@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,20 +177,24 @@
                         <h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type Shortcut;
+<pre><code class="language-graphix">use super::{Length, Widget};
+/// A keyboard shortcut combining modifier keys with a character key.
+type Shortcut;
 
+/// Create a keyboard shortcut. Key must be exactly one character (e.g. "N", "S").
+/// Returns an error for invalid keys.
 val shortcut: fn(
   ?#ctrl: bool,
   ?#shift: bool,
   ?#alt: bool,
   ?#logo: bool,
-  s: string
+  key: string
 ) -&gt; [Shortcut, Error&lt;`InvalidKey(string)&gt;];
 
 type MenuAction = {
   label: &amp;string,
   shortcut: &amp;[Shortcut, null],
-  on_click: &amp;fn(a: null) -&gt; Any,
+  on_click: &amp;[fn(e: null) -&gt; Any, null],
   disabled: &amp;bool
 };
 
@@ -201,22 +205,27 @@ type MenuGroup = {
   items: &amp;Array&lt;MenuItem&gt;
 };
 
-type ContextMenu = { child: &amp;Widget, items: &amp;Array&lt;MenuItem&gt; };
+type MenuBar = {
+  menus: &amp;Array&lt;MenuGroup&gt;,
+  width: &amp;Length
+};
 
 val action: fn(
-  ?#on_click: [fn(a: null) -&gt; Any, null],
+  ?#on_click: [fn(e: null) -&gt; Any, null],
   ?#shortcut: &amp;[Shortcut, null],
   ?#disabled: &amp;bool,
-  s: &amp;string
+  label: &amp;string
 ) -&gt; MenuItem;
 
 val divider: fn() -&gt; MenuItem;
 
-val menu: fn(s: &amp;string, a: &amp;Array&lt;MenuItem&gt;) -&gt; MenuGroup;
+val menu: fn(label: &amp;string, items: &amp;Array&lt;MenuItem&gt;) -&gt; MenuGroup;
 
-val bar: fn(?#width: &amp;Length, a: &amp;Array&lt;MenuGroup&gt;) -&gt; Widget;
+type ContextMenu = { child: &amp;Widget, items: &amp;Array&lt;MenuItem&gt; };
 
-val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widget
+val context_menu: fn(items: &amp;Array&lt;MenuItem&gt;, child: &amp;Widget) -&gt; Widget;
+
+val bar: fn(?#width: &amp;Length, menus: &amp;Array&lt;MenuGroup&gt;) -&gt; Widget
 </code></pre>
 <h2 id="menushortcut"><a class="header" href="#menushortcut"><code>menu::shortcut</code></a></h2>
 <p>Creates a keyboard shortcut from modifier flags and a single character key; any one character, <code>é</code> or <code>€</code> included.</p>

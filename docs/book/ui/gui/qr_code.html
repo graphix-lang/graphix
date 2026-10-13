@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,15 +177,21 @@
                         <h1 id="the-qr-code-widget"><a class="header" href="#the-qr-code-widget">The QR Code Widget</a></h1>
 <p>Encodes a string as a QR code image. The QR code updates reactively when the input string changes.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val qr_code: fn(
+<pre><code class="language-graphix">use super::Widget;
+type QrCode = {
+  data: &amp;string,
+  cell_size: &amp;[f64, null]
+};
+
+val qr_code: fn(
   ?#cell_size: &amp;[f64, null],
-  s: &amp;string
+  data: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong><code>#cell_size</code></strong> – Size in pixels of each cell in the QR code matrix, or <code>null</code> for the default size. Larger values produce a bigger QR code image.</li>
-<li><strong>positional <code>&amp;string</code></strong> – The data to encode. Any valid string will be encoded into the QR code.</li>
+<li><strong>positional <code>&amp;string</code></strong> – The data to encode. Data past a QR code’s capacity (about 2.9 KB) cannot be encoded: the widget renders empty space and logs an error.</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="qr-code-from-text-input"><a class="header" href="#qr-code-from-text-input">QR Code from Text Input</a></h3>

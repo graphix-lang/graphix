@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -191,14 +191,13 @@ contain:</p>
 new set of packages compiled in. This means packages run at native speed with no
 FFI or serialization overhead.</p>
 <p>Packages can depend on other packages through normal Cargo dependencies. For
-example, the <code>net</code> package depends on <code>time</code>. If you remove <code>time</code> from your
-installed packages but still have <code>net</code> installed, <code>time</code> remains available
+example, the <code>tui</code> package depends on <code>sys</code>. If you remove <code>sys</code> from your
+installed packages but still have <code>tui</code> installed, <code>sys</code> remains available
 because it’s a transitive dependency. Cargo handles the dependency graph
 automatically.</p>
 <h2 id="the-standard-library-as-packages"><a class="header" href="#the-standard-library-as-packages">The Standard Library as Packages</a></h2>
-<p>The standard library is itself implemented as a set of packages: <code>core</code>, <code>str</code>,
-<code>array</code>, <code>map</code>, <code>time</code>, <code>net</code>, <code>re</code>, <code>rand</code>, <code>fs</code>, and <code>tui</code>. These ship with
-the default <code>graphix</code> binary. The same <code>defpackage!</code> macro and <code>Package</code> trait
+<p>The standard library is itself implemented as a set of packages, listed in
+<a href="using.html">Using Packages</a>, which ship with the default <code>graphix</code> binary. The same <code>defpackage!</code> macro and <code>Package</code> trait
 that power the standard library are available for third-party packages.</p>
 <h2 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h2>
 <ul>

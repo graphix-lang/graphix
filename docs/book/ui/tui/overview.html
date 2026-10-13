@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -186,11 +186,12 @@
 </ul>
 <h3 id="interactive-widgets"><a class="header" href="#interactive-widgets">Interactive Widgets</a></h3>
 <ul>
-<li><strong>Table</strong>: Sortable, selectable data tables with custom styling</li>
+<li><strong>Table</strong>: Selectable data tables with custom styling</li>
 <li><strong>List</strong>: Scrollable lists with selection and highlighting</li>
 <li><strong>Tabs</strong>: Tabbed interface for organizing content</li>
 <li><strong>Browser</strong>: Netidx browser component</li>
-<li><strong>Calendar</strong>: Date picker and event display</li>
+<li><strong>Calendar</strong>: Month calendar with highlighted dates and events</li>
+<li><strong>Line edit and Form</strong>: Single-line text editing and modal forms (see <a href="input.html#text-entry">Text Entry</a>)</li>
 </ul>
 <h3 id="data-visualization"><a class="header" href="#data-visualization">Data Visualization</a></h3>
 <ul>
@@ -201,10 +202,10 @@
 <li><strong>Canvas</strong>: Low-level drawing surface for custom graphics</li>
 </ul>
 <h3 id="input-handling"><a class="header" href="#input-handling">Input Handling</a></h3>
-<p>Interactive components use the input widget to handle UI events that
-flow through the widget graph from parent to child. Parents can choose
-to pass on events they receive or not. See the input widget for more
-details.</p>
+<p>Interactive components wrap a widget in an <code>input_handler</code> to handle
+UI events that flow through the widget graph from parent to child.
+Parents can choose to pass on events they receive or not. See
+<a href="input.html">Input Handling</a> for details.</p>
 <h2 id="building-your-first-tui"><a class="header" href="#building-your-first-tui">Building Your First TUI</a></h2>
 <p>Here’s a simple example that demonstrates the core concepts:</p>
 <pre><code class="language-graphix">use tui::{line, style, block::block, text::text};
@@ -226,27 +227,30 @@ block(
 <p>Graphix TUIs support rich styling with:</p>
 <ul>
 <li><strong>Colors</strong>: Named colors (<code>Red</code>, <code>Green</code>, <code>Blue</code>), indexed colors (<code>Indexed(202)</code>), and RGB (<code>Rgb({r: 255, g: 100, b: 50})</code>)</li>
-<li><strong>Text Effects</strong>: Bold, italic</li>
+<li><strong>Text Effects</strong>: Bold, dim, italic, underlined, reversed, crossed out, and the other modifiers on the <a href="style.html">style</a> page</li>
 <li><strong>Background Colors</strong>: Set background colors for any component</li>
 <li><strong>Conditional Styling</strong>: Use <code>select</code> expressions to change styles based on state</li>
 </ul>
 <p>Many widgets take optional style arguments, allowing styling to be applied at many levels.</p>
-<pre><code class="language-graphix">use tui::style;
+<pre><code class="language-graphix">use tui::{style, paragraph::paragraph};
 
 let is_selected = true;
 
-style(
-  #fg: select is_selected { true =&gt; `Yellow, false =&gt; `White },
-  #bg: `DarkGray,
-  #add_modifier: [`Bold]
+paragraph(
+  #style: &amp;style(
+    #fg: select is_selected { true =&gt; `Yellow, false =&gt; `White },
+    #bg: `DarkGray,
+    #add_modifier: [`Bold]
+  ),
+  &amp;"a styled paragraph"
 )
 </code></pre>
 <h2 id="layout-system"><a class="header" href="#layout-system">Layout System</a></h2>
 <p>The layout system provides flexible component arrangement:</p>
 <ul>
 <li><strong>Direction</strong>: <code>Horizontal</code> or <code>Vertical</code></li>
-<li><strong>Constraints</strong>: <code>Percentage(50)</code>, <code>Length(20)</code>, <code>Min(10)</code>, <code>Max(100)</code></li>
-<li><strong>Alignment</strong>: <code>Left</code>, <code>Center</code>, <code>Right</code> for horizontal; <code>Top</code>, <code>Center</code>, <code>Bottom</code> for vertical</li>
+<li><strong>Constraints</strong>: <code>Percentage(50)</code>, <code>Length(20)</code>, <code>Min(10)</code>, <code>Max(100)</code>, <code>Ratio(1, 3)</code>, <code>Fill(1)</code></li>
+<li><strong>Flex</strong>: how leftover space is distributed: <code>Start</code>, <code>End</code>, <code>Center</code>, <code>SpaceBetween</code>, <code>SpaceEvenly</code>, <code>SpaceAround</code></li>
 <li><strong>Focus Management</strong>: Built-in focus handling for interactive components</li>
 </ul>
 <pre><code class="language-graphix">use tui::{layout::{child, layout}, text::text};
@@ -279,8 +283,8 @@ let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
 let arrow_pressed = never();
 
-// When user presses down arrow assume the event is handled as
-// shown above and arrow_pressed is set using connect
+// an input_handler (see the Input Handling page) sets arrow_pressed
+// when the user presses the down arrow
 selected_item &lt;- arrow_pressed ~ ((selected_item + 1) % array::len(items));
 
 // UI automatically reflects the change

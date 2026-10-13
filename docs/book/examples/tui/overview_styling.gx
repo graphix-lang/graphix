@@ -1,9 +1,12 @@
-use tui::style;
+use tui::{style, paragraph::paragraph};
 
 let is_selected = true;
 
-style(
-  #fg: select is_selected { true => `Yellow, false => `White },
-  #bg: `DarkGray,
-  #add_modifier: [`Bold]
+paragraph(
+  #style: &style(
+    #fg: select is_selected { true => `Yellow, false => `White },
+    #bg: `DarkGray,
+    #add_modifier: [`Bold]
+  ),
+  &"a styled paragraph"
 )

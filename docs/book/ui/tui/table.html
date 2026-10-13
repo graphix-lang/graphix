@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,14 +177,15 @@
                         <h1 id="the-table-widget"><a class="header" href="#the-table-widget">The Table Widget</a></h1>
 <p>The <code>table</code> widget displays structured data in rows and columns with support for selection, scrolling, and custom styling. It’s ideal for data grids, process monitors, file listings, and any tabular data display.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type Cell = {
+<pre><code class="language-graphix">use super::{Constraint, Flex, HighlightSpacing, Line, Style, Tui};
+type Cell = {
   content: Line,
   style: [Style, null]
 };
 
 val cell: fn(
   ?#style: [Style, null],
-  a: Line
+  content: Line
 ) -&gt; Cell;
 
 type Row = {
@@ -200,8 +201,26 @@ val row: fn(
   ?#height: [i64, null],
   ?#style: [Style, null],
   ?#top_margin: [i64, null],
-  a: Array&lt;Cell&gt;
+  cells: Array&lt;Cell&gt;
 ) -&gt; Row;
+
+type Table = {
+  cell_highlight_style: &amp;[Style, null],
+  column_highlight_style: &amp;[Style, null],
+  column_spacing: &amp;[i64, null],
+  flex: &amp;[Flex, null],
+  footer: &amp;[Row, null],
+  header: &amp;[Row, null],
+  highlight_spacing: &amp;[HighlightSpacing, null],
+  highlight_symbol: &amp;[string, null],
+  row_highlight_style: &amp;[Style, null],
+  rows: &amp;Array&lt;&amp;Row&gt;,
+  selected: &amp;[i64, null],
+  selected_cell: &amp;[{x: i64, y: i64}, null],
+  selected_column: &amp;[i64, null],
+  style: &amp;[Style, null],
+  widths: &amp;[Array&lt;Constraint&gt;, null]
+};
 
 val table: fn(
   ?#cell_highlight_style: &amp;[Style, null],
@@ -218,7 +237,7 @@ val table: fn(
   ?#selected_column: &amp;[i64, null],
   ?#style: &amp;[Style, null],
   ?#widths: &amp;[Array&lt;Constraint&gt;, null],
-  a: &amp;Array&lt;&amp;Row&gt;
+  rows: &amp;Array&lt;&amp;Row&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -369,7 +388,7 @@ let clock = sys::time::timer(duration:1.s, true);
 let cpu_val = 5;
 cpu_val &lt;- {
     let v = clock ~ cpu_val;
-    v + rand::rand(#clock, #start: -5, #end: 5)
+    max(0, min(100, v + rand::rand(#clock, #start: -5, #end: 6)))
 };
 
 let row1 = row([

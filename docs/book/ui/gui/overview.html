@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -187,27 +187,38 @@
 </ul>
 <h2 id="the-window-type"><a class="header" href="#the-window-type">The Window Type</a></h2>
 <p>Every GUI program is built around windows. The <code>Window</code> type describes a window and its content:</p>
-<pre><code class="language-graphix">type Window = { title: &amp;string, size: &amp;mut Size, theme: &amp;Theme, content: &amp;Widget };
+<pre><code class="language-graphix">/// A window description
+type Window = {
+  title: &amp;string,
+  size: &amp;mut Size,
+  theme: &amp;Theme,
+  icon: &amp;ImageSource,
+  content: &amp;Widget
+};
+
+/// The custom display root type. An expression of this type
+/// triggers the GUI display mode in the shell.
 type Gui = Array&lt;&amp;Window&gt;;
 
 val window: fn(
   ?#title: &amp;string,
   ?#size: &amp;mut Size,
   ?#theme: &amp;Theme,
-  a: &amp;Widget
+  ?#icon: &amp;ImageSource,
+  content: &amp;Widget
 ) -&gt; Window;
+
 </code></pre>
-<p>All parameters except the content widget are optional. Defaults are <code>"Graphix"</code> for the title, <code>{ width: 800.0, height: 600.0 }</code> for the size, and <code>`Dark</code> for the theme.</p>
+<p>All parameters except the content widget are optional. Defaults are <code>"Graphix"</code> for the title, <code>{ width: 800.0, height: 600.0 }</code> for the size, and <code>`Dark</code> for the theme. <code>#size</code> is <code>&amp;mut</code> because the runtime writes the window’s real size back when the user resizes it.</p>
+<p><code>#icon</code> is the window’s icon, an <code>ImageSource</code>: a file path (a <code>string</code>), encoded image <code>`Bytes</code>, <code>`Svg</code> source text, or raw <code>`Rgba</code> pixels. Most of the book’s examples pass <code>#icon: &amp;icon::icon</code> from <code>icon.gx</code>, a module beside them that holds the Graphix logo as an <code>`Svg</code>; leave <code>#icon</code> out and the window has the platform’s default icon.</p>
 <p>The final expression of your program should be an <code>Array&lt;&amp;Window&gt;</code> – the shell sees this type and launches the GUI runtime.</p>
 <h2 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h2>
 <p>Here is a minimal GUI program that creates a window with text and a button:</p>
 <pre><code class="language-graphix">use gui::{window, button::button, column::column, text::text};
-mod icon;
 
 let clicks = 0;
 
 [&amp;window(
-  #icon: &amp;icon::icon,
   #title: &amp;"Graphix Demo",
   #theme: &amp;`CatppuccinMocha,
   &amp;column(
@@ -232,19 +243,19 @@ let clicks = 0;
 <p><img src="./media/hello.png" alt="Hello GUI"></p>
 <p>A few things to notice:</p>
 <ul>
-<li><code>use gui</code> brings the top-level GUI module into scope, which gives access to <code>window</code> and shared types like <code>Length</code>, <code>Padding</code>, and <code>Theme</code>.</li>
-<li>Individual widget modules (<code>gui::text</code>, <code>gui::column</code>, <code>gui::button</code>) are imported separately.</li>
+<li><code>use gui::{window, ..}</code> imports <code>window</code> from the top-level GUI module, which also holds the shared types like <code>Length</code>, <code>Padding</code>, and <code>Theme</code> (write <code>gui::Length</code>, or import them by name too).</li>
+<li>Each widget lives in a module of its own name, so the widget function is imported by its path: <code>button::button</code>, <code>column::column</code>, <code>text::text</code>.</li>
 <li>Widget arguments are passed as references with <code>&amp;</code>. Even literal values like <code>&amp;20.0</code> and <code>&amp;"Hello, Graphix GUI!"</code> are wrapped in <code>&amp;</code>.</li>
 <li>The program’s final value is a one-element array <code>[&amp;window(...)]</code>, which has type <code>Gui</code>.</li>
 </ul>
 <h2 id="the-reference-pattern"><a class="header" href="#the-reference-pattern">The Reference Pattern</a></h2>
 <p>GUI widgets take <code>&amp;</code> references so that updates propagate with fine granularity. When you write:</p>
-<pre><code class="language-graphix">let name = "world"
+<pre><code class="language-graphix">let name = "world";
 text(&amp;"Hello, [name]!")
 </code></pre>
 <p>The <code>text</code> widget holds a reference to the string expression <code>"Hello, [name]!"</code>. When <code>name</code> changes, only this specific text widget re-renders – the rest of the window is untouched.</p>
 <p>This is especially important for interactive widgets. A text input, for example, takes a <code>&amp;string</code> for its current value and provides a callback to update it:</p>
-<pre><code class="language-graphix">let name = ""
+<pre><code class="language-graphix">let name = "";
 text_input(#on_input: |v| name &lt;- v, #placeholder: &amp;"Type here...", &amp;name)
 </code></pre>
 <p>The <code>&lt;-</code> connect operator schedules <code>name</code> to update on the next cycle, and because the text input holds a reference to <code>name</code>, it automatically reflects the new value.</p>

@@ -1,0 +1,13 @@
+let (users, raw) = seq {
+    let conn = sqlite::open(":memory:")?;
+    sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
+    sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
+    // typed struct results
+    let users: Array<{id: i64, name: string, age: i64}> =
+        sqlite::query(conn, "SELECT * FROM users", [])?;
+    // raw map results
+    let raw: Array<Map<string, sqlite::SqlVal>> =
+        sqlite::query(conn, "SELECT * FROM users", [])?;
+    (users, raw)
+};
+println("[users] [raw]")

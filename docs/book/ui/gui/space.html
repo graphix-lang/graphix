@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,7 +179,13 @@
 <h2 id="space"><a class="header" href="#space">Space</a></h2>
 <p>The <code>space</code> widget creates empty space with configurable dimensions. Use it to push widgets apart within a row or column.</p>
 <h3 id="interface"><a class="header" href="#interface">Interface</a></h3>
-<pre><code class="language-graphix">val space: fn(
+<pre><code class="language-graphix">use super::{Length, Widget};
+type Space = {
+  width: &amp;Length,
+  height: &amp;Length
+};
+
+val space: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length
 ) -&gt; Widget
@@ -223,8 +229,12 @@ mod icon;
 <h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
 <p>Rules draw horizontal or vertical lines to visually separate content.</p>
 <h3 id="interface-1"><a class="header" href="#interface-1">Interface</a></h3>
-<pre><code class="language-graphix">val horizontal_rule: fn(?#height: &amp;f64) -&gt; Widget;
-val vertical_rule: fn(?#width: &amp;f64) -&gt; Widget;
+<pre><code class="language-graphix">use super::Widget;
+type HorizontalRule = { height: &amp;f64 };
+type VerticalRule = { width: &amp;f64 };
+
+val horizontal_rule: fn(?#height: &amp;f64) -&gt; Widget;
+val vertical_rule: fn(?#width: &amp;f64) -&gt; Widget
 </code></pre>
 <h3 id="parameters-1"><a class="header" href="#parameters-1">Parameters</a></h3>
 <ul>

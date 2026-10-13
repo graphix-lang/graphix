@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -436,7 +436,7 @@ val chart_style: fn(
 <li><strong>title</strong> — Chart title displayed above the plot area. Null for no title.</li>
 <li><strong>x_label</strong> — Label for the x-axis. Null for no label.</li>
 <li><strong>y_label</strong> — Label for the y-axis. Null for no label.</li>
-<li><strong>x_range</strong> — Manual x-axis range as <code>{min: f64, max: f64}</code> or <code>{min: datetime, max: datetime}</code>. When null, the range is computed automatically from the data.</li>
+<li><strong>x_range</strong> — Manual x-axis range as <code>{min: f64, max: f64}</code> or <code>{min: datetime, max: datetime}</code>. When null, the range is computed automatically from the data. A range of the other kind than the chart’s x axis (a datetime range on a numeric chart, or the reverse) is ignored.</li>
 <li><strong>y_range</strong> — Manual y-axis range as <code>{min: f64, max: f64}</code>. When null, auto-computed.</li>
 <li><strong>z_label</strong> — Label for the z-axis (3D charts only). Null for no label.</li>
 <li><strong>z_range</strong> — Manual z-axis range as <code>{min: f64, max: f64}</code> (3D charts only). When null, auto-computed.</li>
@@ -497,7 +497,7 @@ val chart_style: fn(
 so a program defines its look once and hands the same value to every
 chart. A chart that needs one thing different takes a functional update
 of the shared record:</p>
-<pre><code class="language-graphix">let deck = chart::chart_style(
+<pre><code class="language-graphix ignore">let deck = chart::chart_style(
     #background: color(#r: 0.12, #g: 0.12, #b: 0.18)$,
     #title_color: color(#r: 0.9, #g: 0.9, #b: 0.95)$,
     #legend: chart::legend_style(#label_color: color(#r: 0.85, #g: 0.85, #b: 0.9)$),
@@ -568,7 +568,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 </ul>
 <h2 id="chartstyle-fields"><a class="header" href="#chartstyle-fields">ChartStyle Fields</a></h2>
 <ul>
-<li><strong>background</strong> — Background color as a <code>Color</code> struct. Defaults to white when null.</li>
+<li><strong>background</strong> — Background color, a <code>Color</code> made with <code>gui::color</code>. Defaults to white when null.</li>
 <li><strong>margin</strong> — Margin in pixels around the plot area. Defaults to 10.</li>
 <li><strong>title_size</strong> — Font size for the chart title. Defaults to 16.</li>
 <li><strong>title_color</strong> — Color of the chart title text. Defaults to black when null.</li>
@@ -586,7 +586,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>axis_color</strong> — Color of axis lines. 2D charts only.</li>
 <li><strong>label_color</strong> — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.</li>
 <li><strong>label_size</strong> — Font size for axis labels.</li>
-<li><strong>x_label_area_size</strong> — Width of the x-axis label area in pixels. Increase to prevent label clipping.</li>
+<li><strong>x_label_area_size</strong> — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.</li>
 <li><strong>x_labels</strong> — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
 <li><strong>x_light_lines</strong> — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.</li>
 <li><strong>y_label_area_size</strong> — Width of the y-axis label area in pixels. Increase to prevent label clipping.</li>
@@ -602,6 +602,19 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>label_color</strong> — Color of legend text labels. Defaults to plotters default (black) when null.</li>
 <li><strong>label_size</strong> — Font size for legend labels. When null, plotters default is used.</li>
 </ul>
+<h2 id="interaction"><a class="header" href="#interaction">Interaction</a></h2>
+<p>A chart responds to the mouse:</p>
+<ul>
+<li><strong>Wheel</strong> zooms around the cursor (a 3D chart scales instead). The
+chart takes the wheel event, so a chart inside a <code>scrollable</code> does not
+scroll it while the cursor is over the chart.</li>
+<li><strong>Drag</strong> pans the view; a bar chart pans its value axis only. On a 3D
+chart, dragging rotates the view.</li>
+<li><strong>Double-click</strong> resets the view to the chart’s own ranges.</li>
+<li><strong>Hover</strong> shows a tooltip at the data point nearest the cursor (2D
+charts).</li>
+</ul>
+<p>Pie charts ignore zoom and pan.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="multiple-datasets"><a class="header" href="#multiple-datasets">Multiple Datasets</a></h3>
 <pre><code class="language-graphix">use gui::{window, chart, column::column, row::row, slider::slider, text::text};
@@ -611,7 +624,7 @@ let rate = 0.;
 let clock = sys::time::timer(1. - rate, true);
 let x = cast&lt;f64&gt;(count(clock))$;
 
-let series = |start: f64, end: f64| -&gt; Array&lt;(f64, f64)&gt; {
+let series = |start, end| {
     let d = [];
     let y = rand::rand(#start, #end, #clock);
     d &lt;- array::window(#n:20, clock ~ d, (x, y));

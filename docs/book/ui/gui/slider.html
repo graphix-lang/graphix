@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,16 +179,29 @@
 <h2 id="slider"><a class="header" href="#slider">Slider</a></h2>
 <p>A horizontal slider that lets the user select a floating-point value by dragging a handle along a track.</p>
 <h3 id="interface"><a class="header" href="#interface">Interface</a></h3>
-<pre><code class="language-graphix">val slider: fn(
+<pre><code class="language-graphix">use super::{Length, Widget};
+type Slider = {
+  disabled: &amp;bool,
+  value: &amp;f64,
+  min: &amp;f64,
+  max: &amp;f64,
+  step: &amp;[f64, null],
+  on_change: &amp;[fn(v: f64) -&gt; Any, null],
+  on_release: &amp;[fn(e: null) -&gt; Any, null],
+  width: &amp;Length,
+  height: &amp;[f64, null]
+};
+
+val slider: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: [fn(x: f64) -&gt; Any, null],
-  ?#on_release: [fn(a: null) -&gt; Any, null],
+  ?#on_change: [fn(v: f64) -&gt; Any, null],
+  ?#on_release: [fn(e: null) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  x: &amp;f64
+  value: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters"><a class="header" href="#parameters">Parameters</a></h3>
@@ -206,16 +219,29 @@
 <h2 id="vertical-slider"><a class="header" href="#vertical-slider">Vertical Slider</a></h2>
 <p>A vertical slider – identical to <code>slider</code> but oriented top-to-bottom. Note the width and height types are swapped: <code>#width</code> is <code>&amp;[f64, null]</code> (fixed pixels) and <code>#height</code> is <code>&amp;Length</code> (layout-based).</p>
 <h3 id="interface-1"><a class="header" href="#interface-1">Interface</a></h3>
-<pre><code class="language-graphix">val vertical_slider: fn(
+<pre><code class="language-graphix">use super::{Length, Widget};
+type VerticalSlider = {
+  disabled: &amp;bool,
+  value: &amp;f64,
+  min: &amp;f64,
+  max: &amp;f64,
+  step: &amp;[f64, null],
+  on_change: &amp;[fn(v: f64) -&gt; Any, null],
+  on_release: &amp;[fn(e: null) -&gt; Any, null],
+  width: &amp;[f64, null],
+  height: &amp;Length
+};
+
+val vertical_slider: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: [fn(x: f64) -&gt; Any, null],
-  ?#on_release: [fn(a: null) -&gt; Any, null],
+  ?#on_change: [fn(v: f64) -&gt; Any, null],
+  ?#on_release: [fn(e: null) -&gt; Any, null],
   ?#width: &amp;[f64, null],
   ?#height: &amp;Length,
   ?#disabled: &amp;bool,
-  x: &amp;f64
+  value: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters-1"><a class="header" href="#parameters-1">Parameters</a></h3>
@@ -227,12 +253,21 @@
 <h2 id="progress-bar"><a class="header" href="#progress-bar">Progress Bar</a></h2>
 <p>A non-interactive horizontal bar that fills proportionally to a value within a range. Use it to display progress, levels, or any metric that the user should see but not control.</p>
 <h3 id="interface-2"><a class="header" href="#interface-2">Interface</a></h3>
-<pre><code class="language-graphix">val progress_bar: fn(
+<pre><code class="language-graphix">use super::{Length, Widget};
+type ProgressBar = {
+  value: &amp;f64,
+  min: &amp;f64,
+  max: &amp;f64,
+  width: &amp;Length,
+  height: &amp;[f64, null]
+};
+
+val progress_bar: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
-  x: &amp;f64
+  value: &amp;f64
 ) -&gt; Widget
 </code></pre>
 <h3 id="parameters-2"><a class="header" href="#parameters-2">Parameters</a></h3>

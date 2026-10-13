@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-ca61ab31.js"></script>
+        <script src="toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -255,14 +255,14 @@ packages compiled in. See <a href="./packages/overview.html">Packages</a> for fu
 <li><strong>Lambdas</strong>: <code>|x| x + 1</code> defines a function but doesn’t output</li>
 <li><strong>Use statements</strong>: <code>use sys::time</code> imports a module but doesn’t output</li>
 <li><strong>Connect operations</strong>: <code>x &lt;- y</code> schedules updates but doesn’t output</li>
-<li><strong>Module definitions</strong>: <code>mod m { ... }</code> defines a module but doesn’t output</li>
+<li><strong>Module declarations</strong>: <code>mod m</code> loads a module but doesn’t output</li>
 <li><strong>Type definitions</strong>: <code>type Point = {x: f64, y: f64}</code> defines a type but doesn’t output</li>
 </ul>
 <p>Everything else <strong>is</strong> considered an output expression:</p>
 <ul>
 <li>Values: <code>42</code>, <code>"hello"</code>, <code>true</code></li>
 <li>Arithmetic: <code>2 + 2</code></li>
-<li>Function calls: <code>sys::time::now()</code></li>
+<li>Function calls: <code>sys::time::now(null)</code></li>
 <li>Variable references: <code>x</code></li>
 <li>Struct/variant/tuple construction: <code>{x: 10, y: 20}</code></li>
 <li>Blocks with output expressions as their last value</li>
@@ -288,16 +288,16 @@ count
 <p>Even though this printed its value immediately, the shell is still waiting for potential updates. Since <code>2 + 2</code> can never update, nothing more will happen, but you still need <code>Ctrl+C</code> to return to the prompt.</p>
 <h3 id="script-output-behavior"><a class="header" href="#script-output-behavior">Script Output Behavior</a></h3>
 <p>When you run in script mode only the <strong>last top-level expression</strong> produces output. Consider this file:</p>
-<pre><code class="language-graphix">let x = 10
-let y = 20
-x + y
-print("Hello")
+<pre><code class="language-graphix">let x = 10;
+let y = 20;
+x + y;
+print("Hello");
 x * y
 </code></pre>
 <p>This file has multiple top-level expressions. The first two are
 bindings (no output). The third (<code>x + y</code>) is an output expression but
-not the last. The fourth calls <code>print</code> which has side effects but
-returns <code>_</code> (bottom). The fifth and final expression (<code>x * y</code>) is the
+not the last. The fourth calls <code>print</code> which has side effects and
+returns <code>null</code>. The fifth and final expression (<code>x * y</code>) is the
 output expression that the shell will print.</p>
 <p>When you run this file:</p>
 <ul>
@@ -372,7 +372,7 @@ utils::helper()
 <li><strong>Platform-specific init directory</strong>:
 <ul>
 <li>Linux: <code>~/.local/share/graphix</code></li>
-<li>Windows: <code>%APPDATA%\Roaming\graphix</code></li>
+<li>Windows: <code>%APPDATA%\graphix</code></li>
 <li>macOS: <code>~/Library/Application Support/graphix</code></li>
 </ul>
 </li>
@@ -479,11 +479,11 @@ GRAPHIX_MODPATH=netidx:/shared/graphix graphix myprogram.gx
 <p>Create an <code>init.gx</code> file in your init directory to define commonly
 used utilities.</p>
 <p>Example <code>~/.local/share/graphix/init.gx</code>:</p>
-<pre><code class="language-graphix">let debug = |x| { print("DEBUG: [x]"); x };
-let clear = || print("\x1b[2J\x1b[H");
+<pre><code class="language-graphix">let debug = |x| { println("DEBUG: [x]"); x };
+let twice = |f: fn(x: 'a) -&gt; 'a, x: 'a| f(f(x));
 </code></pre>
 <p>The shell loads this as the module <code>init</code>, so in any REPL session the
-utilities are available as <code>init::debug</code>, <code>init::clear</code>, etc. — or
+utilities are available as <code>init::debug</code>, <code>init::twice</code>, etc. — or
 bare after a <code>use init::*</code>.</p>
 <h2 id="command-line-options"><a class="header" href="#command-line-options">Command-Line Options</a></h2>
 <p>The <code>graphix</code> command supports several options for controlling its behavior.</p>

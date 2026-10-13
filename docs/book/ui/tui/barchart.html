@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,9 +175,10 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
-<p>The <code>barchart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It’s ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
+<p>The <code>bar_chart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It’s ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type Bar = {
+<pre><code class="language-graphix">use super::{Direction, Line, Style, Tui};
+type Bar = {
   label: &amp;[Line, null],
   style: &amp;[Style, null],
   text_value: &amp;[string, null],
@@ -190,7 +191,7 @@ val bar: fn(
   ?#style: &amp;[Style, null],
   ?#text_value: &amp;[string, null],
   ?#value_style: &amp;[Style, null],
-  n: &amp;i64
+  value: &amp;i64
 ) -&gt; Bar;
 
 type BarGroup = {
@@ -200,8 +201,21 @@ type BarGroup = {
 
 val bar_group: fn(
   ?#label: [Line, null],
-  a: Array&lt;Bar&gt;
+  bars: Array&lt;Bar&gt;
 ) -&gt; BarGroup;
+
+type BarChart = {
+  bar_gap: &amp;[i64, null],
+  bar_style: &amp;[Style, null],
+  bar_width: &amp;[i64, null],
+  data: &amp;Array&lt;BarGroup&gt;,
+  direction: &amp;[Direction, null],
+  group_gap: &amp;[i64, null],
+  label_style: &amp;[Style, null],
+  max: &amp;[i64, null],
+  style: &amp;[Style, null],
+  value_style: &amp;[Style, null]
+};
 
 val bar_chart: fn(
   ?#bar_gap: &amp;[i64, null],
@@ -213,7 +227,7 @@ val bar_chart: fn(
   ?#max: &amp;[i64, null],
   ?#style: &amp;[Style, null],
   ?#value_style: &amp;[Style, null],
-  a: &amp;Array&lt;BarGroup&gt;
+  data: &amp;Array&lt;BarGroup&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -233,7 +247,7 @@ val bar_chart: fn(
 <ul>
 <li><strong>style</strong> - Style for the bar</li>
 <li><strong>label</strong> - Line labeling the bar</li>
-<li><strong>text_value</strong> - Line displayed above bar (defaults to numeric value)</li>
+<li><strong>text_value</strong> - String displayed above the bar (defaults to the numeric value)</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>

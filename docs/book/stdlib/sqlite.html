@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -221,18 +221,22 @@ SQL injection. SQL that itself holds a <code>[</code> (a JSON path such as
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
 Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> for raw access.</p>
-<pre><code class="language-graphix">
-let conn = sqlite::open(":memory:")?;
-sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
-sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
-
-// typed struct results
-let users: Array&lt;{id: i64, name: string, age: i64}&gt; =
-    sqlite::query(conn, "SELECT * FROM users", [])?;
-
-// raw map results
-let raw: Array&lt;Map&lt;string, SqlVal&gt;&gt; =
-    sqlite::query(conn, "SELECT * FROM users", [])?;
+<p>Calls on one connection are independent async calls, ordered only when
+something sequences them: here a <code>seq</code>, so the table exists before the
+insert and the row before the queries.</p>
+<pre><code class="language-graphix">let (users, raw) = seq {
+    let conn = sqlite::open(":memory:")?;
+    sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
+    sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
+    // typed struct results
+    let users: Array&lt;{id: i64, name: string, age: i64}&gt; =
+        sqlite::query(conn, "SELECT * FROM users", [])?;
+    // raw map results
+    let raw: Array&lt;Map&lt;string, sqlite::SqlVal&gt;&gt; =
+        sqlite::query(conn, "SELECT * FROM users", [])?;
+    (users, raw)
+};
+println("[users] [raw]")
 </code></pre>
 
                     </main>

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -197,6 +197,12 @@ val fold: fn(a: Array&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws
 /// and calls f with the length of the internal buffer and the value of v.
 /// If f returns true then group returns the internal buffer as an array
 /// otherwise group returns nothing.
+/// group waits for f's answer before it takes the next v, and queues
+/// the updates that arrive meanwhile. An f that answers nothing for an
+/// element, because it raised or read something with no value yet, holds
+/// group until something it reads fires and it answers. A raise for an
+/// element whose inputs never fire again holds it for good: answer a
+/// default instead, `select chk(x) { error as _ =&gt; false, b =&gt; b }`.
 val group: fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
 /// iter produces an update for every value in the array a. updates are produced
@@ -206,9 +212,9 @@ val iter: fn(a: Array&lt;'a&gt;) -&gt; 'a;
 /// iterq produces an update for each value in a, but only when clock updates. If
 /// clock does not update but a does, then iterq will store each a in an internal
 /// fifo queue. If clock updates but a does not, iterq will record the number of
-/// times it was triggered, and will update immediately that many times when a
+/// times it was triggered, and will update immediatly that many times when a
 /// updates.
-val iterq: fn(#clock:Any, a: Array&lt;'a&gt;) -&gt; 'a;
+val iterq: fn(#clock: Any, a: Array&lt;'a&gt;) -&gt; 'a;
 
 /// returns the length of a
 val len: fn(a: Array&lt;'a&gt;) -&gt; i64;
@@ -229,7 +235,7 @@ val push_front: fn(a: Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 /// added to the back. If pushing the args would cause the
 /// array to become bigger than #n, remove values from the
 /// front. O(N) where N is the window size.
-val window: fn(#n:i64, a: Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
+val window: fn(#n: i64, a: Array&lt;'a&gt;, @args: 'a) -&gt; Array&lt;'a&gt;;
 
 /// flatten takes an array with two levels of nesting and produces a flat array
 /// with all the nested elements concatenated together.
@@ -255,7 +261,7 @@ type Direction = [
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
-val sort: fn&lt;'a: Ordered&gt;(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val sort: fn&lt;'a: Ordered&gt;(?#dir: Direction, ?#numeric: bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.

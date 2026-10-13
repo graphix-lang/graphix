@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,55 @@
                         <h1 id="the-scrollbar-widget"><a class="header" href="#the-scrollbar-widget">The Scrollbar Widget</a></h1>
 <p>The <code>scrollbar</code> widget adds a visual scrollbar indicator to scrollable content, making it clear when content extends beyond the visible area and showing the current scroll position.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type ScrollbarOrientation = [
+<pre><code class="language-graphix">use super::{Size, Style, Tui};
+type ScrollbarOrientation = [
   `VerticalRight,
   `VerticalLeft,
   `HorizontalBottom,
   `HorizontalTop
 ];
 
+type Scrollbar = {
+  begin_style: &amp;[Style, null],
+  begin_symbol: &amp;[string, null],
+  child: &amp;Tui,
+  content_length: &amp;[i64, null],
+  end_style: &amp;[Style, null],
+  end_symbol: &amp;[string, null],
+  orientation: &amp;[ScrollbarOrientation, null],
+  position: &amp;[i64, null],
+  size: &amp;[Size, null],
+  style: &amp;[Style, null],
+  thumb_style: &amp;[Style, null],
+  thumb_symbol: &amp;[string, null],
+  track_style: &amp;[Style, null],
+  track_symbol: &amp;[string, null],
+  viewport_length: &amp;[i64, null]
+};
+
+// CR claude for claude: [bug/high] TUI #size outputs are read-only &amp;[Size, null] refs
+// that Rust writes: type-unsound. block (block.gxi), layout's child (layout.gxi),
+// tabs (tabs.gxi), overlay (overlay.gxi) and scrollbar (scrollbar.gxi) declare
+// `?#size: &amp;[Size, null]`, a read-only reference, which is covariant. The Rust side
+// writes through it anyway: `SizeReport::report` calls `self.r.set_deref(size)`
+// (graphix-package-tui/src/lib.rs). book/src/ui/tui/scroll.md documents it as an
+// output. Covariance lets `&amp;n` with `n: null` stand where `&amp;[Size, null]` is
+// expected, so the widget stores a `{height, width}` struct in a variable whose
+// static type is `null`. design/place_references.md ('Why') names this exact class:
+// covariance combined with writes is the reason `&amp;T` and `&amp;mut T` were split, and it
+// panicked the JIT before. The GUI's analogous output, `window(#size: &amp;mut Size)`, is
+// declared correctly. Failure: `let n: null = null; let k = select n { null =&gt; "is
+// null" }; block(#size: &amp;n, &amp;text(&amp;"hi"))`. The check accepts it. At run time n holds
+// `[["height", 24], ["width", 80]]`. Logged, it reads `null` first and then the
+// struct. With GRAPHIX_ABORT_ON_NO_MATCH=1 the exhaustive select matches no arm and
+// the process aborts (core dumped). Even with matching types, a program that passes
+// `&amp;dims` for a value it meant as an input has that value silently overwritten, which
+// `&amp;` promises cannot happen. Fix: Declare every size output as an optional writable
+// argument, `?#size: [&amp;mut Size, null]` with default `null` (the CLAUDE.md /
+// place_references rule for optional writable args), in all five .gxi/.gx pairs.
+// Update the examples to pass `&amp;mut size`. Consider having `Ref::set_deref` refuse a
+// reference that was not minted by `&amp;mut`, so a Rust package cannot reopen the hole.
+// Unverified: the reviewer's report, not checked by a verifier. (book-ui-b-01)
 val scrollbar: fn(
   ?#begin_style: &amp;[Style, null],
   ?#begin_symbol: &amp;[string, null],
@@ -199,7 +241,7 @@ val scrollbar: fn(
   ?#track_style: &amp;[Style, null],
   ?#track_symbol: &amp;[string, null],
   ?#viewport_length: &amp;[i64, null],
-  a: &amp;Tui
+  child: &amp;Tui
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -207,6 +249,9 @@ val scrollbar: fn(
 <li><strong>position</strong> - Current scroll position, typically the Y offset (default: 0)</li>
 <li><strong>content_length</strong> - The number of scroll positions in the content; nothing measures the child, so a scrollbar without one draws no bar (default: 0)</li>
 <li><strong>viewport_length</strong> - How many positions the view shows at once, which sizes the thumb (default: the bar’s own length)</li>
+<li><strong>begin_symbol</strong>, <strong>end_symbol</strong> - The arrows at each end; null, the default, draws none</li>
+<li><strong>track_symbol</strong> - The track the thumb runs along; null, the default, draws none</li>
+<li><strong>thumb_symbol</strong> - The thumb; null, the default, keeps ratatui’s own</li>
 <li><strong>size</strong> (output) - Rendered size of the scrollbar area</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
@@ -236,9 +281,9 @@ scrollbar(
   scrollbar::scrollbar
 };
 
-let long_text = "Very long text content...";
+let lines = array::init(100, |i| line("Line [i + 1]"));
 let position = 0;
-let max_position = 100;
+let max_position = array::len(lines) - 1;
 
 let handle_event = |e: Event| on_press(e, |k| select k.code {
     k@`Up if position &gt; 0 =&gt; {
@@ -249,12 +294,12 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
         position &lt;- (k ~ position) + 1;
         `Stop
     },
-    k@`PageUp if position &gt; 10 =&gt; {
-        position &lt;- (k ~ position) - 10;
+    k@`PageUp if position &gt; 0 =&gt; {
+        position &lt;- max(0, (k ~ position) - 10);
         `Stop
     },
-    k@`PageDown if position &lt; (max_position - 10) =&gt; {
-        position &lt;- (k ~ position) + 10;
+    k@`PageDown if position &lt; max_position =&gt; {
+        position &lt;- min(max_position, (k ~ position) + 10);
         `Stop
     },
     k@`Home =&gt; { position &lt;- k ~ 0; `Stop },
@@ -269,23 +314,23 @@ input_handler(
         #title: &amp;line("Scrollable Content"),
         &amp;scrollbar(
             #position: &amp;position,
-            #content_length: &amp;max_position,
-            &amp;paragraph(#scroll: &amp;{x: 0, y: position}, &amp;long_text)
+            #content_length: &amp;array::len(lines),
+            &amp;paragraph(#scroll: &amp;{x: 0, y: position}, &amp;lines)
         )
     )
 )
 </code></pre>
 <p><img src="./media/scroll_paragraph.gif" alt="Scrollable Paragraph"></p>
 <h3 id="scrollable-list"><a class="header" href="#scrollable-list">Scrollable List</a></h3>
-<pre><code class="language-graphix">use tui::{line, list::list, scrollbar::scrollbar};
+<pre><code class="language-graphix">use tui::{
+  line,
+  input_handler::{Event, input_handler, on_press},
+  list::list,
+  scrollbar::scrollbar
+};
 
-let items = [
-    line("Item 1"),
-    line("Item 2"),
-    line("Item 3"),
-    line("Item 4"),
-    line("Item 5")
-];
+let items = array::init(30, |i| line("Item [i + 1]"));
+let last = array::len(items) - 1;
 let selected = 0;
 let scroll_pos = 0;
 let visible = 10;
@@ -297,14 +342,29 @@ scroll_pos &lt;- select selected {
     _ =&gt; never()
 };
 
-scrollbar(
-    #position: &amp;scroll_pos,
-    #content_length: &amp;array::len(items),
-    #viewport_length: &amp;visible,
-    &amp;list(
-        #scroll: &amp;scroll_pos,
-        #selected: &amp;selected,
-        &amp;items
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Up if selected &gt; 0 =&gt; {
+        selected &lt;- (k ~ selected) - 1;
+        `Stop
+    },
+    k@`Down if selected &lt; last =&gt; {
+        selected &lt;- (k ~ selected) + 1;
+        `Stop
+    },
+    _ =&gt; `Continue
+});
+
+input_handler(
+    #handle: &amp;handle_event,
+    &amp;scrollbar(
+        #position: &amp;scroll_pos,
+        #content_length: &amp;array::len(items),
+        #viewport_length: &amp;visible,
+        &amp;list(
+            #scroll: &amp;scroll_pos,
+            #selected: &amp;selected,
+            &amp;items
+        )
     )
 )
 </code></pre>

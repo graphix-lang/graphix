@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,8 @@
                         <h1 id="the-canvas-widget"><a class="header" href="#the-canvas-widget">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level drawing surface for custom graphics. You can draw lines, circles, rectangles, points, and text labels at specific coordinates, making it perfect for diagrams, plots, and custom visualizations.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type CanvasLine = {
+<pre><code class="language-graphix">use super::{Color, Line, Marker, Tui};
+type CanvasLine = {
   color: Color,
   x1: f64,
   x2: f64,
@@ -219,18 +220,26 @@ type CanvasShape = [
   `Label(CanvasLabel)
 ];
 
+type Canvas = {
+  background_color: &amp;[Color, null],
+  marker: &amp;[Marker, null],
+  shapes: &amp;Array&lt;&amp;CanvasShape&gt;,
+  x_bounds: &amp;{ max: f64, min: f64 },
+  y_bounds: &amp;{ max: f64, min: f64 }
+};
+
 val canvas: fn(
   ?#background_color: &amp;[Color, null],
   ?#marker: &amp;[Marker, null],
   #x_bounds: &amp;{ max: f64, min: f64 },
   #y_bounds: &amp;{ max: f64, min: f64 },
-  a: &amp;Array&lt;&amp;CanvasShape&gt;
+  shapes: &amp;Array&lt;&amp;CanvasShape&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong>background_color</strong> - Background color for the canvas</li>
-<li><strong>marker</strong> - Marker type: <code>Dot</code>, <code>Braille</code> (default), or <code>Block</code></li>
+<li><strong>marker</strong> - Marker type, one of <code>Dot</code>, <code>Block</code>, <code>Bar</code>, <code>Braille</code>, <code>HalfBlock</code>, <code>Quadrant</code>, <code>Sextant</code>, <code>Octant</code>; <code>Braille</code> by default</li>
 <li><strong>x_bounds</strong> - X-axis range with <code>min</code> and <code>max</code> fields (required)</li>
 <li><strong>y_bounds</strong> - Y-axis range with <code>min</code> and <code>max</code> fields (required)</li>
 </ul>

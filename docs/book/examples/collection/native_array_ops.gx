@@ -2,17 +2,17 @@
 // array — the spellings a Collection implementation for your own
 // array-backed type would use. Each is an index tail recursion, and the
 // whole loop compiles to a native kernel.
-// fold: the primitive. ~6x the intrinsic per element (the loop's own
-// bounds check, `$` and select — array::len is a fast call).
+// fold: the primitive (the loop pays its own bounds check, `$` and
+// select per element; array::len is a fast call).
 let rec fold_go = |a: Array<'a>, f: fn(acc: 'b, x: 'a) -> 'b, i: i64, acc: 'b| -> 'b
     select i < array::len(a) {
         true => fold_go(a, f, i + 1, f(acc, a[i]$)),
         false => acc
     };
 
-// find: stops at the match — the early exit a fold cannot express
-// (the intrinsic scans all slots by rule, so on an average hit this
-// BEATS it).
+// find: stops at the match, the early exit a fold cannot express. For
+// a type of your own that is the point; against Array's intrinsic it
+// wins only on a hit near the front.
 let rec find_go = |a: Array<'a>, f: fn(x: 'a) -> bool, i: i64| -> ['a, null]
     select i < array::len(a) {
         false => null,

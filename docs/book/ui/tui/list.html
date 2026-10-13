@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,19 @@
                         <h1 id="the-list-widget"><a class="header" href="#the-list-widget">The List Widget</a></h1>
 <p>The <code>list</code> widget displays a scrollable, selectable list of items with keyboard navigation support. It’s perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val list: fn(
+<pre><code class="language-graphix">use super::{HighlightSpacing, Line, Style, Tui};
+type ListBox = {
+  highlight_spacing: &amp;[HighlightSpacing, null],
+  highlight_style: &amp;[Style, null],
+  highlight_symbol: &amp;[string, null],
+  items: &amp;Array&lt;Line&gt;,
+  repeat_highlight_symbol: &amp;[bool, null],
+  scroll: &amp;[i64, null],
+  selected: &amp;[i64, null],
+  style: &amp;[Style, null]
+};
+
+val list: fn(
   ?#highlight_spacing: &amp;[HighlightSpacing, null],
   ?#highlight_style: &amp;[Style, null],
   ?#highlight_symbol: &amp;[string, null],
@@ -185,7 +197,7 @@
   ?#scroll: &amp;[i64, null],
   ?#selected: &amp;[i64, null],
   ?#style: &amp;[Style, null],
-  a: &amp;Array&lt;Line&gt;
+  items: &amp;Array&lt;Line&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

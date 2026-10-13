@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,15 +180,24 @@
 <pre><code class="language-graphix">type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 
-val read_text:   fn(v: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
-val write_text:  fn(s: string) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_image:  fn(v: Any) -&gt; Result&lt;ClipboardImage, `ClipboardError(string)&gt;;
-val write_image: fn(a: ClipboardImage) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_html:   fn(v: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
-val write_html:  fn(a: HtmlContent) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val read_files:  fn(v: Any) -&gt; Result&lt;Array&lt;string&gt;, `ClipboardError(string)&gt;;
-val write_files: fn(a: Array&lt;string&gt;) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
-val clear:       fn(v: Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+/// Read text from the system clipboard. Fires each time `trigger` updates.
+val read_text: fn(trigger: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+/// Write text to the system clipboard.
+val write_text: fn(text: string) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+/// Read an RGBA8 image from the system clipboard.
+val read_image: fn(trigger: Any) -&gt; Result&lt;ClipboardImage, `ClipboardError(string)&gt;;
+/// Write an RGBA8 image to the system clipboard.
+val write_image: fn(image: ClipboardImage) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+/// Read HTML from the system clipboard.
+val read_html: fn(trigger: Any) -&gt; Result&lt;string, `ClipboardError(string)&gt;;
+/// Write HTML to the system clipboard.
+val write_html: fn(content: HtmlContent) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+/// Read file paths from the system clipboard.
+val read_files: fn(trigger: Any) -&gt; Result&lt;Array&lt;string&gt;, `ClipboardError(string)&gt;;
+/// Write file paths to the system clipboard.
+val write_files: fn(files: Array&lt;string&gt;) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
+/// Clear the system clipboard.
+val clear: fn(trigger: Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;
 </code></pre>
 <h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
 <h3 id="text"><a class="header" href="#text">Text</a></h3>

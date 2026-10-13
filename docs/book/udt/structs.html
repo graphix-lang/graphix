@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,7 +183,7 @@ example,</p>
 <p>defines a struct with two fields, <code>foo</code> and <code>bar</code>. <code>foo</code> has type <code>string</code> and
 <code>bar</code> has type <code>i64</code>. We can assign a struct of this type to a variable, and
 pass it around just like any other data object. For example,</p>
-<pre><code class="language-graphix">let s = { foo: "I am foo", bar: 42 }
+<pre><code class="language-graphix">let s = { foo: "I am foo", bar: 42 };
 println("the struct s is [s]")
 </code></pre>
 <p>will print</p>
@@ -220,10 +220,10 @@ any other.</p>
 -: string
 "I am foo"
 </code></pre>
-<p>A more complex expression that results in a struct (such as a function call),
-must be placed in parenthesis before the .field. For example,</p>
+<p>A more complex expression that results in a struct, such as a function call,
+takes <code>.field</code> the same way,</p>
 <pre><code class="language-graphix">〉let f = || s
-〉(f()).foo
+〉f().foo
 -: string
 "I am foo"
 </code></pre>

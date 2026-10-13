@@ -1,11 +1,8 @@
-use tui::{Span, line, span, style, paragraph::paragraph};
+use tui::{line, span, style, paragraph::paragraph};
 
-let spans: Array<Span> = select range(0, 256)$ {
-    i => [
-        span(#style:style(#fg:`Indexed(i)), "██"),
-        span("[i]"),
-        span(#style:style(#fg:`Indexed(i)), "██")
-    ]
-};
-let l = line(array::flatten(array::group(spans, |n, _| n == 256)));
+let l = line(array::flatten(array::init(256, |i| [
+    span(#style: style(#fg: `Indexed(i)), "██"),
+    span("[i]"),
+    span(#style: style(#fg: `Indexed(i)), "██")
+])));
 paragraph(&[l])

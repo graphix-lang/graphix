@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -307,6 +307,15 @@ trait Write {
         let written = write(s, rest);
         select written {
             error as _ =&gt; filter_err(written),
+            // CR claude for claude: [bug/medium] When write answers 0 while bytes
+            // remain, this default never finishes. The false arm writes rest[0..] back
+            // into rest, which issues the same write again every cycle: the call spins
+            // at full CPU and produces neither null nor an error. Only Graphix-written
+            // streams reach this default, since every system stream overrides
+            // write_exact. Add an arm before the retry for n == u64:0 with rest not
+            // empty that answers error(`IOError("write returned 0 bytes")`), as Rust's
+            // write_all does with WriteZero. probe:
+            // design/review-2026-10-12/repro/gx-stdlib-02.gx (gx-stdlib-02)
             u64 as n =&gt; select n ~ (n &gt;= buffer::len(rest)) {
                 true =&gt; null,
                 false =&gt; { rest &lt;- n ~ rest[n..]$; never() }
@@ -364,8 +373,9 @@ reading from a child’s stdin pipe — returns an <code>IOError</code> rather t
 failing to compile: the trait says the operation exists, the operating
 system says which end of the pipe you are holding.</p>
 <h2 id="parsing-and-writing-formats"><a class="header" href="#parsing-and-writing-formats">Parsing and writing formats</a></h2>
-<p><code>json</code>, <code>toml</code>, <code>pack</code> and <code>xls</code> parse from <code>bytes</code> (or a <code>string</code>) and
-serialize to them. Reading a document from a stream is therefore just
+<p><code>json</code> and <code>toml</code> parse from <code>bytes</code> or a <code>string</code> and serialize to
+either; <code>pack</code> reads and writes <code>bytes</code>; <code>xls</code> reads <code>bytes</code> and has no
+writer. Reading a document from a stream is therefore just
 reading the stream:</p>
 <pre><code class="language-graphix">use sys::io::{Read, Write};
 

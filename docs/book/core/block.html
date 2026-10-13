@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -187,8 +187,10 @@ group code together in a logical way.</p>
   43 - y
 };
 
-x; // compile error, x isn't in scope
-y; // compile error, y isn't in scope
+// compile error, x isn't in scope
+x;
+// compile error, y isn't in scope
+y;
 important_thing
 </code></pre>
 <p>This program won’t compile because you can’t reference y and x from

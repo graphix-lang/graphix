@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,19 @@
                         <h1 id="the-tabs-widget"><a class="header" href="#the-tabs-widget">The Tabs Widget</a></h1>
 <p>The <code>tabs</code> widget creates a tabbed interface for organizing content into multiple switchable panels. Each tab has a title displayed in the tab bar and associated content that’s shown when the tab is selected.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val tabs: fn(
+<pre><code class="language-graphix">use super::{Line, Size, Span, Style, Tui};
+type Tabs = {
+  divider: &amp;[Span, null],
+  highlight_style: &amp;[Style, null],
+  padding_left: &amp;[Line, null],
+  padding_right: &amp;[Line, null],
+  selected: &amp;[i64, null],
+  size: &amp;[Size, null],
+  style: &amp;[Style, null],
+  tabs: &amp;Array&lt;(Line, Tui)&gt;
+};
+
+val tabs: fn(
   ?#divider: &amp;[Span, null],
   ?#highlight_style: &amp;[Style, null],
   ?#padding_left: &amp;[Line, null],
@@ -185,7 +197,7 @@
   ?#selected: &amp;[i64, null],
   ?#size: &amp;[Size, null],
   ?#style: &amp;[Style, null],
-  a: &amp;Array&lt;(Line, Tui)&gt;
+  tabs: &amp;Array&lt;(Line, Tui)&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -193,7 +205,7 @@
 <li><strong>selected</strong> - Index of the currently selected tab (0-indexed)</li>
 <li><strong>highlight_style</strong> - Style for the selected tab title</li>
 <li><strong>style</strong> - Base style for unselected tab titles</li>
-<li><strong>divider</strong> - String or span separating tab titles</li>
+<li><strong>divider</strong> - A <code>Span</code> separating tab titles</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>

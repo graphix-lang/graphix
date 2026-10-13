@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -922,17 +922,10 @@ mod icon;
 let tick = time::timer(duration:1.s, true);
 let t = cast&lt;f64&gt;(count(tick))$;
 
-let cpu_1 = 0.0;
-cpu_1 &lt;- tick ~ 50.0 + 40.0 * math::sin(t / 4.0);
-
-let cpu_2 = 0.0;
-cpu_2 &lt;- tick ~ 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
-
-let cpu_3 = 0.0;
-cpu_3 &lt;- tick ~ 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
-
-let cpu_4 = 0.0;
-cpu_4 &lt;- tick ~ 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
+let cpu_1 = 50.0 + 40.0 * math::sin(t / 4.0);
+let cpu_2 = 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
+let cpu_3 = 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
+let cpu_4 = 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
 
 sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
 sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
@@ -1102,7 +1095,7 @@ let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
 };
 
 // single random number
-let rn = |start: f64, end: f64| -&gt; f64 rand::rand(#start, #end, #clock:1);
+let rn = |start, end| rand::rand(#start, #end, #clock:1);
 
 let published = array::init(1024, |i| svc(
     #name:"svc-[i]",
@@ -1208,7 +1201,7 @@ let footer = row(
     #spacing: &amp;10.0,
     &amp;[
         text(&amp;"Selected:"),
-        text(&amp;"[selection[0]$]"),
+        text(&amp;select selection { [p, ..] =&gt; "[p]", [] =&gt; "" }),
         text(&amp;"  Last action:"),
         text(&amp;"[last_action]")
     ]
@@ -1241,10 +1234,10 @@ let layout = column(
 </code></pre>
 <p><img src="./media/data_table_dashboard.png" alt="Data Table — Dashboard"></p>
 <h3 id="scrolling"><a class="header" href="#scrolling">Scrolling</a></h3>
-<p>Enough rows and columns that both scrollbars appear at the default
-window size. The rows are real netidx paths, so scrolling also
-subscribes the rows that enter the viewport and drops the ones that
-leave it.</p>
+<p>Enough rows and columns that both scrollbars appear in the example’s
+900x400 window. The rows are real netidx paths, and the table subscribes
+only the displayed rows plus 50 on each side, so scrolling subscribes
+the rows that enter that window and drops the ones that leave it.</p>
 <pre><code class="language-graphix">use gui::{
   window,
   column::column,
@@ -1255,16 +1248,13 @@ use sys::{time, net};
 mod icon;
 
 // Enough rows and columns that both the vertical and horizontal
-// virtualized scrollbars kick in at the default window size. Rows
-// are real netidx paths, so scrolling also exercises the
-// subscribe-on-enter / drop-on-exit window around the viewport.
+// virtualized scrollbars kick in at the window's 900x400. Rows are real
+// netidx paths, and more of them than the subscription window around
+// the viewport holds (the displayed rows plus 50 on each side), so
+// scrolling subscribes the rows that enter it and drops those that
+// leave.
 
-let host_ids = [
-    "001", "002", "003", "004", "005", "006", "007", "008", "009", "010",
-    "011", "012", "013", "014", "015", "016", "017", "018", "019", "020",
-    "021", "022", "023", "024", "025", "026", "027", "028", "029", "030",
-    "031", "032", "033", "034", "035", "036", "037", "038", "039", "040"
-];
+let host_ids = array::init(300, |i| "[i + 1]");
 
 let base = "/local/graphix/data_table_scrolling";
 
@@ -1313,7 +1303,7 @@ let layout = column(
     #width: &amp;`Fill,
     #height: &amp;`Fill,
     &amp;[
-        text(#size: &amp;18.0, &amp;"40 hosts × 10 metrics"),
+        text(#size: &amp;18.0, &amp;"300 hosts × 10 metrics"),
         text(&amp;"Scroll vertically or horizontally to reveal off-screen cells."),
         data_table(#table: &amp;tbl)
     ]

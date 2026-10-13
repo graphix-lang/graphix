@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,23 @@
                         <h1 id="the-combo-box-widget"><a class="header" href="#the-combo-box-widget">The Combo Box Widget</a></h1>
 <p>A searchable dropdown that combines a text input with a dropdown list. As the user types, the options are filtered to match. This is useful when the list of options is long and the user needs to find a specific item quickly.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val combo_box: fn(
+<pre><code class="language-graphix">use super::{Length, Widget};
+type ComboBox = {
+  disabled: &amp;bool,
+  on_select: &amp;[fn(s: string) -&gt; Any, null],
+  options: &amp;Array&lt;string&gt;,
+  selected: &amp;[string, null],
+  placeholder: &amp;string,
+  width: &amp;Length
+};
+
+val combo_box: fn(
   ?#selected: &amp;[string, null],
   ?#on_select: [fn(s: string) -&gt; Any, null],
   ?#placeholder: &amp;string,
   ?#width: &amp;Length,
   ?#disabled: &amp;bool,
-  a: &amp;Array&lt;string&gt;
+  options: &amp;Array&lt;string&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

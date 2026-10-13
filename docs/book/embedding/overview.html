@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -190,16 +190,18 @@ evaluate changes to your arguments. For example, a function that finds the
 minimum value of all its arguments:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+</span>use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
 struct MinEv;
 
-impl EvalCached for MinEv {
+impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MinEv {
     const NAME: &amp;str = "core_min";
+    const EFFECT: Effect = Effect::Stateless(None);
 
-    fn eval(&amp;mut self, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -213,6 +215,8 @@ impl EvalCached for MinEv {
         res
     }
 }
+
+unit_image_state!(MinEv);
 
 type Min = CachedArgs&lt;MinEv&gt;;
 <span class="boring">}</span></code></pre>

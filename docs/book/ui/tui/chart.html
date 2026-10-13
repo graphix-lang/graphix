@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,8 @@
                         <h1 id="the-chart-widget"><a class="header" href="#the-chart-widget">The Chart Widget</a></h1>
 <p>The <code>chart</code> widget renders line charts with multiple datasets, custom axes, labels, and styling. It’s ideal for visualizing time series data, trends, sensor readings, and any numeric data relationships.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type GraphType = [
+<pre><code class="language-graphix">use super::{Alignment, Constraint, Line, Marker, Style, Tui};
+type GraphType = [
   `Scatter,
   `Line,
   `Bar
@@ -207,7 +208,7 @@ val axis: fn(
   ?#labels_alignment: [Alignment, null],
   ?#style: [Style, null],
   ?#title: [Line, null],
-  a: {min: f64, max: f64}
+  bounds: {min: f64, max: f64}
 ) -&gt; Axis;
 
 type Dataset = {
@@ -223,12 +224,21 @@ val dataset: fn(
   ?#graph_type: &amp;[GraphType, null],
   ?#name: &amp;[Line, null],
   ?#style: &amp;[Style, null],
-  a: &amp;Array&lt;(f64, f64)&gt;
+  data: &amp;Array&lt;(f64, f64)&gt;
 ) -&gt; Dataset;
 
 type LegendConstraints = {
   width: Constraint,
   height: Constraint
+};
+
+type Chart = {
+  datasets: &amp;Array&lt;Dataset&gt;,
+  hidden_legend_constraints: &amp;[LegendConstraints, null],
+  legend_position: &amp;[LegendPosition, null],
+  style: &amp;[Style, null],
+  x_axis: &amp;[Axis, null],
+  y_axis: &amp;[Axis, null]
 };
 
 val chart: fn(
@@ -237,15 +247,15 @@ val chart: fn(
   ?#style: &amp;[Style, null],
   ?#x_axis: &amp;[Axis, null],
   ?#y_axis: &amp;[Axis, null],
-  a: &amp;Array&lt;Dataset&gt;
+  datasets: &amp;Array&lt;Dataset&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <h3 id="chart"><a class="header" href="#chart">chart</a></h3>
 <ul>
 <li><strong>style</strong> - Background style for the chart area</li>
-<li><strong>x_axis</strong> - X-axis configuration (required)</li>
-<li><strong>y_axis</strong> - Y-axis configuration (required)</li>
+<li><strong>x_axis</strong> - X-axis configuration. Optional, but without it the chart has empty bounds and draws nothing</li>
+<li><strong>y_axis</strong> - Y-axis configuration, the same</li>
 </ul>
 <h3 id="axis"><a class="header" href="#axis">axis</a></h3>
 <ul>
@@ -256,8 +266,8 @@ val chart: fn(
 <h3 id="dataset"><a class="header" href="#dataset">dataset</a></h3>
 <ul>
 <li><strong>style</strong> - Style for the dataset (line and markers)</li>
-<li><strong>graph_type</strong> - <code>Line</code> or <code>Scatter</code></li>
-<li><strong>marker</strong> - <code>Dot</code>, <code>Braille</code>, or <code>Block</code></li>
+<li><strong>graph_type</strong> - <code>Line</code>, <code>Scatter</code>, or <code>Bar</code></li>
+<li><strong>marker</strong> - One of <code>Dot</code>, <code>Block</code>, <code>Bar</code>, <code>Braille</code>, <code>HalfBlock</code>, <code>Quadrant</code>, <code>Sextant</code>, <code>Octant</code></li>
 <li><strong>name</strong> - Line naming the dataset (for legends)</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
@@ -285,7 +295,7 @@ chart(
 
 let data: Array&lt;(f64, f64)&gt; = {
     let clock = sys::time::timer(duration:0.5s, true);
-    let x = cast&lt;f64&gt;(count(clock))$;
+    let x = cast&lt;f64&gt;(count(clock))$ * 0.5;
     let y = rand::rand(#clock, #start: f64:0., #end: f64:100.);
     let a = [];
     a &lt;- array::window(#n: 32, clock ~ a, (x, y));

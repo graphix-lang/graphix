@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,7 +175,15 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="systime---timers-and-time-arithmetic"><a class="header" href="#systime---timers-and-time-arithmetic">sys::time - Timers and Time Arithmetic</a></h1>
-<pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
+<pre><code class="language-graphix">// CR claude for claude: [doc-drift/low] after_idle and timer both take `timeout:
+// [duration, Number]`, but neither doc says a number means seconds. Given an invalid
+// timeout (a negative number), timer returns a TimerError, but after_idle clears its
+// timer and never produces, with no report. Make after_idle report it as timer does (or
+// document the difference). Document seconds, and that repeat 0 stops a timer. The
+// graphix-lang skill also says 'a null timeout STOPS it', but this signature refuses
+// null at check, so correct the skill (or accept null here). probe:
+// design/review-2026-10-12/repro/gx-stdlib-09.gx (gx-stdlib-09)
+/// When v updates wait timeout and then return it. If v updates again
 /// before timeout expires, reset the timeout and continue waiting.
 val after_idle: fn(timeout: [duration, Number], v: 'a) -&gt; 'a;
 

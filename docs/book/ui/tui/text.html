@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,10 +177,17 @@
                         <h1 id="the-text-widget"><a class="header" href="#the-text-widget">The Text Widget</a></h1>
 <p>The <code>text</code> widget renders styled text in the terminal. It’s a fundamental building block for displaying formatted content with colors, modifiers, and multiple lines. Text is built from <code>Line</code> objects, which are in turn composed of <code>Span</code> objects.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val text: fn(
+<pre><code class="language-graphix">use super::{Alignment, Line, Style, style, Tui};
+type Text = {
+  style: &amp;Style,
+  alignment: &amp;[Alignment, null],
+  lines: &amp;[Array&lt;Line&gt;, string]
+};
+
+val text: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
-  v: &amp;[Array&lt;Line&gt;, string]
+  lines: &amp;[Array&lt;Line&gt;, string]
 ) -&gt; Tui;
 </code></pre>
 <p>The <code>text</code> widget uses types from the <a href="style.html">style</a> module including <code>Style</code>, <code>Line</code>, <code>Span</code>, <code>Color</code>, <code>Modifier</code>, and <code>Alignment</code>.</p>
@@ -256,7 +263,7 @@ text(&amp;[
 </ul>
 <h2 id="text-modifiers"><a class="header" href="#text-modifiers">Text Modifiers</a></h2>
 <ul>
-<li><code>Bold</code>, <code>Italic</code></li>
+<li><code>Bold</code>, <code>Dim</code>, <code>Italic</code>, <code>Underlined</code>, <code>SlowBlink</code>, <code>RapidBlink</code>, <code>Reversed</code>, <code>Hidden</code>, <code>CrossedOut</code></li>
 </ul>
 <h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
 <ul>

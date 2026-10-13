@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -195,45 +195,41 @@ the simplest possible example.</p>
 <h2 id="understanding-the-once-function"><a class="header" href="#understanding-the-once-function">Understanding The Once Function</a></h2>
 <p>The <code>once</code> function evaluates its argument every cycle and passes
 through one and only one update. The <code>update</code> method is the most
-important method of <code>Apply</code>, it is called every cycle and returns
-something only when the node being updated has “updated”. The meaning
-of that is specific to what the node does, but in the case of <code>once</code>
-it means that the argument to <code>once</code> updated, and <code>once</code> has not
-already seen an update. Consider the example program,</p>
+important method of <code>Apply</code>. It is called every cycle the node is
+awake, and it returns a <code>TagValue</code> every time: the value the node
+holds and whether it is new this cycle. A node <code>Fired</code> this cycle, or
+holds a <code>Stale</code> value from before, or has no value at all
+(<code>FreshBottom</code>, <code>StaleBottom</code>). <code>once</code> passes its argument’s first
+<code>Fired</code> through and is <code>Stale</code> from then on. Consider the example
+program,</p>
 <pre><code class="language-graphix">let clock = sys::time::timer(1, true);
 println(once(clock))
 </code></pre>
-<p>We expect this example to print the datetime exactly one time. Lets
-dig in to how that actually works. The clock created by <code>sys::time::timer</code>
-will tick once per second forever. The <code>sys::time::timer</code> built-in will
-call <code>set_timer</code> in the
-<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Rt.html"><code>Rt</code></a>,
-which is part of the
-<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.ExecCtx.html"><code>ExecCtx</code></a>. This
-will schedule a cycle to happen 1 second from now, and will also
-register that this toplevel node (<code>let clock = ...</code>) depends on the
-timer event. When the timer event happens the approximate sequence of
-events is,</p>
+<p>We expect this example to print the datetime exactly one time. The
+clock created by <code>sys::time::timer</code> ticks once per second forever: the
+built-in asks the
+<a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Rt.html"><code>Rt</code></a>
+for a timer, which schedules a cycle a second from now and records that
+the toplevel node (<code>let clock = ...</code>) depends on the timer’s event.
+When the timer fires, the approximate sequence of events is,</p>
 <ul>
-<li>let clock = sys::time::timer(1, true), update called on toplevel node (Bind)
+<li><code>let clock = ..</code>: the toplevel <code>Bind</code> updates its right side
 <ul>
-<li>sys::time::timer(1, true), bind calls update on its rhs</li>
-<li>sys::time::timer checks events to see if it should update, returns Some(DateTime(..))</li>
-<li>bind sets the id of clock in events to Value::DateTime(..)</li>
-<li>Rt checks for nodes that depend on <code>clock</code> schedules println(..)</li>
+<li><code>sys::time::timer(1, true)</code> finds its event and returns <code>Fired(DateTime(..))</code></li>
+<li>the bind delivers <code>clock</code>’s new value to the event, and the
+runtime schedules what reads <code>clock</code></li>
 </ul>
 </li>
-<li>println(once(clock)), update called on toplevel node (CallSite)
+<li><code>println(once(clock))</code>: the toplevel <code>CallSite</code> updates its argument
 <ul>
-<li>once(clock), println calls update on its argument, once(clock)</li>
-<li>once::update calls update on clock</li>
-<li>ref clock checks events to see if it updated, returns Some(Value::DateTime(..))</li>
-<li>once::update checks if it’s the first time its argument has updated, it is</li>
-<li>once::update returns Some(Value::DateTime(..))</li>
-<li>println prints the datetime</li>
+<li><code>once</code> updates <code>clock</code>, which returns <code>Fired(DateTime(..))</code></li>
+<li>it is <code>once</code>’s first <code>Fired</code>, so <code>once</code> returns it <code>Fired</code></li>
+<li><code>println</code> prints the datetime</li>
 </ul>
 </li>
 </ul>
+<p>At the next tick <code>clock</code> fires again, <code>once</code> returns its value <code>Stale</code>,
+and <code>println</code> does not print.</p>
 <h2 id="sleeping-asynchronous-builtins"><a class="header" href="#sleeping-asynchronous-builtins">Sleeping asynchronous builtins</a></h2>
 <p>If sleeping a builtin discards pending work or detaches an event source,
 also reset its output to <code>TagValue::phantom()</code>. On wake, a restarted
@@ -246,51 +242,71 @@ do not reset every builtin merely because it is classified asynchronous.</p>
 </span><span class="boring">fn main() {
 </span>use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
+    UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use netidx_value::Value;
+use netidx_core::pack::{Pack, PackError};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Once {
-    val: bool,
+    // whether the one update has passed
+    done: bool,
+    // the result slot `update` lends to the caller
+    out: TagValue,
 }
 
 impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
     const NAME: &amp;str = "core_once";
+    // it keeps state across invocations
+    const EFFECT: Effect = Effect::Sync;
 
-    fn init&lt;'a, 'b, 'c&gt;(
+    fn init&lt;'a, 'b, 'c, 'd&gt;(
         _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
-        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
+        _resolved_typ: Option&lt;&amp;'d FnType&gt;,
         _scope: &amp;'b Scope,
         _from: &amp;'c [Node&lt;R, E&gt;],
         _top_id: ExprId,
     ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
-        Ok(Box::new(Once { val: false }))
+        Ok(Box::new(Once::default()))
+    }
+
+    // restore what `image_encode` wrote; the result slot is never imaged
+    fn image_decode(
+        _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
+        _from: &amp;[Node&lt;R, E&gt;],
+        buf: &amp;mut &amp;[u8],
+    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;, PackError&gt; {
+        Ok(Box::new(Once { done: bool::decode(buf)?, out: TagValue::phantom() }))
     }
 }
 
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Once {
+    fn image_encode(&amp;self, buf: &amp;mut ImageBuf) -&gt; Result&lt;(), PackError&gt; {
+        self.done.encode(buf)
+    }
+
     fn update(
         &amp;mut self,
         ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-    ) -&gt; Option&lt;Value&gt; {
-        match from {
-            [s] =&gt; s.update(ctx).and_then(|v| {
-                if self.val {
-                    None
-                } else {
-                    self.val = true;
-                    Some(v)
-                }
-            }),
-            _ =&gt; None,
+    ) -&gt; &amp;TagValue {
+        match from[0].update(ctx).view() {
+            TagView::Fired(tv) if !self.done =&gt; {
+                self.done = true;
+                let v = tv.value_cloned();
+                self.out.set(TagValue::fired(v))
+            }
+            // a bottom input before the update makes the result bottom
+            TagView::FreshBottom if !self.done =&gt; self.out.set_bottom(true),
+            TagView::StaleBottom if !self.done =&gt; self.out.set_bottom(false),
+            _ =&gt; self.out.ride(),
         }
     }
 
+    // once is a restart builtin: a woken once is a fresh one
     fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
-        self.val = false
+        self.done = false
     }
 }
 <span class="boring">}</span></code></pre>
@@ -301,170 +317,45 @@ annotated. For example, <code>once</code> would be bound as:</p>
 <pre><code class="language-graphix">let once = |v: 'a| -&gt; 'a 'core_once
 </code></pre>
 <p>The <code>init</code> method is called when the built-in is instantiated at a
-call site. It receives the execution context, the concrete function
+call site. It receives the compile context, the concrete function
 type, the lexical scope, the argument nodes, and the top-level
 expression id. In this case we don’t care about any of that
-information, but it will be useful later.</p>
-<p>The most important method of <code>Apply</code> is <code>update</code>. <code>sleep</code> is expected to
-reset all the internal state and unregister anything registered with
-the context.</p>
+information, but it will be useful later. <code>EFFECT</code> says what the
+output depends on (<code>Sync</code>: the same cycle, with state kept across
+invocations), and <code>image_encode</code>/<code>image_decode</code> write and restore the
+state <code>init</code> built when the session is cached as an image.</p>
+<p>The most important method of <code>Apply</code> is <code>update</code>. <code>sleep</code> is called
+when the node’s select arm is unselected, and sleep is a pause: values
+and other semantic state are kept, so the node resumes from them when
+the arm wakes. Only a builtin that discards pending work or detaches
+an event source clears its output to <code>TagValue::phantom()</code> (see
+above). <code>once</code> clears its flag in <code>sleep</code> because it is one of the
+restart builtins (<code>once</code>, <code>take</code>, <code>skip</code>, <code>uniq</code>, <code>hold</code>, <code>count</code>):
+a woken one is a fresh one.</p>
 <h2 id="higher-order-functions"><a class="header" href="#higher-order-functions">Higher Order Functions</a></h2>
 <p>Right, now that the easy stuff is out of the way, lets see how we can
 implement a built-in that takes another Graphix function as an
 argument. This gets compiler guts all over the place, sorry about
-that. Again lets look at the simplest example from the standard
-library, which is <code>array::group</code>.</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use anyhow::bail;
-use compact_str::format_compact;
-use graphix_compiler::{
-    expr::ExprId,
-    genn,
-    node::Node,
-    typ::{FnType, Typ, Type},
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
-};
-use netidx_value::Value;
-use smallvec::{smallvec, SmallVec};
-use std::collections::VecDeque;
-
-#[derive(Debug)]
-pub(super) struct Group&lt;R: Rt, E: UserEvent&gt; {
-    queue: VecDeque&lt;Value&gt;,
-    buf: SmallVec&lt;[Value; 16]&gt;,
-    pred: Node&lt;R, E&gt;,
-    ready: bool,
-    pid: BindId,
-    nid: BindId,
-    xid: BindId,
-}
-
-impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
-    const NAME: &amp;str = "array_group";
-
-    fn init&lt;'a, 'b, 'c&gt;(
-        ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
-        typ: &amp;'a FnType,
-        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
-        scope: &amp;'b Scope,
-        from: &amp;'c [Node&lt;R, E&gt;],
-        top_id: ExprId,
-    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
-        match from {
-            [_, _] =&gt; {
-                let scope =
-                    scope.append(&amp;format_compact!("fn{}", LambdaId::new().inner()));
-                let n_typ = Type::Primitive(Typ::I64.into());
-                let etyp = typ.args[0].typ.clone();
-                let mftyp = match &amp;typ.args[1].typ {
-                    Type::Fn(ft) =&gt; ft.clone(),
-                    t =&gt; bail!("expected function not {t}"),
-                };
-                let (nid, n) =
-                    genn::bind(ctx, &amp;scope.lexical, "n", n_typ.clone(), top_id);
-                let (xid, x) =
-                    genn::bind(ctx, &amp;scope.lexical, "x", etyp.clone(), top_id);
-                let pid = BindId::new();
-                let fnode =
-                    genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
-                let pred = genn::apply(fnode, scope, vec![n, x], &amp;mftyp, top_id);
-                Ok(Box::new(Self {
-                    queue: VecDeque::new(),
-                    buf: smallvec![],
-                    pred,
-                    ready: true,
-                    pid,
-                    nid,
-                    xid,
-                }))
-            }
-            _ =&gt; bail!("expected two arguments"),
-        }
-    }
-}
-
-impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
-    fn update(
-        &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
-        from: &amp;mut [Node&lt;R, E&gt;],
-    ) -&gt; Option&lt;Value&gt; {
-        macro_rules! set {
-            ($v:expr) =&gt; {{
-                self.ready = false;
-                self.buf.push($v.clone());
-                let len = Value::I64(self.buf.len() as i64);
-                ctx.cached.insert(self.nid, len.clone());
-                ctx.event.variables.insert(self.nid, len);
-                ctx.cached.insert(self.xid, $v.clone());
-                ctx.event.variables.insert(self.xid, $v);
-            }};
-        }
-        if let Some(v) = from[0].update(ctx) {
-            self.queue.push_back(v);
-        }
-        if let Some(v) = from[1].update(ctx) {
-            ctx.cached.insert(self.pid, v.clone());
-            ctx.event.variables.insert(self.pid, v);
-        }
-        if self.ready &amp;&amp; self.queue.len() &gt; 0 {
-            let v = self.queue.pop_front().unwrap();
-            set!(v);
-        }
-        loop {
-            match self.pred.update(ctx) {
-                None =&gt; break None,
-                Some(v) =&gt; {
-                    self.ready = true;
-                    match v {
-                        Value::Bool(true) =&gt; {
-                            break Some(Value::Array(
-                                netidx_value::ValArray::from_iter_exact(
-                                    self.buf.drain(..),
-                                ),
-                            ))
-                        }
-                        _ =&gt; match self.queue.pop_front() {
-                            None =&gt; break None,
-                            Some(v) =&gt; set!(v),
-                        },
-                    }
-                }
-            }
-        }
-    }
-
-    fn typecheck(
-        &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
-        _from: &amp;mut [Node&lt;R, E&gt;],
-    ) -&gt; anyhow::Result&lt;()&gt; {
-        self.pred.typecheck(ctx)
-    }
-
-    fn refs(&amp;self, refs: &amp;mut Refs) {
-        self.pred.refs(refs)
-    }
-
-    fn delete(&amp;mut self, ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
-        ctx.cached.remove(&amp;self.nid);
-        ctx.cached.remove(&amp;self.pid);
-        ctx.cached.remove(&amp;self.xid);
-        self.pred.delete(ctx);
-    }
-
-    fn sleep(&amp;mut self, ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
-        self.pred.sleep(ctx);
-    }
-}
-<span class="boring">}</span></code></pre>
+that. The simplest example in the standard library is <code>array::group</code>,
+<code>Group</code> in <code>stdlib/graphix-package-array/src/lib.rs</code>; read it beside
+this section. Its <code>init</code> generates the nodes for a call of the
+predicate:</p>
+<ul>
+<li><code>genn::bind</code> makes two variables for the predicate’s arguments, <code>n</code>
+and <code>x</code>, and returns their <code>BindId</code>s (<code>nid</code>, <code>xid</code>) and reference
+nodes;</li>
+<li>a third <code>BindId</code> (<code>pid</code>) names the predicate itself, and
+<code>genn::reference</code> makes a reference node to it;</li>
+<li><code>genn::apply</code> builds a call site over that reference with the two
+argument references, the <code>pred</code> node.</li>
+</ul>
+<p>Its <code>update</code> delivers values to those variables and updates <code>pred</code>.</p>
 <p>This implements <code>array::group</code>, which given an argument, stores that
 argument’s updates internally, and creates an array out of them when
 the predicate returns true. Its type is</p>
-<p><code>fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
+<p><code>fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool throws 'e) -&gt; Array&lt;'a&gt; throws 'e</code></p>
 <p>For example,</p>
-<pre><code class="language-graphix">let n = range(0, 100);
+<pre><code class="language-graphix">let n = range(0, 100)$;
 array::group(n, |_, n| (n == 50) || (n == 99))
 </code></pre>
 <p><code>range(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
@@ -488,7 +379,7 @@ element type, a cast target.</p>
 <p>A builtin whose behaviour depends on a type the program chooses, such as
 <code>str::parse</code> or <code>json::read</code> choosing what to decode, declares that type
 <code>Concrete</code> in its signature, in the <code>.gx</code> and the <code>.gxi</code> alike:</p>
-<pre><code class="language-graphix">let parse = 'b: Concrete |s: string| -&gt; Result&lt;'b, `ParseError(string)&gt; 'str_parse
+<pre><code class="language-graphix ignore">let parse = 'b: Concrete |s: string| -&gt; Result&lt;'b, `ParseError(string)&gt; 'str_parse
 val parse: fn&lt;'b: Concrete&gt;(s: string) -&gt; Result&lt;'b, `ParseError(string)&gt;;
 </code></pre>
 <p>The type checker then refuses every program in which <code>'b</code> is not fully
@@ -500,7 +391,7 @@ program that type checked has a known type there.</p>
 <h4 id="builtins-that-wrap-a-function"><a class="header" href="#builtins-that-wrap-a-function">Builtins that wrap a function</a></h4>
 <p>A builtin that takes any function and reads its signature, such as
 <code>queuefn</code>, declares that parameter’s type <code>Function</code>:</p>
-<pre><code class="language-graphix">let queuefn = 'a: Function |#count: [&amp;mut i64, null] = null, #trigger: Any, f: 'a| -&gt; 'a 'core_queuefn;
+<pre><code class="language-graphix ignore">let queuefn = 'a: Function |#count: [&amp;mut i64, null] = null, #trigger: Any, f: 'a| -&gt; 'a 'core_queuefn;
 val queuefn: fn&lt;'a: Function&gt;(?#count: [&amp;mut i64, null], #trigger:Any, f: 'a) -&gt; 'a;
 </code></pre>
 <p>The type checker refuses every program that passes something else
@@ -514,7 +405,8 @@ argument (through type references) without refusing.</p>
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html"><code>Event</code></a>
 struct contains two tables indexed by it. The most important is <code>variables</code>.
 Every bound variable has a <code>BindId</code>. If a variable has updated this cycle, then
-its updated value will be in the <code>variables</code> table indexed by its <code>BindId</code>. In
+its updated value, a <code>TagValue</code>, will be in the <code>variables</code> table indexed by
+its <code>BindId</code>. In
 order to call this predicate function we actually create three different
 variables and store their <code>BindIds</code> as <code>xid</code>, <code>nid</code>, and <code>pid</code>.
 <code>genn::reference</code> returns a reference <code>Node</code> and the <code>BindId</code> of the variable it
@@ -534,13 +426,13 @@ cycle we need to call update on this node just like any other node, because the
 created with <code>genn::apply</code> needs to know about it. Luckily we don’t have to
 handle any of the wonderful details of late binding beyond this simple passing
 through of updates, the call site will take care of that.</p>
-<h3 id="execctxcached-refs-delete"><a class="header" href="#execctxcached-refs-delete">ExecCtx::cached, refs, delete</a></h3>
-<p>What is all this <code>ctx.cached</code> stuff? Well, when call sites get
-initialized for the first time, or when a branch of select wakes from
-sleep, it turns out we need to know what the current value of every
-variable they depend on is. Which means we need to cache globally the
-current value of every variable. So if you’re setting variables, 90%
-chance you need to update cached.</p>
+<h3 id="the-store-refs-delete"><a class="header" href="#the-store-refs-delete">The store, refs, delete</a></h3>
+<p>When a call site is initialized for the first time, or a select arm
+wakes from sleep, it needs the current value of every variable it
+depends on, so the runtime keeps the current value of every variable
+in its store. A builtin that sets a variable itself updates both: the
+store (<code>ctx.rt.store_insert(id, tv)</code>) and this cycle’s event
+(<code>ctx.event.variables.insert(id, TagValue::fired(v))</code>).</p>
 <p>And this also explains another function that you have to implement
 when you’re generating nodes, which is <code>refs</code>. Turns out we need to know
 all the variables a node depends on, so we can set them when it’s

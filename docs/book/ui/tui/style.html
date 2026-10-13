@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -207,7 +207,14 @@ color, or <code>Indexed</code> for 256-color palette indices.</p>
 <p>Text modifiers change the appearance of text:</p>
 <pre><code class="language-graphix">type Modifier = [
   `Bold,
-  `Italic
+  `Dim,
+  `Italic,
+  `Underlined,
+  `SlowBlink,
+  `RapidBlink,
+  `Reversed,
+  `Hidden,
+  `CrossedOut
 ];
 </code></pre>
 <h2 id="the-style-type"><a class="header" href="#the-style-type">The Style Type</a></h2>
@@ -233,16 +240,16 @@ modifiers:</p>
 </code></pre>
 <p>Examples:</p>
 <pre><code class="language-graphix">// Red foreground
-tui::style(#fg: `Red)
+tui::style(#fg: `Red);
 
 // Green text on black background
-tui::style(#fg: `Green, #bg: `Black)
+tui::style(#fg: `Green, #bg: `Black);
 
 // Bold yellow text
-tui::style(#fg: `Yellow, #add_modifier: [`Bold])
+tui::style(#fg: `Yellow, #add_modifier: [`Bold]);
 
 // Bold italic text with RGB color
-tui::style(#fg: `Rgb({ r: 255, g: 128, b: 0 }), #add_modifier: [`Bold, `Italic])
+tui::style(#fg: `Rgb({ r: 255, g: 128, b: 0 }), #add_modifier: [`Bold, `Italic]);
 
 // Default style (no customization)
 tui::style()
@@ -260,7 +267,7 @@ val span: fn(?#style: Style, s: string) -&gt; Span;
 </code></pre>
 <p>Example:</p>
 <pre><code class="language-graphix">// Create a red "Error:" span
-tui::span(#style: tui::style(#fg: `Red), "Error:")
+tui::span(#style: tui::style(#fg: `Red), "Error:");
 
 // Plain text span (default style)
 tui::span("Hello")
@@ -285,13 +292,13 @@ val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array&lt;Span&g
 simple string (which will use the line’s style).</p>
 <p>Examples:</p>
 <pre><code class="language-graphix">// Simple centered line
-tui::line(#alignment: `Center, "Centered Text")
+tui::line(#alignment: `Center, "Centered Text");
 
 // Line with mixed styles
 tui::line([
   tui::span(#style: tui::style(#fg: `Red, #add_modifier: [`Bold]), "Error: "),
   tui::span("Something went wrong")
-])
+]);
 
 // Right-aligned with style
 tui::line(#style: tui::style(#fg: `Gray), #alignment: `Right, "Status: OK")
@@ -302,7 +309,7 @@ tui::line(#style: tui::style(#fg: `Gray), #alignment: `Right, "Status: OK")
 tui::paragraph::paragraph(
   #style: &amp;tui::style(#fg: `White, #bg: `Blue),
   &amp;"Hello, styled world!"
-)
+);
 
 // Styled gauge
 tui::gauge::gauge(
@@ -314,16 +321,13 @@ tui::gauge::gauge(
 <h2 id="indexed-colors"><a class="header" href="#indexed-colors">Indexed Colors</a></h2>
 <p><code>`Indexed(n)</code> names one of the terminal’s 256 palette colors. This
 prints the whole palette with each index:</p>
-<pre><code class="language-graphix">use tui::{Span, line, span, style, paragraph::paragraph};
+<pre><code class="language-graphix">use tui::{line, span, style, paragraph::paragraph};
 
-let spans: Array&lt;Span&gt; = select range(0, 256)$ {
-    i =&gt; [
-        span(#style:style(#fg:`Indexed(i)), "██"),
-        span("[i]"),
-        span(#style:style(#fg:`Indexed(i)), "██")
-    ]
-};
-let l = line(array::flatten(array::group(spans, |n, _| n == 256)));
+let l = line(array::flatten(array::init(256, |i| [
+    span(#style: style(#fg: `Indexed(i)), "██"),
+    span("[i]"),
+    span(#style: style(#fg: `Indexed(i)), "██")
+])));
 paragraph(&amp;[l])
 </code></pre>
 

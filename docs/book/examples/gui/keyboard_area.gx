@@ -34,7 +34,7 @@ let mod_name = "None";
                 #halign: &`Center,
                 &[
                     text(#size: &24.0, &"Keyboard Area Demo"),
-                    text(&"Press any key..."),
+                    text(&"Click here, then press any key..."),
                     text(#size: &32.0, &last_key),
                     text(&"Modifier: [mod_name]")
                 ]

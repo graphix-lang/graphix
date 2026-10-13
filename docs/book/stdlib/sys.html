@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -176,31 +176,51 @@
                     <main>
                         <h1 id="sys"><a class="header" href="#sys">sys</a></h1>
 <p>The <code>sys</code> module provides access to operating system level functionality:
-files, sockets, timers, and the netidx publish/subscribe system. All I/O
-goes through a unified <code>Stream</code> type defined in <code>sys::io</code>, so the same
-<code>read</code>/<code>write</code> functions work on files, TCP connections, TLS streams,
-and stdio.</p>
+files, sockets, processes, timers, and the netidx publish/subscribe
+system. Each kind of stream (a file, a TCP or TLS connection, stdio, a
+child process’s pipe) is its own type, and the <code>Read</code>, <code>Lines</code>, <code>Write</code>,
+<code>Close</code> and <code>Seek</code> traits give them the same operations; see
+<a href="sys/io.html">sys::io</a>.</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Module</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td><code>sys::io</code></td><td>Unified <code>Stream</code> type, read/write/flush, stdin/stdout/stderr</td></tr>
+<tr><td><code>sys::io</code></td><td>The stream traits, stdin/stdout/stderr</td></tr>
 <tr><td><code>sys::fs</code></td><td>Open files, directory operations, filesystem watching</td></tr>
 <tr><td><code>sys::tcp</code></td><td>TCP connect, listen, accept</td></tr>
 <tr><td><code>sys::tls</code></td><td>Upgrade TCP streams to TLS</td></tr>
+<tr><td><code>sys::process</code></td><td>Spawn child processes, their pipes and exit status</td></tr>
 <tr><td><code>sys::net</code></td><td>Netidx publish/subscribe and RPC</td></tr>
 <tr><td><code>sys::time</code></td><td>Timers and current time</td></tr>
 <tr><td><code>sys::dirs</code></td><td>Platform-aware standard directory paths</td></tr>
 </tbody>
 </table>
 </div>
-<pre><code class="language-graphix">/// the command line arguments. argv[0] is the script file.
+<pre><code class="language-graphix">mod io;
+mod fs;
+mod process;
+mod tcp;
+mod tls;
+mod time;
+mod net;
+mod dirs;
+
+/// the command line arguments. argv[0] names the program: the script
+/// file, or a standalone binary's own path. A program an embedder runs
+/// from source gets the arguments the embedder passes.
 val args: fn() -&gt; Array&lt;string&gt;;
 
 /// join parts to path using the OS specific path separator
-val join_path: fn(s: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
+val join_path: fn(path: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
+
+/// flush stdout/stderr and terminate the process with the given exit
+/// code. The return type is fully polymorphic because the call never
+/// actually returns; it fires when its argument produces a value, so
+/// you can use it as the trailing expression of a program to make it
+/// exit deterministically on completion.
+val exit: fn(code: i64) -&gt; 'a;
 </code></pre>
 
                     </main>

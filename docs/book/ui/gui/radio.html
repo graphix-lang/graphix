@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,27 +177,40 @@
                         <h1 id="the-radio-widget"><a class="header" href="#the-radio-widget">The Radio Widget</a></h1>
 <p>A radio button for single-select choices within a group. Each <code>radio</code> widget represents one option. When the currently selected value matches this radio’s value, the button is filled. Clicking an unselected radio triggers the <code>#on_select</code> callback.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val radio: fn(
+<pre><code class="language-graphix">use super::{Length, Widget};
+/// A radio of any value type: `on_select` is called with `value`.
+type Radio = {
+  disabled: &amp;bool,
+  value: &amp;Any,
+  label: &amp;string,
+  on_select: &amp;[fn(v: Any) -&gt; Any, null],
+  selected: &amp;[Any, null],
+  width: &amp;Length,
+  size: &amp;[f64, null],
+  spacing: &amp;[f64, null]
+};
+
+val radio: fn(
   #label: &amp;string,
-  ?#selected: &amp;'a,
-  ?#on_select: [fn(x: 'a) -&gt; Any, null],
+  ?#selected: &amp;['a, null],
+  ?#on_select: [fn(v: 'a) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  x: &amp;'a
+  value: &amp;'a
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong><code>#label</code></strong> (required) – Text displayed next to the radio button. Unlike most labeled arguments in GUI widgets, this one is <strong>not optional</strong> – every radio button must have a label.</li>
-<li><strong><code>#selected</code></strong> – Reference to the currently selected value. When this value equals the positional value, the radio button appears filled. Pass the same reference to every radio in the group so they stay in sync.</li>
+<li><strong><code>#selected</code></strong> – Reference to the currently selected value, or <code>null</code> for none. When this value equals the positional value, the radio button appears filled. Pass the same reference to every radio in the group so they stay in sync.</li>
 <li><strong><code>#on_select</code></strong> – Callback invoked when this radio is clicked. Receives this radio’s value (the positional argument). Typically: <code>#on_select: |v| selection &lt;- v</code>.</li>
 <li><strong><code>#width</code></strong> – Width of the widget (radio button plus label). Accepts <code>Length</code> values.</li>
 <li><strong><code>#size</code></strong> – Size of the radio circle in pixels, or <code>null</code> for the default size.</li>
 <li><strong><code>#spacing</code></strong> – Gap in pixels between the radio circle and the label text, or <code>null</code> for the default spacing.</li>
 <li><strong><code>#disabled</code></strong> – When <code>true</code>, the radio button is grayed out and cannot be selected. Defaults to <code>false</code>.</li>
-<li><strong>positional <code>&amp;Any</code></strong> – The value this radio button represents. When the user clicks this radio, <code>#on_select</code> receives this value. The radio appears selected when <code>#selected</code> equals this value.</li>
+<li><strong>positional <code>value: &amp;'a</code></strong> – The value this radio button represents. When the user clicks this radio, <code>#on_select</code> receives this value. The radio appears selected when <code>#selected</code> equals this value.</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="radio-group"><a class="header" href="#radio-group">Radio Group</a></h3>
@@ -226,7 +239,7 @@ let col = column(
 [&amp;window(#icon: &amp;icon::icon, #title: &amp;"Radio Buttons", &amp;col)]
 </code></pre>
 <p><img src="./media/radio.gif" alt="Radio"></p>
-<p>Note: the <code>selected</code> variable is typed as <code>Any</code> so it can hold any value used for comparison. In the example above, string values are used as the radio values.</p>
+<p>Every radio in a group and its <code>#selected</code> share one type, here the variant <code>[`Small, `Medium, `Large]</code>.</p>
 <h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
 <ul>
 <li><a href="checkbox.html">checkbox</a> – for multi-select boolean toggles</li>

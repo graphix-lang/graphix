@@ -5,7 +5,7 @@ let clock = sys::time::timer(duration:1.s, true);
 let cpu_val = 5;
 cpu_val <- {
     let v = clock ~ cpu_val;
-    v + rand::rand(#clock, #start: -5, #end: 5)
+    max(0, min(100, v + rand::rand(#clock, #start: -5, #end: 6)))
 };
 
 let row1 = row([

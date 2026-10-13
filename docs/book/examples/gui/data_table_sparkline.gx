@@ -14,17 +14,10 @@ mod icon;
 let tick = time::timer(duration:1.s, true);
 let t = cast<f64>(count(tick))$;
 
-let cpu_1 = 0.0;
-cpu_1 <- tick ~ 50.0 + 40.0 * math::sin(t / 4.0);
-
-let cpu_2 = 0.0;
-cpu_2 <- tick ~ 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
-
-let cpu_3 = 0.0;
-cpu_3 <- tick ~ 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
-
-let cpu_4 = 0.0;
-cpu_4 <- tick ~ 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
+let cpu_1 = 50.0 + 40.0 * math::sin(t / 4.0);
+let cpu_2 = 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
+let cpu_3 = 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
+let cpu_4 = 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
 
 sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
 sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);

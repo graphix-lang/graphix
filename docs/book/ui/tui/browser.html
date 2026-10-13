@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,30 @@
                         <h1 id="the-browser-widget"><a class="header" href="#the-browser-widget">The Browser Widget</a></h1>
 <p>The <code>browser</code> widget provides a specialized interface for browsing and interacting with netidx hierarchies. It displays netidx paths in a tree structure with keyboard navigation, selection, and cursor movement support.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type MoveCursor = [
+<pre><code class="language-graphix">use super::{Constraint, Flex, line, Size, Style, style, Tui};
+use sys::net;
+use tui::table::{cell, row, table};
+
+type MoveCursor = [
     `Left(i64),
     `Right(i64),
     `Up(i64),
     `Down(i64)
 ];
 
+// CR claude for claude: [doc-drift/low] The doc says the listing is fetched once each
+// time `path` changes, and that rows published later appear only when the path changes.
+// browser calls net::list_table(path) with its default #update, which is a one-second
+// repeating timer, so the listing refreshes about once a second and new rows appear on
+// the next refresh. Rewrite the sentence to say that. (gx-ui-05)
+/// A netidx browser over `path`: a table of its children, with one
+/// column per published column when the children are rows of a table.
+/// The listing is fetched once each time `path` changes, so rows
+/// published later appear when the path next changes.
+/// `#size` is the area the browser is drawn in, which sizes its
+/// viewport (pass the enclosing block's `#size` output); `#cursor`
+/// moves the selection. `#selected_row` is set to the selected row's
+/// full path, and `#selected_path` to the selected cell's.
 val browser: fn(
     ?#selected_style: Style,
     ?#header_style: Style,
@@ -323,7 +340,7 @@ let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
     },
     x@ `Enter =&gt; {
         command_mode &lt;- false;
-        run_command(command, x ~ selected_path);
+        run_command(x ~! command, x ~! selected_path);
         `Stop
     },
     e@ `Backspace if command != "" =&gt; {

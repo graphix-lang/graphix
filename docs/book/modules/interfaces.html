@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -213,8 +213,10 @@ val config: Array&lt;i64&gt;;
 <pre><code class="language-graphix">type Color = [`Red, `Green, `Blue];
 type Point = { x: f64, y: f64 };
 type Result&lt;'a, 'e&gt; = ['a, Error&lt;'e&gt;];
-type Handle;                      // abstract: defined in the implementation
-type Meters = Abstract&lt;f64&gt;;      // a public newtype
+// abstract: defined in the implementation
+type Handle;
+// a public newtype
+type Meters = Abstract&lt;f64&gt;;
 </code></pre>
 <p>Types can be polymorphic and recursive, just like in regular Graphix code.</p>
 <h3 id="module-declarations-mod"><a class="header" href="#module-declarations-mod">Module Declarations (mod)</a></h3>
@@ -266,11 +268,9 @@ the module.</p>
 <pre><code class="language-graphix">mod math;
 
 let result = math::add(1, 2);
-let pi = math::constants.pi;
-
-// This would be an error - internal_helper is not exported:
-// math::internal_helper(5)
+let pi = math::constants.pi
 </code></pre>
+<p>Calling <code>math::internal_helper(5)</code> here would be an error: it is not exported.</p>
 <h2 id="interface-and-implementation-relationship"><a class="header" href="#interface-and-implementation-relationship">Interface and Implementation Relationship</a></h2>
 <p>When a module has an interface file:</p>
 <ol>
@@ -331,10 +331,13 @@ mod parser;
 </code></pre>
 <h2 id="sub-module-visibility"><a class="header" href="#sub-module-visibility">Sub-module Visibility</a></h2>
 <p>A sub-module sees nothing of its parent implicitly — it imports what it
-needs with <code>use super::...</code>. Because visibility is order-independent,
-the position of the <code>mod</code> statement carries no meaning: declare it
-wherever reads best, and a sub-module may import parent items declared
-after it.</p>
+needs with <code>use super::...</code>. Module and type names are visible whatever
+their order, but values are not: a module’s body runs where its <code>mod</code>
+statement stands, so a value it imports from its parent must be bound
+above that <code>mod</code>. Place <code>mod</code> after the values the child imports, as the
+example below does. A <code>mod</code> declared only in the <code>.gxi</code> stands in the
+body right after the item the interface lists before it, so a body
+statement above that point cannot read the child’s values.</p>
 <p>Privacy follows Rust’s rule: a private item is visible to its defining
 module and that module’s descendants. So a sub-module may
 <code>use super::private_setup</code> even when <code>private_setup</code> is not exported in
@@ -348,14 +351,15 @@ in the <code>.gx</code> keeps it private to the parent’s subtree.</p>
 val public_helper: fn(x: i64) -&gt; i64;
 mod child;
 </code></pre>
-<pre><code class="language-graphix">// parent.gx
+<pre><code class="language-graphix ignore">// parent.gx
 let private_setup = ...;
 let public_helper = |x| x + 1;
 
 mod child;
 </code></pre>
 <pre><code class="language-graphix">// parent/child.gx
-use super::{private_setup, public_helper};  // both visible here
+// both visible here
+use super::{private_setup, public_helper};
 </code></pre>
 <h2 id="interfaces-with-netidx-modules"><a class="header" href="#interfaces-with-netidx-modules">Interfaces with Netidx Modules</a></h2>
 <p>Interface files also work with modules stored in netidx. The naming convention
@@ -397,9 +401,12 @@ name is its constructor, <code>.0</code> reads the payload, and <code>T(pattern)
 destructures it:</p>
 <pre><code class="language-graphix">type Counter = Abstract&lt;i64&gt;;
 
-let make = |x: i64| -&gt; Counter Counter(x);          // construct
-let get = |c: Counter| -&gt; i64 c.0;                  // payload
-let bump = |c: Counter| -&gt; Counter {                // destructure
+// construct
+let make = |x: i64| -&gt; Counter Counter(x);
+// payload
+let get = |c: Counter| -&gt; i64 c.0;
+// destructure
+let bump = |c: Counter| -&gt; Counter {
     let Counter(x) = c;
     Counter(x + 1)
 };
@@ -414,7 +421,7 @@ let sign = |c: Counter| -&gt; i64 select c {
 <p>Outside the module all three are compile errors — users can only call
 the functions the interface exports. The type <em>test</em> <code>T as t</code> works
 everywhere, since it compares the tag:</p>
-<pre><code class="language-graphix">let v: [a::A, b::B] = ...;
+<pre><code class="language-graphix ignore">let v: [a::A, b::B] = ...;
 select v {
     a::A as _ =&gt; "an A",
     b::B as _ =&gt; "a B"
@@ -450,7 +457,8 @@ let increment = |#trig: Any, c: &amp;mut Counter| -&gt; null {
 
 let c = counter::make(0);
 counter::increment(#trig:null, &amp;mut c);
-let value = counter::get(c)  // 1
+// 1
+let value = counter::get(c)
 </code></pre>
 <h3 id="public-newtypes"><a class="header" href="#public-newtypes">Public Newtypes</a></h3>
 <p>Nominal and hidden are independent. Put the <code>Abstract&lt;..&gt;</code> body in the
@@ -476,11 +484,14 @@ let unwrap = |b: Box&lt;'a&gt;| -&gt; 'a b.0.value
 </code></pre>
 <h3 id="constrained-type-parameters"><a class="header" href="#constrained-type-parameters">Constrained Type Parameters</a></h3>
 <p>Type parameters on abstract types can have constraints. The interface and
-implementation must have matching constraints:</p>
+implementation must have matching constraints, and a <code>val</code> declares every
+bound its implementation needs. <code>double</code> adds a value to itself, and
+arithmetic takes operands of exactly one numeric type, so it needs
+<code>Singleton</code> as well as <code>Number</code>:</p>
 <pre><code class="language-graphix">// interface - constraint required
 type NumericWrapper&lt;'a: Number&gt;;
 val wrap: fn(x: 'a) -&gt; NumericWrapper&lt;'a&gt;;
-val double: fn(w: NumericWrapper&lt;'a&gt;) -&gt; 'a;
+val double: fn&lt;'a: Number + Singleton&gt;(w: NumericWrapper&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation - same constraint required
 type NumericWrapper&lt;'a: Number&gt; = Abstract&lt;'a&gt;;
@@ -490,7 +501,7 @@ let double = |w: NumericWrapper&lt;'a&gt;| -&gt; 'a w.0 + w.0
 <h3 id="abstract-types-in-compound-types"><a class="header" href="#abstract-types-in-compound-types">Abstract Types in Compound Types</a></h3>
 <p>Abstract types can be used within other type definitions in the interface:</p>
 <pre><code class="language-graphix">type Element;
-type List = [`Cons(Element, List), `Nil];
+type Chain = [`Link(Element, Chain), `End];
 type Pair = (Element, Element);
 type Container = { items: Array&lt;Element&gt; };
 </code></pre>

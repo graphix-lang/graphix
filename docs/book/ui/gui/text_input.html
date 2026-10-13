@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,17 +177,31 @@
                         <h1 id="the-text-input-widget"><a class="header" href="#the-text-input-widget">The Text Input Widget</a></h1>
 <p>A single-line text field for user input. The widget displays the current value via a reference and reports changes through callbacks. Supports placeholder text, password masking, and custom sizing.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val text_input: fn(
+<pre><code class="language-graphix">use super::{Font, Length, Padding, Widget};
+type TextInput = {
+  disabled: &amp;bool,
+  value: &amp;string,
+  placeholder: &amp;string,
+  on_input: &amp;[fn(s: string) -&gt; Any, null],
+  on_submit: &amp;[fn(e: null) -&gt; Any, null],
+  is_secure: &amp;bool,
+  width: &amp;Length,
+  padding: &amp;Padding,
+  size: &amp;[f64, null],
+  font: &amp;[Font, null]
+};
+
+val text_input: fn(
   ?#placeholder: &amp;string,
   ?#on_input: [fn(s: string) -&gt; Any, null],
-  ?#on_submit: [fn(a: null) -&gt; Any, null],
+  ?#on_submit: [fn(e: null) -&gt; Any, null],
   ?#is_secure: &amp;bool,
   ?#width: &amp;Length,
   ?#padding: &amp;Padding,
   ?#size: &amp;[f64, null],
   ?#font: &amp;[Font, null],
   ?#disabled: &amp;bool,
-  s: &amp;string
+  value: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

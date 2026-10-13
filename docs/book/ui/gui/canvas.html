@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,86 +177,47 @@
                         <h1 id="the-canvas-widget"><a class="header" href="#the-canvas-widget">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level 2D drawing surface for custom graphics. You supply an array of shapes – lines, circles, rectangles, arcs, curves, text labels, and arbitrary paths – and the canvas renders them in order. This makes it suitable for diagrams, visualizations, procedural art, and anything that doesn’t fit into the standard widget set.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type PathSegment = [
+<pre><code class="language-graphix">use super::{Color, Length, Widget};
+type PathSegment = [
   `MoveTo({x: f64, y: f64}),
   `LineTo({x: f64, y: f64}),
-  `BezierTo({
-    control_a: {x: f64, y: f64},
-    control_b: {x: f64, y: f64},
-    to: {x: f64, y: f64}
-  }),
-  `QuadraticTo({
-    control: {x: f64, y: f64},
-    to: {x: f64, y: f64}
-  }),
-  `ArcTo({
-    a: {x: f64, y: f64},
-    b: {x: f64, y: f64},
-    radius: f64
-  }),
+  `BezierTo({ control_a: {x: f64, y: f64}, control_b: {x: f64, y: f64}, to: {x: f64, y: f64} }),
+  `QuadraticTo({ control: {x: f64, y: f64}, to: {x: f64, y: f64} }),
+  `ArcTo({ a: {x: f64, y: f64}, b: {x: f64, y: f64}, radius: f64 }),
   `Close
 ];
 
 type CanvasShape = [
-  `Line({
-    from: {x: f64, y: f64}, to: {x: f64, y: f64},
-    color: Color, width: f64
-  }),
-  `Circle({
-    center: {x: f64, y: f64}, radius: f64,
-    fill: [Color, null], stroke: [{color: Color, width: f64}, null]
-  }),
-  `Rect({
-    top_left: {x: f64, y: f64}, size: {width: f64, height: f64},
-    fill: [Color, null], stroke: [{color: Color, width: f64}, null]
-  }),
-  `RoundedRect({
-    top_left: {x: f64, y: f64}, size: {width: f64, height: f64},
-    radius: f64,
-    fill: [Color, null], stroke: [{color: Color, width: f64}, null]
-  }),
-  `Arc({
-    center: {x: f64, y: f64}, radius: f64,
-    start_angle: f64, end_angle: f64,
-    stroke: {color: Color, width: f64}
-  }),
-  `Ellipse({
-    center: {x: f64, y: f64}, radii: {x: f64, y: f64},
-    rotation: f64, start_angle: f64, end_angle: f64,
-    fill: [Color, null], stroke: [{color: Color, width: f64}, null]
-  }),
-  `BezierCurve({
-    from: {x: f64, y: f64},
-    control_a: {x: f64, y: f64}, control_b: {x: f64, y: f64},
-    to: {x: f64, y: f64},
-    color: Color, width: f64
-  }),
-  `QuadraticCurve({
-    from: {x: f64, y: f64}, control: {x: f64, y: f64},
-    to: {x: f64, y: f64},
-    color: Color, width: f64
-  }),
-  `Text({
-    content: string, position: {x: f64, y: f64},
-    color: Color, size: f64
-  }),
-  `Path({
-    segments: Array&lt;PathSegment&gt;,
-    fill: [Color, null], stroke: [{color: Color, width: f64}, null]
-  })
+  `Line({ from: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
+  `Circle({ center: {x: f64, y: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `Rect({ top_left: {x: f64, y: f64}, size: {width: f64, height: f64}, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `RoundedRect({ top_left: {x: f64, y: f64}, size: {width: f64, height: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `Arc({ center: {x: f64, y: f64}, radius: f64, start_angle: f64, end_angle: f64, stroke: {color: Color, width: f64} }),
+  `Ellipse({ center: {x: f64, y: f64}, radii: {x: f64, y: f64}, rotation: f64, start_angle: f64, end_angle: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
+  `BezierCurve({ from: {x: f64, y: f64}, control_a: {x: f64, y: f64}, control_b: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
+  `QuadraticCurve({ from: {x: f64, y: f64}, control: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
+  `Text({ content: string, position: {x: f64, y: f64}, color: Color, size: f64 }),
+  `Path({ segments: Array&lt;PathSegment&gt;, fill: [Color, null], stroke: [{color: Color, width: f64}, null] })
 ];
+
+type Canvas = {
+  shapes: &amp;Array&lt;CanvasShape&gt;,
+  width: &amp;Length,
+  height: &amp;Length,
+  background: &amp;[Color, null]
+};
 
 val canvas: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#background: &amp;[Color, null],
-  a: &amp;Array&lt;CanvasShape&gt;
+  shapes: &amp;Array&lt;CanvasShape&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
-<li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
-<li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
+<li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Fill</code>.</li>
+<li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Fill</code>.</li>
 <li><strong>background</strong> - Background color for the canvas area. Null means transparent.</li>
 </ul>
 <p>The positional argument is a reference to an array of <code>CanvasShape</code> values. Shapes are drawn in array order, so later shapes paint over earlier ones.</p>
@@ -389,10 +350,7 @@ let col = column(
 <p>The Mandelbrot set, one rectangle per pixel. The escape loop, its
 coloring and the <code>array::init</code> over the grid compile to native code,
 which the <code>#[native]</code> on the init asserts.</p>
-<pre><code class="language-graphix">// The Mandelbrot set drawn on a canvas, one rectangle per pixel. The
-// per-pixel escape loop, its coloring and the array::init over the grid
-// compile to native code; the #[native] on the init asserts it.
-use gui::{color, window, canvas::canvas};
+<pre><code class="language-graphix">use gui::{color, window, canvas::canvas};
 
 let start = cast&lt;f64&gt;(sys::time::now(once(null)))$;
 let w = 100;
@@ -442,7 +400,7 @@ let shapes = #[native] array::init(w * h, |idx| {
 
 let finish = cast&lt;f64&gt;(sys::time::now(shapes))$;
 let elapsed = (finish - start);
-println("rendered [w * h] pixels in [elapsed]s");
+println("computed [w * h] pixels in [elapsed]s");
 
 [&amp;window(
     #title: &amp;"Mandelbrot Set",

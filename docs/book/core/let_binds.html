@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,24 +177,33 @@
                         <h1 id="let-binds"><a class="header" href="#let-binds">Let Binds</a></h1>
 <p>Let bindings introduce names that are visible in their scope after they are
 defined.</p>
-<pre><code class="language-graphix">let x = 2 + 2 + x; // compile error x isn't defined yet
-let y = x + 1 // ok
+<pre><code class="language-graphix refused">// compile error x isn't defined yet
+let x = 2 + 2 + x;
+// ok
+let y = x + 1
 </code></pre>
 <p>The same name can be used again in the same scope, it will shadow the previous
 value.</p>
 <pre><code class="language-graphix">let x = 1;
-let x = x + 1; // ok uses the previous definition
-x == 2 // true
+// ok uses the previous definition
+let x = x + 1;
+// true
+x == 2
 </code></pre>
 <p>You can annotate the binding with a type, which will then be enforced at compile
 time. Sometimes this is necessary in order to help type inference.</p>
-<pre><code class="language-graphix">let x: Number = 1; // note x will be of type Number even though it's an i64
-let y: string = x + 1; // compile time type error
+<pre><code class="language-graphix">// x may be null later, so its type is the union, though it starts as an i64
+let x: [i64, null] = 1;
+// compile time type error: string does not contain [i64, null]
+let y: string = x;
 </code></pre>
 <p>You can use patterns in let binds as long as they will always match.</p>
-<pre><code class="language-graphix">let (x, y) = (3, "hello"); // binds x to 3 and y to "hello"
-x == 3; // true
-y == "hello" // true
+<pre><code class="language-graphix">// binds x to 3 and y to "hello"
+let (x, y) = (3, "hello");
+// true
+x == 3;
+// true
+y == "hello"
 </code></pre>
 <p>You can mix type annotations with pattern matches</p>
 <pre><code class="language-graphix">let (x, y): (i64, string) = (3, "hello")

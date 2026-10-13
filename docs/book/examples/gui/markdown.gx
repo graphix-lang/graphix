@@ -15,7 +15,7 @@ This is **bold** and this is *italic*.
 - Second item
 - Fifth item
 
-Here is a [link](https://graphix.dev) you can click.
+Here is a [link](https://graphix-lang.github.io/graphix) you can click.
 ";
 
 let col = column(

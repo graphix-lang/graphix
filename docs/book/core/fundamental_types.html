@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,14 +179,15 @@
 explore them by trying out small Graphix expressions. You can run the Graphix
 shell by invoking <code>graphix</code> with no arguments.</p>
 <h2 id="numbers"><a class="header" href="#numbers">Numbers</a></h2>
-<p><code>i32</code>, <code>u32</code>, <code>i64</code>, <code>u64</code>, <code>f32</code>, <code>f64</code>, and <code>decimal</code> are the fundamental
-numeric types in Graphix. Literals are written with their type prefixed, except
+<p><code>i8</code>, <code>u8</code>, <code>i16</code>, <code>u16</code>, <code>i32</code>, <code>u32</code>, <code>i64</code>, <code>u64</code>, <code>f32</code>, <code>f64</code>, and
+<code>decimal</code> are the fundamental numeric types in Graphix. Literals are written with their type prefixed, except
 for <code>i64</code> and <code>f64</code> which are written bare. for example, <code>u32:3</code> is a <code>u32</code>
 literal value.</p>
 <p><code>decimal</code> is an exact decimal representation for performing financial
 calculations without rounding or floating point approximation errors.</p>
-<p>The basic arithmetic operations are implemented on all the number types with all
-the other number types.</p>
+<p>The basic arithmetic operations are implemented on every number type. Both
+operands of an operation are one type: an <code>f64</code> and an <code>i64</code> do not mix
+without a cast.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -208,22 +209,16 @@ the other number types.</p>
 change to values that produce a valid result.</li>
 </ul>
 <p>Checked operators return a union type <code>[T, Error&lt;</code>ArithError(string)&gt;]<code>, allowing you to handle arithmetic errors explicitly using </code>?<code>, </code>$<code>, or </code>select`.</p>
-<p>The compiler will let you do arithmetic on different types of numbers directly
-without casting, however the return type of the operation will be the set of all
-the types in the operation, representing that either type could be returned. If
-you try to pass this result to a function that wants a specific numeric type, it
-will fail at compile time.</p>
+<p>Mixing two numeric types is refused at compile time; cast one side:</p>
 <pre><code class="language-graphix">〉1. + 1
--: [i64, f64]
-2
-〉let f = |x: i64| x * 10
-〉f(1. + 1)
 error: in expr
 
 Caused by:
-    0: at: line: 1, column: 3, in: (f64:1. + i64:1)
-    1: at: line: 1, column: 3, in: (f64:1. + i64:1)
-    2: type mismatch '_1046: i64 does not contain [i64, f64]
+    0: at: line: 1, column: 1, in: 1.0 + 1
+    1: cannot compute f64 + i64: arithmetic is fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a — both operands must be one numeric type (cast one side explicitly)
+〉1. + cast&lt;f64&gt;(1)$
+-: f64
+2
 </code></pre>
 <p>With unchecked operators, a division by zero logs an error and returns bottom – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
@@ -271,13 +266,18 @@ bytes. The type correspondence is,</p>
 <h3 id="number-sets"><a class="header" href="#number-sets">Number Sets</a></h3>
 <p>There are a few sets of number types that classify numbers into various kinds.
 <code>Number</code> being the most broad, it contains all the number types. <code>Int</code> contains
-only integers, <code>Real</code> contains only reals (decimal plus the two float types),
-<code>Sint</code> contains signed integers, <code>Uint</code> contains unsigned integers.</p>
+only integers, <code>Float</code> the two float types, <code>Real</code> contains only reals
+(decimal plus the two float types), <code>Sint</code> contains signed integers, <code>Uint</code>
+contains unsigned integers. A set is a type for a variable to range over
+(<code>'a: Number</code>); a value of a set type is one of its members, and
+arithmetic takes one member type at a time.</p>
 <h2 id="bool"><a class="header" href="#bool">Bool</a></h2>
 <p>Boolean literals are written as <code>true</code> and <code>false</code>, and the name of the boolean
 type is <code>bool</code>.</p>
 <p>Boolean expressions using <code>&amp;&amp;</code>, <code>||</code>, and <code>!</code> are supported. These operators
-only operate on <code>bool</code>. They can be grouped with parenthesis. For example,</p>
+only operate on <code>bool</code>. They can be grouped with parenthesis. <code>&amp;&amp;</code> and <code>||</code>
+are strict: they do not short circuit, and an operand that is bottom makes
+the result bottom (<code>false &amp;&amp; never()</code> produces nothing). For example,</p>
 <pre><code class="language-graphix">〉true &amp;&amp; false
 -: bool
 false
@@ -326,8 +326,9 @@ between two.</p>
 </code></pre>
 <h2 id="string"><a class="header" href="#string">String</a></h2>
 <p>Strings in Graphix are UTF8 encoded text. The type name is <code>string</code> and the
-literal is written in quotes <code>"this is a string"</code>. C style escape sequences are
-supported, <code>"this is \" a string with a quote and a \n"</code>. Non printable
+literal is written in quotes <code>"this is a string"</code>. The escapes are <code>\n</code>, <code>\r</code>,
+<code>\t</code>, <code>\0</code>, <code>\\</code>, <code>\"</code>, and <code>\[</code> / <code>\]</code> for a literal bracket (a bare <code>[</code>
+starts an interpolation): <code>"this is \" a string with a quote and a \n"</code>. Non printable
 characters such as newline will be escaped by default when strings are printed
 to the console, you can use <code>print</code> to print the raw string including control
 characters.</p>
@@ -393,10 +394,13 @@ between the delimiters.</p>
 <p>The <code>Any</code> type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
 is not used very often, as it provides very few guarantees, however it has it’s
-place. For example, <code>Any</code> is the type returned by <code>sys::net::subscribe</code>, indicating
-that any valid netidx value can come from the network. Usually the first thing
-you do with an <code>Any</code> type is call <code>cast</code> to turn it into the type you expect (or
-an error), or use a <code>select</code> expression to match it’s type (more on select later).</p>
+place. For example, <code>queue</code>’s <code>#clock</code> argument is <code>Any</code>: any value at all can
+tick it. Usually the first thing you do with a value of type <code>Any</code> is call
+<code>cast</code> to turn it into the type you expect (or an error), or use a <code>select</code>
+expression to match its type (more on select later). Reading data whose type
+the program cannot see, a netidx subscription or a json document, is
+type-directed instead: <code>sys::net::subscribe</code> returns the type you annotate
+and casts what arrives to it.</p>
 <h2 id="null"><a class="header" href="#null">Null</a></h2>
 <p>Null is nothing, just like in many other languages. Unlike most other languages
 <code>null</code> is a type not a catch all. If the type of a value does not include <code>null</code>
@@ -525,7 +529,7 @@ module</p>
 </code></pre>
 <p>Keys and values can be any Graphix type, for example here is a map where the key
 is a <code>Map&lt;string, i64&gt;</code>.</p>
-<pre><code class="language-graphix">{{"foo" =&gt; 42} =&gt; "foo", {"bar" =&gt; 42} =&gt; "bar"}
+<pre><code class="language-graphix ignore">{{"foo" =&gt; 42} =&gt; "foo", {"bar" =&gt; 42} =&gt; "bar"}
 -: Map&lt;'_1919: Map&lt;'_1915: string, '_1917: i64&gt;, '_1921: string&gt;
 {{"bar" =&gt; 42} =&gt; "bar", {"foo" =&gt; 42} =&gt; "foo"}
 </code></pre>
@@ -552,19 +556,24 @@ O(log(N)) performance for all operations regardless of map size.</p>
 <p>The postfix access operators — struct field <code>.name</code>, tuple index <code>.0</code>, array
 index/slice <code>[i]</code> / <code>[i..j]</code>, map index <code>{key}</code>, and function call <code>(args)</code> —
 can be chained directly, left to right, without intermediate parentheses:</p>
-<pre><code class="language-graphix">data.users[0].name        // field, then index, then field
-config{"db"}.port         // map index, then field
-matrix[i][j]              // nested array index
-point.0.x                 // tuple index, then field
-make_handler(cfg)(event)  // a call whose result is itself called
+<pre><code class="language-graphix ignore">// field, then index, then field
+data.users[0]$.name
+// map index, then field
+config{"db"}$.port
+// nested array index
+matrix[i]$[j]$
+// tuple index, then field
+point.0.x
+// a call whose result is itself called
+make_handler(cfg)(event)
 </code></pre>
 <p>Each operator applies to the value produced by everything to its left, so a
-chain reads in evaluation order. A trailing <code>?</code> or <code>$</code> applies to the whole
-chain: <code>data.users[0]?</code> propagates an error from the indexing.</p>
+chain reads in evaluation order. Array and map indexing return a Result, so
+the <code>?</code> or <code>$</code> that unwraps one sits right after that access, before the
+chain goes on: <code>data.users[0]?.name</code> propagates an error from the indexing.</p>
 <p>Parentheses are only needed when the <em>source</em> of an access is not itself a
-simple value or another access — for example <code>(a + b).0</code> (index into the
-result of an addition) or <code>(40 + 2).0</code>. A bare identifier or an existing chain
-never needs them.</p>
+simple value or another access, for example <code>(a, b).0</code> (index into a tuple
+literal). A bare identifier or an existing chain never needs them.</p>
 <h2 id="error"><a class="header" href="#error">Error</a></h2>
 <p>Error is the built in error type. It carries a type parameter indicating the
 type of error, for example <code>Error&lt;</code>MapKeyError(string)&gt;<code>is an error that carries a ``</code>MapKeyError `` variant. You can access the inner error value

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -184,7 +184,7 @@ that using type variables and constraints in our annotations.</p>
 <pre><code class="language-graphix">〉let f = 'a: Number |x: 'a, y: 'a| -&gt; 'a x + y
 〉f
 -: fn&lt;'a: unbound: Number + Singleton&gt;(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
-160
+Abstract('a: Number |x: 'a, y: 'a| -&gt; 'a x + y)
 </code></pre>
 <p>In type annotations of lambda expressions,</p>
 <ul>
@@ -218,12 +218,11 @@ like <code>[i64, f64]</code>.</p>
 <p>Two bounds say how many types a variable may stand for. <code>Singleton</code>
 says one type, not a union of several. <code>OneNumber</code> says at most one
 numeric type, so a nullable number of one numeric type is</p>
-<pre><code class="language-graphix">let f = 'a: [Number, null] + OneNumber |x: 'a| -&gt; 'a x
+<pre><code class="language-graphix">let g = 'a: [Number, null] + OneNumber |x: 'a| -&gt; 'a x
 </code></pre>
 <p>which takes an <code>[i64, null]</code> or an <code>[f64, null]</code>, and refuses an
-<code>[i64, f64, null]</code>. Because unchecked <code>+</code> wraps on overflow rather
-than throwing, there is no <code>throws</code> clause. We can
-still call this <code>f</code> with any number type,</p>
+<code>[i64, f64, null]</code>. The two-argument <code>f</code> above takes any one number
+type,</p>
 <pre><code class="language-graphix">〉f(1.212, 2.0)
 -: f64
 3.2119999999999997
@@ -286,7 +285,7 @@ without issue, but sometimes annotations are required.</p>
 <pre><code class="language-graphix">〉 let apply = |x: 'a, f: fn(x: 'a) -&gt; 'b throws 'e| -&gt; 'b throws 'e f(x)
 〉 apply
 -: fn&lt;'e: unbound: _&gt;(x: 'a: unbound, f: fn(x: 'a: unbound) -&gt; 'b: unbound throws 'e: unbound) -&gt; 'b: unbound throws 'e: unbound
-163
+Abstract(|x: 'a, f: fn(x: 'a) -&gt; 'b throws 'e| -&gt; 'b throws 'e f(x))
 </code></pre>
 <p>Here we’ve specified a single argument apply, it takes an argument, and a
 function <code>f</code>, and calls <code>f</code> on the argument. Note that we’ve explicitly said
@@ -304,50 +303,24 @@ throwing <code>'e</code> and returns an array of <code>'b</code> possibly throwi
 types are inferred at each call site, and thus may differ from one site to
 another. Any internal constraints are calculated when the definition is compiled
 and are enforced at each call site. For example consider,</p>
-<pre><code class="language-graphix">〉let f = |x, y| x + y
-〉f
--: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
-159
+<pre><code class="language-graphix">let f = |x, y| x + y
 </code></pre>
-<p>The type is a bit of a mouthful, lets format it a bit so it’s easier to read.</p>
-<pre><code>fn&lt;'_2069: unbound: Number,
-   '_2067: unbound: Number,
-   '_2071: unbound: Number&gt;
-(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
+<p>Its type, with the unbound current values removed, is</p>
+<pre><code>fn&lt;'_1: Number + Singleton&gt;(x: '_1, y: '_1) -&gt; '_1
 </code></pre>
-<p>Removing the unbounds,</p>
-<pre><code>fn&lt;'_2069: Number,
-   '_2067: Number,
-   '_2071: Number&gt;
-(x: '_2067, y: '_2069) -&gt; '_2071
+<p>One inferred variable stands for both arguments and the return type. The
+body’s <code>+</code> gave it the arithmetic bound: <code>Number + Singleton</code>, one numeric
+type, not a union of several. So <code>f</code> takes any one number type,</p>
+<pre><code class="language-graphix">let f = |x, y| x + y;
+let a = f(2, 2);
+let b = f(1.5, 2.5);
+(a, b)
 </code></pre>
-<p>Here we can see that <code>'_2067</code>, <code>'_2069</code>, and <code>'_2071</code> represent the two
-arguments and the return type of the function. They are all unbound, meaning
-that when the function is used they can have any type. They are also all
-constrained to <code>Number</code>, and this will be enforced when the function is called,
-it’s arguments must be numbers and it will return a number. We learned this
-because internally the function uses <code>+</code>, which operates on numbers, this
-constraint was then propagated to the otherwise free variables representing the
-args and the return type.</p>
-<p>So in plain English this says that the arguments to the function can by any type
-as long as it is a number, and the function will return some type which is a
-number. None of the three numbers need to be the same type of number.</p>
+<p>but not two at once: <code>f(1.0, 1)</code> is refused (<code>type mismatch f64 does not contain i64</code>), and a cast is the fix, <code>f(1.0, cast&lt;f64&gt;(1)$)</code>.</p>
 <p>Because unchecked <code>+</code> wraps on overflow rather than throwing, there is
 no <code>throws</code> clause in the type. If you want arithmetic errors
 to be part of the type, use the checked operator <code>+?</code> instead, which
 returns <code>[T, Error&lt;</code>ArithError(string)&gt;]`.</p>
-<p>We can indeed call <code>f</code> with different number types, and it works just fine,</p>
-<pre><code class="language-graphix">〉f(1.0, 1)
--: Number
-2
-</code></pre>
-<p>The type we get back really depends on the values we pass. For example,</p>
-<pre><code class="language-graphix">〉f(1.1212, 1)
--: Number
-2.1212
-</code></pre>
-<p>Wherever we use <code>f</code> the compiler will force us to handle every possible case in
-the <code>Number</code> type</p>
 
                     </main>
 

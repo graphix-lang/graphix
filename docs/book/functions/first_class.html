@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -176,8 +176,9 @@
                     <main>
                         <h1 id="functions-are-first-class-values"><a class="header" href="#functions-are-first-class-values">Functions are First Class values</a></h1>
 <p>We can store a function in a structure, which can itself be stored in a data
-structure, a file, or even sent across the network to another instance of the
-same program. Here we build a struct that maintains a count, and a function to
+structure, passed to and returned from functions. A function exists only in the
+program that made it: it cannot be written to a file or sent across the
+network (the json and pack writers refuse one). Here we build a struct that maintains a count, and a function to
 operate on the count, returning a new struct of the same type with a different
 count.</p>
 <pre><code class="language-graphix">type T = { count: i64, f: fn(t: T) -&gt; T };
@@ -185,10 +186,9 @@ let t = { count: 0, f: |t: T| {t with count: t.count + 1} };
 (t.f)(t)
 </code></pre>
 <p>when run this example will output,</p>
-<pre><code>{count: 1, f: 158}
+<pre><code>{count: 1, f: Abstract(|t: T| { t with count: t.count + 1 })}
 </code></pre>
-<p>158 is the lambda id, it’s the actual value that is stored to represent a
-function.</p>
+<p>A function value prints as its source.</p>
 
                     </main>
 

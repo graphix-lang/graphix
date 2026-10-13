@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -221,14 +221,22 @@ For example,</p>
 <h3 id="default-module-path"><a class="header" href="#default-module-path">Default Module Path</a></h3>
 <p>By default the module resolve path has several entries,</p>
 <ul>
-<li>
-<p>the parent directory of the program file passed on the command line. e.g. if
+<li>the parent directory of the program file passed on the command line. e.g. if
 we are running <code>/home/user/test.gx</code> then Graphix will look for modules in
-<code>/home/user</code></p>
-</li>
-<li>
-<p>the Graphix init directory. This is a platform specific directory where you
-can put Graphix modules.</p>
+<code>/home/user</code></li>
+</ul>
+<!-- CR claude for eric: [doc-drift/low] The documented Windows path
+`%APPDATA%\Roaming\graphix` is wrong. `search_path` in graphix-rt uses
+`dirs::data_dir()`, which is `%APPDATA%` (already `...\AppData\Roaming`), so the path is
+`%APPDATA%\graphix`. The package manager (`graphix_data_dir` in graphix-package) uses
+`dirs::data_local_dir()`, which is `%LOCALAPPDATA%`, while packages/using.md documents
+`%APPDATA%\graphix\packages.toml`. On Windows, init modules and packages.toml therefore
+live in different trees, and the book gets both wrong. Also, GRAPHIX_MODPATH is searched
+before the data directory, not 'appended'. Decide whether one directory function should
+serve both, then document the real paths and search order. (book-modules-udt-18) -->
+<ul>
+<li>the Graphix init directory. This is a platform specific directory where you
+can put Graphix modules.
 <ul>
 <li>On Linux <code>~/.local/share/graphix</code></li>
 <li>On Windows <code>%APPDATA%\Roaming\graphix</code></li>
@@ -255,7 +263,7 @@ published successfully.</p>
 </code></pre>
 <p>Looks good, now lets run the code. We need to add to the resolve path to tell
 the Graphix shell where it should look for modules.</p>
-<pre><code>$ GRAPHIX_MODPATH=netidx:/local/graphix graphix test
+<pre><code>$ GRAPHIX_MODPATH=netidx:/local/graphix graphix netidx:/local/graphix/test.gx
 "hello world"
 </code></pre>
 <h2 id="module-hierarchies"><a class="header" href="#module-hierarchies">Module Hierarchies</a></h2>

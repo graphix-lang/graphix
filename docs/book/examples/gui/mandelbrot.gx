@@ -1,6 +1,3 @@
-// The Mandelbrot set drawn on a canvas, one rectangle per pixel. The
-// per-pixel escape loop, its coloring and the array::init over the grid
-// compile to native code; the #[native] on the init asserts it.
 use gui::{color, window, canvas::canvas};
 
 let start = cast<f64>(sys::time::now(once(null)))$;
@@ -51,7 +48,7 @@ let shapes = #[native] array::init(w * h, |idx| {
 
 let finish = cast<f64>(sys::time::now(shapes))$;
 let elapsed = (finish - start);
-println("rendered [w * h] pixels in [elapsed]s");
+println("computed [w * h] pixels in [elapsed]s");
 
 [&window(
     #title: &"Mandelbrot Set",

@@ -18,7 +18,7 @@ let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AA
             image(
                 #width: &`Fixed(200.0),
                 #height: &`Fixed(200.0),
-                &`Rgba({ width: cast<u32>(4)$, height: cast<u32>(4)$, pixels: pixels })
+                &`Rgba({ width: u32:4, height: u32:4, pixels: pixels })
             )
         ]
     )

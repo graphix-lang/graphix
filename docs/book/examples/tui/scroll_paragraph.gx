@@ -6,9 +6,9 @@ use tui::{
   scrollbar::scrollbar
 };
 
-let long_text = "Very long text content...";
+let lines = array::init(100, |i| line("Line [i + 1]"));
 let position = 0;
-let max_position = 100;
+let max_position = array::len(lines) - 1;
 
 let handle_event = |e: Event| on_press(e, |k| select k.code {
     k@`Up if position > 0 => {
@@ -19,12 +19,12 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
         position <- (k ~ position) + 1;
         `Stop
     },
-    k@`PageUp if position > 10 => {
-        position <- (k ~ position) - 10;
+    k@`PageUp if position > 0 => {
+        position <- max(0, (k ~ position) - 10);
         `Stop
     },
-    k@`PageDown if position < (max_position - 10) => {
-        position <- (k ~ position) + 10;
+    k@`PageDown if position < max_position => {
+        position <- min(max_position, (k ~ position) + 10);
         `Stop
     },
     k@`Home => { position <- k ~ 0; `Stop },
@@ -39,8 +39,8 @@ input_handler(
         #title: &line("Scrollable Content"),
         &scrollbar(
             #position: &position,
-            #content_length: &max_position,
-            &paragraph(#scroll: &{x: 0, y: position}, &long_text)
+            #content_length: &array::len(lines),
+            &paragraph(#scroll: &{x: 0, y: position}, &lines)
         )
     )
 )

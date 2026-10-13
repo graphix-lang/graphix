@@ -1,10 +1,8 @@
 use gui::{window, button::button, column::column, text::text};
-mod icon;
 
 let clicks = 0;
 
 [&window(
-  #icon: &icon::icon,
   #title: &"Graphix Demo",
   #theme: &`CatppuccinMocha,
   &column(

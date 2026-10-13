@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -203,13 +203,17 @@ deep.</p>
 </code></pre>
 <p>Every path gets its own publish site, retained across cycles. When the
 array changes, the activations are fed again by position, and those
-past the new end sleep.</p>
+past the new end are deleted, their publishes withdrawn; a later regrow
+builds fresh ones.</p>
 <p>Recursion is bounded by memory, not by a limit: non-tail recursion nests on
 heap-allocated stack segments, in the interpreter and in compiled code
 alike. An embedder may cap it with a stack budget
 (<code>graphix_compiler::set_stack_budget</code>, or <code>GRAPHIX_STACK_BUDGET</code> in
-bytes or with a <code>K</code>, <code>M</code> or <code>G</code> suffix, as in <code>64M</code>); a program that
-exceeds the budget is stopped the way Ctrl-C stops it.</p>
+bytes or with a <code>K</code>, <code>M</code> or <code>G</code> suffix, as in <code>64M</code>), and with an
+activation budget, the live activations (calls, collection slots)
+a runtime may hold (<code>Control::set_activation_budget</code>, or
+<code>GRAPHIX_ACTIVATION_BUDGET</code>); unlimited by default. A program that
+exceeds a budget is stopped the way Ctrl-C stops it.</p>
 <p>If you rely on a function running as a constant-space loop, assert it:</p>
 <pre><code class="language-graphix">#[tail_recursive]
 let rec sum_to = |n: i64, acc: i64| -&gt; i64 select n {

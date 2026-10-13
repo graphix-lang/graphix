@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,7 +175,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="types"><a class="header" href="#types">Types</a></h1>
-<p>The GUI library defines a set of shared types used across all widgets. These types control layout, sizing, colors, fonts, and more. They are all defined in the top-level <code>gui</code> module and become available when you write <code>use gui</code>.</p>
+<p>The GUI library defines a set of shared types used across all widgets. These types control layout, sizing, colors, fonts, and more. They are all defined in the top-level <code>gui</code> module: write them <code>gui::Length</code>, or import them by name, <code>use gui::{Length, Padding}</code>.</p>
 <h2 id="layout-types"><a class="header" href="#layout-types">Layout Types</a></h2>
 <h3 id="length"><a class="header" href="#length">Length</a></h3>
 <p>Controls how a widget is sized along a single axis:</p>
@@ -188,7 +188,7 @@
 <li><code>`Fixed(px)</code> – exact size in logical pixels.</li>
 </ul>
 <p>Most layout widgets accept <code>#width</code> and <code>#height</code> parameters of type <code>&amp;Length</code>:</p>
-<pre><code class="language-graphix">column(
+<pre><code class="language-graphix ignore">column(
   #width: &amp;`Fill,
   #height: &amp;`Fixed(300.0),
   &amp;[...]
@@ -210,7 +210,7 @@
 <pre><code class="language-graphix">container(
   #padding: &amp;`All(20.0),
   &amp;text(&amp;"Padded content")
-)
+);
 
 container(
   #padding: &amp;`Each({top: 10.0, right: 20.0, bottom: 10.0, left: 20.0}),
@@ -232,7 +232,7 @@ type VAlign = [`Top, `Center, `Bottom];
   #halign: &amp;`Center,
   #width: &amp;`Fill,
   &amp;[text(&amp;"Centered text")]
-)
+);
 
 container(
   #halign: &amp;`Center,
@@ -246,7 +246,7 @@ container(
 <h3 id="color"><a class="header" href="#color">Color</a></h3>
 <p>RGBA color with floating-point components in the range 0.0 to 1.0. Color is an abstract type — use the <code>color</code> constructor to create values. Components default to 0.0 except alpha which defaults to 1.0. Out-of-range values return an <code>InvalidColor</code> error.</p>
 <pre><code class="language-graphix">// Solid red ($ swallows errors with a warning)
-let red = color(#r: 1.0)$
+let red = color(#r: 1.0)$;
 
 // Semi-transparent blue (? propagates errors)
 let blue_50 = color(#b: 1.0, #a: 0.5)?
@@ -302,43 +302,48 @@ type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 </ul>
 <h2 id="the-widget-type"><a class="header" href="#the-widget-type">The Widget Type</a></h2>
 <p><code>Widget</code> is a union of all individual widget types. Most widget constructor functions return <code>Widget</code>, which means you can freely mix different widget types in arrays and containers:</p>
-<pre><code class="language-graphix">type Widget = [
+<pre><code class="language-graphix">/// Widget types (content within a window)
+type Widget = [
   `Button(button::Button),
   `Canvas(canvas::Canvas),
   `Chart(chart::Chart),
   `Checkbox(checkbox::Checkbox),
   `Column(column::Column),
   `ComboBox(combo_box::ComboBox),
+  `ContextMenu(menu::ContextMenu),
   `Container(container::Container),
+  `Grid(grid::Grid),
   `HorizontalRule(rule::HorizontalRule),
   `Image(image::Image),
   `KeyboardArea(keyboard_area::KeyboardArea),
+  `Markdown(markdown::Markdown),
+  `MenuBar(menu::MenuBar),
   `MouseArea(mouse_area::MouseArea),
   `PickList(pick_list::PickList),
   `ProgressBar(progress_bar::ProgressBar),
+  `QrCode(qr_code::QrCode),
   `Radio(radio::Radio),
   `Row(row::Row),
   `Scrollable(scrollable::Scrollable),
   `Slider(slider::Slider),
   `Space(space::Space),
   `Stack(stack::Stack),
-  `Svg(svg::Svg),
+  `Table(table::Table),
   `Text(text::Text),
   `TextEditor(text_editor::TextEditor),
   `TextInput(text_input::TextInput),
   `Toggler(toggler::Toggler),
   `Tooltip(tooltip::Tooltip),
   `VerticalRule(rule::VerticalRule),
-  `VerticalSlider(vertical_slider::VerticalSlider)
+  `VerticalSlider(vertical_slider::VerticalSlider),
+  `DataTable(data_table::DataTable)
 ];
+
 </code></pre>
 <p>You do not normally construct <code>Widget</code> variants directly. Each widget module exports a constructor function (e.g., <code>gui::text::text(...)</code>, <code>gui::button::button(...)</code>) that returns <code>Widget</code>. This means a column’s children array has type <code>Array&lt;Widget&gt;</code> and can contain any mix of widgets:</p>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::button;
-use gui::slider;
+<pre><code class="language-graphix">use gui::{button::button, column::column, slider::slider, text::text};
 
-let v = 50.0
+let v = 50.0;
 
 column(
   #spacing: &amp;10.0,

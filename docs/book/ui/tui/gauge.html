@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,20 +177,30 @@
                         <h1 id="the-gauge-widget"><a class="header" href="#the-gauge-widget">The Gauge Widget</a></h1>
 <p>The <code>gauge</code> widget displays a single value as a filled progress indicator, perfect for showing percentages, completion status, or resource usage. It provides a clear visual representation of how full or complete something is.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val gauge: fn(
+<pre><code class="language-graphix">use super::{Span, Style, Tui};
+type Gauge = {
+  gauge_style: &amp;[Style, null],
+  label: &amp;[Span, null],
+  ratio: &amp;f64,
+  style: &amp;[Style, null],
+  use_unicode: &amp;[bool, null]
+};
+
+val gauge: fn(
   ?#gauge_style: &amp;[Style, null],
   ?#label: &amp;[Span, null],
   ?#style: &amp;[Style, null],
   ?#use_unicode: &amp;[bool, null],
-  x: &amp;f64
+  ratio: &amp;f64
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong>gauge_style</strong> - Style for the filled portion</li>
-<li><strong>label</strong> - Line or span displayed in the center</li>
+<li><strong>label</strong> - A <code>Span</code> displayed in the center</li>
 <li><strong>use_unicode</strong> - Use Unicode block characters for smoother rendering</li>
 <li><strong>style</strong> - Style for the unfilled portion</li>
+<li><strong>ratio</strong> (positional) - The filled fraction, from 0.0 to 1.0; a value outside that range is clamped, with a logged warning</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>

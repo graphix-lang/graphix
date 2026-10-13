@@ -1,12 +1,12 @@
-use tui::{line, list::list, scrollbar::scrollbar};
+use tui::{
+  line,
+  input_handler::{Event, input_handler, on_press},
+  list::list,
+  scrollbar::scrollbar
+};
 
-let items = [
-    line("Item 1"),
-    line("Item 2"),
-    line("Item 3"),
-    line("Item 4"),
-    line("Item 5")
-];
+let items = array::init(30, |i| line("Item [i + 1]"));
+let last = array::len(items) - 1;
 let selected = 0;
 let scroll_pos = 0;
 let visible = 10;
@@ -18,13 +18,28 @@ scroll_pos <- select selected {
     _ => never()
 };
 
-scrollbar(
-    #position: &scroll_pos,
-    #content_length: &array::len(items),
-    #viewport_length: &visible,
-    &list(
-        #scroll: &scroll_pos,
-        #selected: &selected,
-        &items
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Up if selected > 0 => {
+        selected <- (k ~ selected) - 1;
+        `Stop
+    },
+    k@`Down if selected < last => {
+        selected <- (k ~ selected) + 1;
+        `Stop
+    },
+    _ => `Continue
+});
+
+input_handler(
+    #handle: &handle_event,
+    &scrollbar(
+        #position: &scroll_pos,
+        #content_length: &array::len(items),
+        #viewport_length: &visible,
+        &list(
+            #scroll: &scroll_pos,
+            #selected: &selected,
+            &items
+        )
     )
 )

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -243,15 +243,15 @@ pure functions, and the full <code>BuiltIn</code> + <code>Apply</code> traits fo
 fine-grained control over the update cycle.</p>
 <h3 id="naming-convention"><a class="header" href="#naming-convention">Naming Convention</a></h3>
 <p>All builtin names <strong>must</strong> start with your package name. For a package named
-<code>mylib</code>, builtins must be named <code>mylib_something</code>. The <code>defpackage!</code> macro
-enforces this at compile time.</p>
+<code>mylib</code>, builtins must be named <code>mylib_something</code> (or <code>mylib</code> itself). The <code>register</code> function
+<code>defpackage!</code> generates refuses any other name when the package loads.</p>
 <h3 id="the-simple-path-evalcached--cachedargs"><a class="header" href="#the-simple-path-evalcached--cachedargs">The Simple Path: <code>EvalCached</code> / <code>CachedArgs</code></a></h3>
 <p>For pure functions that just compute a result from their arguments, use
 <code>EvalCached</code>:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
@@ -278,6 +278,9 @@ impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyMinEv {
     }
 }
 
+// a payload with no state to image
+unit_image_state!(MyMinEv);
+
 type MyMin = CachedArgs&lt;MyMinEv&gt;;
 <span class="boring">}</span></code></pre>
 <p>Then list <code>MyMin</code> in your <code>defpackage!</code> builtins. <code>CachedArgs</code> handles all the
@@ -294,9 +297,19 @@ but the instance keeps state across invocations (a tally, a memo of
 earlier calls), or its result depends on which arguments have been
 delivered.</li>
 <li><code>Effect::Stateless(fast)</code> — same-cycle, and the result depends only
-on the arguments. <code>fast</code> is the fast call described next, or <code>None</code>
-for a builtin that cannot have one (an effect such as <code>print</code>, or a
-function that produces before all its arguments have arrived).</li>
+on the arguments; never an effect. <code>fast</code> is the fast call described
+next, or <code>None</code> only for a raw <code>Apply</code> that answers before all its
+arguments have arrived. A wrong <code>Stateless</code> is a semantics bug: an
+arm holding the builtin skips sleep, and a wake recomputes it.</li>
+<li><code>Effect::Io(io)</code> — same-cycle and stateless, but it acts on the world
+each time its trigger argument fires (printing, a log line, <code>exit</code>).
+An arm holding one sleeps, and a wake computes its value without the
+effect: <code>EvalCached::quiet</code> (its default is <code>eval</code>, so an <code>Io</code> builtin
+overrides it to skip the effect). <code>io</code> is an <code>IoCall</code>, how a fused
+kernel calls it: <code>result</code> computes the call’s value, and each time
+argument <code>trigger</code> fires the kernel queues the call, which
+<code>BuiltIn::perform</code> performs after the kernel returns; <code>None</code> keeps the
+builtin out of native code.</li>
 </ul>
 <p>Stateless matters twice: a tail recursion compiles to a native loop
 only when every builtin it reaches is stateless, and fusion into native
@@ -357,51 +370,71 @@ state across cycles, or work with higher-order functions, implement the
 </span><span class="boring">fn main() {
 </span>use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
+    UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use netidx_value::Value;
+use netidx_core::pack::{Pack, PackError};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MyOnce {
-    val: bool,
+    // whether the one update has passed
+    done: bool,
+    // the result slot `update` lends to the caller
+    out: TagValue,
 }
 
 impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
     const NAME: &amp;str = "mylib_once";
+    // it keeps state across invocations
+    const EFFECT: Effect = Effect::Sync;
 
-    fn init&lt;'a, 'b, 'c&gt;(
+    fn init&lt;'a, 'b, 'c, 'd&gt;(
         _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
-        _resolved_typ: Option&lt;&amp;'a FnType&gt;,
+        _resolved_typ: Option&lt;&amp;'d FnType&gt;,
         _scope: &amp;'b Scope,
         _from: &amp;'c [Node&lt;R, E&gt;],
         _top_id: ExprId,
     ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;&gt; {
-        Ok(Box::new(MyOnce { val: false }))
+        Ok(Box::new(MyOnce::default()))
+    }
+
+    // restore what `image_encode` wrote; the result slot is never imaged
+    fn image_decode(
+        _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
+        _from: &amp;[Node&lt;R, E&gt;],
+        buf: &amp;mut &amp;[u8],
+    ) -&gt; Result&lt;Box&lt;dyn Apply&lt;R, E&gt;&gt;, PackError&gt; {
+        Ok(Box::new(MyOnce { done: bool::decode(buf)?, out: TagValue::phantom() }))
     }
 }
 
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
+    fn image_encode(&amp;self, buf: &amp;mut ImageBuf) -&gt; Result&lt;(), PackError&gt; {
+        self.done.encode(buf)
+    }
+
     fn update(
         &amp;mut self,
         ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-    ) -&gt; Option&lt;Value&gt; {
-        match from {
-            [s] =&gt; s.update(ctx).and_then(|v| {
-                if self.val {
-                    None
-                } else {
-                    self.val = true;
-                    Some(v)
-                }
-            }),
-            _ =&gt; None,
+    ) -&gt; &amp;TagValue {
+        match from[0].update(ctx).view() {
+            TagView::Fired(tv) if !self.done =&gt; {
+                self.done = true;
+                let v = tv.value_cloned();
+                self.out.set(TagValue::fired(v))
+            }
+            // a bottom input before the update makes the result bottom
+            TagView::FreshBottom if !self.done =&gt; self.out.set_bottom(true),
+            TagView::StaleBottom if !self.done =&gt; self.out.set_bottom(false),
+            _ =&gt; self.out.ride(),
         }
     }
 
+    // once is a restart builtin: a woken once is a fresh one
     fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
-        self.val = false
+        self.done = false
     }
 }
 <span class="boring">}</span></code></pre>
@@ -436,6 +469,10 @@ pub trait CustomDisplay&lt;X: GXExt&gt;: Any {
     /// display. The future returned must resolve promptly or the shell
     /// will hang.
     async fn process_update(&amp;mut self, env: &amp;Env, id: ExprId, v: Value);
+
+    /// The updates of one runtime cycle have all been processed: a
+    /// display that redraws shows the cycle whole here.
+    async fn batch_done(&amp;mut self);
 }
 <span class="boring">}</span></code></pre>
 <h3 id="registering-a-custom-display"><a class="header" href="#registering-a-custom-display">Registering a Custom Display</a></h3>
@@ -477,6 +514,8 @@ impl&lt;X: GXExt&gt; CustomDisplay&lt;X&gt; for DebugDisplay {
     async fn process_update(&amp;mut self, _env: &amp;Env, id: ExprId, v: Value) {
         eprintln!("[debug display] {id:?} = {v}");
     }
+
+    async fn batch_done(&amp;mut self) {}
 }
 
 defpackage! {
@@ -503,8 +542,8 @@ CompExp).</p>
 <p>Packages can depend on other packages via Cargo. Add the dependency to your
 <code>Cargo.toml</code>:</p>
 <pre><code class="language-toml">[dependencies]
-graphix-package-core = "0.3"
-graphix-package-time = "0.3"
+graphix-package-core = "0.9"
+graphix-package-sys = "0.9"
 </code></pre>
 <p>Your package’s <code>register()</code> function (generated by <code>defpackage!</code>) automatically
 calls <code>register()</code> on all its <code>graphix-package-*</code> dependencies before
@@ -517,15 +556,28 @@ register functions for all package dependencies. Use the test macros from
 </span><span class="boring">fn main() {
 </span>#[cfg(test)]
 mod test {
-    use graphix_package_core::run;
+    use graphix_package_core::{run, testing::FuseExpect};
 
     run!(my_test, "mylib::my_builtin(true)", |r| {
         matches!(r, Ok(netidx::subscriber::Value::Bool(true)))
-    });
+    }; FuseExpect::None);
 }
 <span class="boring">}</span></code></pre>
 <p>The <code>run!</code> macro sets up a full Graphix runtime with your package registered,
-compiles the expression, and checks the result against your predicate.</p>
+compiles <code>let result = &lt;the expression&gt;</code>, and checks the first value it
+produces against your predicate, which receives a <code>Result&lt;&amp;Value&gt;</code>: the
+value, or the compile error. Each <code>run!</code> is four tests, one per
+<code>testing::Mode</code>: <code>interp</code> (the node-walk), <code>jit</code> (fusion on), and each again
+with every parallel fork point forked (<code>par</code>, <code>jit_par</code>). The predicate must
+hold in every mode. <code>interp</code> also checks the program alone and fails unless
+the check refuses exactly when the build does; <code>; build_only</code> after the
+fusion expectation exempts a refusal only a build makes (a <code>#[native]</code>
+assertion).</p>
+<p>The fusion expectation is checked in <code>jit</code> mode: <code>FuseExpect::Jit</code> asserts
+the program builds a fused kernel, <code>FuseExpect::None</code> that it builds none.
+Leaving it out means <code>FuseExpect::Jit</code>, which fails for a builtin with no
+fast call (<code>Effect::Stateless(None)</code>, or any <code>Sync</code> or <code>Async</code> builtin),
+since a call to it does not fuse.</p>
 <h2 id="publishing"><a class="header" href="#publishing">Publishing</a></h2>
 <p>Packages are published to crates.io like any other Rust crate:</p>
 <pre><code>cd graphix-package-mylib

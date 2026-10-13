@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,15 +177,25 @@
                         <h1 id="the-mouse-area-widget"><a class="header" href="#the-mouse-area-widget">The Mouse Area Widget</a></h1>
 <p>The <code>mouse_area</code> widget wraps a child and captures mouse events within its bounds. Use it to add click, hover, and movement tracking to any widget.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type MouseButton = [`Left, `Right, `Middle];
+<pre><code class="language-graphix">use super::Widget;
+type MouseButton = [`Left, `Right, `Middle];
+
+type MouseArea = {
+  child: &amp;Widget,
+  on_press: &amp;[fn(button: MouseButton) -&gt; Any, null],
+  on_release: &amp;[fn(button: MouseButton) -&gt; Any, null],
+  on_enter: &amp;[fn(e: null) -&gt; Any, null],
+  on_exit: &amp;[fn(e: null) -&gt; Any, null],
+  on_move: &amp;[fn(pos: {x: f64, y: f64}) -&gt; Any, null]
+};
 
 val mouse_area: fn(
-  ?#on_press: [fn(a: MouseButton) -&gt; Any, null],
-  ?#on_release: [fn(a: MouseButton) -&gt; Any, null],
-  ?#on_enter: [fn(a: null) -&gt; Any, null],
-  ?#on_exit: [fn(a: null) -&gt; Any, null],
-  ?#on_move: [fn(a: {x: f64, y: f64}) -&gt; Any, null],
-  a: &amp;Widget
+  ?#on_press: [fn(button: MouseButton) -&gt; Any, null],
+  ?#on_release: [fn(button: MouseButton) -&gt; Any, null],
+  ?#on_enter: [fn(e: null) -&gt; Any, null],
+  ?#on_exit: [fn(e: null) -&gt; Any, null],
+  ?#on_move: [fn(pos: {x: f64, y: f64}) -&gt; Any, null],
+  child: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

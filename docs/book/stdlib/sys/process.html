@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -275,8 +275,14 @@ the graphix process crashes; a child spawned with <code>kill_on_drop: false</cod
 platform.</p>
 <p>There is no separate status-probe function: <code>wait</code> is the reactive
 status source. To track running state, give it an initial value:</p>
-<pre><code class="language-graphix">let status = `Running;
-status &lt;- `Exited(sys::process::wait(child.proc)?)
+<pre><code class="language-graphix">let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "sleep 0.1"],
+    #kill_on_drop: true,
+    "/bin/sh"
+))$;
+let status: [`Running, `Exited(sys::process::ExitStatus)] = `Running;
+status &lt;- `Exited(sys::process::wait(child.proc)$);
+println("[status]")
 </code></pre>
 <p><code>status</code> holds <code>`Running</code> until the process exits, then fires
 exactly once with the exit status — no polling, no race. A <code>wait</code>

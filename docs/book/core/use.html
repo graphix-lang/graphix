@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,11 +179,16 @@
 rules as Rust 2018 paths: every name in scope arrived either by an
 explicit declaration (<code>let</code>, <code>type</code>, <code>mod</code>), an explicit <code>use</code>, or one
 of the two preludes described below. Nothing else is implicit.</p>
-<pre><code class="language-graphix">sys::net::subscribe(...); // fully qualified call
-use sys::net;             // import the name `net`
-net::subscribe(...);      // now `net` is in scope
-use sys::net::subscribe;  // import the item itself
-subscribe(...)            // same function
+<pre><code class="language-graphix ignore">// fully qualified call
+sys::net::subscribe(...);
+// import the name `net`
+use sys::net;
+// now `net` is in scope
+net::subscribe(...);
+// import the item itself
+use sys::net::subscribe;
+// same function
+subscribe(...)
 </code></pre>
 <p>Note that <code>use sys::net</code> imports the single name <code>net</code> — it does not
 bring the <em>contents</em> of <code>sys::net</code> into scope. To import an item, name
@@ -191,13 +196,20 @@ the item. An imported name covers every declaration kind that shares
 it: if a module exports both a type <code>Color</code> and a value <code>Color</code>, one
 <code>use m::Color</code> imports both.</p>
 <h2 id="forms"><a class="header" href="#forms">Forms</a></h2>
-<pre><code class="language-graphix">use tui::line;                    // one name
-use tui::{line, span, style};     // group
-use sys::{fs::{self, watch}, io}; // groups nest; self names the prefix
-use tui::line as tline;           // rename
-use array::*;                     // glob: import everything array exports
-use super::{answer, identicon};   // from the parent module
-use package::tui::pump;           // from the current package's root
+<pre><code class="language-graphix">// one name
+use tui::line;
+// group
+use tui::{line, span, style};
+// groups nest; self names the prefix
+use sys::{fs::{self, watch}, io};
+// rename
+use tui::line as tline;
+// glob: import everything array exports
+use array::*;
+// from the parent module
+use super::{answer, identicon};
+// from the current package's root
+use package::tui::pump;
 </code></pre>
 <p><code>self</code> inside a group names the prefix itself: <code>use sys::{self, net}</code>
 is <code>use sys</code> plus <code>use sys::net</code>. A trailing comma is allowed. The
@@ -264,10 +276,10 @@ Caused by:
     1: map not defined
 </code></pre>
 <p>Unlike declarations, imports carry no ordering constraint within a
-module: a <code>use</code> may name an item that is declared later in the file,
-and <code>mod</code> statements may appear anywhere. Visibility is
-order-independent; only <em>execution</em> of a module’s body follows
-declaration order.</p>
+module: <code>use self::sub::x</code> may stand above <code>mod sub;</code>. Module and type
+names are visible whatever their order; a value is not, because a
+module’s body runs where its <code>mod</code> statement stands, so a sub-module
+that imports a parent’s value must be declared below that value.</p>
 <h2 id="shadowing-and-collisions"><a class="header" href="#shadowing-and-collisions">Shadowing and collisions</a></h2>
 <p>Within one scope, names resolve in precedence order: an explicit
 declaration beats an import, an import beats a glob, a glob beats the

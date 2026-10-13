@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,31 +177,40 @@
                         <h1 id="the-table-widget"><a class="header" href="#the-table-widget">The Table Widget</a></h1>
 <p>Displays data in rows and columns with configurable headers, alignment, and separators. Tables are built from <code>TableColumn</code> definitions and a 2D array of row widgets.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type TableColumn = {
+<pre><code class="language-graphix">use super::{HAlign, Length, VAlign, Widget};
+type TableColumn = {
   header: &amp;Widget,
   width: &amp;Length,
   halign: &amp;HAlign,
   valign: &amp;VAlign
 };
 
+type Table = {
+  columns: &amp;Array&lt;TableColumn&gt;,
+  rows: &amp;Array&lt;Array&lt;Widget&gt;&gt;,
+  width: &amp;Length,
+  padding: &amp;[f64, null],
+  separator: &amp;[f64, null]
+};
+
 val table_column: fn(
   ?#width: &amp;Length,
   ?#halign: &amp;HAlign,
   ?#valign: &amp;VAlign,
-  a: &amp;Widget
+  header: &amp;Widget
 ) -&gt; TableColumn;
 
 val table: fn(
   ?#width: &amp;Length,
   ?#padding: &amp;[f64, null],
   ?#separator: &amp;[f64, null],
-  a: &amp;Array&lt;TableColumn&gt;,
-  a2: &amp;Array&lt;Array&lt;Widget&gt;&gt;
+  columns: &amp;Array&lt;TableColumn&gt;,
+  rows: &amp;Array&lt;Array&lt;Widget&gt;&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="table_column-parameters"><a class="header" href="#table_column-parameters"><code>table_column</code> Parameters</a></h2>
 <ul>
-<li><strong><code>#width</code></strong> – Width of this column. Accepts <code>Length</code> values: <code>`Fill</code>, <code>`Shrink</code>, or <code>`Fixed(f64)</code>. Defaults to <code>`Shrink</code>.</li>
+<li><strong><code>#width</code></strong> – Width of this column. Accepts <code>Length</code> values: <code>`Fill</code>, <code>`FillPortion(i64)</code>, <code>`Shrink</code>, or <code>`Fixed(f64)</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong><code>#halign</code></strong> – Horizontal alignment of content within this column: <code>`Left</code>, <code>`Center</code>, or <code>`Right</code>. Defaults to <code>`Left</code>.</li>
 <li><strong><code>#valign</code></strong> – Vertical alignment of content within this column: <code>`Top</code>, <code>`Center</code>, or <code>`Bottom</code>. Defaults to <code>`Top</code>.</li>
 <li><strong>positional <code>&amp;Widget</code></strong> – The header widget for this column, typically a styled <code>text</code> widget.</li>
@@ -209,8 +218,8 @@ val table: fn(
 <h2 id="table-parameters"><a class="header" href="#table-parameters"><code>table</code> Parameters</a></h2>
 <ul>
 <li><strong><code>#width</code></strong> – Total width of the table. Accepts <code>Length</code> values. Defaults to <code>`Shrink</code>.</li>
-<li><strong><code>#padding</code></strong> – Padding in pixels around each cell, or <code>null</code> for no padding.</li>
-<li><strong><code>#separator</code></strong> – Thickness in pixels of the line between rows, or <code>null</code> for no separators.</li>
+<li><strong><code>#padding</code></strong> – Padding in pixels around each cell, <code>0.0</code> for none, or <code>null</code> for iced’s default (10 px across, 5 px down).</li>
+<li><strong><code>#separator</code></strong> – Thickness in pixels of the lines between rows and between columns, <code>0.0</code> for none, or <code>null</code> for iced’s default (1 px).</li>
 <li><strong>positional <code>&amp;Array&lt;TableColumn&gt;</code></strong> – Column definitions created with <code>table_column</code>.</li>
 <li><strong>positional <code>&amp;Array&lt;Array&lt;Widget&gt;&gt;</code></strong> – Row data. Each inner array has one widget per column.</li>
 </ul>

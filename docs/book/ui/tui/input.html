@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -280,7 +280,7 @@ other):</p>
 <p>A TUI program runs until Ctrl-C, or until it calls <code>tui::exit</code>, which
 ends it the same way: the terminal is restored and the runtime stops.
 Fire it from the key that quits, sampled with the event:</p>
-<pre><code class="language-graphix">`Char("q") =&gt; { tui::exit(k ~ null); `Stop }
+<pre><code class="language-graphix ignore">`Char("q") =&gt; { tui::exit(k ~ null); `Stop }
 </code></pre>
 <h2 id="handing-the-terminal-to-a-program"><a class="header" href="#handing-the-terminal-to-a-program">Handing the Terminal to a Program</a></h2>
 <p>Some steps belong on the plain terminal — a <code>sudo</code> password prompt, an
@@ -332,127 +332,328 @@ type MouseButton = [
 </code></pre>
 <h2 id="creating-input-handlers"><a class="header" href="#creating-input-handlers">Creating Input Handlers</a></h2>
 <p>Use <code>tui::input_handler::input_handler</code> to wrap a widget with event handling:</p>
-<pre><code class="language-graphix">val input_handler: fn(
+<pre><code class="language-graphix">/// Route terminal events through `handle` before `child` sees them, one
+/// at a time: the child gets an event the handler answers `Continue.
+/// An event the handler does not answer in the cycle it was given (its
+/// call produced nothing) goes nowhere. The handler is called from the
+/// display, outside any `catch`, so it may not raise. While `#enabled`
+/// is false, events are dropped: neither the handler nor `child` (nor
+/// any handler under it) sees them.
+val input_handler: fn(
   ?#enabled: &amp;[bool, null],
-  #handle: &amp;fn(a: Event) -&gt; [`Stop, `Continue] throws 'e,
-  a: &amp;Tui
-) -&gt; Tui throws 'e;
+  #handle: &amp;fn(e: Event) -&gt; [`Stop, `Continue],
+  child: &amp;Tui
+) -&gt; Tui;
+
+/// Call `f` with the key event when `e` is a key press, and continue
+/// on everything else: releases and repeats (a terminal that reports
+/// releases would otherwise run every key twice), mouse, paste, focus
+/// and resize. It returns what a handler returns, so it is a handler's
+/// body, `|e: Event| on_press(e, |k| select k.code { .. })`, or a part
+/// of one.
+val on_press: fn(e: Event, f: fn(k: KeyEvent) -&gt; [`Stop, `Continue] throws 'e) -&gt; [`Stop, `Continue] throws 'e;
 </code></pre>
 <p>The handler function receives events and returns:</p>
 <ul>
 <li><code>Stop</code>: The event was handled; don’t propagate to other handlers</li>
 <li><code>Continue</code>: Pass the event to the next handler</li>
 </ul>
+<p>The handler may not raise an error: it is called from the display,
+outside any <code>catch</code>, so handle errors in its body (<code>$</code>, or a <code>catch</code>
+inside it). <code>on_press</code> is the usual body, and it may throw what its
+callback throws.</p>
 <h3 id="basic-example"><a class="header" href="#basic-example">Basic Example</a></h3>
-<pre><code class="language-graphix">let count = 0;
+<pre><code class="language-graphix">use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
 
-tui::input_handler::input_handler(
-  #handle: &amp;|event| select event {
-    `Key({ code: `Char("q"), .. }) =&gt; {
-      // Exit on 'q'
-      `Stop
-    },
-    e@ `Key({ code: `Up, .. }) =&gt; {
-      count &lt;- e ~ count + 1;
-      `Stop
-    },
-    e@ `Key({ code: `Down, .. }) =&gt; {
-      count &lt;- e ~ count - 1;
-      `Stop
-    },
-    _ =&gt; `Continue
+let count = 0;
+
+let handle = |e: Event| on_press(e, |k| select k.code {
+  q@ `Char("q") =&gt; {
+    tui::exit(q ~ null);
+    `Stop
   },
-  &amp;tui::paragraph::paragraph("[count]")
-)
+  u@ `Up =&gt; {
+    count &lt;- u ~ count + 1;
+    `Stop
+  },
+  d@ `Down =&gt; {
+    count &lt;- d ~ count - 1;
+    `Stop
+  },
+  _ =&gt; `Continue
+});
+
+input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[count]"))
 </code></pre>
-<p>The <code>Up</code> and <code>Down</code> arms sample the event (<code>e ~ count + 1</code>). A write
+<p>The <code>Up</code> and <code>Down</code> arms sample the key (<code>u ~ count + 1</code>). A write
 inside a select arm fires when its right-hand side fires: <code>count &lt;- count + 1</code> would fire again on its own update and loop, and a constant
 such as <code>mode &lt;- \</code>Insert` fires once when the arm becomes selected
 rather than on every key. Both are useful, and the select chapter’s
 “Writing From an Arm” spells out when.</p>
 <h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>
-<p>The <code>#enabled</code> parameter allows dynamically enabling/disabling a handler:</p>
-<pre><code class="language-graphix">let editing = false;
+<p>The <code>#enabled</code> parameter turns a handler on and off. A disabled handler
+drops every event: neither it nor anything it wraps, nested handlers
+included, sees one. So it gates a whole subtree, and whatever enables it
+must sit outside it:</p>
+<pre><code class="language-graphix">use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
 
-tui::input_handler::input_handler(
-  #enabled: &amp;editing,
-  #handle: &amp;|event| select event {
-    `Key({ code: `Esc, .. }) =&gt; {
-      editing &lt;- false;
-      `Stop
-    },
-    `Key({ code: `Char(c), .. }) =&gt; {
-      // Handle character input when editing
-      `Stop
-    },
-    _ =&gt; `Continue
+let editing = false;
+let typed = "";
+
+// always enabled: 'e' starts editing
+let start = |e: Event| on_press(e, |k| select k.code {
+  i@ `Char("e") if editing == false =&gt; {
+    editing &lt;- i ~ true;
+    `Stop
   },
-  &amp;tui::paragraph::paragraph("Edit mode")
+  _ =&gt; `Continue
+});
+
+// enabled only while editing: Esc stops, characters are typed
+let edit = |e: Event| on_press(e, |k| select k.code {
+  x@ `Esc =&gt; {
+    editing &lt;- x ~ false;
+    `Stop
+  },
+  c@ `Char(s) =&gt; {
+    typed &lt;- c ~ "[typed][s]";
+    `Stop
+  },
+  _ =&gt; `Continue
+});
+
+let status = select editing {
+  true =&gt; "editing: [typed]",
+  false =&gt; "press e to edit: [typed]"
+};
+
+input_handler(
+  #handle: &amp;start,
+  &amp;input_handler(#enabled: &amp;editing, #handle: &amp;edit, &amp;paragraph(&amp;status))
 )
 </code></pre>
 <h2 id="event-propagation"><a class="header" href="#event-propagation">Event Propagation</a></h2>
 <p>Input handlers form a stack. Events flow from the outermost handler inward:</p>
-<pre><code class="language-graphix">tui::input_handler::input_handler(
-  #handle: &amp;|e| /* handler A */ `Continue,
-  &amp;tui::input_handler::input_handler(
-    #handle: &amp;|e| /* handler B */ `Continue,
-    &amp;widget
-  )
+<pre><code class="language-graphix">use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
+
+let last = "nothing yet";
+
+// the outer handler sees each event first and takes only 'a'
+let outer = |e: Event| on_press(e, |k| select k.code {
+  a@ `Char("a") =&gt; {
+    last &lt;- a ~ "outer took a";
+    `Stop
+  },
+  _ =&gt; `Continue
+});
+
+// the inner handler sees what the outer one passed on
+let inner = |e: Event| on_press(e, |k| select k.code {
+  c@ `Char(s) =&gt; {
+    last &lt;- c ~ "inner took [s]";
+    `Stop
+  },
+  _ =&gt; `Continue
+});
+
+input_handler(
+  #handle: &amp;outer,
+  &amp;input_handler(#handle: &amp;inner, &amp;paragraph(&amp;last))
 )
 </code></pre>
-<p>If handler A returns <code>Continue</code>, the event reaches handler B. If either returns
-<code>Stop</code>, propagation stops.</p>
+<p>If the outer handler returns <code>Continue</code>, the event reaches the inner one. If
+either returns <code>Stop</code>, propagation stops.</p>
 <h2 id="the-raw-event-stream"><a class="header" href="#the-raw-event-stream">The Raw Event Stream</a></h2>
 <p>For advanced use cases, you can access the raw event stream directly via
 <code>tui::event</code>:</p>
-<pre><code class="language-graphix">select tui::event {
-  `Key(k) =&gt; dbg(k),
-  _ =&gt; ()
-}
+<pre><code class="language-graphix">use tui::paragraph::paragraph;
+
+let last = "no key yet";
+
+last &lt;- select tui::event {
+  `Key(k) =&gt; "[k.code]",
+  _ =&gt; never()
+};
+
+paragraph(&amp;last)
 </code></pre>
 <p>However, using <code>input_handler</code> is preferred as it integrates properly with the
 widget tree and supports the enable/disable pattern.</p>
-<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
-<h3 id="vim-style-mode-switching"><a class="header" href="#vim-style-mode-switching">Vim-style Mode Switching</a></h3>
-<pre><code class="language-graphix">type Mode = [`Normal, `Insert];
-let mode: Mode = `Normal;
+<h2 id="text-entry"><a class="header" href="#text-entry">Text Entry</a></h2>
+<p><code>tui::line_edit</code> is a single-line editor: <code>line_edit::state(initial)</code>
+makes its state, <code>line_edit::handle(&amp;mut st, e)</code> applies a key (typing,
+paste, Backspace, Delete, Left, Right, Home, End) and answers <code>Stop</code> or
+<code>Continue</code> like a handler, and <code>line_edit::view(&amp;st)</code> renders it as a
+<code>Line</code> with the cursor shown (<code>#mask</code> hides a secret):</p>
+<pre><code class="language-graphix">use tui::{
+  line,
+  line_edit,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout},
+  text::text
+};
 
-tui::input_handler::input_handler(
-  #handle: &amp;|event| select (mode, event) {
-    (`Normal, `Key({ code: `Char("i"), .. })) =&gt; {
-      mode &lt;- `Insert;
-      `Stop
-    },
-    (`Insert, `Key({ code: `Esc, .. })) =&gt; {
-      mode &lt;- `Normal;
-      `Stop
-    },
-    (`Insert, `Key({ code: `Char(c), .. })) =&gt; {
-      // Insert character
-      `Stop
-    },
-    _ =&gt; `Continue
+let ed = line_edit::state("");
+let saved = "";
+
+// Enter saves the text and clears the editor; every other key edits
+let handle = |e: Event| on_press(e, |k| select k.code {
+  kk@ `Enter =&gt; {
+    saved &lt;- kk ~ ed.value;
+    ed &lt;- kk ~ line_edit::state("");
+    `Stop
   },
-  &amp;content
+  _ =&gt; line_edit::handle(&amp;mut ed, e)
+});
+
+input_handler(
+  #handle: &amp;handle,
+  &amp;block(
+    #border: &amp;`All,
+    #title: &amp;line("type, then Enter"),
+    &amp;layout(
+      #direction: &amp;`Vertical,
+      &amp;[
+        child(#constraint: `Length(1), text(&amp;[line_edit::view(&amp;ed)])),
+        child(#constraint: `Length(1), text(&amp;"saved: [saved]"))
+      ]
+    )
+  )
 )
 </code></pre>
+<p><code>tui::form::form</code> is a modal form of several line editors: Tab and Down
+move to the next field, BackTab and Up to the previous, Enter calls
+<code>#on_submit</code> with every field’s text, Esc calls <code>#on_cancel</code>. Render its
+<code>view</code> in an <code>input_handler</code> running its <code>handle</code>, on an overlay layer:</p>
+<pre><code class="language-graphix">use tui::{
+  block::block,
+  form::form,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
+
+let filling = false;
+let greeting = "press f to fill in the form";
+
+let name_form = form(
+  #title: "Your name",
+  #on_submit: |v| {
+    greeting &lt;- "hello [v[0]$] [v[1]$]";
+    filling &lt;- v ~ false;
+    null
+  },
+  #on_cancel: |e| {
+    filling &lt;- e ~ false;
+    null
+  },
+  [{ label: "first", value: "" }, { label: "last", value: "" }]
+);
+
+let handle_base = |e: Event| on_press(e, |k| select k.code {
+  f@ `Char("f") =&gt; {
+    filling &lt;- f ~ true;
+    `Stop
+  },
+  _ =&gt; `Continue
+});
+
+let base = input_handler(
+  #handle: &amp;handle_base,
+  &amp;block(#border: &amp;`All, &amp;paragraph(&amp;greeting))
+);
+
+let layers: Array&lt;Layer&gt; = select filling {
+  true =&gt; [
+    layer(
+      #width: &amp;`Percentage(60),
+      #height: &amp;`Length(8),
+      input_handler(#handle: &amp;name_form.handle, &amp;name_form.view)
+    )
+  ],
+  false =&gt; []
+};
+
+overlay(#layers: &amp;layers, base)
+</code></pre>
+<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
+<h3 id="vim-style-mode-switching"><a class="header" href="#vim-style-mode-switching">Vim-style Mode Switching</a></h3>
+<pre><code class="language-graphix">use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
+
+type Mode = [`Normal, `Insert];
+let mode: Mode = `Normal;
+let text = "";
+
+let handle = |e: Event| on_press(e, |k| select (mode, k.code) {
+  (`Normal, `Char("i")) =&gt; {
+    mode &lt;- k ~ `Insert;
+    `Stop
+  },
+  (`Insert, `Esc) =&gt; {
+    mode &lt;- k ~ `Normal;
+    `Stop
+  },
+  (`Insert, `Char(c)) =&gt; {
+    text &lt;- k ~ "[text][c]";
+    `Stop
+  },
+  _ =&gt; `Continue
+});
+
+input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[mode]: [text]"))
+</code></pre>
 <h3 id="focus-management"><a class="header" href="#focus-management">Focus Management</a></h3>
-<pre><code class="language-graphix">let focused = 0;
+<pre><code class="language-graphix">use tui::{
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout},
+  paragraph::paragraph
+};
+
+let focused = 0;
 let num_widgets = 3;
 
-tui::input_handler::input_handler(
-  #handle: &amp;|event| select event {
-    `Key({ code: `Tab, .. }) =&gt; {
-      focused &lt;- (focused + 1) % num_widgets;
-      `Stop
-    },
-    `Key({ code: `BackTab, .. }) =&gt; {
-      focused &lt;- (focused - 1 + num_widgets) % num_widgets;
-      `Stop
-    },
-    _ =&gt; `Continue
+let handle = |e: Event| on_press(e, |k| select k.code {
+  t@ `Tab =&gt; {
+    focused &lt;- ((t ~ focused) + 1) % num_widgets;
+    `Stop
   },
-  &amp;widgets
+  t@ `BackTab =&gt; {
+    focused &lt;- ((t ~ focused) - 1 + num_widgets) % num_widgets;
+    `Stop
+  },
+  _ =&gt; `Continue
+});
+
+let pane = |i| block(
+  #border: &amp;select focused { n if n == i =&gt; `All, _ =&gt; `None },
+  &amp;paragraph(&amp;"pane [i]")
+);
+
+input_handler(
+  #handle: &amp;handle,
+  &amp;layout(
+    #direction: &amp;`Horizontal,
+    #focused: &amp;focused,
+    &amp;[
+      child(#constraint: `Fill(1), pane(0)),
+      child(#constraint: `Fill(1), pane(1)),
+      child(#constraint: `Fill(1), pane(2))
+    ]
+  )
 )
 </code></pre>
 <h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>

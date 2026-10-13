@@ -5,7 +5,7 @@ let rate = 0.;
 let clock = sys::time::timer(1. - rate, true);
 let x = cast<f64>(count(clock))$;
 
-let series = |start: f64, end: f64| -> Array<(f64, f64)> {
+let series = |start, end| {
     let d = [];
     let y = rand::rand(#start, #end, #clock);
     d <- array::window(#n:20, clock ~ d, (x, y));

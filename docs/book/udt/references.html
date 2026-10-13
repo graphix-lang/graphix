@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -182,13 +182,14 @@ see what one looks like.</p>
 <pre><code class="language-graphix">〉let v = &amp;1
 〉v
 -: &amp;i64
-727
+&amp;ref
 </code></pre>
 <p>The <code>&amp;</code> in front of the <code>1</code> creates a reference. You can create a reference to
 any value. Note that the type isn’t <code>i64</code> anymore but <code>&amp;i64</code> indicating that <code>v</code>
-is a reference to an <code>i64</code>. Just like a function when printed the reference id
-is printed, not the value it refers to. We get the value that this reference 727
-refers to with the deref operator *.</p>
+is a reference to an <code>i64</code>. A reference prints as <code>&amp;ref</code>, not the value it
+refers to; its id belongs to the session (a cached program image relocates it),
+so it is not shown. We get the value that the reference refers to with the
+deref operator *.</p>
 <pre><code class="language-graphix">〉*v
 -: i64
 1
@@ -275,37 +276,28 @@ binding, <code>&amp;mut 0</code>, is its own place, equal only to itself.</p>
 and so does anything that orders or hashes values: map keys, <code>min</code>,
 <code>max</code>, the sorts and <code>array::dedup</code>. <code>uniq</code> compares them as <code>==</code> does.</p>
 <h2 id="referencing-a-name-vs-referencing-an-expression"><a class="header" href="#referencing-a-name-vs-referencing-an-expression">Referencing a Name vs Referencing an Expression</a></h2>
-<p><code>&amp;</code> does slightly different things depending on what follows it, and the
-difference is observable in <em>when</em> a deref sees an update.</p>
+<p><code>&amp;</code> does slightly different things depending on what follows it.</p>
 <p><code>&amp;v</code>, where <code>v</code> is a binding, is a reference to that binding. Dereferencing it
 reads the binding, so <code>*r</code> and <code>v</code> always agree — on the same cycle, in the same
 update round.</p>
 <pre><code class="language-graphix">let v = 0;
 let r = &amp;v;
 v &lt;- 7;
-(v, *r)     // (0, 0) then (7, 7)
+// (0, 0) then (7, 7)
+(v, *r)
 </code></pre>
-<p><code>&amp;(a + b)</code> has no binding to name, so it makes one. The expression’s value is
-connected into a fresh cell, which is exactly</p>
-<pre><code class="language-graphix">let tmp = a + b;
-tmp &lt;- a + b;
-&amp;tmp
-</code></pre>
-<p>and it therefore paces like any other <code>&lt;-</code>: the initial value is there
-immediately, and every later update arrives on the <em>next</em> cycle.</p>
+<p><code>&amp;(a + b)</code> has no binding to name, so it makes a fresh cell that holds the
+expression’s value. The cell is updated in the same cycle as the expression, as
+a <code>let</code> would be, so a deref sees each new value right away:</p>
 <pre><code class="language-graphix">let a = 2;
 let b = 3;
 let r = &amp;(a + b);
 a &lt;- 10;
-(a + b, *r)   // (5, 5) then (13, 5) then (13, 13)
+// (5, 5) then (13, 13)
+(a + b, *r)
 </code></pre>
 <p>So a reference to a name is a reference to a place, and a reference to an
-expression is a reference to a value that is being kept up to date for you.
-That the two pace differently is an accepted wart — the alternative is either
-making <code>&amp;(expr)</code> illegal, which costs a lot of concision for a construct people
-reach for constantly in UI code, or updating the cell mid-cycle, which would
-make the value a deref sees depend on where it sits in the program rather than
-on what it depends on.</p>
+expression is a reference to a value that is being kept up to date for you.</p>
 
                     </main>
 

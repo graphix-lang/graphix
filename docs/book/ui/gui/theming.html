@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -209,11 +209,11 @@
 <pre><code class="language-graphix">window(#theme: &amp;`CatppuccinMocha, &amp;content)
 </code></pre>
 <p>Since <code>#theme</code> takes a <code>&amp;Theme</code>, you can change the theme reactively:</p>
-<pre><code class="language-graphix">let dark = true
+<pre><code class="language-graphix">let dark = true;
 let theme = select dark {
   true =&gt; `Dark,
   false =&gt; `Light
-}
+};
 
 window(#theme: &amp;theme, &amp;content)
 </code></pre>
@@ -232,8 +232,8 @@ window(#theme: &amp;theme, &amp;content)
 <ul>
 <li><code>background</code> – window and container backgrounds.</li>
 <li><code>text</code> – default text color.</li>
-<li><code>primary</code> – accent color for buttons, sliders, active elements.</li>
-<li><code>success</code> – color for success states (e.g., toggler when enabled).</li>
+<li><code>primary</code> – accent color for buttons, sliders, a toggled-on toggler, active elements.</li>
+<li><code>success</code> – color for success states.</li>
 <li><code>danger</code> – color for destructive actions and error states.</li>
 <li><code>warning</code> – color for warning indicators.</li>
 </ul>

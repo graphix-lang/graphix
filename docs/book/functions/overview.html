@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,7 +178,7 @@
 <p>Functions are first class values. They can be stored in variables, in data
 structures, and they can be passed around to other functions. Etc. They are
 defined with the syntax,</p>
-<pre><code class="language-graphix">|arg0, arg1, ...| body
+<pre><code class="language-graphix ignore">|arg0, arg1, ...| body
 </code></pre>
 <p>This is often combined with a let bind to make a named function.</p>
 <pre><code class="language-graphix">let f = |x, y| x + y + 1
@@ -195,11 +195,8 @@ type,</p>
 <p>Functions are called with the following syntax.</p>
 <pre><code class="language-graphix">f(1, 1)
 </code></pre>
-<p>Would return 3. If the function is stored in a data structure, then sometimes
-you need parenthesis to call it.</p>
-<pre><code class="language-graphix">(s.f)(1, 1)
-</code></pre>
-<p>Would call the function <code>f</code> in the struct <code>s</code>.</p>
+<p>Would return 3. A function stored in a data structure is called the same
+way, <code>s.f(1, 1)</code> calls the function <code>f</code> in the struct <code>s</code>.</p>
 
                     </main>
 

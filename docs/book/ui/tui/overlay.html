@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,13 +183,37 @@ input; when the layers array is empty, the overlay is just its base.
 Open a modal by pushing a layer, close it by popping it — in practice,
 by deriving the layers array from your state with <code>select</code>.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val layer: fn(
+<pre><code class="language-graphix">use super::{Constraint, Size, Tui};
+/// One stacked layer: a widget drawn over the base in a cleared,
+/// centered rectangle sized by its constraints.
+type Layer = {
+  child: Tui,
+  width: &amp;Constraint,
+  height: &amp;Constraint,
+  size: &amp;[Size, null]
+};
+
+/// Build a layer. Defaults to 60% of the overlay area in each axis.
+/// `#size` observes the rectangle the layer was actually given, like
+/// `layout::child`'s.
+val layer: fn(
   ?#width: &amp;Constraint,
   ?#height: &amp;Constraint,
   ?#size: &amp;[Size, null],
   child: Tui
 ) -&gt; Layer;
 
+type Overlay = {
+  base: Tui,
+  layers: &amp;Array&lt;Layer&gt;
+};
+
+/// The base widget with a reactive stack of layers drawn over it, in
+/// order — the modal/popup primitive. Each layer is centered, sized by
+/// its constraints, and cleared before it draws, so the base never
+/// bleeds through. Input goes to the TOPMOST layer while any layer is
+/// up and to the base otherwise; an empty `layers` array is just the
+/// base. Push a layer to open a modal, pop it to close.
 val overlay: fn(#layers: &amp;Array&lt;Layer&gt;, base: Tui) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

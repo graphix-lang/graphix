@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,26 @@
                         <h1 id="the-paragraph-widget"><a class="header" href="#the-paragraph-widget">The Paragraph Widget</a></h1>
 <p>The <code>paragraph</code> widget displays multi-line text with automatic word wrapping and scrolling support. It’s ideal for displaying long text content, logs, or any content that needs to flow across multiple lines.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val paragraph: fn(
+<pre><code class="language-graphix">use super::{Alignment, Line, Style, style, Tui};
+/// `scroll.y` is in lines and `scroll.x` is in chars, and x scrolls only
+/// unwrapped text; `wrap` breaks long lines at the width, and `trim`
+/// drops the leading whitespace of a wrapped line.
+type Paragraph = {
+  alignment: &amp;[Alignment, null],
+  lines: &amp;[Array&lt;Line&gt;, string],
+  scroll: &amp;{ x: i64, y: i64 },
+  style: &amp;Style,
+  trim: &amp;bool,
+  wrap: &amp;bool
+};
+
+val paragraph: fn(
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
   ?#scroll: &amp;{x: i64, y: i64},
   ?#wrap: &amp;bool,
   ?#trim: &amp;bool,
-  v: &amp;[Array&lt;Line&gt;, string]
+  lines: &amp;[Array&lt;Line&gt;, string]
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -208,7 +221,7 @@ paragraph(&amp;"This is a simple paragraph. It will automatically wrap to fit th
   paragraph::paragraph
 };
 
-let long_text = "I have got a lovely bunch of coconuts. Very long text continues here. More text. Even more text. This is a very long paragraph that will need scrolling to see all of it.";
+let lines = array::init(60, |i| line("[i + 1]: I have got a lovely bunch of coconuts"));
 let scroll_y = 0;
 
 let handle_event = |e: Event| on_press(e, |k| select k.code {
@@ -216,7 +229,7 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
         scroll_y &lt;- (k ~ scroll_y) - 1;
         `Stop
     },
-    k@`Down if scroll_y &lt; 100 =&gt; {
+    k@`Down if scroll_y &lt; array::len(lines) - 1 =&gt; {
         scroll_y &lt;- (k ~ scroll_y) + 1;
         `Stop
     },
@@ -230,7 +243,7 @@ input_handler(
         #title: &amp;line("Scrollable Text"),
         &amp;paragraph(
             #scroll: &amp;{x: 0, y: scroll_y},
-            &amp;long_text
+            &amp;lines
         )
     )
 )

@@ -1,16 +1,35 @@
-use tui::{line, style, block::block, paragraph::paragraph};
+use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout},
+  paragraph::paragraph
+};
 
-let focused_block = 0;
-let content = paragraph(&"Content here");
+let focused = 0;
 
-block(
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Tab => {
+        focused <- ((k ~ focused) + 1) % 2;
+        `Stop
+    },
+    _ => `Continue
+});
+
+let pane = |i, title| block(
     #border: &`All,
-    #border_style: &style(
-        #fg: select focused_block {
-            0 => `Red,
-            _ => `Yellow
-        }
-    ),
-    #title: &line("Block 1"),
-    &content
+    #border_style: &style(#fg: select focused { n if n == i => `Red, _ => `Yellow }),
+    #title: &line(title),
+    &paragraph(&"Tab moves the focus")
+);
+
+input_handler(
+    #handle: &handle_event,
+    &layout(
+        #direction: &`Horizontal,
+        &[
+            child(#constraint: `Percentage(50), pane(0, "Block 1")),
+            child(#constraint: `Percentage(50), pane(1, "Block 2"))
+        ]
+    )
 )

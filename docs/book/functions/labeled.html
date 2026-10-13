@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,16 +179,16 @@
 not be specified in order, and optional arguments don’t need to be specified at
 all. When declaring a function you must specify the labeled and optional
 arguments before any non labeled arguments.</p>
-<pre><code class="language-graphix">let f = |#lbl1, #lbl2, arg| ...
+<pre><code class="language-graphix ignore">let f = |#lbl1, #lbl2, arg| ...
 </code></pre>
 <p>In this case lbl1 and 2 are not optional, but are labeled. You can call f with
 either labeled argument in either order. e.g. <code>f(#lbl2, #lbl1, a)</code>.</p>
-<pre><code class="language-graphix">let f = |#opt = null, a| ...
+<pre><code class="language-graphix ignore">let f = |#opt = null, a| ...
 </code></pre>
 <p><code>opt</code> need not be specifed when <code>f</code> is called, if it isn’t specified then it
 will be <code>null</code>. e.g. <code>f(2)</code> is a valid way to call <code>f</code>. You can also apply type
 constraints to labeled and optional arguments.</p>
-<pre><code class="language-graphix">let f = |#opt: [i64, null] = null, a| ..
+<pre><code class="language-graphix ignore">let f = |#opt: [i64, null] = null, a| ..
 </code></pre>
 <p>Specifies that <code>opt</code> can be either an <code>i64</code> or <code>null</code> and by default it is null.
 A default is checked where the function is defined: it must fit the
@@ -203,7 +203,8 @@ also has other optional arguments. The non optional and non labeled arguments
 must match, of course. For example,</p>
 <pre><code class="language-graphix">let f = |g: fn(#foo: i64, x: i64) -&gt; i64, x: i64| g(#foo: x, x);
 let g = |#foo:i64, #bar: i64 = 0, x: i64| foo + bar + x;
-f(g, 42) // valid call
+// valid call
+f(g, 42)
 </code></pre>
 <p>outputs</p>
 <pre><code>$ graphix test.gx

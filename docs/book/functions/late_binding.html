@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,10 +175,12 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="late-binding"><a class="header" href="#late-binding">Late Binding</a></h1>
-<p>Functions are always late bound. Late binding means that the runtime actually
-figures out which function is going to be called at runtime, not compile time.
-At compile time we only know the type of the function we are going to call. This
-complicates the compiler significantly, but it is a powerful abstraction tool.
+<p>A call whose function the compiler can see (a name bound to a lambda,
+a function argument it can trace to one) is resolved when the program
+compiles. A call through a function value it cannot trace, one read out
+of a data structure for example, is late bound: the runtime figures out
+which function it calls, and at compile time only the function’s type
+is known. Late binding is a powerful abstraction tool.
 For example we can create two structs of type <code>T</code> that each contain a different
 implementation of <code>f</code>, and we can use them interchangibly with any function that
 accepts a <code>T</code>. In this simple example we create one implementation of <code>f</code> that
@@ -192,11 +194,11 @@ let t = array::iter(ts);
 (t.f)(t)
 </code></pre>
 <p>when run this example will output,</p>
-<pre><code>{count: 1, f: 158}
-{count: -1, f: 159}
+<pre><code>{count: 1, f: Abstract(|t: T| { t with count: t.count + 1 })}
+{count: -1, f: Abstract(|t: T| { t with count: t.count - 1 })}
 </code></pre>
-<p>You can clearly see that f is bound to different functions by the runtime since
-the lambda ids (158 and 159) are different. While Graphix is not an object
+<p>You can see that <code>f</code> is bound to a different function in each struct,
+and the call ran each one’s body. While Graphix is not an object
 oriented language, you can use closures and late binding to achieve some of the
 same outcomes as OOP.</p>
 

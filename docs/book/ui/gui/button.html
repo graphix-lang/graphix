@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,23 @@
                         <h1 id="the-button-widget"><a class="header" href="#the-button-widget">The Button Widget</a></h1>
 <p>A clickable button that wraps a child widget (typically text). Buttons trigger a callback when pressed and can be styled with custom width, height, and padding.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val button: fn(
-  ?#on_press: [fn(a: null) -&gt; Any, null],
+<pre><code class="language-graphix">use super::{Length, Padding, Widget};
+type Button = {
+  child: &amp;Widget,
+  disabled: &amp;bool,
+  on_press: &amp;[fn(e: null) -&gt; Any, null],
+  width: &amp;Length,
+  height: &amp;Length,
+  padding: &amp;Padding
+};
+
+val button: fn(
+  ?#on_press: [fn(e: null) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#padding: &amp;Padding,
   ?#disabled: &amp;bool,
-  a: &amp;Widget
+  child: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

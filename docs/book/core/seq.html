@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -445,7 +445,7 @@ next one.</p>
 <p>The event is evaluated as the run’s first step. It is asleep between
 runs and wakes when a run starts, so a timer in it times the run, and
 an event that fired while nothing was running aborts nothing:</p>
-<pre><code class="language-graphix">// a ten second budget for each run
+<pre><code class="language-graphix ignore">// a ten second budget for each run
 seq go; abort(sys::time::timer(duration:10.s, false)) { ... }
 
 // the trigger's name is this run's trigger
@@ -461,7 +461,7 @@ run is written to a variable outside the block rather than bound with
 <code>let</code>.</p>
 <p>Under <code>seqq</code>, <code>abort</code> ends the current run and the next queued request
 starts. <code>flush(event)</code> also empties the queue:</p>
-<pre><code class="language-graphix">seqq request; abort(skip); flush(cancel_all) { ... }
+<pre><code class="language-graphix ignore">seqq request; abort(skip); flush(cancel_all) { ... }
 </code></pre>
 <p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
 it. A request that arrives with the flush or after it is kept.</p>

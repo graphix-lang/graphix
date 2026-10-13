@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,10 +180,10 @@ once, implemented per type, and used as a bound on type variables —
 Graphix’s traits are Rust’s, spelled in Graphix.</p>
 <h2 id="declaring-a-trait"><a class="header" href="#declaring-a-trait">Declaring a Trait</a></h2>
 <pre><code class="language-graphix">trait Show {
-    /// required: every implementor supplies it
+    // required: every implementor supplies it
     val show: fn(self) -&gt; string;
 
-    /// overridable: the body is the default
+    // overridable: the body is the default
     val twice: fn(self) -&gt; string = |s| "[show(s)] [show(s)]"
 };
 </code></pre>
@@ -208,7 +208,8 @@ impl Show for Counter {
 
 impl Show for i64 {
     let show = |x| "int [x]";
-    let twice = |x| "int [x], again"     // overriding the default
+    // overriding the default
+    let twice = |x| "int [x], again"
 };
 </code></pre>
 <p>An <code>impl</code> block holds one <code>let</code> per method. Each binding is checked
@@ -248,7 +249,8 @@ implementation per (trait, type) is enforced.</p>
 <p>A trait’s methods live under the trait’s name, like a module’s items:</p>
 <pre><code class="language-graphix">Show::show(Counter(42));
 
-use Show::{show, twice};         // or `use Show::*`
+// or `use Show::*`
+use Show::{show, twice};
 show(7);
 twice(Counter(1))
 </code></pre>
@@ -261,7 +263,8 @@ call is a compile error: annotate the argument.</p>
 <p>When the self type is a union of implementors, the call becomes the
 <code>select</code> you would otherwise write, one arm per member:</p>
 <pre><code class="language-graphix">let v: [i64, Counter] = select flag { true =&gt; 1, false =&gt; Counter(2) };
-show(v)      // ≡ select v { i64 as x =&gt; show(x), Counter as x =&gt; show(x) }
+// ≡ select v { i64 as x =&gt; show(x), Counter as x =&gt; show(x) }
+show(v)
 </code></pre>
 <p>Every member needs an implementation.</p>
 <h2 id="traits-as-bounds"><a class="header" href="#traits-as-bounds">Traits as Bounds</a></h2>
@@ -275,10 +278,10 @@ describe(Counter(4))
 dispatches to <code>i64</code>’s <code>show</code> and <code>Counter(4)</code> to <code>Counter</code>’s.</p>
 <p>Writing the trait as a parameter’s type is shorthand for a fresh
 bounded variable per parameter:</p>
-<pre><code class="language-graphix">let both = |a: Show, b: Show| "[show(a)] [show(b)]";
-// ≡ 'a: Show, 'b: Show |a: 'a, b: 'b| ...
+<pre><code class="language-graphix">// the same as 'a: Show, 'b: Show |a: 'a, b: 'b| ...
+let both = |a: Show, b: Show| "[show(a)] [show(b)]"
 </code></pre>
-<p>Bounds combine with <code>+</code>: <code>'a: Show + Hash</code>, <code>fn&lt;'s: Read + Write&gt;(s: 's)</code>.
+<p>Bounds combine with <code>+</code>: <code>'a: Show + Ord</code>, <code>fn&lt;'s: Read + Write&gt;(s: 's)</code>.
 A trait anywhere else in a type — a return type, a field, an array
 element — is an error, since no value has a trait as its type.</p>
 <p>A function whose signature was written before an implementation
@@ -322,18 +325,24 @@ work on every value: <code>Eq::eq(1, 1)</code> is <code>1 == 1</code>.</p>
 <pre><code class="language-graphix">type Key = Abstract&lt;string&gt;;
 impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
 
-Key("Foo") == Key("FOO")              // true: the implementation
-[Key("a")] == [Key("A")]              // true: called per element
-(Key("x"), 1) == (Key("X"), 2)        // false: the i64s differ
+// true: the implementation
+Key("Foo") == Key("FOO");
+// true: called per element
+[Key("a")] == [Key("A")];
+// false: the i64s differ
+(Key("x"), 1) == (Key("X"), 2)
 </code></pre>
 <p>A color that prints as its hex triplet, wherever it appears:</p>
 <pre><code class="language-graphix">type Color = Abstract&lt;{r: i64, g: i64, b: i64}&gt;;
 impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
 
 let red = Color({r: 255, g: 0, b: 0});
-println("[red]")                      // #25500
-println([red, red])                   // [#25500, #25500]
-println({fg: red, n: 3})              // {fg: #25500, n: 3}
+// #25500
+println("[red]");
+// [#25500, #25500]
+println([red, red]);
+// {fg: #25500, n: 3}
+println({fg: red, n: 3})
 </code></pre>
 <p>Outside core only an abstract type may implement a core trait (the
 rule of the previous section). A core trait’s method runs inside the
@@ -352,7 +361,8 @@ impl Ord for T {
     }
 };
 let m = {T(0) =&gt; 0, T(1) =&gt; 1, T(2) =&gt; 2};
-"[m]"                  // {T(2) =&gt; 2, T(1) =&gt; 1, T(0) =&gt; 0}
+// {T(2) =&gt; 2, T(1) =&gt; 1, T(0) =&gt; 0}
+"[m]"
 </code></pre>
 <p>and an <code>Ord</code> that calls two payloads equal unifies them as keys —
 inserting <code>Key("A")</code> replaces <code>Key("a")</code> under a case-insensitive
@@ -381,9 +391,9 @@ program’s own <code>Tree&lt;'_&gt;</code>) selects the implementation. Core’
     val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
     val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
     val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    // a default, as are filter, find, find_map and len
     val map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; self&lt;'b&gt; throws 'e
-        = |c, f| filter_map(c, |x| f(x));
-    // filter, find, find_map and len are defaults too
+        = |c, f| filter_map(c, |x| f(x))
 };
 </code></pre>
 <p><code>fold</code>, <code>filter_map</code> and <code>flat_map</code> are required; <code>map</code>, <code>filter</code>,
@@ -394,9 +404,12 @@ keys), the list package for <code>List</code>, all three through their
 intrinsics — so <code>use Collection::*</code> makes <code>map(c, f)</code> mean the same
 thing whatever <code>c</code> is:</p>
 <pre><code class="language-graphix">use Collection::*;
-map([1, 2, 3], |x| x * 2);                           // [2, 4, 6]
-fold(list::from_array([1, 2, 3]), 0, |a, x| a + x);  // 6
-len(filter({"a" =&gt; 1, "b" =&gt; 20}, |v| v &gt; 5))        // 1
+// [2, 4, 6]
+map([1, 2, 3], |x| x * 2);
+// 6
+fold(list::from_array([1, 2, 3]), 0, |a, x| a + x);
+// 1
+len(filter({"a" =&gt; 1, "b" =&gt; 20}, |v| v &gt; 5))
 </code></pre>
 <p>An implementation’s head names the constructor with the hole <code>'_</code> as
 its last parameter:</p>
@@ -407,7 +420,8 @@ impl Collection for Bag&lt;'_&gt; {
     let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
 };
 use Collection::*;
-len(filter(Bag([1, 2, 3, 4]), |x| x &gt; 2))            // 2, through the defaults
+// 2, through the defaults
+len(filter(Bag([1, 2, 3, 4]), |x| x &gt; 2))
 </code></pre>
 <p><code>'_</code> is legal only there. A program’s own linear or tree structure
 implements the three methods as recursions — an activation per
@@ -417,15 +431,18 @@ rest.</p>
 applied to a fresh element, and each call site resolves it for its
 own receiver:</p>
 <pre><code class="language-graphix">let total = |c: Collection| fold(c, 0, |a, x| a + x);
-total([1, 2]) + total(list::from_array([3, 4]))      // 10
+// 10
+total([1, 2]) + total(list::from_array([3, 4]))
 </code></pre>
 <p><code>|c: Collection|</code> hides the constructor, which is enough when the
 result is not the same shape (<code>total</code> returns a scalar). To <em>preserve</em>
 the container — return the same kind of collection with a new element
 — name the constructor and apply it:</p>
 <pre><code class="language-graphix">let sqr = 'c: Collection, 'a: Number |c: 'c&lt;'a&gt;| -&gt; 'c&lt;'a&gt; map(c, |n| n * n);
-sqr([1, 2, 3])                                       // Array&lt;i64&gt; [1, 4, 9]
-sqr({"a" =&gt; 2, "b" =&gt; 3})                            // Map&lt;string, i64&gt;
+// Array&lt;i64&gt; [1, 4, 9]
+sqr([1, 2, 3]);
+// Map&lt;string, i64&gt;
+sqr({"a" =&gt; 2, "b" =&gt; 3})
 </code></pre>
 <p><code>'c: Collection</code> binds the constructor; <code>'c&lt;'a&gt;</code> applies it to the
 element, so <code>-&gt; 'c&lt;'a&gt;</code> returns the <em>same</em> container: an <code>Array</code> in

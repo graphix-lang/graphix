@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -206,24 +206,45 @@ type ParseResult = {
     values: Map&lt;string, [string, null]&gt;
 };
 
-/// Create a positional argument descriptor.
+/// create a positional argument descriptor
 val positional: fn(#name: string, ?#help: [string, null], ?#required: [bool, null]) -&gt; Arg;
 
-/// Create an option argument descriptor (--name value).
+/// create an option argument descriptor (--name value)
 val option: fn(#name: string, ?#short: [string, null], ?#help: [string, null], ?#default: [string, null], ?#required: [bool, null]) -&gt; Arg;
 
-/// Create a flag argument descriptor (--name, boolean).
+/// create a flag argument descriptor (--name, boolean)
 val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -&gt; Arg;
 
-/// Create a command descriptor.
+/// create a command descriptor
 val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array&lt;Command&gt;, args: Array&lt;Arg&gt;) -&gt; Command;
 
-/// Parse command-line arguments against the spec.
-val parse: fn(cmd: Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
+/// parse the program's arguments (sys::args) against the spec. A
+/// flag's value is "true" or "false". --help and --version answer
+/// `ArgHelp with the text to print, a usage error `ArgError.
+val parse: fn(cmd: Command) -&gt; [ParseResult, Error&lt;[`ArgError(string), `ArgHelp(string)]&gt;];
 </code></pre>
+<p><code>parse</code> reads the program’s own arguments, the ones <code>sys::args</code> returns.
+In <code>values</code> an option’s value is its string, and a flag’s is <code>"true"</code> or
+<code>"false"</code>. <code>--help</code> and <code>--version</code> answer <code>`ArgHelp</code> with the text
+to print, and a usage error answers <code>`ArgError</code> with clap’s message,
+so a script prints either and exits, 0 for help and non-zero for an
+error, as the example does.</p>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">
-let cli = args::parse(
+// XCR claude for claude: [doc-drift/medium] args::parse returns clap's help text,
+// version text and usage errors as `ArgError(string)`, and this example drops all of
+// them with `$`. As a result `cli.gx -- --help` and `cli.gx -- --bogus` both print
+// nothing and exit 0. Select on the result instead: print the ArgError text and exit,
+// with code 0 for help and version and non-zero for a usage error. In args.md, say that
+// help, version and usage errors come back as ArgError, that parse reads the program's
+// own arguments (sys::args), and that a flag's value in `values` is the string "true"
+// or "false". (book-stdlib-08)
+// 2026-10-13 claude: help and version text now come back as
+// `ArgHelp(string), distinct from a usage error's `ArgError (Parse::update, mod.gxi), so
+// the example exits 0 for them and 2 for a usage error; args.md documents both, sys::args
+// and the flag strings. Review the new variant: it changes parse's type. Pins:
+// lib_tests::args::parse_help_is_arg_help, parse_usage_error.
+let cli: args::ParseResult = select args::parse(
     args::command(
         #name: "example",
         #version: "0.1.0",
@@ -240,7 +261,19 @@ let cli = args::parse(
             args::flag(#name: "verbose", #short: "v", #help: "Verbose output")
         ]
     )
-)$;
+) {
+    args::ParseResult as r =&gt; r,
+    Error&lt;'e&gt; as e =&gt; select e.0 {
+        `ArgHelp(text) =&gt; {
+            println(text);
+            sys::exit(0)
+        },
+        `ArgError(text) =&gt; {
+            println(text);
+            sys::exit(2)
+        }
+    }
+};
 
 println("Command: [cli.command]");
 println("Values: [cli.values]");

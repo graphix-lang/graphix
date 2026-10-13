@@ -1,0 +1,50 @@
+use tui::{
+  block::block,
+  form::form,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
+
+let filling = false;
+let greeting = "press f to fill in the form";
+
+let name_form = form(
+  #title: "Your name",
+  #on_submit: |v| {
+    greeting <- "hello [v[0]$] [v[1]$]";
+    filling <- v ~ false;
+    null
+  },
+  #on_cancel: |e| {
+    filling <- e ~ false;
+    null
+  },
+  [{ label: "first", value: "" }, { label: "last", value: "" }]
+);
+
+let handle_base = |e: Event| on_press(e, |k| select k.code {
+  f@ `Char("f") => {
+    filling <- f ~ true;
+    `Stop
+  },
+  _ => `Continue
+});
+
+let base = input_handler(
+  #handle: &handle_base,
+  &block(#border: &`All, &paragraph(&greeting))
+);
+
+let layers: Array<Layer> = select filling {
+  true => [
+    layer(
+      #width: &`Percentage(60),
+      #height: &`Length(8),
+      input_handler(#handle: &name_form.handle, &name_form.view)
+    )
+  ],
+  false => []
+};
+
+overlay(#layers: &layers, base)

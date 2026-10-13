@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,10 +177,17 @@
                         <h1 id="the-stack-widget"><a class="header" href="#the-stack-widget">The Stack Widget</a></h1>
 <p>The <code>stack</code> widget layers children on top of each other. The first child is drawn at the bottom, and each subsequent child is drawn on top. This is useful for overlays, watermarks, or layered visual effects.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val stack: fn(
+<pre><code class="language-graphix">use super::{Length, Widget};
+type Stack = {
+  children: &amp;Array&lt;Widget&gt;,
+  width: &amp;Length,
+  height: &amp;Length
+};
+
+val stack: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
-  a: &amp;Array&lt;Widget&gt;
+  children: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,11 +177,19 @@
                         <h1 id="the-tooltip-widget"><a class="header" href="#the-tooltip-widget">The Tooltip Widget</a></h1>
 <p>The <code>tooltip</code> widget displays a popup hint when the user hovers over a child widget. The tooltip content is itself a widget, allowing rich formatted tips.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val tooltip: fn(
+<pre><code class="language-graphix">use super::{TooltipPosition, Widget};
+type Tooltip = {
+  child: &amp;Widget,
+  tip: &amp;Widget,
+  position: &amp;TooltipPosition,
+  gap: &amp;[f64, null]
+};
+
+val tooltip: fn(
   #tip: &amp;Widget,
   ?#position: &amp;TooltipPosition,
   ?#gap: &amp;[f64, null],
-  a: &amp;Widget
+  child: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>

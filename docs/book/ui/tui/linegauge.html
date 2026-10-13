@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,14 +177,25 @@
                         <h1 id="the-line-gauge-widget"><a class="header" href="#the-line-gauge-widget">The Line Gauge Widget</a></h1>
 <p>The <code>line_gauge</code> widget displays a horizontal progress indicator using line-drawing characters. It’s more compact than <code>gauge</code> and ideal for dashboards where vertical space is limited.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val line_gauge: fn(
+<pre><code class="language-graphix">use super::{Line, Style, Tui};
+type LineGauge = {
+  filled_style: &amp;[Style, null],
+  filled_symbol: &amp;[string, null],
+  label: &amp;[Line, null],
+  ratio: &amp;f64,
+  style: &amp;[Style, null],
+  unfilled_style: &amp;[Style, null],
+  unfilled_symbol: &amp;[string, null],
+};
+
+val line_gauge: fn(
   ?#filled_style: &amp;[Style, null],
   ?#filled_symbol: &amp;[string, null],
   ?#label: &amp;[Line, null],
   ?#style: &amp;[Style, null],
   ?#unfilled_style: &amp;[Style, null],
   ?#unfilled_symbol: &amp;[string, null],
-  x: &amp;f64
+  ratio: &amp;f64
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
@@ -193,8 +204,9 @@
 <li><strong>filled_symbol</strong> - Character used to draw the filled portion</li>
 <li><strong>unfilled_style</strong> - Style for the unfilled portion</li>
 <li><strong>unfilled_symbol</strong> - Character used to draw the unfilled portion</li>
-<li><strong>label</strong> - Line or span displayed within the gauge</li>
+<li><strong>label</strong> - A <code>Line</code> displayed within the gauge</li>
 <li><strong>style</strong> - Base style for the widget</li>
+<li><strong>ratio</strong> (positional) - The filled fraction, from 0.0 to 1.0; a value outside that range is clamped, with a logged warning</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>

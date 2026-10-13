@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,8 +178,10 @@
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
 Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization, and
 the writers write a value as its type says, as <code>json::write_str</code> does: a
-document is a struct or a <code>Map</code>, and an array of pairs is refused
-whatever its contents.</p>
+document is a struct or a <code>Map</code>, and an <code>Array&lt;(string, T)&gt;</code> is refused.
+As with json, only a value whose type says nothing (<code>Any</code>) is written by
+its contents, where an array of <code>(string, _)</code> pairs in key order is a
+table.</p>
 <pre><code class="language-graphix">/// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.

@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,20 @@
                         <h1 id="the-text-editor-widget"><a class="header" href="#the-text-editor-widget">The Text Editor Widget</a></h1>
 <p>A multi-line text editing area for longer-form content. Unlike <code>text_input</code>, which handles a single line, <code>text_editor</code> supports multiple lines of text with scrolling. It reports the full content string on every edit.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val text_editor: fn(
+<pre><code class="language-graphix">use super::{Font, Padding, Widget};
+type TextEditor = {
+  content: &amp;string,
+  disabled: &amp;bool,
+  on_edit: &amp;[fn(s: string) -&gt; Any, null],
+  placeholder: &amp;string,
+  width: &amp;[f64, null],
+  height: &amp;[f64, null],
+  padding: &amp;Padding,
+  font: &amp;[Font, null],
+  size: &amp;[f64, null]
+};
+
+val text_editor: fn(
   ?#placeholder: &amp;string,
   ?#on_edit: [fn(s: string) -&gt; Any, null],
   ?#width: &amp;[f64, null],
@@ -186,19 +199,19 @@
   ?#font: &amp;[Font, null],
   ?#size: &amp;[f64, null],
   ?#disabled: &amp;bool,
-  s: &amp;string
+  content: &amp;string
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong><code>#placeholder</code></strong> – Hint text displayed when the editor is empty.</li>
-<li><strong><code>#on_edit</code></strong> – Callback invoked on every edit. Receives the full content as a <code>string</code>. Use with <code>&lt;-</code> to keep state in sync: <code>#on_edit: |v| content &lt;- v</code>.</li>
+<li><strong><code>#on_edit</code></strong> – Callback invoked on every edit. Receives the full content as a <code>string</code>. Use with <code>&lt;-</code> to keep state in sync: <code>#on_edit: |v| content &lt;- v</code>. Without <code>#on_edit</code> the editor is read-only, as a disabled one is.</li>
 <li><strong><code>#width</code></strong> – Width in pixels as <code>f64</code>, or <code>null</code> for automatic sizing. Note: this is <code>&amp;[f64, null]</code>, not <code>&amp;Length</code> – the text editor uses fixed pixel dimensions rather than the layout-based <code>Length</code> type.</li>
 <li><strong><code>#height</code></strong> – Height in pixels as <code>f64</code>, or <code>null</code> for automatic sizing. Same <code>&amp;[f64, null]</code> type as width.</li>
 <li><strong><code>#padding</code></strong> – Interior padding around the text content. Accepts <code>Padding</code> values.</li>
 <li><strong><code>#font</code></strong> – Font to use, or <code>null</code> for the default font.</li>
 <li><strong><code>#size</code></strong> – Font size in pixels, or <code>null</code> for the default size.</li>
-<li><strong><code>#disabled</code></strong> – When <code>true</code>, the editor cannot be focused or edited. Defaults to <code>false</code>.</li>
+<li><strong><code>#disabled</code></strong> – When <code>true</code>, edits are refused; the text can still be scrolled, selected and copied. Defaults to <code>false</code>.</li>
 <li><strong>positional <code>&amp;string</code></strong> – Reference to the current content. The editor displays this text and you update it from the <code>#on_edit</code> callback.</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>

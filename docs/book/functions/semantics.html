@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -267,7 +267,7 @@ rust if you require high performance). Synchronous iterators compute
 the entire result in one cycle.</p>
 <pre><code class="language-graphix">let len = |a: Array&lt;'a&gt;| array::fold(a, 0, |acc, x| x ~ acc + 1);
 let a = [1, 2, 3, 4, 5];
-a &lt;- [1, 2, 3, 4, 5];
+a &lt;- [1, 2, 3];
 a &lt;- [1, 2];
 len(a)
 </code></pre>
@@ -290,18 +290,25 @@ queued, it still remembers to allow that many through when they
 arrive.</p>
 <p>Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.</p>
-<pre><code class="language-graphix">let f = |path| sys::net::subscribe(path)$;
+<pre><code class="language-graphix">let f = |path| -&gt; string sys::net::subscribe(path)$;
 let path = "/local/baz0";
 path &lt;- "/local/baz1";
 path &lt;- "/local/baz2";
 f(path)
 </code></pre>
 <p>Now suppose we have published</p>
-<p>| path        | value |
-+———––+—––+
-| /local/baz0 | “baz0 |
-| /local/baz1 | “baz1 |
-| /local/baz2 | “baz2 |</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>path</th><th>value</th></tr>
+</thead>
+<tbody>
+<tr><td>/local/baz0</td><td>“baz0”</td></tr>
+<tr><td>/local/baz1</td><td>“baz1”</td></tr>
+<tr><td>/local/baz2</td><td>“baz2”</td></tr>
+</tbody>
+</table>
+</div>
 <p>This program will always return “baz2”</p>
 <pre><code>$ graphix text.gx
 "baz2"
@@ -319,7 +326,7 @@ moving on to the next one. We can use queue to achieve this.</p>
 <pre><code class="language-graphix">let f = |path| {
   let clock = "";
   let path = queue(#clock, path);
-  let res = sys::net::subscribe(path)$;
+  let res: string = sys::net::subscribe(path)$;
   clock &lt;- uniq(res ~ path);
   res
 };
@@ -371,7 +378,7 @@ work in any situation using <code>queue</code>.</p>
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../udt/overview.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../functions/parallel.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -385,7 +392,7 @@ work in any situation using <code>queue</code>.</p>
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../udt/overview.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../functions/parallel.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

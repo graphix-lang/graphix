@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -270,7 +270,7 @@ struct Point {
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// assume we got id from a data structure and its type is &amp;i64
-let mut r = handle.compile_ref(id);
+let mut r = handle.compile_ref(id).await?;
 
 // if the variable r is bound to has a value right now it will be in last
 if let Some(v) = &amp;r.last {
@@ -305,68 +305,46 @@ for ev in batch.drain(..) {
 // the rest of the code is exactly the same
 <span class="boring">}</span></code></pre>
 <h2 id="calling-graphix-functions"><a class="header" href="#calling-graphix-functions">Calling Graphix Functions</a></h2>
-<p>Now lets register a call site, call a Graphix function, and get its result. We
-do this by calling
-<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.compile_callable_by_name"><code>compile_callable_by_name</code></a>
-on the handle.</p>
+<p>A function is called through a call site the runtime compiles for it,
+a <a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.Callable.html"><code>Callable</code></a>.
+<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.compile_callable"><code>compile_callable</code></a>
+takes the function as a <code>Value</code>: one an expression returned, or a
+variable’s value. To call a function by name, take its value through a
+ref first:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let mut f = handle.compile_callable_by_name(
+</span>let r = handle.compile_ref_by_name(
     &amp;env,
     &amp;graphix_compiler::Scope::root(),
     &amp;graphix_compiler::ModPath::from(["sum"]),
 ).await?;
-f.call(netidx_value::ValArray::from_iter_exact(
+let sum = r.last.clone().ok_or_else(|| anyhow::anyhow!("sum has no value yet"))?;
+let f = handle.compile_callable(sum).await?;
+<span class="boring">}</span></code></pre>
+<p><a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.Callable.html#method.call_answered"><code>call_answered</code></a>
+calls it, and its return value arrives on the channel under the
+callable’s <code>answer</code> id:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>f.call_answered(netidx_value::ValArray::from_iter_exact(
     [Value::from(1), Value::from(2), Value::from(3)]
 )).await?;
-
-// now we must update f to drive both late binding, and get our return value
-// we need a loop this time because there will be multiple updates
-loop {
+'answer: loop {
     let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
     for ev in batch.drain(..) {
         match ev {
-            graphix_rt::GXEvent::Updated(id, v) =&gt; {
-                if let Some(v) = f.update(&amp;v).await {
-                    println!("sum returned {v}")
-                }
+            graphix_rt::GXEvent::Updated(id, v) if id == f.answer =&gt; {
+                println!("sum returned {v}");
+                break 'answer;
             }
             graphix_rt::GXEvent::Env(e) =&gt; env = e,
-            _ =&gt; ()
+            _ =&gt; (),
         }
     }
 }
 <span class="boring">}</span></code></pre>
-<h3 id="calling-functions-by-lambdaid"><a class="header" href="#calling-functions-by-lambdaid">Calling Functions by LambdaId</a></h3>
-<p>The above case applies when we only know the name of the function we want to
-call, which is less common than you might imagine. If the function was passed in
-to us, for example we evaluated an expression that returned a function, then
-it’s actually easier to deal with because we don’t have to handle late binding.
-In this case we can call
-<a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html#method.compile_callable"><code>compile_callable</code></a>
-on the handle.</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// id is the LambdaId of the function as a Value. Lets assume it's sum
-let f = handle.compile_callable(id).await?;
-f.call(netidx_value::ValArray::from_iter_exact(
-    [Value::from(1), Value::from(41)]
-)).await?;
-
-// now wait for the value
-let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
-for ev in batch.drain(..) {
-    match ev {
-        graphix_rt::GXEvent::Updated(id, v) =&gt; {
-            if let Some(v) = f.update(&amp;v) {
-                println!("sum returned {v}")
-            }
-        }
-        graphix_rt::GXEvent::Env(e) =&gt; env = e,
-        _ =&gt; ()
-    }
-}
-<span class="boring">}</span></code></pre>
+<p><code>call</code> makes the same call without an answer, for a function called
+for its effects (an event handler).</p>
 
                     </main>
 

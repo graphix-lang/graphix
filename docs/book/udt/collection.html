@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -189,17 +189,17 @@ recursions, compiled to a native loop:</p>
 // array — the spellings a Collection implementation for your own
 // array-backed type would use. Each is an index tail recursion, and the
 // whole loop compiles to a native kernel.
-// fold: the primitive. ~6x the intrinsic per element (the loop's own
-// bounds check, `$` and select — array::len is a fast call).
+// fold: the primitive (the loop pays its own bounds check, `$` and
+// select per element; array::len is a fast call).
 let rec fold_go = |a: Array&lt;'a&gt;, f: fn(acc: 'b, x: 'a) -&gt; 'b, i: i64, acc: 'b| -&gt; 'b
     select i &lt; array::len(a) {
         true =&gt; fold_go(a, f, i + 1, f(acc, a[i]$)),
         false =&gt; acc
     };
 
-// find: stops at the match — the early exit a fold cannot express
-// (the intrinsic scans all slots by rule, so on an average hit this
-// BEATS it).
+// find: stops at the match, the early exit a fold cannot express. For
+// a type of your own that is the point; against Array's intrinsic it
+// wins only on a hit near the front.
 let rec find_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool, i: i64| -&gt; ['a, null]
     select i &lt; array::len(a) {
         false =&gt; null,
@@ -220,12 +220,14 @@ let d = map_go(xs, |x| x * 10);
 println("sum=[s] found=[m] mapped=[d]");
 sys::exit(s ~ 0)
 </code></pre>
-<p><code>fold</code> is the primitive, and the hand-written loop runs within ~6x of
-the intrinsic per element. <code>find</code> as a loop <em>stops at the match</em> — an
-early exit the fold-derived default cannot express, which is why it
-beats the intrinsic (an all-slots scan by rule) on an average hit.
-<code>map</code> by construction over the length is at parity with the
-intrinsic.</p>
+<p><code>fold</code> is the primitive; the hand-written loop pays its own bounds
+check, <code>$</code> and select per element, so it runs several times slower
+than the intrinsic. <code>find</code> as a loop <em>stops at the match</em>, an early
+exit the fold-derived default cannot express. That is what a
+<code>Collection</code> implementation for your own type gains; against Array’s
+intrinsic, which is faster per element and forks across cores, the
+loop wins only when the hit is near the front. <code>map</code> by construction
+over the length runs close to the intrinsic.</p>
 <h2 id="flat_map-without-the-quadratic"><a class="header" href="#flat_map-without-the-quadratic">flat_map without the quadratic</a></h2>
 <p>The tempting derivation — fold with <code>array::concat</code> — copies the
 accumulator on every step and is O(n²) by construction. Cons onto a

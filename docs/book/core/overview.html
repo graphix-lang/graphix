@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -209,7 +209,7 @@ count &lt;- timer ~ (count + 1)
 <ul>
 <li>How <code>?</code> throws errors to the nearest installed <code>catch</code> in dynamic scope</li>
 <li>How error types are checked at compile time—you can’t forget to handle an error type</li>
-<li>How the <code>$</code> operator silently swallows errors (use with caution!)</li>
+<li>How the <code>$</code> operator drops an error to bottom and logs it at warn with its site</li>
 <li>How error chains track the full context of where errors originated</li>
 </ul>
 <p>Every error that gets raised with <code>?</code> is wrapped in an <code>ErrChain</code> that captures the file, line, column, and full stack of previous errors. No more mystery exceptions.</p>

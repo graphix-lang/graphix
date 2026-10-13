@@ -40,7 +40,7 @@ let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
 };
 
 // single random number
-let rn = |start: f64, end: f64| -> f64 rand::rand(#start, #end, #clock:1);
+let rn = |start, end| rand::rand(#start, #end, #clock:1);
 
 let published = array::init(1024, |i| svc(
     #name:"svc-[i]",
@@ -146,7 +146,7 @@ let footer = row(
     #spacing: &10.0,
     &[
         text(&"Selected:"),
-        text(&"[selection[0]$]"),
+        text(&select selection { [p, ..] => "[p]", [] => "" }),
         text(&"  Last action:"),
         text(&"[last_action]")
     ]

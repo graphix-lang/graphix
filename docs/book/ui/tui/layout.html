@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,8 @@
                         <h1 id="the-layout-widget"><a class="header" href="#the-layout-widget">The Layout Widget</a></h1>
 <p>The <code>layout</code> widget arranges child widgets in horizontal or vertical layouts with flexible sizing constraints. It’s the primary tool for organizing complex TUI interfaces and supports focus management for interactive applications.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type Spacing = [
+<pre><code class="language-graphix">use super::{Constraint, Direction, Flex, Size, Tui};
+type Spacing = [
   `Space(i64),
   `Overlap(i64)
 ];
@@ -191,8 +192,19 @@ type Child = {
 val child: fn(
   ?#size: &amp;[Size, null],
   #constraint: Constraint,
-  a: Tui
+  child: Tui
 ) -&gt; Child;
+
+type Layout = {
+  children: &amp;Array&lt;Child&gt;,
+  direction: &amp;[Direction, null],
+  flex: &amp;[Flex, null],
+  focused: &amp;[i64, null],
+  horizontal_margin: &amp;[i64, null],
+  margin: &amp;[i64, null],
+  spacing: &amp;[Spacing, null],
+  vertical_margin: &amp;[i64, null]
+};
 
 val layout: fn(
   ?#direction: &amp;[Direction, null],
@@ -202,14 +214,14 @@ val layout: fn(
   ?#margin: &amp;[i64, null],
   ?#spacing: &amp;[Spacing, null],
   ?#vertical_margin: &amp;[i64, null],
-  a: &amp;Array&lt;Child&gt;
+  children: &amp;Array&lt;Child&gt;
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong>direction</strong> - <code>Horizontal</code> or <code>Vertical</code> (default: <code>Vertical</code>)</li>
 <li><strong>focused</strong> - Index of the currently focused child (0-indexed)</li>
-<li><strong>flex</strong> - Alignment when children don’t fill space: <code>Start</code>, <code>Center</code>, <code>End</code>, <code>SpaceAround</code>, <code>SpaceBetween</code></li>
+<li><strong>flex</strong> - How leftover space is distributed when children don’t fill it: <code>Legacy</code>, <code>Start</code>, <code>End</code>, <code>Center</code>, <code>SpaceBetween</code>, <code>SpaceEvenly</code>, <code>SpaceAround</code></li>
 </ul>
 <h2 id="constraint-types"><a class="header" href="#constraint-types">Constraint Types</a></h2>
 <ul>
@@ -330,7 +342,8 @@ scrolled beside a scrollbar.</p>
   text::text
 };
 
-let long_text = "1 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head! 2 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!3 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!4 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!5 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!6 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!7 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!8 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!9 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!10 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!11 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!12 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!13 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!14 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!15 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!16 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!17 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!18 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!19 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!20 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!21 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!22 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!23 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!24 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!25 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!26 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!27 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!28 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!29 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!30 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!31 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!32 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!33 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!34 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!35 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!36 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!37 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!38 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!39 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!40 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!41 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!42 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!43 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!44 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!45 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!46 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!47 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!48 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!49 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!50 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!";
+let long_text = str::join(#sep: " ", array::init(50, |i| "[i + 1] I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!"));
+let max_scroll = 150;
 
 let focused = 0;
 
@@ -366,7 +379,7 @@ let block2rem = block(
              position &lt;- (k ~ position) - 1;
              `Stop
          },
-         k@`Down if position &lt; 150 =&gt; {
+         k@`Down if position &lt; max_scroll =&gt; {
              position &lt;- (k ~ position) + 1;
              `Stop
          },
@@ -376,7 +389,7 @@ let block2rem = block(
        #handle: &amp;handle_event,
        &amp;scrollbar(
          #position: &amp;position,
-         #content_length:&amp;150,
+         #content_length:&amp;max_scroll,
          &amp;paragraph(#scroll: &amp;{x: 0, y: position}, &amp;long_text)
        )
      )
@@ -418,7 +431,7 @@ input_handler(
 <h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
 <ul>
 <li><a href="block.html">block</a> - Common child widget for layouts</li>
-<li><a href="../overview.html#input-handling">input_handler</a> - For handling focus changes</li>
+<li><a href="input.html">input_handler</a> - For handling focus changes</li>
 </ul>
 
                     </main>

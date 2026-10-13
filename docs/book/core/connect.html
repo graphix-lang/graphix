@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,8 +180,8 @@ sharp eyed may have noticed that up until now there was no way to introduce a
 cycle in the graph. Connect is the only graph operator in Graphix, it allows you
 to connect one part of the graph to another by name, causing the output of the
 right side to flow to the name on the left side. Consider,</p>
-<pre><code class="language-graphix">let x = "off"
-x &lt;- sys::time::timer(duration:1.0s, false) ~ "on"
+<pre><code class="language-graphix">let x = "off";
+x &lt;- sys::time::timer(duration:1.0s, false) ~ "on";
 print(x)
 </code></pre>
 <p>This program will first print <code>off</code>, and after 1 second it will print <code>on</code>. Note
@@ -225,7 +225,8 @@ Graphix. A quick example,</p>
   let x = 0;
   select x {
     n if n &lt; 10 =&gt; x &lt;- x + 1,
-    _ =&gt; never() // never() never updates
+    // never() never updates
+    _ =&gt; never()
   };
   x
 };

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-ca61ab31.js"></script>
+        <script src="../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -215,12 +215,14 @@
 <pre><code class="language-graphix">val text: fn(?#style: Style, content: string) -&gt; Widget
 </code></pre>
 <p>This function can be called in two ways:</p>
-<pre><code class="language-graphix">text("Hello")                           // style uses default value
-text(#style: my_style, "Hello")        // style is specified
+<pre><code class="language-graphix">// style uses default value
+text("Hello");
+// style is specified
+text(#style: my_style, "Hello")
 </code></pre>
 <h3 id="order-flexibility"><a class="header" href="#order-flexibility">Order Flexibility</a></h3>
 <p>Labeled arguments can be provided in any order, but must come before positional arguments:</p>
-<pre><code class="language-graphix">val widget: fn(?#width: i64, ?#height: i64, content: string) -&gt; Widget
+<pre><code class="language-graphix ignore">val widget: fn(?#width: i64, ?#height: i64, content: string) -&gt; Widget
 
 // All of these are valid:
 widget("text")
@@ -231,19 +233,20 @@ widget(#height: 50, "text")
 <h2 id="required-labeled-arguments"><a class="header" href="#required-labeled-arguments">Required Labeled Arguments</a></h2>
 <p>Arguments with <code>#</code> but no <code>?</code> are required but labeled:</p>
 <pre><code class="language-graphix">val input_handler: fn(
-    #handle: fn(e: Event) -&gt; Response,
-    w: &amp;Widget
-) -&gt; Widget
+    ?#enabled: &amp;[bool, null],
+    #handle: &amp;fn(e: Event) -&gt; [`Stop, `Continue],
+    child: &amp;Tui
+) -&gt; Tui
 </code></pre>
-<p>You must provide <code>#handle</code>, but it doesn’t have to be in the first position. However, it must come before the unlabeled <code>&amp;Widget</code> argument:</p>
-<pre><code class="language-graphix">input_handler(#handle: my_handler, &amp;my_widget)
+<p>You must provide <code>#handle</code>, but it doesn’t have to be in the first position. However, it must come before the unlabeled <code>&amp;Tui</code> argument:</p>
+<pre><code class="language-graphix">input_handler(#handle: &amp;my_handler, &amp;my_widget)
 </code></pre>
 <h2 id="variadic-arguments"><a class="header" href="#variadic-arguments">Variadic Arguments</a></h2>
 <p>The <code>@args</code> notation means a function accepts any number of arguments:</p>
 <pre><code class="language-graphix">val sum: fn(@args: i64) -&gt; i64
 </code></pre>
 <p>You can call this with any number of integers:</p>
-<pre><code class="language-graphix">sum(1, 2, 3)
+<pre><code class="language-graphix">sum(1, 2, 3);
 sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 </code></pre>
 <h3 id="variadic-with-required-arguments"><a class="header" href="#variadic-with-required-arguments">Variadic with Required Arguments</a></h3>
@@ -264,13 +267,16 @@ with an <code>@args</code> parameter is refused.</p>
 </ol>
 <p>Create a reference with <code>&amp;</code> and dereference (get the value) with <code>*</code>:</p>
 <pre><code class="language-graphix">let s = "Hello";
-let r = &amp;s;      // r is a reference to s
-let v = *r;      // v is the value "Hello"
+// r is a reference to s
+let r = &amp;s;
+// v is the value "Hello"
+let v = *r;
 </code></pre>
 <p><code>&amp;T</code> is read-only. A function that writes through a reference (<code>*r &lt;- v</code>) takes <code>&amp;mut T</code>, and you pass it <code>&amp;mut x</code>:</p>
 <pre><code class="language-graphix">let set = |r: &amp;mut i64, v: i64| *r &lt;- v;
 let x = 0;
-set(&amp;mut x, 1)   // x becomes 1
+// x becomes 1
+set(&amp;mut x, 1)
 </code></pre>
 <p>A <code>&amp;T</code> parameter accepts a <code>&amp;mut</code> too, and covers any narrower type: <code>&amp;[i64, null]</code> accepts <code>&amp;x</code> with <code>x: i64</code>. A <code>&amp;mut T</code> must refer to exactly a <code>T</code>.</p>
 <p>In function signatures, <code>&amp;T</code> in a parameter position means the function expects a reference. In widget examples, you’ll often see:</p>
@@ -313,7 +319,7 @@ set(&amp;mut x, 1)   // x becomes 1
 <pre><code class="language-graphix">val find: fn(haystack: Array&lt;string&gt;, needle: string) -&gt; [string, null]
 </code></pre>
 <p>Returns a string if found, <code>null</code> if not found. This is aliased as <code>Option&lt;T&gt;</code>:</p>
-<pre><code class="language-graphix">type Option&lt;'a&gt; = ['a, null]
+<pre><code class="language-graphix">type Option&lt;'a&gt; = ['a, null];
 val find: fn(haystack: Array&lt;string&gt;, needle: string) -&gt; Option&lt;string&gt;
 </code></pre>
 <h3 id="nested-sets"><a class="header" href="#nested-sets">Nested Sets</a></h3>
@@ -321,13 +327,13 @@ val find: fn(haystack: Array&lt;string&gt;, needle: string) -&gt; Option&lt;stri
 <pre><code class="language-graphix">val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number
 </code></pre>
 <p>This accepts numbers, arrays of numbers, or even arrays of (numbers or arrays of numbers). The flexibility allows you to call:</p>
-<pre><code class="language-graphix">sum(1, 2, 3)
-sum([1, 2], [3, 4])
+<pre><code class="language-graphix">sum(1, 2, 3);
+sum([1, 2], [3, 4]);
 sum(1, [2, 3], 4)
 </code></pre>
 <h3 id="function-constraints"><a class="header" href="#function-constraints">Function Constraints</a></h3>
 <p>Type variables in functions can have constraints:</p>
-<pre><code class="language-graphix">let sum&lt;'a: Number&gt;(@args: 'a) -&gt; 'a
+<pre><code class="language-graphix">val sum: fn&lt;'a: Number&gt;(@args: 'a) -&gt; 'a
 </code></pre>
 <p>This is subtly different from the <code>sum</code> examples earlier. This says,
 <code>sum</code> is a function that takes any number of arguments of the same
@@ -340,7 +346,7 @@ itself during the type inference process.</p>
 <pre><code class="language-graphix">let f = |x, y| x + y
 </code></pre>
 <p>Its type will be something like:</p>
-<pre><code class="language-graphix">val f: fn&lt;'_2067: Number + Singleton&gt;(x: '_2067, y: '_2067) -&gt; '_2067
+<pre><code class="language-graphix ignore">val f: fn&lt;'_2067: Number + Singleton&gt;(x: '_2067, y: '_2067) -&gt; '_2067
 </code></pre>
 <p>The compiler has inferred two properties here,</p>
 <ul>
@@ -374,31 +380,33 @@ when debugging.)</p>
 shell also telling you what type variables are currently bound to, or
 <code>unbound</code> if they aren’t bound. So in the shell this pops out as,</p>
 <pre><code class="language-graphix">〉f
--: fn&lt;'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number&gt;(x: '_2067: unbound, y: '_2069: unbound) -&gt; '_2071: unbound
+-: fn&lt;'_2067: unbound: Number + Singleton&gt;(x: '_2067: unbound, y: '_2067: unbound) -&gt; '_2067: unbound
 </code></pre>
-<p>The constraint <code>'_2069: unbound: Number</code> is read as. _2069 is not
-currently bound to a type but is constrained to type <code>Number</code>. This is
+<p>The constraint <code>'_2067: unbound: Number + Singleton</code> is read as: <code>_2067</code>
+is not currently bound to a type but is constrained to one type of
+<code>Number</code>. This is
 all useful information, even though it’s intimidating at first it’s
 worth putting in the work to learn to decipher it.</p>
 <h2 id="putting-it-all-together"><a class="header" href="#putting-it-all-together">Putting It All Together</a></h2>
 <p>Let’s decode some complex real-world signatures:</p>
 <h3 id="example-1-tui-table-widget"><a class="header" href="#example-1-tui-table-widget">Example 1: TUI Table Widget</a></h3>
 <pre><code class="language-graphix">val table: fn(
-    ?#header: &amp;Row,
-    ?#selected: &amp;i64,
-    ?#row_highlight_style: &amp;Style,
-    ?#highlight_symbol: &amp;string,
+    ?#header: &amp;[Row, null],
+    ?#selected: &amp;[i64, null],
+    ?#row_highlight_style: &amp;[Style, null],
+    ?#highlight_symbol: &amp;[string, null],
     rows: &amp;Array&lt;&amp;Row&gt;
-) -&gt; Widget
+) -&gt; Tui
 </code></pre>
+<p>(a few of <code>table</code>’s labeled arguments; the rest have the same shape)</p>
 <p>Breaking it down:</p>
 <ul>
-<li><code>?#header: &amp;Row</code> - optional labeled argument, reference to a Row</li>
-<li><code>?#selected: &amp;i64</code> - optional labeled argument, reference to selected index</li>
-<li><code>?#row_highlight_style: &amp;Style</code> - optional labeled argument, reference to a Style</li>
-<li><code>?#highlight_symbol: &amp;string</code> - optional labeled argument, reference to symbol string</li>
+<li><code>?#header: &amp;[Row, null]</code> - optional labeled argument, reference to a Row or null</li>
+<li><code>?#selected: &amp;[i64, null]</code> - optional labeled argument, reference to the selected index</li>
+<li><code>?#row_highlight_style: &amp;[Style, null]</code> - optional labeled argument, reference to a Style</li>
+<li><code>?#highlight_symbol: &amp;[string, null]</code> - optional labeled argument, reference to the symbol string</li>
 <li><code>rows: &amp;Array&lt;&amp;Row&gt;</code> - required positional argument, reference to array of row references</li>
-<li><code>-&gt; Widget</code> - returns a Widget</li>
+<li><code>-&gt; Tui</code> - returns a TUI widget</li>
 </ul>
 <p>All parameters are references because the table needs to react to changes without rebuilding.</p>
 <h3 id="example-2-filter-function"><a class="header" href="#example-2-filter-function">Example 2: Filter Function</a></h3>
@@ -418,11 +426,12 @@ worth putting in the work to learn to decipher it.</p>
 <li><code>throws 'e</code> - propagates any errors from the predicate</li>
 </ul>
 <h3 id="example-3-queue-function"><a class="header" href="#example-3-queue-function">Example 3: Queue Function</a></h3>
-<pre><code class="language-graphix">val queue: fn(#clock: Any, v: 'a) -&gt; 'a
+<pre><code class="language-graphix">val queue: fn(#clock: Any, ?#flush: Any, v: 'a) -&gt; 'a
 </code></pre>
 <p>Breaking it down:</p>
 <ul>
 <li><code>#clock: Any</code> - required labeled argument of any type, just used as an event source</li>
+<li><code>?#flush: Any</code> - optional labeled argument, an event that empties the queue</li>
 <li><code>v: 'a</code> - a value of any type</li>
 <li><code>-&gt; 'a</code> - returns values of the same type</li>
 </ul>
@@ -453,7 +462,7 @@ worth putting in the work to learn to decipher it.</p>
 <tr><td><code>'a</code>, <code>'b</code>, <code>'e</code></td><td>Type parameter (generic)</td><td><code>fn(x: 'a) -&gt; 'a</code></td></tr>
 <tr><td><code>'_23</code>, <code>'_24</code>, <code>'_25</code></td><td>Inferred type parameter (generic)</td><td><code>fn(x: '_23) -&gt; '_23</code></td></tr>
 <tr><td><code>name: T</code></td><td>Named positional argument</td><td><code>fn(x: i64) -&gt; i64</code></td></tr>
-<tr><td><code>?#param</code></td><td>Optional labeled argument</td><td><code>fn(?#x: i64 = 0)</code></td></tr>
+<tr><td><code>?#param</code></td><td>Optional labeled argument (its default is the lambda’s, <code>|#x: i64 = 0| ..</code>)</td><td><code>fn(?#x: i64)</code></td></tr>
 <tr><td><code>#param</code></td><td>Required labeled argument</td><td><code>fn(#x: i64)</code></td></tr>
 <tr><td><code>@args</code></td><td>Variadic (any number of args)</td><td><code>fn(@args: i64)</code></td></tr>
 <tr><td><code>&amp;T</code></td><td>Reference to type T</td><td><code>fn(s: &amp;string)</code></td></tr>

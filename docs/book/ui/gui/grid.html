@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,21 +177,32 @@
                         <h1 id="the-grid-widget"><a class="header" href="#the-grid-widget">The Grid Widget</a></h1>
 <p>A layout container that arranges child widgets in a grid with a fixed number of columns. Items wrap to the next row automatically.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type GridColumns = [`Fixed(i64), `Fluid(f64)];
+<pre><code class="language-graphix">use super::{Length, Widget};
+/// `Fixed(n) is exactly n columns; `Fluid(max_width) is as many columns as
+/// needed so that none is wider than max_width pixels
+type GridColumns = [`Fixed(i64), `Fluid(f64)];
 type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
+
+type Grid = {
+  children: &amp;Array&lt;Widget&gt;,
+  spacing: &amp;f64,
+  columns: &amp;GridColumns,
+  width: &amp;[f64, null],
+  height: &amp;GridHeight
+};
 
 val grid: fn(
   ?#spacing: &amp;f64,
   ?#columns: &amp;GridColumns,
   ?#width: &amp;[f64, null],
   ?#height: &amp;GridHeight,
-  a: &amp;Array&lt;Widget&gt;
+  children: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
 <li><strong><code>#spacing</code></strong> – Space in pixels between grid cells, applied both horizontally and vertically. Defaults to <code>0.0</code>.</li>
-<li><strong><code>#columns</code></strong> – How columns are determined. <code>`Fixed(n)</code> uses exactly <code>n</code> columns. <code>`Fluid(min_width)</code> calculates the column count so each column is at least <code>min_width</code> pixels wide. Defaults to <code>`Fixed(3)</code>.</li>
+<li><strong><code>#columns</code></strong> – How columns are determined. <code>`Fixed(n)</code> uses exactly <code>n</code> columns. <code>`Fluid(max_width)</code> uses as many columns as needed so that none is wider than <code>max_width</code> pixels. Defaults to <code>`Fixed(3)</code>.</li>
 <li><strong><code>#width</code></strong> – Total width of the grid in pixels, or <code>null</code> to use the available space. Defaults to <code>null</code>.</li>
 <li><strong><code>#height</code></strong> – How row heights are determined. <code>`AspectRatio(ratio)</code> sets each cell’s height relative to its width (e.g. <code>1.0</code> for square cells). <code>`EvenlyDistribute(len)</code> divides the given <code>Length</code> evenly among all rows. Defaults to <code>`AspectRatio(1.0)</code>.</li>
 <li><strong>positional <code>&amp;Array&lt;Widget&gt;</code></strong> – The child widgets to arrange in the grid. They fill left-to-right, top-to-bottom.</li>

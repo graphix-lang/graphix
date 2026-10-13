@@ -1,0 +1,29 @@
+use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
+
+let last = "nothing yet";
+
+// the outer handler sees each event first and takes only 'a'
+let outer = |e: Event| on_press(e, |k| select k.code {
+  a@ `Char("a") => {
+    last <- a ~ "outer took a";
+    `Stop
+  },
+  _ => `Continue
+});
+
+// the inner handler sees what the outer one passed on
+let inner = |e: Event| on_press(e, |k| select k.code {
+  c@ `Char(s) => {
+    last <- c ~ "inner took [s]";
+    `Stop
+  },
+  _ => `Continue
+});
+
+input_handler(
+  #handle: &outer,
+  &input_handler(#handle: &inner, &paragraph(&last))
+)

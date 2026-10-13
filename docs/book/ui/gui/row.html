@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
+            window.path_to_searchindex_js = "../../searchindex-71e82a1e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-ca61ab31.js"></script>
+        <script src="../../toc-fa28cf06.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,23 @@
                         <h1 id="the-row-widget"><a class="header" href="#the-row-widget">The Row Widget</a></h1>
 <p>The <code>row</code> widget arranges child widgets horizontally from left to right. It is one of the primary layout containers, along with <code>column</code>.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">val row: fn(
+<pre><code class="language-graphix">use super::{Length, Padding, VAlign, Widget};
+type Row = {
+  children: &amp;Array&lt;Widget&gt;,
+  spacing: &amp;f64,
+  padding: &amp;Padding,
+  width: &amp;Length,
+  height: &amp;Length,
+  valign: &amp;VAlign
+};
+
+val row: fn(
   ?#spacing: &amp;f64,
   ?#padding: &amp;Padding,
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#valign: &amp;VAlign,
-  a: &amp;Array&lt;Widget&gt;
+  children: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
