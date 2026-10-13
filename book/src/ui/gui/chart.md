@@ -13,7 +13,7 @@ The `chart` widget renders data visualizations with multiple datasets, axis labe
 - **title** — Chart title displayed above the plot area. Null for no title.
 - **x_label** — Label for the x-axis. Null for no label.
 - **y_label** — Label for the y-axis. Null for no label.
-- **x_range** — Manual x-axis range as `{min: f64, max: f64}` or `{min: datetime, max: datetime}`. When null, the range is computed automatically from the data.
+- **x_range** — Manual x-axis range as `{min: f64, max: f64}` or `{min: datetime, max: datetime}`. When null, the range is computed automatically from the data. A range of the other kind than the chart's x axis (a datetime range on a numeric chart, or the reverse) is ignored.
 - **y_range** — Manual y-axis range as `{min: f64, max: f64}`. When null, auto-computed.
 - **z_label** — Label for the z-axis (3D charts only). Null for no label.
 - **z_range** — Manual z-axis range as `{min: f64, max: f64}` (3D charts only). When null, auto-computed.
@@ -233,13 +233,7 @@ Used with the chart `#projection` parameter for 3D charts:
 - **axis_color** — Color of axis lines. 2D charts only.
 - **label_color** — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.
 - **label_size** — Font size for axis labels.
-<!-- CR claude for claude: [doc-drift/low] x_label_area_size is the height of the bottom
-label area, not a width. The page also has no Interaction section: wheel zoom (captured,
-so it does not scroll an enclosing scrollable), drag pan, double-click reset, 3D
-drag-rotate and the hover tooltip are undocumented. It does not say that an x_range of
-the other kind (datetime on a numeric chart, or the reverse) is ignored. Fix the
-wording, add the section and the x_range rule, and rebuild the book. (gui-chart-13) -->
-- **x_label_area_size** — Width of the x-axis label area in pixels. Increase to prevent label clipping.
+- **x_label_area_size** — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.
 - **x_labels** — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.
 - **x_light_lines** — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.
 - **y_label_area_size** — Width of the y-axis label area in pixels. Increase to prevent label clipping.
@@ -254,6 +248,21 @@ wording, add the section and the x_range rule, and rebuild the book. (gui-chart-
 - **border** — Legend border color. Defaults to black when null.
 - **label_color** — Color of legend text labels. Defaults to plotters default (black) when null.
 - **label_size** — Font size for legend labels. When null, plotters default is used.
+
+## Interaction
+
+A chart responds to the mouse:
+
+- **Wheel** zooms around the cursor (a 3D chart scales instead). The
+  chart takes the wheel event, so a chart inside a `scrollable` does not
+  scroll it while the cursor is over the chart.
+- **Drag** pans the view; a bar chart pans its value axis only. On a 3D
+  chart, dragging rotates the view.
+- **Double-click** resets the view to the chart's own ranges.
+- **Hover** shows a tooltip at the data point nearest the cursor (2D
+  charts).
+
+Pie charts ignore zoom and pan.
 
 ## Examples
 
