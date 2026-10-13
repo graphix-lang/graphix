@@ -200,18 +200,10 @@ Falls back to this mode when tree-sitter is not available.
      ;; Level 2: functions
      :language 'graphix
      :feature 'function
-     ;; CR claude for claude: [bug/low] This rule has no last-child anchor, so in
-     ;; `sys::time::timer(..)` every segment gets the function face; treesit keeps the
-     ;; first face applied, so the later rules cannot fix it. The 'module rule
-     ;; `(module_path . (identifier) ..)` matches the first segment of every path,
-     ;; including a connect target, so `count <- ..` colours `count` as a constant.
-     ;; Mirror highlights.scm: in string form, `(apply (reference (module_path
-     ;; (identifier) @font-lock-function-name-face .)))`, `(module_path (identifier)
-     ;; @font-lock-constant-face . "::")`, plus `(connect target: (module_path
-     ;; (identifier) @font-lock-variable-name-face))`. probe:
-     ;; design/review-2026-10-12/repro/ide-tooling-07.gx (ide-tooling-07)
-     '((apply (reference (module_path (identifier) @font-lock-function-name-face)))
-       (builtin_ref (identifier) @font-lock-function-name-face))
+     ;; a call's last path segment, as highlights.scm: a string, for the
+     ;; `.` anchor (see the module rule below)
+     "(apply (reference (module_path (identifier) @font-lock-function-name-face .)))
+      (builtin_ref (identifier) @font-lock-function-name-face)"
 
      ;; Level 2: constants
      :language 'graphix
@@ -227,11 +219,13 @@ Falls back to this mode when tree-sitter is not available.
      ;; Level 3: variables
      :language 'graphix
      :feature 'variable
-     '((let_binding
+     ;; a path's last segment; the segments before it are namespaces
+     "(let_binding
         pattern: (structure_pattern
                   (pattern_bind name: (identifier) @font-lock-variable-name-face)))
-       (pattern_bind name: (identifier) @font-lock-variable-name-face)
-       (reference (module_path (identifier) @font-lock-variable-name-face)))
+      (pattern_bind name: (identifier) @font-lock-variable-name-face)
+      (connect target: (module_path (identifier) @font-lock-variable-name-face .))
+      (reference (module_path (identifier) @font-lock-variable-name-face .))"
 
      ;; Level 3: parameters
      :language 'graphix
@@ -257,7 +251,7 @@ Falls back to this mode when tree-sitter is not available.
      :language 'graphix
      :feature 'module
      "(module name: (identifier) @font-lock-constant-face)
-      (module_path . (identifier) @font-lock-constant-face)"
+      (module_path (identifier) @font-lock-constant-face . \"::\")"
 
      ;; Level 3: constructors (variants)
      :language 'graphix
