@@ -11,7 +11,8 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, Shape, TypedRead, shape,
+    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, Shape, TypedRead, f32_as_written,
+    shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -127,16 +128,7 @@ fn leaf_to_json(value: &Value) -> Result<serde_json::Value, String> {
         Value::Z32(n) => Ok(serde_json::Value::from(*n)),
         Value::Z64(n) => Ok(serde_json::Value::from(*n)),
         Value::F32(n) => {
-            // CR claude for claude: [bug/low] `*n as f64` widens the f32 exactly, so
-            // the writer prints the shortest f64 form of the widened value.
-            // json::write_str({c: f32:0.1}) gives 0.10000000149011612, and toml's
-            // leaf_to_toml F32 arm does the same. Graphix reads the value back
-            // unchanged, but every other consumer sees a different number from the one
-            // the program holds. Fix: widen through the f32's shortest decimal,
-            // `format_compact!("{n}").parse::<f64>()`, which stays inline and reads
-            // back to the same f32. Use it in both writers. probe:
-            // design/review-2026-10-12/repro/small-pkgs-08.gx (small-pkgs-08)
-            let f = *n as f64;
+            let f = f32_as_written(*n);
             if f.is_finite() {
                 Ok(serde_json::Value::from(f))
             } else {

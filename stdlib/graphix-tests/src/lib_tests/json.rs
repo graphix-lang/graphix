@@ -246,3 +246,15 @@ run!(json_keys_writing_alike_refused, r#"{
     matches!(v, Ok(Value::String(s))
         if s.contains("same JSON key 1") && s.contains("same TOML key 1"))
 }; FuseExpect::Jit);
+
+// An f32 is written as the number the program holds, not its exact f64
+// widening, by json and toml alike, and reads back to itself.
+run!(f32_written_as_held, r#"{
+    let v = {c: f32:0.1};
+    let s = json::write_str(v)$;
+    let t = toml::write_str(v)$;
+    let back: {c: f32} = json::read(s)$;
+    "[s] [str::trim(t)] [back.c == f32:0.1]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"{"c":0.1} c = 0.1 true"#)
+}; FuseExpect::Jit);

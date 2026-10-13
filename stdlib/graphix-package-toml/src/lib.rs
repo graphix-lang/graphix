@@ -12,7 +12,8 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, Keys, ReadFormat, ReadInput, Shape, TypedRead, shape,
+    CachedArgsAsync, CachedVals, Keys, ReadFormat, ReadInput, Shape, TypedRead,
+    f32_as_written, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -123,7 +124,7 @@ fn leaf_to_toml(value: &Value) -> Result<toml::Value, String> {
             .map_err(|_| format!("v64 value {n} exceeds TOML i64 range")),
         Value::Z32(n) => Ok(toml::Value::Integer(i64::from(*n))),
         Value::Z64(n) => Ok(toml::Value::Integer(*n)),
-        Value::F32(n) => Ok(toml::Value::Float(*n as f64)),
+        Value::F32(n) => Ok(toml::Value::Float(f32_as_written(*n))),
         Value::F64(n) => Ok(toml::Value::Float(*n)),
         Value::String(s) => Ok(toml::Value::String(s.to_string())),
         Value::DateTime(dt) => {

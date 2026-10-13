@@ -502,6 +502,12 @@ pub enum Keys {
     Data,
 }
 
+/// The f64 a text writer gives an f32: the one its shortest decimal
+/// names, which is the number the program wrote and reads back to it.
+pub fn f32_as_written(n: f32) -> f64 {
+    compact_str::format_compact!("{n}").parse().unwrap_or(n as f64)
+}
+
 /// `v`'s shape under `t`, the type its call site gave it: a struct or a
 /// map is an object; an array, a list, a tuple or a variant's tag and
 /// payload a sequence; a union reads as the first member `v` inhabits.
