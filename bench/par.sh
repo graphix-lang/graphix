@@ -11,8 +11,8 @@
 set -u
 iters=${1:-3}
 dir="$(cd "$(dirname "$0")" && pwd)"
-graphix=${2:-${GRAPHIX:-$(cd "$dir/.." && cargo metadata --no-deps --format-version 1 2>/dev/null \
-    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/quick/graphix}}
+source "$dir/lib.sh"
+graphix=$(graphix_bin "${2:-}")
 timeout_s=300
 
 if [[ ! -x "$graphix" ]]; then
@@ -20,28 +20,11 @@ if [[ ! -x "$graphix" ]]; then
     exit 1
 fi
 
-# best <mode> <cpus> <threads> <program> [flags...]
-# CR claude for claude: [structure/low] This best() and the cargo-metadata binary lookup
-# above repeat bench/run.sh's almost line for line. The only differences are the
-# env/taskset prefix and --no-cache: par.sh passes it and run.sh does not, so run.sh
-# writes a session image per bench program into the user's cache and measures warm
-# starts. Move the lookup and best() into a sourced bench/lib.sh that takes the prefix
-# command, and pass --no-cache in both. (ide-tooling-16)
-best() {
-    local mode="$1" cpus="$2" threads="$3" prog="$4"; shift 4
-    local best="" t out
-    for _ in $(seq 1 "$iters"); do
-        out=$(GRAPHIX_PAR="$mode" GRAPHIX_EVAL_THREADS="$threads" \
-            timeout "$timeout_s" taskset -c "$cpus" \
-            "$graphix" --no-netidx --no-cache "$@" "$prog" 2>/dev/null)
-        if [[ $? -eq 124 ]]; then echo "timeout"; return; fi
-        t=$(sed -n 's/.*elapsed_s=\([0-9.eE+-]*\).*/\1/p' <<<"$out" | head -1)
-        [[ -z "$t" ]] && { echo "fail"; return; }
-        if [[ -z "$best" ]] || awk -v a="$t" -v b="$best" 'BEGIN{exit !(a<b)}'; then
-            best="$t"
-        fi
-    done
-    echo "$best"
+# run <mode> <cpus> <threads> <program> [flags...]
+run() {
+    local mode="$1" cpus="$2" threads="$3"; shift 3
+    prefix=(env GRAPHIX_PAR="$mode" GRAPHIX_EVAL_THREADS="$threads" taskset -c "$cpus")
+    best "$@"
 }
 
 printf '%-14s %10s %12s %14s\n' "bench" "serial(s)" "auto P x4" "auto P+E x12"
@@ -50,8 +33,8 @@ for prog in "$dir"/par_*.gx; do
     flags=()
     # node-walk benches: fused, each is a few milliseconds in all
     [[ "$name" == par_wide || "$name" == par_growth ]] && flags=(--no-fusion)
-    s=$(best off 0-3 4 "$prog" "${flags[@]}")
-    a4=$(best auto 0-3 4 "$prog" "${flags[@]}")
-    a12=$(best auto 0-11 12 "$prog" "${flags[@]}")
+    s=$(run off 0-3 4 "$prog" "${flags[@]}")
+    a4=$(run auto 0-3 4 "$prog" "${flags[@]}")
+    a12=$(run auto 0-11 12 "$prog" "${flags[@]}")
     printf '%-14s %10s %12s %14s\n' "$name" "$s" "$a4" "$a12"
 done

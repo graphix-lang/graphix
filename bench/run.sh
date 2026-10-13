@@ -19,8 +19,8 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 iters=${1:-3}
-graphix=${2:-${GRAPHIX:-$(cd "$here/.." && cargo metadata --no-deps --format-version 1 2>/dev/null \
-    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/quick/graphix}}
+source "$here/lib.sh"
+graphix=$(graphix_bin "${2:-}")
 dir="$(cd "${3:-$here}" && pwd)"
 timeout_s=120
 
@@ -29,33 +29,6 @@ if [[ ! -x "$graphix" ]]; then
     echo "build it first: cargo build --profile quick -p graphix-shell" >&2
     exit 1
 fi
-
-# Best (min) elapsed_s over $iters runs of one (mode, program). Echoes
-# either a float, "timeout", or "fail" (no elapsed_s line — e.g. stack
-# overflow).
-best() {
-    local prog="$1"; shift   # remaining args = mode flags
-    local best="" t out
-    for _ in $(seq 1 "$iters"); do
-        # --no-netidx: the netidx bench must measure a round trip, not
-        # the box's netidx INSTALL. The shell otherwise seeds the local
-        # client config, so `netidx_stream` published into whatever
-        # resolver that names — and when it is down (or its TLS is not
-        # set up for whoever is running the bench) publish and subscribe
-        # simply never complete. That reads as `timeout` in the results
-        # table, which looks like a performance number and is not one;
-        # it also burns the full budget twice per run. The internal
-        # netidx is a real one, so the round trip is still real.
-        out=$(timeout "$timeout_s" "$graphix" --no-netidx "$@" "$prog" 2>/dev/null)
-        if [[ $? -eq 124 ]]; then echo "timeout"; return; fi
-        t=$(sed -n 's/.*elapsed_s=\([0-9.eE+-]*\).*/\1/p' <<<"$out" | head -1)
-        [[ -z "$t" ]] && { echo "fail"; return; }
-        if [[ -z "$best" ]] || awk -v a="$t" -v b="$best" 'BEGIN{exit !(a<b)}'; then
-            best="$t"
-        fi
-    done
-    echo "$best"
-}
 
 printf '%-18s %14s %14s %12s\n' "bench" "jit(s)" "node-walk(s)" "speedup"
 printf '%-18s %14s %14s %12s\n' "-----" "------" "------------" "-------"
