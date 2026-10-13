@@ -1,0 +1,10 @@
+use tui::paragraph::paragraph;
+
+let last = "no key yet";
+
+last <- select tui::event {
+  `Key(k) => "[k.code]",
+  _ => never()
+};
+
+paragraph(&last)

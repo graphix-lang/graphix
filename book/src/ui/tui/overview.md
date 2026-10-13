@@ -13,23 +13,12 @@ The TUI library provides all the essential building blocks:
 
 ### Interactive Widgets
 
-<!-- CR claude for claude: [doc-drift/low] overview.md and input.md describe API the
-code does not have. overview.md says Table is 'Sortable', but table has no sort
-parameter. overview.md and calendar.md call calendar a 'Date picker', but it takes no
-input. overview.md lists a layout 'Alignment' with Top/Center/Bottom, but layout has
-only `flex`, and Alignment is Left/Center/Right. input.md gives `#handle: &fn(..) -> ..
-throws 'e` and `-> Tui throws 'e`. The .gxi has no throws, and the checker refuses a
-throwing handler. Failure: A handler using `?` written from input.md fails: `type
-mismatch fn(e: Event) -> [`Continue, `Stop] does not contain fn(e: Event) -> [`Continue,
-`Stop] throws Error<ErrChain<`Boom>>`. Fix: Drop 'Sortable' and 'Date picker', replace
-the alignment bullet with the Flex variants, and copy input_handler's signature from
-input_handler.gxi. Unverified: the reviewer's report, not checked by a verifier.
-(examples-tui-10) -->
 - **Table**: Selectable data tables with custom styling
 - **List**: Scrollable lists with selection and highlighting
 - **Tabs**: Tabbed interface for organizing content
 - **Browser**: Netidx browser component
 - **Calendar**: Month calendar with highlighted dates and events
+- **Line edit and Form**: Single-line text editing and modal forms (see [Text Entry](input.md#text-entry))
 
 ### Data Visualization
 

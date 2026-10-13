@@ -1,0 +1,26 @@
+use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
+
+type Mode = [`Normal, `Insert];
+let mode: Mode = `Normal;
+let text = "";
+
+let handle = |e: Event| on_press(e, |k| select (mode, k.code) {
+  (`Normal, `Char("i")) => {
+    mode <- k ~ `Insert;
+    `Stop
+  },
+  (`Insert, `Esc) => {
+    mode <- k ~ `Normal;
+    `Stop
+  },
+  (`Insert, `Char(c)) => {
+    text <- k ~ "[text][c]";
+    `Stop
+  },
+  _ => `Continue
+});
+
+input_handler(#handle: &handle, &paragraph(&"[mode]: [text]"))

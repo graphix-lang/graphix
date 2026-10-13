@@ -1,0 +1,39 @@
+use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
+
+let editing = false;
+let typed = "";
+
+// always enabled: 'e' starts editing
+let start = |e: Event| on_press(e, |k| select k.code {
+  i@ `Char("e") if editing == false => {
+    editing <- i ~ true;
+    `Stop
+  },
+  _ => `Continue
+});
+
+// enabled only while editing: Esc stops, characters are typed
+let edit = |e: Event| on_press(e, |k| select k.code {
+  x@ `Esc => {
+    editing <- x ~ false;
+    `Stop
+  },
+  c@ `Char(s) => {
+    typed <- c ~ "[typed][s]";
+    `Stop
+  },
+  _ => `Continue
+});
+
+let status = select editing {
+  true => "editing: [typed]",
+  false => "press e to edit: [typed]"
+};
+
+input_handler(
+  #handle: &start,
+  &input_handler(#enabled: &editing, #handle: &edit, &paragraph(&status))
+)

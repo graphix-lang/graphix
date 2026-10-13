@@ -450,6 +450,9 @@ impl<X: GXExt> TuiWidget for InputHandlerW<X> {
         // document it in input_handler.gxi and pin it with a TuiTestHarness test. The
         // book's signature is also stale (`throws 'e`, parameter `a`) and should match
         // the gxi. (tui-core-07)
+        // 2026-10-13 claude: input_handler.gxi and the book's Conditional Handling now
+        // document the rule as built (a disabled handler drops events for its whole
+        // subtree); change both if the ruling is bypass.
         if self.p.enabled.t.flatten().unwrap_or(true) {
             if self.queued.len() < MAX_QUEUED {
                 self.queued.push_back(v);
