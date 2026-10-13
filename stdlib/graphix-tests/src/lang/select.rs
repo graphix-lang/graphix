@@ -2797,15 +2797,9 @@ run!(array_list_ladders_refused, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 // Two members with one runtime form can't be told apart by any test:
-// a tuple and an array, a bare variant and a string, two references,
-// and a union trait dispatch over such members.
-// CR claude for claude: [test-gap/medium] The one-runtime-form pins skip three
-// collisions CLAUDE.md lists: a payload variant and an array (`[`A(i64), Array<[`A,
-// i64]>]`), a struct and an array (`[{a: i64, b: i64}, Array<(string, i64)>]`), and a
-// reference and a number (`[&i64, u64]`). If `Type::rep_collision` lost one of these,
-// nothing would fail. Losing the reference case lets `&i64 as r` take a u64 and
-// dereference it. Add a refused("same runtime form") fixture for each. All three are
-// refused today. (tests-select-05)
+// a tuple, a payload variant or a struct and an array, a bare variant
+// and a string, a reference and a number, two references, and a union
+// trait dispatch over such members.
 const SAME_FORM_TUPLE_ARRAY: &str = r#"
 {
   let f = |x: [(i64, string), Array<[i64, string]>]| select x {
@@ -2819,6 +2813,46 @@ const SAME_FORM_TUPLE_ARRAY: &str = r#"
 run!(same_form_tuple_array_refused, SAME_FORM_TUPLE_ARRAY, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
 }; FuseExpect::None);
+
+const SAME_FORM_VARIANT_ARRAY: &str = r#"
+{
+  let f = |x: [`A(i64), Array<[`A, i64]>]| select x {
+    `A(n) => n,
+    Array<[`A, i64]> as a => 2
+  };
+  f(`A(1))
+}
+"#;
+
+run!(same_form_variant_array_refused, SAME_FORM_VARIANT_ARRAY,
+    refused("same runtime form"); FuseExpect::None);
+
+const SAME_FORM_STRUCT_ARRAY: &str = r#"
+{
+  let f = |x: [{a: i64, b: i64}, Array<(string, i64)>]| select x {
+    {a: i64, b: i64} as s => 1,
+    Array<(string, i64)> as a => 2
+  };
+  f({a: 1, b: 2})
+}
+"#;
+
+run!(same_form_struct_array_refused, SAME_FORM_STRUCT_ARRAY,
+    refused("same runtime form"); FuseExpect::None);
+
+const SAME_FORM_REF_NUMBER: &str = r#"
+{
+  let f = |x: [&i64, u64]| select x {
+    &i64 as r => *r,
+    u64 as n => 2
+  };
+  let v = 1;
+  f(&v)
+}
+"#;
+
+run!(same_form_ref_number_refused, SAME_FORM_REF_NUMBER,
+    refused("same runtime form"); FuseExpect::None);
 
 const SAME_FORM_TAG_STRING: &str = r#"
 {
