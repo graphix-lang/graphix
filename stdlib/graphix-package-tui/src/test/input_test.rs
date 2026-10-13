@@ -313,7 +313,7 @@ let result = browser(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_scroll_keeps_the_rows_that_stay() -> Result<()> {
     let mut h = TuiTestHarness::with_viewport(
-        // CR claude for claude: [risk/low] Browser scroll test relies on a fixed 600 ms
+        // XCR claude for claude: [risk/low] Browser scroll test relies on a fixed 600 ms
         // load window and is flaky under load.
         // a_browser_scroll_keeps_the_rows_that_stay counts #SUB rows only once i >= 6,
         // that is 600 ms after start, 400 ms after the path arrives at 200 ms. It
@@ -326,23 +326,33 @@ async fn a_browser_scroll_keeps_the_rows_that_stay() -> Result<()> {
         // `flashed == 0` frame has been seen (e.g. a `loaded` latch), not after a fixed
         // tick count. Unverified: the reviewer's report, not checked by a verifier.
         // (tests-tui-10)
+        // 2026-10-13 codex: Gate the timer on three visible rows with no #SUB
+        // cells. a_browser_scroll_keeps_the_rows_that_stay now measures only
+        // scrolling; socket creation is refused in this sandbox, so its live
+        // network run still needs review outside the sandbox.
         r##"
 use tui::{Tui, browser::{MoveCursor, browser}};
 let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k]", k));
 let path = sys::time::after_idle(duration:200.ms, "/local/ring");
 let cur: MoveCursor = never();
 let b: Tui = browser(#size: {width: 40, height: 4}, #cursor: cur, path);
-let flashed = select b {
-  `Table(t) => array::len(array::filter(*t.rows, |r| str::contains(#part: "#SUB", "[(*r).cells]"))),
+let progress = select b {
+  `Table(t) => {
+    let rows = *t.rows;
+    (array::len(rows), array::len(array::filter(rows, |r| str::contains(#part: "#SUB", "[(*r).cells]"))))
+  },
   _ => never()
 };
+let loaded = false;
+loaded <- select (loaded, progress) { (false, (3, 0)) => true, _ => never() };
 let i = 0;
-i <- sys::time::timer(duration:100.ms, 16) ~ i + 1;
-cur <- select i { x if x >= 6 && x < 12 => i ~ `Down(1), _ => never() };
-let after_load = select i { x if x >= 6 => flashed, _ => never() };
+let tick = select loaded { true => sys::time::timer(duration:100.ms, 10), false => never() };
+i <- tick ~ i + 1;
+cur <- select i { x if x >= 1 && x <= 6 => i ~ `Down(1), _ => never() };
+let after_load = select loaded { true => progress.1, false => never() };
 let worst = 0;
 worst <- after_load ~ max(worst, after_load);
-let answer = select i { 16 => worst, _ => never() };
+let answer = select i { 10 => worst, _ => never() };
 let result = b
 "##,
         40,
