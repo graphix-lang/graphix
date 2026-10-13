@@ -7,7 +7,7 @@
 
 use std::{
     fs,
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -27,16 +27,16 @@ fn signal(child: &Child, sig: libc::c_int) {
     unsafe { libc::kill(child.id() as libc::pid_t, sig) };
 }
 
-/// True iff `child` exited within `budget`.
-fn exited_within(child: &mut Child, budget: Duration) -> bool {
+/// How `child` exited, if it did within `budget`.
+fn exited_within(child: &mut Child, budget: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
-        if child.try_wait().expect("try_wait").is_some() {
-            return true;
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            return Some(status);
         }
         thread::sleep(Duration::from_millis(100));
     }
-    false
+    None
 }
 
 fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
@@ -93,13 +93,17 @@ fn signal_frees_process(
             signal(&child, sig);
         }
     }
-    let freed = exited_within(&mut child, Duration::from_secs(30));
-    if !freed {
+    let status = exited_within(&mut child, Duration::from_secs(30));
+    if status.is_none() {
         let _ = child.kill();
         let _ = child.wait();
     }
     let _ = fs::remove_dir_all(&dir);
-    assert!(freed, "{label}: wedged shell survived signal {sig}: only SIGKILL frees it");
+    let status = status.unwrap_or_else(|| {
+        panic!("{label}: wedged shell survived signal {sig}: only SIGKILL frees it")
+    });
+    // an interrupted program did not succeed: `graphix x.gx && next` stops
+    assert!(!status.success(), "{label}: signal {sig} ended the shell with {status}");
 }
 
 #[test]

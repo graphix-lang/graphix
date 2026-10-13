@@ -668,18 +668,8 @@ impl<X: GXExt> Shell<X> {
                             gx.interrupt();
                             output.clear().await;
                         }
-                        // CR claude for claude: [bug/low] An interrupted script ends
-                        // with no exit code, so the process exits 0. `graphix long.gx
-                        // && deploy` followed by Ctrl-C therefore runs `deploy`.
-                        // `Terminated::recv` reports 128+n for SIGTERM and SIGHUP,
-                        // which makes SIGINT the only end signal that reads as success.
-                        // Probe:
-                        // design/review-2026-10-12/repro/tests-shell-compiler-04.gx
-                        // (SIGINT exits 0, SIGTERM 143). Fix: `break Ok(Some(128 +
-                        // 2))`, and assert the exit status in interrupt_wedge.rs, which
-                        // today checks only that the process exits.
-                        // (tests-shell-compiler-04)
-                        Ok(Signal::CtrlC) if script => break Ok(None),
+                        // the status a shell reports for SIGINT
+                        Ok(Signal::CtrlC) if script => break Ok(Some(128 + 2)),
                         Ok(Signal::CtrlC) => {
                             // Interrupt first: a wedged runtime cannot serve `output.clear()`.
                             gx.interrupt();
