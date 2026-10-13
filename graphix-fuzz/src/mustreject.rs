@@ -122,13 +122,12 @@ struct Entry {
 }
 
 impl TypeMap {
-    /// From a check's sites in the subject's module `module`, whose first
-    /// line carries `body_col` characters before the body.
-    pub fn new(sites: &[ExprTypeSite], module: &str, body_col: usize) -> Self {
+    /// From a check's sites in the subject's module `module`.
+    pub fn new(sites: &[ExprTypeSite], module: &str) -> Self {
         let mut map: AHashMap<(i32, i32, i32, i32), Entry> = AHashMap::new();
         for s in sites.iter().filter(|s| in_module(&s.ori, module)) {
             let Some(end) = s.end else { continue };
-            let (a, b) = (to_body(s.pos, body_col), to_body(end, body_col));
+            let (a, b) = (to_body(s.pos), to_body(end));
             let e = map.entry((a.line, a.column, b.line, b.column)).or_default();
             e.types.push(s.typ.clone());
             e.cell |= s.cell;
@@ -156,12 +155,10 @@ pub fn in_module(ori: &Origin, module: &str) -> bool {
     matches!(&ori.source, Source::Vfs(m) if netidx_core::path::Path::basename(m) == Some(module))
 }
 
-/// A module-file position as a body position.
-pub fn to_body(p: SourcePosition, body_col: usize) -> SourcePosition {
-    match p.line {
-        1 => SourcePosition { line: 1, column: p.column - body_col as i32 },
-        _ => p,
-    }
+/// A module-file position as a body position: the body starts on the
+/// module's second line.
+pub fn to_body(p: SourcePosition) -> SourcePosition {
+    SourcePosition { line: p.line - 1, column: p.column }
 }
 
 fn span(e: &Expr) -> Option<Span> {

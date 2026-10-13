@@ -1,25 +1,8 @@
-// expect: reject
 // bisect: asymmetric timeout (interp exceeded 8x budget; JIT produced a value — verify the node-walk terminates and agrees before reading this as a JIT bug)
 // interp: Timeout
 // jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(7))], capped: false }] })
 // mutant: {let rec f = |n: i64| -> i64 select select n {i64:0 => str::len("abc"), _ => f(n - i64:1) + array::len([n])} {m if m <= i64:0 => i64:1 % m, m => f(m - i64:1)}; let v = f(i64:1); array::fold([i64:5, i64:7], v, |a, x| x)}
 // minimized:
-
-{
-	let rec f = |n: i64| -> i64
-		select
-			select n {
-				i64:0 => str::len("abc"),
-				_ => f(n - i64:1)
-			}
-		{
-			m if m <= i64:0 => i64:1 % m,
-			m => f(m - i64:1)
-	    };
-	let v = f(i64:1);
-	array::fold([i64:5, i64:7], v, |a, x| x)
-}
-
 // RULED + FIXED (Eric, 2026-07-23): depth-limit-exceeded is a
 // SETTLED, DELIVERED tainted bottom (node/lambda.rs trip site) — an
 // identical retry re-trips deterministically, so re-evaluation waits
@@ -42,3 +25,18 @@
 // it is WHY cap-mismatch must stay a recorded divergence: prefix-pass
 // cannot distinguish "interp merely slow" (fib) from "JIT value the
 // interp never produces" (this).
+
+{
+	let rec f = |n: i64| -> i64
+		select
+			select n {
+				i64:0 => str::len("abc"),
+				_ => f(n - i64:1)
+			}
+		{
+			m if m <= i64:0 => i64:1 % m,
+			m => f(m - i64:1)
+	    };
+	let v = f(i64:1);
+	array::fold([i64:5, i64:7], v, |a, x| x)
+}

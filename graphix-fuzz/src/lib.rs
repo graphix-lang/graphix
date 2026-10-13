@@ -362,9 +362,6 @@ pub struct Subject {
     pub table: AHashMap<Path, VfsEntry>,
     /// The module the body is installed as.
     pub modname: String,
-    /// The characters before the body on the module's first line: a
-    /// position the compiler reports there is the body's plus this.
-    pub body_col: usize,
 }
 
 impl Subject {
@@ -393,168 +390,9 @@ impl Subject {
         let statements =
             parser::parse(Origin::unspecified(body)).map_or(1, |items| items.len());
         let (open, close) = if statements > 1 { ("{", "\n}") } else { ("", "") };
-        // CR claude for claude: [bug/high] Every `// expect: reject` pin passes regress
-        // whatever its program does; 3 such pins compile. Subject::parse wraps the body
-        // as `use super::*; {inputs}let result = {open}{body}{close}` (lib.rs) without
-        // removing comment lines. build.rs strip_header (build.rs) keeps `// expect:
-        // reject` as the first line of each embedded pin. So every expect-reject pin
-        // compiles as `let result = // expect: reject\n...`, which the parser refuses
-        // since eb97e70d (comments only on their own line). run_regression then records
-        // Verdict::Rejected, and undeclared_rejection (lib.rs) skips the pin because it
-        // carries the marker. The pin's program is never parsed or typechecked, so a
-        // checker that started accepting a refused program would not be noticed. The
-        // fusecheck counts for these pins are vacuous too. Three of the 82 pins do not
-        // reject even on their own program; they are accepted only because a trailing
-        // write-up comment block also fails to parse:
-        // tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx (its header says 'Both
-        // modes now AGREE with real values'; with comments removed: AGREE (trace)),
-        // abort-seam-jul2026/01_depth_trip_settled_taint.gx (AGREE (contained)), and
-        // select-guard-prenarrow-bind-aug2026/02 (EXCLUDED). The marker was added to
-        // them in 0695927a, which means the tvar constraint self-deadlock pin has not
-        // been checked since then. Failure: Pin `// expect: reject\ni64:2 + i64:3` (a
-        // valid program) gives `graphix-fuzz check` -> `AGREE (reject)`. If the tvar
-        // self-deadlock fix (35e00e34) regressed, `regress` would still say 0
-        // regressions: tvar-lock-jul2026/01 is rejected by the parser before typecheck
-        // ever runs. Fix: Make Subject::parse drop the leading `//` block (keeping the
-        // `-v1` headers it already consumes and the expect marker) before wrapping, or
-        // start the body on its own line after `let result =`. Move the trailing
-        // write-ups of the tvar-lock and abort-seam pins above their programs (a
-        // trailing comment never parses), remove their wrong `// expect: reject` lines,
-        // and re-bless outcome.manifest and fusecheck.manifest. Add a unit test that
-        // check_verdict("// expect: reject\ni64:1") is not Rejected. Unverified: the
-        // reviewer's report, not checked by a verifier. (fuzz-main-aux-01)
-        // CR claude for claude: [test-gap/high] Fuzz wrapper puts body line 1 on the
-        // `let result = {` line: comment-led pins reject vacuously. `Subject::parse`
-        // builds `format!("use super::*; {inputs}let result = {open}")` and appends the
-        // body directly, so the body's first line shares the wrapper's line. Since
-        // eb97e70d (parser: own-line comments) a `//` comment must stand on its own
-        // line, so any body whose first line is a comment fails to PARSE at column 29.
-        // build.rs (`strip_header`) re-attaches `// expect: reject` above every
-        // must-reject pin in the embedded regress corpus, and `Subject::parse` only
-        // removes the schedule/callable headers (schedule.rs `split_header`). As a
-        // result all 81 `reject` pins in outcome.manifest are refused by the wrapper's
-        // parse error, not by the checker. `check_verdict` sees `Rejected`,
-        // `undeclared_rejection` (lib.rs) is satisfied by the marker, and the pin
-        // passes whatever the type checker does. The `check`, `run`, `minimize`,
-        // `check-isolated` and `typemorph` subcommands read a file and `trim()` it. 532
-        // of the 547 saved findings start with a `// bisect:` header, so checking one
-        // of them by hand always prints `AGREE (reject)`. Failure: A regression makes
-        // the checker accept arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx
-        // (or any `// expect: reject` pin). `regress` still reports it `reject` (a
-        // parse error at `let result = {// expect: reject`) and passes. Separately,
-        // `graphix-fuzz check
-        // graphix-fuzz/findings/arm-entry-raise-sep2026/00_fold_init_constant_raise.gx`
-        // prints `AGREE (reject)`, while the manifest says `trace` and the
-        // comment-stripped program gives `AGREE (trace)`, so a divergence in a
-        // re-checked finding is invisible. Fix: In `Subject::parse`, strip the leading
-        // `//` block (keeping the marker for `undeclared_rejection`, which reads the
-        // original text), or open the wrapper with a newline (`let result = {\n`) and
-        // carry a body LINE offset next to `body_col`. Also have a `Rejected` verdict
-        // record the refusal class, so a parse error at the wrapper can never stand in
-        // for a checker refusal. Add a unit test: a valid body under `// expect:
-        // reject` must be a regression. Unverified: the reviewer's report, not checked
-        // by a verifier. (examples-rest-01)
-        // CR claude for claude: [bug/low] The body is appended to this prefix on the
-        // same line. A body whose first line is a `//` comment (one that is not a -v1
-        // header, which the header parsers strip) then fails to parse in every mode ('a
-        // comment stands on a line of its own'). Both failures agree, so `graphix-fuzz
-        // check` reports AGREE (reject) for a file `graphix --check` accepts. End the
-        // prefix with a newline and have body_col's users account for the body starting
-        // on line 2, or strip the body's leading comment lines before wrapping. probe:
-        // design/review-2026-10-12/repro/fuzz-lib-a-10.gx (fuzz-lib-a-10)
-        // CR claude for claude: [test-gap/high] The body is spliced onto the `let
-        // result = {` line. A body whose first line is a `//` comment therefore puts
-        // that comment after the `{`, and the parser refuses it. build.rs strip_header
-        // keeps `// expect: reject` as the first line of every such corpus pin, so all
-        // of them reject at parse whatever the program says. A pin whose program the
-        // checker starts accepting stays green in `regress`, and `check`/`run` on any
-        // file with a comment header report a false AGREE (reject). A pin with its
-        // comments removed (abort-seam-jul2026/01) passes `graphix --check`. Fix: take
-        // the oracle comment lines out of the body before wrapping (blank them so rows
-        // keep their numbers), or start the body on its own line and adjust body_col
-        // and the line offset. Then re-bless outcome.manifest, look at every pin that
-        // leaves `reject`, and add a selfcheck that a valid program marked `// expect:
-        // reject` fails the gate. probe: design/review-2026-10-12/repro/x-rerun-6-01.sh
-        // Also reported as (x-rerun-8-04). (x-rerun-6-02)
-        // CR claude for claude: [test-gap/high] The body starts on the same line as
-        // `let result = {`, and the parser refuses a `//` comment that does not start
-        // its line. So any body whose first line is a comment fails to parse in /test.
-        // That covers every corpus pin with `// expect: reject` (strip_header keeps
-        // that line first), every campaign finding file with its header, and every
-        // review repro. A reject pin therefore agrees as `reject` whatever the checker
-        // does with the program: a regression that starts accepting a pinned program
-        // passes regress unnoticed. A valid program behind `// expect: reject` checks
-        // as AGREE (reject). Fix: start the body on its own line (`let result =
-        // {open}\n`, with body_col and the line mapping adjusted to match), or drop the
-        // header comments in Subject::parse once they have been read. Then add a test
-        // that a reject pin's CompileErr is not a parse error at line 1 of /test.
-        // probe: design/review-2026-10-12/repro/x-rerun-1-01.gx Also reported as
-        // (x-rerun-7-01). (x-rerun-1-01)
-        // CR claude for claude: [bug/medium] The body starts on the same line as `let
-        // result = {open}`. So when a program's first line is a `//` comment, every
-        // mode fails to parse it ("a comment stands on a line of its own"). This covers
-        // every commented pin under findings/ and every divergence_*.gx the fuzzer
-        // writes (`// bisect:` header). The oracle then reports AGREE (reject) and
-        // never runs the program. `graphix-fuzz check <pin>` silently tests nothing.
-        // Only the embedded regression corpus escapes this, because
-        // `build.rs::strip_header` drops the header first. Fix: either start the body
-        // on its own line (`{open}\n`, with `body_col` and the reported line offsets
-        // shifted to match), or have `Subject::parse` drop the leading comment lines
-        // the same way `strip_header` does. probe:
-        // design/review-2026-10-12/repro/f-call-flow-04.sh Also reported as
-        // (x-rerun-2-06), (x-engine-collections-05). (f-call-flow-04)
-        // CR claude for claude: [bug/high] The body is appended right after `let result
-        // = ` on the same line. A body whose first line is a `//` comment therefore
-        // becomes `let result = // ...`, and the own-line comment rule refuses it as a
-        // parse error. build.rs `strip_header` keeps `// expect: reject` as the first
-        // line of every embedded pin, and `schedule::split_header` keeps every
-        // non-header comment. As a result, all 82 expect-reject pins in findings/ are
-        // rejected by the parser in every mode, regress (`check_verdict`,
-        // `undeclared_rejection`) reads that as the pinned refusal, and a checker
-        // change that starts accepting one of them goes unnoticed. The same applies to
-        // `graphix-fuzz check` on any hand-written witness that starts with a comment:
-        // it prints "AGREE (reject)". Fix: drop the leading non-header comment lines
-        // (the marker included) before wrapping, in one helper shared with
-        // `strip_header`, or end the prefix with a newline and shift `body_col` and the
-        // line offsets to match. Add a pin: a valid program under `// expect: reject`
-        // must be reported as not rejected, and one under a note comment must run.
-        // probe: design/review-2026-10-12/repro/x-rerun-3-01.sh (x-rerun-3-01)
-        // CR claude for claude: [bug/high] The body is spliced onto this line after
-        // `let result =`, but only the schedule-v1 and callable-v1 headers were taken
-        // off it. So the `// expect: reject` line that build.rs::strip_header keeps on
-        // top of every refusal pin ends up mid-line. The parser refuses it ("a comment
-        // stands on a line of its own"), and every one of those pins agrees as `reject`
-        // in every mode whatever the type checker does. A checker that starts accepting
-        // one of them still passes regress. A well-typed `{ let x = 1; x + 1 }` under
-        // the marker gives AGREE (reject). The same thing makes any hand-run
-        // `graphix-fuzz check|run findings/<pin>.gx` that has a commentary header a
-        // parse error. Fix: drop the whole leading `//` block (EXPECT_REJECT included)
-        // before wrapping, or start the body on a line of its own and adjust body_col.
-        // Add a selfcheck that a well-typed program under EXPECT_REJECT does not give a
-        // `reject` verdict. Fix or delete
-        // findings/dyncall-pending-taint-jul2026/03_pend_chain_cached_downstream.gx: it
-        // is rejected only because its u64 schedule type is unsupported. probe:
-        // design/review-2026-10-12/repro/tests-select-01.sh (tests-select-01)
-        // CR claude for claude: [bug/high] build.rs strip_header keeps the `// expect:
-        // reject` marker (EXPECT_REJECT) as the program's first line, and this prefix
-        // puts it on the same line as `let result =`, where a comment is a parse error.
-        // Every marked pin is refused by the parser whatever its program does. Verdict
-        // `reject` always matches outcome.manifest, and undeclared_rejection skips
-        // marked pins, so none of the 81 `reject` rows can fail: a typechecker refusal
-        // that regresses to acceptance (infinite-type-jul2026/00) stays green. Two
-        // marked pins are not rejects at all. Once the marker and its trailing comments
-        // are removed, tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx runs to a
-        // trace and abort-seam-jul2026/01_depth_trip_settled_taint.gx is containment,
-        // so the compile-wedge regression they pin is never compiled. Fix: drop
-        // EXPECT_REJECT lines from the body here, as the -v1 headers are dropped
-        // (undeclared_rejection still reads the raw text). Then fix those two pins,
-        // re-run `regress --bless`, and add a unit test that a well-typed program
-        // carrying the marker gets verdict `trace`. probe:
-        // design/review-2026-10-12/repro/fuzz-lib-b-01.sh Also reported as
-        // (x-fix-fuzz-tests-01). (fuzz-lib-b-01)
-        let prefix = format!("use super::*; {inputs}let result = {open}");
-        let body_col = prefix.chars().count();
-        let wrapped = ArcStr::from(format!("{prefix}{body}{close}"));
+        let wrapped = ArcStr::from(format!(
+            "use super::*; {inputs}let result = {open}\n{body}{close}"
+        ));
         let mut table = AHashMap::from_iter([(
             Path::from(format!("/{modname}.gx")),
             VfsEntry::from(wrapped),
@@ -576,7 +414,6 @@ impl Subject {
             mods: files::mod_decls(&files),
             table,
             modname: modname.to_string(),
-            body_col,
         })
     }
 
@@ -3218,8 +3055,8 @@ enum TmCheck {
     Unparsed(String),
     /// The check outlived its budget; the runtime is still busy with it.
     Hung,
-    /// The check's answer, and the subject body's first column.
-    Done(anyhow::Result<graphix_rt::CheckResult>, usize),
+    /// The check's answer.
+    Done(anyhow::Result<graphix_rt::CheckResult>),
 }
 
 /// Check `full` on `ctx`, recording its types when `types`.
@@ -3250,7 +3087,7 @@ async fn tm_check(
         }
     };
     match r {
-        Ok(r) => TmCheck::Done(r, subj.body_col),
+        Ok(r) => TmCheck::Done(r),
         Err(_) => TmCheck::Hung,
     }
 }
@@ -3292,8 +3129,8 @@ pub async fn typemorph_subject(
     let accept = |c: TmCheck| match c {
         TmCheck::Unparsed(e) => TmVerdict::Reject(tm_error_head(&e)),
         TmCheck::Hung => TmVerdict::Hung,
-        TmCheck::Done(Ok(_), _) => TmVerdict::Accept,
-        TmCheck::Done(Err(e), _) => TmVerdict::Reject(tm_error_head(&format!("{e:?}"))),
+        TmCheck::Done(Ok(_)) => TmVerdict::Accept,
+        TmCheck::Done(Err(e)) => TmVerdict::Reject(tm_error_head(&format!("{e:?}"))),
     };
     let base = accept(tm_check(&ctx, &compose(body), false, per_check).await);
     let mut results = Vec::new();
@@ -3329,12 +3166,12 @@ async fn must_reject(
 ) -> Vec<Probed<Option<String>>> {
     use graphix_compiler::expr::ErrorSite;
     let mut out = Vec::new();
-    let TmCheck::Done(Ok(checked), body_col) =
+    let TmCheck::Done(Ok(checked)) =
         tm_check(ctx, &compose(body), true, per_check).await
     else {
         return out;
     };
-    let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test", body_col);
+    let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test");
     for p in mustreject::probes(body, &types, cap) {
         // CR claude for claude: [test-gap/low] A mutant is classified only by where it
         // is refused. Any refusal inside the expected spans (the whole select for
@@ -3352,12 +3189,12 @@ async fn must_reject(
         let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
             TmCheck::Unparsed(_) => continue,
             TmCheck::Hung => break,
-            TmCheck::Done(Ok(_), _) => Some(format!("LEAK: accepted at {}", p.reached)),
-            TmCheck::Done(Err(e), body_col) => {
+            TmCheck::Done(Ok(_)) => Some(format!("LEAK: accepted at {}", p.reached)),
+            TmCheck::Done(Err(e)) => {
                 let site = e.downcast_ref::<ErrorSite>().map(|s| s.expr());
                 let right = site.is_some_and(|x| {
                     mustreject::in_module(&x.ori, "test")
-                        && p.right_site(mustreject::to_body(x.pos, body_col))
+                        && p.right_site(mustreject::to_body(x.pos))
                 });
                 match right {
                     true => None,
@@ -6511,6 +6348,21 @@ mod trace_probes {
         assert_eq!(shapes(&j), want, "jit trace");
         for s in i.iter().chain(j.iter()) {
             assert!(!s.capped_cycles && !s.capped_events, "no caps: {s:?}");
+        }
+    }
+
+    /// A comment above the body is legal, the reject marker included: a
+    /// well-typed program under `// expect: reject` runs, so a pin whose
+    /// refusal regressed to acceptance fails the gate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leading_comments_do_not_reject() {
+        for prog in [
+            "// expect: reject\ni64:2 + i64:3",
+            "// a note\n{ let x = i64:1; x + i64:1 }",
+        ] {
+            let (d, v) = check_verdict(prog, std::time::Duration::from_secs(60)).await;
+            assert!(d.is_none(), "{prog}: {d:?}");
+            assert!(matches!(v, Verdict::Ran), "{prog}: {v:?}");
         }
     }
 

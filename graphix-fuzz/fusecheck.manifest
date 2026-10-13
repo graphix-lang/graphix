@@ -1,4 +1,4 @@
-0	abort-seam-jul2026/01_depth_trip_settled_taint.gx
+abort	abort-seam-jul2026/01_depth_trip_settled_taint.gx
 0	abstract-opaque-overtag-jul2026/00_het_list_fn_fold.gx
 0	abstract-opaque-overtag-jul2026/01_het_list_nested_list.gx
 2	abstract-ord-mixed-types-sep2026/00_map_key_union.gx
@@ -122,7 +122,6 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	dyncall-partial-args-jul2026/01_window_scalar_bottom_val.gx
 1	dyncall-pending-taint-jul2026/01_pad_guard_unconsumed_bind.gx
 1	dyncall-pending-taint-jul2026/02_pad_guard_consumed_silent.gx
-0	dyncall-pending-taint-jul2026/03_pend_chain_cached_downstream.gx
 1	dyncall-site-identity-jul2026/00_masked_outer_call_cache_ride.gx
 1	dyncall-site-identity-jul2026/01_seed_backedge_unwrap.gx
 4	dyncall-stale-arg-fired-aug2026/01_escape_per_arg_gating.gx
@@ -491,7 +490,7 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 1	tvar-alias-sever-jul2026/00_fn_elem_find.gx
 1	tvar-alias-sever-jul2026/01_string_elem_map.gx
 0	tvar-alias-sever-jul2026/02_acceptance_hole_rejects.gx
-0	tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx
+1	tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx
 5	twochannel-jul2026/late_init_priming.gx
 2	twochannel-jul2026/p10_const_callee_body.gx
 2	twochannel-jul2026/p11_letrec_group.gx

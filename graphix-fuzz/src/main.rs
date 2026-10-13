@@ -979,22 +979,6 @@ async fn main() -> Result<()> {
                 Some(p) => p,
                 None => bail!("usage: graphix-fuzz {cmd} <file>"),
             };
-            // CR claude for claude: [bug/high] `check`, `run`, `minimize` and
-            // `check-isolated` hand the file to Subject::parse unchanged.
-            // Subject::parse puts the body on the line of `let result = `, so a leading
-            // `//` comment block is a parse error in every engine. 532 of the 547 pins
-            // under findings/, and every divergence file Corpus::record writes (`//
-            // bisect:`, `// key:`, `// minimized:`), start with such a block. The
-            // result: `check` prints `AGREE (reject)` and `minimize` prints "no
-            // divergence to minimize". The README's loop of `graphix-fuzz check` over
-            // findings/ and the triage of a pulled divergence therefore always report
-            // agreement. Fix: move build.rs::strip_header into the library (build.rs
-            // can `#[path]`-include it, keeping the `-v1` and `// expect: reject` lines
-            // as it does now) and run every file-reading CLI path through it (typemorph
-            // included, see fuzz-main-aux-01). Also print the CompileErr head with an
-            // `AGREE (reject)` verdict so a rejection the wrapper caused is visible.
-            // probe: design/review-2026-10-12/repro/fuzz-main-aux-02.gx Also reported
-            // as (x-fix-fuzz-tests-02). (fuzz-main-aux-02)
             let code = std::fs::read_to_string(path)?;
             let code = code.trim();
             match cmd {

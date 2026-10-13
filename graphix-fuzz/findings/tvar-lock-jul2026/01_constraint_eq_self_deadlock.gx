@@ -1,5 +1,3 @@
-// expect: reject
-{let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v))); (m([i64:1], |x| x * i64:2), m(["a"], |s| str::parse))}
 // ROOT-CAUSED + FIXED (2026-07-23): NOT a lost wake — a same-thread
 // RwLock SELF-DEADLOCK in the tvar constraint machinery.
 // TCell::add_constraint's dedup runs a full structural Type::eq, and
@@ -39,3 +37,5 @@
 //   before a ref registers, backfill misses, node waits forever.
 // - Repro: loop the shell under timeout; wedge rate is load- and
 //   binary-dependent (release wedges more often than debug).
+
+{let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v))); (m([i64:1], |x| x * i64:2), m(["a"], |s| str::parse))}
