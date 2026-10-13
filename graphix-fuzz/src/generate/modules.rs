@@ -283,44 +283,22 @@ pub(super) fn gen_module(
         if chance(rng, 0.6) {
             let override_default = chance(rng, 0.5);
             let decl = "trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };\n";
-            // CR claude for claude: [structure/low] Both arms build the same sig_impl.
-            // `let via = 'a: Tr |x: 'a| Tr::tw(x);` is written in both body_impl
-            // strings and again in the bare-module form, and the bare path then deletes
-            // it with a `replace` on the exact text. If any copy changes, the replace
-            // stops matching and the bare module defines via twice with no error to
-            // flag it. Fix: only the impl line depends on override_default. Build it
-            // alone and push the via line once, the annotated form when there is no
-            // gxi, and drop the replace. (fuzz-gen-b-08)
-            let (sig_impl, body_impl) = if override_default {
-                (
-                    "impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n",
-                    format!(
-                        "impl Tr for T {{ let tv = |t| {un_body}; let tw = |t| {un_body} * i64:2 }};\nlet via = 'a: Tr |x: 'a| Tr::tw(x);\n"
-                    ),
-                )
+            let tw = if override_default {
+                format!("; let tw = |t| {un_body} * i64:2")
             } else {
-                (
-                    "impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n",
-                    format!(
-                        "impl Tr for T {{ let tv = |t| {un_body} }};\nlet via = 'a: Tr |x: 'a| Tr::tw(x);\n"
-                    ),
-                )
+                String::new()
             };
+            let imp = format!("impl Tr for T {{ let tv = |t| {un_body}{tw} }};\n");
+            let via = "'a: Tr |x: 'a| Tr::tw(x);\n";
             if has_gxi {
                 gxi.push_str(decl);
-                gxi.push_str(sig_impl);
+                gxi.push_str("impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n");
+                gx.push_str(&imp);
+                gx.push_str(&format!("let via = {via}"));
             } else {
                 gx.push_str(decl);
-                gx.push_str(
-                    "let via: fn<'a: Tr>(x: 'a) -> i64 = 'a: Tr |x: 'a| Tr::tw(x);\n",
-                );
-            }
-            if has_gxi {
-                gx.push_str(&body_impl);
-            } else {
-                gx.push_str(
-                    &body_impl.replace("let via = 'a: Tr |x: 'a| Tr::tw(x);\n", ""),
-                );
+                gx.push_str(&format!("let via: fn<'a: Tr>(x: 'a) -> i64 = {via}"));
+                gx.push_str(&imp);
             }
             ctx.push(
                 format!("{mname}::Tr::tv"),
