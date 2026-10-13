@@ -1918,9 +1918,10 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     }
 
     /// Release an id this node minted for its own deliveries: unregister
-    /// it and forget the value the store holds for it and the writes
-    /// waiting for it, which nothing will read.
+    /// it, stop a timer set on it, and forget the value the store holds
+    /// for it and the writes waiting for it, which nothing will read.
     pub fn release_var(&mut self, id: BindId, top_id: ExprId) {
+        self.rt.cancel_timer(id);
         self.unref_var(id, top_id);
         self.rt.store_release(&id);
     }

@@ -261,7 +261,6 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
         ctx.release_var(self.id, self.top_id);
-        ctx.rt.store_remove(&self.id);
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {

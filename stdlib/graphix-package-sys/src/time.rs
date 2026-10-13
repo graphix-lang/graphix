@@ -17,16 +17,6 @@ use std::time::Duration;
 
 /// Drop a timer's private fire id: its timer, its reference and the value
 /// the runtime stored for it, which no one else can read.
-fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, eid: ExprId) {
-    ctx.rt.cancel_timer(id);
-    ctx.release_var(id, eid);
-    // CR claude for claude: [dead/low] ExecCtx::release_var already does unref_var plus
-    // rt.store_remove for the same id, so this call repeats it. The same pair appears
-    // in io.rs IoLines::delete, core's CachedArgsAsync::release and queuefn's delete.
-    // Delete the trailing store_remove in each. Leave net.rs's pair alone: there
-    // store_remove removes a different id. (sys-io-13)
-    ctx.rt.store_remove(&id);
-}
 
 #[derive(Debug)]
 pub(crate) struct AfterIdle {
@@ -116,7 +106,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
             && (timeout_up || val_up || (woke && self.last_v.is_some()))
         {
             if let Some(old) = self.id.take() {
-                release(ctx, old, self.eid);
+                ctx.release_var(old, self.eid);
             }
             match secs.clone().cast_to::<Duration>() {
                 Ok(dur) => {
@@ -142,7 +132,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         let res = self.id.and_then(|id| {
             if ctx.event.variables.contains_key(&id) {
                 self.id = None;
-                release(ctx, id, self.eid);
+                ctx.release_var(id, self.eid);
                 self.last_v.clone()
             } else {
                 None
@@ -156,14 +146,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.id.take() {
-            release(ctx, id, self.eid)
+            ctx.release_var(id, self.eid)
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         if let Some(id) = self.id.take() {
-            release(ctx, id, self.eid);
+            ctx.release_var(id, self.eid);
         }
         self.timeout_v = None;
         self.last_v = None;
@@ -236,7 +226,7 @@ impl Timer {
 
     fn stop<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.id.take() {
-            release(ctx, id, self.eid);
+            ctx.release_var(id, self.eid);
         }
     }
 

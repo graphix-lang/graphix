@@ -1695,7 +1695,6 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         self.inflight = 0;
         self.queued.clear();
         ctx.release_var(self.id, self.top_id);
-        ctx.rt.store_remove(&self.id);
     }
 
     /// `release`, then answer under a fresh reply id.
@@ -2855,26 +2854,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
     }
 }
 
+/// Where a throttle stands between emissions.
+#[derive(Debug, Clone, Copy)]
+enum Run {
+    /// nothing emitted since it started or slept
+    Idle,
+    /// emitted at `last`, nothing held
+    Open { last: Instant },
+    /// emitted at `last`; `tid`'s timer releases the value held
+    Pending { last: Instant, tid: BindId },
+}
+
 #[derive(Debug)]
-// CR claude for claude: [risk/low] Throttle releases a pending timer's id with
-// `ctx.release_var` when the rate changes, on `sleep` and on `delete`, but never calls
-// `ctx.rt.cancel_timer`. The tokio timer task therefore stays in `rt.timers` and the
-// JoinSet until it expires, then wakes the runtime for a cycle that delivers to an id
-// nobody reads. With a long rate in an arm that sleeps often, these tasks pile up.
-// `sys::time::release` already does it right (cancel_timer + release_var +
-// store_remove), but core cannot reach it. Move it onto `ExecCtx` (e.g.
-// `release_timer`) and use it from Throttle, Timer and AfterIdle. The run state is also
-// three loose fields with an unstated rule (`tid` implies `last`); `enum Run { Idle,
-// Open { last: Instant }, Pending { last: Instant, tid: BindId } }` makes the rule
-// structural and removes the `tid.take() && let Some(last)` chain that would drop an id
-// if the rule broke. (x-invalid-states-07)
 struct Throttle {
     wait: Duration,
-    last: Option<Instant>,
-    tid: Option<BindId>,
+    run: Run,
     top_id: ExprId,
-    /// The latest value of the throttled arg, emitted when the timer
-    /// fires.
     last_v: Option<Value>,
     out: TagValue,
 }
@@ -2891,8 +2886,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
         let last_v = Pack::decode(buf)?;
         Ok(Box::new(Self {
             wait,
-            last: None,
-            tid: None,
+            run: Run::Idle,
             top_id,
             last_v,
             out: TagValue::phantom(),
@@ -2911,8 +2905,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self {
             wait: Duration::ZERO,
-            last: None,
-            tid: None,
+            run: Run::Idle,
             top_id,
             last_v: None,
             out: TagValue::phantom(),
@@ -2923,7 +2916,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
 impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         // a running timer and its wall-clock mark exist only once a cycle ran
-        if self.last.is_some() || self.tid.is_some() {
+        if !matches!(self.run, Run::Idle) {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.wait.encode(buf)?;
@@ -2969,7 +2962,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 }
             };
         }
-        macro_rules! emit_cached {
+        macro_rules! emit {
             ($cause:expr) => {{
                 match self.last_v.clone() {
                     Some(v) => return self.out.set(caused(v, $cause)),
@@ -2977,79 +2970,59 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 }
             }};
         }
+        // emit now if the wait since `last` has passed, else hold the
+        // value for a timer
         macro_rules! maybe_schedule {
             ($last:expr, $cause:expr) => {{
-                let now = Instant::now();
-                if now - *$last >= self.wait {
-                    *$last = now;
-                    emit_cached!($cause)
+                let (last, now) = ($last, Instant::now());
+                if now - last >= self.wait {
+                    self.run = Run::Open { last: now };
+                    emit!($cause)
                 } else {
-                    let id = BindId::new();
-                    ctx.rt.ref_var(id, self.top_id);
-                    ctx.rt.set_timer(id, self.wait - (now - *$last));
-                    self.tid = Some(id);
+                    let tid = BindId::new();
+                    ctx.rt.ref_var(tid, self.top_id);
+                    ctx.rt.set_timer(tid, self.wait - (now - last));
+                    self.run = Run::Pending { last, tid };
                     ride!()
                 }
             }};
         }
         if let Some((d, cause)) = new_wait {
             self.wait = d;
-            if let Some(id) = self.tid.take()
-                && let Some(last) = &mut self.last
-            {
-                ctx.release_var(id, self.top_id);
+            if let Run::Pending { last, tid } = self.run {
+                ctx.release_var(tid, self.top_id);
                 maybe_schedule!(last, cause)
             }
         }
-        if let Some(cause) = up1
-            && self.tid.is_none()
-        {
-            match &mut self.last {
-                Some(last) => maybe_schedule!(last, cause),
-                None => {
-                    self.last = Some(Instant::now());
-                    emit_cached!(cause)
+        if let Some(cause) = up1 {
+            match self.run {
+                Run::Idle => {
+                    self.run = Run::Open { last: Instant::now() };
+                    emit!(cause)
                 }
+                Run::Open { last } => maybe_schedule!(last, cause),
+                Run::Pending { .. } => (),
             }
         }
-        if let Some(id) = self.tid
-            && let Some(_) = ctx.event.variables.get(&id)
+        if let Run::Pending { tid, .. } = self.run
+            && ctx.event.variables.contains_key(&tid)
         {
-            ctx.release_var(id, self.top_id);
-            self.tid = None;
-            self.last = Some(Instant::now());
-            emit_cached!(Tag::FIRED)
+            ctx.release_var(tid, self.top_id);
+            self.run = Run::Open { last: Instant::now() };
+            emit!(Tag::FIRED)
         }
         ride!()
     }
 
-    // CR claude for claude: [perf/low] `Throttle` arms timers with `ctx.rt.set_timer`
-    // but drops them with `ctx.release_var`, here, in `sleep` and on a `#rate` retune
-    // in `update`. `release_var` never calls `cancel_timer`, so each dropped timer's
-    // tokio task and `rt.timers` entry live until the timer expires, up to `#rate`
-    // later. An arm that toggles while a fire is pending piles them up. The private
-    // `release` in graphix-package-sys's time.rs (cancel_timer + release_var +
-    // store_remove) does the whole job. Move it to one shared place, for example an
-    // `ExecCtx::release_timer`, and use it here and in sys::time. (x-node-contract-04)
-    // CR claude for claude: [structure/low] Throttle's delete, sleep and rate-retune
-    // paths release the timer id with ctx.release_var but never ctx.rt.cancel_timer.
-    // The timer task and its entry in the runtime's timers map therefore live until the
-    // deadline: throttle(#rate: 1.h, x) in a slot or arm that is torn down repeatedly
-    // keeps one hour-long task per teardown. sys::time keeps its own `release` helper
-    // (cancel_timer + release_var + a store_remove that release_var already does) to
-    // get this right by hand. Fix: have ExecCtx::release_var also cancel any timer on
-    // the id (a no-op for ids with none), together with dropping its queued writes
-    // (x-concurrency-04). Then delete sys::time's `release` and every private-id
-    // builtin releases completely. (x-concurrency-10)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(id) = self.tid.take() {
-            ctx.release_var(id, self.top_id);
+        if let Run::Pending { tid, .. } = self.run {
+            ctx.release_var(tid, self.top_id);
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
-        self.last = None;
+        self.run = Run::Idle;
         self.last_v = None;
         self.out = TagValue::phantom();
     }
