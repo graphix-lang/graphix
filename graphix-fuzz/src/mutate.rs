@@ -117,62 +117,55 @@ const BOOLOP: &[BinOp] = &[BinOp::And, BinOp::Or];
 fn try_swap_binop(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     let (op, lhs, rhs) = BinOp::of(&e.kind)?;
     let class = [ARITH, CHECKED, CMP, BOOLOP].into_iter().find(|c| c.contains(&op))?;
-    Some(rng.pick(class).build(lhs.clone(), rhs.clone()))
+    let others: Vec<BinOp> = class.iter().copied().filter(|o| *o != op).collect();
+    Some(rng.pick(&others).build(lhs.clone(), rhs.clone()))
 }
 
-/// If `e` is a numeric/bool constant, return an edge-value perturbation.
-// CR claude for claude: [test-gap/low] The parser refuses a non-finite float literal,
-// and a constant prints as `f64:NaN`, `f64:inf` or `f32:inf`. Duration::MAX prints as a
-// seconds count the duration parser refuses. So every pick of f64
-// INFINITY/NEG_INFINITY/NAN, f32 INFINITY/NAN or Duration::MAX fails `mutate_program`'s
-// reparse and only uses up a try. No mutated program ever holds these edge values. Emit
-// them as expressions that print back, such as `(0.0 / 0.0)` and `(1.0 / 0.0)`, with a
-// cast for f32. Replace Duration::MAX with the largest duration that prints exactly.
-// `try_swap_binop` and this function can also pick the current op or value, and that
-// no-op counts as an applied mutation, so leave the current one out of the pick.
-// (fuzz-mutate-11)
+/// If `e` is a numeric/bool constant, return an edge-value perturbation,
+/// never the value it holds. A non-finite float has no literal, so it is
+/// the quotient that computes it.
 fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
-    let v = match &e.kind {
-        ExprKind::Constant(v) => v,
-        _ => return None,
+    let ExprKind::Constant(v) = &e.kind else { return None };
+    let computed = |rng: &mut Rng, t: &str| {
+        let q = ["(T:1.0 / T:0.0)", "(T:-1.0 / T:0.0)", "(T:0.0 / T:0.0)"];
+        let text = rng.pick(&q).replace('T', t);
+        parser::parse_one(&text).ok().map(|e| e.kind.clone())
     };
-    let nv = match v {
+    let cands: Vec<Value> = match v {
         Value::I64(_) => {
-            Value::I64(*rng.pick(&[0, 1, -1, i64::MAX, i64::MIN, 2, 100, -100]))
+            [0, 1, -1, i64::MAX, i64::MIN, 2, 100, -100].map(Value::I64).into()
         }
-        Value::U64(_) => Value::U64(*rng.pick(&[0u64, 1, u64::MAX, 2, 100])),
-        Value::I32(_) => Value::I32(*rng.pick(&[0i32, 1, -1, i32::MAX, i32::MIN])),
-        Value::U8(_) => Value::U8(*rng.pick(&[0u8, 1, 255, 100, 200])),
-        Value::I8(_) => Value::I8(*rng.pick(&[0i8, 1, -1, i8::MAX, i8::MIN])),
-        Value::I16(_) => Value::I16(*rng.pick(&[0i16, 1, -1, i16::MAX, i16::MIN])),
-        Value::U16(_) => Value::U16(*rng.pick(&[0u16, 1, u16::MAX])),
-        Value::U32(_) => Value::U32(*rng.pick(&[0u32, 1, u32::MAX])),
-        Value::V32(_) => Value::V32(*rng.pick(&[0u32, 1, u32::MAX])),
-        Value::V64(_) => Value::V64(*rng.pick(&[0u64, 1, u64::MAX])),
-        Value::Z32(_) => Value::Z32(*rng.pick(&[0i32, 1, -1, i32::MAX, i32::MIN])),
-        Value::Z64(_) => Value::Z64(*rng.pick(&[0i64, 1, -1, i64::MAX, i64::MIN])),
-        Value::Duration(_) => Value::from(*rng.pick(&[
-            std::time::Duration::ZERO,
-            std::time::Duration::from_nanos(1),
-            std::time::Duration::MAX,
-        ])),
-        Value::F64(_) => Value::F64(*rng.pick(&[
-            0.0,
-            1.0,
-            -1.0,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            f64::MAX,
-            5e-324,
-        ])),
-        Value::F32(_) => {
-            Value::F32(*rng.pick(&[0.0f32, 1.0, -1.0, f32::INFINITY, f32::NAN, f32::MAX]))
+        Value::U64(_) => [0u64, 1, u64::MAX, 2, 100].map(Value::U64).into(),
+        Value::I32(_) => [0i32, 1, -1, i32::MAX, i32::MIN].map(Value::I32).into(),
+        Value::U8(_) => [0u8, 1, 255, 100, 200].map(Value::U8).into(),
+        Value::I8(_) => [0i8, 1, -1, i8::MAX, i8::MIN].map(Value::I8).into(),
+        Value::I16(_) => [0i16, 1, -1, i16::MAX, i16::MIN].map(Value::I16).into(),
+        Value::U16(_) => [0u16, 1, u16::MAX].map(Value::U16).into(),
+        Value::U32(_) => [0u32, 1, u32::MAX].map(Value::U32).into(),
+        Value::V32(_) => [0u32, 1, u32::MAX].map(Value::V32).into(),
+        Value::V64(_) => [0u64, 1, u64::MAX].map(Value::V64).into(),
+        Value::Z32(_) => [0i32, 1, -1, i32::MAX, i32::MIN].map(Value::Z32).into(),
+        Value::Z64(_) => [0i64, 1, -1, i64::MAX, i64::MIN].map(Value::Z64).into(),
+        // the longest duration that prints back
+        Value::Duration(_) => {
+            use std::time::Duration;
+            [
+                Duration::ZERO,
+                Duration::from_nanos(1),
+                Duration::from_secs(u32::MAX as u64),
+            ]
+            .map(Value::from)
+            .into()
         }
-        Value::Bool(b) => Value::Bool(!b),
+        Value::F64(_) if rng.below(3) == 0 => return computed(rng, "f64"),
+        Value::F64(_) => [0.0, 1.0, -1.0, f64::MAX, 5e-324].map(Value::F64).into(),
+        Value::F32(_) if rng.below(3) == 0 => return computed(rng, "f32"),
+        Value::F32(_) => [0.0f32, 1.0, -1.0, f32::MAX].map(Value::F32).into(),
+        Value::Bool(b) => vec![Value::Bool(!b)],
         _ => return None,
     };
-    Some(ExprKind::Constant(nv))
+    let cands: Vec<Value> = cands.into_iter().filter(|c| c != v).collect();
+    (!cands.is_empty()).then(|| ExprKind::Constant(rng.pick(&cands).clone()))
 }
 
 /// If `e` is a block with ≥2 simple binds, rename a later one to an
