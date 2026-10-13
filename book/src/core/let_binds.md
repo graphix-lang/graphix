@@ -25,10 +25,10 @@ You can annotate the binding with a type, which will then be enforced at compile
 time. Sometimes this is necessary in order to help type inference.
 
 ```graphix
-// note x will be of type Number even though it's an i64
-let x: Number = 1;
-// compile time type error
-let y: string = x + 1;
+// x may be null later, so its type is the union, though it starts as an i64
+let x: [i64, null] = 1;
+// compile time type error: string does not contain [i64, null]
+let y: string = x;
 ```
 
 You can use patterns in let binds as long as they will always match.

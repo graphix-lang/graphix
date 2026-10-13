@@ -54,13 +54,12 @@ says one type, not a union of several. `OneNumber` says at most one
 numeric type, so a nullable number of one numeric type is
 
 ```graphix
-let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x
+let g = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x
 ```
 
 which takes an `[i64, null]` or an `[f64, null]`, and refuses an
-`[i64, f64, null]`. Because unchecked `+` wraps on overflow rather
-than throwing, there is no `throws` clause. We can
-still call this `f` with any number type,
+`[i64, f64, null]`. The two-argument `f` above takes any one number
+type,
 
 ```graphix
 〉f(1.212, 2.0)
@@ -165,24 +164,6 @@ fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e
 So map takes an array of `'a`, and a function mapping `'a` to `'b` and possibly
 throwing `'e` and returns an array of `'b` possibly throwing `'e`.
 
-<!-- CR claude for claude: [doc-drift/high] Polymorphism chapter teaches mixed-number
-arithmetic that the checker refuses. The 'Implicit Polymorphism' section (168-235) has
-three wrong claims. It says `|x, y| x + y` has three independent `Number` variables. It
-says 'None of the three numbers need to be the same type of number'. It shows `f(1.0,
-1)` returning `-: Number 2` and `f(1.1212, 1)` returning `2.1212`. Arithmetic is now
-`fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`, and `f(1.0, 1)` is refused. This
-contradicts reading_types.md in the same book. Separately, lines 56-69 define `f` as the
-one-argument `'a: [Number, null] + OneNumber |x: 'a|`. The very next example then calls
-'this `f`' with two arguments (`f(1.212, 2.0)`). The sentence 'Because unchecked `+`
-wraps ... there is no throws clause' sits in the OneNumber paragraph, where no `+`
-appears. The code is right; the doc is stale. Failure: A reader types the chapter's `let
-f = |x, y| x + y; f(1.0, 1)` and gets `type mismatch f64 does not contain i64` instead
-of the advertised `-: Number 2`. Fix: Rewrite 168-235 around the current rule: one
-inferred variable bounded `Number + Singleton`, `f(2, 2)` and `f(1.5, 2.5)` accepted,
-`f(1.0, 1)` refused with a cast as the fix. Rename the OneNumber example (`g`) so the
-following `f(1.212, 2.0)` refers to the two-argument function. Move the throws sentence
-next to the arithmetic. Unverified: the reviewer's report, not checked by a verifier.
-(book-core-02) -->
 ## Implicit Polymorphism
 
 All functions are polymorphic, even without annotations, argument and return
@@ -191,63 +172,30 @@ another. Any internal constraints are calculated when the definition is compiled
 and are enforced at each call site. For example consider,
 
 ```graphix
-〉let f = |x, y| x + y
-〉f
--: fn<'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number>(x: '_2067: unbound, y: '_2069: unbound) -> '_2071: unbound
-159
+let f = |x, y| x + y
 ```
 
-The type is a bit of a mouthful, lets format it a bit so it's easier to read.
+Its type, with the unbound current values removed, is
 
 ```
-fn<'_2069: unbound: Number,
-   '_2067: unbound: Number,
-   '_2071: unbound: Number>
-(x: '_2067: unbound, y: '_2069: unbound) -> '_2071: unbound
+fn<'_1: Number + Singleton>(x: '_1, y: '_1) -> '_1
 ```
 
-Removing the unbounds,
+One inferred variable stands for both arguments and the return type. The
+body's `+` gave it the arithmetic bound: `Number + Singleton`, one numeric
+type, not a union of several. So `f` takes any one number type,
 
+```graphix
+let f = |x, y| x + y;
+let a = f(2, 2);
+let b = f(1.5, 2.5);
+(a, b)
 ```
-fn<'_2069: Number,
-   '_2067: Number,
-   '_2071: Number>
-(x: '_2067, y: '_2069) -> '_2071
-```
 
-Here we can see that `'_2067`, `'_2069`, and `'_2071` represent the two
-arguments and the return type of the function. They are all unbound, meaning
-that when the function is used they can have any type. They are also all
-constrained to `Number`, and this will be enforced when the function is called,
-it's arguments must be numbers and it will return a number. We learned this
-because internally the function uses `+`, which operates on numbers, this
-constraint was then propagated to the otherwise free variables representing the
-args and the return type.
-
-So in plain English this says that the arguments to the function can by any type
-as long as it is a number, and the function will return some type which is a
-number. None of the three numbers need to be the same type of number.
+but not two at once: `f(1.0, 1)` is refused (`type mismatch f64 does not
+contain i64`), and a cast is the fix, `f(1.0, cast<f64>(1)$)`.
 
 Because unchecked `+` wraps on overflow rather than throwing, there is
 no `throws` clause in the type. If you want arithmetic errors
 to be part of the type, use the checked operator `+?` instead, which
 returns `[T, Error<`ArithError(string)>]`.
-
-We can indeed call `f` with different number types, and it works just fine,
-
-```graphix
-〉f(1.0, 1)
--: Number
-2
-```
-
-The type we get back really depends on the values we pass. For example,
-
-```graphix
-〉f(1.1212, 1)
--: Number
-2.1212
-```
-
-Wherever we use `f` the compiler will force us to handle every possible case in
-the `Number` type
