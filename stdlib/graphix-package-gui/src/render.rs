@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use iced_core::Size;
 use iced_wgpu::{
+    Engine,
     graphics::{Shell, Viewport, shell::Notifier},
     wgpu,
 };
@@ -42,6 +43,7 @@ pub struct GpuState {
     pub queue: wgpu::Queue,
     pub format: wgpu::TextureFormat,
     max_texture_dimension_2d: u32,
+    engine: Engine,
 }
 
 impl GpuState {
@@ -78,29 +80,29 @@ impl GpuState {
             .context("surface has no supported formats")?;
         drop(surface);
         let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
-        Ok(Self { instance, adapter, device, queue, format, max_texture_dimension_2d })
-    }
-
-    /// Create an iced Engine + Renderer pair for a window.
-    pub fn create_renderer(&self) -> iced_wgpu::Renderer {
-        // CR claude for claude: [perf/low] Every window builds a new iced_wgpu::Engine,
-        // so each one compiles its own quad, text, triangle and image pipelines and
-        // keeps its own glyph atlas. Opening a window pays pipeline creation again, and
-        // a multi-window program holds one copy per window. Engine is Clone
-        // (Arc-shared), and iced's own compositor builds one and clones it per window.
-        // Fix: build the Engine once in GpuState::new, store it, and have
-        // create_renderer pass engine.clone() to Renderer::new. Image caches stay per
-        // Renderer either way. (gui-core-07)
-        let engine = iced_wgpu::Engine::new(
-            &self.adapter,
-            self.device.clone(),
-            self.queue.clone(),
-            self.format,
+        let engine = Engine::new(
+            &adapter,
+            device.clone(),
+            queue.clone(),
+            format,
             None,
             Shell::new(Wake),
         );
-        iced_wgpu::Renderer::new(
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            format,
+            max_texture_dimension_2d,
             engine,
+        })
+    }
+
+    /// Create a renderer sharing this GPU's pipelines.
+    pub fn create_renderer(&self) -> iced_wgpu::Renderer {
+        iced_wgpu::Renderer::new(
+            self.engine.clone(),
             iced_core::Font::DEFAULT,
             iced_core::Pixels(16.0),
         )
