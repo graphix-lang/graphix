@@ -293,6 +293,9 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_, '_> {
         _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
+        if !*self.open || shell.is_event_captured() {
+            return;
+        }
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key,

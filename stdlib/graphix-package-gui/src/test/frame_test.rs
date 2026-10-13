@@ -189,3 +189,35 @@ async fn deferred_focus_applies_before_keyboard_input() -> Result<()> {
 async fn context_menu_forwards_widget_operations() -> Result<()> {
     assert_deferred_focus(true).await
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn captured_menu_events_publish_nothing() {
+    use crate::widgets::menu_bar_widget::{MenuItemDesc, MenuOverlay};
+    use graphix_rt::CallableId;
+    use iced_core::{Layout, Overlay, Shell};
+
+    let renderer = headless_gpu().await.create_renderer();
+    let items = [MenuItemDesc::Action {
+        label: "action",
+        shortcut: None,
+        callable_id: Some(CallableId::new()),
+        disabled: false,
+    }];
+    let mut open = true;
+    let mut menu =
+        MenuOverlay { items: &items, position: Point::ORIGIN, open: &mut open };
+    let node = menu.layout(&renderer, Size::new(400.0, 300.0));
+    let mut messages = Vec::new();
+    let mut shell = Shell::new(&mut messages);
+    shell.capture_event();
+    menu.update(
+        &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Layout::new(&node),
+        mouse::Cursor::Available(Point::new(20.0, 15.0)),
+        &renderer,
+        &mut clipboard::Null,
+        &mut shell,
+    );
+    assert!(messages.is_empty());
+    assert!(open);
+}

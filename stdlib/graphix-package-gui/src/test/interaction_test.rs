@@ -1045,3 +1045,74 @@ async fn menu_shortcuts_match_modified_characters() -> Result<()> {
     }
     Ok(())
 }
+
+async fn two_context_menus() -> Result<InteractionHarness> {
+    let code = r#"
+        use gui::{column::column, menu, text::text, container::container};
+        let del_a = 0;
+        let copy_a = 0;
+        let del_b = 0;
+        let copy_b = 0;
+        let row = |label, on_del, on_copy| menu::context_menu(
+            &[menu::action(#shortcut: &menu::shortcut(#ctrl: true, "d")$, #on_click: on_del, &"Delete"),
+              menu::action(#on_click: on_copy, &"Copy")],
+            &container(#width: &`Fill, #height: &`Fixed(40.0), &text(&label))
+        );
+        let result = column(&[
+            row("A", |c| del_a <- c ~ del_a + 1, |c| copy_a <- c ~ copy_a + 1),
+            row("B", |c| del_b <- c ~ del_b + 1, |c| copy_b <- c ~ copy_b + 1)
+        ])
+    "#;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(400.0, 300.0)).await?;
+    for var in ["test::del_a", "test::copy_a", "test::del_b", "test::copy_b"] {
+        h.watch(var).await?;
+    }
+    Ok(h)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn opening_a_second_context_menu_closes_the_first() -> Result<()> {
+    for shortcut in [false, true] {
+        let mut h = two_context_menus().await?;
+        right_click(&mut h, Point::new(50.0, 20.0));
+        right_click(&mut h, Point::new(if shortcut { 300.0 } else { 20.0 }, 60.0));
+        let msgs =
+            if shortcut { h.press_ctrl("d") } else { h.click(Point::new(100.0, 70.0)) };
+        h.dispatch_calls(&msgs).await?;
+        for var in ["test::del_a", "test::copy_a", "test::del_b", "test::copy_b"] {
+            assert_eq!(
+                h.get_watched(var),
+                Some(&Value::I64(i64::from(var == "test::del_b"))),
+                "{var}, shortcut={shortcut}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_menu_bar_heading_toggles_its_menu_closed() -> Result<()> {
+    let mut h = InteractionHarness::with_viewport(
+        r#"
+        use gui::menu;
+        let calls = 0;
+        let result = menu::bar(&[menu::menu(&"File", &[
+            menu::action(#on_click: |t| calls <- t ~ calls + 1, &"Action")
+        ])])
+    "#,
+        Size::new(400.0, 300.0),
+    )
+    .await?;
+    h.watch("test::calls").await?;
+    for _ in 0..2 {
+        h.click(WIDGET_HIT);
+    }
+    let msgs = h.click(Point::new(30.0, 50.0));
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(0)));
+    h.click(WIDGET_HIT);
+    let msgs = h.click(Point::new(30.0, 50.0));
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(1)));
+    Ok(())
+}

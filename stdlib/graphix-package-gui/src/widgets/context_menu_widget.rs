@@ -119,6 +119,13 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
             viewport,
         );
         let state = tree.state.downcast_mut::<State>();
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(_))
+                | Event::Touch(touch::Event::FingerPressed { .. })
+        ) {
+            state.open = false;
+        }
         match event {
             // a menu inside this one may have taken the click
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
@@ -128,29 +135,6 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
                     state.open = true;
                     state.position = pos;
                     shell.capture_event();
-                }
-            }
-            // CR claude for claude: [bug/high] The menu closes only on a left press, a
-            // finger press or Escape. A right press on another row opens that row's
-            // menu and leaves this one open. iced's `overlay::Group::update` gives
-            // every event to every sibling overlay, whether or not one has captured it.
-            // `MenuOverlay::update` never checks `shell.is_event_captured()`. So with
-            // two menus open, one Ctrl+D runs the matching action in both menus, and
-            // one left click where they overlap runs an item in each (e.g. A's Copy and
-            // B's Delete). Fix: close the menu on any button press that lands outside
-            // its overlay, including a right press elsewhere, and make
-            // `MenuOverlay::update` return early when the event is already captured.
-            // Probe: design/review-2026-10-12/repro/gui-widgets-a-03.sh (tests
-            // second_context_menu_closes_the_first, one_shortcut_one_action in
-            // gui-widgets-a.rs). (gui-widgets-a-03)
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if state.open {
-                    state.open = false;
-                }
-            }
-            Event::Touch(touch::Event::FingerPressed { .. }) => {
-                if state.open {
-                    state.open = false;
                 }
             }
             Event::Keyboard(keyboard::Event::KeyPressed {
