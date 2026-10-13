@@ -1035,11 +1035,16 @@ fn give_back_terminal() {
     ratatui::restore();
 }
 
+static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
+static TERMINAL_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
 struct GiveBack;
 
 impl Drop for GiveBack {
     fn drop(&mut self) {
-        give_back_terminal()
+        TERMINAL_ACTIVE.store(false, Ordering::Release);
+        give_back_terminal();
+        TERMINAL_INTERRUPTED.store(false, Ordering::Release);
     }
 }
 
@@ -1057,7 +1062,7 @@ struct Live {
 impl Live {
     fn take(mouse: bool) -> Result<Self> {
         static HOOK: std::sync::Once = std::sync::Once::new();
-        // CR claude for claude: [bug/medium] This hook is process-wide and stays
+        // XCR claude for claude: [bug/medium] This hook is process-wide and stays
         // installed for good, so every panic gives the terminal back. That includes
         // panics the runtime catches and continues past: `sort_values` and
         // `pairs_to_map` over an Ord that is no total order, a panicking async
@@ -1073,6 +1078,10 @@ impl Live {
         // restores the terminal through `GiveBack`, so the hook only needs to restore
         // for a panic that will abort the process. Alternatively, re-take the terminal
         // after a caught panic. (tui-core-04)
+        // 2026-10-13 codex: Gate cleanup on Live ownership and re-take the
+        // terminal before the next frame after a caught panic. The PTY pin
+        // caught_panics_do_not_leave_the_display_cooked checks recovery and a
+        // later raw-mode owner after Live drops. Review the recovery path.
         HOOK.call_once(|| {
             let prev = std::panic::take_hook();
             // CR claude for claude: [risk/low] This hook gives back the terminal but
@@ -1096,12 +1105,17 @@ impl Live {
             // onto fd 2 and copies the held file out before calling prev(info).
             // (tui-core-06)
             std::panic::set_hook(Box::new(move |info| {
-                give_back_terminal();
+                if TERMINAL_ACTIVE.load(Ordering::Acquire) {
+                    give_back_terminal();
+                    TERMINAL_INTERRUPTED.store(true, Ordering::Release);
+                }
                 prev(info)
             }))
         });
         terminal::enable_raw_mode().context("raw mode")?;
         let give_back = GiveBack;
+        TERMINAL_INTERRUPTED.store(false, Ordering::Release);
+        TERMINAL_ACTIVE.store(true, Ordering::Release);
         let mut out = std::io::stdout();
         take_terminal_modes(&mut out)?;
         if mouse {
@@ -1119,6 +1133,25 @@ impl Live {
                 .inspect_err(|e| error!("stderr stays on the terminal: {e:?}"))
                 .ok(),
         })
+    }
+
+    fn recover(&mut self, mouse: bool) -> Result<bool> {
+        if !TERMINAL_INTERRUPTED.swap(false, Ordering::AcqRel) {
+            return Ok(false);
+        }
+        #[cfg(unix)]
+        drop(self._stderr.take());
+        terminal::enable_raw_mode().context("recover raw mode")?;
+        take_terminal_modes(&mut std::io::stdout())?;
+        set_mouse(mouse);
+        self.terminal.resize(self.terminal.size()?.into())?;
+        #[cfg(unix)]
+        {
+            self._stderr = StderrHeld::hold()
+                .inspect_err(|e| error!("stderr stays on the terminal: {e:?}"))
+                .ok();
+        }
+        Ok(true)
     }
 }
 
@@ -1199,6 +1232,9 @@ async fn display<X: GXExt>(
     let mut liveness = interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
+        if let Term::Live(live) = &mut term {
+            dirty |= live.recover(mouse.t == Some(true))?;
+        }
         if let Term::Live(live) = &mut term
             && std::mem::take(&mut dirty)
         {
