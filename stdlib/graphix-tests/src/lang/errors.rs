@@ -1,7 +1,10 @@
 // Tests for try/catch and error handling
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::publisher::Value;
 
 const UNCHECKED0: &str = r#"
@@ -567,25 +570,10 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
     Ok(())
 }
 
-// A bottom-typed arm whose handler-ful `?` derives from an input
-// fuses and delivers: it runs its body instead of a bare placeholder
-// (the constant-error twin node-walks: `findings/arm-entry-raise-sep2026`).
-// CR claude for claude: [doc-drift/medium] This fixture's name and comment say an
-// input-derived handler-ful `?` under an arm fuses. lowering::arm_raise_blocker refuses
-// every handler-ful `?` under a select arm, so this select always node-walks.
-// FuseExpect::Jit holds only because another region of the program fused, and a
-// regression in fused raise delivery would leave the test green. Put `#[native]` on the
-// select to see it: the build is refused (probe:
-// design/review-2026-10-12/repro/tests-lang-rest-a-arm-input-raise-native.gx). Rename
-// it and invert the claim: it should pin that the select node-walks, for example by
-// expecting the #[native] form to be refused under `build_only`. Drop the 'fused or
-// node-walked' wording in async_restart.rs reentry_raises_once, which is moot for the
-// same reason. The rule text is stale too. CLAUDE.md (Strict fusion) names
-// lowering::entry_raise_blocker, which no longer exists, and design/strict_fusion.md
-// says an input-derived raise fuses. Both should name arm_raise_blocker and state the
-// broader rule (same as f-mod-lowering-09). Regenerate AGENTS.md afterwards.
-// (tests-lang-rest-a-02)
-const ARM_INPUT_RAISE_FUSES: &str = r#"
+// A bottom-typed arm's handler-ful `?` over an input delivers each
+// raise once. Every handler-ful `?` under a select arm node-walks
+// (`lowering::arm_raise_blocker`), which the #[native] twin pins.
+const ARM_INPUT_RAISE_DELIVERS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let n = 0;
@@ -594,10 +582,22 @@ const ARM_INPUT_RAISE_FUSES: &str = r#"
 }
 "#;
 
-run!(arm_input_raise_fuses, ARM_INPUT_RAISE_FUSES, |v: Result<&Value>| matches!(
+run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
 ); FuseExpect::Jit);
+
+const ARM_INPUT_RAISE_NODE_WALKS: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let n = 0;
+  let v = { catch(e) n <- e ~ n + 1; #[native] select x { 2 => error(`E(x))?, _ => x } };
+  select count(x) { 4 => n, _ => never() }
+}
+"#;
+
+run!(arm_input_raise_node_walks, ARM_INPUT_RAISE_NODE_WALKS,
+    refused("did not fully fuse to native code"); FuseExpect::None; jit_only);
 
 // `$` over a nullable waits out the null, and says nothing about it.
 const OR_NEVER_NULL: &str = r#"

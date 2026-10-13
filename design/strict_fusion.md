@@ -140,15 +140,16 @@ rule. The value side is untouched: the failing `?` is the tainted
 placeholder that continues.
 
 The delivery's TRIGGER must be computable by a memoryless kernel. A
-handler-ful `?` whose error derives from a constant (`error(`E)?`,
-`cast<i64>("x")?`), under a select arm, raises on the node-walk when
-the arm is ENTERED — the constant fires at the arm's wake — and once
-only (a same-arm re-match does not re-raise). A kernel constant is
-stale off-init and a kernel keeps no arm-entry memory, so
-`lowering::entry_raise_blocker` refuses such a region (transitively
-through lambda callee bodies; a constant under an INNER select's arm
-is reconciled by that select's scrutinee fold and does not count). An
-input-derived raise fuses. A bottom-typed arm that can raise runs its
+handler-ful `?` under a select arm raises on an edge the arm may owe
+to the select: a constant fires at the arm's wake, so a raise whose
+error derives from one (`error(`E)?`, `cast<i64>("x")?`) fires when
+the arm is ENTERED, and an input fire no selected arm saw is
+re-delivered FIRED to the arm that reads it at its wake
+(design/wake_catchup.md). A kernel derives its selection fresh every
+run and keeps neither memory, so `lowering::arm_raise_blocker` refuses
+every region with a handler-ful `?` reachable under a select arm,
+whatever its error derives from, callee bodies and nested selects
+included. A bottom-typed arm that can raise runs its
 body for the delivery instead of the bare `never()` placeholder, and a
 `?` or `$` over an inner that is always what it strips has its own
 emission (`emit_qop_always_bad`: raise when fresh, yield a bottom). The

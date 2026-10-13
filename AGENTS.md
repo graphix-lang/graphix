@@ -647,10 +647,11 @@ node graph IS the IR — there is no parallel typed IR
   scrutinee or the arm's binds, and no arm has a guard,
   `lowering::arm_io_blocker`); `?` fuses with or without a covering catch (a handler-ful
   raise is queued and delivered after the run through the same path
-  `Qop` uses), except a handler-ful `?` under a select arm whose error
-  derives from a constant: that raise fires when the arm is ENTERED and
-  a kernel has no arm-entry view, so it node-walks
-  (`lowering::entry_raise_blocker`); only a `never(..)` arm is a
+  `Qop` uses), except a handler-ful `?` reachable under a select arm,
+  callee bodies included: its raise may be owed to a fire the arm
+  missed asleep or to a constant at its wake, and a kernel remembers
+  neither, so it node-walks (`lowering::arm_raise_blocker`); only a
+  `never(..)` arm is a
   standing bottom (its args are still emitted and consumed), any other
   bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
   `~`, `Any`, `Catch` — node-walks, transitively. A kernel's only

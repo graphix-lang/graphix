@@ -344,7 +344,7 @@ async fn wake_restarts_quietly(mode: Mode) -> Result<()> {
 
 // An arm holding a raise to a handler sleeps and wakes like an arm with a
 // write: re-entered over a standing error, it reads it stale and raises
-// nothing new, fused or node-walked.
+// nothing new.
 async fn reentry_raises_once(mode: Mode) -> Result<()> {
     let code = r#"{
         let s = array::iter([1, 2, 1, 2]);
