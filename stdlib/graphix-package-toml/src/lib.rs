@@ -84,7 +84,11 @@ fn to_toml(
             // cast reads back as null; a map's null value is refused
             let field_null = |v: &Value| keys == Keys::Fields && *v == Value::Null;
             for (k, v, t) in entries.drain(..).filter(|(_, v, _)| !field_null(v)) {
-                table.insert(k.to_string(), to_toml(env, t.as_ref(), &v, depth + 1)?);
+                let v = to_toml(env, t.as_ref(), &v, depth + 1)?;
+                // two keys may print alike (`1` and `"1"`): never one for two
+                if table.insert(k.to_string(), v).is_some() {
+                    return Err(format!("two keys write as the same TOML key {k}"));
+                }
             }
             Ok(toml::Value::Table(table))
         }

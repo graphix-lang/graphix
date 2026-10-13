@@ -91,16 +91,11 @@ fn to_json(
         Shape::Object(mut entries, _) => {
             let mut map = serde_json::Map::with_capacity(entries.len());
             for (k, v, t) in entries.drain(..) {
-                // CR claude for claude: [bug/medium] This drops the old value that
-                // insert returns. Two map keys whose text from `map_key` is the same
-                // (i64 1 and "1" in a Map<[i64, string], _>, or i64 1 and f64 1.0 in a
-                // Map<[i64, f64], _>) become one object key, and the last value
-                // silently replaces the first, so the output has fewer entries than the
-                // map. `to_toml`'s `table.insert` has the same problem, and hbs gets it
-                // through `value_to_json`. Return an Err naming the duplicate key when
-                // insert returns Some, both here and in `to_toml`. probe:
-                // design/review-2026-10-12/repro/small-pkgs-05.gx (small-pkgs-05)
-                map.insert(k.to_string(), to_json(env, t.as_ref(), &v, depth + 1)?);
+                let v = to_json(env, t.as_ref(), &v, depth + 1)?;
+                // two keys may print alike (`1` and `"1"`): never one for two
+                if map.insert(k.to_string(), v).is_some() {
+                    return Err(format!("two keys write as the same JSON key {k}"));
+                }
             }
             Ok(serde_json::Value::Object(map))
         }

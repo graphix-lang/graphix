@@ -237,3 +237,12 @@ async fn the_deepest_written_value_reads_back() -> Result<()> {
     }
     Ok(())
 }
+
+// Two map keys that print alike are refused, never merged into one.
+run!(json_keys_writing_alike_refused, r#"{
+    let m: Map<[i64, string], i64> = {1 => 10, "1" => 20};
+    "[json::write_str(m)] [toml::write_str(m)]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s))
+        if s.contains("same JSON key 1") && s.contains("same TOML key 1"))
+}; FuseExpect::Jit);
