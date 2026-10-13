@@ -1146,3 +1146,25 @@ async fn context_menu_over_tooltip_can_choose_an_item() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_slider_ranges_are_inert() -> Result<()> {
+    for (kind, size, hit) in [
+        ("slider", Size::new(200.0, 22.0), Point::new(150.0, 10.0)),
+        ("vertical_slider", Size::new(22.0, 200.0), Point::new(10.0, 50.0)),
+    ] {
+        for (min, max) in [("10.0", "0.0"), ("0.0 / 0.0", "10.0"), ("0.0", "0.0 / 0.0")] {
+            let code = format_compact!(
+                "{IMPORTS}; let result = {kind}(#min: &({min}), #max: &({max}), #on_change: |v| null, #on_release: |v| null, &5.0)"
+            );
+            let mut h = InteractionHarness::with_viewport(&code, size).await?;
+            let msgs = h.click(hit);
+            assert!(
+                !msgs.iter().any(|m| matches!(m, super::Message::Call(..))),
+                "{kind} {min}..{max}: {msgs:?}"
+            );
+            h.inner.render().await?;
+        }
+    }
+    Ok(())
+}

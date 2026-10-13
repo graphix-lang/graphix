@@ -88,18 +88,11 @@ macro_rules! slider_widget {
                 let val = self.p.value.t.unwrap_or(0.0);
                 let min = self.p.min.t.unwrap_or(0.0);
                 let max = self.p.max.t.unwrap_or(100.0);
-                let disabled = self.p.disabled.t.unwrap_or(false);
+                let valid = min <= max;
+                let disabled = self.p.disabled.t.unwrap_or(false) || !valid;
+                let (min, max, val) =
+                    if valid { (min, max, val) } else { (0.0, 1.0, 0.0) };
                 let on_change_id = if disabled { None } else { self.on_change.id() };
-                // CR claude for claude: [bug/low] A reversed range (#min above #max)
-                // reaches iced unguarded. iced clamps the value to the smaller bound,
-                // draws the handle at the left edge whatever the value, and turns every
-                // interior click into that same bound, so dragging does nothing. A
-                // click at the far left sends #min. progress_bar's view treats a
-                // reversed or NaN range as empty, so the two numeric widgets read the
-                // same input differently. Fix: give the slider the same rule. A
-                // reversed or NaN range draws inert and disabled (on_change is Nop), as
-                // progress_bar draws it empty. Then document that rule in
-                // book/src/ui/gui/slider.md. (gui-widgets-b-04)
                 let mut sl =
                     widget::$Widget::new(min..=max, val, move |v| match on_change_id {
                         Some(id) => {

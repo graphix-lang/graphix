@@ -24,6 +24,8 @@ A horizontal slider that lets the user select a floating-point value by dragging
 - **`#disabled`** -- When `true`, the slider cannot be dragged. Defaults to `false`.
 - **positional `&f64`** -- Reference to the current value. Must be within the `#min`..`#max` range.
 
+A range with `#min > #max` or a NaN bound displays an empty, inert track. Neither `#on_change` nor `#on_release` fires for that range.
+
 ## Vertical Slider
 
 A vertical slider -- identical to `slider` but oriented top-to-bottom. Note the width and height types are swapped: `#width` is `&[f64, null]` (fixed pixels) and `#height` is `&Length` (layout-based).
@@ -69,7 +71,9 @@ A non-interactive horizontal bar that fills proportionally to a value within a r
 
 ![Slider](./media/slider.gif)
 
-### Vertical Slider
+#A range with `#min > #max` or a NaN bound displays an empty, inert track. Neither `#on_change` nor `#on_release` fires for that range.
+
+## Vertical Slider
 
 ```graphix
 {{#include ../../examples/gui/vertical_slider.gx}}
