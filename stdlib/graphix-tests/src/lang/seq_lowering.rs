@@ -60,27 +60,6 @@ async fn try_value_takes_the_annotation(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// An attribute on a seq statement annotates its computation.
-// CR claude for claude: [test-gap/low] This test passes with both attributes dropped:
-// 83 does not depend on them. `#[sync]` on a lambda let is pinned in lowering_refusals.
-// Nothing pins `#[native]` on a non-lambda statement, which the lowering moves onto the
-// step's value. A lowering that lost it there would accept `seq { #[native] let y = t ~
-// 5; y }` silently, and the positive `#[native]` fixtures in seq_calls and seqq would
-// still pass. Add to lowering_refusals: `{ let t = sys::time::timer(duration:1.ms,
-// false); seq { #[native] let y = t ~ 5; y } }` must be refused with 'did not fully
-// fuse'. Then drop the attributes from this test, or delete it. (tests-seq-07)
-async fn statement_attributes_apply(mode: Mode) -> Result<()> {
-    let code = r#"seq {
-        #[sync]
-        let f = |x| x + 1;
-        #[native]
-        let y = 41 * 2;
-        f(y)
-    }"#;
-    assert_eq!(last(code, mode).await?, Value::I64(83));
-    Ok(())
-}
-
 // A declaration in a block statement is a statement there.
 async fn declaration_in_a_block(mode: Mode) -> Result<()> {
     let code = r#"seq { let n = { use str::len; len("abc") }; n }"#;
@@ -110,6 +89,12 @@ async fn lowering_refusals() -> Result<()> {
         "{ let f = |x: i64| -> [i64, Error<`E>] x; \
          seq { #[sync] let v = try { f(1)? } with(_) { 0 }; v } }",
         "a try statement takes no attribute",
+    )
+    .await;
+    // `#[native]` on a statement moves onto the step's value
+    refused(
+        "{ let t = sys::time::timer(duration:1.ms, false); seq { #[native] let y = t ~ 5; y } }",
+        "did not fully fuse",
     )
     .await;
     Ok(())
@@ -196,7 +181,6 @@ modes!(
     typed_destructuring_trigger,
     trigger_error_leaves_the_run,
     try_value_takes_the_annotation,
-    statement_attributes_apply,
     declaration_in_a_block,
     use_shadows,
     place_through_parens,
