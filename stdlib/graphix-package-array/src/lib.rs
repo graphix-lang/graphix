@@ -254,18 +254,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let queue = Pack::decode(buf)?;
-        let buf_ = Pack::decode(buf)?;
         let pred = image::decode_node(ctx, buf)?;
-        let ready = bool::decode(buf)?;
         let pid = BindId::decode(buf)?;
         let nid = BindId::decode(buf)?;
         let xid = BindId::decode(buf)?;
         Ok(Box::new(Self {
-            queue,
-            buf: buf_,
+            queue: VecDeque::new(),
+            buf: smallvec![],
             pred,
-            ready,
+            ready: true,
             pid,
             nid,
             xid,
@@ -275,19 +272,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
-    // CR claude for claude: [structure/low] Group encodes queue, buf and ready, state
-    // that exists only once a cycle has run. The image rule is that such state refuses
-    // the write with image::NOT_QUIESCENT, as the builtins in opt.rs and queuefn.rs do.
-    // As written, every group call site carries two empty collections and a bool in the
-    // image, and a mid-run encode would carry live grouping state into a warm start
-    // instead of failing. Refuse with NOT_QUIESCENT when the queue or buf is non-empty
-    // or ready is false. Encode only pred and the three ids, and have image_decode
-    // build an empty queue and buf with ready = true. (collections-str-08)
+    /// The queue, the group being built and the wait for an answer
+    /// exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.queue.encode(buf)?;
-        self.buf.encode(buf)?;
+        if !self.queue.is_empty() || !self.buf.is_empty() || !self.ready {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         self.pred.image_encode(buf)?;
-        self.ready.encode(buf)?;
         self.pid.encode(buf)?;
         self.nid.encode(buf)?;
         self.xid.encode(buf)
