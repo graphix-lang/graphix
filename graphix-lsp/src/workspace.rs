@@ -10,6 +10,7 @@ use graphix_compiler::expr::{
     Expr, ExprKind, MODULE_LAYOUTS, ModuleKind, Origin, SigKind, Source, parser,
 };
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::SystemTime,
@@ -161,34 +162,33 @@ fn build_projects(files: AHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
         }
         reachable.insert(path.clone(), bfs_from_root(path, &files));
     }
-    // A file is "imported" if some other root's BFS reaches it.
-    let mut imported: AHashSet<PathBuf> = AHashSet::default();
-    // CR claude for claude: [bug/medium] `imported` collects what every .gx reaches as
-    // a pretend root, so a module's `mod`s are resolved beside the module. The resolver
-    // resolves them under `submodule_base` of the module's file. With app.gx `mod util`
-    // and util.gx `mod tool` (really util/tool.gx), the search from util.gx reaches a
-    // sibling script ./tool.gx and marks it imported. tool.gx then roots no project,
-    // and its own modules belong to no project: an edit to such a module (lib.gx)
-    // re-checks it alone, and tool.gx's breakage is not published until tool.gx itself
-    // changes. Count an edge only as its real resolution takes it. Either iterate from
-    // the candidate roots until the root set is stable, or resolve a non-root file's
-    // `mod`s under `submodule_base(file)`. Pin it with the five-file tree. probe:
-    // design/review-2026-10-12/repro/lsp-01.py (lsp-01)
-    for (root, set) in &reachable {
-        for f in set {
-            if f != root {
-                imported.insert(f.clone());
-            }
+    // A root's `mod`s resolve beside it and a module's under its own name,
+    // so which files are roots depends on the roots. From every file a
+    // root, each round's roots are the files the last round's do not reach;
+    // the rounds settle or alternate (a mod cycle no root reaches), and
+    // then each file of either round roots.
+    let gx: BTreeSet<&PathBuf> = reachable.keys().collect();
+    let unreached = |roots: &BTreeSet<&PathBuf>| -> BTreeSet<&PathBuf> {
+        let mut imported: AHashSet<&PathBuf> = AHashSet::default();
+        for root in roots {
+            imported.extend(reachable[*root].iter().filter(|f| f != root));
         }
+        gx.iter().copied().filter(|f| !imported.contains(f)).collect()
+    };
+    let mut roots = gx.clone();
+    let mut last = BTreeSet::new();
+    loop {
+        let next = unreached(&roots);
+        if next == roots {
+            break;
+        }
+        if next == last {
+            roots.extend(next);
+            break;
+        }
+        last = std::mem::replace(&mut roots, next);
     }
-    // Roots: .gx files not imported by any other root.
-    let mut roots: Vec<PathBuf> = files
-        .iter()
-        .filter(|(_, wf)| wf.kind == FileKind::Gx)
-        .map(|(p, _)| p.clone())
-        .filter(|p| !imported.contains(p))
-        .collect();
-    roots.sort();
+    let roots: Vec<PathBuf> = roots.into_iter().cloned().collect();
     let mut projects: Vec<Project> = Vec::new();
     for root in roots {
         let project_files = reachable.get(&root).cloned().unwrap_or_else(|| {
@@ -327,6 +327,39 @@ mod tests {
         let util = root.join("util.gx");
         let containing = m.file_to_projects.get(&util).cloned().unwrap_or_default();
         assert_eq!(containing.len(), 2);
+    }
+
+    /// A module's `mod` resolves under the module, never to a script
+    /// beside it, so that script still roots its own project.
+    #[test]
+    fn a_module_does_not_import_a_script_beside_it() {
+        let dir = make_dir();
+        let root = dir.path();
+        write(&root.join("app.gx"), "mod util;\nutil::v\n");
+        write(&root.join("util.gx"), "mod tool;\nlet v = tool::w;\n");
+        write(&root.join("util").join("tool.gx"), "let w = 1;\n");
+        write(&root.join("tool.gx"), "mod lib;\nlib::x + 1\n");
+        write(&root.join("lib.gx"), "let x = 1;\n");
+        let m = scan(&[root.to_path_buf()], &WorkspaceModel::default());
+        let mut roots: Vec<_> = m.projects.iter().map(|p| p.root.clone()).collect();
+        roots.sort();
+        assert_eq!(roots, [root.join("app.gx"), root.join("tool.gx")]);
+        let lib = &m.file_to_projects[&root.join("lib.gx")];
+        assert_eq!(
+            lib.iter().map(|i| &m.projects[*i].root).collect::<Vec<_>>(),
+            [&root.join("tool.gx")]
+        );
+    }
+
+    /// Files whose `mod`s only reach each other all root.
+    #[test]
+    fn an_unrooted_mod_cycle_roots_each_file() {
+        let dir = make_dir();
+        let root = dir.path();
+        write(&root.join("a.gx"), "mod b;\n");
+        write(&root.join("b.gx"), "mod a;\n");
+        let m = scan(&[root.to_path_buf()], &WorkspaceModel::default());
+        assert_eq!(m.projects.len(), 2);
     }
 
     #[test]
