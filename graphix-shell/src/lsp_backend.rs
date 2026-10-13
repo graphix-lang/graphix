@@ -14,10 +14,7 @@ use graphix_lsp::{Checked, Connection, LspBackend};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
 use parking_lot::Mutex;
 use poolshark::global::GPooled;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc as StdArc,
-};
+use std::{path::Path, sync::Arc as StdArc};
 use tokio::{
     runtime::{Handle, Runtime},
     sync::mpsc,
@@ -38,33 +35,18 @@ pub fn run() -> Result<()> {
 /// [`run`] over any connection; tests drive `Connection::memory()`.
 pub fn serve(connection: Connection) -> Result<()> {
     let rt = Runtime::new().context("building tokio runtime")?;
-    graphix_lsp::serve(connection, |init| {
-        rt.block_on(build_backend(graphix_lsp::workspace_roots(init)))
-    })
+    graphix_lsp::serve(connection, |_| rt.block_on(build_backend()))
 }
 
-async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
+async fn build_backend() -> Result<StdArc<dyn LspBackend>> {
     let mut ctx = GXRt::<NoExt>::new_state().context("creating graphix context")?;
     let packages = crate::stdlib_packages::<NoExt>();
     let (vfs, root) =
         graphix_package::register_packages(&mut ctx, packages.iter().map(|p| &**p))
             .context("registering stdlib modules")?;
-    let mut resolvers: Vec<ResolverRef> = vec![vfs];
     // The stdlib layer, shared by every per-project check.
-    let base_resolvers = resolvers.clone();
+    let base_resolvers: Vec<ResolverRef> = vec![vfs];
     let search = graphix_rt::search_path(&Default::default(), &mut ctx.libstate)?;
-    // CR claude for claude: [dead/low] These resolvers go into the runtime's default
-    // chain, but no check uses that chain. `typecheck_project` always passes its own
-    // chain from `resolvers_for` (stdlib, the file's directory, `search`), and the
-    // default chain only resolves the stdlib root, where the VFS answers first. So
-    // workspace roots are not on any module search path, although this loop suggests
-    // they are. Drop the loop and the `resolvers` copy (pass `base_resolvers` to
-    // `GXConfig`), and drop the `roots` argument from `build_backend` unless roots are
-    // meant to be searched, in which case `resolvers_for` should add them. Also
-    // reported as (x-lsp-probe-11). (shell-12)
-    for root in roots {
-        resolvers.push(FilesResolver::new(root, None));
-    }
     // A check runs CFlag::CheckOnly, which never fuses.
     let flags = BitFlags::from(CFlag::WarnUnhandled);
     // Drain runtime events so the channel never stalls the runtime.
@@ -73,7 +55,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let gx = GXConfig::builder(ctx, tx)
         .flags(BitFlags::from(flags))
         .root(root)
-        .resolvers(resolvers)
+        .resolvers(base_resolvers.clone())
         .lsp_mode(true)
         .build()
         .context("building runtime config")?
