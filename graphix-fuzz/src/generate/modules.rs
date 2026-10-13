@@ -39,7 +39,7 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
         | GenType::List(t)
         | GenType::Map(t)
         | GenType::Nullable(t)
-        | GenType::Ref(t) => map_abstract(t, f),
+        | GenType::Ref { inner: t, .. } => map_abstract(t, f),
         GenType::Struct(fs) => fs.iter_mut().for_each(|(_, t)| map_abstract(t, f)),
         GenType::Variant(vs) => vs
             .iter_mut()
@@ -185,7 +185,10 @@ pub(super) fn gen_module(
             .map(|_| {
                 if chance(rng, 0.15) {
                     stats.ref_op = true;
-                    GenType::Ref(Box::new(types::scalar_type(rng)))
+                    GenType::Ref {
+                        inner: Box::new(types::scalar_type(rng)),
+                        mutable: false,
+                    }
                 } else {
                     iface_type(rng, stats)
                 }

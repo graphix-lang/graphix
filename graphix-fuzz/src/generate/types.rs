@@ -253,10 +253,10 @@ pub enum GenType {
         params: Vec<GenType>,
         ret: Box<GenType>,
     },
-    /// A reference `&T` with a scalar inner type. Never produced by
-    /// `random_type`; introduced by dedicated statements, ref-typed
-    /// params, and `&literal` leaves.
-    Ref(Box<GenType>),
+    /// A reference `&T`, or `&mut T` when `mutable`, with a scalar inner
+    /// type. Never produced by `random_type`; introduced by dedicated
+    /// statements, ref-typed params, and `&literal` leaves.
+    Ref { inner: Box<GenType>, mutable: bool },
     /// A generated module's abstract type, identified by its module:
     /// its `T`, or with `boxed` its `B<i64>`. Produced only by
     /// `<module>::mk(i64)` (`mkb`); the only structural consumer is
@@ -308,7 +308,8 @@ impl GenType {
             GenType::Nullable(t) => format!("[{}, null]", t.render()),
             GenType::Abstract { module, boxed: false } => format!("{module}::T"),
             GenType::Abstract { module, boxed: true } => format!("{module}::B<i64>"),
-            GenType::Ref(t) => format!("&{}", t.render()),
+            GenType::Ref { inner, mutable: false } => format!("&{}", inner.render()),
+            GenType::Ref { inner, mutable: true } => format!("&mut {}", inner.render()),
             // fn-type annotations name their positional params
             GenType::Fn { labels, params, ret } => {
                 let parts: Vec<_> = labels
@@ -344,7 +345,7 @@ impl GenType {
             GenType::Array(e) | GenType::List(e) | GenType::Map(e) => {
                 e.contains_nullable()
             }
-            GenType::Ref(t) => t.contains_nullable(),
+            GenType::Ref { inner, .. } => inner.contains_nullable(),
             GenType::Num(_)
             | GenType::Bool
             | GenType::Str
@@ -369,7 +370,7 @@ impl GenType {
             | GenType::List(e)
             | GenType::Map(e)
             | GenType::Nullable(e) => e.printable(),
-            GenType::Ref(_) | GenType::Fn { .. } => false,
+            GenType::Ref { .. } | GenType::Fn { .. } => false,
         }
     }
 
@@ -387,7 +388,7 @@ impl GenType {
             }
             GenType::Variant(_)
             | GenType::Nullable(_)
-            | GenType::Ref(_)
+            | GenType::Ref { .. }
             | GenType::Fn { .. } => false,
             GenType::Tuple(es) => es.iter().all(|e| e.infers_exact()),
             GenType::Struct(fs) => fs.iter().all(|(_, t)| t.infers_exact()),
@@ -566,7 +567,8 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
             }
         }
         // a ref to a literal
-        GenType::Ref(t) => format!("&{}", literal(rng, t)),
+        GenType::Ref { inner, mutable: false } => format!("&{}", literal(rng, inner)),
+        GenType::Ref { inner, mutable: true } => format!("&mut {}", literal(rng, inner)),
         // no literal form; the constructor over an i64 literal is the
         // closed leaf
         GenType::Abstract { module, boxed } => {

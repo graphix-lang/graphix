@@ -403,16 +403,6 @@ pub(super) fn gen_error_arm_lambda(
 /// write through it with a literal RHS (a self-reading RHS re-fires
 /// every cycle and never quiesces). Reads are organic vocabulary from
 /// the binding alone.
-// CR claude for claude: [test-gap/low] This is the only reference generator, and it is
-// reached only from gen_slots. Its targets are a let or a constant-path place, and its
-// only write is `*r <- literal` at statement level. Never generated: a moving reference
-// over a dynamic key (`&mut a[i]` with `i` later written), a `&mut T` parameter written
-// inside a called lambda or HOF callback, and an optional writable `[&mut T, null]`
-// argument. GenType::Ref also does not tell `&T` from `&mut T`. So patching the root at
-// delivery, moving references and write-through across a call have no generated
-// coverage. Fix: add a variable-index ref shape whose index is then written, add a
-// typed lambda taking `r: &mut T` that does `*r <- e`, called with a place, and give
-// `&mut` its own GenType kind. (fuzz-gen-a-06)
 pub(super) fn gen_ref_stmts(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -421,17 +411,24 @@ pub(super) fn gen_ref_stmts(
 ) -> Vec<String> {
     stats.ref_op = true;
     let inner = types::scalar_type(rng);
-    let rty = GenType::Ref(Box::new(inner.clone()));
     let mut stmts = Vec::new();
     let tgts = ctx.vars_of(&inner);
     let places = places_of(ctx, &inner);
-    let (val, var_target) = if !places.is_empty() && rng.below(2) == 0 {
+    let arrays = ctx.vars_of(&GenType::Array(Box::new(inner.clone())));
+    let (val, var_target) = if !arrays.is_empty() && rng.below(4) == 0 {
+        // a moving reference: its key is a variable written below
+        let (arr, key) = (arrays[rng.below(arrays.len())].to_string(), ctx.fresh());
+        stmts.push(format!("let {key} = i64:0"));
+        stmts.push(format!("{key} <- i64:-1"));
+        (format!("&mut {arr}[{key}]"), true)
+    } else if !places.is_empty() && rng.below(2) == 0 {
         (format!("&mut {}", places[rng.below(places.len())]), true)
     } else if !tgts.is_empty() && rng.below(3) != 0 {
         (format!("&mut {}", tgts[rng.below(tgts.len())]), true)
     } else {
         (format!("&{}", types::literal(rng, &inner)), false)
     };
+    let rty = GenType::Ref { inner: Box::new(inner.clone()), mutable: var_target };
     let r = ctx.name_for_bind(rng, cfg);
     stmts.push(format!("let {r} = {val}"));
     ctx.push(r.clone(), rty.clone());
@@ -442,9 +439,25 @@ pub(super) fn gen_ref_stmts(
             stmts.push(format!("let {t} = ({r}, {other})"));
             ctx.push(t, GenType::Tuple(vec![rty, inner]));
         }
-        // write-through requires a variable target
-        1 if var_target => {
+        // write-through requires a variable target, here or in a callee
+        1 if var_target && rng.below(2) == 0 => {
             stmts.push(format!("*{r} <- {}", types::literal(rng, &inner)));
+        }
+        1 if var_target => {
+            let w = ctx.fresh();
+            let (t, lit) = (inner.render(), types::literal(rng, &inner));
+            if rng.below(2) == 0 {
+                stmts.push(format!("let {w} = |p: &mut {t}| *p <- {lit}"));
+                stmts.push(format!("{w}({r})"));
+            } else {
+                // an optional writable argument, given and omitted
+                stmts.push(format!(
+                    "let {w} = |#p: [&mut {t}, null] = null| \
+                     select p {{ null => null, q => *q <- {lit} }}"
+                ));
+                stmts.push(format!("{w}(#p: {r})"));
+                stmts.push(format!("{w}()"));
+            }
         }
         // array of refs; try_accessor reads it back
         2 => {
