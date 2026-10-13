@@ -4,13 +4,14 @@ use crate::init;
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    BitFlags, CFlag,
-    expr::{ExprId, Source},
+    BitFlags, CFlag, Scope,
+    expr::{ExprId, ModPath, Source},
 };
 use graphix_package_core::{
     run,
     testing::{Events, FuseExpect, init_with_flags_and_setup, next_update},
 };
+use graphix_rt::EnvStats;
 use netidx::publisher::Value;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::Instant};
@@ -714,41 +715,35 @@ fn iota(n: i64) -> Value {
     Value::Array(netidx_value::ValArray::from(v))
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn env_accounting_grow_shrink() -> Result<()> {
-    use graphix_compiler::{Scope, expr::ModPath};
-
+/// `code` mapping `arr: Array<i64>` churned `cycles` times: `arr` filled
+/// with `n` elements, `settle` waited out, then emptied. The env stats at
+/// each empty `arr`, and at the last full one.
+async fn churn(
+    code: &str,
+    n: i64,
+    cycles: usize,
+    settle: Duration,
+) -> Result<(Vec<EnvStats>, EnvStats)> {
     let (tx, mut rx) = mpsc::channel(64);
     let ctx = init(tx).await?;
-
-    // Keep `_first` alive so its Delete does not race the second compile.
-    // `throttle(x)` is the async fusion boundary that forces the per-slot
-    // node-walk residue this test measures.
-    let _first = ctx.rt.compile(ArcStr::from("let arr: Array<i64> = [];")).await?;
-    let res = ctx
-        .rt
-        .compile(ArcStr::from("array::map(arr, |x| { let v = throttle(x) * 2 + 1; v })"))
-        .await?;
+    // Kept alive so its Delete does not race the second compile.
+    let _arr = ctx.rt.compile(ArcStr::from("let arr: Array<i64> = [];")).await?;
+    let res = ctx.rt.compile(ArcStr::from(code)).await?;
     let eid = res.exprs[0].id;
-
-    // Resolve `arr`'s BindId from the env; a compiled Ref would itself
-    // mint a binding and skew the baseline.
+    // From the env: a compiled Ref would mint a binding of its own and
+    // skew the baseline.
     let env = ctx.rt.get_env().await?;
-    let scope = Scope::root();
     let arr_id = env
-        .lookup_bind(&scope.lexical, &ModPath::from_iter(["arr"]))?
+        .lookup_bind(&Scope::root().lexical, &ModPath::from_iter(["arr"]))?
         .ok_or_else(|| anyhow::anyhow!("arr not in scope"))?
         .1
         .id;
-
-    const N: i64 = 4;
-    const CYCLES: usize = 4;
-
     let mut bottoms = Vec::new();
     let mut peak = None;
-    for _ in 0..CYCLES {
-        ctx.rt.set(arr_id, iota(N))?;
-        await_map_len(&mut rx, eid, N as usize).await?;
+    for _ in 0..cycles {
+        ctx.rt.set(arr_id, iota(n))?;
+        await_map_len(&mut rx, eid, n as usize).await?;
+        tokio::time::sleep(settle).await;
         peak = Some(ctx.rt.env_stats().await?);
         ctx.rt.set(
             arr_id,
@@ -757,8 +752,21 @@ async fn env_accounting_grow_shrink() -> Result<()> {
         await_map_len(&mut rx, eid, 0).await?;
         bottoms.push(ctx.rt.env_stats().await?);
     }
-
     ctx.shutdown().await;
+    Ok((bottoms, peak.context("no cycle ran")?))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn env_accounting_grow_shrink() -> Result<()> {
+    // `throttle(x)` is the async fusion boundary that forces the per-slot
+    // node-walk residue this test measures.
+    let (bottoms, peak) = churn(
+        "array::map(arr, |x| { let v = throttle(x) * 2 + 1; v })",
+        4,
+        4,
+        Duration::ZERO,
+    )
+    .await?;
 
     // Every bottom-of-cycle snapshot (0 slots) must be identical.
     let base = bottoms[0];
@@ -774,7 +782,6 @@ async fn env_accounting_grow_shrink() -> Result<()> {
 
     // The peak (N slots) must exceed the bottom, or the invariant holds
     // trivially.
-    let peak = peak.unwrap();
     if !(peak.by_id_len > base.by_id_len) {
         bail!(
             "env-accounting test is vacuous: peak {peak:?} did not exceed \
@@ -811,50 +818,21 @@ async fn failed_statement_releases_refs() -> Result<()> {
 // variable's store entry with it when its slot is deleted: two triggers
 // bank before `v` arrives, one is answered, the other is paid.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [structure/low] This test repeats env_accounting_grow_shrink's
-// driver: the local `use`, the `let arr` compile, the `lookup_bind` of `arr`, and the
-// set-iota / set-empty / `await_map_len` loop. The copies have drifted. This one never
-// checks that the store grew at the peak, so it passes vacuously if the `~`'s private
-// variable is never created. Extract one churn helper that returns the bottoms and the
-// peak, use it in both tests, and add the peak-over-base guard here. Also hoist
-// `Scope`/`ModPath` into the top-level `use graphix_compiler::{..}`, and delete
-// node_shape_matches_by_kind_name's local re-import of `CFlag` and
-// `init_with_flags_and_setup`, which the file already imports. (tests-fusion-traits-10)
 async fn deleted_sample_releases_store() -> Result<()> {
-    use graphix_compiler::{Scope, expr::ModPath};
-
-    let (tx, mut rx) = mpsc::channel(64);
-    let ctx = init(tx).await?;
-    let _first = ctx.rt.compile(ArcStr::from("let arr: Array<i64> = [];")).await?;
-    let res = ctx
-        .rt
-        .compile(ArcStr::from(
-            "array::map(arr, |x| { let v = never(); v <- x; let t = never(); \
-             t <- x; any(x, t) ~ v })",
-        ))
-        .await?;
-    let eid = res.exprs[0].id;
-    let env = ctx.rt.get_env().await?;
-    let arr_id = env
-        .lookup_bind(&Scope::root().lexical, &ModPath::from_iter(["arr"]))?
-        .ok_or_else(|| anyhow::anyhow!("arr not in scope"))?
-        .1
-        .id;
-    let mut bottoms = Vec::new();
-    for _ in 0..3 {
-        ctx.rt.set(arr_id, iota(4))?;
-        await_map_len(&mut rx, eid, 4).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        ctx.rt.set(
-            arr_id,
-            Value::Array(netidx_value::ValArray::from_iter_exact(std::iter::empty())),
-        )?;
-        await_map_len(&mut rx, eid, 0).await?;
-        bottoms.push(ctx.rt.env_stats().await?.store_len);
-    }
-    ctx.shutdown().await;
-    if bottoms.iter().any(|b| *b != bottoms[0]) {
+    let (bottoms, peak) = churn(
+        "array::map(arr, |x| { let v = never(); v <- x; let t = never(); \
+         t <- x; any(x, t) ~ v })",
+        4,
+        3,
+        Duration::from_millis(50),
+    )
+    .await?;
+    let base = bottoms[0].store_len;
+    if bottoms.iter().any(|b| b.store_len != base) {
         bail!("deleted slots leaked store entries: {bottoms:?}")
+    }
+    if !(peak.store_len > base) {
+        bail!("vacuous: the store did not grow at the peak {peak:?} over {base}")
     }
     Ok(())
 }
@@ -1022,8 +1000,7 @@ async fn node_shape_external_scalar() -> Result<()> {
 // (fusion off, so the root is the node itself, not a kernel).
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_matches_by_kind_name() -> Result<()> {
-    use graphix_compiler::{CFlag, node_shape::NodeShape};
-    use graphix_package_core::testing::init_with_flags_and_setup;
+    use graphix_compiler::node_shape::NodeShape;
 
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init_with_flags_and_setup(
