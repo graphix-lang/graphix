@@ -5,13 +5,8 @@
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
-use graphix_compiler::{
-    ExecCtx, FastCall, Rt, UserEvent, effects::Effect, env::Env, err, errf,
-    expr::split_escaped, typ::FnType,
-};
-use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, FastMemo, cast_target, fast_eval,
-};
+use graphix_compiler::{env::Env, err, errf, expr::split_escaped, typ::FnType};
+use graphix_package_core::{FastMemo, cast_target};
 use netidx::{path::Path, subscriber::Value};
 use netidx_derive::FromValue;
 use netidx_value::ValArray;
@@ -294,13 +289,6 @@ fn with_escape(esc: &Value, f: impl FnOnce(&Escape) -> Value) -> Value {
 // below only forwards to fast_builtin!, so delete it and call fast_builtin! from its
 // two sites. abstract_arg is defined twice, in db's tree.rs and http's lib.rs; one copy
 // as a CachedVals method in core would serve both. (x-fix-stdlib-08)
-// CR claude for claude: [structure/low] escape_fn! writes out by hand what
-// graphix_package_core::fast_builtin! expands to: the unit struct, unit_image_state!,
-// the Stateless(Plain) EvalCached impl over fast_eval, and the CachedArgs alias. A
-// change to fast_builtin! would silently miss str_escape and str_unescape. split_fn!
-// below is fast_builtin! under another name. Keep escape_fn! for the fc body only and
-// invoke fast_builtin! for the builtin, delete split_fn!, and call fast_builtin!
-// directly from string_split! and string_splitn!. (collections-str-05)
 macro_rules! escape_fn {
     ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $escape:ident) => {
         fn $fc(args: &[Value]) -> Option<Value> {
@@ -312,36 +300,12 @@ macro_rules! escape_fn {
             }
         }
 
-        #[derive(Debug, Default)]
-        struct $ev;
-
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));
-            const NAME: &str = $builtin;
-
-            fn eval(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                fast_eval(ctx, $fc, from)
-            }
-        }
-
-        type $name = CachedArgs<$ev>;
-
-        graphix_package_core::unit_image_state!($ev);
+        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
     };
 }
 
 escape_fn!(StringEscapeEv, StringEscape, "str_escape", fc_escape, escape);
 escape_fn!(StringUnescapeEv, StringUnescape, "str_unescape", fc_unescape, unescape);
-
-macro_rules! split_fn {
-    ($ev:ident, $name:ident, $builtin:literal, $fc:ident) => {
-        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
-    };
-}
 
 fn strings<'a>(it: impl Iterator<Item = &'a str>) -> Value {
     Value::Array(ValArray::from_iter(it.map(|s| Value::String(ArcStr::from(s)))))
@@ -356,7 +320,7 @@ macro_rules! string_split {
             }
         }
 
-        split_fn!($ev, $name, $builtin, $fc);
+        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
     };
 }
 
@@ -376,7 +340,7 @@ macro_rules! string_splitn {
             }
         }
 
-        split_fn!($ev, $name, $builtin, $fc);
+        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
     };
 }
 
