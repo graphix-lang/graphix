@@ -1669,20 +1669,28 @@ async fn implementations_are_declared_ones() {
 
 // A trait call whose self argument is never produced dispatches nothing:
 // it is bottom, its other arguments still live, and the program builds.
-// CR claude for claude: [test-gap/low] The pin binds never_sized but its value is
-// `sized` alone, so it only checks that the program builds. If resolve_trait_call
-// lowered the bottom-self call to a value, made it fire, or dispatched to an impl, the
-// pin would still pass. Make the value observe the lowered call, e.g. `let seen =
-// false; seen <- never_sized ~ true;` with the value `(sized, seen)` and the predicate
-// (2, false), which both engines give today. Also add the written-later case (`let x =
-// never(); let s = csize(x); x <- ["a", "b"]; s` gives 2). (x-fix-nodes-07)
 run!(
     trait_call_over_bottom_self,
     r#"{
     let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
     let never_sized = csize(never());
     let sized = csize(["a", "b"]);
-    sized
+    let seen = false;
+    seen <- never_sized ~ true;
+    (sized, seen)
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:2, false]"
+);
+
+// The self argument written later dispatches when it arrives.
+run!(
+    trait_call_over_late_self,
+    r#"{
+    let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
+    let x = never();
+    let s = csize(x);
+    x <- ["a", "b"];
+    s
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
 );
