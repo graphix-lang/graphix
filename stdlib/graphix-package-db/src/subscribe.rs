@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arcstr::literal;
+use arcstr::{ArcStr, literal};
 use futures::{
     channel::mpsc,
     future::{self, Either},
@@ -8,6 +8,7 @@ use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
     Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
+    errf,
     expr::ExprId,
     image::{self, ImageBuf},
     typ::FnType,
@@ -80,10 +81,11 @@ enum DbEvent {
     Remove { key: Value },
 }
 
-static EVENT_POOL: LazyLock<Pool<Vec<DbEvent>>> = LazyLock::new(|| Pool::new(128, 4096));
+static EVENT_POOL: LazyLock<Pool<Vec<Result<DbEvent>>>> =
+    LazyLock::new(|| Pool::new(128, 4096));
 
 #[derive(Debug)]
-struct DbEvents(GPooled<Vec<DbEvent>>);
+struct DbEvents(GPooled<Vec<Result<DbEvent>>>);
 
 impl CustomBuiltinType for DbEvents {}
 
@@ -99,25 +101,18 @@ fn decode_sled_event(key_typ: Option<Typ>, event: sled::Event) -> Result<DbEvent
     })
 }
 
-// CR claude for claude: [doc-drift/low] An event that fails to decode is logged and
-// dropped. on_change, on_insert and on_remove are typed Result<.., `DbErr(string)> in
-// subscription.gxi, but nothing ever delivers a DbErr. A program that catches it waits
-// for nothing, and a copy kept from on_change silently stops holding what the tree
-// holds, which the gxi promises it does. Carry the decode error through DbEvents and
-// deliver it from the accessors as a DbErr. Otherwise drop the Result from the three
-// signatures and document that undecodable events are skipped. Delivering the error is
-// the option that keeps the mirror promise. (db2-09)
-fn push_event(key_typ: Option<Typ>, event: sled::Event, events: &mut Vec<DbEvent>) {
-    match decode_sled_event(key_typ, event) {
-        Ok(ev) => events.push(ev),
-        Err(e) => log::warn!("db subscription: {e:#}"),
-    }
+fn push_event(
+    key_typ: Option<Typ>,
+    event: sled::Event,
+    events: &mut Vec<Result<DbEvent>>,
+) {
+    events.push(decode_sled_event(key_typ, event));
 }
 
 fn drain_ready(
     subscriber: &mut sled::Subscriber,
     key_typ: Option<Typ>,
-    events: &mut Vec<DbEvent>,
+    events: &mut Vec<Result<DbEvent>>,
 ) {
     let waker = Waker::noop();
     let mut cx = Context::from_waker(&waker);
@@ -337,7 +332,13 @@ fn scan_db_events<E: UserEvent>(
     let bid = bind_id?;
     event.with_custom(&bid, |cbt| {
         let events = (cbt as &dyn Any).downcast_ref::<DbEvents>()?;
-        let mut vals: LPooled<Vec<Value>> = events.0.iter().filter_map(convert).collect();
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        for event in &*events.0 {
+            match event {
+                Err(e) => return Some(errf!("DbErr", "{e:#}")),
+                Ok(event) => vals.extend(convert(event)),
+            }
+        }
         if vals.is_empty() {
             return None;
         }
@@ -496,6 +497,37 @@ mod test {
     use super::*;
     use crate::encoding::{encode_key, encode_value};
     use std::{sync::mpsc as std_mpsc, thread, time::Duration};
+
+    #[test]
+    fn undecodable_events_reach_accessors() {
+        for event in [
+            sled::Event::Insert {
+                key: 1i64.to_be_bytes().as_slice().into(),
+                value: b"".as_slice().into(),
+            },
+            sled::Event::Remove { key: b"".as_slice().into() },
+        ] {
+            let mut events = EVENT_POOL.take();
+            push_event(Some(Typ::I64), event, &mut events);
+            let id = BindId::new();
+            let event = Event::new(graphix_compiler::NoUserEvent);
+            event.custom.lock().insert(id, Box::new(DbEvents(events)));
+            for convert in [
+                (|_: &DbEvent| None) as fn(&DbEvent) -> Option<Value>,
+                (|_: &DbEvent| Some(Value::Null)) as fn(&DbEvent) -> Option<Value>,
+            ] {
+                let v = scan_db_events(Some(id), &event, convert)
+                    .expect("decode error delivered");
+                let Value::Error(e) = v else { panic!("expected DbErr") };
+                let Value::Array(fields) = &*e else { panic!("expected tagged error") };
+                assert_eq!(fields[0], Value::from("DbErr"));
+                let Value::String(msg) = &fields[1] else {
+                    panic!("expected error text")
+                };
+                assert!(msg.contains("undecodable"));
+            }
+        }
+    }
 
     /// The runtime never takes a delivery, yet writes to the tree finish:
     /// the watch keeps reading sled, whose full buffer would block them.
