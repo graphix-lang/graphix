@@ -1172,17 +1172,6 @@ impl<X: GXExt> GX<X> {
             })
             .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
-        // CR claude for claude: [perf/low] This call site's callee is a Constant, so it
-        // is unbound when check_and_fuse runs. emit_clif then falls through to the
-        // builtin path and fails as 'builtin call site ("nop")("nop") not discovered',
-        // and CallSite::fuse has no apply to fuse. The run-time bind at the first
-        // update fuses the instance only for a shared collection slot. So the body of
-        // every Callable (a GUI/TUI handler, even a pure `|x: i64| -> i64 x * 2 + 1`)
-        // always runs on the node-walk, while the same call written in Graphix would be
-        // offered to fusion, and FusionStats.failed shows it as an emitter gap. The
-        // callee is a known LambdaDef here: bind its instance when compiling, as a
-        // statically resolved call is pre-bound, so fusion sees a Lambda callee and
-        // fuses its body. Add a FuseExpect pin for a pure callable. (rt-12)
         let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid);
         self.ctx.view().open_compile_frame(eid);
         if let Err(e) =

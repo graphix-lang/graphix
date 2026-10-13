@@ -1896,6 +1896,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
             NodeView::Lambda(l) => Some(l.def_value().clone()),
+            // an embedder's callable calls the lambda value it was given
+            NodeView::Constant(c) => Some(c.value.clone()),
             _ => None,
         };
         let fv = match target {
