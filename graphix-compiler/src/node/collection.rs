@@ -668,7 +668,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.delete(ctx);
-        ctx.rt.store_remove(&self.id);
+        ctx.rt.store_release(&self.id);
         ctx.env.unbind_variable(self.id);
     }
 }
@@ -1209,7 +1209,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         let Self { base, slots, .. } = self;
         base.source.delete(ctx);
         base.prototype.delete(ctx);
-        ctx.rt.store_remove(&base.prototype_id);
+        ctx.rt.store_release(&base.prototype_id);
         ctx.env.unbind_variable(base.prototype_id);
         for slot in slots.iter_mut() {
             slot.delete(ctx);
@@ -1285,7 +1285,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.delete(ctx);
         for id in [self.acc_id, self.element_id] {
-            ctx.rt.store_remove(&id);
+            ctx.rt.store_release(&id);
             ctx.env.unbind_variable(id);
         }
     }
@@ -1643,7 +1643,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         base.init.delete(ctx);
         base.prototype.delete(ctx);
         for id in base.prototype_ids {
-            ctx.rt.store_remove(&id);
+            ctx.rt.store_release(&id);
             ctx.env.unbind_variable(id);
         }
         for slot in slots.iter_mut() {

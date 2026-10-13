@@ -590,39 +590,6 @@ impl<X: GXExt> GX<X> {
     /// other's result), and the event as FIRED. A reply
     /// nothing references any more goes nowhere.
     fn deliver(&mut self, id: BindId, u: VarUpdate, via: Via) {
-        // CR claude for claude: [bug/medium] Waiting writes outlive their variable and
-        // leave store entries behind. deliver() drops only a Via::Reply write whose
-        // variable nothing references. A Write or Set queued in var_updates or `sets`
-        // lands in the store after the binding that owned the variable was deleted. Two
-        // cases. delete_callable removes the argument store entries (gx.rs) but not the
-        // call already in `sets`, so call() followed by drop re-creates them in the
-        // next do_cycle (the rt-11 fix covers only one site). And a REPL or embedder
-        // Delete of an expression whose `<-` queued a write: Bind::delete's
-        // store_remove runs first, then the queued write lands. Failure: Five
-        // compile_callable + call + drop iterations: store_len goes from 1 to 6. Five
-        // compile/drop iterations of `{ let x = 0; x <- x + 1; x }`: store_len goes
-        // from 0 to 5. The control `{ let x = 0; x + 1 }` stays at 0. Each entry holds
-        // its value until the runtime ends, and env_stats-based leak checks drift. Fix:
-        // When a binding is released, purge its waiting writes: a Waiting::forget(id)
-        // called from the paths that store_remove a dead binding (Bind::delete,
-        // delete_callable, release_var), with delete_callable also dropping its calls'
-        // pending sets. Alternatively, have deliver() skip any write to an id that a
-        // release has marked dead, not only replies. Unverified: the reviewer's report,
-        // not checked by a verifier. (rt-05)
-        // CR claude for claude: [bug/high] A `Via::Write` still waiting in
-        // `var_updates` when its id is released (`ExecCtx::release_var`) or deleted
-        // (the `store_remove` in pattern, slot, sample, wrapper and catch delete) lands
-        // here afterwards. It puts a store entry back that nothing ever removes. Any id
-        // written more than once in a cycle can leak this way: `array::iter`/`iterq`,
-        // `queue`, `range`, queuefn pops, a `<-` target with several writers, and
-        // sys::net var_watches. The leak is one value per release, unbounded, and the
-        // runtime also runs cycles that do no work. Dropping writes to unreferenced ids
-        // here would be wrong, because the store keeps writes for readers that bind
-        // later. Instead, add an `Rt` method that removes the id from `var_updates`
-        // (`Waiting::by_id` and `ids`) together with the `store_remove`, and call it
-        // from every release and delete path. Then pin it with a test that releases an
-        // id while writes to it are queued. probe:
-        // design/review-2026-10-12/repro/x-node-contract-01.gx (x-node-contract-01)
         if matches!(via, Via::Reply) && !self.ctx.rt.by_ref.contains_key(&id) {
             return;
         }
@@ -805,7 +772,7 @@ impl<X: GXExt> GX<X> {
                 }
                 // one message, one set, one cycle (GXHandle::set_many)
                 ToGX::SetMany { sets: set } => sets.push(EmbedderWrite::Set(set)),
-                ToGX::DeleteCallable { id } => self.delete_callable(id),
+                ToGX::DeleteCallable { id } => self.delete_callable(id, sets),
                 ToGX::Call { id, args, answered } => {
                     if let Err(e) = self.call_callable(id, args, answered, sets) {
                         error!("calling callable {id:?} failed with {e:?}")
@@ -1389,13 +1356,21 @@ impl<X: GXExt> GX<X> {
         });
     }
 
-    fn delete_callable(&mut self, id: CallableId) {
+    /// Delete a callable: its calls are made, with nothing to answer,
+    /// next cycle, and its arguments' stored and pending values go.
+    fn delete_callable(&mut self, id: CallableId, sets: &mut Vec<EmbedderWrite>) {
         if let Some(c) = self.callables.remove(&id) {
-            // its calls are made, with nothing to answer, next cycle
             for call in self.calls.iter_mut().filter(|call| call.expr == c.expr) {
                 call.arg = None
             }
+            for w in sets.iter_mut() {
+                if let EmbedderWrite::Set(set) = w {
+                    set.retain(|(id, _)| !c.args.contains(id));
+                }
+            }
+            sets.retain(|w| !matches!(w, EmbedderWrite::Set(set) if set.is_empty()));
             for a in c.args.iter() {
+                self.ctx.rt.forget_writes(*a);
                 self.ctx.rt.store_remove(a);
             }
             if let Some(mut n) = self.nodes.shift_remove(&c.expr) {

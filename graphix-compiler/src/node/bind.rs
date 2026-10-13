@@ -1531,7 +1531,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         // Document the rule in design/place_references.md and pin it. Unverified: the
         // reviewer's report, not checked by a verifier. (x-rerun-1-06)
         ctx.env.byref_chain.remove(&self.id);
-        ctx.rt.store_remove(&self.id);
+        ctx.rt.store_release(&self.id);
         self.unregister(ctx);
         self.referent.each(&mut |n| n.delete(ctx));
     }

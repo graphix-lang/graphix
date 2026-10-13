@@ -1421,7 +1421,7 @@ impl StructPatternNode {
 
     pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
         self.ids(&mut |id| {
-            ctx.rt.store_remove(&id);
+            ctx.rt.store_release(&id);
             ctx.env.unbind_variable(id);
         })
     }

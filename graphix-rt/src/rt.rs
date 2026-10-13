@@ -87,6 +87,12 @@ impl<T> Waiting<T> {
         }
     }
 
+    /// Drop every write waiting for `id`; `take` passes over its place
+    /// in line.
+    pub(super) fn forget(&mut self, id: &BindId) {
+        self.by_id.remove(id);
+    }
+
     pub(super) fn has(&self, id: &BindId) -> bool {
         self.by_id.contains_key(id)
     }
@@ -116,14 +122,18 @@ impl<T> Waiting<T> {
                 match via {
                     Via::Set(members) => {
                         let members = members.clone();
+                        // a member whose writes were forgotten is not waited for
                         let first = |m: &BindId| {
                             !self.taken.contains(m)
-                                && self.by_id.get(m).and_then(|q| q.front()).is_some_and(
+                                && self.by_id.get(m).and_then(|q| q.front()).is_none_or(
                                     |(_, v)| matches!(v, Via::Set(s) if Arc::ptr_eq(s, &members)),
                                 )
                         };
                         if members.iter().all(first) {
                             for m in members.iter() {
+                                if !self.by_id.contains_key(m) {
+                                    continue;
+                                }
                                 let (t, via) = self.pop(m);
                                 self.taken.insert(*m);
                                 out.push((*m, t, via));
@@ -240,6 +250,11 @@ impl<X: GXExt> Rt for GXRt<X> {
 
     fn store_remove(&mut self, id: &BindId) {
         self.store.remove(id);
+    }
+
+    fn forget_writes(&mut self, id: BindId) {
+        self.var_updates.forget(&id);
+        self.custom_updates.forget(&id);
     }
 
     fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {

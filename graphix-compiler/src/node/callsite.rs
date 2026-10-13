@@ -2747,7 +2747,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         self.fnode.delete(ctx);
         for arg in self.args.values_mut() {
-            ctx.rt.store_remove(&arg.id);
+            ctx.rt.store_release(&arg.id);
             if let Some(ref mut n) = arg.node {
                 n.delete(ctx);
             }

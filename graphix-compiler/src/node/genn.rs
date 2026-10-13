@@ -181,7 +181,7 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
         self.site.delete(ctx);
         for id in self.args.drain(..) {
             ctx.env.unbind_variable(id);
-            ctx.rt.store_remove(&id);
+            ctx.rt.store_release(&id);
         }
     }
 }

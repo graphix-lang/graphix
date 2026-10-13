@@ -49,6 +49,7 @@ enum RtOp {
     SetLevel(BindId, Value),
     PatchVar(BindId, Path, Value),
     NotifySet(BindId),
+    ForgetWrites(BindId),
     SetTimer(BindId, Duration),
     CancelTimer(BindId),
     Spawn(BoxFuture<(BindId, Box<dyn CustomBuiltinType>)>),
@@ -264,6 +265,13 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
+    /// A binding released or deleted: its stored value and the writes
+    /// still waiting for it go.
+    pub fn store_release(&mut self, id: &BindId) {
+        logged!(self, forget_writes(*id), RtOp::ForgetWrites(*id));
+        self.store_remove(id)
+    }
+
     pub fn ref_path(&self, cell: &BindId) -> Option<&(BindId, Path)> {
         let mut view: &RtView<'_, R> = self;
         loop {
@@ -331,6 +339,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                         RtOp::SetLevel(id, v) => r.set_level(id, v),
                         RtOp::PatchVar(id, p, v) => r.patch_var(id, p, v),
                         RtOp::NotifySet(id) => r.notify_set(id),
+                        RtOp::ForgetWrites(id) => r.forget_writes(id),
                         RtOp::SetTimer(id, d) => r.set_timer(id, d),
                         RtOp::CancelTimer(id) => r.cancel_timer(id),
                         RtOp::Spawn(f) => r.spawn(f),

@@ -1080,6 +1080,10 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// Remove a bind from the store.
     fn store_remove(&mut self, id: &BindId);
 
+    /// Drop the writes waiting for `id`: its binding is gone, and a write
+    /// that landed now would leave a store entry nothing removes.
+    fn forget_writes(&mut self, id: BindId);
+
     /// Insert a standing entry, stamped as an earlier cycle so a
     /// same-cycle reader never sees it as delivered.
     fn store_insert_standing(&mut self, id: BindId, tv: TagValue);
@@ -1908,26 +1912,11 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     }
 
     /// Release an id this node minted for its own deliveries: unregister
-    /// it and forget the value the store holds for it, which nothing will
-    /// read again.
-    // CR claude for claude: [perf/medium] release_var unregisters the id and drops its
-    // store entry, but leaves the writes already queued for it in the runtime's
-    // var_updates. A builtin that queues many writes to its private id keeps getting
-    // them delivered after it sleeps or is deleted, one per cycle. This affects core
-    // range (one set_var per element, up to MAX_ARRAY_INIT_LEN), queue, the fs watch
-    // stream and NetState::subscribe's replay. Each delivery is a worked cycle, so the
-    // runtime never goes idle. Each one is also a Via::Write, which deliver does not
-    // drop, so it re-inserts a store entry for the dead id. A range of 2M elements
-    // whose arm sleeps after 10 values burns seconds of CPU cycling through writes
-    // nothing reads. Fix: add an Rt operation that discards an id's pending writes
-    // (remove its Waiting queue; take skips ids with none) and call it from
-    // release_var. Then releasing a private id is complete, and x-concurrency-10's
-    // timer cancel can live there too. probe:
-    // design/review-2026-10-12/repro/x-concurrency-03.gx (control:
-    // x-concurrency-03-control.gx, driver x-concurrency-03.sh) (x-concurrency-04)
+    /// it and forget the value the store holds for it and the writes
+    /// waiting for it, which nothing will read.
     pub fn release_var(&mut self, id: BindId, top_id: ExprId) {
         self.unref_var(id, top_id);
-        self.rt.store_remove(&id);
+        self.rt.store_release(&id);
     }
 
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
@@ -1993,7 +1982,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             match d {
                 Discarded::Node(mut n) => n.delete(self),
                 Discarded::Apply(mut a) => a.delete(self),
-                Discarded::Stored(id) => self.rt.store_remove(&id),
+                Discarded::Stored(id) => self.rt.store_release(&id),
             }
         }
     }

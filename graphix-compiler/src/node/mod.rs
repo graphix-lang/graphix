@@ -2439,7 +2439,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.debt_id() {
             ctx.unref_var(id, self.top_id);
-            ctx.rt.store_remove(&id);
+            ctx.rt.store_release(&id);
         }
         self.arg.node.delete(ctx);
         self.trigger.delete(ctx);

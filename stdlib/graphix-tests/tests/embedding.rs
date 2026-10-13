@@ -68,7 +68,7 @@ async fn a_callable_leaves_its_definitions_signature_alone() -> Result<()> {
 }
 
 /// A dropped callable takes its arguments' stored values with it, called
-/// or not.
+/// or not, and dropped before its call landed or after.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1000);
@@ -78,7 +78,7 @@ async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
     let m = gx.compile(literal!("mod test")).await?;
     let r = gx.compile_ref(find_bind_id(&m.env, "test::h")?).await?;
     let lambda = r.last.clone().context("h has no value")?;
-    for call in [false, true] {
+    for (call, wait) in [(false, true), (true, true), (true, false)] {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let s0 = gx.env_stats().await?.store_len;
         for i in 0..20 {
@@ -86,17 +86,46 @@ async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
             if call {
                 c.call(ValArray::from_iter_exact([Value::I64(i)].into_iter())).await?;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            if wait {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
             drop(c);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
         let s1 = gx.env_stats().await?.store_len;
         if s1 != s0 {
-            bail!("20 dropped callables (called: {call}) left {} store entries", s1 - s0);
+            bail!(
+                "20 dropped callables (called: {call}, waited: {wait}) left {} store entries",
+                s1 - s0
+            );
         }
     }
     drop(r);
     drop(m);
+    ctx.shutdown().await;
+    drain.abort();
+    Ok(())
+}
+
+/// A write still waiting when its expression is deleted goes with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_writer_leaves_no_store_entry() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = runtime(tx).await?;
+    let gx = ctx.rt.clone();
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let s0 = gx.env_stats().await?.store_len;
+    for _ in 0..5 {
+        let e = gx.compile(literal!("{ let x = 0; x <- x + 1; x }")).await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(e);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let s1 = gx.env_stats().await?.store_len;
+    if s1 != s0 {
+        bail!("5 deleted writers left {} store entries", s1 - s0);
+    }
     ctx.shutdown().await;
     drain.abort();
     Ok(())
