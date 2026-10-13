@@ -536,16 +536,8 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
 
 // A block issues its statements at entry, so two calls in one block are
 // in flight together; at the seq level a call is opaque, so the second
-// waits for the write before it.
-// CR claude for claude: [test-gap/low] This fixture decides its answer by racing two 30
-// ms after_idle calls against a 50 ms one-shot `late` timer. The margin is 20 ms in the
-// block case and 10 ms in the sequential case, so a runtime stall that long on a loaded
-// box lands both events in one cycle and flips "done" to "late". That is the flake
-// class tests-lang-a-02 fixed in three other fixtures. Make the order part of the
-// program. One option is to assert on the cycle in which `a` and `b` land, by counting
-// the cycles between the seq's entry and each write. The other is to put the timeouts
-// far enough apart that a stall cannot reorder them. probe:
-// design/review-2026-10-12/repro/x-rerun-5-04.sh (x-rerun-5-06)
+// waits for the write before it. 100 ms apart either way, so a stall
+// cannot reorder them.
 // CR claude for claude: [doc-drift/low] The comment gives the wrong reason for 'late'.
 // A call to a static target is not opaque to the planner: `b <- f(2)` neither reads nor
 // writes `a`, and the plan is `S0 -> S1 same`. The second statement starts in the cycle
@@ -559,11 +551,11 @@ async fn block_issues_together(mode: Mode) -> Result<()> {
     {
         let code = format!(
             r#"{{
-                let f = |v| sys::time::after_idle(duration:30.ms, v);
+                let f = |v| sys::time::after_idle(duration:200.ms, v);
                 let a = never<i64>();
                 let b = never<i64>();
                 seq {{ {body} }};
-                let late = sys::time::timer(duration:50.ms, false);
+                let late = sys::time::timer(duration:300.ms, false);
                 let first = once(any(late ~ "late", (a + b) ~ "done"));
                 sys::time::after_idle(duration:100.ms, first)
             }}"#
