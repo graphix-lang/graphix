@@ -347,18 +347,7 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
         .enable_all()
         .build()
         .context("building tokio runtime")?;
-    // CR claude for claude: [bug/high] The runtime is dropped when tokio_main returns,
-    // and dropping a tokio Runtime waits for its blocking-pool tasks. sys_io_stdin's
-    // tokio::io::stdin read runs on that pool, so after the program's sys::exit fires
-    // (Shell::run returns Some(code)), the process does not reach process::exit until
-    // the pending stdin read gets a line or EOF. A blocked file operation stalls it the
-    // same way. A stdin command loop that exits on "quit" hangs at a terminal until the
-    // next Enter. Piped `{ echo quit; sleep 10; }`, it exits after 10 s instead of at
-    // once. Fix: end the runtime with `rt.shutdown_background()` (or a short
-    // `shutdown_timeout`) after block_on returns, on both the Ok and the Err path,
-    // instead of letting it drop. probe: design/review-2026-10-12/repro/sys-io-02.gx
-    // (sys-io-02)
-    rt.block_on(async move {
+    let res = rt.block_on(async move {
         // a program's failures reach stderr with or without a log
         let _logger = match &p.log_dir {
             // CR claude for claude: [bug/medium] With RUST_LOG unset,
@@ -491,7 +480,10 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
             .build()?
             .run(run_on_main)
             .await
-    })
+    });
+    // a blocking task (a stdin read) must not hold the exit
+    rt.shutdown_background();
+    res
 }
 
 fn main() -> Result<()> {
