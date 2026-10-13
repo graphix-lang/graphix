@@ -261,42 +261,13 @@ async fn mesh_style_3d() -> Result<()> {
 /// chart drew from inherits that chart's cache. Its first draw must
 /// not trust it.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [structure/low] This test and markers_draw_on_every_series_kind
-// each rebuild the renderer, theme, bounds and Program::draw call that draw_in already
-// does. Each also re-imports GraphixTheme, ChartState, ChartW, NoExt, Point, Rectangle,
-// Size, mouse and Program, which the file's top-level use statements already provide.
-// Here, draw both harnesses through `draw_in(&tall, &state, size)` and `draw_in(&short,
-// &state, size)` with one shared ChartState and read y_range from the result. In the
-// markers test, use `assert!(draw(&h).await.is_some())`. Delete the local use
-// statements. (tests-gui-b-10)
 async fn fresh_chart_redraws_an_inherited_cache() -> Result<()> {
-    use crate::{
-        theme::GraphixTheme,
-        widgets::chart::{ChartState, ChartW},
-    };
-    use graphix_rt::NoExt;
-    use iced_core::{Point, Rectangle, Size, mouse};
-    use iced_widget::canvas::Program;
     let tall = chart_harness(r#"&[line(&[(1.0, 1000.0), (2.0, 2000.0)])]"#).await?;
     let short = chart_harness(r#"&[line(&[(1.0, 1.0), (2.0, 2.0)])]"#).await?;
-    let renderer = super::headless_gpu().await.create_renderer();
-    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
-    let bounds = Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0));
     let state = ChartState::default();
-    let y_max = |w: &crate::widgets::GuiW<NoExt>| {
-        let c = w.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart");
-        let _ = Program::draw(
-            c,
-            &state,
-            &renderer,
-            &theme,
-            bounds,
-            mouse::Cursor::Unavailable,
-        );
-        state.plot_info.get().expect("draw records the plot area").y_range.1
-    };
-    assert!(y_max(&tall.widget) > 1000.0);
-    assert!(y_max(&short.widget) < 100.0);
+    let size = Size::new(400.0, 300.0);
+    assert!(draw_in(&tall, &state, size).await.expect("drawn").y_range.1 > 1000.0);
+    assert!(draw_in(&short, &state, size).await.expect("drawn").y_range.1 < 100.0);
     Ok(())
 }
 
@@ -313,13 +284,6 @@ fn marker_size_rule() {
 /// one-point series, whose auto range is degenerate.
 #[tokio::test(flavor = "current_thread")]
 async fn markers_draw_on_every_series_kind() -> Result<()> {
-    use crate::{
-        theme::GraphixTheme,
-        widgets::chart::{ChartState, ChartW},
-    };
-    use graphix_rt::NoExt;
-    use iced_core::{Point, Rectangle, Size, mouse};
-    use iced_widget::canvas::Program;
     let h = chart_harness(
         r#"&[
             line(&[(2.0, 5.0)]),
@@ -329,14 +293,7 @@ async fn markers_draw_on_every_series_kind() -> Result<()> {
         ]"#,
     )
     .await?;
-    let renderer = super::headless_gpu().await.create_renderer();
-    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
-    let bounds = Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0));
-    let state = ChartState::default();
-    let c = h.widget.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart");
-    let _ =
-        Program::draw(c, &state, &renderer, &theme, bounds, mouse::Cursor::Unavailable);
-    assert!(state.plot_info.get().is_some());
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
