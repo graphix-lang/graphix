@@ -52,7 +52,7 @@ const ARRAY_MAP_NESTED_CONST: &str = r#"
 {
   let a = [1, 2];
   let b = [3, 4];
-  array::map(a, |x| array::map(b, |y| 7))
+  #[native] array::map(a, |x| array::map(b, |y| 7))
 }
 "#;
 
@@ -207,18 +207,7 @@ const ARRAY_FILTER_MAP: &str = r#"
 }
 "#;
 
-// `x ~ null` in a fully sync kernel lowers to `null`, so the body fuses.
-// CR claude for claude: [test-gap/low] The comment above says `x ~ null` lowers in a
-// kernel and the body fuses. That is false: #[native] on this filter_map is refused
-// because `x ~ null` does not emit CLIF (probe:
-// design/review-2026-10-12/repro/tests-lib-a-03.gx). The default FuseExpect::Jit does
-// not catch it, because check_fuse_expectation passes on any fused region and the `let
-// a = [..]` literal is one. The same weakness applies to every comment in this file
-// that claims a construct fuses (ARRAY_MAP_NESTED_CONST, ARRAY_FIND_SCALAR).
-// ARRAY_FIND_SCALAR's "early-exit loop" wording also contradicts
-// design/collection_intrinsics.md, which says find scans every slot. Fix: delete this
-// comment, put #[native] on the expression in fixtures whose point is that a construct
-// fuses, and correct the find comment. (tests-lib-a-03)
+// `x ~ null` is a sample, so this callback node-walks.
 run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -271,12 +260,11 @@ run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
 });
 
 // Scalar-element `array::find` lowers to the array-find loop (result
-// `Nullable<i64>`) and JITs via an early-exit loop whose found / not-
-// found edges feed a two-word `(disc, payload)` merge.
+// `Nullable<i64>`), which scans every slot and keeps the first match.
 const ARRAY_FIND_SCALAR: &str = r#"
 {
   let a = [1, 2, 3, 4, 5];
-  array::find(a, |x| x > 3)
+  #[native] array::find(a, |x| x > 3)
 }
 "#;
 
