@@ -2,17 +2,13 @@
 //! …)` emits a graphix expression of type `ty` from in-scope bindings
 //! and literals, so every program typechecks by construction. Programs
 //! are emitted as text. Bindings deliberately rebind visible names and
-//! collide with names from other scopes; only pure, deterministic
-//! constructs are generated so the oracle's comparison is sound.
+//! collide with names from other scopes. Generated values are
+//! deterministic, and a program keeps the oracle's `Exact` tier except
+//! where a template says otherwise: an async reader lowers it to
+//! `FinalValues`, an async reader beside a `<-` to `Excluded`, so a
+//! program draws its codec round trips (`GenCfg::p_codecs`) or its
+//! `<-` templates, never both.
 
-// CR claude for claude: [doc-drift/low] The module doc above says only pure,
-// deterministic constructs are generated so the oracle's comparison is sound. The
-// generator also emits connects (the catch-slot counter), `*r <-` write-through and
-// async type-directed readers (try_format_round_trip). The async readers move a program
-// to oracle_tier's FinalValues, and together with a `<-` to Excluded (see
-// fuzz-gen-a-01). Fix: state the real contract. Generated values are deterministic,
-// async readers and `<-` lower the oracle tier, and a new template keeps the Exact tier
-// unless its doc says otherwise. (fuzz-gen-a-08)
 mod exprs;
 mod funcs;
 mod modules;
@@ -105,6 +101,9 @@ pub struct GenCfg {
     /// Remaining nesting budget for subprogram slots (decremented per
     /// level; 0 disables the arm).
     pub subprogram_depth: usize,
+    /// A program round-trips data through the json/toml/pack codecs; it
+    /// then emits no `<-` template.
+    pub p_codecs: f64,
 }
 
 impl Default for GenCfg {
@@ -135,6 +134,7 @@ impl Default for GenCfg {
             type_depth: 2,
             p_subprogram: 0.10,
             subprogram_depth: 2,
+            p_codecs: 0.1,
         }
     }
 }
@@ -243,6 +243,8 @@ pub(crate) struct GenCtx {
     next: usize,
     /// Inside a seq body, where a `catch` is refused.
     no_catch: bool,
+    /// The program round-trips data through the codecs (`GenCfg::p_codecs`).
+    codecs: bool,
 }
 
 fn is_type_keyword(name: &str) -> bool {
@@ -251,7 +253,13 @@ fn is_type_keyword(name: &str) -> bool {
 
 impl GenCtx {
     fn new() -> Self {
-        GenCtx { vars: Vec::new(), collision_pool: Vec::new(), next: 0, no_catch: false }
+        GenCtx {
+            vars: Vec::new(),
+            collision_pool: Vec::new(),
+            next: 0,
+            no_catch: false,
+            codecs: false,
+        }
     }
 
     fn fresh(&mut self) -> String {
@@ -421,6 +429,7 @@ pub fn gen_program(rng: &mut Rng) -> String {
 /// reports which bug-class shapes the program contains.
 pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut ctx = GenCtx::new();
+    ctx.codecs = chance(rng, cfg.p_codecs);
     let mut stats = GenStats::default();
     let mut files: Vec<(String, String)> = Vec::new();
     let stmts = gen_slots(&mut ctx, rng, cfg, &mut stats, Some(&mut files));
@@ -482,7 +491,7 @@ fn gen_slots(
             stmts.extend(modules::gen_dynamic_module(ctx, rng, cfg, stats, n));
         } else if cfg.subprogram_depth > 0 && chance(rng, cfg.p_subprogram) {
             stmts.push(gen_subprogram_stmt(ctx, rng, cfg, stats));
-        } else if chance(rng, cfg.p_ref) {
+        } else if !ctx.codecs && chance(rng, cfg.p_ref) {
             stmts.extend(funcs::gen_ref_stmts(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_shape) {
             stmts.extend(funcs::gen_shape_template(ctx, rng, stats));
@@ -490,7 +499,7 @@ fn gen_slots(
             stmts.extend(funcs::gen_rec_lambda(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_error_lambda) {
             stmts.extend(funcs::gen_error_arm_lambda(ctx, rng, cfg, stats));
-        } else if chance(rng, cfg.p_catch) {
+        } else if !ctx.codecs && chance(rng, cfg.p_catch) {
             let n = stmts.len();
             let acc = format!("cerr{n}");
             stmts.push(format!("let {acc}: Error<Any> = never()"));
@@ -592,6 +601,7 @@ fn gen_subprogram_stmt(
     } else {
         let mut inner = GenCtx::new();
         inner.next = ctx.next;
+        inner.codecs = ctx.codecs;
         let b = gen_block(&mut inner, rng, &inner_cfg, stats, &ty);
         ctx.next = inner.next;
         b

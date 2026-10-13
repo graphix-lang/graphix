@@ -509,31 +509,7 @@ pub(super) fn gen_typed(
             return b;
         }
     }
-    // CR claude for claude: [test-gap/medium] try_format_round_trip emits
-    // json::read/toml::read/pack::read. These are async builtins, and oracle_tier marks
-    // a program holding one as Excluded whenever it also has a `<-` or a fire-count
-    // builtin. Catch slots, ref groups and every reactive program have one. So one leaf
-    // here strips value comparison from about 12% of plain programs and 7% of reactive
-    // ones; an engine bug anywhere in them is never recorded. It also breaks the
-    // module's contract that only pure, deterministic constructs are generated. Keep
-    // the codecs but stop them from poisoning other programs: a per-program codec
-    // profile that enables round trips and suppresses the `<-`-bearing templates, or a
-    // GenCtx flag that turns round trips off once a `<-` slot is emitted. Then fix the
-    // contract line in the generate module doc. probe:
-    // design/review-2026-10-12/repro/fuzz-gen-b-01.sh (fuzz-gen-b-01)
-    // CR claude for claude: [test-gap/high] This tries a json/toml/pack round trip at
-    // 1/24 odds at every data-typed node. Its async reader is the only async marker the
-    // generator emits, and oracle_tier moves any program that contains one to
-    // FinalValues. If the program also has a `<-` (the catch-slot counter, `*r <-`) or
-    // a fire-count builtin, it moves to Excluded, which compares only the outcome kind.
-    // The chance grows with program size: of the generated programs of 8k+ characters,
-    // 92% are Excluded and 5% Exact (probe:
-    // design/review-2026-10-12/repro/fuzz-gen-a-03-tier-by-size.sh). So the big_cfg
-    // profile has almost no value oracle. Fix: take the round trip out of gen_typed.
-    // Make it a rare per-program statement template with its own GenCfg probability,
-    // and have a program that draws it skip the `<-`-emitting arms so it stays in
-    // FinalValues. Or give round trips their own profile. (fuzz-gen-a-01)
-    if rng.below(24) == 0 {
+    if ctx.codecs && rng.below(24) == 0 {
         if let Some(b) = try_format_round_trip(ctx, rng, ty, d) {
             return b;
         }
