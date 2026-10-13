@@ -108,23 +108,17 @@ fn pad_range_by(min: f64, max: f64, unit: f64) -> (f64, f64) {
     if !(min <= max) || !min.is_finite() || !max.is_finite() {
         return (-unit, unit);
     }
+    let (min, max) = (min.clamp(-LIMIT, LIMIT), max.clamp(-LIMIT, LIMIT));
     let (lo, hi) = if min == max { (min - unit, max + unit) } else { (min, max) };
     let pad = (hi / 2.0 - lo / 2.0) / 10.0;
-    // CR claude for claude: [bug/low] The doc says the result is always a
-    // checked_range, but it is not when all the data lies on one side beyond LIMIT. For
-    // (1e308, 1e308), hi is clamped to LIMIT while lo stays near 1e308, and the
-    // fallback below widens both ends without restoring the order. The result is
-    // (9.99e307, 4.49e307). The chart then draws nothing, the axes are reversed, and
-    // checked_range rejects every pan and zoom. Clamp min and max to [-LIMIT, LIMIT]
-    // before padding, so the min == max branch covers a one-sided overflow. probe:
-    // design/review-2026-10-12/repro/gui-chart-01.rs
-    // (pad_range_beyond_the_limit_is_checked); move it in as a unit test.
-    // (gui-chart-06)
     let (lo, hi) = ((lo - pad).max(-LIMIT), (hi + pad).min(LIMIT));
     if lo < hi {
         (lo, hi)
     } else {
-        (lo - unit.max(lo.abs() * 1e-9), hi + unit.max(hi.abs() * 1e-9))
+        (
+            (lo - unit.max(lo.abs() * 1e-9)).max(-LIMIT),
+            (hi + unit.max(hi.abs() * 1e-9)).min(LIMIT),
+        )
     }
 }
 
@@ -165,5 +159,35 @@ pub fn tick_precision(range: f64) -> usize {
         3
     } else {
         4
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn padding_extreme_values_keeps_an_ordered_bounded_range() {
+        let limit = f64::MAX / 4.0;
+        for (min, max) in [
+            (1e308, 1e308),
+            (1e308, f64::MAX),
+            (-f64::MAX, -1e308),
+            (-1e308, -1e308),
+            (-f64::MAX, f64::MAX),
+            (0.0, 0.0),
+            (f64::NAN, f64::NAN),
+            (f64::NEG_INFINITY, f64::INFINITY),
+        ] {
+            let r = pad_range(min, max);
+            assert_eq!(checked_range(r), Some(r), "{min}..{max}: {r:?}");
+            assert!(r.0 >= -limit && r.1 <= limit, "{r:?}");
+            if min > limit {
+                assert!(r.0 > limit / 2.0);
+            }
+            if max < -limit {
+                assert!(r.1 < -limit / 2.0);
+            }
+        }
     }
 }
