@@ -518,6 +518,17 @@ fn link_equal_inner(t0: &Type, t1: &Type, commit: bool) -> bool {
     }
 }
 
+/// How many positional arguments a function type takes, when it takes a
+/// fixed number.
+fn positional_arity(t: &Type) -> Option<usize> {
+    t.with_deref(|t| match t {
+        Some(Type::Fn(ft)) if ft.vargs.is_none() => {
+            Some(ft.args.iter().filter(|a| a.is_positional()).count())
+        }
+        _ => None,
+    })
+}
+
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
     union_identical(t0, t1)
@@ -545,6 +556,19 @@ impl std::fmt::Display for TypeMismatch {
             // definition (its scope or defining position), or expanded one level.
             // probe: design/review-2026-10-12/repro/x-rerun-7-07-same-name-diag.gx
             // (x-rerun-7-07)
+            if let Some((passed, takes)) =
+                positional_arity(&self.expected).zip(positional_arity(&self.actual))
+                && passed != takes
+            {
+                let s = |n: usize| if n == 1 { "" } else { "s" };
+                write!(
+                    f,
+                    "a function taking {takes} argument{} where {passed} argument{} are \
+                     passed: ",
+                    s(takes),
+                    s(passed)
+                )?;
+            }
             write!(f, "type mismatch {} does not contain {}", self.expected, self.actual)
         })
     }

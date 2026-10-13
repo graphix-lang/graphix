@@ -762,15 +762,9 @@ const ARRAY_GROUP2: &str = r#"
 }
 "#;
 
-// CR claude for claude: [readability/low] A one-argument callback passed where
-// array::group passes two is reported as `type mismatch fn(len: i64, x: 'a: i64) ->
-// bool throws 'e: unbound does not contain fn(v: i64) -> bool`. The user sees
-// inference-cell state (`'a: i64`, `'e: unbound`) rather than the actual problem, an
-// arity mismatch. This pin freezes that wording, so improving the message breaks the
-// test. Fix: have the checker report a lambda-versus-expected-function arity mismatch
-// as such (the callback takes 1 argument, the expected type passes 2), and pin a stable
-// phrase of that message here. (tests-lib-a-07)
-run!(array_group2, ARRAY_GROUP2, refused("bool throws 'e: unbound does not contain fn(v:"); FuseExpect::None);
+// A callback of the wrong arity is told so.
+run!(array_group2, ARRAY_GROUP2,
+    refused("a function taking 1 argument where 2 arguments are passed"); FuseExpect::None);
 
 // A predicate that answers bottom holds group until it answers: the
 // elements that arrive meanwhile are judged once th has a value.
