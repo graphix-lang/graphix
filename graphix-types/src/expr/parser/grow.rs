@@ -157,6 +157,9 @@ fn note_furthest(pos: SourcePosition) {
 pub struct ParseFailure {
     pub pos: SourcePosition,
     pub msg: String,
+    /// What went wrong and the note, for a reader shown where (an
+    /// editor): no position, no source line.
+    pub summary: String,
 }
 
 impl std::fmt::Display for ParseFailure {
@@ -287,14 +290,12 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
             // `refused`'s position and append `snippet(text, pos)` as the general
             // branch below does. Probe:
             // design/review-2026-10-12/repro/t-parser-a-10.gx. (t-parser-a-10)
-            return ParseFailure {
-                pos: err_pos,
-                msg: format!(
-                    "expression nesting too deep (limit {}, see \
-                     graphix_compiler::expr::parser::set_max_nesting)",
-                    max_nesting()
-                ),
-            };
+            let msg = format!(
+                "expression nesting too deep (limit {}, see \
+                 graphix_compiler::expr::parser::set_max_nesting)",
+                max_nesting()
+            );
+            return ParseFailure { pos: err_pos, summary: msg.clone(), msg };
         }
         let pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
         // CR claude for claude: [readability/low] When the furthest point is combine's
@@ -310,14 +311,15 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
         // drop statement expectations inside a bracket, raise reason-style refusals
         // with `message` instead of `unexpected_any`, and for an end-of-input failure
         // note the innermost unclosed opener's position. (x-errors-06)
-        let mut msg = if pos == err_pos {
-            format!("{e}")
+        let (mut msg, mut summary) = if pos == err_pos {
+            // combine's rendering: its position line, then what it expected
+            let msg = format!("{e}");
+            let summary = msg.split_once('\n').map_or(&*msg, |(_, s)| s).to_string();
+            (msg, summary)
         } else {
-            format!(
-                "Parse error at line: {}, column: {}\nthe parser could not \
-                 continue past this point",
-                pos.line, pos.column
-            )
+            let summary = "the parser could not continue past this point".to_string();
+            let at = format!("Parse error at line: {}, column: {}", pos.line, pos.column);
+            (format!("{at}\n{summary}"), summary)
         };
         let snippet = snippet(text, pos);
         if !snippet.is_empty() {
@@ -331,9 +333,9 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
                 "\n  note: at line: {}, column: {}: {}",
                 r.pos.line, r.pos.column, r.reason
             ));
+            summary.push_str(&format!("\nnote: {}", r.reason));
         }
-
-        ParseFailure { pos, msg }
+        ParseFailure { pos, msg, summary }
     })
 }
 

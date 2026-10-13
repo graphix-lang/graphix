@@ -661,6 +661,19 @@ fn a_watched_change_rescans() {
 
 /// An interface written before its implementation has its syntax
 /// checked, and a clean one publishes nothing.
+/// A parse error's message says what went wrong; its squiggle shows
+/// where, so no position or caret line rides in the text.
+#[test]
+fn a_parse_error_is_published_without_its_snippet() {
+    let mut c = Client::start(&[("main.gx", "let x = 1;\nlet y = ;\nx\n")]);
+    c.open("main.gx");
+    let d = c.diagnostics("main.gx");
+    assert_eq!(d.len(), 1, "{d:?}");
+    let (line, _, msg) = &d[0];
+    assert_eq!(*line, 1, "{msg}");
+    assert!(!msg.contains('^') && !msg.contains("Parse error at"), "{msg}");
+}
+
 #[test]
 fn a_lone_interface_reports_its_parse_error() {
     let mut c = Client::start(&[("api.gxi", "val x: i64 = ;\n")]);

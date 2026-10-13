@@ -42,7 +42,7 @@ use triomphe::Arc;
 
 mod grow;
 use grow::grow;
-pub use grow::{DEFAULT_MAX_NESTING, max_nesting, set_max_nesting};
+pub use grow::{DEFAULT_MAX_NESTING, ParseFailure, max_nesting, set_max_nesting};
 
 mod interpolateexp;
 use interpolateexp::interpolated;
