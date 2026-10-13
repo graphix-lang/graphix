@@ -364,16 +364,9 @@ run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
 }; FuseExpect::Jit);
 
-// A decode writes its targets at each fire of its arguments, never again
-// when its arm is re-entered with them standing, asleep or not.
-// CR claude for claude: [test-gap/low] The comment says this covers re-entry 'asleep or
-// not', but buffer::decode is `Effect::Io`, and an arm holding an Io call always
-// sleeps. Both r1 and r2 sleep, so r2 (the `once(c)` arm) repeats r1 and the not-asleep
-// case does not exist. Drop r2 and say what is pinned: the arm sleeps, and a wake does
-// not write again. In DECODE_UNFINISHED_WRITES_NOTHING below, the decode's arguments
-// never fire again and `len` is never written, so 'and nothing again' cannot fail.
-// Write `len` at a later step and assert what the decode's targets then hold, or drop
-// that half of the claim. (tests-lib-b1-05)
+// A decode writes its targets at each fire of its arguments. Its arm (it
+// holds an Io call) sleeps while deselected, and a wake with the
+// arguments standing writes nothing again: one write in three entries.
 const DECODE_WRITES_ONCE_PER_FIRE: &str = r#"{
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };
@@ -382,32 +375,34 @@ const DECODE_WRITES_ONCE_PER_FIRE: &str = r#"{
   let x: u8 = u8:0;
   let spec_x = [`U8(&mut x)];
   let r1 = select c { true => buffer::decode(b, spec_x), false => b };
-  let y: u8 = u8:0;
-  let spec_y = [`U8(&mut y)];
-  let r2 = select c { true => { let q = once(c); buffer::decode(b, spec_y) }, false => b };
-  let counts = (count(x), count(y));
-  select step { 7 => counts, _ => never() }
+  let n = count(x);
+  select step { 7 => (n, x), _ => never() }
 }"#;
 
 run!(decode_writes_once_per_fire, DECODE_WRITES_ONCE_PER_FIRE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(2)])
+    format!("{}", v.unwrap()) == "[i64:2, u8:7]"
 });
 
-// A decode that cannot finish writes nothing, and nothing again.
+// A decode that cannot finish writes nothing, and the length it lacked
+// arriving later does not run it again: x keeps its initial 0, d stays
+// unwritten.
 const DECODE_UNFINISHED_WRITES_NOTHING: &str = r#"{
   let step = 0;
   step <- select step { s if s < 6 => s + 1, _ => never() };
   let x: u8 = u8:0;
   let len: u64 = never();
+  len <- select step { 3 => u64:1, _ => never() };
   let d: bytes = never();
   let spec = [`U8(&mut x), `Bytes(&len, &mut d)];
   let r = buffer::decode(buffer::encode([`U8(u8:7), `U8(u8:1)]), spec);
   let c = count(x);
-  select step { 5 => c, _ => never() }
+  let got_d = false;
+  got_d <- d ~ true;
+  select step { 5 => (c, x, got_d), _ => never() }
 }"#;
 
 run!(decode_unfinished_writes_nothing, DECODE_UNFINISHED_WRITES_NOTHING, |v: Result<
     &Value,
 >| {
-    matches!(v, Ok(Value::I64(1)))
+    format!("{}", v.unwrap()) == "[i64:1, u8:0, false]"
 });
