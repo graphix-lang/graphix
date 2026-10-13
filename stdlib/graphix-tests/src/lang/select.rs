@@ -2124,20 +2124,35 @@ const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
       once <- 1
     }
   };
-  select step { 6 => (sampled, once), _ => never() }
+  let writes = count(once);
+  select step { 6 => (sampled, once, writes), _ => never() }
 }
 "#;
 
-// CR claude for claude: [test-gap/medium] This predicate cannot fail on the rule it
-// pins. `once <- 1` writes the constant 1, so `once` is 1 after one write or after
-// three. A regression that re-fires a constant arm RHS on every same-arm re-match, like
-// `once <- k ~ 1`, still passes. Take `count(once)` outside the arm and assert it is 2
-// (init plus one entry). Add a re-entry case (`Go at steps 1,2,3,6,7, otherwise `Stop)
-// that expects 3. Probe: design/review-2026-10-12/repro/tests-select-01.gx gives (once,
-// count, every, count) = (1, 2, 1, 4) on both engines. (tests-select-02)
+// `once` is written at init and at the one entry: two writes.
 run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(1)]),
+    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(1), Value::I64(2)]),
     _ => false,
+}; FuseExpect::Jit);
+
+// Each entry writes the constant once more: init and two entries.
+const ARM_CONST_WRITES_AT_EACH_ENTRY: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 9 => s + 1, _ => never() };
+  let k = select step { 1 | 2 | 3 | 6 | 7 => `Go, _ => `Stop };
+  let once = 0;
+  select k {
+    `Go => { once <- 1; null },
+    `Stop => null
+  };
+  let writes = count(once);
+  select step { 9 => writes, _ => never() }
+}
+"#;
+
+run!(arm_const_writes_at_each_entry, ARM_CONST_WRITES_AT_EACH_ENTRY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
 }; FuseExpect::Jit);
 
 const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
