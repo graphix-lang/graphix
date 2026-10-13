@@ -1354,15 +1354,7 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 {
     const NAME: &str;
     /// The builtin's classification — see `graphix_compiler::Effect`.
-    // CR claude for claude: [risk/low] `EvalCached` answers in the cycle it is called,
-    // but its `EFFECT` defaults to `Effect::Async`, the one classification that is
-    // never true for it. A package builtin that leaves out the declaration compiles
-    // anyway. Every caller is then reported async, nothing around it fuses, and
-    // `CachedArgs` skips its wake recompute. Every `EvalCached` in the workspace and in
-    // netidx-admin already declares `EFFECT`, so removing the default costs nothing and
-    // makes the choice between Sync, Stateless and Io a compile error to forget.
-    // (x-builtin-effects-09)
-    const EFFECT: Effect = Effect::Async;
+    const EFFECT: Effect;
     /// See `graphix_compiler::BuiltIn::ORDERED`.
     const ORDERED: bool = false;
 
