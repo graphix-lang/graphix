@@ -235,6 +235,11 @@ impl Label {
 // bytes and duration, each with a literal pool and a few builtins. Give Map a key type
 // drawn from the Ordered scalars and small tuples, rendered `Map<K, V>`. Draw them at a
 // low rate so the generator still compiles 100%. (fuzz-gen-b-05)
+// 2026-10-12 claude: Done: decimal is a NumTy (fuzz-gen-a-05) and Map carries a key type
+// (string, i64, (i64, string)). Left: duration, datetime and bytes. Their arithmetic is
+// sys::time::{add, sub, add_dur, diff, scale}, and oracle_tier excludes every program
+// that names sys::time, so those leaves need the pure time functions told apart from
+// timer/now first.
 pub enum GenType {
     Num(NumTy),
     Bool,
