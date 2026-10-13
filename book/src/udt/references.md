@@ -5,23 +5,19 @@ pointer in C. This is kind of an odd thing to have in a very high level language
 like Graphix, but there are good reasons for it. Before we get into those lets
 see what one looks like.
 
-<!-- CR claude for claude: [doc-drift/low] The REPL output below shows `727` for `&1`,
-and the next paragraph says the reference id is printed and calls it 'this reference
-727'. A reference prints as `&ref`, because its id belongs to the session and a warm
-image start relocates it. `let v = &1; (v, *v)` prints `(&ref, 1)`. Fix the output and
-the paragraph, and say briefly why the id is hidden. (book-modules-udt-15) -->
 ```graphix
 〉let v = &1
 〉v
 -: &i64
-727
+&ref
 ```
 
 The `&` in front of the `1` creates a reference. You can create a reference to
 any value. Note that the type isn't `i64` anymore but `&i64` indicating that `v`
-is a reference to an `i64`. Just like a function when printed the reference id
-is printed, not the value it refers to. We get the value that this reference 727
-refers to with the deref operator *.
+is a reference to an `i64`. A reference prints as `&ref`, not the value it
+refers to; its id belongs to the session (a cached program image relocates it),
+so it is not shown. We get the value that the reference refers to with the
+deref operator *.
 
 ```graphix
 〉*v
@@ -143,8 +139,7 @@ and so does anything that orders or hashes values: map keys, `min`,
 
 ## Referencing a Name vs Referencing an Expression
 
-`&` does slightly different things depending on what follows it, and the
-difference is observable in *when* a deref sees an update.
+`&` does slightly different things depending on what follows it.
 
 `&v`, where `v` is a binding, is a reference to that binding. Dereferencing it
 reads the binding, so `*r` and `v` always agree — on the same cycle, in the same
@@ -154,50 +149,22 @@ update round.
 let v = 0;
 let r = &v;
 v <- 7;
-(v, *r)     // (0, 0) then (7, 7)
+// (0, 0) then (7, 7)
+(v, *r)
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] udt/references.md: `&(expr)` does not pace
-like `<-`; it publishes in the same cycle. Lines 155-181 say `&(a + b)` is exactly `let
-tmp = a + b; tmp <- a + b; &tmp`, that a later update reaches the deref only on the next
-cycle, and that `(a + b, *r)` prints (5, 5) then (13, 5) then (13, 13); the text calls
-this an 'accepted wart'. The code does something else. `ByRef::update`
-(graphix-compiler/src/node/bind.rs) calls `publish` (bind.rs), which writes
-`ctx.event.variables` and the store in the same cycle, like a `let`. Even the claimed
-desugar does not pace as described, because a `let` keeps tracking its initializer. I
-believe the code: same-cycle publication is the cleaner semantics, and the book section
-(including the 'wart' rationale) is stale. Failure: Program from the book (lines
-168-172): `let a = 2; let b = 3; let r = &(a + b); a <- 10; (a + b, *r)`. The book
-promises (5, 5), (13, 5), (13, 13). Both engines print (5, 5), (13, 13). A reader
-designing UI code around the documented one-cycle lag gets wrong expectations. Fix:
-Rewrite the 'Referencing a Name vs Referencing an Expression' section: `&(expr)` mints a
-cell that is updated in the same cycle as `expr`. Drop the `tmp <- a + b` desugar and
-the 'accepted wart' paragraph, and fix the trace to (5, 5) then (13, 13). Unverified:
-the reviewer's report, not checked by a verifier. (book-modules-udt-01) -->
-`&(a + b)` has no binding to name, so it makes one. The expression's value is
-connected into a fresh cell, which is exactly
-
-```graphix
-let tmp = a + b;
-tmp <- a + b;
-&tmp
-```
-
-and it therefore paces like any other `<-`: the initial value is there
-immediately, and every later update arrives on the *next* cycle.
+`&(a + b)` has no binding to name, so it makes a fresh cell that holds the
+expression's value. The cell is updated in the same cycle as the expression, as
+a `let` would be, so a deref sees each new value right away:
 
 ```graphix
 let a = 2;
 let b = 3;
 let r = &(a + b);
 a <- 10;
-(a + b, *r)   // (5, 5) then (13, 5) then (13, 13)
+// (5, 5) then (13, 13)
+(a + b, *r)
 ```
 
 So a reference to a name is a reference to a place, and a reference to an
 expression is a reference to a value that is being kept up to date for you.
-That the two pace differently is an accepted wart — the alternative is either
-making `&(expr)` illegal, which costs a lot of concision for a construct people
-reach for constantly in UI code, or updating the cell mid-cycle, which would
-make the value a deref sees depend on where it sits in the program rather than
-on what it depends on.
