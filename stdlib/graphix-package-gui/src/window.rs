@@ -97,6 +97,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             last_mouse_interaction: mouse::Interaction::default(),
             pending_events: Vec::new(),
             needs_redraw: true,
+            redraw_at: None,
             last_set_size: None,
             pending_resize: None,
             resize_render_timer_armed: false,
@@ -140,6 +141,7 @@ pub struct TrackedWindow<X: GXExt> {
     pub last_mouse_interaction: mouse::Interaction,
     pub pending_events: Vec<iced_core::Event>,
     pub needs_redraw: bool,
+    pub redraw_at: Option<Instant>,
     pub last_set_size: Option<SizeV>,
     pub pending_resize: Option<(u32, u32, f64)>,
     /// True while a resize render timer is armed; at most one per drag.

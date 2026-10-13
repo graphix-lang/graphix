@@ -134,6 +134,10 @@ const RESIZE_RENDER_PERIOD: Duration = Duration::from_millis(16);
 /// `RESIZE_RENDER_PERIOD`. The size ref is written once per drag.
 const RESIZE_END_DEBOUNCE: Duration = Duration::from_millis(200);
 
+fn redraw_deadline(dirty: bool, at: Option<Instant>, now: Instant) -> Option<Instant> {
+    if dirty { Some(now) } else { at }
+}
+
 fn open_windows(
     bids: &[BindId],
     mut open: impl FnMut(BindId) -> Result<()>,
@@ -154,6 +158,16 @@ fn open_windows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redraw_waits_for_the_cursor_deadline_unless_dirty() {
+        let now = Instant::now();
+        let blink = now + Duration::from_millis(500);
+        assert_eq!(redraw_deadline(false, Some(blink), now), Some(blink));
+        assert_eq!(redraw_deadline(true, Some(blink), now), Some(now));
+        assert_eq!(redraw_deadline(false, None, now), None);
+        assert!(redraw_deadline(false, Some(now), blink).unwrap() <= blink);
+    }
 
     #[test]
     fn a_failed_window_does_not_skip_later_windows() {
@@ -286,8 +300,10 @@ impl<X: GXExt> GuiHandler<X> {
     fn render(&mut self, bid: BindId) -> Option<Instant> {
         let gpu = self.gpu.as_ref()?;
         let tw = self.windows.get_mut(&bid)?;
-        if !tw.needs_redraw {
-            return None;
+        let now = Instant::now();
+        let deadline = redraw_deadline(tw.needs_redraw, tw.redraw_at, now)?;
+        if deadline > now {
+            return Some(deadline);
         }
         if tw.pending_resize.is_some() && tw.last_render.elapsed() < RESIZE_RENDER_PERIOD
         {
@@ -368,19 +384,8 @@ impl<X: GXExt> GuiHandler<X> {
                         }
                     }
                 };
-                // CR claude for claude: [perf/high] A future RedrawRequest::At(t) sets
-                // needs_redraw here. about_to_wait then wakes at once for any window
-                // with needs_redraw, and render never checks t, so the deadline is
-                // never waited for. A focused text_input or text_editor asks for At(now
-                // + ~500 ms) to blink its cursor, so the loop draws every vsync for as
-                // long as the input has focus: 240 frames in 4 s where about 8 are
-                // expected (probe: design/review-2026-10-12/repro/gui-core-02.sh). Fix:
-                // keep the request apart from the dirty bit. Add a redraw_at:
-                // Option<Instant> to TrackedWindow, set from At and NextFrame. render
-                // draws when needs_redraw or now >= redraw_at. about_to_wait wakes now
-                // only for needs_redraw and otherwise waits until the earliest
-                // redraw_at. (gui-core-02)
-                tw.needs_redraw = next.is_some();
+                tw.needs_redraw = false;
+                tw.redraw_at = next;
                 next
             }
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -391,6 +396,7 @@ impl<X: GXExt> GuiHandler<X> {
             Err(e) => {
                 error!("surface frame error: {e:?}");
                 tw.needs_redraw = false;
+                tw.redraw_at = None;
                 None
             }
         }
