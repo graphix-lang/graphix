@@ -201,24 +201,23 @@ async fn any_wakes_bottom(mode: Mode) -> Result<()> {
 
 modes!(any_wakes_bottom);
 
-// So is a uniq: it holds nothing across a bottom.
-// CR claude for claude: [test-gap/low] This test cannot tell whether v0 went bottom
-// during the sleep. uniq clears itself in its own sleep(), and a fresh uniq over a
-// stale input emits nothing at the wake whether v0 is bottom or still 5. Removing the
-// `4 => 0` write still gives [10, 5, -1] (probe:
-// design/review-2026-10-12/repro/tests-lang-rest-a-uniq-wake-standin.gx).
-// any_wakes_bottom is the real pin, and wake_restarts_quietly covers uniq's wake.
-// Either delete this test, or pin uniq across a bottom without a sleep: an in-arm
-// `uniq(10 / in1)` with in1 going 1, 2, 0, 2 re-emits 5 after the bottom in both
-// engines. (tests-lang-rest-a-04)
-async fn uniq_wakes_bottom(mode: Mode) -> Result<()> {
-    let code = ANY_WAKES_BOTTOM.replace("any(v0, never<i64>())", "uniq(v0)");
-    let (values, _) = run_delta(&code, mode).await?;
-    assert_eq!(as_i64s(&values), vec![10, 5, -1]);
+// A uniq holds nothing across a bottom: the value it emitted before the
+// bottom is emitted again after it.
+const UNIQ_ACROSS_BOTTOM: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 4 => n + 1, _ => never() };
+  let in1 = 1;
+  in1 <- select ep { 2 => 2, 3 => 0, 4 => 2, _ => never() };
+  uniq(10 / in1)
+}"#;
+
+async fn uniq_across_bottom(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(UNIQ_ACROSS_BOTTOM, mode).await?;
+    assert_eq!(as_i64s(&values), vec![10, 5, 5]);
     Ok(())
 }
 
-modes!(uniq_wakes_bottom);
+modes!(uniq_across_bottom);
 
 // A window with no arm (here a bottom scrutinee) pauses the selected
 // arm, which resumes with its state: presses goes on from where it
