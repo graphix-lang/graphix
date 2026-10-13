@@ -40,15 +40,10 @@ pub struct Epoch {
 /// `LambdaDef`'s own equality is its minted id. An abstract value's
 /// payload normalizes too. Iterative because value nesting depth is
 /// program-controlled.
-// CR claude for claude: [perf/low] normalize rebuilds every Array, Map and Error it
-// visits with new allocations, plus a temporary `pairs` Vec per map and unpooled
-// `work`/`out` stacks. It does this even when the value holds no `LambdaDef`, which is
-// the only thing it rewrites. It runs on every traced event of every session of every
-// subject, so a large collection result is copied element by element up to MAX_EVENTS
-// times per session. Fix: first scan read-only for an `Abstract` downcasting to
-// `LambdaDef` and return `v.clone()` (a refcount bump) when there is none, and rebuild
-// only the spine leading to one. Use pooled stacks for the walk. (fuzz-main-aux-12)
 fn normalize(v: &Value) -> Value {
+    if !holds_lambda(v) {
+        return v.clone();
+    }
     enum Task<'a> {
         Visit(&'a Value),
         BuildArray(usize),
@@ -117,6 +112,26 @@ fn normalize(v: &Value) -> Value {
         }
     }
     out.pop().expect("normalize: empty result stack")
+}
+
+/// Whether `v` holds a lambda anywhere, the one thing [`normalize`]
+/// rewrites.
+fn holds_lambda(v: &Value) -> bool {
+    let mut work: Vec<&Value> = vec![v];
+    while let Some(v) = work.pop() {
+        match v {
+            Value::Array(a) => work.extend(a.iter()),
+            Value::Error(e) => work.push(e),
+            Value::Map(m) => m.into_iter().for_each(|(k, v)| work.extend([k, v])),
+            v if let Some(a) = abstract_value::get(v) => work.push(&a.payload),
+            v => {
+                if v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>().is_some() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Equality as a program can observe it: `Value`'s own, except that a
