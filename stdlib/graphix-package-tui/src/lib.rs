@@ -630,12 +630,18 @@ struct Suspend {
     ack: oneshot::Sender<Result<oneshot::Sender<()>>>,
 }
 
+enum StopState {
+    Idle,
+    PendingExit,
+    Running(Stop),
+}
+
 /// What a program can ask of the running display, shared through
 /// libstate: the stop signal Ctrl-C fires (`tui::exit`), and the
 /// suspend channel (`tui::suspend`). The receiver is parked here until
 /// a display takes it, and handed back when that display ends.
 struct TuiControlInner {
-    stop: Mutex<Option<Stop>>,
+    stop: Mutex<StopState>,
     suspend_tx: mpsc::UnboundedSender<Suspend>,
     suspend_rx: Mutex<Option<mpsc::UnboundedReceiver<Suspend>>>,
     /// No display will ever run (a test harness): a suspend is refused
@@ -650,11 +656,41 @@ impl Default for TuiControl {
     fn default() -> Self {
         let (suspend_tx, suspend_rx) = mpsc::unbounded();
         TuiControl(Arc::new(TuiControlInner {
-            stop: Mutex::new(None),
+            stop: Mutex::new(StopState::Idle),
             suspend_tx,
             suspend_rx: Mutex::new(Some(suspend_rx)),
             headless: std::sync::atomic::AtomicBool::new(false),
         }))
+    }
+}
+
+impl TuiControl {
+    fn request_exit(&self) {
+        let mut state = self.0.stop.lock();
+        if let StopState::Running(stop) =
+            std::mem::replace(&mut *state, StopState::PendingExit)
+        {
+            *state = StopState::Idle;
+            let _ = stop.send(Ok(()));
+        }
+    }
+
+    fn install_stop(&self, stop: Stop) {
+        let mut state = self.0.stop.lock();
+        match std::mem::replace(&mut *state, StopState::Idle) {
+            StopState::PendingExit => {
+                let _ = stop.send(Ok(()));
+            }
+            _ => *state = StopState::Running(stop),
+        }
+    }
+
+    fn finish(&self, result: Result<()>) {
+        if let StopState::Running(stop) =
+            std::mem::replace(&mut *self.0.stop.lock(), StopState::Idle)
+        {
+            let _ = stop.send(result);
+        }
     }
 }
 
@@ -816,22 +852,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for claude: [bug/medium] An exit is dropped when TuiControl.stop is
-        // empty. Tui::start installs its Stop later, from a spawned task through
-        // `gx.with_ctx`, so a `tui::exit` that fires in the init cycle is lost:
-        // `tui::exit(null); text(&"hello")` never ends, while the same exit on a 1ms
-        // timer does. When the program's value is not a Tui, the slot is never filled
-        // and `tui::exit` does nothing, although the interface says it ends the program
-        // the way Ctrl-C does. Fix: record a pending stop in TuiControlInner when the
-        // slot is empty, and have Tui::start fire it as soon as it installs the Stop.
-        // Without a display, either end the runtime the way `sys::exit` does or say in
-        // the gxi that exit needs a display. probe:
-        // design/review-2026-10-12/repro/tui-core-02.sh (tui-core-02)
         if let Some(n) = from.get_mut(0)
             && seam_tick(n.update(ctx)).is_some()
-            && let Some(stop) = ctx.libstate.get::<TuiControl>()
         {
-            fire(&stop.0.stop, Ok(()));
+            ctx.libstate.get_or_default::<TuiControl>().request_exit();
         }
         TagValue::phantom_ref()
     }
@@ -852,7 +876,7 @@ impl<X: GXExt> Tui<X> {
             let control = gx
                 .with_ctx(move |ctx| {
                     let control = ctx.libstate.get_or_default::<TuiControl>().clone();
-                    *control.0.stop.lock() = Some(stop);
+                    control.install_stop(stop);
                     control
                 })
                 .await;
@@ -869,7 +893,7 @@ impl<X: GXExt> Tui<X> {
                 Err(e) => Err(anyhow!("the display failed: {e}")),
             };
             if let Err(e) = r {
-                fire(&control.0.stop, Err(e))
+                control.finish(Err(e))
             }
         });
         Self { to: to_tx, ph: PhantomData }
@@ -1291,7 +1315,7 @@ async fn display<X: GXExt>(
                     dirty |= matches!(e, Event::Resize(..));
                     match screen.event(&e).await {
                         Ok(true) => (),
-                        Ok(false) => fire(&control.0.stop, Ok(())),
+                        Ok(false) => control.finish(Ok(())),
                         Err(e) => error!("error handling event {e:?}"),
                     }
                 },

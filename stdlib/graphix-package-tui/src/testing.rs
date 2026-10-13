@@ -394,4 +394,18 @@ let result = layout(&[
         h.render()?;
         Ok(())
     }
+    #[tokio::test]
+    async fn an_initial_exit_reaches_a_later_display() -> Result<()> {
+        let h = TuiTestHarness::new(
+            "tui::exit(null); let result = tui::text::text(&\"hello\")",
+        )
+        .await?;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        h.gx.with_ctx(move |ctx| {
+            ctx.libstate.get_or_default::<TuiControl>().install_stop(stop);
+        })
+        .await?;
+        tokio::time::timeout(Duration::from_millis(100), stopped).await???;
+        Ok(())
+    }
 }
