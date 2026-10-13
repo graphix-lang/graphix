@@ -2,11 +2,9 @@
 //! so any absolute path round-trips, spelled as VS Code spells it.
 
 use lsp_types::Uri;
+use percent_encoding::{AsciiSet, CONTROLS};
 #[cfg(unix)]
-use percent_encoding::percent_encode;
-#[cfg(not(unix))]
-use percent_encoding::utf8_percent_encode;
-use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str};
+use percent_encoding::{percent_decode_str, percent_encode};
 use std::{
     path::{Path, PathBuf},
     str::FromStr,
@@ -45,46 +43,24 @@ const PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b'@');
 
 /// Convert a `file://` URI to a filesystem path. Returns `None` for
-/// non-`file` schemes and remote hosts (anything other than empty or
-/// `localhost`).
-// CR claude for claude: [bug/medium] On Windows, drive-letter paths break both ways.
-// uri_to_path keeps the leading '/', so VS Code's `file:///c%3A/proj/main.gx` becomes
-// "/c:/proj/main.gx". Windows reads that as a root-relative path whose first component
-// is `c:`, so the workspace scan, roots_of's exists check and sibling `mod` reads all
-// miss on disk. path_to_uri percent-encodes `\` and writes no '/' before the drive,
-// giving `file://C:%5Cproj%5Cmain.gx`. fluent-uri parses `C:` as host:port and refuses
-// it, so path_to_uri returns None for every drive-letter path. publish_files then drops
-// diagnostics on files that are not open, and definition, references and workspace
-// symbols drop their locations. Only an open buffer still checks, because its override
-// and its uri come from the client. Fix: on non-Unix hosts, strip the '/' before
-// `<letter>:` and handle a UNC host in uri_to_path. In path_to_uri, write `\` as '/'
-// and prefix '/' to a drive path (`file:///C:/proj/main.gx`). Or use
-// url::Url::from_file_path / to_file_path, which are already in the lock file. Add
-// Windows-gated round-trip tests for `C:\x\a b.gx` and `\\server\share\a.gx`. Also
-// reported as (x-lsp-probe-05). (x-fix-tools-07)
+/// non-`file` schemes and, on Unix, remote hosts (anything other than
+/// empty or `localhost`).
 pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    let s = uri.as_str();
-    let rest = s.strip_prefix("file://")?;
-    // After `file://`: an absolute path beginning with `/`, or
-    // `localhost/<path>`; anything else is a remote host.
-    let raw = if let Some(p) = rest.strip_prefix("localhost/") {
-        format!("/{p}")
-    } else if rest.starts_with('/') {
-        rest.to_string()
-    } else {
-        return None;
-    };
+    let rest = uri.as_str().strip_prefix("file://")?;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
-        let bytes: Vec<u8> = percent_decode_str(&raw).collect();
+        // an absolute path beginning with `/`, or `localhost/<path>`
+        let path = match rest.strip_prefix("localhost") {
+            Some(p) if p.starts_with('/') => p,
+            _ if rest.starts_with('/') => rest,
+            _ => return None,
+        };
+        let bytes: Vec<u8> = percent_decode_str(path).collect();
         Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
     }
     #[cfg(not(unix))]
-    {
-        let decoded = percent_decode_str(&raw).decode_utf8().ok()?;
-        Some(PathBuf::from(decoded.as_ref()))
-    }
+    windows::path_of(rest).map(PathBuf::from)
 }
 
 /// Convert an absolute filesystem path to a `file://` URI; `None` for a
@@ -95,14 +71,51 @@ pub fn path_to_uri(path: &Path) -> Option<Uri> {
         return None;
     }
     #[cfg(unix)]
-    let encoded = {
+    let uri_str = {
         use std::os::unix::ffi::OsStrExt;
-        percent_encode(path.as_os_str().as_bytes(), PATH_ENCODE).to_string()
+        format!("file://{}", percent_encode(path.as_os_str().as_bytes(), PATH_ENCODE))
     };
     #[cfg(not(unix))]
-    let encoded = utf8_percent_encode(path.to_str()?, PATH_ENCODE).to_string();
-    let uri_str = format!("file://{encoded}");
+    let uri_str = windows::uri_of(path.to_str()?)?;
     Uri::from_str(&uri_str).ok()
+}
+
+/// The Windows spelling: a drive path is `file:///C:/x/a%20b.gx` for
+/// `C:\x\a b.gx`, and a host names a UNC share, `file://server/share/a.gx`
+/// for `\\server\share\a.gx`.
+#[cfg(any(not(unix), test))]
+mod windows {
+    use super::PATH_ENCODE;
+    use percent_encoding::{percent_decode_str, utf8_percent_encode};
+
+    fn is_drive(p: &str) -> bool {
+        matches!(p.as_bytes(), [l, b':', ..] if l.is_ascii_alphabetic())
+    }
+
+    /// The path of the URI whose text after `file://` is `rest`.
+    pub(super) fn path_of(rest: &str) -> Option<String> {
+        let (host, path) = rest.split_at(rest.find('/')?);
+        let path = percent_decode_str(path).decode_utf8().ok()?;
+        let path = match host {
+            "" | "localhost" => match path.strip_prefix('/') {
+                Some(p) if is_drive(p) => p.to_string(),
+                _ => return None,
+            },
+            host => format!("//{host}{path}"),
+        };
+        Some(path.replace('/', "\\"))
+    }
+
+    /// The `file://` URI of the absolute path `path`.
+    pub(super) fn uri_of(path: &str) -> Option<String> {
+        let path = path.replace('\\', "/");
+        let (host, path) = match path.strip_prefix("//") {
+            Some(unc) => unc.split_at(unc.find('/')?),
+            None if is_drive(&path) => ("", &*format!("/{path}")),
+            None => return None,
+        };
+        Some(format!("file://{host}{}", utf8_percent_encode(path, PATH_ENCODE)))
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +189,25 @@ mod tests {
     fn remote_host_rejected() {
         let uri = Uri::from_str("file://otherhost/tmp/foo").unwrap();
         assert!(uri_to_path(&uri).is_none());
+    }
+
+    #[test]
+    fn windows_paths_roundtrip() {
+        for (path, uri) in [
+            (r"C:\x\a b.gx", "file:///C:/x/a%20b.gx"),
+            (r"\\server\share\a.gx", "file://server/share/a.gx"),
+        ] {
+            assert_eq!(windows::uri_of(path).as_deref(), Some(uri));
+            assert!(Uri::from_str(uri).is_ok(), "{uri}");
+            let rest = uri.strip_prefix("file://").unwrap();
+            assert_eq!(windows::path_of(rest).as_deref(), Some(path));
+        }
+        // as VS Code spells a drive
+        assert_eq!(
+            windows::path_of("/c%3A/proj/main.gx").as_deref(),
+            Some(r"c:\proj\main.gx")
+        );
+        assert_eq!(windows::uri_of(r"\x\rootless.gx"), None);
     }
 
     #[test]
