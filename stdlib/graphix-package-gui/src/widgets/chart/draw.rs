@@ -14,7 +14,12 @@ use iced_widget::canvas as iced_canvas;
 use log::error;
 use plotters::{
     chart::{ChartBuilder, ChartContext, SeriesAnno},
-    coord::CoordTranslate,
+    coord::{
+        CoordTranslate,
+        cartesian::Cartesian2d,
+        ranged1d::{AsRangedCoord, Ranged, ValueFormatter},
+        types::RangedCoordf64,
+    },
     drawing::DrawingAreaErrorKind,
     element::{
         CandleStick, Circle, ErrorBar, IntoDynElement, PathElement, Pie, Polygon,
@@ -201,250 +206,286 @@ fn plot_info(
 }
 
 /// Set up the mesh of a 2D chart; an x axis that cannot take zero grid
-/// lines (datetime, categories) gets `$x_min_lines`.
-// CR claude for claude: [structure/low] configure_mesh!, draw_xy_body! and xy_chart!
-// exist only to instantiate the 2D drawing over each x coordinate type, and they hide
-// control flow. configure_mesh! returns from the enclosing cache closure, and xy_chart!
-// returns error!(..), neither visible at the call site. The bodies are type-checked
-// only per expansion, with errors reported at the expansion site. Make them generic
-// functions over the x coordinate: configure_mesh(chart, ..) -> bool, and
-// draw_xy(chart, w, cs, view, to_x) bounded on plotters' Ranged. draw() then returns
-// explicitly. (gui-chart-11)
-macro_rules! configure_mesh {
-    ($chart:expr, $x_label:expr, $y_label:expr, $mesh_style:expr, $x_min_lines:expr) => {{
-        let mut mesh_cfg = $chart.configure_mesh();
-        if let Some(xl) = $x_label {
-            mesh_cfg.x_desc(xl);
+/// lines (datetime, categories) gets `x_min_lines`.
+fn configure_mesh<DB, C>(
+    chart: &mut ChartContext<'_, DB, Cartesian2d<C, RangedCoordf64>>,
+    x_label: Option<&str>,
+    y_label: Option<&str>,
+    mesh_style: Option<&MeshStyleV>,
+    x_min_lines: usize,
+) -> bool
+where
+    DB: DrawingBackend,
+    C: Ranged + ValueFormatter<C::ValueType>,
+{
+    let mut mesh_cfg = chart.configure_mesh();
+    if let Some(xl) = x_label {
+        mesh_cfg.x_desc(xl);
+    }
+    if let Some(yl) = y_label {
+        mesh_cfg.y_desc(yl);
+    }
+    if let Some(ms) = mesh_style {
+        if ms.show_x_grid == Some(false) {
+            mesh_cfg.disable_x_mesh();
         }
-        if let Some(yl) = $y_label {
-            mesh_cfg.y_desc(yl);
+        if ms.show_y_grid == Some(false) {
+            mesh_cfg.disable_y_mesh();
         }
-        if let Some(ms) = $mesh_style {
-            if ms.show_x_grid == Some(false) {
-                mesh_cfg.disable_x_mesh();
-            }
-            if ms.show_y_grid == Some(false) {
-                mesh_cfg.disable_y_mesh();
-            }
-            if let Some(c) = ms.grid_color {
-                mesh_cfg.light_line_style(c.to_plotters());
-            }
-            if let Some(c) = ms.bold_line_color {
-                mesh_cfg.bold_line_style(c.to_plotters());
-            }
-            if let Some(c) = ms.axis_color {
-                mesh_cfg.axis_style(c.to_plotters());
-            }
-            if ms.label_size.is_some() || ms.label_color.is_some() {
-                let style = text_style(ms.label_size.unwrap_or(12.0), ms.label_color);
-                mesh_cfg.label_style(style.clone());
-                mesh_cfg.axis_desc_style(style);
-            }
-            if let Some(n) = ms.x_labels {
-                mesh_cfg.x_labels(ticks(n, 1));
-            }
-            if let Some(n) = ms.y_labels {
-                mesh_cfg.y_labels(ticks(n, 1));
-            }
-            if let Some(n) = ms.x_light_lines {
-                mesh_cfg.x_max_light_lines(ticks(n, $x_min_lines));
-            }
-            if let Some(n) = ms.y_light_lines {
-                mesh_cfg.y_max_light_lines(ticks(n, 0));
-            }
+        if let Some(c) = ms.grid_color {
+            mesh_cfg.light_line_style(c.to_plotters());
         }
-        if let Err(e) = mesh_cfg.draw() {
-            error!("chart mesh draw: {e:?}");
-            return;
+        if let Some(c) = ms.bold_line_color {
+            mesh_cfg.bold_line_style(c.to_plotters());
         }
-    }};
+        if let Some(c) = ms.axis_color {
+            mesh_cfg.axis_style(c.to_plotters());
+        }
+        if ms.label_size.is_some() || ms.label_color.is_some() {
+            let style = text_style(ms.label_size.unwrap_or(12.0), ms.label_color);
+            mesh_cfg.label_style(style.clone());
+            mesh_cfg.axis_desc_style(style);
+        }
+        if let Some(n) = ms.x_labels {
+            mesh_cfg.x_labels(ticks(n, 1));
+        }
+        if let Some(n) = ms.y_labels {
+            mesh_cfg.y_labels(ticks(n, 1));
+        }
+        if let Some(n) = ms.x_light_lines {
+            mesh_cfg.x_max_light_lines(ticks(n, x_min_lines));
+        }
+        if let Some(n) = ms.y_light_lines {
+            mesh_cfg.y_max_light_lines(ticks(n, 0));
+        }
+    }
+    if let Err(e) = mesh_cfg.draw() {
+        error!("chart mesh draw: {e:?}");
+        return false;
+    }
+    true
 }
 
 /// Draw the XY, candlestick and error-bar series of a 2D chart, each cut
-/// to `$view` in data space; `$to_x` maps a data x to the axis'.
-macro_rules! draw_xy_body {
-    ($chart:expr, $w:expr, $cs:expr, $view:expr, $to_x:expr) => {{
-        let view: View = $view;
-        let cs: Option<&ChartStyleV> = $cs;
-        let at = |(x, y): (f64, f64)| ($to_x(x), y);
-        for (i, ds) in $w.datasets.iter().enumerate() {
-            if ds.mode() != Some($w.mode) {
-                continue;
-            }
-            match ds {
-                DatasetEntry::XY { kind, data, style } => {
-                    let Some(d) = data.t.as_ref() else { continue };
-                    let color = series_color(cs, style.color, i);
-                    let line = ShapeStyle::from(color).stroke_width(stroke(style));
-                    let fill = ShapeStyle::from(color).filled();
-                    let label = style.label.as_deref();
-                    let lines = |chart: &mut _, label: Option<&str>| {
-                        let runs = clip_polyline(&d.pts, view);
-                        let none: [(f64, f64); 0] = [];
-                        let mut label = label;
-                        if runs.is_empty() {
-                            annotate(
-                                ChartContext::draw_series(
-                                    chart,
-                                    LineSeries::new(none.into_iter().map(at), line),
-                                ),
-                                label,
-                                line_mark(line),
-                                "line",
-                            );
-                        }
-                        for run in runs.iter() {
-                            let pts = run.iter().copied().map(at);
-                            let drawn = match kind {
-                                XYKind::Dashed { dash, gap } => {
-                                    ChartContext::draw_series(
-                                        chart,
-                                        DashedLineSeries::new(
-                                            pts,
-                                            (*dash as u32).max(1),
-                                            *gap as u32,
-                                            line,
-                                        ),
-                                    )
-                                }
-                                _ => ChartContext::draw_series(
-                                    chart,
-                                    LineSeries::new(pts, line),
-                                ),
-                            };
-                            annotate(drawn, label.take(), line_mark(line), "line");
-                        }
-                    };
-                    let markers = |chart: &mut _, ps: u32, label: Option<&str>| {
-                        let dots = d
-                            .pts
-                            .iter()
-                            .copied()
-                            .filter(|p| ps > 0 && view.contains(*p))
-                            .map(|p| Circle::new(at(p), ps, fill));
+/// to `view` in data space; `to_x` maps a data x to the axis'.
+fn draw_xy<'a, DB, C, X>(
+    chart: &mut ChartContext<'a, DB, Cartesian2d<C, RangedCoordf64>>,
+    w: &ChartW<X>,
+    cs: Option<&ChartStyleV>,
+    view: View,
+    to_x: impl Fn(f64) -> C::ValueType,
+) where
+    DB: DrawingBackend + 'a,
+    C: Ranged,
+    C::ValueType: Clone + 'static,
+    X: GXExt,
+{
+    let at = |(x, y): (f64, f64)| (to_x(x), y);
+    for (i, ds) in w.datasets.iter().enumerate() {
+        if ds.mode() != Some(w.mode) {
+            continue;
+        }
+        match ds {
+            DatasetEntry::XY { kind, data, style } => {
+                let Some(d) = data.t.as_ref() else { continue };
+                let color = series_color(cs, style.color, i);
+                let line = ShapeStyle::from(color).stroke_width(stroke(style));
+                let fill = ShapeStyle::from(color).filled();
+                let label = style.label.as_deref();
+                let lines = |chart: &mut _, label: Option<&str>| {
+                    let runs = clip_polyline(&d.pts, view);
+                    let none: [(f64, f64); 0] = [];
+                    let mut label = label;
+                    if runs.is_empty() {
                         annotate(
-                            ChartContext::draw_series(chart, dots),
+                            ChartContext::draw_series(
+                                chart,
+                                LineSeries::new(none.into_iter().map(at), line),
+                            ),
                             label,
-                            dot_mark(ps, fill),
-                            "markers",
+                            line_mark(line),
+                            "line",
                         );
-                    };
-                    match kind {
-                        XYKind::Line | XYKind::Dashed { .. } => {
-                            lines(&mut $chart, label);
-                            markers(
-                                &mut $chart,
-                                marker_size(style.point_size, d.pts.len()),
-                                None,
-                            );
-                        }
-                        XYKind::Scatter => markers(
-                            &mut $chart,
-                            style.point_size.unwrap_or(3.0) as u32,
+                    }
+                    for run in runs.iter() {
+                        let pts = run.iter().copied().map(at);
+                        let drawn = match kind {
+                            XYKind::Dashed { dash, gap } => ChartContext::draw_series(
+                                chart,
+                                DashedLineSeries::new(
+                                    pts,
+                                    (*dash as u32).max(1),
+                                    *gap as u32,
+                                    line,
+                                ),
+                            ),
+                            _ => ChartContext::draw_series(
+                                chart,
+                                LineSeries::new(pts, line),
+                            ),
+                        };
+                        annotate(drawn, label.take(), line_mark(line), "line");
+                    }
+                };
+                let markers = |chart: &mut _, ps: u32, label: Option<&str>| {
+                    let dots = d
+                        .pts
+                        .iter()
+                        .copied()
+                        .filter(|p| ps > 0 && view.contains(*p))
+                        .map(|p| Circle::new(at(p), ps, fill));
+                    annotate(
+                        ChartContext::draw_series(chart, dots),
+                        label,
+                        dot_mark(ps, fill),
+                        "markers",
+                    );
+                };
+                match kind {
+                    XYKind::Line | XYKind::Dashed { .. } => {
+                        lines(chart, label);
+                        markers(chart, marker_size(style.point_size, d.pts.len()), None);
+                    }
+                    XYKind::Scatter => {
+                        markers(chart, style.point_size.unwrap_or(3.0) as u32, label)
+                    }
+                    XYKind::Area => {
+                        let area = clip_area(&d.pts, view);
+                        let series = AreaSeries::new(
+                            area.iter().copied().map(at),
+                            view.clamp_y(0.0),
+                            ShapeStyle::from(color.mix(0.3)).filled(),
+                        );
+                        annotate(
+                            chart.draw_series(series),
                             label,
-                        ),
-                        XYKind::Area => {
-                            let area = clip_area(&d.pts, view);
-                            let series = AreaSeries::new(
-                                area.iter().copied().map(at),
-                                view.clamp_y(0.0),
-                                ShapeStyle::from(color.mix(0.3)).filled(),
-                            );
-                            annotate(
-                                $chart.draw_series(series),
-                                label,
-                                line_mark(line),
-                                "area",
-                            );
-                            lines(&mut $chart, None);
-                            markers(
-                                &mut $chart,
-                                marker_size(style.point_size, d.pts.len()),
-                                None,
-                            );
-                        }
+                            line_mark(line),
+                            "area",
+                        );
+                        lines(chart, None);
+                        markers(chart, marker_size(style.point_size, d.pts.len()), None);
                     }
                 }
-                DatasetEntry::Candlestick { data, style } => {
-                    let Some(d) = data.t.as_ref() else { continue };
-                    let pick = |c: Option<ChartColor>, or: RGBColor| {
-                        ShapeStyle::from(c.map_or(or.to_rgba(), ChartColor::to_plotters))
-                            .filled()
-                    };
-                    let (gain, loss) = (
-                        pick(style.gain_color, DEFAULT_GAIN),
-                        pick(style.loss_color, DEFAULT_LOSS),
-                    );
-                    let bw = style.bar_width.unwrap_or(5.0) as u32;
-                    // CR claude for claude: [bug/medium] Candlesticks and error bars
-                    // filter only on x, and `View::clamp_y` keeps NaN. plotters'
-                    // `RangedCoordf64::map` turns a NaN y into `limit.0`, so a candle
-                    // with a NaN low or close, or an error bar with a NaN min, is drawn
-                    // to the bottom edge of the plot. Because open and close are
-                    // clamped separately, a gain candle whose body lies wholly past one
-                    // edge compares Equal in `CandleStick::new` and gets the loss
-                    // style. The 3D series (Scatter3D/Line3D below) filter nothing:
-                    // `Cartesian3d::map_3d` maps NaN to the axis minimum corner, and a
-                    // point outside a user x/y/z range projects outside the cube.
-                    // `compute_3d_ranges` skips those same points, so the drawing and
-                    // the range disagree. Fix: apply the 2D XY rule everywhere. Leave
-                    // out a candle or error bar with any non-finite y. Choose the gain
-                    // or loss style from the unclamped open and close. For 3D, skip
-                    // non-finite points (break Line3D runs as `clip_polyline` does) and
-                    // drop or clip points outside the 3D ranges. Probe:
-                    // design/review-2026-10-12/repro/gui-chart-04.gx. (gui-chart-04)
-                    let y = |v: f64| view.clamp_y(v);
-                    let candles =
-                        d.pts.iter().filter(|p| view.contains_x(p.x)).map(|p| {
-                            CandleStick::new(
-                                $to_x(p.x),
-                                y(p.open),
-                                y(p.high),
-                                y(p.low),
-                                y(p.close),
-                                gain,
-                                loss,
-                                bw,
-                            )
-                        });
-                    annotate(
-                        $chart.draw_series(candles),
-                        style.label.as_deref(),
-                        block_mark(gain),
-                        "candlestick",
-                    );
-                }
-                DatasetEntry::ErrorBar { data, style } => {
-                    let Some(d) = data.t.as_ref() else { continue };
-                    let line = ShapeStyle::from(series_color(cs, style.color, i))
-                        .stroke_width(stroke(style));
-                    let caps = style.point_size.map_or(stroke(style), |p| p as u32);
-                    let y = |v: f64| view.clamp_y(v);
-                    let bars = d.pts.iter().filter(|p| view.contains_x(p.x)).map(|p| {
-                        ErrorBar::new_vertical(
-                            $to_x(p.x),
-                            y(p.min),
-                            y(p.avg),
-                            y(p.max),
-                            line,
-                            caps,
-                        )
-                    });
-                    annotate(
-                        $chart.draw_series(bars),
-                        style.label.as_deref(),
-                        line_mark(line),
-                        "errorbar",
-                    );
-                }
-                DatasetEntry::Bar { .. }
-                | DatasetEntry::Pie { .. }
-                | DatasetEntry::Scatter3D { .. }
-                | DatasetEntry::Line3D { .. }
-                | DatasetEntry::Surface { .. } => {}
             }
+            DatasetEntry::Candlestick { data, style } => {
+                let Some(d) = data.t.as_ref() else { continue };
+                let pick = |c: Option<ChartColor>, or: RGBColor| {
+                    ShapeStyle::from(c.map_or(or.to_rgba(), ChartColor::to_plotters))
+                        .filled()
+                };
+                let (gain, loss) = (
+                    pick(style.gain_color, DEFAULT_GAIN),
+                    pick(style.loss_color, DEFAULT_LOSS),
+                );
+                let bw = style.bar_width.unwrap_or(5.0) as u32;
+                // CR claude for claude: [bug/medium] Candlesticks and error bars
+                // filter only on x, and `View::clamp_y` keeps NaN. plotters'
+                // `RangedCoordf64::map` turns a NaN y into `limit.0`, so a candle
+                // with a NaN low or close, or an error bar with a NaN min, is drawn
+                // to the bottom edge of the plot. Because open and close are
+                // clamped separately, a gain candle whose body lies wholly past one
+                // edge compares Equal in `CandleStick::new` and gets the loss
+                // style. The 3D series (Scatter3D/Line3D below) filter nothing:
+                // `Cartesian3d::map_3d` maps NaN to the axis minimum corner, and a
+                // point outside a user x/y/z range projects outside the cube.
+                // `compute_3d_ranges` skips those same points, so the drawing and
+                // the range disagree. Fix: apply the 2D XY rule everywhere. Leave
+                // out a candle or error bar with any non-finite y. Choose the gain
+                // or loss style from the unclamped open and close. For 3D, skip
+                // non-finite points (break Line3D runs as `clip_polyline` does) and
+                // drop or clip points outside the 3D ranges. Probe:
+                // design/review-2026-10-12/repro/gui-chart-04.gx. (gui-chart-04)
+                let y = |v: f64| view.clamp_y(v);
+                let candles = d.pts.iter().filter(|p| view.contains_x(p.x)).map(|p| {
+                    CandleStick::new(
+                        to_x(p.x),
+                        y(p.open),
+                        y(p.high),
+                        y(p.low),
+                        y(p.close),
+                        gain,
+                        loss,
+                        bw,
+                    )
+                });
+                annotate(
+                    chart.draw_series(candles),
+                    style.label.as_deref(),
+                    block_mark(gain),
+                    "candlestick",
+                );
+            }
+            DatasetEntry::ErrorBar { data, style } => {
+                let Some(d) = data.t.as_ref() else { continue };
+                let line = ShapeStyle::from(series_color(cs, style.color, i))
+                    .stroke_width(stroke(style));
+                let caps = style.point_size.map_or(stroke(style), |p| p as u32);
+                let y = |v: f64| view.clamp_y(v);
+                let bars = d.pts.iter().filter(|p| view.contains_x(p.x)).map(|p| {
+                    ErrorBar::new_vertical(
+                        to_x(p.x),
+                        y(p.min),
+                        y(p.avg),
+                        y(p.max),
+                        line,
+                        caps,
+                    )
+                });
+                annotate(
+                    chart.draw_series(bars),
+                    style.label.as_deref(),
+                    line_mark(line),
+                    "errorbar",
+                );
+            }
+            DatasetEntry::Bar { .. }
+            | DatasetEntry::Pie { .. }
+            | DatasetEntry::Scatter3D { .. }
+            | DatasetEntry::Line3D { .. }
+            | DatasetEntry::Surface { .. } => {}
         }
-    }};
+    }
+}
+
+fn draw_xy_chart<DB, R, X>(
+    builder: &mut ChartBuilder<'_, '_, DB>,
+    w: &ChartW<X>,
+    state: &ChartState,
+    cs: Option<&ChartStyleV>,
+    view: View,
+    x_range: R,
+    to_x: impl Fn(f64) -> R::Value,
+    x_min_lines: usize,
+) -> bool
+where
+    DB: DrawingBackend,
+    R: AsRangedCoord,
+    R::CoordDescType: ValueFormatter<R::Value>,
+    R::Value: Clone + 'static,
+    X: GXExt,
+{
+    let mut chart = match builder.build_cartesian_2d(x_range, view.y.0..view.y.1) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("chart build: {e:?}");
+            return false;
+        }
+    };
+    state.plot_info.set(Some(plot_info(
+        chart.plotting_area().get_pixel_range(),
+        view.x,
+        view.y,
+    )));
+    let x_label = w.drawn.x_label.t.as_ref().and_then(|o| o.as_deref());
+    let y_label = w.drawn.y_label.t.as_ref().and_then(|o| o.as_deref());
+    let mesh_style = cs.and_then(|s| s.mesh.as_ref());
+    if !configure_mesh(&mut chart, x_label, y_label, mesh_style, x_min_lines) {
+        return false;
+    }
+    draw_xy(&mut chart, w, cs, view, to_x);
+    let label_size = mesh_style.and_then(|m| m.label_size).unwrap_or(12.0);
+    draw_legend(&mut chart, w, cs, label_size);
+    true
 }
 
 impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::GraphixTheme>
@@ -550,36 +591,30 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     let plot = View { x: if time { time_range(x) } else { x }, y };
                     let pad = if time { (20, 12) } else { (15, 8) };
                     label_areas(&mut builder, y, descs, mesh_style, label_sz, pad);
-                    macro_rules! xy_chart {
-                        ($x_range:expr, $to_x:expr, $x_min_lines:expr) => {{
-                            let mut chart =
-                                match builder.build_cartesian_2d($x_range, y.0..y.1) {
-                                    Ok(c) => c,
-                                    Err(e) => return error!("chart build: {e:?}"),
-                                };
-                            state.plot_info.set(Some(plot_info(
-                                chart.plotting_area().get_pixel_range(),
-                                plot.x,
-                                y,
-                            )));
-                            configure_mesh!(
-                                chart,
-                                x_label,
-                                y_label,
-                                mesh_style,
-                                $x_min_lines
-                            );
-                            draw_xy_body!(chart, self, chart_style, plot, $to_x);
-                            draw_legend(&mut chart, self, chart_style, label_sz);
-                        }};
-                    }
-                    match time {
-                        true => xy_chart!(
+                    let drawn = match time {
+                        true => draw_xy_chart(
+                            &mut builder,
+                            self,
+                            state,
+                            chart_style,
+                            plot,
                             ms_datetime(plot.x.0)..ms_datetime(plot.x.1),
                             ms_datetime,
-                            1
+                            1,
                         ),
-                        false => xy_chart!(plot.x.0..plot.x.1, |x: f64| x, 0),
+                        false => draw_xy_chart(
+                            &mut builder,
+                            self,
+                            state,
+                            chart_style,
+                            plot,
+                            plot.x.0..plot.x.1,
+                            |x| x,
+                            0,
+                        ),
+                    };
+                    if !drawn {
+                        return;
                     }
                 }
                 ChartMode::Bar => {
@@ -627,7 +662,9 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         (0.0, categories.len() as f64),
                         y,
                     )));
-                    configure_mesh!(chart, x_label, y_label, mesh_style, 1);
+                    if !configure_mesh(&mut chart, x_label, y_label, mesh_style, 1) {
+                        return;
+                    }
                     let view = View { x: (0.0, categories.len() as f64), y };
                     for (i, ds) in self.datasets.iter().enumerate() {
                         let DatasetEntry::Bar { style, .. } = ds else { continue };
