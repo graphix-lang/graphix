@@ -252,3 +252,49 @@ async fn parse_usage_error() -> Result<()> {
     assert_eq!(error_tag(&v), Some("ArgError"), "{v:?}");
     Ok(())
 }
+
+/// `spec` is refused before parsing, with an ArgError saying `why`.
+async fn spec_refused(spec: &str, why: &str) -> Result<()> {
+    let (v, ctx) = testing::eval_with_setup(
+        &format!("args::parse({spec})"),
+        &crate::TEST_REGISTER,
+        |ctx| {
+            ctx.libstate.set(ProgramArgs(vec![ArcStr::from("script.gx")]));
+        },
+    )
+    .await?;
+    ctx.shutdown().await;
+    assert_eq!(error_tag(&v), Some("ArgError"), "{spec}: {v:?}");
+    assert!(v.to_string().contains(why), "{spec}: {v}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn spec_refusals() -> Result<()> {
+    for (spec, why) in [
+        (
+            r#"args::command(#name: "t", [args::flag(#name: "a", #short: "ab")])"#,
+            r#"a: #short \"ab\" is not one character"#,
+        ),
+        (
+            r#"args::command(#name: "t", [args::flag(#name: "a", #short: "x"), args::flag(#name: "b", #short: "x")])"#,
+            "b: -x is taken",
+        ),
+        (
+            r#"args::command(#name: "t", [args::flag(#name: "a"), args::option(#name: "a")])"#,
+            "--a is taken",
+        ),
+        (
+            r#"args::command(#name: "t", [args::flag(#name: "quiet", #short: "h")])"#,
+            "quiet: -h is taken",
+        ),
+        (r#"args::command(#name: "t", [args::flag(#name: "help")])"#, "--help is taken"),
+        (
+            r#"args::command(#name: "t", #subcommands: [args::command(#name: "help", [])], [])"#,
+            "help is clap's own subcommand",
+        ),
+    ] {
+        spec_refused(spec, why).await?;
+    }
+    Ok(())
+}

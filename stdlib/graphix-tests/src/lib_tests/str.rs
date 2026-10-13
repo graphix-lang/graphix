@@ -104,16 +104,6 @@ run!(str_replace, STR_REPLACE, |v: Result<&Value>| {
     }
 });
 
-// CR claude for claude: [test-gap/low] No fixture pins the join and dirname fixes. Join
-// is tested only with non-empty parts, and dirname only on an absolute path with a
-// parent, so a return to first-part detection by buffer emptiness, or to dirname("foo")
-// = "/", passes the gate. Both engines agree on these values, so the fuzzer cannot see
-// a regression either. Add run! fixtures for str::join(#sep: ",", "", "b") == ",b", the
-// split-then-join round trip of "/usr/bin", and dirname of "foo", "" and "/foo" (null,
-// null, "/"). Also decide and pin dirname("/foo/"), which is "/foo" today and "/" under
-// POSIX. args.rs needs an ArgError case for each refusal check_spec makes: a
-// multi-character #short, a duplicate short or long, -h/--help, and a subcommand named
-// help. (x-fix-stdlib-09)
 const STR_DIRNAME: &str = r#"
   str::dirname("/foo/bar/baz")
 "#;
@@ -123,6 +113,27 @@ run!(str_dirname, STR_DIRNAME, |v: Result<&Value>| {
         Ok(Value::String(s)) => s == "/foo/bar",
         _ => false,
     }
+});
+
+// A join whose first part is empty keeps its separator, and a split
+// joins back to its source.
+const STR_JOIN_EDGES: &str = r#"
+  (str::join(#sep: ",", "", "b"), str::join(#sep: "/", str::split(#pat: "/", "/usr/bin")))
+"#;
+
+run!(str_join_edges, STR_JOIN_EDGES, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"[",b", "/usr/bin"]"#
+});
+
+// A path with no parent has no dirname, and one a level below the root
+// has the root; a trailing `/` names an empty leaf (netidx paths, not
+// POSIX), so its dirname is the path before it.
+const STR_DIRNAME_EDGES: &str = r#"
+  (str::dirname("foo"), str::dirname(""), str::dirname("/foo"), str::dirname("/foo/"))
+"#;
+
+run!(str_dirname_edges, STR_DIRNAME_EDGES, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"[null, null, "/", "/foo"]"#
 });
 
 const STR_BASENAME: &str = r#"
