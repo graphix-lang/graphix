@@ -33,7 +33,7 @@ use std::{collections::VecDeque, future, mem, result, time::Duration};
 use tokio::{
     select,
     sync::{
-        mpsc::{self as tmpsc, UnboundedReceiver, error::SendTimeoutError},
+        mpsc::{self as tmpsc, UnboundedReceiver},
         oneshot,
     },
     task::{JoinError, JoinSet},
@@ -211,6 +211,9 @@ async fn join_or_wait<T: 'static>(
         Some(r) => r,
     }
 }
+
+/// The most input messages the runtime takes at once.
+const INPUT_BATCH: usize = 100_000;
 
 /// A finished task's reply, or nothing when the task was cancelled or
 /// died; a death is logged, its reply never comes.
@@ -514,36 +517,30 @@ impl<X: GXExt> GX<X> {
             tr.cycle_end(self.ctx.rt.cycle, worked);
         }
         self.ctx.rt.cycle += 1;
+        // input is served while the batch waits for room: a display's
+        // rebuild compiles through it while the shell waits on the display
+        let sub = self.sub.clone();
+        let mut open = true;
         loop {
-            // CR claude for claude: [perf/low] While the subscriber's batch channel is
-            // full, the runtime serves ToGX commands only when this 100ms timeout
-            // expires. Displays rebuild by awaiting compile_ref/compile_callable round
-            // trips (the TUI's widget compile, the GUI's block_on compiles), and the
-            // shell that drains batches is itself blocked forwarding to the display. So
-            // whenever the program produces batches faster than the display consumes
-            // them, each round trip of a rebuild can cost up to 100ms. The Timeout arm
-            // also never checks control.aborted(): after GXHandle::abort with a
-            // subscriber that is open but not draining, the runtime keeps polling every
-            // 100ms and serving compiles forever. Fix: select! on self.sub.reserve()
-            // against to_rt.recv_many, so input is served as soon as it arrives while
-            // the batch waits for room, and leave the loop when the control is aborted.
-            // (x-concurrency-09)
-            match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
-                Ok(()) => break,
-                // a subscriber gone after an abort is the abort
-                Err(SendTimeoutError::Closed(_)) if self.ctx.control.aborted() => break,
-                Err(SendTimeoutError::Closed(_)) => {
-                    error!("could not send batch");
+            select! {
+                biased;
+                permit = sub.reserve() => {
+                    match permit {
+                        Ok(permit) => permit.send(batch),
+                        // a subscriber gone after an abort is the abort
+                        Err(_) if self.ctx.control.aborted() => (),
+                        Err(_) => error!("could not send batch"),
+                    }
                     break;
                 }
-                Err(SendTimeoutError::Timeout(b)) => {
-                    batch = b;
-                    // prevent deadlock on input
-                    while let Ok(m) = to_rt.try_recv() {
-                        input.push(m);
-                    }
-                    self.process_input_batch(sets, input, &mut batch).await;
-                }
+                n = to_rt.recv_many(input, INPUT_BATCH), if open => match n {
+                    0 => open = false,
+                    _ => self.process_input_batch(sets, input, &mut batch).await,
+                },
+                _ = time::sleep(Duration::from_millis(100)) => (),
+            }
+            if self.ctx.control.aborted() {
+                break;
             }
         }
     }
@@ -1553,7 +1550,7 @@ impl<X: GXExt> GX<X> {
                 _ = or_never(ready) => {
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
-                n = to_rt.recv_many(&mut input, 100000) => {
+                n = to_rt.recv_many(&mut input, INPUT_BATCH) => {
                     if n == 0 {
                         break 'main Ok(())
                     }
