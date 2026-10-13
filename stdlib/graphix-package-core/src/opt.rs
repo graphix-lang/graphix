@@ -132,7 +132,7 @@ pub(crate) trait Fallback: std::fmt::Debug + Send + Sync + 'static {
 /// driven. The output follows the inputs as the select spelling does: a
 /// stale production surfaces as stale.
 #[derive(Debug)]
-// CR claude for claude: [perf/medium] `OptHof` and `OrElse` re-implement the select
+// CR claude for eric: [perf/medium] `OptHof` and `OrElse` re-implement the select
 // spelling in about 300 lines of feed/bind/answer bookkeeping. They are `Effect::Sync`
 // with no fast call, so any lambda calling `opt::map`, `flat_map`, `filter`,
 // `is_some_and`, `is_none_or`, `or_else` or `ok_or_else` cannot fuse ("builtin
@@ -149,6 +149,9 @@ pub(crate) trait Fallback: std::fmt::Debug + Send + Sync + 'static {
 // docs promise f() driven eagerly, which a select arm would not keep, so moving them is
 // a semantics change to decide; filter_err's select spelling would bottom where it now
 // holds its last error.
+// 2026-10-13 claude: re-addressed: whether or_else and ok_or_else may give up their
+// documented eager f() (driven while v is non-null, so a later null answers at once)
+// for the select spelling, and filter_err its held error for bottom, is Eric's call.
 pub(crate) struct OrElse<W, R: Rt, E: UserEvent> {
     inner: Node<R, E>,
     fid: BindId,
