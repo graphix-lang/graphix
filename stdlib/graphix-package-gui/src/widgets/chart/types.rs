@@ -88,8 +88,8 @@ impl FromValue for XYData {
     }
 }
 
-/// Bar chart data: categorical (String) x-axis, numeric y-axis.
-pub struct BarData(pub LPooled<Vec<(String, f64)>>);
+/// Bar chart data: categorical x-axis, numeric y-axis.
+pub struct BarData(pub LPooled<Vec<(ArcStr, f64)>>);
 
 impl FromValue for BarData {
     fn from_value(v: Value) -> Result<Self> {
@@ -99,7 +99,7 @@ impl FromValue for BarData {
         };
         Ok(Self(
             a.iter()
-                .map(|v| v.clone().cast_to::<(String, f64)>())
+                .map(|v| v.clone().cast_to::<(ArcStr, f64)>())
                 .collect::<Result<_>>()?,
         ))
     }

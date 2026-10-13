@@ -577,3 +577,48 @@ fn colors_keep_their_alpha() {
     assert_eq!((c.0, c.1, c.2), (255, 0, 0));
     assert!((c.3 - 0.3).abs() < 1e-6);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn bar_categories_share_the_dataset_labels() -> Result<()> {
+    use crate::widgets::chart::DatasetEntry;
+    let h = chart_harness(r#"&[bar(&[("a category name longer than 24 bytes", 1.0)])]"#)
+        .await?;
+    let chart = chart(&h);
+    let categories = chart.bar_categories();
+    let DatasetEntry::Bar { data, .. } = &chart.datasets()[0] else { unreachable!() };
+    assert!(std::ptr::eq(
+        categories[0].as_str(),
+        data.t.as_ref().unwrap().0[0].0.as_str()
+    ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bar_slots_sum_duplicates_and_follow_data_changes() -> Result<()> {
+    let mut h = GuiTestHarness::new(
+        r#"
+        use gui::chart::{bar, chart};
+        let data = [("a", 1.0), ("a", 2.0), ("b", 4.0)];
+        let change = |t: Any| data <- t ~ [("c", 7.0), ("c", 8.0)];
+        let result = chart(&[bar(&data), bar(&[("b", 10.0), ("c", 20.0)])])
+    "#,
+    )
+    .await?;
+    let c = chart(&h);
+    assert_eq!(c.bar_categories(), ["a", "b", "c"]);
+    assert_eq!(
+        [c.bar_value(0, 0), c.bar_value(0, 1), c.bar_value(0, 2)],
+        [Some(3.0), Some(4.0), None]
+    );
+    assert_eq!(
+        [c.bar_value(1, 0), c.bar_value(1, 1), c.bar_value(1, 2)],
+        [None, Some(10.0), Some(20.0)]
+    );
+    let change = h.compile_named_callable("test::change").await?;
+    h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
+    let c = chart(&h);
+    assert_eq!(c.bar_categories(), ["c", "b"]);
+    assert_eq!([c.bar_value(0, 0), c.bar_value(0, 1)], [Some(15.0), None]);
+    assert_eq!([c.bar_value(1, 0), c.bar_value(1, 1)], [Some(20.0), Some(10.0)]);
+    Ok(())
+}

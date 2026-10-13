@@ -1,10 +1,7 @@
 use super::{
     ChartW,
     clip::{View, clip_area, clip_polyline},
-    dataset::{
-        ChartMode, DatasetEntry, XYKind, bar_categories, bar_value, pie_slices,
-        pie_start_angle,
-    },
+    dataset::{ChartMode, DatasetEntry, XYKind, pie_slices, pie_start_angle},
     interact::{ChartState, PlotInfo, draw_tooltip},
     plotters_backend::{IcedBackend, estimate_text},
     ranges::*,
@@ -586,19 +583,15 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     }
                 }
                 ChartMode::Bar => {
-                    let categories = bar_categories(&self.datasets);
+                    let categories = self.bar_categories();
                     let mut lo = 0.0f64;
                     let mut hi = 0.0f64;
-                    for ds in self.datasets.iter() {
-                        if let DatasetEntry::Bar { data: d, .. } = ds
-                            && let Some(bd) = d.t.as_ref()
-                        {
-                            for v in categories.iter().filter_map(|c| bar_value(bd, c)) {
-                                if v.is_finite() {
-                                    lo = lo.min(v);
-                                    hi = hi.max(v);
-                                }
-                            }
+                    for v in
+                        self.bars.series.iter().flat_map(|series| series.iter().flatten())
+                    {
+                        if v.is_finite() {
+                            lo = lo.min(*v);
+                            hi = hi.max(*v);
                         }
                     }
                     let y = view
@@ -623,7 +616,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         // one-category test that checks the label's x against the plot
                         // rect's centre. probe:
                         // design/review-2026-10-12/repro/gui-chart-03.rs (gui-chart-03)
-                        categories.as_slice().into_segmented(),
+                        categories.into_segmented(),
                         y.0..y.1,
                     ) {
                         Ok(c) => c,
@@ -637,8 +630,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     configure_mesh!(chart, x_label, y_label, mesh_style, 1);
                     let view = View { x: (0.0, categories.len() as f64), y };
                     for (i, ds) in self.datasets.iter().enumerate() {
-                        let DatasetEntry::Bar { data, style } = ds else { continue };
-                        let Some(bd) = data.t.as_ref() else { continue };
+                        let DatasetEntry::Bar { style, .. } = ds else { continue };
                         let fill =
                             ShapeStyle::from(series_color(chart_style, style.color, i))
                                 .filled();
@@ -646,10 +638,15 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                             .style(fill)
                             .margin(style.margin.unwrap_or(5.0) as u32)
                             .baseline(view.clamp_y(0.0))
-                            .data(categories.iter().filter_map(|c| {
-                                let v = bar_value(bd, c).filter(|v| v.is_finite())?;
-                                Some((c, view.clamp_y(v)))
-                            }));
+                            .data(categories.iter().enumerate().filter_map(
+                                |(slot, c)| {
+                                    let v = self
+                                        .bars
+                                        .value(i, slot)
+                                        .filter(|v| v.is_finite())?;
+                                    Some((c, view.clamp_y(v)))
+                                },
+                            ));
                         annotate(
                             chart.draw_series(hist),
                             style.label.as_deref(),

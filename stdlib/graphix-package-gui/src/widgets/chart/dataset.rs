@@ -1,5 +1,7 @@
 use super::types::*;
+use ahash::AHashMap;
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
@@ -174,37 +176,41 @@ impl ChartMode {
     }
 }
 
-/// The bar chart's category slots: every bar series' categories in
-/// first-seen order, each once.
-// CR claude for claude: [perf/low] bar_categories dedups with a linear cats.contains
-// and clones every label String. bar_value scans the whole series for each category.
-// Both run on every draw (twice per category per dataset) and on every CursorMoved in
-// find_nearest_point. A bar pan clears the cache on every move, so with C categories
-// each hover or pan step costs O(C^2) compares plus C String allocations. Build the
-// categories and per-series sums once per data change in handle_update: an index of
-// category to slot, a Vec<Option<f64>> per series, and labels as ArcStr taken from the
-// Value rather than copied. draw and find_nearest_point then read slots directly.
-// (gui-chart-07)
-pub fn bar_categories<X: GXExt>(datasets: &[DatasetEntry<X>]) -> LPooled<Vec<String>> {
-    let mut cats: LPooled<Vec<String>> = LPooled::take();
-    for ds in datasets {
-        if let DatasetEntry::Bar { data, .. } = ds
-            && let Some(bd) = data.t.as_ref()
-        {
-            for (cat, _) in bd.0.iter() {
-                if !cats.contains(cat) {
-                    cats.push(cat.clone());
-                }
-            }
-        }
-    }
-    cats
+#[derive(Default)]
+pub(super) struct BarSlots {
+    pub categories: LPooled<Vec<ArcStr>>,
+    pub series: LPooled<Vec<LPooled<Vec<Option<f64>>>>>,
 }
 
-/// A bar series' height at `cat`: the sum of its entries there, as the
-/// histogram draws it; `None` where it has none.
-pub fn bar_value(bd: &BarData, cat: &str) -> Option<f64> {
-    bd.0.iter().filter(|(c, _)| c == cat).map(|(_, v)| *v).reduce(|a, b| a + b)
+impl BarSlots {
+    pub fn rebuild<X: GXExt>(&mut self, datasets: &[DatasetEntry<X>]) {
+        self.categories.clear();
+        self.series.clear();
+        let mut index: LPooled<AHashMap<ArcStr, usize>> = LPooled::take();
+        for ds in datasets {
+            let mut values: LPooled<Vec<Option<f64>>> = LPooled::take();
+            if let DatasetEntry::Bar { data, .. } = ds
+                && let Some(data) = &data.t
+            {
+                for (label, value) in data.0.iter() {
+                    let slot = *index.entry(label.clone()).or_insert_with(|| {
+                        let slot = self.categories.len();
+                        self.categories.push(label.clone());
+                        slot
+                    });
+                    if values.len() <= slot {
+                        values.resize(slot + 1, None);
+                    }
+                    values[slot] = Some(values[slot].map_or(*value, |v| v + value));
+                }
+            }
+            self.series.push(values);
+        }
+    }
+
+    pub fn value(&self, series: usize, slot: usize) -> Option<f64> {
+        self.series.get(series)?.get(slot).copied().flatten()
+    }
 }
 
 /// The slices a pie draws: finite and positive.

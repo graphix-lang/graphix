@@ -53,6 +53,7 @@ pub(crate) struct ChartW<X: GXExt> {
     gx: GXHandle<X>,
     datasets_ref: Ref<X>,
     datasets: LPooled<Vec<DatasetEntry<X>>>,
+    bars: BarSlots,
     /// What the plot is drawn from: a change redraws it.
     drawn: Drawn<X>,
     size: Size<X>,
@@ -82,6 +83,7 @@ impl<X: GXExt> ChartW<X> {
             gx: gx.clone(),
             datasets_ref,
             datasets: entries,
+            bars: BarSlots::default(),
             drawn,
             size,
             id: ChartId::new(),
@@ -89,8 +91,17 @@ impl<X: GXExt> ChartW<X> {
             conflict: None,
             dirty: Cell::new(true),
         };
-        chart.refresh_mode();
+        chart.refresh_data();
         Ok(Box::new(chart))
+    }
+
+    pub(crate) fn bar_categories(&self) -> &[ArcStr] {
+        &self.bars.categories
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bar_value(&self, series: usize, slot: usize) -> Option<f64> {
+        self.bars.value(series, slot)
     }
 
     #[cfg(test)]
@@ -103,8 +114,9 @@ impl<X: GXExt> ChartW<X> {
         self.mode
     }
 
-    /// Recompute the mode from the data, reporting a new disagreement.
-    fn refresh_mode(&mut self) {
+    /// Rebuild derived data, reporting a new mode disagreement.
+    fn refresh_data(&mut self) {
+        self.bars.rebuild(&self.datasets);
         match ChartMode::of(&self.datasets) {
             Ok(mode) => {
                 self.mode = mode;
@@ -167,7 +179,7 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
             }
         }
         if changed {
-            self.refresh_mode();
+            self.refresh_data();
         }
         if self.drawn.update(id, v).context("chart")? {
             self.dirty.set(true);

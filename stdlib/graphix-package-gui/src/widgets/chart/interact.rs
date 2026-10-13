@@ -1,8 +1,6 @@
 use super::{
     ChartW,
-    dataset::{
-        ChartMode, DatasetEntry, bar_categories, bar_value, pie_slices, pie_start_angle,
-    },
+    dataset::{ChartMode, DatasetEntry, pie_slices, pie_start_angle},
     ranges::checked_range,
     types::*,
 };
@@ -389,7 +387,7 @@ fn find_nearest_point<X: GXExt>(
             .map(|(x, _)| x.floor() as usize),
         _ => None,
     };
-    let categories = bar_categories(&chart.datasets);
+    let categories = chart.bar_categories();
     let mut bar: Option<Hit> = None;
     let mut pie: Option<Hit> = None;
     for (i, ds) in chart.datasets.iter().enumerate() {
@@ -412,11 +410,11 @@ fn find_nearest_point<X: GXExt>(
                     near(i, j, p.x, p.avg)
                 }
             }
-            DatasetEntry::Bar { data, .. } => {
+            DatasetEntry::Bar { .. } => {
                 // The whole vertical strip of a slot is a hit; the anchor is
                 // the top-center of this series' bar there.
-                let (Some(bd), Some(at)) = (data.t.as_ref(), slot) else { continue };
-                let Some(v) = categories.get(at).and_then(|c| bar_value(bd, c)) else {
+                let Some(at) = slot else { continue };
+                let Some(v) = chart.bars.value(i, at) else {
                     continue;
                 };
                 // CR claude for claude: [bug/low] The hit test reads raw data where the
@@ -511,9 +509,9 @@ fn find_nearest_point<X: GXExt>(
             };
             (series(), v)
         }
-        DatasetEntry::Bar { data, style } => {
+        DatasetEntry::Bar { style, .. } => {
             let cat = categories.get(hit.at)?;
-            let v = bar_value(data.t.as_ref()?, cat)?;
+            let v = chart.bars.value(hit.ds, hit.at)?;
             let label = style.label.as_deref().unwrap_or(cat);
             (CompactString::from(label), format_compact!("{cat}: {v:.2}"))
         }
