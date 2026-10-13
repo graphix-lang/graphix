@@ -6,12 +6,6 @@ Graphix's traits are Rust's, spelled in Graphix.
 
 ## Declaring a Trait
 
-<!-- CR claude for claude: [doc-drift/low] This snippet puts `///` docs on trait
-methods, and the page then says trait declarations are legal in `.gx` files. Pasted into
-a `.gx`, it fails to parse: "`///` is a doc comment, legal only in a .gxi interface
-file". Use `//` here, or label the block as `.gxi` content. examples_compile.rs does not
-compile inline book snippets, so nothing catches this. Probe:
-design/review-2026-10-12/repro/lang-skill-08.gx. (lang-skill-08) (lang-skill-08) -->
 <!-- CR claude for claude: [test-gap/medium] Many inline ```graphix blocks do not parse.
 This one uses `///` doc comments, which are legal only in a .gxi. Trailing `// ...`
 comments run through this page and also appear in modules/interfaces.md and
@@ -23,12 +17,15 @@ the comments onto their own lines or into prose, and add a test that extracts ev
 ```graphix block not marked as REPL or a fragment and runs the check on it.
 Alternatively, move the runnable blocks into book/src/examples and `{{#include}}` them.
 (book-modules-udt-09) -->
+<!-- 2026-10-13 claude: the comments are moved onto their own lines and the
+`///` docs are `//` (traits.md, interfaces.md, references.md); the test over every
+fence is still to come, with (book-core-10). -->
 ```graphix
 trait Show {
-    /// required: every implementor supplies it
+    // required: every implementor supplies it
     val show: fn(self) -> string;
 
-    /// overridable: the body is the default
+    // overridable: the body is the default
     val twice: fn(self) -> string = |s| "[show(s)] [show(s)]"
 };
 ```
@@ -59,7 +56,8 @@ impl Show for Counter {
 
 impl Show for i64 {
     let show = |x| "int [x]";
-    let twice = |x| "int [x], again"     // overriding the default
+    // overriding the default
+    let twice = |x| "int [x], again"
 };
 ```
 
@@ -111,7 +109,8 @@ A trait's methods live under the trait's name, like a module's items:
 ```graphix
 Show::show(Counter(42));
 
-use Show::{show, twice};         // or `use Show::*`
+// or `use Show::*`
+use Show::{show, twice};
 show(7);
 twice(Counter(1))
 ```
@@ -129,7 +128,8 @@ When the self type is a union of implementors, the call becomes the
 
 ```graphix
 let v: [i64, Counter] = select flag { true => 1, false => Counter(2) };
-show(v)      // ≡ select v { i64 as x => show(x), Counter as x => show(x) }
+// ≡ select v { i64 as x => show(x), Counter as x => show(x) }
+show(v)
 ```
 
 Every member needs an implementation.
@@ -218,9 +218,12 @@ A case-insensitive key, equal however it is capitalized:
 type Key = Abstract<string>;
 impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
 
-Key("Foo") == Key("FOO")              // true: the implementation
-[Key("a")] == [Key("A")]              // true: called per element
-(Key("x"), 1) == (Key("X"), 2)        // false: the i64s differ
+// true: the implementation
+Key("Foo") == Key("FOO")
+// true: called per element
+[Key("a")] == [Key("A")]
+// false: the i64s differ
+(Key("x"), 1) == (Key("X"), 2)
 ```
 
 A color that prints as its hex triplet, wherever it appears:
@@ -230,9 +233,12 @@ type Color = Abstract<{r: i64, g: i64, b: i64}>;
 impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
 
 let red = Color({r: 255, g: 0, b: 0});
-println("[red]")                      // #25500
-println([red, red])                   // [#25500, #25500]
-println({fg: red, n: 3})              // {fg: #25500, n: 3}
+// #25500
+println("[red]")
+// [#25500, #25500]
+println([red, red])
+// {fg: #25500, n: 3}
+println({fg: red, n: 3})
 ```
 
 Outside core only an abstract type may implement a core trait (the
@@ -255,7 +261,8 @@ impl Ord for T {
     }
 };
 let m = {T(0) => 0, T(1) => 1, T(2) => 2};
-"[m]"                  // {T(2) => 2, T(1) => 1, T(0) => 0}
+// {T(2) => 2, T(1) => 1, T(0) => 0}
+"[m]"
 ```
 
 and an `Ord` that calls two payloads equal unifies them as keys —
@@ -307,9 +314,12 @@ thing whatever `c` is:
 
 ```graphix
 use Collection::*;
-map([1, 2, 3], |x| x * 2);                           // [2, 4, 6]
-fold(list::from_array([1, 2, 3]), 0, |a, x| a + x);  // 6
-len(filter({"a" => 1, "b" => 20}, |v| v > 5))        // 1
+// [2, 4, 6]
+map([1, 2, 3], |x| x * 2);
+// 6
+fold(list::from_array([1, 2, 3]), 0, |a, x| a + x);
+// 1
+len(filter({"a" => 1, "b" => 20}, |v| v > 5))
 ```
 
 An implementation's head names the constructor with the hole `'_` as
@@ -323,7 +333,8 @@ impl Collection for Bag<'_> {
     let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
 };
 use Collection::*;
-len(filter(Bag([1, 2, 3, 4]), |x| x > 2))            // 2, through the defaults
+// 2, through the defaults
+len(filter(Bag([1, 2, 3, 4]), |x| x > 2))
 ```
 
 `'_` is legal only there. A program's own linear or tree structure
@@ -337,7 +348,8 @@ own receiver:
 
 ```graphix
 let total = |c: Collection| fold(c, 0, |a, x| a + x);
-total([1, 2]) + total(list::from_array([3, 4]))      // 10
+// 10
+total([1, 2]) + total(list::from_array([3, 4]))
 ```
 
 `|c: Collection|` hides the constructor, which is enough when the
@@ -347,8 +359,10 @@ the container — return the same kind of collection with a new element
 
 ```graphix
 let sqr = 'c: Collection, 'a: Number |c: 'c<'a>| -> 'c<'a> map(c, |n| n * n);
-sqr([1, 2, 3])                                       // Array<i64> [1, 4, 9]
-sqr({"a" => 2, "b" => 3})                            // Map<string, i64>
+// Array<i64> [1, 4, 9]
+sqr([1, 2, 3])
+// Map<string, i64>
+sqr({"a" => 2, "b" => 3})
 ```
 
 `'c: Collection` binds the constructor; `'c<'a>` applies it to the

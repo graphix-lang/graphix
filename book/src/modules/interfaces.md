@@ -50,8 +50,10 @@ Export type definitions that users of the module can reference:
 type Color = [`Red, `Green, `Blue];
 type Point = { x: f64, y: f64 };
 type Result<'a, 'e> = ['a, Error<'e>];
-type Handle;                      // abstract: defined in the implementation
-type Meters = Abstract<f64>;      // a public newtype
+// abstract: defined in the implementation
+type Handle;
+// a public newtype
+type Meters = Abstract<f64>;
 ```
 
 Types can be polymorphic and recursive, just like in regular Graphix code.
@@ -123,11 +125,10 @@ the module.
 mod math;
 
 let result = math::add(1, 2);
-let pi = math::constants.pi;
-
-// This would be an error - internal_helper is not exported:
-// math::internal_helper(5)
+let pi = math::constants.pi
 ```
+
+Calling `math::internal_helper(5)` here would be an error: it is not exported.
 
 ## Interface and Implementation Relationship
 
@@ -240,7 +241,8 @@ mod child;
 
 ```graphix
 // parent/child.gx
-use super::{private_setup, public_helper};  // both visible here
+// both visible here
+use super::{private_setup, public_helper};
 ```
 
 ## Interfaces with Netidx Modules
@@ -300,9 +302,12 @@ destructures it:
 ```graphix
 type Counter = Abstract<i64>;
 
-let make = |x: i64| -> Counter Counter(x);          // construct
-let get = |c: Counter| -> i64 c.0;                  // payload
-let bump = |c: Counter| -> Counter {                // destructure
+// construct
+let make = |x: i64| -> Counter Counter(x);
+// payload
+let get = |c: Counter| -> i64 c.0;
+// destructure
+let bump = |c: Counter| -> Counter {
     let Counter(x) = c;
     Counter(x + 1)
 };
@@ -364,7 +369,8 @@ mod counter;
 
 let c = counter::make(0);
 counter::increment(#trig:null, &mut c);
-let value = counter::get(c)  // 1
+// 1
+let value = counter::get(c)
 ```
 
 ### Public Newtypes
