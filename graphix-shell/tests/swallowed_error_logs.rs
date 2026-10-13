@@ -3,7 +3,7 @@
 //! same line through its helper. The logger's module path tells the
 //! two apart, so each engine is proven to have produced its own. A
 //! collection init count past the element limit bottoms, and says so,
-//! in both engines.
+//! in both engines. A task the runtime cancels itself logs nothing.
 
 use std::{
     fs,
@@ -102,4 +102,18 @@ fn init_oversize_is_logged_by_both_engines() {
             "{label}: the oversize count was not logged:\n{log}"
         );
     }
+}
+
+/// A debounce re-arms its timer at every input; the cancelled timer task
+/// is the runtime's own doing, never a logged failure.
+#[test]
+fn cancelled_timers_are_not_logged() {
+    const DEBOUNCE: &str = r#"
+let t = sys::time::timer(duration:10.ms, 20);
+let d = sys::time::after_idle(duration:50.ms, t);
+sys::exit(sys::time::after_idle(duration:300.ms, d ~ 0));
+d
+"#;
+    let (_, log) = run(DEBOUNCE, false, "debounce");
+    assert!(!log.contains("without replying"), "{log}");
 }

@@ -212,26 +212,17 @@ async fn join_or_wait<T: 'static>(
     }
 }
 
-/// A finished task's reply, or nothing when the task died, which is
-/// logged: its reply never comes.
+/// A finished task's reply, or nothing when the task was cancelled or
+/// died; a death is logged, its reply never comes.
 fn joined<T>(r: result::Result<(BindId, T), JoinError>) -> Option<(BindId, T)> {
-    // CR claude for claude: [risk/low] Every JoinError is logged at ERROR, including
-    // the cancellations the runtime makes itself: after_idle's restart, a superseded
-    // `Latest` call, the abort at delete or sleep. An ordinary debounce program logs
-    // one 'ended without replying: task N was cancelled' line per re-arm (10 for the
-    // probe's program). That buries the case this log exists for, a task that panicked.
-    // Fix: return None without an ERROR when `e.is_cancelled()` (at most trace), and
-    // keep error! for `e.is_panic()`. probe:
-    // design/review-2026-10-12/repro/x-rerun-8-13.sh (x-rerun-8-12)
-    // CR claude for claude: [bug/low] Rt::cancel_timer aborts the timer's task in the
-    // `tasks` JoinSet, and join_next still yields it as JoinError::Cancelled. This line
-    // then logs it as a dead task. Every timer re-arm and every after_idle input logs
-    // an ERROR "task N was cancelled": the probe logs 21 for one short debounce, and
-    // real task panics end up buried in that noise. Drop errors where
-    // `e.is_cancelled()` silently and log only panics. Same defect as rt-03. Probe:
-    // design/review-2026-10-12/repro/rt-06.sh. Also reported as (x-concurrency-05),
-    // (x-fix-tools-05). (rt-06)
-    r.map_err(|e| error!("a runtime task ended without replying: {e}")).ok()
+    // the runtime cancels its own tasks (a timer's re-arm, a superseded
+    // call, an abort at delete or sleep): only a panic is news
+    r.map_err(|e| {
+        if e.is_panic() {
+            error!("a runtime task ended without replying: {e}")
+        }
+    })
+    .ok()
 }
 
 struct CallInFlight {
