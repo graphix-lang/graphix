@@ -449,6 +449,33 @@ run!(str_sub, STR_SUB, |v: Result<&Value>| {
     }
 });
 
+// A range past the end is cut at it; the whole range is the string.
+run!(
+    str_sub_bounds,
+    r#"{
+  let s = "💗💖🍇";
+  "[str::sub(#start:2, #len:5, s)]|[str::sub(#start:3, #len:1, s)]|[str::sub(#start:0, #len:3, s)]"
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::String(s)) if &**s == "🍇||💗💖🍇")
+    }
+);
+
+// A `%s` precision counts bytes and never cuts inside a char; a missing
+// or mistyped argument is a FormatError, never a panic.
+run!(
+    str_sprintf_precision_and_errors,
+    r#"{
+  let hearts = str::sprintf("%.3s|%.5s|%.*s|", "💖💖💖💖", "💖💖💖💖", 9, "💖💖💖💖");
+  let missing = select str::sprintf("%d %d", 1) { error as _ => "error", s => s };
+  let mistyped = select str::sprintf("%d", "x") { error as _ => "error", s => s };
+  "[hearts$] [missing] [mistyped]"
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::String(s)) if &**s == "|💖|💖💖| error error")
+    }
+);
+
 const STR_PARSE: &str = r#"{
   let v: i64 = str::parse("42")?;
   v

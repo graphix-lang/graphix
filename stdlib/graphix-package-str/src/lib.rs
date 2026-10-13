@@ -552,30 +552,9 @@ graphix_package_core::fast_builtin!(
 fn fc_sprintf(args: &[Value]) -> Option<Value> {
     match args {
         [Value::String(fmt), rest @ ..] => {
-            // CR claude for claude: [perf/low] fc_sprintf builds into a fresh String
-            // and then copies it into an ArcStr, so every call costs two allocations.
-            // fc_sub does the same, and it also walks every char of `s`, even past the
-            // end of the requested range. Inside a map callback that is two allocations
-            // per element. Fix: use an LPooled<String> scratch buffer, as fc_join and
-            // fc_concat do. For fc_sub, find the byte bounds with char_indices,
-            // stopping at the end, and build the ArcStr straight from the `&s[a..b]`
-            // slice, with no scratch buffer at all. (x-alloc-09)
-            let mut buf = String::new();
-            // CR claude for claude: [bug/high] A `%s` with a precision that ends inside
-            // a multibyte char panics in fish-printf. Its `s` conversion slices
-            // `&s[..p]` by bytes. The panic unwinds out of this fast fn and kills the
-            // runtime: `str::sprintf("%.3s|", "💖💖💖💖")` makes the shell exit 1 with
-            // "runtime did not respond", under the node-walk and the JIT alike. Called
-            // from a fused kernel, the unwind aborts the process. Fix it at the root:
-            // netidx_value::printf should pass each string argument's precision cut
-            // back to a char boundary, or fish-printf should be patched to cut at
-            // `floor_char_boundary(p)`. Either way the result must be a value or the
-            // declared `FormatError`, never a panic. Add sprintf pins to the str tests:
-            // precision over non-ASCII, a missing argument, a wrong argument type.
-            // probe: design/review-2026-10-12/repro/collections-str-02.sh
-            // (collections-str-02)
-            match netidx_value::printf(&mut buf, fmt, rest) {
-                Ok(_) => Some(Value::String(ArcStr::from(&buf))),
+            let mut buf: LPooled<String> = LPooled::take();
+            match netidx_value::printf(&mut *buf, fmt, rest) {
+                Ok(_) => Some(Value::String(ArcStr::from(buf.as_str()))),
                 Err(e) => Some(errf!(literal!("FormatError"), "{e}")),
             }
         }
@@ -603,27 +582,19 @@ fn str_char_len(args: &[Value]) -> Option<Value> {
     }
 }
 
-// CR claude for claude: [perf/low] fc_sub enumerates every char of s, including those
-// after the end of the range, pushes the selected ones one at a time into a fresh
-// String, then copies that into an ArcStr: O(len(s)) plus a per-char push even for a
-// short prefix. Find the byte bounds with char_indices (stop once the end is found),
-// return ArcStr::from(&s[a..b]), and return s.clone() when the range covers the whole
-// string. fc_sprintf's scratch buffer is a plain String: make it an LPooled<String>.
-// (collections-str-06)
 fn fc_sub(args: &[Value]) -> Option<Value> {
     match args {
         [Value::I64(start), Value::I64(len), Value::String(s)]
             if *start >= 0 && *len >= 0 =>
         {
-            let start = *start as usize;
-            let end = start + *len as usize;
-            let mut buf = String::new();
-            for (i, c) in s.chars().enumerate() {
-                if i >= start && i < end {
-                    buf.push(c);
-                }
-            }
-            Some(Value::String(ArcStr::from(&buf)))
+            // the byte bounds of chars [start, start + len), cut at the end
+            let a = s.char_indices().nth(*start as usize).map_or(s.len(), |(i, _)| i);
+            let b =
+                s[a..].char_indices().nth(*len as usize).map_or(s.len(), |(i, _)| a + i);
+            Some(Value::String(match (a, b) {
+                (0, b) if b == s.len() => s.clone(),
+                (a, b) => ArcStr::from(&s[a..b]),
+            }))
         }
         v @ [_, _, _] => {
             Some(errf!(literal!("SubError"), "sub args must be non negative {v:?}"))
