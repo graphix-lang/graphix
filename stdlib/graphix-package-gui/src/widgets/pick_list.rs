@@ -52,7 +52,7 @@ impl<X: GXExt> GuiWidget<X> for PickListW<X> {
 
     fn view(&self) -> IcedElement<'_> {
         let options = self.p.options.t.as_ref().map(|v| v.0.as_slice()).unwrap_or(&[]);
-        let selected = self.p.selected.t.as_ref().and_then(|o| o.clone());
+        let selected = self.p.selected.t.as_ref().and_then(|o| o.as_ref());
         if self.p.disabled.t.unwrap_or(false) {
             let placeholder = self.p.placeholder.t.as_deref().unwrap_or("");
             let shown =

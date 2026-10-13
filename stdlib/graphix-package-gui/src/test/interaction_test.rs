@@ -1168,3 +1168,29 @@ async fn invalid_slider_ranges_are_inert() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn mouse_button_names_use_static_storage() -> Result<()> {
+    let mut h = harness(
+        "mouse_area(#on_press: |v| null, #on_release: |v| null, &text(&\"target\"))",
+    )
+    .await?;
+    h.move_cursor(WIDGET_HIT);
+    for button in [mouse::Button::Left, mouse::Button::Right, mouse::Button::Middle] {
+        for event in
+            [mouse::Event::ButtonPressed(button), mouse::Event::ButtonReleased(button)]
+        {
+            let msgs = h.process_events(&[Event::Mouse(event)]);
+            expect_call(&msgs);
+            for m in &msgs {
+                if let super::Message::Call(_, args) = m {
+                    let Value::String(name) = &args[0] else {
+                        panic!("button name missing")
+                    };
+                    assert!(arcstr::ArcStr::is_static(name), "{name}");
+                }
+            }
+        }
+    }
+    Ok(())
+}

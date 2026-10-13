@@ -1,20 +1,11 @@
 use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use anyhow::{Context, Result};
+use arcstr::literal;
 use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-
-// CR claude for claude: [perf/low] view runs every frame, and every call here allocates
-// a fresh ArcStr from a &str, up to six per mouse_area per frame. The button names are
-// compile-time constants: pass `literal!("Left")` and the like (an ArcStr literal costs
-// nothing) and drop this helper. PickListW::view has the same pattern: it clones its
-// `selected: Option<String>` every frame, but iced's PickList::new takes `Option<impl
-// Borrow<T>>`, so passing `selected.as_ref()` needs no clone. (gui-widgets-b-09)
-fn mouse_button_value(button: &str) -> Value {
-    Value::String(button.into())
-}
 
 pub(crate) struct MouseAreaW<X: GXExt> {
     gx: GXHandle<X>,
@@ -85,30 +76,30 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
             let id = c.id();
             ma = ma.on_press(Message::Call(
                 id,
-                ValArray::from_iter([mouse_button_value("Left")]),
+                ValArray::from_iter([Value::String(literal!("Left"))]),
             ));
             ma = ma.on_right_press(Message::Call(
                 id,
-                ValArray::from_iter([mouse_button_value("Right")]),
+                ValArray::from_iter([Value::String(literal!("Right"))]),
             ));
             ma = ma.on_middle_press(Message::Call(
                 id,
-                ValArray::from_iter([mouse_button_value("Middle")]),
+                ValArray::from_iter([Value::String(literal!("Middle"))]),
             ));
         }
         if let Some(c) = &self.on_release.f {
             let id = c.id();
             ma = ma.on_release(Message::Call(
                 id,
-                ValArray::from_iter([mouse_button_value("Left")]),
+                ValArray::from_iter([Value::String(literal!("Left"))]),
             ));
             ma = ma.on_right_release(Message::Call(
                 id,
-                ValArray::from_iter([mouse_button_value("Right")]),
+                ValArray::from_iter([Value::String(literal!("Right"))]),
             ));
             ma = ma.on_middle_release(Message::Call(
                 id,
-                ValArray::from_iter([mouse_button_value("Middle")]),
+                ValArray::from_iter([Value::String(literal!("Middle"))]),
             ));
         }
         if let Some(c) = &self.on_enter.f {
@@ -121,8 +112,8 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
             let id = c.id();
             ma = ma.on_move(move |point| {
                 let point_val: Value = [
-                    (arcstr::literal!("x"), Value::F64(point.x as f64)),
-                    (arcstr::literal!("y"), Value::F64(point.y as f64)),
+                    (literal!("x"), Value::F64(point.x as f64)),
+                    (literal!("y"), Value::F64(point.y as f64)),
                 ]
                 .into();
                 Message::Call(id, ValArray::from_iter([point_val]))
