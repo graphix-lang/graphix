@@ -10,7 +10,7 @@ The `text` widget displays a string with optional styling. It is the most basic 
 
 ## Parameters
 
-- **size** - Font size in pixels. Defaults to the theme's standard text size when null.
+- **size** - Font size in pixels, finite and greater than zero, up to 4096. Defaults to the theme's standard text size when null.
 - **color** - Text color, a `Color` made with `gui::color(#r, #g, #b, #a)`, each component a float from 0.0 to 1.0 (`color` returns an error for one out of range, so unwrap it: `color(#r: 1.0)$`). Defaults to the theme's text color when null.
 - **font** - A `Font` struct controlling the typeface:
   - `family`: One of `` `SansSerif ``, `` `Serif ``, `` `Monospace ``, or `` `Name(string) `` for a specific font name.

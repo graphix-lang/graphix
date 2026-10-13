@@ -8,6 +8,7 @@ type PathSegment = [
   `Close
 ];
 
+// A Text shape's size must be finite, positive and at most 4096 pixels.
 type CanvasShape = [
   `Line({ from: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
   `Circle({ center: {x: f64, y: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),

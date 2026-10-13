@@ -24,6 +24,7 @@ use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
 use std::{
     cell::RefCell,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -155,9 +156,36 @@ fn open_windows(
     }
 }
 
+fn draw_frame<T>(frame: T, draw: impl FnOnce(&T)) -> T {
+    if let Err(panic) = catch_unwind(AssertUnwindSafe(|| draw(&frame))) {
+        // wgpu discards an unpresented texture only outside unwinding.
+        drop(frame);
+        resume_unwind(panic);
+    }
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::Cell, panic::panic_any};
+
+    #[test]
+    fn an_unpresented_frame_drops_before_unwinding_resumes() {
+        struct Frame<'a>(&'a Cell<Option<bool>>);
+        impl Drop for Frame<'_> {
+            fn drop(&mut self) {
+                self.0.set(Some(std::thread::panicking()));
+            }
+        }
+        let unwinding = Cell::new(None);
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            draw_frame(Frame(&unwinding), |_| panic_any(42_u8));
+        }))
+        .unwrap_err();
+        assert_eq!(panic.downcast_ref::<u8>(), Some(&42));
+        assert_eq!(unwinding.get(), Some(false));
+    }
 
     #[test]
     fn redraw_waits_for_the_cursor_deadline_unless_dirty() {
@@ -362,10 +390,18 @@ impl<X: GXExt> GuiHandler<X> {
         let ws = &mut tw.surface;
         match ws.surface.get_current_texture() {
             Ok(frame) => {
-                let view =
-                    frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let background = theme.palette().background;
-                ws.renderer.present(Some(background), gpu.format, &view, &ws.viewport);
+                let frame = draw_frame(frame, |frame| {
+                    let view = frame
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let background = theme.palette().background;
+                    ws.renderer.present(
+                        Some(background),
+                        gpu.format,
+                        &view,
+                        &ws.viewport,
+                    );
+                });
                 frame.present();
                 tw.last_render = Instant::now();
                 let next = match &state {

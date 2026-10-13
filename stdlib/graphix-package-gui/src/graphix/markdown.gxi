@@ -7,6 +7,7 @@ type Markdown = {
   width: &Length
 };
 
+// A non-null #text_size must be finite, positive and at most 4096 pixels.
 val markdown: fn(
   ?#on_link: [fn(url: string) -> Any, null],
   ?#spacing: &[f64, null],

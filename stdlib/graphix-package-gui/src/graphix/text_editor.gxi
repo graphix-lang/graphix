@@ -11,6 +11,7 @@ type TextEditor = {
   size: &[f64, null]
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_editor: fn(
   ?#placeholder: &string,
   ?#on_edit: [fn(s: string) -> Any, null],

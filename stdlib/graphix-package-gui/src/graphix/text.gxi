@@ -10,6 +10,7 @@ type Text = {
   valign: &VAlign
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val text: fn(
   ?#size: &[f64, null],
   ?#color: &[Color, null],

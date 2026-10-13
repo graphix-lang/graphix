@@ -40,16 +40,14 @@ impl FromValue for LengthV {
     }
 }
 
-/// A size in pixels that text can be laid out at: finite and positive
-/// as an f32. Zero, negative and non-finite sizes are refused, which
-/// cosmic-text would otherwise assert on or hang over.
+/// A text size in pixels: finite, positive and at most 4096 as an f32.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextSizeV(pub f32);
 
 impl FromValue for TextSizeV {
     fn from_value(v: Value) -> Result<Self> {
         let f = v.cast_to::<f64>()? as f32;
-        // CR claude for claude: [bug/medium] Any finite positive size is accepted, but
+        // XCR claude for claude: [bug/medium] Any finite positive size is accepted, but
         // swash/zeno cannot rasterize a glyph at huge sizes. At #size 100000 zeno's
         // Format::buffer_size overflows u32 (a panic in debug, a wrap in release, and
         // its unchecked to_fixed is UB further out). The panic then unwinds into the
@@ -62,10 +60,15 @@ impl FromValue for TextSizeV {
         // panic during unwind (drop the frame's texture before the surface). probe:
         // design/review-2026-10-12/repro/gui-core-04.gx (driver gui-core-05.sh)
         // (gui-core-04)
-        if f.is_finite() && f > 0.0 {
+        // 2026-10-13 codex: text_sizes_fit_the_rasterizer and
+        // an_unpresented_frame_drops_before_unwinding_resumes fail before their fixes.
+        // Rendering now drops an acquired frame outside unwinding before resuming the
+        // original panic. The real-window abort probe needs D-Bus/display sockets and
+        // remains unverified here; review that teardown path outside the sandbox.
+        if f.is_finite() && f > 0.0 && f <= 4096.0 {
             Ok(Self(f))
         } else {
-            bail!("a text size must be finite and positive, got {f}")
+            bail!("a text size must be finite, positive and at most 4096 pixels, got {f}")
         }
     }
 }
@@ -615,5 +618,20 @@ impl FromValue for StringVec {
         let v: Vec<String> =
             items.into_iter().map(|v| v.cast_to::<String>()).collect::<Result<_>>()?;
         Ok(Self(v))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_sizes_fit_the_rasterizer() {
+        for size in [100_000.0, 4096.5, 0.0, -1.0, f64::INFINITY, f64::NAN] {
+            assert!(TextSizeV::from_value(Value::F64(size)).is_err(), "{size}");
+        }
+        for size in [0.5, 16.0, 4096.0] {
+            assert_eq!(TextSizeV::from_value(Value::F64(size)).unwrap().0, size as f32);
+        }
     }
 }
