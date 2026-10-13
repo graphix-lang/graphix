@@ -1339,23 +1339,12 @@ impl<X: GXExt> GX<X> {
             // undelivered update in a watch channel is pending work that
             // `cycle_ready` cannot see until it is drained.
             peek!(watches, tasks, var_watches, custom_tasks, input);
-            // CR claude for claude: [bug/medium] The idle test misses work parked in
-            // `sets` (and `calls`). When the subscriber is full, do_cycle's send loop
-            // runs process_input_batch, which turns ToGX::Set, SetMany, Call and a
-            // chainless SetDeref into entries of `sets`. That cycle has already drained
-            // `sets`, and nothing here or in cycle_ready looks at it. So `ready` is
-            // false, `or_never` never fires, and the write or call waits for an
-            // unrelated wake: a timer, another message, a source. In a GUI, a button
-            // press made while a frame stalls the channel does nothing until the mouse
-            // moves. Fix: count `!sets.is_empty()` in `ready`, or better, move `sets`
-            // and `calls` into GX so cycle_ready sees them. Then extend
-            // tests/send_loop.rs to cover a set and a call received in the send loop.
-            // Probe: design/review-2026-10-12/repro/rt-01.rs
-            // (set_in_send_loop_is_delivered, call_in_send_loop_is_delivered). (rt-01)
+            // the send loop parks the input it serves in `sets`
             let ready = self.cycle_ready()
                 || !tasks.is_empty()
                 || !custom_tasks.is_empty()
-                || !input.is_empty();
+                || !input.is_empty()
+                || !sets.is_empty();
             // An idle waiter resolves once the runtime is idle, confirmed on
             // a second consecutive pass: the first may race an in-flight
             // spawned task.
