@@ -6,15 +6,8 @@ use crate::mutate::Rng;
 
 /// Every graphix numeric type. The fixed-width ten are the JIT's
 /// register-scalar set; the variable-width four (`v`/`z`) are valid
-/// language that de-fuses.
+/// language that de-fuses; decimal is an opaque two-word kernel value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// CR claude for claude: [test-gap/low] The doc above says this is every graphix numeric
-// type, but decimal is missing. Decimal is a `Number` and one of the opaque two-word
-// kernel values, so `'a: Number` poly lambdas, checked arithmetic, casts and the
-// result-select lowering never meet it in generated code. datetime and duration are
-// never generated either. Fix: add a Decimal variant whose literal pool always carries
-// a '.' (a bare `decimal:12` does not parse), give fits_in a rule for it, and correct
-// the doc. Consider small duration/datetime literal leaves too. (fuzz-gen-a-05)
 pub enum NumTy {
     I8,
     I16,
@@ -30,6 +23,7 @@ pub enum NumTy {
     V64,
     Z32,
     Z64,
+    Decimal,
 }
 
 pub(super) const NUM_TYS: &[NumTy] = &[
@@ -47,6 +41,7 @@ pub(super) const NUM_TYS: &[NumTy] = &[
     NumTy::V64,
     NumTy::Z32,
     NumTy::Z64,
+    NumTy::Decimal,
 ];
 
 impl NumTy {
@@ -66,6 +61,7 @@ impl NumTy {
             NumTy::V64 => "v64",
             NumTy::Z32 => "z32",
             NumTy::Z64 => "z64",
+            NumTy::Decimal => "decimal",
         }
     }
 
@@ -73,11 +69,13 @@ impl NumTy {
         matches!(self, NumTy::F32 | NumTy::F64)
     }
 
-    /// Signed (negation is legal): signed ints, zigzag varints, floats.
+    /// Signed (negation is legal): signed ints, zigzag varints, floats,
+    /// decimal.
     pub(super) fn is_signed(self) -> bool {
         matches!(
             self,
-            NumTy::I8
+            NumTy::Decimal
+                | NumTy::I8
                 | NumTy::I16
                 | NumTy::I32
                 | NumTy::I64
@@ -101,7 +99,8 @@ impl NumTy {
     }
 
     /// Every value of `self` casts to `other` losslessly. Floats count
-    /// integer embeddings only up to their exact-integer range.
+    /// integer embeddings only up to their exact-integer range; decimal
+    /// holds every integer and fits in nothing else.
     pub(super) fn fits_in(self, other: NumTy) -> bool {
         fn int_bits(t: NumTy) -> Option<(u32, bool)> {
             Some(match t {
@@ -114,10 +113,17 @@ impl NumTy {
                 NumTy::U32 => (32, false),
                 NumTy::U64 => (64, false),
                 NumTy::F32 | NumTy::F64 => return None,
-                NumTy::V32 | NumTy::V64 | NumTy::Z32 | NumTy::Z64 => unreachable!(),
+                NumTy::V32 | NumTy::V64 | NumTy::Z32 | NumTy::Z64 | NumTy::Decimal => {
+                    unreachable!()
+                }
             })
         }
         let (a, b) = (self.range_twin(), other.range_twin());
+        match (a, b) {
+            (NumTy::Decimal, b) => return b == NumTy::Decimal,
+            (a, NumTy::Decimal) => return !a.is_float(),
+            _ => (),
+        }
         match (int_bits(a), int_bits(b)) {
             (Some((ab, asig)), Some((bb, bsig))) => match (asig, bsig) {
                 (false, false) | (true, true) => ab <= bb,
@@ -196,6 +202,9 @@ impl NumTy {
                 "9223372036854775807",
                 "-9223372036854775808",
             ][rng.below(7)],
+            NumTy::Decimal => {
+                ["0.0", "1.5", "-2.25", "100.0", "0.1", "-0.001"][rng.below(6)]
+            }
         };
         format!("{}:{v}", self.render())
     }
