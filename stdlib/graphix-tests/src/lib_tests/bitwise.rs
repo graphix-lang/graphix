@@ -87,3 +87,13 @@ const SHL_I64: &str = r#"
 "#;
 
 run!(shl_i64, SHL_I64, |v: Result<&Value>| { matches!(v, Ok(Value::I64(0x100000000))) });
+
+// A shift at or beyond the width wraps the count: by 9 on a u8 is by 1,
+// and by -1 on an i64 is by 63.
+const SHIFT_COUNT_WRAPS: &str = r#"
+  (shl(u8:1, u8:9), shr(u8:200, u8:9), shl(i64:1, i64:-1))
+"#;
+
+run!(shift_count_wraps, SHIFT_COUNT_WRAPS, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[u8:2, u8:100, i64:-9223372036854775808]"
+});

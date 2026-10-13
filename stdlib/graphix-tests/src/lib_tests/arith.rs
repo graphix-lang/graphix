@@ -40,15 +40,21 @@ run!(float_zero_div_zero_nan, FLOAT_ZERO_DIV_ZERO_NAN, |v: Result<&Value>| {
 // Float comparison is a total order (NaN == NaN, NaN below every
 // non-NaN), not IEEE.
 
+// NaN below -inf, from runtime values in a kernel: an order that put NaN
+// anywhere else would fail one of the three.
+const NAN_BELOW_NEG_INF: &str = r#"{
+  let f = |a: f64, b: f64| {
+    let n = a / b;
+    let ninf = f64:-1.0 / b;
+    [n < ninf, n == ninf, ninf > n]
+  };
+  #[native] f(0.0, 0.0)
+}"#;
+run!(nan_below_neg_inf, NAN_BELOW_NEG_INF, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[true, false, true]"
+});
+
 // NaN equals itself (the deliberate non-IEEE choice).
-// CR claude for claude: [test-gap/low] The NaN pins compare a NaN only with itself or
-// with 1.0. An engine that stood NaN in for -inf (or ordered it some other way that
-// agrees at 1.0) would pass them all while breaking 'NaN below every number'. Add a
-// fused fixture whose arguments are runtime values: `let f = |a: f64, b: f64| { let n =
-// a / b; let ninf = f64:-1.0 / b; [n < ninf, n == ninf, ninf > n] }; f(0.0, 0.0)`,
-// expecting [true, false, true]. bitwise.rs likewise has no pin for the documented
-// 'wrapping' shift at or beyond the width: add `shl(u8:1, u8:9) == u8:2`, `shr(u8:200,
-// u8:9) == u8:100` and `shl(i64:1, i64:-1)` (expected i64::MIN). (tests-lib-b1-08)
 const NAN_EQ_SELF: &str = "{ let x = f64:0.0 / f64:0.0; x == x }";
 run!(nan_eq_self, NAN_EQ_SELF, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
