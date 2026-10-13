@@ -126,3 +126,24 @@ run!(
         _ => false,
     }
 );
+
+// Partials that expand inside one another without end are refused at a
+// depth bound, whatever the shape of the cycle; a data-bounded recursion
+// renders.
+run!(hbs_partial_cycle_refused, r#"{
+    let cycle = hbs::render(#partials: {a: "x{{> b}}", b: "y{{> a}}"}, "{{> a}}", {x: 1});
+    let inline = hbs::render("{{#*inline \"p\"}}{{> p}}{{/inline}}{{> p}}", {x: 1});
+    let block = hbs::render(#partials: {a: "{{#if x}}{{> a}}{{/if}}"}, "{{> a}}", {x: 1});
+    "[cycle]|[inline]|[block]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.matches("partials nest more than 128 deep").count() == 3)
+}; FuseExpect::Jit);
+
+run!(hbs_partial_tree_renders, r#"{
+    type Node = {name: string, kids: Array<Node>};
+    let leaf = |name: string| -> Node {name, kids: []};
+    let tree: Node = {name: "a", kids: [{name: "b", kids: [leaf("c")]}, leaf("d")]};
+    hbs::render(#partials: {node: "{{name}}({{#each kids}}{{> node}}{{/each}})"}, "{{> node}}", tree)$
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "a(b(c())d())")
+}; FuseExpect::Jit);

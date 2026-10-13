@@ -11,9 +11,16 @@ use graphix_compiler::{
 };
 use graphix_package_core::{FastMemo, Shape, shape};
 use graphix_package_json::value_to_json;
-use handlebars::Handlebars;
+use handlebars::{
+    Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
+    RenderErrorReason, Renderable,
+    template::{Template, TemplateElement},
+};
 use netidx_value::Value;
-use std::cell::RefCell;
+use std::{
+    cell::{Cell, RefCell},
+    mem,
+};
 
 /// Register each entry of `partials`, a struct or a map of templates by
 /// name as its type `typ` says, or null.
@@ -47,6 +54,80 @@ thread_local! {
         RefCell::new(FastMemo::new(16));
 }
 
+/// How deep partials may expand inside one another. Nothing else bounds
+/// a cycle of partials (handlebars refuses only a partial naming itself),
+/// and one would recurse until the stack overflows.
+const MAX_PARTIAL_DEPTH: usize = 128;
+
+/// The block helper every partial expansion is wrapped in: it counts the
+/// expansions in progress and refuses one past [`MAX_PARTIAL_DEPTH`].
+const DEPTH_HELPER: &str = "__gx_partial_depth";
+
+thread_local! {
+    static PARTIAL_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct PartialDepth;
+
+impl HelperDef for PartialDepth {
+    fn call<'reg: 'rc, 'rc>(
+        &self,
+        h: &Helper<'rc>,
+        r: &'reg Handlebars<'reg>,
+        ctx: &'rc Context,
+        rc: &mut RenderContext<'reg, 'rc>,
+        out: &mut dyn Output,
+    ) -> HelperResult {
+        let depth = PARTIAL_DEPTH.with(|d| d.replace(d.get() + 1)) + 1;
+        let res = match h.template() {
+            _ if depth > MAX_PARTIAL_DEPTH => Err(RenderErrorReason::Other(format!(
+                "partials nest more than {MAX_PARTIAL_DEPTH} deep"
+            ))
+            .into()),
+            Some(t) => t.render(r, ctx, rc, out),
+            None => Ok(()),
+        };
+        PARTIAL_DEPTH.with(|d| d.set(depth - 1));
+        res
+    }
+}
+
+/// Wrap every partial expansion in `t`, nested templates and inline
+/// partials included, in a [`DEPTH_HELPER`] block like `block`.
+fn bound_partials(t: &mut Template, block: &TemplateElement) {
+    let Template { elements, mapping, .. } = t;
+    for (i, el) in elements.iter_mut().enumerate() {
+        match el {
+            TemplateElement::PartialExpression(_) => (),
+            TemplateElement::PartialBlock(d) | TemplateElement::DecoratorBlock(d) => {
+                if let Some(t) = &mut d.template {
+                    bound_partials(t, block)
+                }
+            }
+            TemplateElement::HelperBlock(h) => {
+                for t in [&mut h.template, &mut h.inverse].into_iter().flatten() {
+                    bound_partials(t, block)
+                }
+                continue;
+            }
+            _ => continue,
+        }
+        if let TemplateElement::DecoratorBlock(_) = el {
+            continue;
+        }
+        let mut wrapper = block.clone();
+        if let TemplateElement::HelperBlock(h) = &mut wrapper {
+            let mut inner = Template::default();
+            inner
+                .elements
+                .push(mem::replace(el, TemplateElement::Comment(String::new())));
+            inner.mapping.extend(mapping.get(i).cloned());
+            h.template = Some(inner);
+        }
+        *el = wrapper;
+    }
+}
+
 fn build_registry(
     strict: bool,
     env: &Env,
@@ -59,6 +140,19 @@ fn build_registry(
     register_partials(&mut registry, env, ft.args.get(1).map(|a| &a.typ), partials)
         .map_err(|e| anyhow!("{e}"))?;
     registry.register_template_string("main", template).map_err(|e| anyhow!("{e}"))?;
+    let block =
+        Template::compile(&format!("{{{{#{DEPTH_HELPER}}}}}{{{{/{DEPTH_HELPER}}}}}"))?
+            .elements
+            .pop()
+            .ok_or_else(|| anyhow!("the partial depth helper did not compile"))?;
+    let names: Vec<String> = registry.get_templates().keys().cloned().collect();
+    for name in names {
+        if let Some(mut t) = registry.get_template(&name).cloned() {
+            bound_partials(&mut t, &block);
+            registry.register_template(&name, t);
+        }
+    }
+    registry.register_helper(DEPTH_HELPER, Box::new(PartialDepth));
     Ok(registry)
 }
 
@@ -83,47 +177,6 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
                     .with(
                         &key,
                         || build_registry(*strict, env, ft, partials, template),
-                        // CR claude for claude: [bug/medium] x-panics-08 still
-                        // reproduces: hbs::render with mutually recursive partials
-                        // aborts the process. fc_render calls `registry.render("main",
-                        // &json_data)` (lib.rs) with no bound on partial recursion.
-                        // handlebars refuses only a partial that includes itself while
-                        // it is the current template. A two-partial cycle, an inline
-                        // self-include or a self-include under a block recurses until
-                        // the runtime worker's stack overflows: an uncatchable abort of
-                        // the whole program. Commit 5f6364bc re-addressed this CR to
-                        // Eric, but no CR or pin mentioning it remains in the tree, so
-                        // it has dropped out of tracking. Failure: The program below
-                        // aborts: "thread 'tokio-rt-worker' has overflowed its stack /
-                        // fatal runtime error: stack overflow, aborting", SIGABRT, in
-                        // both engines. A template or partials map that comes from data
-                        // (a config file, a request) can take down any server that
-                        // renders it. Fix: Before rendering, walk the registered
-                        // templates' ASTs for `{{> name}}` references, inline partials
-                        // included, and refuse a cycle with `HbsErr`. Alternatively,
-                        // register partials through a wrapper that tracks depth and
-                        // fails past a fixed bound. Pin the three shapes from the
-                        // original repro. Unverified: the reviewer's report, not
-                        // checked by a verifier. (x-rerun-8-05)
-                        // CR claude for claude: [bug/high] Partials that include each
-                        // other without a data bound, such as {a: "x{{> b}}", b: "y{{>
-                        // a}}"}, make registry.render recurse until the stack
-                        // overflows, and the whole process aborts. handlebars refuses
-                        // only a partial that includes itself directly
-                        // (expand_partial's is_current_template check), and it has no
-                        // depth limit. Templates and partials are often loaded from
-                        // files, so the input can come from outside the program.
-                        // Refusing every static cycle in build_registry would be wrong:
-                        // a cycle under a block (node -> kid -> node inside {{#each
-                        // kids}}) is ordinary tree rendering, and it works today. A fix
-                        // could refuse, in build_registry, only a cycle of `{{> name}}`
-                        // references that are not under any block, returning HbsErr. It
-                        // could also run the render under a stack guard
-                        // (crate::stack::ensure_sufficient or a stacker::grow with a
-                        // fixed budget), so deep data-bounded recursion is contained
-                        // too. probe: design/review-2026-10-12/repro/small-pkgs-01.gx
-                        // (x-security-04 is the same defect). Also reported as
-                        // (x-panics-01), (x-security-07). (small-pkgs-01)
                         |registry| match registry.render("main", &json_data) {
                             Ok(s) => Value::String(ArcStr::from(s.as_str())),
                             Err(e) => errf!("HbsErr", "{e}"),
