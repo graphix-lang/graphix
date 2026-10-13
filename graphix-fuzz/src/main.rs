@@ -827,14 +827,10 @@ async fn main() -> Result<()> {
         // one mode alone: `trace` in the file named by argv[2] when it
         // produced one
         Some("run-one") => {
-            let mode = match args.get(3).map(String::as_str) {
-                Some("interp") => Mode::Interp,
-                Some("jit") => Mode::Jit,
-                _ => bail!("run-one requires a mode: interp or jit"),
-            };
+            let run = args.get(3..6).map(|a| a.join(" ")).unwrap_or_default();
             let code = read_stdin()?;
             let o =
-                graphix_fuzz::run_program(code.trim(), mode, campaign_timeout()).await;
+                graphix_fuzz::run_named(code.trim(), &run, campaign_timeout()).await?;
             finish_child(
                 &args,
                 if matches!(o, Outcome::Trace(_)) { "trace" } else { "other" },

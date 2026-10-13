@@ -1632,6 +1632,44 @@ struct Run {
 }
 
 impl Run {
+    /// `mode route session`, as [`Self::parse`] reads it.
+    fn token(self) -> String {
+        format!("{:?} {:?} {:?}", self.mode, self.route, self.session)
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        let mut w = s.split_whitespace();
+        let mode = match w.next()? {
+            "Interp" => Mode::Interp,
+            "Jit" => Mode::Jit,
+            "Par" => Mode::Par,
+            "JitPar" => Mode::JitPar,
+            _ => return None,
+        };
+        let route = match w.next()? {
+            "InLanguage" => Route::InLanguage,
+            "Dispatch" => Route::Dispatch,
+            _ => return None,
+        };
+        let session = match w.next()? {
+            "NoCache" => Session::NoCache,
+            "Cold" => Session::Cold,
+            "Warm" => Session::Warm,
+            _ => return None,
+        };
+        Some(Run { mode, route, session })
+    }
+
+    /// The node-walk's run of the same path.
+    fn node_walk(self) -> Self {
+        let mode = match self.mode {
+            Mode::Jit => Mode::Interp,
+            Mode::JitPar => Mode::Par,
+            m => m,
+        };
+        Run { mode, ..self }
+    }
+
     const fn plain(mode: Mode, route: Route) -> Self {
         Run { mode, route, session: Session::NoCache }
     }
@@ -1704,18 +1742,71 @@ enum Job {
 async fn do_job(code: &str, job: Job, timeout: Duration) -> Vec<(Run, Outcome)> {
     match job {
         Job::Plain(r) => {
-            vec![(r, run_program_routed(code, r.mode, r.route, timeout).await)]
+            log_run("RUN", r);
+            let o = run_program_routed(code, r.mode, r.route, timeout).await;
+            log_run("DONE", r);
+            vec![(r, o)]
         }
         Job::Sessions(mode, route) => {
-            let (cold, warm) = cold_warm(code, mode, route, timeout).await;
             let run = |session| Run { mode, route, session };
-            vec![(run(Session::Cold), cold), (run(Session::Warm), warm)]
+            let (c, w) = (run(Session::Cold), run(Session::Warm));
+            log_run("RUN", c);
+            log_run("RUN", w);
+            let (cold, warm) = cold_warm(code, mode, route, timeout).await;
+            log_run("DONE", c);
+            log_run("DONE", w);
+            vec![(c, cold), (w, warm)]
         }
     }
 }
 
+/// Whether this process logs each run it makes on stderr
+/// (`GRAPHIX_FUZZ_RUN_LOG`), so the parent of a check child that died
+/// knows which runs were in flight.
+fn run_log() -> bool {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("GRAPHIX_FUZZ_RUN_LOG").is_some());
+    *ON
+}
+
+/// Whether this process makes its runs one at a time
+/// (`GRAPHIX_FUZZ_SERIAL_RUNS`): concurrent runs share one address-space
+/// cap, so a death beside another run says nothing about either.
+fn serial_runs() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var_os("GRAPHIX_FUZZ_SERIAL_RUNS").is_some()
+    });
+    *ON
+}
+
+fn log_run(what: &str, r: Run) {
+    if run_log() {
+        eprintln!("{what} {}", r.token());
+    }
+}
+
+/// The run `token` (`mode route session`, as a check child logs it) of
+/// `code`.
+pub async fn run_named(
+    code: &str,
+    token: &str,
+    budget: Duration,
+) -> anyhow::Result<Outcome> {
+    let run = Run::parse(token).ok_or_else(|| {
+        anyhow::anyhow!("run-one requires `mode route session`, not {token:?}")
+    })?;
+    Ok(run_one(code, run, budget).await)
+}
+
 /// `run` again at `budget`.
 async fn run_one(code: &str, run: Run, budget: Duration) -> Outcome {
+    log_run("RUN", run);
+    let o = run_one_inner(code, run, budget).await;
+    log_run("DONE", run);
+    o
+}
+
+async fn run_one_inner(code: &str, run: Run, budget: Duration) -> Outcome {
     match run.session {
         Session::NoCache => run_program_routed(code, run.mode, run.route, budget).await,
         Session::Cold => {
@@ -1794,10 +1885,17 @@ impl<'a> Oracle<'a> {
         }
         let code = self.code;
         let timeout = self.timeout;
-        let done =
-            futures::future::join_all(jobs.into_iter().map(|j| do_job(code, j, timeout)))
-                .await;
-        self.runs.extend(done.into_iter().flatten());
+        if serial_runs() {
+            for j in jobs {
+                self.runs.extend(do_job(code, j, timeout).await);
+            }
+        } else {
+            let done = futures::future::join_all(
+                jobs.into_iter().map(|j| do_job(code, j, timeout)),
+            )
+            .await;
+            self.runs.extend(done.into_iter().flatten());
+        }
     }
 
     /// Make the runs of every comparison in `pair`'s group.
@@ -4509,10 +4607,23 @@ pub async fn detcheck(
 /// program that kills the evaluator kills only the child; the campaign
 /// records a crash finding and keeps running.
 async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration) {
+    check_child(prog, timeout, false).await
+}
+
+/// [`check_isolated`], its runs made one at a time when `serial`.
+async fn check_child(
+    prog: &str,
+    timeout: Duration,
+    serial: bool,
+) -> (PoolResult, Duration) {
     // every run in the child has its own deadline; this one catches a
     // wedged child
     let deadline = Deadline::Fixed(check_deadline(prog, timeout));
-    let c = run_child("check-one", &[], &[], prog, true, deadline).await;
+    let mut env = vec![("GRAPHIX_FUZZ_RUN_LOG", "1")];
+    if serial {
+        env.push(("GRAPHIX_FUZZ_SERIAL_RUNS", "1"));
+    }
+    let c = run_child("check-one", &[], &env, prog, true, deadline).await;
     let res = match (c.status, c.verdict) {
         (None, _) => PoolResult::Crash("HANG (outer deadline)".into()),
         (_, Some(v)) => match v.split_once('\n') {
@@ -4523,7 +4634,7 @@ async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration)
             },
             _ => PoolResult::Crash(format!("unreadable verdict: {v}")),
         },
-        (Some(status), None) => died(prog, timeout, status, &c.stderr).await,
+        (Some(status), None) => died(prog, timeout, status, &c.stderr, serial).await,
     };
     (res, c.cpu)
 }
@@ -4547,6 +4658,7 @@ async fn died(
     timeout: Duration,
     status: std::process::ExitStatus,
     stderr: &str,
+    serial: bool,
 ) -> PoolResult {
     // a SIGTERM death is the campaign stop's own kill signal reaching a
     // mid-flight child, not a finding
@@ -4559,9 +4671,11 @@ async fn died(
     }
     // the child's last stderr lines distinguish a node-walk overflow from
     // a SIGSEGV in JIT'd frames (which prints nothing)
+    let output =
+        || stderr.lines().filter(|l| !l.starts_with("RUN ") && !l.starts_with("DONE "));
     let crash = |what: &str| {
         let mut status = format!("{what}{status}");
-        for l in stderr.lines().rev().take(2).collect::<Vec<_>>().into_iter().rev() {
+        for l in output().collect::<Vec<_>>().into_iter().rev().take(2).rev() {
             status.push_str(" | ");
             status.push_str(l);
         }
@@ -4587,10 +4701,12 @@ async fn died(
         return crash("");
     }
     // The address-space cap stopped a runaway: containment, as the stack
-    // budget's abort is, when the node-walk alone runs away too. One that
-    // runs alone beside another engine that dies alone is that engine's
-    // runaway.
-    // CR claude for claude: [risk/medium] This re-runs only the two plain no-cache
+    // budget's abort is, when the node-walk's run of the same path runs
+    // away too. A run that dies alone beside the node-walk's value is
+    // that engine's runaway. The runs in flight at the death are re-run
+    // alone, each with its node-walk twin; with none logged, the plain
+    // engine pair.
+    // XCR claude for claude: [risk/medium] This re-runs only the two plain no-cache
     // serial runs (run-one is run_program). check-one also makes the cold and warm
     // image sessions, the dispatch route, the forked Par/JitPar runs and settle's
     // slow-budget remakes, and Oracle::make runs each group concurrently under one
@@ -4605,23 +4721,55 @@ async fn died(
     // re-run that Run alone (run-one taking mode, route, session and par mode), and
     // call it containment only when the node-walk's run of the same path also dies.
     // (x-fix-fuzz-tests-03)
-    match (
-        run_isolated(prog, Mode::Interp, timeout).await,
-        run_isolated(prog, Mode::Jit, timeout).await,
-    ) {
-        (Some(true), None) => crash(
-            "the JIT alone exceeds the address-space cap beside a node-walk value: ",
-        ),
-        _ => PoolResult::Agree,
+    // 2026-10-12 claude: a check child now logs each run it makes (RUN/DONE on
+    // stderr, GRAPHIX_FUZZ_RUN_LOG); a death re-runs every JIT run in flight alone
+    // (run-one takes `mode route session`, sessions and forked runs included) beside
+    // its node-walk twin, and is a crash when the JIT run dies alone beside a
+    // node-walk value. Runs that died only together are checked again one at a time
+    // (GRAPHIX_FUZZ_SERIAL_RUNS). Left: one child's runs still accumulate memory, so
+    // under the repro's 2 GB cap the serial check dies at the second run (Jit
+    // NoCache) although that run alone traces; it reads AGREE, its later comparisons
+    // unmade. Only one child per run would make every comparison under the cap.
+    let mut flight: Vec<Run> = Vec::new();
+    for l in stderr.lines() {
+        if let Some(r) = l.strip_prefix("RUN ").and_then(Run::parse) {
+            flight.push(r);
+        } else if let Some(r) = l.strip_prefix("DONE ").and_then(Run::parse)
+            && let Some(i) = flight.iter().position(|x| *x == r)
+        {
+            flight.remove(i);
+        }
     }
+    if flight.is_empty() {
+        flight.push(Run::plain(Mode::Jit, Route::InLanguage));
+    }
+    let crowded = flight.len() > 1;
+    for r in flight.into_iter().filter(|r| !r.mode.node_walk()) {
+        if run_isolated(prog, r, timeout).await.is_none()
+            && run_isolated(prog, r.node_walk(), timeout).await == Some(true)
+        {
+            return crash(&format!(
+                "the JIT alone exceeds the address-space cap beside a node-walk value \
+                 ({}): ",
+                r.token()
+            ));
+        }
+    }
+    // runs that die only together shared the cap: check again one at a
+    // time, so every comparison is made and a death names its run
+    if crowded && !serial {
+        return Box::pin(check_child(prog, timeout, true)).await.0;
+    }
+    PoolResult::Agree
 }
 
-/// Run `prog` in one mode in a child (`graphix-fuzz run-one`): whether
-/// it produced a trace, `None` when the child died.
-async fn run_isolated(prog: &str, mode: Mode, timeout: Duration) -> Option<bool> {
-    let mode = if mode == Mode::Interp { "interp" } else { "jit" };
-    let deadline = Deadline::Fixed(slow_budget(timeout) + Duration::from_secs(30));
-    let c = run_child("run-one", &[mode], &[], prog, false, deadline).await;
+/// Make `run` in a child (`graphix-fuzz run-one`): whether it produced a
+/// trace, `None` when the child died.
+async fn run_isolated(prog: &str, run: Run, timeout: Duration) -> Option<bool> {
+    let deadline = Deadline::Fixed(slow_budget(timeout) * 2 + Duration::from_secs(30));
+    let token = run.token();
+    let args: Vec<&str> = token.split(' ').collect();
+    let c = run_child("run-one", &args, &[], prog, false, deadline).await;
     c.verdict.map(|v| v.trim() == "trace")
 }
 
