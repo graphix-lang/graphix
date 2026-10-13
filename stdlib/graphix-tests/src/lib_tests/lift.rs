@@ -148,25 +148,6 @@ async fn fused_loop_recursion_sheds_unreached_blocks() -> Result<()> {
     Ok(())
 }
 
-/// Every mode produces the same first `n` values.
-// CR claude for claude: [test-gap/low] assert_agree only checks that every mode matches
-// Interp, so a regression in shared code (write landing, the connect node, the array
-// helpers) that all four modes reproduce goes unnoticed. The testing rule is that a
-// predicate pins the value exactly; comparing engines is the fuzzer's job.
-// mutually_referencing_counters is deterministic: replace its call with
-// assert_stream(code, &[0, 0, 1, 3, 6, 10, 15, 21]). Fix the window test as
-// tests-lib-b2-02 describes, then delete this helper. (tests-lib-b2-03)
-async fn assert_agree(code: &str, n: usize) -> Result<()> {
-    let interp = as_i64(&collect_n(code, Mode::Interp, n).await?)?;
-    for mode in &Mode::ALL[1..] {
-        let got = as_i64(&collect_n(code, *mode, n).await?)?;
-        if got != interp {
-            bail!("{mode:?} {got:?} != Interp {interp:?}");
-        }
-    }
-    Ok(())
-}
-
 /// In every mode the i64 stream starts with `expected`.
 async fn assert_stream(code: &str, expected: &[i64]) -> Result<()> {
     for mode in Mode::ALL {
@@ -253,8 +234,12 @@ async fn connect_const_then_quiesces() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mutually_referencing_counters() -> Result<()> {
-    // Both self-feed every cycle; pin the differential.
-    assert_agree("{ let a = 0; let b = 0; a <- a + 1; b <- b + a; b }", 8).await
+    // Both self-feed every cycle: b sums a's past values.
+    assert_stream(
+        "{ let a = 0; let b = 0; a <- a + 1; b <- b + a; b }",
+        &[0, 0, 1, 3, 6, 10, 15, 21],
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
