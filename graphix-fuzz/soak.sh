@@ -89,21 +89,21 @@ launcher_groups() {
     done | sort -u
 }
 
+# Whether one of the campaign's processes is in process group `pgid`.
+campaign_group() {
+    local dir=$1 pgid=$2 p
+    for p in $(campaign_procs "$dir"); do
+        [[ $(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ') == "$pgid" ]] && return 0
+    done
+    return 1
+}
+
 stop_campaign() {
     local dir=$1 pid
-    # CR claude for claude: [bug/medium] stop_campaign signals the process group that
-    # state/soak.pid names without checking that the group is still the campaign's.
-    # Nothing removes the pidfile when a soak dies, and fleet.sh deploy runs `soak.sh
-    # stop <old>` on every box, often long after. By then the pid may lead an unrelated
-    # group (a login shell, tmux, another campaign's soak), and that group gets TERM,
-    # then KILL 10 s later. Probe: design/review-2026-10-12/repro/fuzz-main-aux-05.sh
-    # (an unrelated session leader named in the pidfile is TERMed). Fix: signal `-$pid`
-    # only when a process from campaign_procs still has pgid $pid (soak_live, or a
-    # surviving child of the dead soak). Otherwise skip to the campaign_procs sweep,
-    # which matches by executable. (fuzz-main-aux-05)
-    if pid=$(soak_pid "$dir"); then
-        kill -TERM -- "-$pid" 2>/dev/null || true
+    if pid=$(soak_pid "$dir") && ! campaign_group "$dir" "$pid"; then
+        pid=
     fi
+    [[ -n $pid ]] && kill -TERM -- "-$pid" 2>/dev/null || true
     for _ in {1..100}; do
         campaign_live "$dir" || return 0
         sleep 0.1
