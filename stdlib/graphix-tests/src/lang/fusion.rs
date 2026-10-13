@@ -1905,25 +1905,19 @@ modes!(always_raising_operand);
 // A callee body cached for one instance and emitted from another binds
 // its own formals: both arms' `#[native]` fuse, `g -> h` reached directly
 // and through `k`.
-// CR claude for claude: [test-gap/low] `x` fires once, so `count(x)` is 1 and only
-// `g(x) + 1` ever runs. The `k(x) + 2` arm, where `g`'s cached body is emitted for
-// another instance, compiles but never runs. A regression that binds the wrong formals
-// there and returns a wrong value, rather than refusing, would pass. Fire `x` twice
-// (`array::iter([3, 4])`) and pin the second arm's value (44 in both engines), e.g.
-// `let r = select count(x) {..}; select count(r) { 2 => r, _ => never() }`. Probe:
-// design/review-2026-10-12/repro/tests-fusion-traits-06.gx. (tests-fusion-traits-08)
 const CALLEE_BODY_OTHER_INSTANCE: &str = r#"
 {
   let h = |a: i64| a * 3 + 1;
   let g = |a: i64| h(a) + 1;
   let k = |c: i64| g(c) * 3;
-  let x = sys::time::after_idle(duration:1.ms, 3);
-  select count(x) { 1 => #[native] (g(x) + 1), _ => #[native] (k(x) + 2) }
+  let x = array::iter([3, 4]);
+  let r = select count(x) { 1 => #[native] (g(x) + 1), _ => #[native] (k(x) + 2) };
+  array::group(r, |n, _| n == 2)
 }
 "#;
 
 run!(callee_body_other_instance, CALLEE_BODY_OTHER_INSTANCE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(12)))
+    format!("{}", v.unwrap()) == "[i64:12, i64:44]"
 }; FuseExpect::Jit);
 
 // A tail-recursive body holding a collection loop recurses natively:
