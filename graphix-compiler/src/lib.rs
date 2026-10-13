@@ -1060,6 +1060,10 @@ pub trait Rt: Debug + Any + Send + Sync {
         value: Value,
         writer: Option<Arc<Expr>>,
     );
+    /// [`Self::patch_var`] for a level kept at a place: it replaces the
+    /// variable's last waiting level write when that patches the same
+    /// path, as [`Self::set_level`] does for the whole variable.
+    fn patch_level(&mut self, id: BindId, path: node::place::Path, value: Value);
     /// Register the place a reference cell stands for (`&root[i].f`), so
     /// `*r` reads through the root and `*r <- v` patches it.
     fn set_ref_path(&mut self, cell: BindId, root: BindId, path: node::place::Path);

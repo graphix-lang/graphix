@@ -451,6 +451,21 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     }
 }; FuseExpect::Jit);
 
+// A place target for #count is written as a level too: the cycle's
+// changes land as one write, as they do for a binding.
+run!(queuefn_count_place, r#"
+{
+  let s = { depth: -1, other: 0 };
+  let qf = queuefn(#count: &mut s.depth, #trigger: never(), |x: i64| -> i64 x * 10);
+  qf(1);
+  qf(2);
+  qf(3);
+  array::group(s.depth, |n, _| n == 2)
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(-1), Value::I64(2)])
+}; FuseExpect::Jit);
+
 // A queuefn passed as a HOF callback must not be statically resolved
 // (that would bypass the queue): the callback stays dynamic, `qf(7) -> 70`.
 const QUEUEFN_HOF_CALLBACK: &str = r#"

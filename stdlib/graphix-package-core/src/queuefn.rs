@@ -76,18 +76,8 @@ fn write_count<R: Rt, E: UserEvent>(
     if let Some((r, depth)) = w {
         let v = Value::I64(depth);
         match ctx.write_target(r) {
-            // CR claude for claude: [bug/medium] A place target for #count is written
-            // with Rt::patch_var, which queues an ordinary write. A binding target uses
-            // Rt::set_level instead. Several depth changes in one cycle therefore queue
-            // one patch each. They land one per cycle, so `&mut s.depth` steps through
-            // stale depths (0, 1, 2, 3) while `&mut d` reads 3 at once. This breaks
-            // queuefn's documented promise in mod.gxi that a place is written "as to a
-            // binding: as a level". Fix: add a level patch to Rt and to the branch view
-            // (push_level with VarUpdate::Patch, replacing a waiting level patch), call
-            // it here, and add a place variant of the queuefn_count_ref pin. probe:
-            // design/review-2026-10-12/repro/core-aux-04.sh (core-aux-04)
             graphix_compiler::WriteTarget::Place(root, path) => {
-                ctx.rt.patch_var(root, path, v, None)
+                ctx.rt.patch_level(root, path, v)
             }
             graphix_compiler::WriteTarget::Bind(target) => ctx.rt.set_level(target, v),
         }

@@ -49,6 +49,7 @@ enum RtOp {
     SetVar(BindId, Value),
     SetLevel(BindId, Value),
     PatchVar(BindId, Path, Value, Option<Arc<Expr>>),
+    PatchLevel(BindId, Path, Value),
     NotifySet(BindId),
     ForgetWrites(BindId),
     SetTimer(BindId, Duration),
@@ -173,6 +174,10 @@ impl<'a, R: Rt> RtView<'a, R> {
         w: Option<Arc<Expr>>,
     ) {
         logged!(self, patch_var(id, path, value, w), RtOp::PatchVar(id, path, value, w))
+    }
+
+    pub fn patch_level(&mut self, id: BindId, path: Path, value: Value) {
+        logged!(self, patch_level(id, path, value), RtOp::PatchLevel(id, path, value))
     }
 
     #[inline]
@@ -345,6 +350,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                         RtOp::SetVar(id, v) => r.set_var(id, v),
                         RtOp::SetLevel(id, v) => r.set_level(id, v),
                         RtOp::PatchVar(id, p, v, w) => r.patch_var(id, p, v, w),
+                        RtOp::PatchLevel(id, p, v) => r.patch_level(id, p, v),
                         RtOp::NotifySet(id) => r.notify_set(id),
                         RtOp::ForgetWrites(id) => r.forget_writes(id),
                         RtOp::SetTimer(id, d) => r.set_timer(id, d),

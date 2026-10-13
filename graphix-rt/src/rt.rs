@@ -71,10 +71,15 @@ impl<T> Waiting<T> {
     }
 
     /// Push a level's write, replacing the variable's last waiting write
-    /// when that is a level's too.
-    pub(super) fn push_level(&mut self, id: BindId, t: T) {
+    /// when that is a level's too and `replaces` it.
+    pub(super) fn push_level(
+        &mut self,
+        id: BindId,
+        t: T,
+        replaces: impl FnOnce(&T) -> bool,
+    ) {
         match self.by_id.get_mut(&id).and_then(|q| q.last_mut()) {
-            Some((last, Via::Level)) => *last = t,
+            Some((last, Via::Level)) if replaces(last) => *last = t,
             _ => self.push(id, t, Via::Level),
         }
     }
@@ -310,7 +315,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("SET_LEVEL {id:?} = {value}");
         }
-        self.var_updates.push_level(id, VarUpdate::Set(value));
+        self.var_updates.push_level(id, VarUpdate::Set(value), |_| true);
     }
 
     fn patch_var(&mut self, id: BindId, path: Path, value: Value, w: Option<Arc<Expr>>) {
@@ -318,6 +323,16 @@ impl<X: GXExt> Rt for GXRt<X> {
             eprintln!("PATCH_VAR {id:?} {path:?} = {value}");
         }
         self.var_updates.push(id, VarUpdate::Patch(path, value, w), Via::Write);
+    }
+
+    fn patch_level(&mut self, id: BindId, path: Path, value: Value) {
+        if dbg_vars() {
+            eprintln!("PATCH_LEVEL {id:?} {path:?} = {value}");
+        }
+        let same =
+            |last: &VarUpdate| matches!(last, VarUpdate::Patch(p, ..) if *p == path);
+        let update = VarUpdate::Patch(path.clone(), value, None);
+        self.var_updates.push_level(id, update, same);
     }
 
     fn set_ref_path(&mut self, cell: BindId, root: BindId, path: Path) {
