@@ -92,6 +92,12 @@ const TYP: &str = "Tm__0";
 /// Enumerate up to `cap` candidates PER TRANSFORM over `body`.
 /// Returns the probes and the count of candidates dropped because
 /// their printed form failed to re-parse.
+/// Whether `body` already holds a name the mutations write (`tm__0`,
+/// `Tm__1`, `` `TmSame ``): a mutant's would shadow it or meet it.
+pub(crate) fn holds_synthetic(body: &str) -> bool {
+    ["tm__", "Tm__", "TmSame"].iter().any(|n| body.contains(n))
+}
+
 pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     let mut out: Vec<TmProbe> = Vec::new();
     let mut noparse = 0usize;
@@ -99,7 +105,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // attributes, one that relocates a node moves them, and the reparse
     // check sees neither (Expr equality ignores attributes), so an
     // attr-bearing body could flip on its attributes rather than typing.
-    if body.contains("tm__") || body.contains("Tm__") || body.contains("#[") {
+    if holds_synthetic(body) || body.contains("#[") {
         return (out, 0);
     }
     let Some(root) = mutate::parse(body) else {

@@ -269,16 +269,10 @@ fn nth_stmt(root: &Expr, i: usize) -> Option<&Expr> {
 }
 
 /// Every mutant of `body` the families take, up to `cap` per family.
-// CR claude for claude: [risk/low] `typemorph::probes` skips a body that contains
-// `tm__` or `Tm__`, but this runs on the same body unguarded and inserts `tm__0`,
-// `Tm__1` and `TmSame`. Corpus pins bind `tm__0`. Take a body whose lambda reads an
-// outer `tm__0`. rigid-var's `let tm__0 = x == 1` shadows it, and the mutant is also
-// refused for returning bool, so a regression of the rigid-variable rule still reads
-// ok. Apply the same guard here (no probes for a body holding `tm__`, `Tm__` or
-// `TmSame`), or draw fresh names absent from the body. Sharing one helper with
-// typemorph keeps the two lists from drifting. probe:
-// design/review-2026-10-12/repro/fuzz-mutate-12.gx (fuzz-mutate-12)
 pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
+    if typemorph::holds_synthetic(body) {
+        return Vec::new();
+    }
     let Some(root) = mutate::parse(body) else { return Vec::new() };
     let pre = mutate::preorder(&root);
     let mut out = Vec::new();
