@@ -221,3 +221,83 @@ async fn captured_menu_events_publish_nothing() {
     assert!(messages.is_empty());
     assert!(open);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn menu_headings_use_full_text_shaping() {
+    use crate::widgets::{
+        IcedElement,
+        menu_bar_widget::{MenuGroupDesc, OwnedMenuBar},
+    };
+    use iced_core::{
+        Layout, Length, Rectangle, Renderer as _, layout::Limits, renderer::Style,
+        widget::Tree,
+    };
+
+    let mut renderer = headless_gpu().await.create_renderer();
+    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+    let palette = theme.palette();
+    let bg = Color::from_rgb(
+        palette.background.r * 0.9,
+        palette.background.g * 0.9,
+        palette.background.b * 0.9,
+    );
+    let viewport = Rectangle::with_size(Size::new(400.0, 100.0));
+    let mut render = |mut element: IcedElement<'_>| {
+        let mut tree = Tree::new(&element);
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &Limits::new(Size::ZERO, viewport.size()),
+        );
+        renderer.reset(viewport);
+        element.as_widget().draw(
+            &tree,
+            &mut renderer,
+            &theme,
+            &Style { text_color: palette.text },
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &viewport,
+        );
+        (
+            node.size(),
+            renderer.screenshot(
+                &Viewport::with_physical_size(Size::new(400, 100), 1.0),
+                Color::BLACK,
+            ),
+        )
+    };
+    for label in ["سلام", "office"] {
+        let (size, actual) = render(
+            OwnedMenuBar {
+                descs: vec![MenuGroupDesc { label, items: Vec::new() }],
+                width: Length::Shrink,
+            }
+            .into(),
+        );
+        let (_, expected) = render(
+            iced_widget::container(
+                iced_widget::text(label)
+                    .shaping(iced_core::text::Shaping::Advanced)
+                    .align_x(iced_core::alignment::Horizontal::Center)
+                    .align_y(iced_core::alignment::Vertical::Center)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .color(palette.text),
+            )
+            .width(size.width)
+            .height(size.height)
+            .style(move |_| iced_widget::container::Style {
+                background: Some(bg.into()),
+                ..Default::default()
+            })
+            .into(),
+        );
+        for y in 2..size.height as usize - 2 {
+            for x in 2..size.width as usize - 2 {
+                let i = (y * 400 + x) * 4;
+                assert_eq!(&actual[i..i + 4], &expected[i..i + 4], "{label}: ({x}, {y})");
+            }
+        }
+    }
+}
