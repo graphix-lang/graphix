@@ -2272,12 +2272,11 @@ const FLAT_MAP_BARE_ELEMENT: &str = r#"
 }
 "#;
 
-run!(flat_map_bare_element_refused, FLAT_MAP_BARE_ELEMENT, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("does not contain"))
-}; FuseExpect::None);
+run!(flat_map_bare_element_refused, FLAT_MAP_BARE_ELEMENT, refused(
+    "fn(a: Array<i64>, f: fn(x: i64) -> [i64, Array<i64>]) -> Array<i64> does not contain"
+); FuseExpect::None);
 
-// A tuple callback result is spliced as an array would never be: it is
-// refused, and the result is the arrays' concatenation.
+// A tuple callback result is refused.
 const FLAT_MAP_TUPLE_REFUSED: &str = r#"
 {
   let r = array::flat_map([1, 2], |x| (x, x * 10));
@@ -2285,33 +2284,33 @@ const FLAT_MAP_TUPLE_REFUSED: &str = r#"
 }
 "#;
 
-run!(flat_map_tuple_refused, FLAT_MAP_TUPLE_REFUSED, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("does not contain"))
-}; FuseExpect::None);
+run!(flat_map_tuple_refused, FLAT_MAP_TUPLE_REFUSED,
+    refused("does not contain fn(x: i64) -> (i64, i64)"); FuseExpect::None);
 
 // A binding that is not generalized holds one instance: used twice, the
-// second use meets cells the first linked.
-// CR claude for claude: [test-gap/low] Both uses of `t` are now at Array<i64> with an
-// array-returning callback, so no change to cell sharing can fail this test. Its
-// premise is also false: `{ let z = 1; array::flat_map }` names a generalized binding,
-// and `b(["s"], |x| [x])` checks and runs (FORWARDED_POLY_REF_TWICE already pins that).
-// Delete it, or make it a real monomorphism pin over a binding that is not generalized
-// (a `<-` target) used at two types, expecting the refusal. In FLAT_MAP_TUPLE_REFUSED,
-// the comment ('it is refused, and the result is the arrays' concatenation') should
-// just say the tuple result is refused. Both flat_map refusal fixtures match only 'does
-// not contain', which almost any type error satisfies. Pin the specific text, e.g.
-// 'does not contain fn(x: i64) -> (i64, i64)'. (tests-functions-04)
-const MONOMORPHIC_FLAT_MAP_TWICE: &str = r#"
+// second use meets cells the first linked. Unwritten, it is generic.
+const WRITTEN_CALLBACK_IS_ONE_INSTANCE: &str = r#"
 {
-  let t = { let z = 1; array::flat_map };
-  let a = filter(t, |x| true);
-  let b = filter(t, |x| true);
-  (a([1], |x| [x, x]), b([2], |x| [x]))
+  let t = |x| [x, x];
+  t <- never();
+  (array::flat_map([1], t), array::flat_map(["s"], t))
 }
 "#;
 
-run!(monomorphic_flat_map_twice, MONOMORPHIC_FLAT_MAP_TWICE, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:2]]"
+run!(written_callback_is_one_instance, WRITTEN_CALLBACK_IS_ONE_INSTANCE,
+    refused("does not contain fn(x: i64) -> Array<i64>"); FuseExpect::None);
+
+const UNWRITTEN_CALLBACK_IS_GENERIC: &str = r#"
+{
+  let t = |x| [x, x];
+  (array::flat_map([1], t), array::flat_map(["s"], t))
+}
+"#;
+
+run!(unwritten_callback_is_generic, UNWRITTEN_CALLBACK_IS_GENERIC, |v: Result<
+    &Value,
+>| {
+    format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s", "s"]]"#
 });
 
 // A callback typed body-first returns a cell constrained to an array;
