@@ -555,27 +555,23 @@ pub(super) fn gen_typed(
             )
         }
         GenType::Bool => match rng.below(3) {
+            0 if rng.below(8) == 0 && let Some(c) = ref_comparison(ctx, rng) => c,
             0 => {
-                // CR claude for claude: [test-gap/medium] Comparison operands are
-                // always one numeric type, and no other generator emits `==`/`<` except
-                // the modules Eq template. So string, bool, tuple, struct, array, list,
-                // map, nullable, variant-union and reference comparisons never appear
-                // in generated programs. That leaves the one-type operand rule, union
-                // comparison, the Discernible/Ordered bounds, reference comparison by
-                // place (bind::ref_target) and the kernels' opaque two-word comparisons
-                // unexercised by the generate lane. Fix: draw the operand type from
-                // random_type, plus nullable and variant types, using the same type on
-                // both sides. Restrict `<`/`>`/`<=`/`>=` to Ordered types (no refs, no
-                // fns). Add a rare reference-equality form over two visible refs of one
-                // type. (fuzz-gen-a-04)
-                let nt = types::numeric_type(rng);
                 let op = *rng.pick(&["<", ">", "<=", ">=", "==", "!="]);
-                format!(
-                    "({} {} {})",
-                    gen_typed(ctx, rng, &nt, d),
-                    op,
-                    gen_typed(ctx, rng, &nt, d)
-                )
+                let nt = match rng.below(12) {
+                    0..4 => types::random_type(rng, 1),
+                    4 => types::random_variant(rng, 0),
+                    _ => types::numeric_type(rng),
+                };
+                if nt.is_numeric() {
+                    let (a, b) = (gen_typed(ctx, rng, &nt, d), gen_typed(ctx, rng, &nt, d));
+                    format!("({a} {op} {b})")
+                } else {
+                    // annotated operands: a bare `null` or tag is not the union
+                    let t = nt.render();
+                    let (a, b) = (gen_typed(ctx, rng, &nt, d), gen_typed(ctx, rng, &nt, d));
+                    format!("({{ let l: {t} = {a}; l }} {op} {{ let r: {t} = {b}; r }})")
+                }
             }
             1 => {
                 let op = *rng.pick(&["&&", "||"]);
@@ -784,6 +780,24 @@ fn try_map_builtin(
 /// json for any data, toml for a struct (its documents are tables), pack
 /// for any data. The reader's target is the annotation, so the imaged cast
 /// target meets the cold/warm comparison.
+/// `==`/`!=` over two visible references of one type, compared by what
+/// they name.
+fn ref_comparison(ctx: &GenCtx, rng: &mut Rng) -> Option<String> {
+    let refs: Vec<(&str, &GenType)> = ctx
+        .visible_values()
+        .into_iter()
+        .filter(|(_, t)| matches!(t, GenType::Ref(_)))
+        .collect();
+    if refs.is_empty() {
+        return None;
+    }
+    let (a, ta) = refs[rng.below(refs.len())];
+    let same: Vec<&str> = refs.iter().filter(|(_, t)| *t == ta).map(|(n, _)| *n).collect();
+    let b = same[rng.below(same.len())];
+    let op = *rng.pick(&["==", "!="]);
+    Some(format!("({a} {op} {b})"))
+}
+
 fn try_format_round_trip(
     ctx: &GenCtx,
     rng: &mut Rng,
