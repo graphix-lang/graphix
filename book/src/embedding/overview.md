@@ -21,16 +21,18 @@ evaluate changes to your arguments. For example, a function that finds the
 minimum value of all its arguments:
 
 ```rust
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
 struct MinEv;
 
-impl EvalCached for MinEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const NAME: &str = "core_min";
+    const EFFECT: Effect = Effect::Stateless(None);
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -44,6 +46,8 @@ impl EvalCached for MinEv {
         res
     }
 }
+
+unit_image_state!(MinEv);
 
 type Min = CachedArgs<MinEv>;
 ```

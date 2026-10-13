@@ -104,7 +104,7 @@ For pure functions that just compute a result from their arguments, use
 
 ```rust
 use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
@@ -131,6 +131,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyMinEv {
     }
 }
 
+// a payload with no state to image
+unit_image_state!(MyMinEv);
+
 type MyMin = CachedArgs<MyMinEv>;
 ```
 
@@ -138,15 +141,6 @@ Then list `MyMin` in your `defpackage!` builtins. `CachedArgs` handles all the
 details of caching argument values, calling `eval` when arguments change, and
 implementing the `Apply` trait.
 
-<!-- CR claude for claude: [doc-drift/medium] This lists three effect classes, and the
-Stateless bullet tells authors to use `Stateless(None)` for 'an effect such as print'.
-The code has a fourth class, `Effect::Io(Option<IoCall>)`, for exactly that case.
-`Effect::Stateless` is documented as never an effect, and a wrong Stateless is a
-semantics bug: an arm holding it skips sleep and wake recomputes it, so a logging
-builtin written from this page fires from an unselected arm. Fix: limit
-`Stateless(None)` to a raw Apply that answers before all its arguments arrive, and add
-an `Io` bullet. It should cover the trigger argument, `IoCall`, `BuiltIn::perform` for
-fused calls, the sleeping arm, and `EvalCached::quiet`. (book-modules-udt-03) -->
 `EFFECT` is the builtin's whole classification, three questions
 answered in one place:
 
@@ -158,9 +152,19 @@ answered in one place:
   earlier calls), or its result depends on which arguments have been
   delivered.
 - `Effect::Stateless(fast)` — same-cycle, and the result depends only
-  on the arguments. `fast` is the fast call described next, or `None`
-  for a builtin that cannot have one (an effect such as `print`, or a
-  function that produces before all its arguments have arrived).
+  on the arguments; never an effect. `fast` is the fast call described
+  next, or `None` only for a raw `Apply` that answers before all its
+  arguments have arrived. A wrong `Stateless` is a semantics bug: an
+  arm holding the builtin skips sleep, and a wake recomputes it.
+- `Effect::Io(io)` — same-cycle and stateless, but it acts on the world
+  each time its trigger argument fires (printing, a log line, `exit`).
+  An arm holding one sleeps, and a wake computes its value without the
+  effect: `EvalCached::quiet` (its default is `eval`, so an `Io` builtin
+  overrides it to skip the effect). `io` is an `IoCall`, how a fused
+  kernel calls it: `result` computes the call's value, and each time
+  argument `trigger` fires the kernel queues the call, which
+  `BuiltIn::perform` performs after the kernel returns; `None` keeps the
+  builtin out of native code.
 
 Stateless matters twice: a tail recursion compiles to a native loop
 only when every builtin it reaches is stateless, and fusion into native
@@ -228,51 +232,71 @@ Here is a minimal example -- `once` passes through exactly one update:
 ```rust
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
+    UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use netidx_value::Value;
+use netidx_core::pack::{Pack, PackError};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MyOnce {
-    val: bool,
+    // whether the one update has passed
+    done: bool,
+    // the result slot `update` lends to the caller
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MyOnce {
     const NAME: &str = "mylib_once";
+    // it keeps state across invocations
+    const EFFECT: Effect = Effect::Sync;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
+        _resolved_typ: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(MyOnce { val: false }))
+        Ok(Box::new(MyOnce::default()))
+    }
+
+    // restore what `image_encode` wrote; the result slot is never imaged
+    fn image_decode(
+        _ctx: &mut ExecCtx<'_, R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(MyOnce { done: bool::decode(buf)?, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for MyOnce {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.done.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-    ) -> Option<Value> {
-        match from {
-            [s] => s.update(ctx).and_then(|v| {
-                if self.val {
-                    None
-                } else {
-                    self.val = true;
-                    Some(v)
-                }
-            }),
-            _ => None,
+    ) -> &TagValue {
+        match from[0].update(ctx).view() {
+            TagView::Fired(tv) if !self.done => {
+                self.done = true;
+                let v = tv.value_cloned();
+                self.out.set(TagValue::fired(v))
+            }
+            // a bottom input before the update makes the result bottom
+            TagView::FreshBottom if !self.done => self.out.set_bottom(true),
+            TagView::StaleBottom if !self.done => self.out.set_bottom(false),
+            _ => self.out.ride(),
         }
     }
 
+    // once is a restart builtin: a woken once is a fresh one
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.val = false
+        self.done = false
     }
 }
 ```
@@ -313,6 +337,10 @@ pub trait CustomDisplay<X: GXExt>: Any {
     /// display. The future returned must resolve promptly or the shell
     /// will hang.
     async fn process_update(&mut self, env: &Env, id: ExprId, v: Value);
+
+    /// The updates of one runtime cycle have all been processed: a
+    /// display that redraws shows the cycle whole here.
+    async fn batch_done(&mut self);
 }
 ```
 
@@ -356,6 +384,8 @@ impl<X: GXExt> CustomDisplay<X> for DebugDisplay {
     async fn process_update(&mut self, _env: &Env, id: ExprId, v: Value) {
         eprintln!("[debug display] {id:?} = {v}");
     }
+
+    async fn batch_done(&mut self) {}
 }
 
 defpackage! {
