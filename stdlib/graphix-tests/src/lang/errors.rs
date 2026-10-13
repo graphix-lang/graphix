@@ -132,21 +132,13 @@ const CATCH4: &str = r#"
     };
     (a[5]? /? a[0]?)?;
     a[6]?;
-    [err0, err1]
+    ((err0.0).error, (err1.0).error, count(err0), count(err1))
 }
 "#;
 
-// CR claude for claude: [test-gap/low] The fixture is about routing: the ArithError
-// goes to the second handler (err1), and the ArrayIndexError is rethrown from there to
-// the first (err0). The predicate accepts any `[Error(_), Error(_)]`, so a swapped or
-// broadcast routing passes. Make the program's value `((err0.0).error, (err1.0).error,
-// count(err0), count(err1))` and assert (`ArrayIndexError(..), `ArithError(..), 1, 1),
-// which both engines give today. (tests-lang-rest-a-10)
-run!(catch4, CATCH4, |v: Result<&Value>| match v
-    .and_then(|v| v.clone().cast_to::<[Value; 2]>())
-{
-    Ok([Value::Error(_), Value::Error(_)]) => true,
-    _ => false,
+run!(catch4, CATCH4, |v: Result<&Value>| {
+    format!("{}", v.unwrap())
+        == r#"[["ArrayIndexError", "array index out of bounds"], ["ArithError", "attempt to divide by zero"], i64:1, i64:1]"#
 }; FuseExpect::Jit);
 
 const CHECKED_DOLLAR: &str = r#"
