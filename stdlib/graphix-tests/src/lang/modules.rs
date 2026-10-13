@@ -1,4 +1,4 @@
-// Tests for dynamic modules
+// Modules: static, dynamic, interfaces and `use`.
 
 use anyhow::Result;
 use graphix_package_core::{
