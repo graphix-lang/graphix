@@ -16,7 +16,7 @@ A horizontal slider that lets the user select a floating-point value by dragging
 
 - **`#min`** -- Minimum value of the range. Defaults to `0.0`.
 - **`#max`** -- Maximum value of the range. Defaults to `100.0`.
-- **`#step`** -- Snap increment. When set, the slider snaps to multiples of this value. `null` means continuous (no snapping).
+- **`#step`** -- Snap increment. When set, the slider snaps to multiples of this value. `null` means continuous dragging. With the pointer over the track, Up/Down arrows and Ctrl+wheel move by one percent of the range.
 - **`#on_change`** -- Callback invoked as the handle is dragged. Receives the current `f64` value. Typically: `#on_change: |v| volume <- v`.
 - **`#on_release`** -- Callback invoked when the user releases the handle. Receives `null`. Useful for committing a value only after the user finishes adjusting.
 - **`#width`** -- Width of the slider track. Accepts `Length` values. Defaults to `` `Fill ``.
@@ -24,7 +24,7 @@ A horizontal slider that lets the user select a floating-point value by dragging
 - **`#disabled`** -- When `true`, the slider cannot be dragged. Defaults to `false`.
 - **positional `&f64`** -- Reference to the current value. Must be within the `#min`..`#max` range.
 
-A range with `#min > #max` or a NaN bound displays an empty, inert track. Neither `#on_change` nor `#on_release` fires for that range.
+A range with `#min > #max` or a non-finite bound displays an empty, inert track. Neither `#on_change` nor `#on_release` fires for that range.
 
 ## Vertical Slider
 
@@ -70,8 +70,6 @@ A non-interactive horizontal bar that fills proportionally to a value within a r
 ```
 
 ![Slider](./media/slider.gif)
-
-#A range with `#min > #max` or a NaN bound displays an empty, inert track. Neither `#on_change` nor `#on_release` fires for that range.
 
 ## Vertical Slider
 

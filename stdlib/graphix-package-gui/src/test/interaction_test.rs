@@ -1277,3 +1277,68 @@ async fn rejected_text_input_returns_to_the_program_value() -> Result<()> {
 async fn rejected_text_editor_returns_to_the_program_value() -> Result<()> {
     rejected_text_edit("text_editor", "on_edit").await
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuous_slider_keys_and_wheel_move_one_percent() -> Result<()> {
+    use iced_core::keyboard::{self, key::Named};
+    for (name, size, hit) in [
+        ("slider", Size::new(400.0, 22.0), Point::new(149.3, 10.0)),
+        ("vertical_slider", Size::new(22.0, 400.0), Point::new(10.0, 250.7)),
+    ] {
+        let code = format_compact!(
+            "{IMPORTS}; let result = {name}(#min: &0.0, #max: &100.0, #on_change: |v| null, &50.0)"
+        );
+        let mut h = InteractionHarness::with_viewport(&code, size).await?;
+        h.move_cursor(hit);
+        let value = |msgs: &[super::Message]| -> f64 {
+            msgs.iter()
+                .find_map(|m| match m {
+                    super::Message::Call(_, args) => match args.first() {
+                        Some(Value::F64(v)) => Some(*v),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("slider callback")
+        };
+        assert!((value(&h.press_key(Named::ArrowUp)) - 51.0).abs() < 1e-10, "{name} key");
+        h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
+            keyboard::Modifiers::CTRL,
+        ))]);
+        assert!((value(&h.scroll(0.0, -1.0)) - 49.0).abs() < 1e-10, "{name} wheel");
+        h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
+            keyboard::Modifiers::empty(),
+        ))]);
+        assert!((value(&h.click(hit)) - 37.325).abs() < 0.0002, "{name} fine drag");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuous_slider_extreme_range_clicks_stay_inside() -> Result<()> {
+    for (name, size, hit) in [
+        ("slider", Size::new(400.0, 22.0), Point::new(100.0, 10.0)),
+        ("vertical_slider", Size::new(22.0, 400.0), Point::new(10.0, 300.0)),
+    ] {
+        let code = format_compact!(
+            "{IMPORTS}; let result = {name}(#min: &-1.7e308, #max: &1.7e308, #on_change: |v| null, &0.0)"
+        );
+        let mut h = InteractionHarness::with_viewport(&code, size).await?;
+        let msgs = h.click(hit);
+        let value = msgs
+            .iter()
+            .find_map(|m| match m {
+                super::Message::Call(_, args) => match args.first() {
+                    Some(Value::F64(v)) => Some(*v),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("slider callback");
+        assert!(
+            value.is_finite() && (value / 1.7e308 + 0.5).abs() < 1e-6,
+            "{name}: {value}"
+        );
+    }
+    Ok(())
+}
