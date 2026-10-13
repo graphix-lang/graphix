@@ -2576,6 +2576,51 @@ run!(wake_constant_keeps_target, WAKE_CONSTANT_KEEPS_TARGET, |v: Result<&Value>|
             [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
 });
 
+// A restart builtin passing a wake's own constant emits a wake's fire, so
+// a `<-` target it initialises resumes after the wake as one a constant
+// initialises does (`base`).
+const WAKE_RESTART_BUILTINS_KEEP_TARGET: &str = r#"
+{
+  let ep = 0;
+  ep <- select ep { n if n < 8 => n + 1, _ => never() };
+  let mode = select ep { 3 => 1, 4 => 1, _ => 0 };
+  let r = select mode {
+    0 => {
+      let base = 100;
+      base <- ep ~ base + 1;
+      let a = once(100);
+      a <- ep ~ a + 1;
+      let b = take(#n: 1, 100);
+      b <- ep ~ b + 1;
+      let c = skip(#n: 0, 100);
+      c <- ep ~ c + 1;
+      let d = uniq(100);
+      d <- ep ~ d + 1;
+      let e = hold(#clock: 1, 100);
+      e <- ep ~ e + 1;
+      let f = count(100) + 99;
+      f <- ep ~ f + 1;
+      let g = filter(100, |x| x > 0);
+      g <- ep ~ g + 1;
+      let h = throttle(100);
+      h <- ep ~ h + 1;
+      [base, a, b, c, d, e, f, g, h]
+    },
+    _ => [-1]
+  };
+  select ep { 8 => r, _ => never() }
+}
+"#;
+
+run!(
+    wake_restart_builtins_keep_target,
+    WAKE_RESTART_BUILTINS_KEEP_TARGET,
+    |v: Result<&Value>| {
+        format!("{}", v.unwrap())
+            == "[i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106, i64:106]"
+    }
+);
+
 // While a consulted guard stands bottom the selection is undecidable on
 // every cycle, quiet ones included: the held arm does not run.
 const SELECT_UNDECIDABLE_QUIET: &str = r#"

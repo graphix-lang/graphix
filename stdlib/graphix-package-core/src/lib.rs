@@ -617,6 +617,12 @@ fn untyped_shape(v: &Value) -> Shape {
     }
 }
 
+/// What a builtin emits for `v` because of the production tagged
+/// `cause`: a fire, and a wake's own when only a wake caused it.
+pub fn caused(v: Value, cause: Tag) -> TagValue {
+    TagValue::tagged(v, cause.fresh_or_wake())
+}
+
 /// The TICK view of a production at a builtin's arg seam — `Some` iff
 /// this delivery is an event that advances the builtin's state. Only
 /// `Fired` ticks; stale deliveries and bottoms do not.
@@ -1918,10 +1924,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         match seam_tick(from[0].update(ctx)).and_then(|tv| match tv.value_cloned() {
-            v @ Value::Error(_) => Some(v),
+            v @ Value::Error(_) => Some(caused(v, tv.tag())),
             _ => None,
         }) {
-            Some(v) => self.out.set(TagValue::fired(v)),
+            Some(tv) => self.out.set(tv),
             None => self.out.ride(),
         }
     }
@@ -1982,27 +1988,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
                     None
                 } else {
                     self.val = true;
-                    Some(tv.value_cloned())
+                    Some(caused(tv.value_cloned(), tv.tag()))
                 }
             }),
             _ => None,
         };
         match res {
-            // CR claude for claude: [bug/high] Once builds its output as
-            // `TagValue::fired(v)` and drops the WAKE bit of the input that fired it. A
-            // wake's own constant passed through once therefore becomes a real event,
-            // and the enclosing `let` overwrites its `<-` targets' last writes at every
-            // wake of the arm. That breaks "sleep is pause": `let v = once(100); v <-
-            // ep ~ v + 1` in an arm that sleeps and wakes restarts at 100, while `let v
-            // = 100` or a CachedArgs builtin resumes at 103. take/skip (Counted), uniq,
-            // hold, count, filter, filter_err and throttle do the same. Fix: carry the
-            // bit of the input production that caused the emission,
-            // `TagValue::tagged(v, tv.tag().fresh_or_wake())` (for hold and throttle,
-            // the join of the tags that fired). Do it in one helper all of these
-            // builtins use. Pin each one beside
-            // `lang::select::wake_constant_keeps_target`. probe:
-            // design/review-2026-10-12/repro/core-lib-01.gx (core-lib-01)
-            Some(v) => self.out.set(TagValue::fired(v)),
+            Some(tv) => self.out.set(tv),
             None => self.out.ride(),
         }
     }
@@ -2096,10 +2088,10 @@ impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
             }
             // take passes while its count runs; skip once it has run out,
             // or when it has none
-            (counting == TAKE).then(|| tv.value_cloned())
+            (counting == TAKE).then(|| caused(tv.value_cloned(), tv.tag()))
         });
         match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
+            Some(tv) => self.out.set(tv),
             None => self.out.ride(),
         }
     }
@@ -2433,11 +2425,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
             ctx.event.variables.insert(self.x, TagValue::tagged(v, tag));
         }
         let res = seam_tick(self.pred.update(ctx)).and_then(|b| match b.value_cloned() {
-            Value::Bool(true) => self.pending.clone(),
+            Value::Bool(true) => self.pending.clone().map(|v| caused(v, b.tag())),
             _ => None,
         });
         match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
+            Some(tv) => self.out.set(tv),
             // CR claude for claude: [bug/medium] core-lib-03/core-aux-08 variant: core
             // filter and raw-Apply builtins ride their last value through a bottom
             // input. bfb34d1d made range bottom on a bottomed argument, and 274ab649
@@ -2658,17 +2650,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx)).is_some() {
+        let mut cause = None::<Tag>;
+        if let Some(tv) = seam_tick(from[0].update(ctx)) {
             self.triggered += 1;
+            cause = Some(tv.tag());
         }
         if let Some(tv) = seam_tick(from[1].update(ctx)) {
             self.current = Some(tv.value_cloned());
+            cause = Some(cause.map_or(tv.tag(), |c| c.join(tv.tag())));
         }
         if self.triggered > 0
+            && let Some(cause) = cause
             && let Some(v) = self.current.take()
         {
             self.triggered -= 1;
-            self.out.set(TagValue::fired(v))
+            self.out.set(caused(v, cause))
         } else {
             self.out.ride()
         }
@@ -2870,19 +2866,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         macro_rules! emit_cached {
-            () => {{
+            ($cause:expr) => {{
                 match self.last_v.clone() {
-                    Some(v) => return self.out.set(TagValue::fired(v)),
+                    Some(v) => return self.out.set(caused(v, $cause)),
                     None => return self.out.ride(),
                 }
             }};
         }
         macro_rules! maybe_schedule {
-            ($last:expr) => {{
+            ($last:expr, $cause:expr) => {{
                 let now = Instant::now();
                 if now - *$last >= self.wait {
                     *$last = now;
-                    emit_cached!()
+                    emit_cached!($cause)
                 } else {
                     let id = BindId::new();
                     ctx.rt.ref_var(id, self.top_id);
@@ -2900,31 +2896,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         let new_wait = seam_value(from[0].update(ctx))
             .and_then(|tv| {
                 tv.with_value(|v| match v {
-                    Value::Duration(d) => Some(**d),
+                    Value::Duration(d) => Some((**d, tv.tag())),
                     _ => None,
                 })
             })
-            .filter(|d| *d != self.wait);
-        let mut up1 = false;
+            .filter(|(d, _)| *d != self.wait);
+        let mut up1 = None;
         if let Some(tv) = seam_value(from[1].update(ctx)) {
-            up1 = tv.is_fired();
+            up1 = tv.is_fired().then(|| tv.tag());
             self.last_v = Some(tv.value_cloned());
         }
-        if let Some(d) = new_wait {
+        if let Some((d, cause)) = new_wait {
             self.wait = d;
             if let Some(id) = self.tid.take()
                 && let Some(last) = &mut self.last
             {
                 ctx.release_var(id, self.top_id);
-                maybe_schedule!(last)
+                maybe_schedule!(last, cause)
             }
         }
-        if up1 && self.tid.is_none() {
+        if let Some(cause) = up1
+            && self.tid.is_none()
+        {
             match &mut self.last {
-                Some(last) => maybe_schedule!(last),
+                Some(last) => maybe_schedule!(last, cause),
                 None => {
                     self.last = Some(Instant::now());
-                    emit_cached!()
+                    emit_cached!(cause)
                 }
             }
         }
@@ -2934,7 +2932,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             ctx.release_var(id, self.top_id);
             self.tid = None;
             self.last = Some(Instant::now());
-            emit_cached!()
+            emit_cached!(Tag::FIRED)
         }
         self.out.ride()
     }
@@ -3012,18 +3010,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for claude: [risk/low] The `||` short-circuits, so once one
-        // argument has fired, the arguments after it are not updated that cycle. Every
-        // argument must be updated every cycle (see `seam_arg`). count has one
-        // argument, so this cannot happen today, but the fold looks like it handles
-        // several and does it wrong. Write `if
-        // seam_tick(from[0].update(ctx)).is_some()`, which matches the signature.
-        // (core-lib-06)
-        if from.into_iter().fold(false, |u, n| u || seam_tick(n.update(ctx)).is_some()) {
-            self.count += 1;
-            self.out.set(TagValue::fired(Value::I64(self.count)))
-        } else {
-            self.out.ride()
+        match seam_tick(from[0].update(ctx)) {
+            Some(tv) => {
+                self.count += 1;
+                self.out.set(caused(Value::I64(self.count), tv.tag()))
+            }
+            None => self.out.ride(),
         }
     }
 
@@ -3112,7 +3104,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
             *last = None;
             return out.set_bottom(tv.tag().triggers());
         }
-        let Some(v) = seam_tick(tv).map(|tv| tv.value_cloned()) else {
+        let Some((v, tag)) = seam_tick(tv).map(|tv| (tv.value_cloned(), tv.tag())) else {
             return out.ride();
         };
         let cmp = match &self.2 {
@@ -3122,7 +3114,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         let changed = coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref());
         if changed {
             *last = Some(cmp);
-            out.set(TagValue::fired(v))
+            out.set(caused(v, tag))
         } else {
             out.ride()
         }
