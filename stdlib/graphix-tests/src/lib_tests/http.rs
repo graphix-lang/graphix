@@ -391,3 +391,20 @@ async fn http_silent_socket_releases_its_permit() -> Result<()> {
     }
     Ok(())
 }
+
+// A header the caller gives replaces rest's default of that name, whatever
+// its case, rather than going out beside it.
+run!(http_rest_caller_header_replaces_default, r#"{
+    let srv = http::serve(#addr: "127.0.0.1:0", #handler: |req: http::Request| {
+        body: str::join(#sep: "|", array::map(array::filter(req.headers, |(k, _)| (k == "content-type") || (k == "accept")), |(k, v)| "[k]=[v]")),
+        headers: [],
+        status: u16:200,
+        url: ""
+    })$;
+    let addr = http::server_addr(srv);
+    let client = http::default_client(addr)$;
+    let r = http::rest::post(#headers: [("Content-Type", "application/merge-patch+json")], #body: "{}", client, "http://[addr]/x");
+    (r$).body
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "accept=application/json|content-type=application/merge-patch+json")
+}; FuseExpect::Jit);
