@@ -15,7 +15,11 @@ change to the documentation.
 `graphix-shell/tests/examples_compile.rs` builds every example (check,
 elaboration and fusion) against the full shell environment in the plain
 `cargo test`, as `graphix --expand` does, so an example must build, not
-only parse: a `#[native]` in one is verified there. The
+only parse: a `#[native]` in one is verified there. The same test
+parses every ```` ```graphix ```` fence written inline in a page, and each
+`〉` input of a REPL transcript; tag a schematic fragment
+```` ```graphix,ignore ```` and a program meant to be refused
+```` ```graphix,refused ````, which the check must refuse. The
 UI examples are run by hand:
 
 ```bash

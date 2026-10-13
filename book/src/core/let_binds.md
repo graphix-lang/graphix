@@ -3,7 +3,7 @@
 Let bindings introduce names that are visible in their scope after they are
 defined.
 
-```graphix
+```graphix,refused
 // compile error x isn't defined yet
 let x = 2 + 2 + x;
 // ok

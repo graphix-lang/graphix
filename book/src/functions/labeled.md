@@ -5,14 +5,14 @@ not be specified in order, and optional arguments don't need to be specified at
 all. When declaring a function you must specify the labeled and optional
 arguments before any non labeled arguments.
 
-```graphix
+```graphix,ignore
 let f = |#lbl1, #lbl2, arg| ...
 ```
 
 In this case lbl1 and 2 are not optional, but are labeled. You can call f with
 either labeled argument in either order. e.g. `f(#lbl2, #lbl1, a)`.
 
-```graphix
+```graphix,ignore
 let f = |#opt = null, a| ...
 ```
 
@@ -20,7 +20,7 @@ let f = |#opt = null, a| ...
 will be `null`. e.g. `f(2)` is a valid way to call `f`. You can also apply type
 constraints to labeled and optional arguments.
 
-```graphix
+```graphix,ignore
 let f = |#opt: [i64, null] = null, a| ..
 ```
 

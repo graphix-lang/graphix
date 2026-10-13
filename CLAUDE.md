@@ -995,7 +995,9 @@ test is a result.
 - Examples in `book/src/examples/` are documentation and test corpus at
   once: each is included by a book page, and `graphix-shell/tests/
   examples_compile.rs` builds every one (check, elaboration, fusion, as
-  `graphix --expand` does) in the plain gate; TUI/GUI
+  `graphix --expand` does) in the plain gate, and parses every inline
+  ```` ```graphix ```` fence (`,ignore` for a schematic fragment,
+  `,refused` for one the check must refuse); TUI/GUI
   examples are run by hand
   (`cargo run --bin graphix -- examples/tui/barchart_basic.gx`).
 - A new compiler walk must name the loss without it before it is added;

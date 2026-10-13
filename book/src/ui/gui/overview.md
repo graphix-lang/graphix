@@ -47,7 +47,7 @@ A few things to notice:
 GUI widgets take `&` references so that updates propagate with fine granularity. When you write:
 
 ```graphix
-let name = "world"
+let name = "world";
 text(&"Hello, [name]!")
 ```
 

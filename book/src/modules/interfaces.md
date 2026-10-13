@@ -231,7 +231,7 @@ val public_helper: fn(x: i64) -> i64;
 mod child;
 ```
 
-```graphix
+```graphix,ignore
 // parent.gx
 let private_setup = ...;
 let public_helper = |x| x + 1;
@@ -325,7 +325,7 @@ Outside the module all three are compile errors — users can only call
 the functions the interface exports. The type *test* `T as t` works
 everywhere, since it compares the tag:
 
-```graphix
+```graphix,ignore
 let v: [a::A, b::B] = ...;
 select v {
     a::A as _ => "an A",
@@ -434,7 +434,7 @@ Abstract types can be used within other type definitions in the interface:
 
 ```graphix
 type Element;
-type List = [`Cons(Element, List), `Nil];
+type Chain = [`Link(Element, Chain), `End];
 type Pair = (Element, Element);
 type Container = { items: Array<Element> };
 ```

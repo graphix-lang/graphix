@@ -15,7 +15,7 @@ ref(foo) ──> select ─┼────────────────�
 
 is written as
 
-```graphix
+```graphix,ignore
 select foo {
   n if n > 0 => ...,
   n if n < 0 => ...,
@@ -339,7 +339,7 @@ The one case that still needs help is a scrutinee union in which
 SEVERAL struct members carry all the named fields: the pattern is
 ambiguous, and the compiler asks you to annotate the member you mean:
 
-```graphix
+```graphix,ignore
 S as {x, ..} if (x < 10) || (x > 50) => `VWall
 ```
 

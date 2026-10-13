@@ -4,7 +4,7 @@ Functions are first class values. They can be stored in variables, in data
 structures, and they can be passed around to other functions. Etc. They are
 defined with the syntax,
 
-```graphix
+```graphix,ignore
 |arg0, arg1, ...| body
 ```
 

@@ -123,7 +123,7 @@ so a program defines its look once and hands the same value to every
 chart. A chart that needs one thing different takes a functional update
 of the shared record:
 
-```graphix
+```graphix,ignore
 let deck = chart::chart_style(
     #background: color(#r: 0.12, #g: 0.12, #b: 0.18)$,
     #title_color: color(#r: 0.9, #g: 0.9, #b: 0.95)$,

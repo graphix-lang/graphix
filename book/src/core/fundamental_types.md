@@ -443,7 +443,7 @@ Maps can be constructed using the `{key => value}` syntax:
 Keys and values can be any Graphix type, for example here is a map where the key
 is a `Map<string, i64>`.
 
-```graphix
+```graphix,ignore
 {{"foo" => 42} => "foo", {"bar" => 42} => "bar"}
 -: Map<'_1919: Map<'_1915: string, '_1917: i64>, '_1921: string>
 {{"bar" => 42} => "bar", {"foo" => 42} => "foo"}

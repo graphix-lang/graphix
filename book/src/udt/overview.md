@@ -26,7 +26,7 @@ The Graphix type system is based on set operations. For example, a function
 could declare that it can take either an `i32` or an `i64` as an argument by
 defining the set, `[i32, i64]` and annotating it's argument with this type.
 
-```graphix
+```graphix,ignore
 let f = |a: [i32, i64]| ...
 ```
 

@@ -132,7 +132,7 @@ A TUI program runs until Ctrl-C, or until it calls `tui::exit`, which
 ends it the same way: the terminal is restored and the runtime stops.
 Fire it from the key that quits, sampled with the event:
 
-```graphix
+```graphix,ignore
 `Char("q") => { tui::exit(k ~ null); `Stop }
 ```
 

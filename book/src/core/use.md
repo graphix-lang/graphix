@@ -5,7 +5,7 @@ rules as Rust 2018 paths: every name in scope arrived either by an
 explicit declaration (`let`, `type`, `mod`), an explicit `use`, or one
 of the two preludes described below. Nothing else is implicit.
 
-```graphix
+```graphix,ignore
 // fully qualified call
 sys::net::subscribe(...);
 // import the name `net`

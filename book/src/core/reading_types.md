@@ -68,7 +68,7 @@ This function can be called in two ways:
 
 ```graphix
 // style uses default value
-text("Hello")
+text("Hello");
 // style is specified
 text(#style: my_style, "Hello")
 ```
@@ -77,7 +77,7 @@ text(#style: my_style, "Hello")
 
 Labeled arguments can be provided in any order, but must come before positional arguments:
 
-```graphix
+```graphix,ignore
 val widget: fn(?#width: i64, ?#height: i64, content: string) -> Widget
 
 // All of these are valid:
@@ -116,7 +116,7 @@ val sum: fn(@args: i64) -> i64
 You can call this with any number of integers:
 
 ```graphix
-sum(1, 2, 3)
+sum(1, 2, 3);
 sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 ```
 
@@ -248,7 +248,7 @@ val find: fn(haystack: Array<string>, needle: string) -> [string, null]
 Returns a string if found, `null` if not found. This is aliased as `Option<T>`:
 
 ```graphix
-type Option<'a> = ['a, null]
+type Option<'a> = ['a, null];
 val find: fn(haystack: Array<string>, needle: string) -> Option<string>
 ```
 
@@ -263,8 +263,8 @@ val sum: fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number
 This accepts numbers, arrays of numbers, or even arrays of (numbers or arrays of numbers). The flexibility allows you to call:
 
 ```graphix
-sum(1, 2, 3)
-sum([1, 2], [3, 4])
+sum(1, 2, 3);
+sum([1, 2], [3, 4]);
 sum(1, [2, 3], 4)
 ```
 
@@ -294,7 +294,7 @@ let f = |x, y| x + y
 
 Its type will be something like:
 
-```graphix
+```graphix,ignore
 val f: fn<'_2067: Number + Singleton>(x: '_2067, y: '_2067) -> '_2067
 ```
 

@@ -85,16 +85,16 @@ Examples:
 
 ```graphix
 // Red foreground
-tui::style(#fg: `Red)
+tui::style(#fg: `Red);
 
 // Green text on black background
-tui::style(#fg: `Green, #bg: `Black)
+tui::style(#fg: `Green, #bg: `Black);
 
 // Bold yellow text
-tui::style(#fg: `Yellow, #add_modifier: [`Bold])
+tui::style(#fg: `Yellow, #add_modifier: [`Bold]);
 
 // Bold italic text with RGB color
-tui::style(#fg: `Rgb({ r: 255, g: 128, b: 0 }), #add_modifier: [`Bold, `Italic])
+tui::style(#fg: `Rgb({ r: 255, g: 128, b: 0 }), #add_modifier: [`Bold, `Italic]);
 
 // Default style (no customization)
 tui::style()
@@ -121,7 +121,7 @@ Example:
 
 ```graphix
 // Create a red "Error:" span
-tui::span(#style: tui::style(#fg: `Red), "Error:")
+tui::span(#style: tui::style(#fg: `Red), "Error:");
 
 // Plain text span (default style)
 tui::span("Hello")
@@ -154,13 +154,13 @@ Examples:
 
 ```graphix
 // Simple centered line
-tui::line(#alignment: `Center, "Centered Text")
+tui::line(#alignment: `Center, "Centered Text");
 
 // Line with mixed styles
 tui::line([
   tui::span(#style: tui::style(#fg: `Red, #add_modifier: [`Bold]), "Error: "),
   tui::span("Something went wrong")
-])
+]);
 
 // Right-aligned with style
 tui::line(#style: tui::style(#fg: `Gray), #alignment: `Right, "Status: OK")
@@ -175,7 +175,7 @@ Most widgets accept style parameters. For example:
 tui::paragraph::paragraph(
   #style: &tui::style(#fg: `White, #bg: `Blue),
   &"Hello, styled world!"
-)
+);
 
 // Styled gauge
 tui::gauge::gauge(

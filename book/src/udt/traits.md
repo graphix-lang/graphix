@@ -6,20 +6,6 @@ Graphix's traits are Rust's, spelled in Graphix.
 
 ## Declaring a Trait
 
-<!-- CR claude for claude: [test-gap/medium] Many inline ```graphix blocks do not parse.
-This one uses `///` doc comments, which are legal only in a .gxi. Trailing `// ...`
-comments run through this page and also appear in modules/interfaces.md and
-udt/references.md. The math main.gx in interfaces.md ends with two comment lines and
-nothing after them, which is 'Unexpected end of input'. A reader who pastes any of these
-gets a parse error, and with the comments moved the programs run as described. The cause
-is that graphix-shell/tests/examples_compile.rs covers only book/src/examples. Fix: move
-the comments onto their own lines or into prose, and add a test that extracts every
-```graphix block not marked as REPL or a fragment and runs the check on it.
-Alternatively, move the runnable blocks into book/src/examples and `{{#include}}` them.
-(book-modules-udt-09) -->
-<!-- 2026-10-13 claude: the comments are moved onto their own lines and the
-`///` docs are `//` (traits.md, interfaces.md, references.md); the test over every
-fence is still to come, with (book-core-10). -->
 ```graphix
 trait Show {
     // required: every implementor supplies it
@@ -152,8 +138,8 @@ Writing the trait as a parameter's type is shorthand for a fresh
 bounded variable per parameter:
 
 ```graphix
-let both = |a: Show, b: Show| "[show(a)] [show(b)]";
-// ≡ 'a: Show, 'b: Show |a: 'a, b: 'b| ...
+// the same as 'a: Show, 'b: Show |a: 'a, b: 'b| ...
+let both = |a: Show, b: Show| "[show(a)] [show(b)]"
 ```
 
 Bounds combine with `+`: `'a: Show + Ord`, `fn<'s: Read + Write>(s: 's)`.
@@ -216,9 +202,9 @@ type Key = Abstract<string>;
 impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
 
 // true: the implementation
-Key("Foo") == Key("FOO")
+Key("Foo") == Key("FOO");
 // true: called per element
-[Key("a")] == [Key("A")]
+[Key("a")] == [Key("A")];
 // false: the i64s differ
 (Key("x"), 1) == (Key("X"), 2)
 ```
@@ -231,9 +217,9 @@ impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
 
 let red = Color({r: 255, g: 0, b: 0});
 // #25500
-println("[red]")
+println("[red]");
 // [#25500, #25500]
-println([red, red])
+println([red, red]);
 // {fg: #25500, n: 3}
 println({fg: red, n: 3})
 ```
@@ -295,9 +281,9 @@ trait Collection {
     val fold: fn(self<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
     val filter_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> self<'b> throws 'e;
     val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
+    // a default, as are filter, find, find_map and len
     val map: fn(self<'a>, f: fn(x: 'a) -> 'b throws 'e) -> self<'b> throws 'e
-        = |c, f| filter_map(c, |x| f(x));
-    // filter, find, find_map and len are defaults too
+        = |c, f| filter_map(c, |x| f(x))
 };
 ```
 
@@ -357,7 +343,7 @@ the container — return the same kind of collection with a new element
 ```graphix
 let sqr = 'c: Collection, 'a: Number |c: 'c<'a>| -> 'c<'a> map(c, |n| n * n);
 // Array<i64> [1, 4, 9]
-sqr([1, 2, 3])
+sqr([1, 2, 3]);
 // Map<string, i64>
 sqr({"a" => 2, "b" => 3})
 ```

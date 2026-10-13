@@ -19,7 +19,7 @@ type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
 
 Most layout widgets accept `#width` and `#height` parameters of type `&Length`:
 
-```graphix
+```graphix,ignore
 column(
   #width: &`Fill,
   #height: &`Fixed(300.0),
@@ -47,7 +47,7 @@ type Padding = [
 container(
   #padding: &`All(20.0),
   &text(&"Padded content")
-)
+);
 
 container(
   #padding: &`Each({top: 10.0, right: 20.0, bottom: 10.0, left: 20.0}),
@@ -81,7 +81,7 @@ column(
   #halign: &`Center,
   #width: &`Fill,
   &[text(&"Centered text")]
-)
+);
 
 container(
   #halign: &`Center,
@@ -100,7 +100,7 @@ RGBA color with floating-point components in the range 0.0 to 1.0. Color is an a
 
 ```graphix
 // Solid red ($ swallows errors with a warning)
-let red = color(#r: 1.0)$
+let red = color(#r: 1.0)$;
 
 // Semi-transparent blue (? propagates errors)
 let blue_50 = color(#b: 1.0, #a: 0.5)?

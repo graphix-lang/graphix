@@ -227,7 +227,7 @@ A builtin whose behaviour depends on a type the program chooses, such as
 `str::parse` or `json::read` choosing what to decode, declares that type
 `Concrete` in its signature, in the `.gx` and the `.gxi` alike:
 
-```graphix
+```graphix,ignore
 let parse = 'b: Concrete |s: string| -> Result<'b, `ParseError(string)> 'str_parse
 val parse: fn<'b: Concrete>(s: string) -> Result<'b, `ParseError(string)>;
 ```
@@ -244,7 +244,7 @@ program that type checked has a known type there.
 A builtin that takes any function and reads its signature, such as
 `queuefn`, declares that parameter's type `Function`:
 
-```graphix
+```graphix,ignore
 let queuefn = 'a: Function |#count: [&mut i64, null] = null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
 val queuefn: fn<'a: Function>(?#count: [&mut i64, null], #trigger:Any, f: 'a) -> 'a;
 ```

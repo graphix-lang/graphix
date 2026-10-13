@@ -335,7 +335,7 @@ The event is evaluated as the run's first step. It is asleep between
 runs and wakes when a run starts, so a timer in it times the run, and
 an event that fired while nothing was running aborts nothing:
 
-```graphix
+```graphix,ignore
 // a ten second budget for each run
 seq go; abort(sys::time::timer(duration:10.s, false)) { ... }
 
@@ -356,7 +356,7 @@ run is written to a variable outside the block rather than bound with
 Under `seqq`, `abort` ends the current run and the next queued request
 starts. `flush(event)` also empties the queue:
 
-```graphix
+```graphix,ignore
 seqq request; abort(skip); flush(cancel_all) { ... }
 ```
 
