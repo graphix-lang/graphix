@@ -9,10 +9,10 @@ use graphix_compiler::{
 };
 use graphix_package_core::{CachedVals, Invocation, seam_tick};
 use netidx::subscriber::Value;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::PackError;
 use netidx_value::ValArray;
+use poolshark::local::LPooled;
 use rand::{RngExt, distr::uniform::SampleRange, rng, seq::SliceRandom};
-use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug)]
 struct Rand {
@@ -129,18 +129,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for claude: [bug/medium] seam_tick returns None for a bottom input
-        // as well as for a stale one, and both cases ride the resident. Once the input
-        // has gone bottom, pick keeps delivering its last pick as a value. That breaks
-        // "bottomness ORs over consumed productions": with x selected into never(), (y,
-        // rand::pick(x)) still prints (1, 7) after x is gone, while array::len(x) and
-        // rand::rand(#clock: x) go bottom. Shuffle::update has the same bug. Fix: test
-        // the input's tag first, as Uniq::update does, `if tv.tag().is_bottom() {
-        // return self.out.set_bottom(tv.tag().triggers()) }`, then seam_tick for the
-        // event. Do the same in Shuffle::update, and add a pin with a bottomed input
-        // for each. probe: design/review-2026-10-12/repro/small-pkgs-06.gx
-        // (small-pkgs-06)
-        let res = seam_tick(from[0].update(ctx)).and_then(|a| match a.value_cloned() {
+        // a bottom input is a bottom output
+        let tv = from[0].update(ctx);
+        if tv.tag().is_bottom() {
+            return self.out.set_bottom(tv.tag().triggers());
+        }
+        let res = seam_tick(tv).and_then(|a| match a.value_cloned() {
             Value::Array(a) if a.len() > 0 => {
                 Some(a[rng().random_range(0..a.len())].clone())
             }
@@ -157,13 +151,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
 
 #[derive(Debug)]
 struct Shuffle {
-    // CR claude for claude: [structure/low] buf is scratch: update fills it and drains
-    // it in the same call, so between updates it is always empty. Even so, every
-    // Shuffle instance (call site, slot, activation) carries 32 inline Values,
-    // image_encode/image_decode Pack it, and sleep clears it. Fix: drop the field and
-    // shuffle an `LPooled<Vec<Value>>` local collected from the array. Shuffle's image
-    // codec then becomes unit and sleep a no-op. (small-pkgs-09)
-    buf: SmallVec<[Value; 32]>,
     out: TagValue,
 }
 
@@ -179,22 +166,21 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Shuffle { buf: smallvec![], out: TagValue::phantom() }))
+        Ok(Box::new(Shuffle { out: TagValue::phantom() }))
     }
 
     fn image_decode(
         _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
-        buf: &mut &[u8],
+        _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let elems = Pack::decode(buf)?;
-        Ok(Box::new(Shuffle { buf: elems, out: TagValue::phantom() }))
+        Ok(Box::new(Shuffle { out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.buf.encode(buf)
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
     }
 
     fn update(
@@ -202,11 +188,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let res = seam_tick(from[0].update(ctx)).and_then(|a| match a.value_cloned() {
+        // a bottom input is a bottom output
+        let tv = from[0].update(ctx);
+        if tv.tag().is_bottom() {
+            return self.out.set_bottom(tv.tag().triggers());
+        }
+        let res = seam_tick(tv).and_then(|a| match a.value_cloned() {
             Value::Array(a) => {
-                self.buf.extend(a.iter().cloned());
-                self.buf.shuffle(&mut rng());
-                Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
+                let mut elems: LPooled<Vec<Value>> = a.iter().cloned().collect();
+                elems.shuffle(&mut rng());
+                Some(Value::Array(ValArray::from_iter_exact(elems.drain(..))))
             }
             _ => None,
         });
@@ -216,9 +207,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.buf.clear()
-    }
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 #[cfg(test)]

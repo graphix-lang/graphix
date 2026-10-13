@@ -30,7 +30,7 @@ netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
 rand = { workspace = true }
-smallvec = { workspace = true }
+poolshark = { workspace = true }
 tokio = { workspace = true }
 
 [build-dependencies]

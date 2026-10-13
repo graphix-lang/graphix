@@ -4,8 +4,9 @@ use graphix_compiler::{
     Event, NoUserEvent, Scope, Tag, TagValue, View, compile,
     expr::{ModPath, parser::parse_one},
 };
-use graphix_package_core::testing::{Mode, init_with_flags_and_setup};
+use graphix_package_core::testing::{Collect, Mode, collect, init_with_flags_and_setup};
 use netidx_value::{ValArray, Value};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 async fn strict_bottom(mode: Mode) -> Result<()> {
@@ -288,3 +289,29 @@ async fn bottom_scrutinee_consults_no_guard(mode: Mode) -> Result<()> {
 }
 
 modes!(strict_bottom, strict_sample, bottom_scrutinee_consults_no_guard);
+
+/// rand::pick and rand::shuffle go bottom with their input: the tuple
+/// holding them gives its value once, before `x` goes, and never again.
+#[tokio::test(flavor = "multi_thread")]
+async fn rand_picks_go_bottom_with_their_input() -> Result<()> {
+    const CODE: &str = r#"{
+  let t = 0;
+  t <- sys::time::timer(duration:20.ms, false) ~ 1;
+  let x: Array<i64> = select t { 0 => [7], _ => never() };
+  let y = 0;
+  y <- sys::time::timer(duration:80.ms, false) ~ 1;
+  (y, rand::pick(x), rand::shuffle(x))
+}"#;
+    let want = Value::Array(ValArray::from_iter_exact(
+        [Value::I64(0), Value::I64(7), Value::Array(ValArray::from([Value::I64(7)]))]
+            .into_iter(),
+    ));
+    for mode in Mode::ALL {
+        let quiet = Collect::Quiet(Duration::from_millis(300));
+        let got =
+            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
+                .await?;
+        assert_eq!(got, [want.clone()], "{mode:?}");
+    }
+    Ok(())
+}
