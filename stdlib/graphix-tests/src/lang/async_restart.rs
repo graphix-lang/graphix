@@ -229,17 +229,8 @@ modes!(line_reader_rewake);
 // A woken arm restarts each builtin over its present arguments, every one
 // of them standing at the wake.
 
-// An async builtin is issued again, so it answers again.
-// CR claude for claude: [test-gap/medium] This test, and wake_restarts_standing_timers
-// below it, cannot fail if an async builtin stops restarting at the wake. When `on`
-// fires, the select re-emits the arm's current value, so `n <- r ~ n + 1` bumps whether
-// or not the call was re-issued. Replacing `sys::fs::is_file(path)$` with plain `path`
-// also gives [0, 1, 2] (probe:
-// design/review-2026-10-12/repro/tests-lang-rest-a-wake-reissue-standin.gx). The fix is
-// to observe the builtin's own production through a restart builtin, e.g. `true =>
-// count(sys::fs::is_file(path)$)` and the same for the timer and the idle wait. A fresh
-// count over a stale input shows nothing, so `count(path)` gives [0, 1], while the real
-// re-issued calls give [0, 1, 2] in both engines. (tests-lang-rest-a-03)
+// An async builtin is issued again, so it answers again: a woken count
+// over a call that only stands would show nothing.
 async fn wake_reissues_standing_async(mode: Mode) -> Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("f"), "")?;
@@ -248,7 +239,7 @@ async fn wake_reissues_standing_async(mode: Mode) -> Result<()> {
         r#"{{
             let path = "{path}";
             let on = true;
-            let r = select on {{ true => sys::fs::is_file(path)$, false => never() }};
+            let r = select on {{ true => count(sys::fs::is_file(path)$), false => never() }};
             let n = 0;
             n <- r ~ n + 1;
             let t = 0;
@@ -295,9 +286,10 @@ async fn wake_restarts_a_count(mode: Mode) -> Result<()> {
 
 // A timer and an idle wait over a standing argument start again at the wake.
 async fn wake_restarts_standing_timers(mode: Mode) -> Result<()> {
-    for expr in
-        ["sys::time::timer(interval, once)?", "sys::time::after_idle(interval, seven)"]
-    {
+    for expr in [
+        "count(sys::time::timer(interval, once)?)",
+        "count(sys::time::after_idle(interval, seven))",
+    ] {
         let code = format!(
             r#"{{
                 let interval = duration:10.ms;
