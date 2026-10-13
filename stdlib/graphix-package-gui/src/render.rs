@@ -2,6 +2,7 @@
 //! Use `iced_wgpu::wgpu`, never a direct wgpu dependency.
 
 use anyhow::{Context, Result};
+use iced_core::Size;
 use iced_wgpu::{
     graphics::{Shell, Viewport, shell::Notifier},
     wgpu,
@@ -9,12 +10,38 @@ use iced_wgpu::{
 use std::sync::Arc;
 use winit::window::Window;
 
+fn surface_size(width: u32, height: u32, limit: u32) -> Size<u32> {
+    Size::new(width.clamp(1, limit), height.clamp(1, limit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_dimensions_fit_the_device() {
+        for limit in [2048, 8192, 16384] {
+            assert_eq!(surface_size(0, 0, limit), Size::new(1, 1));
+            assert_eq!(surface_size(800, 600, limit), Size::new(800, 600));
+            assert_eq!(
+                surface_size(u32::MAX, 9000, limit),
+                Size::new(limit, 9000.min(limit))
+            );
+            assert_eq!(
+                surface_size(9000, u32::MAX, limit),
+                Size::new(9000.min(limit), limit)
+            );
+        }
+    }
+}
+
 pub struct GpuState {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub format: wgpu::TextureFormat,
+    max_texture_dimension_2d: u32,
 }
 
 impl GpuState {
@@ -34,22 +61,11 @@ impl GpuState {
             .await
             .context("no suitable GPU adapter found")?;
         let (device, queue) = adapter
-            // CR claude for claude: [bug/high] The device is requested with
-            // Limits::default(), so max_texture_dimension_2d is 8192 whatever the
-            // adapter supports. WindowSurface::new and WindowSurface::resize configure
-            // the surface at the window's physical size with only a lower bound. Past
-            // 8192 wgpu raises a validation error, and since no on_uncaptured_error
-            // handler is installed, the process panics. A `#size` of 9000 wide, 4200
-            // logical px at scale 2, or maximizing across several monitors all kill
-            // graphix at once (probe: design/review-2026-10-12/repro/gui-core-04.sh;
-            // 8000 wide opens). Stock iced has the same cap, so its compositor is no
-            // model here. Fix: request
-            // `Limits::downlevel_defaults().using_resolution(adapter.limits())` (with a
-            // downlevel fallback, since Limits::default can exceed a GL adapter and
-            // then no window opens), keep the device's max_texture_dimension_2d in
-            // GpuState, and clamp config.width/height to it in WindowSurface::new and
-            // resize. (gui-core-03)
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits()),
+                ..Default::default()
+            })
             .await
             .context("failed to create GPU device")?;
         // iced packs colors as linear values and needs an sRGB target
@@ -61,7 +77,8 @@ impl GpuState {
             .copied()
             .context("surface has no supported formats")?;
         drop(surface);
-        Ok(Self { instance, adapter, device, queue, format })
+        let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
+        Ok(Self { instance, adapter, device, queue, format, max_texture_dimension_2d })
     }
 
     /// Create an iced Engine + Renderer pair for a window.
@@ -116,6 +133,7 @@ pub struct WindowSurface {
 impl WindowSurface {
     pub fn new(gpu: &GpuState, window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
+        let size = surface_size(size.width, size.height, gpu.max_texture_dimension_2d);
         let surface = gpu
             .instance
             .create_surface(window.clone())
@@ -123,8 +141,8 @@ impl WindowSurface {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: gpu.format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: size.width,
+            height: size.height,
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
@@ -133,24 +151,20 @@ impl WindowSurface {
         surface.configure(&gpu.device, &config);
         let renderer = gpu.create_renderer();
         let scale = window.scale_factor() as f32;
-        let viewport = Viewport::with_physical_size(
-            iced_core::Size::new(size.width, size.height),
-            scale,
-        );
+        let viewport =
+            Viewport::with_physical_size(Size::new(size.width, size.height), scale);
         Ok(Self { surface, config, renderer, viewport })
     }
 
     pub fn resize(&mut self, gpu: &GpuState, width: u32, height: u32, scale: f64) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
+        let size = surface_size(width, height, gpu.max_texture_dimension_2d);
+        self.config.width = size.width;
+        self.config.height = size.height;
         self.surface.configure(&gpu.device, &self.config);
-        self.viewport = Viewport::with_physical_size(
-            iced_core::Size::new(width, height),
-            scale as f32,
-        );
+        self.viewport = Viewport::with_physical_size(size, scale as f32);
     }
 
-    pub fn logical_size(&self) -> iced_core::Size {
+    pub fn logical_size(&self) -> Size {
         self.viewport.logical_size()
     }
 }
