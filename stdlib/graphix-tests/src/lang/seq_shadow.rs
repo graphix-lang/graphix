@@ -1,7 +1,7 @@
-use super::dense_deltas::{as_i64s, run_delta};
+use super::dense_deltas::run_delta;
 use anyhow::{Context, Result};
 use arcstr::format;
-use graphix_package_core::testing::Mode;
+use graphix_package_core::testing::{Mode, as_i64s};
 
 async fn check(body: &str, expected: &[i64], mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval, refused},
+    testing::{FuseExpect, as_i64s, eval, refused},
 };
 use netidx::publisher::Value;
 
@@ -1264,8 +1264,7 @@ const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 run!(select_arm_local_persists, SELECT_ARM_LOCAL_PERSISTS, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![10, 0, 11, 0]
+            as_i64s(a) == [10, 0, 11, 0]
         }
         _ => false,
     }
@@ -1287,8 +1286,7 @@ const SELECT_ARM_LOCAL_PERSISTS_FOLD: &str = r#"
 run!(select_arm_local_persists_fold, SELECT_ARM_LOCAL_PERSISTS_FOLD, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![0, 100, 6, 100]
+            as_i64s(a) == [0, 100, 6, 100]
         }
         _ => false,
     }
@@ -1314,8 +1312,7 @@ run!(
     |v: Result<&Value>| {
         match v {
             Ok(Value::Array(a)) => {
-                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                    == vec![1, 1, 2]
+                as_i64s(a) == [1, 1, 2]
             }
             _ => false,
         }
@@ -1343,8 +1340,7 @@ run!(
     |v: Result<&Value>| {
         match v {
             Ok(Value::Array(a)) => {
-                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                    == vec![42, 1]
+                as_i64s(a) == [42, 1]
             }
             _ => false,
         }
@@ -1497,9 +1493,7 @@ const SELECT_PARTIAL_AMBIGUOUS: &str = r#"
 run!(
     select_partial_ambiguous_refused,
     SELECT_PARTIAL_AMBIGUOUS,
-    |v: Result<&Value>| {
-        matches!(&v, Err(e) if format!("{e:#}").contains("matches more than one member"))
-    };
+    refused("matches more than one member");
     FuseExpect::None
 );
 
@@ -2265,8 +2259,7 @@ const WAKE_STALE_BOTTOM_SCRUTINEE: &str = r#"
 run!(wake_stale_bottom_scrutinee, WAKE_STALE_BOTTOM_SCRUTINEE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![100, -1, -1, -1]
+            as_i64s(a) == [100, -1, -1, -1]
         }
         _ => false,
     }
@@ -2289,8 +2282,7 @@ const WAKE_STALE_BOTTOM_LET: &str = r#"
 run!(wake_stale_bottom_let, WAKE_STALE_BOTTOM_LET, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![11, -1, -1, -1]
+            as_i64s(a) == [11, -1, -1, -1]
         }
         _ => false,
     }
@@ -2314,8 +2306,7 @@ const WAKE_STALE_BOTTOM_CALL: &str = r#"
 run!(wake_stale_bottom_call, WAKE_STALE_BOTTOM_CALL, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![11, -1, -1, -1]
+            as_i64s(a) == [11, -1, -1, -1]
         }
         _ => false,
     }
@@ -2338,8 +2329,7 @@ const WAKE_STALE_BOTTOM_MAP_SOURCE: &str = r#"
 run!(wake_stale_bottom_map_source, WAKE_STALE_BOTTOM_MAP_SOURCE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![15, -1, -1, -1]
+            as_i64s(a) == [15, -1, -1, -1]
         }
         _ => false,
     }
@@ -2364,8 +2354,7 @@ const MAP_SOURCE_RECOVERS_QUIETLY: &str = r#"
 run!(map_source_recovers_quietly, MAP_SOURCE_RECOVERS_QUIETLY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![6, 0, 0, 6]
+            as_i64s(a) == [6, 0, 0, 6]
         }
         _ => false,
     }
@@ -2395,8 +2384,7 @@ run!(
     |v: Result<&Value>| {
         match v {
             Ok(Value::Array(a)) => {
-                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                    == vec![42, -1, 42]
+                as_i64s(a) == [42, -1, 42]
             }
             _ => false,
         }
@@ -2648,9 +2636,7 @@ const NULL_LITERAL_ARM_DEAD: &str = r#"
 }
 "#;
 
-run!(null_literal_arm_dead, NULL_LITERAL_ARM_DEAD, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("unreachable arm"))
-}; FuseExpect::None);
+run!(null_literal_arm_dead, NULL_LITERAL_ARM_DEAD, refused("unreachable arm"); FuseExpect::None);
 
 // A nested variant head is a pooled position: two arms that miss
 // `(true, `B)` do not cover the tuple.
@@ -2661,9 +2647,7 @@ const POOL_NESTED_VARIANT_PARTIAL: &str = r#"
 }
 "#;
 
-run!(pool_nested_variant_partial, POOL_NESTED_VARIANT_PARTIAL, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
-}; FuseExpect::None);
+run!(pool_nested_variant_partial, POOL_NESTED_VARIANT_PARTIAL, refused("missing match cases"); FuseExpect::None);
 
 const POOL_NESTED_VARIANT_COMPLETE: &str = r#"
 {
@@ -2684,9 +2668,7 @@ const POOL_BOOL_IN_UNION: &str = r#"
 }
 "#;
 
-run!(pool_bool_in_union, POOL_BOOL_IN_UNION, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
-}; FuseExpect::None);
+run!(pool_bool_in_union, POOL_BOOL_IN_UNION, refused("missing match cases"); FuseExpect::None);
 
 // A tuple pattern of binds is a wildcard only over a tuple scrutinee.
 const TUPLE_ARM_OVER_UNION: &str = r#"
@@ -2696,9 +2678,7 @@ const TUPLE_ARM_OVER_UNION: &str = r#"
 }
 "#;
 
-run!(tuple_arm_over_union, TUPLE_ARM_OVER_UNION, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
-}; FuseExpect::None);
+run!(tuple_arm_over_union, TUPLE_ARM_OVER_UNION, refused("missing match cases"); FuseExpect::None);
 
 // Completion picks the member the pattern can match, not the first
 // struct: `{x: ..}` is exhaustive, so it cannot be the member with `a`.
@@ -2721,9 +2701,7 @@ const COMPLETE_TUPLE_AMBIGUOUS: &str = r#"
 }
 "#;
 
-run!(complete_tuple_ambiguous, COMPLETE_TUPLE_AMBIGUOUS, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("matches more than one member"))
-}; FuseExpect::None);
+run!(complete_tuple_ambiguous, COMPLETE_TUPLE_AMBIGUOUS, refused("matches more than one member"); FuseExpect::None);
 
 // Slice arms cover a union of arrays whichever member a type test names.
 const ARRAY_UNION_TYPE_TEST: &str = r#"
@@ -2792,9 +2770,7 @@ const ARRAY_LIST_LADDERS: &str = r#"
 }
 "#;
 
-run!(array_list_ladders_refused, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; FuseExpect::None);
+run!(array_list_ladders_refused, ARRAY_LIST_LADDERS, refused("same runtime form"); FuseExpect::None);
 
 // Two members with one runtime form can't be told apart by any test:
 // a tuple, a payload variant or a struct and an array, a bare variant
@@ -2810,9 +2786,7 @@ const SAME_FORM_TUPLE_ARRAY: &str = r#"
 }
 "#;
 
-run!(same_form_tuple_array_refused, SAME_FORM_TUPLE_ARRAY, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; FuseExpect::None);
+run!(same_form_tuple_array_refused, SAME_FORM_TUPLE_ARRAY, refused("same runtime form"); FuseExpect::None);
 
 const SAME_FORM_VARIANT_ARRAY: &str = r#"
 {
@@ -2861,9 +2835,7 @@ const SAME_FORM_TAG_STRING: &str = r#"
 }
 "#;
 
-run!(same_form_tag_string_refused, SAME_FORM_TAG_STRING, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; FuseExpect::None);
+run!(same_form_tag_string_refused, SAME_FORM_TAG_STRING, refused("same runtime form"); FuseExpect::None);
 
 const SAME_FORM_REFERENCES: &str = r#"
 {
@@ -2873,9 +2845,7 @@ const SAME_FORM_REFERENCES: &str = r#"
 }
 "#;
 
-run!(same_form_references_refused, SAME_FORM_REFERENCES, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; FuseExpect::None);
+run!(same_form_references_refused, SAME_FORM_REFERENCES, refused("same runtime form"); FuseExpect::None);
 
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
@@ -2887,9 +2857,7 @@ const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 }
 "#;
 
-run!(same_form_trait_dispatch_refused, SAME_FORM_TRAIT_DISPATCH, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; FuseExpect::None);
+run!(same_form_trait_dispatch_refused, SAME_FORM_TRAIT_DISPATCH, refused("same runtime form"); FuseExpect::None);
 
 // The same dispatch reached through a generic bound: the instance is never
 // checked again, so the bound refuses the union at the call.
@@ -2904,9 +2872,7 @@ const SAME_FORM_TRAIT_BOUND: &str = r#"
 }
 "#;
 
-run!(same_form_trait_dispatch_bound_refused, SAME_FORM_TRAIT_BOUND, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("can't tell string from `A"))
-}; FuseExpect::None);
+run!(same_form_trait_dispatch_bound_refused, SAME_FORM_TRAIT_BOUND, refused("can't tell string from `A"); FuseExpect::None);
 
 // A compared type and a map key type may hold no two members with one
 // runtime form: `"A" == `A` would be true, and they would be one key.
@@ -2918,9 +2884,7 @@ const SAME_FORM_COMPARE: &str = r#"
 }
 "#;
 
-run!(same_form_compare_refused, SAME_FORM_COMPARE, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; FuseExpect::None);
+run!(same_form_compare_refused, SAME_FORM_COMPARE, refused("same runtime form"); FuseExpect::None);
 
 const SAME_FORM_MAP_KEY: &str = r#"
 {
@@ -2930,9 +2894,7 @@ const SAME_FORM_MAP_KEY: &str = r#"
 }
 "#;
 
-run!(same_form_map_key_refused, SAME_FORM_MAP_KEY, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; FuseExpect::None);
+run!(same_form_map_key_refused, SAME_FORM_MAP_KEY, refused("same runtime form"); FuseExpect::None);
 
 // Members that share a constructor are told apart by their parts, and
 // an empty array of either element type is both.
@@ -3073,8 +3035,7 @@ const OR_BINDS_UNION: &str = r#"
 
 run!(or_binds_union, OR_BINDS_UNION, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => {
-        a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-            == vec![7, 3, 9, 5]
+        as_i64s(a) == [7, 3, 9, 5]
     }
     _ => false,
 }; FuseExpect::Jit);
@@ -3135,52 +3096,30 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(4)))
 );
 
-// CR claude for claude: [structure/low] This loop, pattern_typing_refusals and
-// written_type_constructor_refusals call testing::refusal, which runs the JIT build
-// only. None of their 17 programs gets run!'s interp mode, which fails when `--check`
-// and the build disagree. Make each entry a run!(name, src, refused(why);
-// FuseExpect::None). Across this file, also replace the hand-rolled `matches!(&v,
-// Err(e) if format!("{e:#}").contains(..))` predicates with refused(..). Replace the
-// repeated `cast_to::<i64>().unwrap()).collect` comparisons with one shared helper,
-// moving dense_deltas::as_i64s into graphix_package_core::testing. (tests-select-09)
-#[tokio::test(flavor = "current_thread")]
-async fn coverage_refusals() {
-    use graphix_package_core::testing::refusal;
-    for (src, why) in [
-        // a covered product leaves the catch-all nothing
-        (
-            "{ let f = |v: ([`X, `Y], [`A, `B])| -> i64 select v { (`X, `A) => 1, (`X, `B) => 2, (`Y, `A) => 3, (`Y, `B) => 4, _ => 5 }; f((`Y, `B)) }",
-            "unreachable arm",
-        ),
-        // a type test that does not hold the member covers none of it
-        (
-            "{ let v: (bool, [i64, string]) = (true, 1); select v { (bool, i64) as (true, x) => 1, (bool, string) as (false, x) => 2 } }",
-            "missing match cases",
-        ),
-        // positions are paths, not indexes
-        (
-            "{ let f = |v: ((bool, bool), (bool, bool))| select v { ((true, _), _) => 1, (_, (false, _)) => 2, ((_, true), _) => 3 }; f(((false, true), (true, false))) }",
-            "missing match cases",
-        ),
-        // a repeat matches nothing new
-        ("{ let x = 0; select x { 0 => 1, 0 => 2, _ => 3 } }", "unreachable arm"),
-        (
-            "{ let t = true; select t { true => 1, true => 2, false => 3 } }",
-            "unreachable arm",
-        ),
-        (
-            "{ let p = (true, false); select p { (true, _) => 1, (true, false) => 2, (false, _) => 3 } }",
-            "unreachable arm",
-        ),
-        (
-            "{ let f = |v: [`A(i64), `B]| select v { `A(0) => 1, `A(0) => 2, `A(_) => 3, `B => 4 }; f(`A(0)) }",
-            "unreachable arm",
-        ),
-    ] {
-        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
-        assert!(e.contains(why), "{src}: {e}");
-    }
-}
+// a covered product leaves the catch-all nothing
+run!(covered_product_leaves_catch_all_nothing, "{ let f = |v: ([`X, `Y], [`A, `B])| -> i64 select v { (`X, `A) => 1, (`X, `B) => 2, (`Y, `A) => 3, (`Y, `B) => 4, _ => 5 }; f((`Y, `B)) }",
+    refused("unreachable arm"); FuseExpect::None);
+
+// a type test that does not hold the member covers none of it
+run!(type_test_not_holding_member_covers_none, "{ let v: (bool, [i64, string]) = (true, 1); select v { (bool, i64) as (true, x) => 1, (bool, string) as (false, x) => 2 } }",
+    refused("missing match cases"); FuseExpect::None);
+
+// positions are paths, not indexes
+run!(coverage_positions_are_paths, "{ let f = |v: ((bool, bool), (bool, bool))| select v { ((true, _), _) => 1, (_, (false, _)) => 2, ((_, true), _) => 3 }; f(((false, true), (true, false))) }",
+    refused("missing match cases"); FuseExpect::None);
+
+// a repeat matches nothing new
+run!(repeated_literal_arm_unreachable, "{ let x = 0; select x { 0 => 1, 0 => 2, _ => 3 } }",
+    refused("unreachable arm"); FuseExpect::None);
+
+run!(repeated_bool_arm_unreachable, "{ let t = true; select t { true => 1, true => 2, false => 3 } }",
+    refused("unreachable arm"); FuseExpect::None);
+
+run!(repeated_tuple_arm_unreachable, "{ let p = (true, false); select p { (true, _) => 1, (true, false) => 2, (false, _) => 3 } }",
+    refused("unreachable arm"); FuseExpect::None);
+
+run!(repeated_payload_arm_unreachable, "{ let f = |v: [`A(i64), `B]| select v { `A(0) => 1, `A(0) => 2, `A(_) => 3, `B => 4 }; f(`A(0)) }",
+    refused("unreachable arm"); FuseExpect::None);
 
 // A guarded arm before an unguarded one over a payload holding null leaves
 // the unguarded arm's bind its whole type.
@@ -3221,8 +3160,7 @@ run!(
 }"#,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![5, 7, 1, 11, 5, 5]
+            as_i64s(a) == [5, 7, 1, 11, 5, 5]
         }
         _ => false,
     }
@@ -3242,8 +3180,7 @@ run!(
 }"#,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![3, 3, 4]
+            as_i64s(a) == [3, 3, 4]
         }
         _ => false,
     }
@@ -3289,49 +3226,32 @@ run!(
     FuseExpect::Jit
 );
 
-#[tokio::test(flavor = "current_thread")]
-async fn pattern_typing_refusals() {
-    use graphix_package_core::testing::refusal;
-    for (src, why) in [
-        // a rest is typed from the scrutinee, not the elements beside it
-        (
-            "{ let f = |xs: Array<[i64, null]>| select xs { [0, rest..] => array::fold(rest, 0, |a, x| a + x), _ => 0 }; f([0, null]) }",
-            "cannot compute",
-        ),
-        // an element bind is the scrutinee's element type
-        (
-            "{ let f = |a: Array<[i64, string, f64]>| select a { [1, x] => select x { i64 as n => 0, f64 as d => 1 }, _ => 2 }; f([1, \"q\"]) }",
-            "missing match cases",
-        ),
-        // an alternative's cells are not decided by another's literals
-        (
-            "{ let f = |v: ([i64, null], [i64, null])| select v { p@ (0, y) | p@ (y, 0) => y + 1, _ => 0 }; f((0, null)) }",
-            "cannot compute",
-        ),
-        (
-            "{ let a: Array<[i64, null]> = [null, 1]; select a { [x, 1 | 2] => x + 1, _ => 0 } }",
-            "cannot compute",
-        ),
-        // a shared name is typed over what every alternative can match
-        (
-            "{ let f = |v: [`A(i64, i64), `A(string, i64)]| -> i64 select v { `A(x, 1) | `A(_, x) => x }; f(`A(\"s\", 1)) }",
-            "does not contain",
-        ),
-        // an or-arm is a wildcard only through a bare name
-        (
-            "{ let f = |t: [(i64, i64), (i64, i64, i64)]| select t { (x, 0, _) | (x, _) => x }; f((7, 8, 9)) }",
-            "missing match cases",
-        ),
-        // an alternative is taken by its structure
-        (
-            "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
-            "can't tell",
-        ),
-    ] {
-        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
-        assert!(e.contains(why), "{src}: {e}");
-    }
-}
+// a rest is typed from the scrutinee, not the elements beside it
+run!(rest_typed_from_scrutinee, "{ let f = |xs: Array<[i64, null]>| select xs { [0, rest..] => array::fold(rest, 0, |a, x| a + x), _ => 0 }; f([0, null]) }",
+    refused("cannot compute"); FuseExpect::None);
+
+// an element bind is the scrutinee's element type
+run!(element_bind_is_scrutinee_element, "{ let f = |a: Array<[i64, string, f64]>| select a { [1, x] => select x { i64 as n => 0, f64 as d => 1 }, _ => 2 }; f([1, \"q\"]) }",
+    refused("missing match cases"); FuseExpect::None);
+
+// an alternative's cells are not decided by another's literals
+run!(alternative_cells_not_decided_by_another, "{ let f = |v: ([i64, null], [i64, null])| select v { p@ (0, y) | p@ (y, 0) => y + 1, _ => 0 }; f((0, null)) }",
+    refused("cannot compute"); FuseExpect::None);
+
+run!(slice_alternative_cells_not_decided_by_another, "{ let a: Array<[i64, null]> = [null, 1]; select a { [x, 1 | 2] => x + 1, _ => 0 } }",
+    refused("cannot compute"); FuseExpect::None);
+
+// a shared name is typed over what every alternative can match
+run!(shared_name_typed_over_every_alternative, "{ let f = |v: [`A(i64, i64), `A(string, i64)]| -> i64 select v { `A(x, 1) | `A(_, x) => x }; f(`A(\"s\", 1)) }",
+    refused("does not contain"); FuseExpect::None);
+
+// an or-arm is a wildcard only through a bare name
+run!(or_arm_wildcard_only_through_bare_name, "{ let f = |t: [(i64, i64), (i64, i64, i64)]| select t { (x, 0, _) | (x, _) => x }; f((7, 8, 9)) }",
+    refused("missing match cases"); FuseExpect::None);
+
+// an alternative is taken by its structure
+run!(alternative_taken_by_structure, "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
+    refused("can't tell"); FuseExpect::None);
 
 // A wake's own fire (a woken arm's constants, through any operator, call,
 // builtin, select, formal or collection loop) never rewrites a `<-`
@@ -3378,8 +3298,7 @@ const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
 
 run!(wake_fire_keeps_targets, WAKE_FIRE_KEEPS_TARGETS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => {
-        a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-            == vec![22; 14]
+        as_i64s(a) == [22; 14]
     }
     _ => false,
 });
@@ -3491,35 +3410,21 @@ run!(
 }"#,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) => {
-            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![1, 0, 3, 30, 7, 5, 8]
+            as_i64s(a) == [1, 0, 3, 30, 7, 5, 8]
         }
         _ => false,
     }
 );
 
-#[tokio::test(flavor = "current_thread")]
-async fn written_type_constructor_refusals() {
-    use graphix_package_core::testing::refusal;
-    for (src, why) in [
-        // a constructor over a union is refutable
-        (
-            "{ let v: [`A(i64), `B] = `B; let `A(x) = v; x }",
-            "refutable patterns are not allowed in let",
-        ),
-        // a slice of tuples under a written type covers no length of a
-        // union of tuple shapes
-        (
-            "{ type U = [(i64, i64), (i64, i64, i64)]; let f = |a: Array<U>| select a { Array<U> as [(x, _)] => x, [] => 0, [_, _, ..] => 9 }; f([(1, 2)]) }",
-            "missing match cases",
-        ),
-        // a structure test that passes another member's runtime form
-        (
-            "{ let v: [`A(i64), (string, i64)] = (\"A\", 5); select v { [`A(i64), (string, i64)] as `A(x) => x, _ => 0 } }",
-            "can't tell",
-        ),
-    ] {
-        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
-        assert!(e.contains(why), "{src}: {e}");
-    }
-}
+// a constructor over a union is refutable
+run!(constructor_over_union_refutable_in_let, "{ let v: [`A(i64), `B] = `B; let `A(x) = v; x }",
+    refused("refutable patterns are not allowed in let"); FuseExpect::None);
+
+// a slice of tuples under a written type covers no length of a
+// union of tuple shapes
+run!(written_slice_of_tuples_covers_no_union_length, "{ type U = [(i64, i64), (i64, i64, i64)]; let f = |a: Array<U>| select a { Array<U> as [(x, _)] => x, [] => 0, [_, _, ..] => 9 }; f([(1, 2)]) }",
+    refused("missing match cases"); FuseExpect::None);
+
+// a structure test that passes another member's runtime form
+run!(structure_test_passing_another_members_form, "{ let v: [`A(i64), (string, i64)] = (\"A\", 5); select v { [`A(i64), (string, i64)] as `A(x) => x, _ => 0 } }",
+    refused("can't tell"); FuseExpect::None);

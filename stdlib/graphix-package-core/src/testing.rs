@@ -481,6 +481,17 @@ pub async fn updates_until_quiet(
     }
 }
 
+/// `values`, every one an i64.
+pub fn as_i64s(values: &[Value]) -> Vec<i64> {
+    values
+        .iter()
+        .map(|v| match v {
+            Value::I64(n) => *n,
+            v => panic!("expected i64, got {v:?}"),
+        })
+        .collect()
+}
+
 /// A [`run!`] predicate for a program that must be refused: its compile
 /// error contains `phrase`. A parse error or a dead runtime does not
 /// match the rule's message.

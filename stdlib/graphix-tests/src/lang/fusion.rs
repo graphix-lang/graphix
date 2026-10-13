@@ -1896,7 +1896,7 @@ async fn always_raising_operand(mode: graphix_package_core::testing::Mode) -> Re
         mode,
     )
     .await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), vec![0, 1]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![0, 1]);
     Ok(())
 }
 
@@ -1938,7 +1938,7 @@ async fn tail_body_with_collection(
         mode,
     )
     .await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), vec![6]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![6]);
     Ok(())
 }
 
@@ -1963,7 +1963,7 @@ async fn fresh_depth_is_born(mode: graphix_package_core::testing::Mode) -> Resul
         mode,
     )
     .await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values).last(), Some(&5));
+    assert_eq!(graphix_package_core::testing::as_i64s(&values).last(), Some(&5));
     Ok(())
 }
 

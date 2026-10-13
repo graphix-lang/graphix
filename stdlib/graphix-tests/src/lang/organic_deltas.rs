@@ -2,9 +2,9 @@
 // input fires; no node stores a previous value or selection to decide a
 // tag. Do not adjust these expectations without a ruling.
 
-use super::dense_deltas::{as_i64s, run_delta};
+use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::Mode;
+use graphix_package_core::testing::{Mode, as_i64s};
 
 // A scrutinee re-fire on the same arm emits: x delivers 1, 2, 2 into a
 // const `_` arm; count [1, 2, 3].

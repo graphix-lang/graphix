@@ -665,7 +665,7 @@ async fn core_display_println(mode: Mode) -> Result<()> {
         42
     }"##;
     let (values, out) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), vec![42]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![42]);
     let (dbg, mut lines): (Vec<&str>, Vec<&str>) =
         out.lines().partition(|l| l.ends_with("): {c: #123, n: 1}"));
     lines.sort();

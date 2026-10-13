@@ -76,7 +76,7 @@ async fn destructured_snapshot(mode: Mode) -> Result<()> {
             }}"#
         );
         let (values, _) = super::dense_deltas::run_delta(&code, mode).await?;
-        assert_eq!(super::dense_deltas::as_i64s(&values), [0], "{trigger}");
+        assert_eq!(graphix_package_core::testing::as_i64s(&values), [0], "{trigger}");
     }
     Ok(())
 }
@@ -97,14 +97,18 @@ async fn trigger_writes_reach_the_variable(mode: Mode) -> Result<()> {
             }}"#
         );
         let (values, _) = super::dense_deltas::run_delta(&code, mode).await?;
-        assert_eq!(super::dense_deltas::as_i64s(&values), [10], "{body}");
+        assert_eq!(graphix_package_core::testing::as_i64s(&values), [10], "{body}");
     }
     let code = r#"{
         let t = 0;
         seq t { t <- 10; sys::time::after_idle(duration:20.ms, 1); t + 1 }
     }"#;
     let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), [1], "the body reads the snapshot");
+    assert_eq!(
+        graphix_package_core::testing::as_i64s(&values),
+        [1],
+        "the body reads the snapshot"
+    );
     Ok(())
 }
 

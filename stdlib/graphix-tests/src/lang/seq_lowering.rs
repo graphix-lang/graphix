@@ -2,9 +2,9 @@
 // attributes, declarations, scopes, places, function arguments and the
 // queue's flush (design/seq_blocks.md).
 
-use super::dense_deltas::{as_i64s, run_delta};
+use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, eval};
+use graphix_package_core::testing::{Mode, as_i64s, eval};
 use netidx::publisher::Value;
 
 async fn last(code: &str, mode: Mode) -> Result<Value> {

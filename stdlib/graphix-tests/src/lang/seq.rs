@@ -1,11 +1,11 @@
 // seq (design/seq_blocks.md): pc-machine atoms, then the surface
 // construct. Straight-line only.
 
-use super::dense_deltas::{as_i64s, run_delta};
+use super::dense_deltas::run_delta;
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, eval},
+    testing::{FuseExpect, Mode, as_i64s, eval},
 };
 use netidx::publisher::Value;
 

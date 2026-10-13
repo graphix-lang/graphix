@@ -7,7 +7,8 @@ use graphix_compiler::ParMode;
 use graphix_package_core::{
     PrintSink,
     testing::{
-        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Mode, as_i64s, compile_result, fixture_runtime, result_source,
+        updates_until_quiet,
     },
 };
 use netidx::publisher::Value;
@@ -64,16 +65,6 @@ pub(super) async fn run_delta_with(
     let (forks, build_forks) = (control.forks(), control.build_forks());
     ctx.shutdown().await;
     Ok(Delta { values, out, forks, build_forks })
-}
-
-pub(super) fn as_i64s(values: &[Value]) -> Vec<i64> {
-    values
-        .iter()
-        .map(|v| match v {
-            Value::I64(n) => *n,
-            v => panic!("expected i64, got {v:?}"),
-        })
-        .collect()
 }
 
 // A constant print message fires once in both engines.

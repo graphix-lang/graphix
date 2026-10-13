@@ -1,9 +1,9 @@
-use super::dense_deltas::{as_i64s, run_delta};
+use super::dense_deltas::run_delta;
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::CFlag;
-use graphix_package_core::testing::Mode;
 use graphix_package_core::testing::init_with_flags_and_setup;
+use graphix_package_core::testing::{Mode, as_i64s};
 use netidx_value::{ValArray, Value};
 use tokio::sync::mpsc;
 

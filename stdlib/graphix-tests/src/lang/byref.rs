@@ -476,7 +476,8 @@ const BYREF_LET: &str = r#"{
 }"#;
 
 async fn byref_expr_same_cycle(mode: Mode) -> Result<()> {
-    use super::dense_deltas::{as_i64s, run_delta};
+    use super::dense_deltas::run_delta;
+    use graphix_package_core::testing::as_i64s;
     let (expr, _) = run_delta(BYREF_EXPR, mode).await?;
     let (bind, _) = run_delta(BYREF_LET, mode).await?;
     assert_eq!(as_i64s(&expr), as_i64s(&bind));
@@ -686,7 +687,8 @@ const MOVING_REFERENCE_HELD: &str = r#"{
 }"#;
 
 async fn moving_reference_held(mode: Mode) -> Result<()> {
-    use super::dense_deltas::{as_i64s, run_delta};
+    use super::dense_deltas::run_delta;
+    use graphix_package_core::testing::as_i64s;
     let (values, _) = run_delta(MOVING_REFERENCE_HELD, mode).await?;
     assert_eq!(as_i64s(&values), vec![11, 33]);
     Ok(())

@@ -3,9 +3,9 @@
 // through a call or a reference as well as a `<-`, and a passed step is
 // asleep.
 
-use super::dense_deltas::{as_i64s, run_delta};
+use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::Mode;
+use graphix_package_core::testing::{Mode, as_i64s};
 
 async fn run(code: &str, mode: Mode) -> Result<Vec<i64>> {
     Ok(as_i64s(&run_delta(code, mode).await?.0))

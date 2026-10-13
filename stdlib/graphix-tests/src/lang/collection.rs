@@ -462,7 +462,8 @@ run!(collection_returns_a_generic_function, r#"{
 // whatever tag the source arrives with (an arm waking after another arm
 // consumed the source's fire), as the fused loop does.
 async fn collection_fires_on_a_stale_resize(mode: Mode) -> Result<()> {
-    use super::dense_deltas::{as_i64s, run_delta};
+    use super::dense_deltas::run_delta;
+    use graphix_package_core::testing::as_i64s;
     let (values, _) = run_delta(
         r#"{
             let n = 0;

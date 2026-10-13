@@ -401,7 +401,7 @@ const FOLD_OVER_OVERSIZE_INIT_BOTTOMS: &str = r#"
 async fn fold_over_oversize_init_bottoms(mode: Mode) -> Result<()> {
     let (values, _) =
         super::dense_deltas::run_delta(FOLD_OVER_OVERSIZE_INIT_BOTTOMS, mode).await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), [1]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), [1]);
     Ok(())
 }
 

@@ -2056,7 +2056,7 @@ const TAIL_QUIET_BOTTOM_INLINE: &str = r#"{
 
 async fn tail_quiet_bottom(code: &str, mode: Mode) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), vec![6, 6]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![6, 6]);
     Ok(())
 }
 
@@ -2572,7 +2572,7 @@ async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
         select array::iter([0, 1]) { 0 => 0, _ => f(10) }
     }"#;
     let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), [0, 10]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), [0, 10]);
     let code = r#"{
         let t = array::iter([0, 1]);
         let d = 5;
@@ -2581,7 +2581,7 @@ async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
         g(10)
     }"#;
     let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), [10, 11]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), [10, 11]);
     Ok(())
 }
 
@@ -2824,7 +2824,7 @@ async fn rebind_reads_quiet_args(mode: Mode) -> Result<()> {
         mode,
     )
     .await?;
-    assert_eq!(super::dense_deltas::as_i64s(&values), vec![6, 50]);
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![6, 50]);
     Ok(())
 }
 
