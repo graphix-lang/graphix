@@ -1269,6 +1269,18 @@ async fn edit_selection(items: &[Item]) -> Result<Outcome> {
     }
 }
 
+/// A backup of a replaced shell is named this prefix, then the local time
+/// it was made in `BACKUP_STAMP`'s format.
+const BACKUP_PREFIX: &str = "graphix-previous-";
+const BACKUP_STAMP: &str = "%Y%m%d-%H%M%S";
+
+/// When the backup named `name` was made, read from its name: a copy keeps
+/// its source's mtime on some platforms.
+fn backup_stamp(name: &str) -> Option<chrono::NaiveDateTime> {
+    let stamp = name.strip_prefix(BACKUP_PREFIX)?.get(..15)?;
+    chrono::NaiveDateTime::parse_from_str(stamp, BACKUP_STAMP).ok()
+}
+
 /// The Graphix package manager
 pub struct GraphixPM {
     cratesio: AsyncClient,
@@ -1393,9 +1405,9 @@ impl GraphixPM {
         println!("Updating Cargo.toml...");
         rewrite_manifest(source_dir, &plan.external).await?;
         // Save previous binary
-        let date = Local::now().format("%Y%m%d-%H%M%S");
+        let date = Local::now().format(BACKUP_STAMP);
         let backup_name = format!(
-            "graphix-previous-{date}{}",
+            "{BACKUP_PREFIX}{date}{}",
             self.exe
                 .extension()
                 .map(|e| format!(".{}", e.to_string_lossy()))
@@ -1435,32 +1447,13 @@ impl GraphixPM {
     async fn cleanup_old_binaries(&self) {
         let Some(bin_dir) = self.exe.parent() else { return };
         let Ok(mut entries) = fs::read_dir(bin_dir).await else { return };
-        let week_ago = std::time::SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
+        let week_ago = Local::now().naive_local() - chrono::Duration::days(7);
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if !name.starts_with("graphix-previous-") {
-                continue;
-            }
-            if let Ok(md) = entry.metadata().await {
-                // CR claude for claude: [bug/medium] Pruning by mtime deletes the
-                // backup this same run just made, on macOS and Windows.
-                // install_from_source creates the backup with fs::copy. On Apple
-                // targets, std's copy uses fclonefileat, or fcopyfile with COPYFILE_ALL
-                // (which includes COPYFILE_STAT). On Windows it uses CopyFileExW. All
-                // of these keep the source's modification time. So when the installed
-                // graphix is more than a week old, its fresh graphix-previous-<now>
-                // copy is already "older than a week" when cleanup_old_binaries runs
-                // after cargo install, and it gets removed, leaving nothing to roll
-                // back to. Linux is unaffected because its copy gets a new mtime. Fix:
-                // prune by the %Y%m%d-%H%M%S stamp in the file name (parse it with
-                // chrono), or set the backup's mtime to now right after the copy.
-                // (package-04)
-                if let Ok(modified) = md.modified() {
-                    if modified < week_ago {
-                        let _ = fs::remove_file(entry.path()).await;
-                    }
-                }
+            if let Some(made) = name.to_str().and_then(backup_stamp)
+                && made < week_ago
+            {
+                let _ = fs::remove_file(entry.path()).await;
             }
         }
     }

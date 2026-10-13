@@ -453,6 +453,14 @@ mod pure {
     }
 
     #[test]
+    fn backups_are_dated_by_name() {
+        let made = super::super::backup_stamp("graphix-previous-20260102-030405.exe");
+        assert_eq!(made.unwrap().to_string(), "2026-01-02 03:04:05");
+        assert!(super::super::backup_stamp("graphix-previous-2026").is_none());
+        assert!(super::super::backup_stamp("graphix").is_none());
+    }
+
+    #[test]
     fn migrate_all_default_stdlib() {
         let mut toml = String::from("[packages]\n");
         for name in DEFAULT_PACKAGES {
