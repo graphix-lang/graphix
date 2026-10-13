@@ -1,3 +1,4 @@
+// ANCHOR: widget
 /// Widget types (content within a window)
 type Widget = [
   `Button(button::Button),
@@ -35,6 +36,7 @@ type Widget = [
   `DataTable(data_table::DataTable)
 ];
 
+// ANCHOR_END: widget
 type Length = [`Fill, `FillPortion(i64), `Shrink, `Fixed(f64)];
 type Padding = [`All(f64), `Axis({x: f64, y: f64}), `Each({top: f64, right: f64, bottom: f64, left: f64})];
 type Size = { width: f64, height: f64 };

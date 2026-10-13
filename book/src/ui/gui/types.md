@@ -1,6 +1,6 @@
 # Types
 
-The GUI library defines a set of shared types used across all widgets. These types control layout, sizing, colors, fonts, and more. They are all defined in the top-level `gui` module and become available when you write `use gui`.
+The GUI library defines a set of shared types used across all widgets. These types control layout, sizing, colors, fonts, and more. They are all defined in the top-level `gui` module: write them `gui::Length`, or import them by name, `use gui::{Length, Padding}`.
 
 ## Layout Types
 
@@ -179,77 +179,18 @@ type ContentFit = [`Fill, `Contain, `Cover, `None, `ScaleDown];
 
 ## The Widget Type
 
-<!-- CR claude for claude: [doc-drift/low] The `type Widget` block below is stale. It
-lists `` `Svg(svg::Svg) ``, but there is no svg module (SVG goes through `image` with
-`ImageSource`'s `` `Svg ``). It also omits ContextMenu, Grid, Markdown, MenuBar, QrCode,
-Table and DataTable, which the `Widget` type in gui's mod.gxi has. Copy the block from
-mod.gxi, or replace it with a sentence and a link so it cannot drift again.
-(book-ui-a-05) -->
-<!-- CR claude for claude: [doc-drift/medium] The Widget type below is out of date with
-gui's mod.gxi. It lacks `ContextMenu, `Grid, `Markdown, `MenuBar, `QrCode, `Table and
-`DataTable, and it lists a `Svg variant that does not exist, so a reader who matches on
-Widget writes an arm the checker refuses. Four other hand-copied blocks have drifted
-too. overview.md's Window and window lack the icon field and the ?#icon argument that
-every example passes. radio.md gives #selected as &'a where radio.gxi has &['a, null].
-menu.md's MenuAction gives on_click as &fn(a: null) -> Any where menu.gxi has &[fn(e:
-null) -> Any, null]. Replace hand-copied interface blocks with {{#include}} of the .gxi,
-as image.md, chart.md, keyboard_area.md and data_table.md do; for mod.gxi, include a
-line range or an anchor. Also rewrite overview.md's "`use gui` brings the top-level GUI
-module into scope" bullet to describe the `use gui::{window, text::text, ..}` form that
-hello.gx uses. (examples-gui-02) -->
 `Widget` is a union of all individual widget types. Most widget constructor functions return `Widget`, which means you can freely mix different widget types in arrays and containers:
 
 ```graphix
-type Widget = [
-  `Button(button::Button),
-  `Canvas(canvas::Canvas),
-  `Chart(chart::Chart),
-  `Checkbox(checkbox::Checkbox),
-  `Column(column::Column),
-  `ComboBox(combo_box::ComboBox),
-  `Container(container::Container),
-  `HorizontalRule(rule::HorizontalRule),
-  `Image(image::Image),
-  `KeyboardArea(keyboard_area::KeyboardArea),
-  `MouseArea(mouse_area::MouseArea),
-  `PickList(pick_list::PickList),
-  `ProgressBar(progress_bar::ProgressBar),
-  `Radio(radio::Radio),
-  `Row(row::Row),
-  `Scrollable(scrollable::Scrollable),
-  `Slider(slider::Slider),
-  `Space(space::Space),
-  `Stack(stack::Stack),
-  `Svg(svg::Svg),
-  `Text(text::Text),
-  `TextEditor(text_editor::TextEditor),
-  `TextInput(text_input::TextInput),
-  `Toggler(toggler::Toggler),
-  `Tooltip(tooltip::Tooltip),
-  `VerticalRule(rule::VerticalRule),
-  `VerticalSlider(vertical_slider::VerticalSlider)
-];
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:widget}}
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] The example below does not compile. `use
-gui; use gui::text; ..` imports the module names, so `column` is not defined and
-`text(..)` names the module. The page intro has the same mistake ("become available when
-you write `use gui`"): after `use gui;`, `Length` is an undefined type. overview.md's
-bullets under 'A few things to notice' repeat it and do not match the `use gui::{window,
-button::button, ..}` that hello.gx actually writes. Write `use gui::{column::column,
-text::text, button::button, slider::slider};`, say that the shared types are written
-`gui::Length` or imported by name (`use gui::{Length, Padding}`), and fix the overview
-bullets to match. probe:
-design/review-2026-10-12/repro/book-ui-a-types-widget-imports.gx (book-ui-a-04) -->
 You do not normally construct `Widget` variants directly. Each widget module exports a constructor function (e.g., `gui::text::text(...)`, `gui::button::button(...)`) that returns `Widget`. This means a column's children array has type `Array<Widget>` and can contain any mix of widgets:
 
 ```graphix
-use gui;
-use gui::text;
-use gui::button;
-use gui::slider;
+use gui::{button::button, column::column, slider::slider, text::text};
 
-let v = 50.0
+let v = 50.0;
 
 column(
   #spacing: &10.0,

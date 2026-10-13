@@ -37,8 +37,8 @@ Here is a minimal GUI program that creates a window with text and a button:
 
 A few things to notice:
 
-- `use gui` brings the top-level GUI module into scope, which gives access to `window` and shared types like `Length`, `Padding`, and `Theme`.
-- Individual widget modules (`gui::text`, `gui::column`, `gui::button`) are imported separately.
+- `use gui::{window, ..}` imports `window` from the top-level GUI module, which also holds the shared types like `Length`, `Padding`, and `Theme` (write `gui::Length`, or import them by name too).
+- Each widget lives in a module of its own name, so the widget function is imported by its path: `button::button`, `column::column`, `text::text`.
 - Widget arguments are passed as references with `&`. Even literal values like `&20.0` and `&"Hello, Graphix GUI!"` are wrapped in `&`.
 - The program's final value is a one-element array `[&window(...)]`, which has type `Gui`.
 
