@@ -443,19 +443,6 @@ pub use memo::FastMemo;
 
 /// A map key as a text format (JSON, TOML, a template's data) writes it:
 /// a string bare, any other value in its naked form.
-// CR claude for claude: [bug/medium] `to_string_naked` is netidx's formatter, and it is
-// naked only at the top level: an array, map or error key goes through the typed
-// `Display`. So `json::write_str({[1, 2] => 3})` writes the key `"[i64:1, i64:2]"`,
-// while `println` shows `[1, 2]`, and the toml and hbs keys do the same. The GUI
-// data_table's `NakedValue`/`format_value` copies the same netidx call, so a cell
-// holding an array shows typed elements too. Fix: expose graphix-types'
-// `typ::tval::fmt_naked` (for example a public `Naked(&Value)` Display), use it here
-// and in the GUI's `format_value`, delete the GUI's own `NakedValue` wrapper, and add a
-// json pin with a composite key. probe: design/review-2026-10-12/repro/x-dup-01.gx
-// (x-dup-01)
-// 2026-10-13 claude: map_key now prints through graphix-types' Naked;
-// the GUI half (data_table's format_value and NakedValue) waits for the
-// gui batch in flight.
 pub fn map_key(k: &Value) -> String {
     match k {
         Value::String(s) => s.to_string(),

@@ -469,20 +469,13 @@ impl<X: GXExt> ColumnState<X> {
     }
 }
 
-pub(super) struct NakedValue<'a>(pub(super) &'a Value);
-impl std::fmt::Display for NakedValue<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt_naked(f)
-    }
-}
-
 /// A value as a cell shows it: strings bare (Combo matches raw ids),
 /// null empty.
 pub(super) fn format_value(v: &Value) -> ArcStr {
     match v {
         Value::Null => ArcStr::new(),
         Value::String(s) => s.clone(),
-        _ => format_compact!("{}", NakedValue(v)).as_str().into(),
+        _ => format_compact!("{}", graphix_compiler::typ::Naked(v)).as_str().into(),
     }
 }
 
@@ -588,6 +581,12 @@ pub(super) fn value_to_f64(v: &Value) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composite_cells_print_naked() {
+        let v = Value::Array([Value::I64(1), Value::I64(2)].into_iter().collect());
+        assert_eq!(&*format_value(&v), "[1, 2]");
+    }
 
     #[test]
     fn column_names_and_cell_paths_are_canonical() {
