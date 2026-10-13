@@ -528,7 +528,7 @@ async fn compile_each<T, F: Future<Output = Result<T>>>(
 /// struct field `size`, written when the size changes.
 struct SizeReport<X: GXExt> {
     r: Option<graphix_rt::Ref<X>>,
-    last: SizeV,
+    last: Option<SizeV>,
 }
 
 impl<X: GXExt> SizeReport<X> {
@@ -542,20 +542,13 @@ impl<X: GXExt> SizeReport<X> {
             Some(id) => Some(gx.compile_ref(id).await?),
             None => None,
         };
-        // CR claude for claude: [bug/low] last starts at 0x0, which means both "never
-        // reported" and "reported 0x0". A widget whose first draw gets an empty area (a
-        // Length(0) slot, a bordered block in a two-row area) compares equal and never
-        // writes, so the program's #size stays null instead of becoming {height: 0,
-        // width: 0}. It stays null until the area grows. Fix: make last an
-        // Option<SizeV>, None until the first report, and write whenever it differs
-        // from Some(size). (tui-core-09)
-        Ok(Self { r, last: SizeV::default() })
+        Ok(Self { r, last: None })
     }
 
     fn report(&mut self, rect: Rect) -> Result<()> {
         let size = SizeV::from(rect);
-        if self.last != size {
-            self.last = size;
+        if self.last != Some(size) {
+            self.last = Some(size);
             if let Some(r) = &mut self.r {
                 r.set_deref(size)?;
             }

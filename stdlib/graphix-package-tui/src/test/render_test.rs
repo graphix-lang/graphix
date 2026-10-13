@@ -288,3 +288,22 @@ async fn size_outputs_require_writable_references() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_zero_area_is_reported_on_the_first_draw() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::{Size, block::block, text::text};
+let size: Size = never();
+let result = block(#border: &`All, #size: &mut size, &text(&"body"))
+"#,
+        2,
+        2,
+    )
+    .await?;
+    h.watch("test::size").await?;
+    h.render()?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::size"), Some(&crate::SizeV::new(0, 0).into()));
+    Ok(())
+}
