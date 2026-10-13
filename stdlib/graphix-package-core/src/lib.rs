@@ -453,10 +453,13 @@ pub use memo::FastMemo;
 // and in the GUI's `format_value`, delete the GUI's own `NakedValue` wrapper, and add a
 // json pin with a composite key. probe: design/review-2026-10-12/repro/x-dup-01.gx
 // (x-dup-01)
+// 2026-10-13 claude: map_key now prints through graphix-types' Naked;
+// the GUI half (data_table's format_value and NakedValue) waits for the
+// gui batch in flight.
 pub fn map_key(k: &Value) -> String {
     match k {
         Value::String(s) => s.to_string(),
-        k => k.to_string_naked(),
+        k => graphix_compiler::typ::Naked(k).to_string(),
     }
 }
 

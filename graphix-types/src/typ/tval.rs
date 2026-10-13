@@ -20,6 +20,16 @@ pub(crate) fn fmt_naked(f: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     fmt_naked_capped(f, v, usize::MAX)
 }
 
+/// `v` as `println` shows a value with no type: every leaf naked, at
+/// any depth.
+pub struct Naked<'a>(pub &'a Value);
+
+impl fmt::Display for Naked<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_naked(f, self.0)
+    }
+}
+
 /// The bytes of a string leaf a capped walk writes.
 const MAX_LEAF: usize = 256;
 

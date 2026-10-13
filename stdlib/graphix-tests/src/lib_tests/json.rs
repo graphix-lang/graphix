@@ -270,3 +270,9 @@ run!(writers_refuse_references, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == r#"error:["JsonErr", "a reference cannot be written as JSON"]|error:["TomlErr", "a reference cannot be written as TOML"]|error:["HbsErr", "a reference cannot be written as JSON"]"#)
 }; FuseExpect::Jit);
+
+// A composite map key is written as println shows it, naked at every
+// depth.
+run!(json_composite_key_is_naked, r#"json::write_str({[1, 2] => 3})$"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"{"[1, 2]":3}"#)
+}; FuseExpect::Jit);

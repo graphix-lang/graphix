@@ -50,7 +50,7 @@ pub(crate) mod tval;
 pub mod tvar;
 
 pub use fntyp::{FnArgKind, FnArgType, FnType, seed_conjuncts};
-pub use tval::TVal;
+pub use tval::{Naked, TVal};
 pub use tvar::TVar;
 
 struct AndAc(bool);
