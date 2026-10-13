@@ -11,7 +11,7 @@ that using type variables and constraints in our annotations.
 〉let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y
 〉f
 -: fn<'a: unbound: Number + Singleton>(x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
-160
+Abstract('a: Number |x: 'a, y: 'a| -> 'a x + y)
 ```
 
 In type annotations of lambda expressions,
@@ -145,7 +145,7 @@ without issue, but sometimes annotations are required.
 〉 let apply = |x: 'a, f: fn(x: 'a) -> 'b throws 'e| -> 'b throws 'e f(x)
 〉 apply
 -: fn<'e: unbound: _>(x: 'a: unbound, f: fn(x: 'a: unbound) -> 'b: unbound throws 'e: unbound) -> 'b: unbound throws 'e: unbound
-163
+Abstract(|x: 'a, f: fn(x: 'a) -> 'b throws 'e| -> 'b throws 'e f(x))
 ```
 
 Here we've specified a single argument apply, it takes an argument, and a
