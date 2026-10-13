@@ -195,11 +195,7 @@ impl GuiTestHarness {
     }
 
     /// Drain and `before_view` in a loop until `pred(self)` holds;
-    /// panics when `within` elapses.
-    // CR claude for claude: [doc-drift/low] The doc says this panics when `within`
-    // elapses, but the body bails with an error. A caller who trusts the doc and
-    // discards the Result skips the wait silently. Change the doc to say it returns an
-    // error when `within` elapses. (tests-gui-b-13)
+    /// returns an error when `within` elapses.
     async fn wait_until<F>(
         &mut self,
         mut pred: F,
