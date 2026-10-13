@@ -145,16 +145,6 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     let nepochs = 1 + rng.below(3);
     let epochs =
         (0..nepochs).map(|_| vec![Lit::I64((rng.below(37) as i64) - 5)]).collect();
-    // CR claude for claude: [test-gap/medium] Twins are the only generated callable-v1
-    // programs. Their handler always takes one i64 and is a fixed shape of selects and
-    // connects, and callable programs never enter the mutation ring. So the embedder
-    // dispatch route (compile_callable + call, how every GUI/TUI handler runs) never
-    // runs a seq/seqq machine, abort/flush, a labeled or second argument, or an async
-    // builtin. A bug in how a machine is entered or reset across Callable::call epochs,
-    // or in busy-drop against a second call, cannot be generated. Fix: let
-    // reactive::ceremony render into a module handler (`let handler = |x: i64| -> i64
-    // seqq x { .. }`) and emit it in callable form half the time, as twins are. Draw
-    // 1-2 args (i64 or bool, optionally labeled). (fuzz-gen-b-04)
     TwinShape { module: m, args: vec![("cx0", "i64")], epochs }
 }
 

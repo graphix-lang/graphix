@@ -87,10 +87,76 @@ pub const STEP_KINDS: [StepKind; 10] = [
 /// Generate one reactive wrapper (schedule header + body) with the
 /// default profile. A slice of the lane is metamorphic twin programs.
 pub fn gen_reactive_program(rng: &mut Rng) -> String {
-    if rng.below(100) < 15 {
-        return super::twin::gen_twin_program(rng);
+    match rng.below(100) {
+        0..15 => super::twin::gen_twin_program(rng),
+        15..25 => gen_callable_ceremony(rng),
+        _ => gen_reactive_stats(&GenCfg::default(), rng).0,
     }
-    gen_reactive_stats(&GenCfg::default(), rng).0
+}
+
+/// A callable-form program whose handler is a `seq` or `seqq` machine
+/// over its arguments (an `i64`, sometimes a `bool` too), dispatched
+/// through the embedder's `Callable::call` and in language, 1-4 calls: a
+/// call while a run is busy is dropped or queued. The machine's effects
+/// land in module state the driver observes.
+fn gen_callable_ceremony(rng: &mut Rng) -> String {
+    use crate::callable::CallSpec;
+    let mut ctx = GenCtx::new();
+    let flag = chance(rng, 0.5);
+    let (x, h, y) = ("x", "h", "y");
+    let mut m = String::from("let acc = i64:0;\nlet runs = i64:0;\n");
+    let hbody = {
+        let mark = ctx.mark();
+        ctx.push(y.into(), I64);
+        let e = exprs::gen_typed(&ctx, rng, &I64, 1);
+        ctx.truncate(mark);
+        e
+    };
+    m.push_str(&format!("let {h} = |{y}: i64| -> i64 {hbody};\n"));
+    ctx.push(x.into(), I64);
+    if flag {
+        ctx.push("b".into(), GenType::Bool);
+    }
+    ctx.no_catch = true;
+    let mut steps = Vec::new();
+    for i in 0..2 + rng.below(4) {
+        let a = format!("a{i}");
+        let step = match rng.below(6) {
+            0 => format!("let {a} = {}", exprs::gen_typed(&ctx, rng, &I64, 1)),
+            1 => format!("let {a} = {h}({})", exprs::gen_typed(&ctx, rng, &I64, 1)),
+            2 => format!("acc <- acc + {}", exprs::gen_typed(&ctx, rng, &I64, 1)),
+            3 => format!("println(\"[{}]\")", exprs::gen_typed(&ctx, rng, &I64, 1)),
+            4 if flag => "until b".into(),
+            _ => format!(
+                "{{ let {a} = {}; acc <- {a} }}",
+                exprs::gen_typed(&ctx, rng, &I64, 1)
+            ),
+        };
+        if step.starts_with(&format!("let {a} ")) {
+            ctx.push(a, I64);
+        }
+        steps.push(step);
+    }
+    steps.push("runs <- runs + i64:1".into());
+    steps.push("null".into());
+    let kw = if chance(rng, 0.5) { "seq" } else { "seqq" };
+    let params = if flag { "x: i64, b: bool" } else { "x: i64" };
+    m.push_str(&format!(
+        "let handler = |{params}| -> null {kw} {x} {{\n  {}\n}};\n",
+        steps.join(";\n  ")
+    ));
+    m.push_str("let observe = (acc, runs)\n");
+    let epochs = (0..1 + rng.below(4))
+        .map(|_| {
+            let mut args = vec![("cx0".to_string(), Lit::I64(rng.below(21) as i64 - 10))];
+            if flag {
+                args.push(("cx1".to_string(), Lit::Bool(chance(rng, 0.6))));
+            }
+            args
+        })
+        .collect();
+    let spec = CallSpec { handler: "m0::handler".into(), epochs };
+    spec.render(&format!("{{ let o = m0::observe; o }}\n// file-v1: m0.gx\n{m}"))
 }
 
 pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats) {
