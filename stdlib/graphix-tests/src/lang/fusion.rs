@@ -193,45 +193,32 @@ async fn load_uses_external_scalar() -> Result<()> {
 // Closure conversion: a capturing lambda's captures become extra kernel
 // args the caller forwards.
 
-/// Load `code`, returning the produced Value and the JIT-invocation
-/// delta across the load.
-async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
-    let (v, (_, inv)) = load_and_count(code).await?;
-    Ok((v, inv))
-}
-
 /// A single primitive capture: `let y = 7; let f = |x| x + y; f(3)` is 10.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn closure_primitive_capture() -> Result<()> {
-    let (v, inv) = load_value_and_jit("let y = 7; let f = |x| x + y; f(3)").await?;
+    let v = load_and_await("let y = 7; let f = |x| x + y; #[native] f(3)").await?;
     assert_eq!(v, Value::I64(10));
-    assert!(inv > 0, "JIT_INVOCATIONS=0 — capturing closure didn't fuse");
     Ok(())
 }
 
 /// A composite (tuple) capture passed across the kernel boundary:
 /// `g(10)` is 13.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn closure_tuple_capture() -> Result<()> {
-    let (v, inv) =
-        load_value_and_jit("let t = (1, 2); let g = |x| t.0 + t.1 + x; g(10)").await?;
+    let v = load_and_await("let t = (1, 2); let g = |x| t.0 + t.1 + x; #[native] g(10)")
+        .await?;
     assert_eq!(v, Value::I64(13));
-    assert!(inv > 0, "JIT_INVOCATIONS=0 — tuple-capturing closure didn't fuse");
     Ok(())
 }
 
 /// Nested closures both capturing `z`: `outer(5)` is 105.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn closure_nested_capture() -> Result<()> {
-    let (v, inv) = load_value_and_jit(
-        "let z = 100; let outer = |x| { let inner = |y| y + z; inner(x) }; outer(5)",
+    let v = load_and_await(
+        "let z = 100; let outer = |x| { let inner = |y| y + z; inner(x) }; #[native] outer(5)",
     )
     .await?;
     assert_eq!(v, Value::I64(105));
-    assert!(inv > 0, "JIT_INVOCATIONS=0 — nested capturing closures didn't fuse");
     Ok(())
 }
 
@@ -267,34 +254,27 @@ async fn call_arg_order_composite_then_scalar() -> Result<()> {
 
 /// An impure HOF callback (`counter <- v`): the sync sub-region fuses
 /// while the connect node-walks.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_callback_splits() -> Result<()> {
-    let (v, inv) = load_value_and_jit(
+    let v = load_and_await(
         "let counter = 0; \
-         array::map([1, 2, 3], |x| { let v = x * 2 + 1; counter <- v; v })",
+         array::map([1, 2, 3], |x| { let v = #[native] (x * 2 + 1); counter <- v; v })",
     )
     .await?;
     match v {
         Value::Array(a) if &a[..] == [Value::I64(3), Value::I64(5), Value::I64(7)] => {}
         other => bail!("unexpected value: {other:?}"),
     }
-    assert!(
-        inv > 0,
-        "JIT_INVOCATIONS=0 — impure HOF callback's sync sub-region \
-         didn't fuse"
-    );
     Ok(())
 }
 
 /// The impure callback's sync sub-region captures an outer binding `k`:
 /// `[10,20,30]`.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_callback_split_captures() -> Result<()> {
-    let (v, inv) = load_value_and_jit(
+    let v = load_and_await(
         "let k = 10; let counter = 0; \
-         array::map([1, 2, 3], |x| { let v = x * k; counter <- v; v })",
+         array::map([1, 2, 3], |x| { let v = #[native] (x * k); counter <- v; v })",
     )
     .await?;
     match v {
@@ -302,7 +282,6 @@ async fn impure_hof_callback_split_captures() -> Result<()> {
         }
         other => bail!("unexpected value: {other:?}"),
     }
-    assert!(inv > 0, "JIT_INVOCATIONS=0 — captured sync sub-region didn't fuse");
     Ok(())
 }
 
@@ -629,68 +608,45 @@ async fn region_select_let_bound() -> Result<()> {
     )
 }
 
-// Fused select-with-binding through the pure `pure_map` harness, which
-// fuses the select into the kernel; asserts the value and that a kernel
-// ran.
+// Selects with bindings in a pure callback, #[native]: the select is
+// in the callback's kernel.
 
-#[cfg(debug_assertions)]
-// CR claude for claude: [test-gap/medium] The `f > 0` asserts that use this helper
-// (fused_select_catch_all, _typed_capture, _guard_capture, _arith_wrapped,
-// _stabilize_multiref) cannot fail when the select under test stops fusing. The same is
-// true of the `inv > 0` asserts in closure_primitive_capture, closure_tuple_capture,
-// closure_nested_capture, impure_hof_callback_splits and
-// impure_hof_callback_split_captures. The reason is that each program starts with a
-// literal `let` (`let k = 3`, `let y = 7`, `let counter = 0`), and `Bind::fuse` makes
-// that literal a kernel, which runs at init and moves both counters. Probe:
-// design/review-2026-10-12/repro/tests-fusion-traits-01.gx reports fused=1 although its
-// callback is refused. Fix: state the claim at the expression with `#[native]` (`|x:
-// i64| #[native] select x {..}`, `#[native] f(3)`, `let v = #[native] (x * 2 + 1)`), or
-// use a `NodeShape::contains_fused` matcher. Then drop the counter asserts,
-// `load_value_and_jit` and this helper. (tests-fusion-traits-01)
-async fn pure_select_value_and_fusion(body: &str) -> Result<(Value, u64)> {
-    let (v, (f, _)) = load_and_count(&pure_map_program(body)).await?;
-    Ok((v, f))
+/// [`pure_map`] with `body` under `#[native]`.
+async fn native_map(body: &str) -> Result<Value> {
+    load_and_await(&pure_map_program(&format!("#[native] ({body})"))).await
 }
 
 /// Catch-all binding `n =>` binds the scrutinee. `[3,6,9,12]`, fused.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_catch_all() -> Result<()> {
-    let (v, f) = pure_select_value_and_fusion("select x { 1 => k, n => n * k }").await?;
-    assert!(f > 0, "select-with-binding should fuse, FUSION=0");
-    assert_i64s(&v, &[3, 6, 9, 12])
+    assert_i64s(&native_map("select x { 1 => k, n => n * k }").await?, &[3, 6, 9, 12])
 }
 
 /// Typed capture `i64 as n =>`: `[3,6,9,12]`, fused.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_typed_capture() -> Result<()> {
-    let (v, f) =
-        pure_select_value_and_fusion("select x { 1 => k, i64 as n => n * k }").await?;
-    assert!(f > 0, "typed-capture select should fuse, FUSION=0");
-    assert_i64s(&v, &[3, 6, 9, 12])
+    assert_i64s(
+        &native_map("select x { 1 => k, i64 as n => n * k }").await?,
+        &[3, 6, 9, 12],
+    )
 }
 
 /// Typed capture used in a guard and the body: `[3,6,9,7]`, fused.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_guard_capture() -> Result<()> {
-    let (v, f) = pure_select_value_and_fusion(
-        "select x { i64 as a if a > k => a + k, i64 as a => a * k }",
+    assert_i64s(
+        &native_map("select x { i64 as a if a > k => a + k, i64 as a => a * k }").await?,
+        &[3, 6, 9, 7],
     )
-    .await?;
-    assert!(f > 0, "guarded-capture select should fuse, FUSION=0");
-    assert_i64s(&v, &[3, 6, 9, 7])
 }
 
 /// A binding select in arithmetic position: `[4,7,10,13]`, fused.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_arith_wrapped() -> Result<()> {
-    let (v, f) =
-        pure_select_value_and_fusion("1 + (select x { 1 => k, n => n * k })").await?;
-    assert!(f > 0, "arith-wrapped binding select should fuse, FUSION=0");
-    assert_i64s(&v, &[4, 7, 10, 13])
+    assert_i64s(
+        &native_map("1 + (select x { 1 => k, n => n * k })").await?,
+        &[4, 7, 10, 13],
+    )
 }
 
 /// A non-idempotent scrutinee (`rand()`) is evaluated exactly once:
@@ -719,13 +675,9 @@ async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
 
 /// A non-Local scrutinee `x + 1` bound to a temp and referenced three
 /// times: `[6,9,12,15]`, fused.
-#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_stabilize_multiref() -> Result<()> {
-    let (v, f) =
-        pure_select_value_and_fusion("select (x + 1) { m => m + m + m }").await?;
-    assert!(f > 0, "stabilized-scrutinee select should fuse, FUSION=0");
-    assert_i64s(&v, &[6, 9, 12, 15])
+    assert_i64s(&native_map("select (x + 1) { m => m + m + m }").await?, &[6, 9, 12, 15])
 }
 
 /// Same with subtraction: `n - n` is 0.
