@@ -192,24 +192,8 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         return (out, noparse);
     };
     let stmts: Vec<Expr> = stmts.to_vec();
-    // CR claude for claude: [structure/low] This computes each top-level statement's
-    // preorder index, as `mustreject::statements` also does. In mutate.rs,
-    // `mutate_once`, `reductions_all` and `drop_statement` each inline `preorder()`,
-    // and the test module defines its own `preorder`. Every one of these must agree
-    // exactly with `replace`'s indexing, so each copy is another place for the
-    // typemorph and must-reject site ids to drift apart. Keep one top-level statement
-    // helper in mutate (statement index, preorder index, expression), used by typemorph
-    // and mustreject. Have mutate's own callers and its tests call `preorder()`.
-    // (fuzz-mutate-13)
-    let offsets: Vec<usize> = {
-        let mut off = 1usize;
-        let mut v = Vec::with_capacity(stmts.len());
-        for _ in 0..stmts.len() {
-            v.push(off);
-            off += sizes[*v.last().expect("just pushed")];
-        }
-        v
-    };
+    let offsets: Vec<usize> =
+        mutate::top_statements(&root, &sizes).iter().map(|(_, at, _)| *at).collect();
     // let-extract: `f(.., |x| body)` -> `let tm__0 = |x| body; f(.., tm__0)`.
     // Only at Apply sites reachable from the statement root through
     // non-scoping nodes, else the lambda's captures would be stranded;

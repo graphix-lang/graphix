@@ -62,6 +62,27 @@ pub(crate) fn preorder(e: &Expr) -> Vec<Expr> {
     out
 }
 
+/// The top-level statements of a block `root`: each one's index, its
+/// preorder index (`sizes` from [`sizes`]) and the statement; empty when
+/// `root` is not a block. The one indexing [`replace`] and the site ids
+/// agree on.
+pub(crate) fn top_statements<'a>(
+    root: &'a Expr,
+    sizes: &[usize],
+) -> Vec<(usize, usize, &'a Expr)> {
+    let ExprKind::Block { exprs } = &root.kind else { return Vec::new() };
+    let mut at = 1;
+    exprs
+        .iter()
+        .enumerate()
+        .map(|(si, e)| {
+            let s = (si, at, e);
+            at += sizes[at];
+            s
+        })
+        .collect()
+}
+
 /// Total number of nodes (preorder), so a target index can be chosen.
 fn count(e: &Expr) -> usize {
     let mut n = 1;
@@ -244,11 +265,7 @@ fn try_strip_annotation(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
 /// Apply one random mutation to `prog`, drawing transplant donors from
 /// `donor_nodes` (a flat preorder pool of subtrees from the seed corpus).
 pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
-    let nodes = {
-        let mut v = Vec::new();
-        collect_preorder(prog, &mut v);
-        v
-    };
+    let nodes = preorder(prog);
     let total = nodes.len();
     for _ in 0..4 {
         let target = rng.below(total);
@@ -514,9 +531,7 @@ pub fn replace(prog: &Expr, target: usize, repl: &Expr) -> Expr {
 /// reducer keeps any candidate that still parses, still typechecks, and
 /// reproduces the same divergence, so the oracle filters them.
 pub fn reductions_all(prog: &Expr) -> Vec<Vec<Expr>> {
-    let mut nodes = Vec::new();
-    collect_preorder(prog, &mut nodes);
-    nodes
+    preorder(prog)
         .iter()
         .map(|node| {
             let mut out = Vec::new();
@@ -562,8 +577,7 @@ fn statements_at(e: &Expr, ctr: &mut usize, out: &mut Vec<(usize, usize, usize)>
 /// Returns `prog` unchanged if that node isn't a block (the caller's
 /// parse check still guards a drop that empties one).
 pub fn drop_statement(prog: &Expr, at: usize, pos: usize) -> Expr {
-    let mut nodes = Vec::new();
-    collect_preorder(prog, &mut nodes);
+    let nodes = preorder(prog);
     let Some(ExprKind::Block { exprs }) = nodes.get(at).map(|e| &e.kind) else {
         return prog.clone();
     };
@@ -583,12 +597,6 @@ mod test {
 
     const PROG: &str =
         "{let a = i64:1; let b = {let c = i64:2; c + a}; let d = [a, b]; a + b}";
-
-    fn preorder(e: &Expr) -> Vec<Expr> {
-        let mut v = Vec::new();
-        collect_preorder(e, &mut v);
-        v
-    }
 
     /// `sizes[i]` must be the extent of node `i` in the same preorder
     /// `replace` and `statements` index by.

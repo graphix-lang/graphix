@@ -633,21 +633,6 @@ fn arg_indices(i: usize, sizes: &[usize], n: usize) -> Vec<usize> {
     out
 }
 
-/// A block's statements, each with its index and its preorder index.
-fn statements<'a>(root: &'a Expr, sizes: &[usize]) -> Vec<(usize, usize, &'a Expr)> {
-    let ExprKind::Block { exprs } = &root.kind else { return Vec::new() };
-    let mut at = 1;
-    exprs
-        .iter()
-        .enumerate()
-        .map(|(si, e)| {
-            let s = (si, at, e);
-            at += sizes[at];
-            s
-        })
-        .collect()
-}
-
 /// The uses of `f` its binding at statement `si` reaches in the
 /// statements after it, up to a rebinding: the calls, and the references
 /// (a call's callee among them) with the statement each is in, by
@@ -758,7 +743,7 @@ fn rigid_probe(l: &LambdaExpr, bottom: bool) -> Option<(Expr, Option<Type>)> {
 /// in its body, so `'a` can become neither. Right site: the definition.
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     let sizes = mutate::sizes(root);
-    let stmts = statements(root, &sizes);
+    let stmts = mutate::top_statements(root, &sizes);
     let mut taken = 0usize;
     for k in spread(stmts.len()) {
         let (si, at, stmt) = stmts[k];
@@ -949,7 +934,7 @@ fn labels_default(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
-    let stmts = statements(root, sizes);
+    let stmts = mutate::top_statements(root, sizes);
     let mut taken = 0usize;
     for k in spread(stmts.len()) {
         let (si, at, stmt) = stmts[k];
@@ -1116,7 +1101,7 @@ fn retype(
 ) {
     let ExprKind::Block { exprs: block } = &root.kind else { return };
     let sizes = mutate::sizes(root);
-    let stmts = statements(root, &sizes);
+    let stmts = mutate::top_statements(root, &sizes);
     let mut taken = 0usize;
     for k in spread(stmts.len()) {
         let (si, at, stmt) = stmts[k];
@@ -1217,7 +1202,7 @@ fn widen_through_let(
 ) {
     let ExprKind::Block { exprs: block } = &root.kind else { return };
     let sizes = mutate::sizes(root);
-    let stmts = statements(root, &sizes);
+    let stmts = mutate::top_statements(root, &sizes);
     let mut taken = 0usize;
     for k in spread(stmts.len()) {
         let (si, at, stmt) = stmts[k];
@@ -1284,7 +1269,7 @@ fn mono_reuse(
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
-    let stmts = statements(root, &sizes);
+    let stmts = mutate::top_statements(root, &sizes);
     let mut taken = 0usize;
     for k in spread(stmts.len()) {
         let (si, at, stmt) = stmts[k];
