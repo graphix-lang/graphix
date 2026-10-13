@@ -25,7 +25,6 @@ use std::{
     io::{self, Write},
     marker::PhantomData,
     ops::ControlFlow,
-    process::exit,
 };
 use tokio::{
     select,
@@ -488,18 +487,7 @@ impl<X: GXExt> Shell<X> {
     ) -> Result<Env> {
         let env;
         match &self.mode {
-            Mode::Check(_) => {
-                self.check_with(gx).await?;
-                // CR claude for claude: [structure/low] The library ends the process
-                // here, from inside the public `Shell::run`. That skips the teardown
-                // its other exits do, and it kills an embedder that calls `run` in
-                // `Mode::Check`. `Shell::check` exists only to avoid this. Fix: handle
-                // `Mode::Check` at the top of `run` (call `check_with`, return
-                // `Ok(Some(0))`) and let `main` exit, as it does for `sys::exit`. Then
-                // `Shell::check` is the only other path and its doc no longer needs the
-                // caveat. (shell-11)
-                exit(0)
-            }
+            Mode::Check(_) => bail!("run checks Mode::Check without loading"),
             Mode::Script(_) => {
                 let r = gx
                     .program()
@@ -565,9 +553,7 @@ impl<X: GXExt> Shell<X> {
         Ok(())
     }
 
-    /// Compile and typecheck the `Mode::Check` source, returning the
-    /// result instead of exiting the process — the embeddable/test
-    /// entry ([`Self::run`] exits after checking, as the CLI expects).
+    /// Compile and typecheck the `Mode::Check` source.
     pub async fn check(mut self) -> Result<()> {
         let (tx, _from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
@@ -576,7 +562,11 @@ impl<X: GXExt> Shell<X> {
 
     /// Run the shell; `Some(code)` when the program asked to exit with it,
     /// after the display is cleared and the runtime stopped.
+    /// `Mode::Check` checks, and is `Some(0)` when the check passes.
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
+        if let Mode::Check(_) = self.mode {
+            return self.check().await.map(|()| Some(0));
+        }
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
         if self.cache == CacheMode::Warm {
