@@ -246,8 +246,9 @@ impl Outcome {
     }
 
     /// Whether two outcomes are observably equivalent. Traces compare
-    /// structurally; different outcome kinds always disagree; same-kind
-    /// non-trace outcomes agree without comparing mode-dependent messages.
+    /// structurally; different outcome kinds always disagree; two
+    /// rejections agree on the same diagnostics (counters aside); other
+    /// same-kind outcomes agree without comparing mode-dependent messages.
     pub fn agrees_with(&self, other: &Outcome) -> bool {
         use Outcome::*;
         match (self, other) {
@@ -1322,47 +1323,38 @@ pub struct Divergence {
 /// node-walk-vs-JIT check; `EngineDispatch` and `Route` exist only for
 /// `callable-v1` programs (see [`callable`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// CR claude for claude: [doc-drift/low] The variant docs say which of `interp`/`jit`
-// holds what (Engine, Route, Cold, Warm, Check, Par), but Divergence's fields are
-// `reference` and `tested`. Par says 'a run with every fork forced', but Mode::par runs
-// JitPar at ParMode::Auto over AUTO_T. Rewrite them in terms of reference/tested and
-// say JitPar is Auto. Two more doc fixes: batch_size's doc repeats its first sentence
-// on one line, and Outcome::agrees_with's doc says same-kind outcomes agree without
-// comparing messages, while CompileErr compares normalize_diag'd diagnostics.
-// (fuzz-lib-a-13)
 pub enum Pair {
-    /// node-walk vs fused+JIT, in-language route (`interp`/`jit`
-    /// fields hold exactly that).
+    /// node-walk (`reference`) vs fused+JIT (`tested`), in-language
+    /// route.
     Engine,
     /// node-walk vs fused+JIT, embedder-dispatch route.
     EngineDispatch,
-    /// in-language route vs embedder-dispatch route, node-walk engine
-    /// (`interp` holds the in-language outcome, `jit` the dispatch
-    /// outcome). Compared at final-values strength — route pacing is
+    /// in-language route (`reference`) vs embedder-dispatch route
+    /// (`tested`), node-walk engine. Compared at final-values strength — route pacing is
     /// not contractual, the per-epoch settled value is.
     Route,
     /// A metamorphic twin program violated its own invariant. Detected
-    /// within a single run (both fields hold the offending outcome), so
+    /// within a single run (`reference` and `tested` both hold it), so
     /// it catches bugs that break every engine and route identically.
     Twin,
-    /// No cache vs cold (`interp` holds the no-cache outcome, `jit` the
-    /// cold one): writing the program image changed the program.
+    /// No cache (`reference`) vs cold (`tested`): writing the program
+    /// image changed the program.
     Cold(Mode, Route),
-    /// Cold vs warm (`interp` holds the cold outcome, `jit` the warm
-    /// one): restoring the program image changed the program.
+    /// Cold (`reference`) vs warm (`tested`): restoring the program
+    /// image changed the program.
     Warm(Mode, Route),
-    /// A corpus pin both engines reject (both fields hold the
-    /// rejection) without saying `// expect: reject`: a rejection agrees
+    /// A corpus pin both engines reject (`reference` and `tested` both
+    /// hold the rejection) without saying `// expect: reject`: a rejection agrees
     /// with itself, so a pin that stopped compiling would otherwise pass.
     Rejected,
-    /// The check alone accepted (`interp` holds [`Outcome::Checked`]) a
-    /// program both engines' builds refused (`jit` holds the refusal):
+    /// The check alone accepted (`reference` holds [`Outcome::Checked`])
+    /// a program both engines' builds refused (`tested` holds the refusal):
     /// elaboration refused what the check accepted, a type-system bug.
     Check,
-    /// Serial node-walk vs a run with every fork forced: the node-walk
-    /// (`Mode::Par`) or the fused JIT, kernel loops included
-    /// (`Mode::JitPar`); `interp` holds the serial outcome, `jit` the
-    /// forked one.
+    /// Serial node-walk (`reference`) vs a forked run (`tested`): the
+    /// node-walk with every fork forced (`Mode::Par`), or the fused JIT,
+    /// kernel loops included, at `Auto` over [`AUTO_T`], so every site
+    /// probes and forks (`Mode::JitPar`).
     Par(Mode),
 }
 
@@ -2116,7 +2108,7 @@ async fn first_pass(
     BatchVerdict::Agree { ran }
 }
 
-/// Batch size for the campaign pool's batch children./// Batch size for the campaign pool's batch children. 1 disables
+/// Batch size for the campaign pool's batch children. 1 disables
 /// batching. Larger than the default starves the mutation ring's
 /// agreement feedback and coarsens pool granularity in finite gates.
 fn batch_size() -> usize {
