@@ -282,13 +282,49 @@ async fn spec_refusals() -> Result<()> {
         ),
         (
             r#"args::command(#name: "t", [args::flag(#name: "a"), args::option(#name: "a")])"#,
-            "--a is taken",
+            "a is taken",
         ),
         (
             r#"args::command(#name: "t", [args::flag(#name: "quiet", #short: "h")])"#,
             "quiet: -h is taken",
         ),
-        (r#"args::command(#name: "t", [args::flag(#name: "help")])"#, "--help is taken"),
+        (r#"args::command(#name: "t", [args::flag(#name: "help")])"#, "help is taken"),
+        (
+            r#"args::command(#name: "t", [args::positional(#name: "x"), args::flag(#name: "x")])"#,
+            "x is taken",
+        ),
+        (
+            r#"args::command(#name: "t", [args::positional(#name: "x"), args::positional(#name: "x")])"#,
+            "x is taken",
+        ),
+        (
+            r#"args::command(#name: "t", [args::positional(#name: "help")])"#,
+            "help is taken",
+        ),
+        (
+            r#"args::command(#name: "t", #version: "1", [args::positional(#name: "version")])"#,
+            "version is taken",
+        ),
+        (
+            r#"args::command(#name: "t", [args::flag(#name: "")])"#,
+            r#"\"\" is not an argument name"#,
+        ),
+        (
+            r#"args::command(#name: "t", [args::flag(#name: "-x")])"#,
+            r#"\"-x\" is not an argument name"#,
+        ),
+        (
+            r#"args::command(#name: "t", [args::positional(#name: "a"), args::positional(#name: "b", #required: true)])"#,
+            "b: a required positional follows an optional one",
+        ),
+        (
+            r#"args::command(#name: "t", #subcommands: [args::command(#name: "s", []), args::command(#name: "s", [])], [])"#,
+            "subcommand s is named twice",
+        ),
+        (
+            r#"args::command(#name: "t", #subcommands: [args::command(#name: "s", [args::option(#name: "level")])], [args::option(#name: "level")])"#,
+            "level is taken by an enclosing command",
+        ),
         (
             r#"args::command(#name: "t", #subcommands: [args::command(#name: "help", [])], [])"#,
             "help is clap's own subcommand",

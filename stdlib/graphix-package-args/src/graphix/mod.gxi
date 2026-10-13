@@ -20,7 +20,8 @@ type Command = {
     subcommands: Array<Command>
 };
 
-/// Parse result
+/// Parse result: the matched command path, and every level's args by
+/// name (an option's string, a flag's "true" or "false", null when absent)
 type ParseResult = {
     command: Array<string>,
     values: Map<string, [string, null]>

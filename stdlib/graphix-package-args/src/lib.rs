@@ -86,88 +86,81 @@ fn build_clap_arg(spec: &Arg) -> clap::Arg {
 }
 
 /// What clap would refuse with a panic (debug builds) or take wrongly (a
-/// later match unreachable): a short of more than one char, a short or
-/// long claimed twice or by clap's own help/version flags, a subcommand
-/// named help.
-// CR claude for claude: [bug/medium] check_spec misses id clashes that clap panics on.
-// It checks longs only among options and flags, so these all get through: a positional
-// and a flag or option with one name, two positionals with one name, a positional named
-// help (or version when #version is set), a #name that is empty or starts with '-', and
-// a subcommand name used twice. clap's debug_asserts panic on each of these inside
-// Parse::update. Nothing catches the panic, so the runtime dies ("Error: runtime did
-// not respond", exit 1) where the caller should get an `ArgError`. In release the debug
-// asserts are off, but the flag-plus-positional case still panics in extract_matches:
-// get_flag downcasts the positional's String to bool. Fix: keep one set of ids seeded
-// with help (and version when set), add every arg's name whatever its kind, and refuse
-// a duplicate. Refuse an empty name or one starting with '-'. Refuse a repeated
-// subcommand name. Fix the doc comment above to match. probe:
-// design/review-2026-10-12/repro/x-panics-04.gx (x-panics-04)
-// CR claude for claude: [bug/medium] check_spec misses shapes that clap's debug_asserts
-// refuse, so these specs still panic a tokio worker in a debug build and kill the
-// runtime. In a release build clap takes the first match without any check. The missed
-// shapes are: a positional and an option with the same name, two positionals with the
-// same name, two subcommands with the same name at one level, and a non-required
-// positional before a required one. An empty arg name is also accepted. Fix: put every
-// arg's name, of every kind, in one set. Return an ArgError for duplicate subcommand
-// names, an empty name, and a non-required positional before a required one. Running
-// clap's `Command::debug_assert()` on the built command under catch_unwind would also
-// keep the check from falling behind clap. Add a pin for each refused shape. probe:
-// design/review-2026-10-12/repro/x-fix-stdlib-05.sh (x-fix-stdlib-05)
+/// later match unreachable, a value misread): a name empty, starting with
+/// `-`, or used twice, whatever the kinds, clap's own help/version
+/// included; a short of more than one char or claimed twice; a required
+/// positional after an optional one; a subcommand named help or twice.
+/// A subcommand may not reuse a name an enclosing command uses: every
+/// level's values land in one map (`ParseResult.values`).
 fn check_spec(spec: &Command) -> Result<(), CompactString> {
+    check_level(spec, &mut LPooled::take())
+}
+
+/// `spec`, under enclosing commands whose arg names are `enclosing`.
+fn check_level<'a>(
+    spec: &'a Command,
+    enclosing: &mut LPooled<Vec<&'a str>>,
+) -> Result<(), CompactString> {
+    let mut names: LPooled<Vec<&str>> = LPooled::take();
     let mut shorts: LPooled<Vec<char>> = LPooled::take();
-    let mut longs: LPooled<Vec<&str>> = LPooled::take();
+    names.push("help");
     shorts.push('h');
-    longs.push("help");
     if spec.version.is_some() {
+        names.push("version");
         shorts.push('V');
-        longs.push("version");
     }
+    let mut optional_positional = false;
     for a in spec.args.iter() {
+        let name = &*a.name;
+        if name.is_empty() || name.starts_with('-') {
+            return Err(format_compact!("{name:?} is not an argument name"));
+        }
+        if enclosing.contains(&name) {
+            return Err(format_compact!("{name} is taken by an enclosing command"));
+        }
+        if names.contains(&name) {
+            return Err(format_compact!("{name} is taken"));
+        }
+        names.push(name);
         if let Some(s) = &a.short {
             let mut cs = s.chars();
             let c = match (cs.next(), cs.next()) {
                 (Some(c), None) if c != '-' => c,
                 _ => {
                     return Err(format_compact!(
-                        "{}: #short {s:?} is not one character",
-                        a.name
+                        "{name}: #short {s:?} is not one character"
                     ));
                 }
             };
             if shorts.contains(&c) {
-                return Err(format_compact!("{}: -{c} is taken", a.name));
+                return Err(format_compact!("{name}: -{c} is taken"));
             }
             shorts.push(c);
         }
-        // CR claude for claude: [bug/medium] check_spec checks only shorts and the
-        // longs of options and flags. Clap also refuses other specs, and they reach
-        // build_clap_command unchecked: an arg id used twice across any kinds (two
-        // positionals `x`, or a positional and an option both named `x`), a positional
-        // named `help`, or `version` when #version is set; two subcommands with one
-        // name; and an optional positional before a required one. In a debug build each
-        // one panics in clap's debug_asserts inside Parse::update, and the shell
-        // reports "runtime did not respond". In release the asserts are compiled out,
-        // so clap takes the spec silently. Fix: keep one per-command set of every arg
-        // id, pre-seeded with help (and version when set), and refuse duplicates. Also
-        // refuse duplicate subcommand names and a required positional after an optional
-        // one. Add a graphix-tests pin for each ArgError refusal; there are none today.
-        // probe: design/review-2026-10-12/repro/small-pkgs-03.sh (small-pkgs-03)
-        // 2026-10-13 claude: The refusals check_spec makes today are pinned in
-        // lib_tests::args::spec_refusals (x-fix-stdlib-09); the missed shapes above still
-        // are not.
-        if !matches!(a.kind, Kind::Positional) {
-            if longs.contains(&&*a.name) {
-                return Err(format_compact!("--{} is taken", a.name));
+        if let Kind::Positional = a.kind {
+            match a.required {
+                Some(true) if optional_positional => {
+                    return Err(format_compact!(
+                        "{name}: a required positional follows an optional one"
+                    ));
+                }
+                Some(true) => (),
+                _ => optional_positional = true,
             }
-            longs.push(&a.name);
         }
     }
-    for sub in spec.subcommands.iter() {
+    let depth = enclosing.len();
+    enclosing.extend(spec.args.iter().map(|a| &*a.name));
+    for (i, sub) in spec.subcommands.iter().enumerate() {
         if sub.name == "help" {
             return Err(format_compact!("help is clap's own subcommand"));
         }
-        check_spec(sub)?;
+        if spec.subcommands[..i].iter().any(|s| s.name == sub.name) {
+            return Err(format_compact!("subcommand {} is named twice", sub.name));
+        }
+        check_level(sub, enclosing)?;
     }
+    enclosing.truncate(depth);
     Ok(())
 }
 
@@ -211,17 +204,6 @@ fn extract_matches(
                 None => Value::Null,
             },
         };
-        // CR claude for claude: [bug/medium] Every command level's args go into one
-        // map: the parent's first, then the matched subcommand's. An absent option is
-        // inserted as null and an unset flag as "false". So when a subcommand declares
-        // an arg with a parent arg's name, the subcommand's value replaces the parent's
-        // even when the subcommand did not receive it. `prog --level 1 sub` returns
-        // values{"level"} == null and silently drops the user's --level 1. Fix: have
-        // check_spec refuse an arg name that an ancestor command already uses, so the
-        // flat map stays unambiguous. Also document in ParseResult (args/mod.gxi and
-        // book/src/stdlib/args.md) that values merge every level and that flags come
-        // back as the strings "true"/"false". probe:
-        // design/review-2026-10-12/repro/gx-stdlib-03.sh (gx-stdlib-03)
         *values = values.insert(key, val).0;
     }
 
