@@ -1,5 +1,7 @@
 # The JIT helper ABI: nothing wider than a word crosses by value
 
+Status: built.
+
 Pins: every `jit` and `jit_par` fixture (each fused kernel calls
 helpers through this seam); `fastcall_tags_follow_the_arg_discs`
 (`fusion/emit_helpers.rs`) calls a pair-returning helper the way a
