@@ -66,21 +66,14 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {
             let data_type = ft.args.get(3).map(|a| &a.typ);
-            // CR claude for claude: [perf/low] This shape() call is made only to test
-            // for an object, and value_to_json calls shape() again on the same data at
-            // once. Every render therefore builds each field's (ArcStr, Value,
-            // Option<Type>) entry twice, plus a String and an ArcStr per map key. Fix:
-            // call value_to_json once and refuse unless the result is a
-            // serde_json::Value::Object. to_json returns Object exactly when shape is
-            // Object, so the error case is unchanged. (small-pkgs-11)
-            if !matches!(shape(env, data_type, data), Shape::Object(..)) {
-                return Some(errf!(
-                    "HbsErr",
-                    "the data must be a struct or a map, not {data}"
-                ));
-            }
             let json_data = match value_to_json(env, data_type, data) {
-                Ok(j) => j,
+                Ok(j @ handlebars::JsonValue::Object(_)) => j,
+                Ok(_) => {
+                    return Some(errf!(
+                        "HbsErr",
+                        "the data must be a struct or a map, not {data}"
+                    ));
+                }
                 Err(e) => return Some(errf!("HbsErr", "{e}")),
             };
             let partials_type = ft.args.get(1).map(|a| a.typ.clone());
