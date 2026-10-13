@@ -29,7 +29,6 @@
   "}"
   "]"
   ")"
-  ">]"
 ] @outdent
 
 ; Extend (continue current indent)

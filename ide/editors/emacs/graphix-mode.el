@@ -292,7 +292,10 @@ Falls back to this mode when tree-sitter is not available.
        ((node-is "}") parent-bol 0)
        ((node-is "]") parent-bol 0)
        ((node-is ")") parent-bol 0)
-       ((node-is ">]") parent-bol 0)
+       ;; a list's `>]` is a hidden token, no node to match
+       (,(lambda (_node _parent bol &rest _)
+           (save-excursion (goto-char bol) (looking-at-p ">\\]")))
+        parent-bol 0)
        ((parent-is "sig_block") parent-bol ,graphix-indent-offset)
        ((parent-is "block") parent-bol ,graphix-indent-offset)
        ((parent-is "select") parent-bol ,graphix-indent-offset)
