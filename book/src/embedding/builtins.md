@@ -24,41 +24,38 @@ the simplest possible example.
 
 The `once` function evaluates its argument every cycle and passes
 through one and only one update. The `update` method is the most
-important method of `Apply`, it is called every cycle and returns
-something only when the node being updated has "updated". The meaning
-of that is specific to what the node does, but in the case of `once`
-it means that the argument to `once` updated, and `once` has not
-already seen an update. Consider the example program,
+important method of `Apply`. It is called every cycle the node is
+awake, and it returns a `TagValue` every time: the value the node
+holds and whether it is new this cycle. A node `Fired` this cycle, or
+holds a `Stale` value from before, or has no value at all
+(`FreshBottom`, `StaleBottom`). `once` passes its argument's first
+`Fired` through and is `Stale` from then on. Consider the example
+program,
 
 ```graphix
 let clock = sys::time::timer(1, true);
 println(once(clock))
 ```
 
-We expect this example to print the datetime exactly one time. Lets
-dig in to how that actually works. The clock created by `sys::time::timer`
-will tick once per second forever. The `sys::time::timer` built-in will
-call `set_timer` in the
-[`Rt`](https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Rt.html),
-which is part of the
-[`ExecCtx`](https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.ExecCtx.html). This
-will schedule a cycle to happen 1 second from now, and will also
-register that this toplevel node (`let clock = ...`) depends on the
-timer event. When the timer event happens the approximate sequence of
-events is,
+We expect this example to print the datetime exactly one time. The
+clock created by `sys::time::timer` ticks once per second forever: the
+built-in asks the
+[`Rt`](https://docs.rs/graphix-compiler/latest/graphix_compiler/trait.Rt.html)
+for a timer, which schedules a cycle a second from now and records that
+the toplevel node (`let clock = ...`) depends on the timer's event.
+When the timer fires, the approximate sequence of events is,
 
-- let clock = sys::time::timer(1, true), update called on toplevel node (Bind)
-    - sys::time::timer(1, true), bind calls update on its rhs
-    - sys::time::timer checks events to see if it should update, returns Some(DateTime(..))
-    - bind sets the id of clock in events to Value::DateTime(..)
-    - Rt checks for nodes that depend on `clock` schedules println(..)
-- println(once(clock)), update called on toplevel node (CallSite)
-    - once(clock), println calls update on its argument, once(clock)
-    - once::update calls update on clock
-    - ref clock checks events to see if it updated, returns Some(Value::DateTime(..))
-    - once::update checks if it's the first time its argument has updated, it is
-    - once::update returns Some(Value::DateTime(..))
-    - println prints the datetime
+- `let clock = ..`: the toplevel `Bind` updates its right side
+    - `sys::time::timer(1, true)` finds its event and returns `Fired(DateTime(..))`
+    - the bind delivers `clock`'s new value to the event, and the
+      runtime schedules what reads `clock`
+- `println(once(clock))`: the toplevel `CallSite` updates its argument
+    - `once` updates `clock`, which returns `Fired(DateTime(..))`
+    - it is `once`'s first `Fired`, so `once` returns it `Fired`
+    - `println` prints the datetime
+
+At the next tick `clock` fires again, `once` returns its value `Stale`,
+and `println` does not print.
 
 ## Sleeping asynchronous builtins
 
@@ -69,70 +66,76 @@ activation's result. This applies outside `seq` as well as inside it.
 Retain outputs for paused computations whose semantic value remains valid;
 do not reset every builtin merely because it is classified asynchronous.
 
-<!-- CR claude for claude: [doc-drift/medium] None of the Rust builtin listings compile
-against the current traits. Once and Group here, MyOnce and DebugDisplay in
-packages/creating.md, and MinEv in embedding/overview.md all have the same problems.
-`Apply::update` returns `&TagValue`, not `Option<Value>`. `Apply::image_encode` and
-`BuiltIn::image_decode` are required. `typecheck` is now `typecheck0`/`typecheck1` over
-`CompileCtx`. `ctx.cached` and `ctx.event.variables.insert` no longer exist, so the
-'ExecCtx::cached' section describes a mechanism that is gone. `EvalCached` is
-`EvalCached<R, E>`, its `eval` takes `ctx`, and it requires `ImageState`.
-`CustomDisplay` requires `batch_done`. The 'Understanding The Once Function' walkthrough
-teaches the old Some/None model instead of dense TagValue delivery. Fix: rebuild the
-listings from graphix-package/src/skel/lib.rs (TagView handling, EFFECT, the image
-codec, `unit_image_state!`), point Group at the real `array::group` in
-graphix-package-array instead of copying it, delete the cached section, and add
-`batch_done` to the CustomDisplay listing. (book-modules-udt-02) -->
 ## Implementing Once
 
 ```rust
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
+    UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use netidx_value::Value;
+use netidx_core::pack::{Pack, PackError};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Once {
-    val: bool,
+    // whether the one update has passed
+    done: bool,
+    // the result slot `update` lends to the caller
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
+    // it keeps state across invocations
+    const EFFECT: Effect = Effect::Sync;
 
-    fn init<'a, 'b, 'c>(
+    fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
+        _resolved_typ: Option<&'d FnType>,
         _scope: &'b Scope,
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Once { val: false }))
+        Ok(Box::new(Once::default()))
+    }
+
+    // restore what `image_encode` wrote; the result slot is never imaged
+    fn image_decode(
+        _ctx: &mut ExecCtx<'_, R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(Once { done: bool::decode(buf)?, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.done.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-    ) -> Option<Value> {
-        match from {
-            [s] => s.update(ctx).and_then(|v| {
-                if self.val {
-                    None
-                } else {
-                    self.val = true;
-                    Some(v)
-                }
-            }),
-            _ => None,
+    ) -> &TagValue {
+        match from[0].update(ctx).view() {
+            TagView::Fired(tv) if !self.done => {
+                self.done = true;
+                let v = tv.value_cloned();
+                self.out.set(TagValue::fired(v))
+            }
+            // a bottom input before the update makes the result bottom
+            TagView::FreshBottom if !self.done => self.out.set_bottom(true),
+            TagView::StaleBottom if !self.done => self.out.set_bottom(false),
+            _ => self.out.ride(),
         }
     }
 
+    // once is a restart builtin: a woken once is a fresh one
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.val = false
+        self.done = false
     }
 }
 ```
@@ -147,175 +150,42 @@ let once = |v: 'a| -> 'a 'core_once
 ```
 
 The `init` method is called when the built-in is instantiated at a
-call site. It receives the execution context, the concrete function
+call site. It receives the compile context, the concrete function
 type, the lexical scope, the argument nodes, and the top-level
 expression id. In this case we don't care about any of that
-information, but it will be useful later.
+information, but it will be useful later. `EFFECT` says what the
+output depends on (`Sync`: the same cycle, with state kept across
+invocations), and `image_encode`/`image_decode` write and restore the
+state `init` built when the session is cached as an image.
 
-<!-- CR claude for claude: [doc-drift/medium] This says `sleep` should reset all
-internal state. That contradicts the `Apply::sleep` contract and this page's own
-'Sleeping asynchronous builtins' section. Values and semantic state are retained across
-sleep. Only a builtin that discards pending work or detaches an event source clears its
-output to phantom, and the restart builtins (once, take, skip, ...) clear their latches.
-A builtin written to this sentence loses its state at every wake, so wake catch-up
-breaks. Fix: state the `Apply::sleep` contract, and note that Once's `sleep` clears its
-flag only because once is a restart builtin. (book-modules-udt-04) -->
-The most important method of `Apply` is `update`. `sleep` is expected to
-reset all the internal state and unregister anything registered with
-the context.
+The most important method of `Apply` is `update`. `sleep` is called
+when the node's select arm is unselected, and sleep is a pause: values
+and other semantic state are kept, so the node resumes from them when
+the arm wakes. Only a builtin that discards pending work or detaches
+an event source clears its output to `TagValue::phantom()` (see
+above). `once` clears its flag in `sleep` because it is one of the
+restart builtins (`once`, `take`, `skip`, `uniq`, `hold`, `count`):
+a woken one is a fresh one.
 
 ## Higher Order Functions
 
 Right, now that the easy stuff is out of the way, lets see how we can
 implement a built-in that takes another Graphix function as an
 argument. This gets compiler guts all over the place, sorry about
-that. Again lets look at the simplest example from the standard
-library, which is `array::group`.
+that. The simplest example in the standard library is `array::group`,
+`Group` in `stdlib/graphix-package-array/src/lib.rs`; read it beside
+this section. Its `init` generates the nodes for a call of the
+predicate:
 
-```rust
-use anyhow::bail;
-use compact_str::format_compact;
-use graphix_compiler::{
-    expr::ExprId,
-    genn,
-    node::Node,
-    typ::{FnType, Typ, Type},
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
-};
-use netidx_value::Value;
-use smallvec::{smallvec, SmallVec};
-use std::collections::VecDeque;
+- `genn::bind` makes two variables for the predicate's arguments, `n`
+  and `x`, and returns their `BindId`s (`nid`, `xid`) and reference
+  nodes;
+- a third `BindId` (`pid`) names the predicate itself, and
+  `genn::reference` makes a reference node to it;
+- `genn::apply` builds a call site over that reference with the two
+  argument references, the `pred` node.
 
-#[derive(Debug)]
-pub(super) struct Group<R: Rt, E: UserEvent> {
-    queue: VecDeque<Value>,
-    buf: SmallVec<[Value; 16]>,
-    pred: Node<R, E>,
-    ready: bool,
-    pid: BindId,
-    nid: BindId,
-    xid: BindId,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
-    const NAME: &str = "array_group";
-
-    fn init<'a, 'b, 'c>(
-        ctx: &'a mut CompileCtx<R, E>,
-        typ: &'a FnType,
-        _resolved_typ: Option<&'a FnType>,
-        scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        match from {
-            [_, _] => {
-                let scope =
-                    scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
-                let n_typ = Type::Primitive(Typ::I64.into());
-                let etyp = typ.args[0].typ.clone();
-                let mftyp = match &typ.args[1].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected function not {t}"),
-                };
-                let (nid, n) =
-                    genn::bind(ctx, &scope.lexical, "n", n_typ.clone(), top_id);
-                let (xid, x) =
-                    genn::bind(ctx, &scope.lexical, "x", etyp.clone(), top_id);
-                let pid = BindId::new();
-                let fnode =
-                    genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
-                let pred = genn::apply(fnode, scope, vec![n, x], &mftyp, top_id);
-                Ok(Box::new(Self {
-                    queue: VecDeque::new(),
-                    buf: smallvec![],
-                    pred,
-                    ready: true,
-                    pid,
-                    nid,
-                    xid,
-                }))
-            }
-            _ => bail!("expected two arguments"),
-        }
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> Option<Value> {
-        macro_rules! set {
-            ($v:expr) => {{
-                self.ready = false;
-                self.buf.push($v.clone());
-                let len = Value::I64(self.buf.len() as i64);
-                ctx.cached.insert(self.nid, len.clone());
-                ctx.event.variables.insert(self.nid, len);
-                ctx.cached.insert(self.xid, $v.clone());
-                ctx.event.variables.insert(self.xid, $v);
-            }};
-        }
-        if let Some(v) = from[0].update(ctx) {
-            self.queue.push_back(v);
-        }
-        if let Some(v) = from[1].update(ctx) {
-            ctx.cached.insert(self.pid, v.clone());
-            ctx.event.variables.insert(self.pid, v);
-        }
-        if self.ready && self.queue.len() > 0 {
-            let v = self.queue.pop_front().unwrap();
-            set!(v);
-        }
-        loop {
-            match self.pred.update(ctx) {
-                None => break None,
-                Some(v) => {
-                    self.ready = true;
-                    match v {
-                        Value::Bool(true) => {
-                            break Some(Value::Array(
-                                netidx_value::ValArray::from_iter_exact(
-                                    self.buf.drain(..),
-                                ),
-                            ))
-                        }
-                        _ => match self.queue.pop_front() {
-                            None => break None,
-                            Some(v) => set!(v),
-                        },
-                    }
-                }
-            }
-        }
-    }
-
-    fn typecheck(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
-        self.pred.typecheck(ctx)
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.pred.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.cached.remove(&self.nid);
-        ctx.cached.remove(&self.pid);
-        ctx.cached.remove(&self.xid);
-        self.pred.delete(ctx);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.pred.sleep(ctx);
-    }
-}
-```
+Its `update` delivers values to those variables and updates `pred`.
 
 <!-- CR claude for claude: [doc-drift/low] The group example below is refused: `range(0,
 100)` now yields a `RangeError` Result, so `n == 50` compares `[i64, Error<..>]` with
@@ -403,7 +273,8 @@ argument (through type references) without refusing.
 [`Event`](https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html)
 struct contains two tables indexed by it. The most important is `variables`.
 Every bound variable has a `BindId`. If a variable has updated this cycle, then
-its updated value will be in the `variables` table indexed by its `BindId`. In
+its updated value, a `TagValue`, will be in the `variables` table indexed by
+its `BindId`. In
 order to call this predicate function we actually create three different
 variables and store their `BindIds` as `xid`, `nid`, and `pid`.
 `genn::reference` returns a reference `Node` and the `BindId` of the variable it
@@ -424,14 +295,14 @@ created with `genn::apply` needs to know about it. Luckily we don't have to
 handle any of the wonderful details of late binding beyond this simple passing
 through of updates, the call site will take care of that.
 
-### ExecCtx::cached, refs, delete
+### The store, refs, delete
 
-What is all this `ctx.cached` stuff? Well, when call sites get
-initialized for the first time, or when a branch of select wakes from
-sleep, it turns out we need to know what the current value of every
-variable they depend on is. Which means we need to cache globally the
-current value of every variable. So if you're setting variables, 90%
-chance you need to update cached.
+When a call site is initialized for the first time, or a select arm
+wakes from sleep, it needs the current value of every variable it
+depends on, so the runtime keeps the current value of every variable
+in its store. A builtin that sets a variable itself updates both: the
+store (`ctx.rt.store_insert(id, tv)`) and this cycle's event
+(`ctx.event.variables.insert(id, TagValue::fired(v))`).
 
 And this also explains another function that you have to implement
 when you're generating nodes, which is `refs`. Turns out we need to know
