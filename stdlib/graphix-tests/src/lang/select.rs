@@ -943,14 +943,6 @@ run!(variant_ignored_payload_arm_narrows, VARIANT_IGNORED_PAYLOAD_ARM_NARROWS, |
 
 // A guarded select fires only when an input feeding it fired: count 1
 // on both engines despite an unrelated reactive input in the region.
-// CR claude for claude: [test-gap/low] These fixtures pin only consulted guards. Add
-// the converse: a guard on an arm below the taken one does not emit when its input
-// fires. `select 0 { 0 => 1, k if m == 0 => 2, _ => 3 }` with `m = x % 2` over four `x`
-// fires gives count 1. Also pin that an or-arm's one guard is judged once, on the first
-// structural match: `|p: (i64, i64)| -> i64 #[native] select p { (0, y) | (y, 9) if y <
-// 5 => y, _ => -1 }` gives -1 on (0, 9). OR_GUARD's (5, 0) fails its first alternative
-// on structure, so it does not cover this. Both engines agree on both values today.
-// (tests-select-08)
 const GUARDED_SELECT_FIRING_COUNT: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -962,6 +954,35 @@ const GUARDED_SELECT_FIRING_COUNT: &str = r#"
 
 run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
+}; FuseExpect::Jit);
+
+// A guard on an arm below the taken one is not consulted, so its input's
+// fires emit nothing: m fires per x delivery, the select once.
+const UNCONSULTED_GUARD_IS_QUIET: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x % 2;
+  let c = count(select 0 { 0 => 1, k if m == 0 => 2, _ => 3 });
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(unconsulted_guard_is_quiet, UNCONSULTED_GUARD_IS_QUIET, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; FuseExpect::Jit);
+
+// An or-arm's one guard is judged once, on the first alternative that
+// matches the structure: (0, 9) binds y = 9 by `(0, y)`, the guard fails,
+// and `(y, 9)` is not tried.
+const OR_GUARD_JUDGED_ONCE: &str = r#"
+{
+  let f = |p: (i64, i64)| -> i64 #[native] select p { (0, y) | (y, 9) if y < 5 => y, _ => -1 };
+  f((0, 9))
+}
+"#;
+
+run!(or_guard_judged_once, OR_GUARD_JUDGED_ONCE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(-1)))
 }; FuseExpect::Jit);
 
 // A guard-dep fire emits whether or not the selection changes. m fires
