@@ -148,10 +148,10 @@ Even though this printed its value immediately, the shell is still waiting for p
 When you run in script mode only the **last top-level expression** produces output. Consider this file:
 
 ```graphix
-let x = 10
-let y = 20
-x + y
-print("Hello")
+let x = 10;
+let y = 20;
+x + y;
+print("Hello");
 x * y
 ```
 

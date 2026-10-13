@@ -7,8 +7,8 @@ to connect one part of the graph to another by name, causing the output of the
 right side to flow to the name on the left side. Consider,
 
 ```graphix
-let x = "off"
-x <- sys::time::timer(duration:1.0s, false) ~ "on"
+let x = "off";
+x <- sys::time::timer(duration:1.0s, false) ~ "on";
 print(x)
 ```
 
@@ -54,16 +54,6 @@ happen yet, because it didn't. In the above case the event loop would never
 wait, because there is always work to do adding 1 to `x`, however it will still
 check for other events every cycle.
 
-<!-- CR claude for claude: [doc-drift/medium] The counter below, which the text tells
-the reader to save as test.gx and run, does not parse. `_ => never() // never() never
-updates` is a trailing comment, and the parser refuses it ('a comment stands on a line
-of its own'). The first block in this file, and shell.md's script-output example,
-separate top-level statements with newlines and no `;`, which is also a parse error. The
-same trailing-comment shape appears in block.md, let_binds.md (right above the section
-that states the rule), use.md, reading_types.md, fundamental_types.md and labeled.md.
-Fix: move each comment onto its own line above its expression, or into prose, and add
-the `;` separators. The gate in book-core-10 would keep these from coming back.
-(book-core-05) -->
 When combined with other operations, specifically select, connect becomes a
 powerful general looping construct, and is the only way to write a loop in
 Graphix. A quick example,
@@ -73,7 +63,8 @@ let count = {
   let x = 0;
   select x {
     n if n < 10 => x <- x + 1,
-    _ => never() // never() never updates
+    // never() never updates
+    _ => never()
   };
   x
 };

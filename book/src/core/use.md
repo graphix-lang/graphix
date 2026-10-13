@@ -6,11 +6,16 @@ explicit declaration (`let`, `type`, `mod`), an explicit `use`, or one
 of the two preludes described below. Nothing else is implicit.
 
 ```graphix
-sys::net::subscribe(...); // fully qualified call
-use sys::net;             // import the name `net`
-net::subscribe(...);      // now `net` is in scope
-use sys::net::subscribe;  // import the item itself
-subscribe(...)            // same function
+// fully qualified call
+sys::net::subscribe(...);
+// import the name `net`
+use sys::net;
+// now `net` is in scope
+net::subscribe(...);
+// import the item itself
+use sys::net::subscribe;
+// same function
+subscribe(...)
 ```
 
 Note that `use sys::net` imports the single name `net` — it does not
@@ -22,13 +27,20 @@ it: if a module exports both a type `Color` and a value `Color`, one
 ## Forms
 
 ```graphix
-use tui::line;                    // one name
-use tui::{line, span, style};     // group
-use sys::{fs::{self, watch}, io}; // groups nest; self names the prefix
-use tui::line as tline;           // rename
-use array::*;                     // glob: import everything array exports
-use super::{answer, identicon};   // from the parent module
-use package::tui::pump;           // from the current package's root
+// one name
+use tui::line;
+// group
+use tui::{line, span, style};
+// groups nest; self names the prefix
+use sys::{fs::{self, watch}, io};
+// rename
+use tui::line as tline;
+// glob: import everything array exports
+use array::*;
+// from the parent module
+use super::{answer, identicon};
+// from the current package's root
+use package::tui::pump;
 ```
 
 `self` inside a group names the prefix itself: `use sys::{self, net}`

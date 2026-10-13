@@ -67,8 +67,10 @@ val text: fn(?#style: Style, content: string) -> Widget
 This function can be called in two ways:
 
 ```graphix
-text("Hello")                           // style uses default value
-text(#style: my_style, "Hello")        // style is specified
+// style uses default value
+text("Hello")
+// style is specified
+text(#style: my_style, "Hello")
 ```
 
 ### Order Flexibility
@@ -157,8 +159,10 @@ Create a reference with `&` and dereference (get the value) with `*`:
 
 ```graphix
 let s = "Hello";
-let r = &s;      // r is a reference to s
-let v = *r;      // v is the value "Hello"
+// r is a reference to s
+let r = &s;
+// v is the value "Hello"
+let v = *r;
 ```
 
 `&T` is read-only. A function that writes through a reference (`*r <- v`) takes `&mut T`, and you pass it `&mut x`:
@@ -166,7 +170,8 @@ let v = *r;      // v is the value "Hello"
 ```graphix
 let set = |r: &mut i64, v: i64| *r <- v;
 let x = 0;
-set(&mut x, 1)   // x becomes 1
+// x becomes 1
+set(&mut x, 1)
 ```
 
 A `&T` parameter accepts a `&mut` too, and covers any narrower type: `&[i64, null]` accepts `&x` with `x: i64`. A `&mut T` must refer to exactly a `T`.

@@ -513,11 +513,16 @@ index/slice `[i]` / `[i..j]`, map index `{key}`, and function call `(args)` —
 can be chained directly, left to right, without intermediate parentheses:
 
 ```graphix
-data.users[0].name        // field, then index, then field
-config{"db"}.port         // map index, then field
-matrix[i][j]              // nested array index
-point.0.x                 // tuple index, then field
-make_handler(cfg)(event)  // a call whose result is itself called
+// field, then index, then field
+data.users[0].name
+// map index, then field
+config{"db"}.port
+// nested array index
+matrix[i][j]
+// tuple index, then field
+point.0.x
+// a call whose result is itself called
+make_handler(cfg)(event)
 ```
 
 Each operator applies to the value produced by everything to its left, so a

@@ -4,8 +4,10 @@ Let bindings introduce names that are visible in their scope after they are
 defined.
 
 ```graphix
-let x = 2 + 2 + x; // compile error x isn't defined yet
-let y = x + 1 // ok
+// compile error x isn't defined yet
+let x = 2 + 2 + x;
+// ok
+let y = x + 1
 ```
 
 The same name can be used again in the same scope, it will shadow the previous
@@ -13,24 +15,31 @@ value.
 
 ```graphix
 let x = 1;
-let x = x + 1; // ok uses the previous definition
-x == 2 // true
+// ok uses the previous definition
+let x = x + 1;
+// true
+x == 2
 ```
 
 You can annotate the binding with a type, which will then be enforced at compile
 time. Sometimes this is necessary in order to help type inference.
 
 ```graphix
-let x: Number = 1; // note x will be of type Number even though it's an i64
-let y: string = x + 1; // compile time type error
+// note x will be of type Number even though it's an i64
+let x: Number = 1;
+// compile time type error
+let y: string = x + 1;
 ```
 
 You can use patterns in let binds as long as they will always match.
 
 ```graphix
-let (x, y) = (3, "hello"); // binds x to 3 and y to "hello"
-x == 3; // true
-y == "hello" // true
+// binds x to 3 and y to "hello"
+let (x, y) = (3, "hello");
+// true
+x == 3;
+// true
+y == "hello"
 ```
 
 You can mix type annotations with pattern matches

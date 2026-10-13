@@ -15,8 +15,10 @@ let important_thing = {
   43 - y
 };
 
-x; // compile error, x isn't in scope
-y; // compile error, y isn't in scope
+// compile error, x isn't in scope
+x;
+// compile error, y isn't in scope
+y;
 important_thing
 ```
 
