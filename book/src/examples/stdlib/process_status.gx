@@ -1,0 +1,8 @@
+let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "sleep 0.1"],
+    #kill_on_drop: true,
+    "/bin/sh"
+))$;
+let status: [`Running, `Exited(sys::process::ExitStatus)] = `Running;
+status <- `Exited(sys::process::wait(child.proc)$);
+println("[status]")
