@@ -164,7 +164,9 @@ fn completion() {
     };
     assert_eq!(at(&mut c, "let q = util::"), ["area", "bump"]);
     assert_eq!(at(&mut c, "let q = util::bu"), ["bump"]);
-    assert_eq!(at(&mut c, "let q = nam"), ["names"]);
+    assert_eq!(at(&mut c, "let q = are"), ["area"]);
+    // declared after the cursor: not in scope there
+    assert_eq!(at(&mut c, "let q = nam"), Vec::<String>::new());
     assert_eq!(at(&mut c, "let q = println(#"), ["#dest"]);
     assert_eq!(at(&mut c, "let q = p."), ["x", "y"]);
     c.replace("main.gx", "    y * 2", "    let w = y\n    y * 2");
@@ -354,6 +356,27 @@ fn an_unused_import_is_a_warning() {
 fn a_field_shows_its_type() {
     let mut c = two_files();
     hover_is(&mut c, "p.|x", "x: f64");
+}
+
+/// A binding is offered once it is in scope: after its statement, or
+/// inside it for a `let rec`.
+#[test]
+fn completion_offers_only_what_is_in_scope() {
+    let mut c = Client::start(&[(
+        "main.gx",
+        "let x = 1;\n\
+         let f = |a: i64| a + 1;\n\
+         let rec r = |n: i64| -> i64 select n { 0 => 0, n => r(n - 1) };\n\
+         let later = 2;\n\
+         later\n",
+    )]);
+    c.open("main.gx");
+    let got = c.completions("main.gx", "a + |1");
+    let has = |n: &str| got.iter().any(|g| g == n);
+    assert!(has("a") && has("x"), "{got:?}");
+    assert!(!has("f") && !has("r") && !has("later"), "{got:?}");
+    let got = c.completions("main.gx", "n => |r(");
+    assert!(got.iter().any(|g| g == "r"), "{got:?}");
 }
 
 #[test]

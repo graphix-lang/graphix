@@ -5,7 +5,8 @@ use crate::{
     query::{display_type, in_file},
     state::{Checked, ServerState},
     text::{
-        Typed, UsePath, call_context, label_start, typed_before, use_path, zero_based,
+        Typed, UsePath, call_context, label_start, text_between, typed_before, use_path,
+        zero_based,
     },
     uri::uri_to_path,
 };
@@ -14,6 +15,7 @@ use compact_str::CompactString;
 use graphix_compiler::{
     env::{Bind, Env},
     expr::ModPath,
+    ide::ScopeMapEntry,
     typ::{FnArgKind, FnType, Type},
 };
 use lsp_types::{
@@ -21,6 +23,7 @@ use lsp_types::{
     InsertTextFormat, Position, Range, TextEdit, Uri,
 };
 use netidx_core::path::Path as NPath;
+use poolshark::local::LPooled;
 use std::{cmp::Reverse, fmt::Write, path::Path};
 
 /// A path as typed (`array::ma`, `array::`) for `lookup_matching`; a
@@ -110,11 +113,39 @@ impl<'a> Completer<'a> {
     /// it, innermost and latest first.
     fn locals(&self) -> impl Iterator<Item = &'a Bind> {
         let binds = self.checked.into_iter().flat_map(|c| c.ide.binds.iter().rev());
-        binds.filter(|b| {
+        let defining = self.defining();
+        binds.filter(move |b| {
             in_file(&b.ori, self.file)
                 && zero_based(b.pos) <= self.cursor
                 && is_under(&self.scope, &b.scope)
+                && !defining(b)
         })
+    }
+
+    /// Whether a binding of this file is not in scope yet at the cursor:
+    /// it is in its own statement, which binds its names after its value
+    /// (a `let rec` before).
+    fn defining(&self) -> impl Fn(&Bind) -> bool + 'a {
+        let entries = self.checked.into_iter().flat_map(|c| c.ide.scope_map.iter());
+        let cursor = self.cursor;
+        let around: LPooled<Vec<&'a ScopeMapEntry>> = entries
+            .filter(|e| {
+                in_file(&e.ori, self.file)
+                    && zero_based(e.pos) <= cursor
+                    && cursor <= zero_based(e.end)
+            })
+            .collect();
+        move |b| {
+            let at = zero_based(b.pos);
+            around.iter().any(|e| {
+                let start = zero_based(e.pos);
+                e.scope == b.scope
+                    && start <= at
+                    && !text_between(&e.ori.text, start, at)
+                        .split_whitespace()
+                        .any(|w| w == "rec")
+            })
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<&'a Bind> {
@@ -284,18 +315,14 @@ impl<'a> Completer<'a> {
             }
         }
         let part = typed_path(&typed.path);
-        // CR claude for claude: [bug/low] The env here is the one left at the end of
-        // the last check, so it holds every root binding of this file: those declared
-        // after the cursor, and the non-rec `let` whose body the cursor is in. Graphix
-        // has no hoisting, so accepting one gives `not defined`. In `let f = |a: i64| a
-        // + 1; let g = ..; let later = 1;` completion inside f's body offers a, f, g
-        // and later, and only `a` is in scope. Fix: skip an env result whose bind is in
-        // this file (`in_file(&bind.ori, self.file)`) and is declared at or after the
-        // start of the enclosing statement. The locals pass already offers this file's
-        // earlier binds. probe: design/review-2026-10-12/repro/x-lsp-probe.py
-        // completion-scope (x-lsp-probe-03)
+        // the env is the last check's, which holds every binding of this file
+        let defining = self.defining();
+        let unbound = |b: &Bind| {
+            in_file(&b.ori, self.file) && (zero_based(b.pos) > self.cursor || defining(b))
+        };
         for (name, id) in self.env.lookup_matching(&self.scope, &part) {
             if let Some(bind) = self.env.by_id.get(&id)
+                && !unbound(bind)
                 && seen.insert(name.clone())
             {
                 items.push(self.bind_item(&name, bind));

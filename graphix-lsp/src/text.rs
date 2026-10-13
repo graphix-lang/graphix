@@ -25,6 +25,19 @@ pub(crate) fn covers(start: Position, len: usize, cursor: Position) -> bool {
         && cursor.character <= start.character + len as u32
 }
 
+/// The text from `from` up to `to`.
+pub(crate) fn text_between(text: &str, from: Position, to: Position) -> LPooled<String> {
+    let mut out: LPooled<String> = LPooled::take();
+    let lines = text.lines().enumerate().skip(from.line as usize);
+    for (i, line) in lines.take_while(|(i, _)| *i <= to.line as usize) {
+        let skip = if i == from.line as usize { from.character as usize } else { 0 };
+        let end = if i == to.line as usize { to.character as usize } else { usize::MAX };
+        out.extend(line.chars().take(end).skip(skip));
+        out.push('\n');
+    }
+    out
+}
+
 fn line_chars(text: &str, line: u32) -> Option<LPooled<Vec<char>>> {
     let line = text.lines().nth(line as usize)?;
     let mut chars: LPooled<Vec<char>> = LPooled::take();
