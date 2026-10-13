@@ -25,6 +25,10 @@ pub(crate) async fn init(
 // FuseExpect, and assert it in Mode::Jit. For SAME_ARM_REFIRE, put `#[native]` on the
 // select so the kernel path is what the jit modes run: `let s = #[native] select x
 // {..}; count(s)` builds and gives 1 2 3. (tests-lang-rest-a-08)
+// 2026-10-13 claude: SAME_ARM_REFIRE's select is #[native] now, so its jit modes run the
+// kernel. The general check stands: run_delta reports no fusion counters and modes!
+// asserts no FuseExpect, so another cadence fixture whose jit modes fuse nothing still
+// passes as a node-walk run.
 macro_rules! modes {
     ($($test:ident),+ $(,)?) => {$(
         mod $test {

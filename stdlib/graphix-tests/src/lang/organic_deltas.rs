@@ -6,11 +6,12 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use graphix_package_core::testing::{Mode, as_i64s};
 
-// A scrutinee re-fire on the same arm emits: x delivers 1, 2, 2 into a
-// const `_` arm; count [1, 2, 3].
+// A scrutinee re-fire on the same arm emits, in the kernel too: x
+// delivers 1, 2, 2 into a const `_` arm; count [1, 2, 3].
 const SAME_ARM_REFIRE: &str = r#"{
   let x = array::iter([i64:1, i64:2, i64:2]);
-  count(select x {i64:0 => i64:0, _ => i64:7})
+  let s = #[native] select x {i64:0 => i64:0, _ => i64:7};
+  count(s)
 }"#;
 
 async fn same_arm_refire_emits(mode: Mode) -> Result<()> {
