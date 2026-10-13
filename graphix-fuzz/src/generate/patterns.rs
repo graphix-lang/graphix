@@ -6,18 +6,16 @@
 //! select scrut {
 //!   [0-2 guarded arms]            // first ⇒ can never be dead
 //!   [0-1 bound or-arm]            // over a pair of one integer type
-//!   [0-1 unguarded refutable arm]
+//!   [0-1 unguarded refutable arm] // only without an or-arm, which may cover it
 //!   [final irrefutable arm]       // one refutable arm never exhausts
 //! }
 //! ```
 //!
-//! The or-arm may cover the refutable arm by value (`(i64:1, v) | (v,
-//! i64:2)` before `(i64:1, _)`); both stay live because dead arms are
-//! found by type, and literal patterns never complete a type's coverage.
-//!
-//! or, for a variant scrutinee, full-coverage mode: every tag exactly
-//! once, unguarded, with irrefutable payload patterns and no trailing
-//! wildcard.
+//! or a pair built for the or-arm, `select (a, b) { (l0, x) | (x, l1) =>
+//! .., (y, z) => .. }`; or, for a variant scrutinee, full-coverage mode:
+//! every tag exactly once, unguarded, with irrefutable payload patterns
+//! and no trailing wildcard, two tags sometimes sharing an or-arm that
+//! binds their one payload.
 
 use super::{
     GenCtx, exprs,
@@ -266,6 +264,9 @@ pub(super) fn maybe_select(
         (exprs::gen_typed(ctx, rng, &I64, d), I64)
     };
     let mut arms: Vec<String> = Vec::new();
+    if rng.below(16) == 0 {
+        return Some(or_pair_select(ctx, rng, ty, d));
+    }
     // nullable coverage mode: null arm + value type-match arm, no wildcard
     if let GenType::Nullable(t) = &scrut_ty {
         if t.is_scalar() && rng.below(2) == 0 {
@@ -316,6 +317,33 @@ pub(super) fn maybe_select(
     general_select(ctx, rng, scrut, scrut_ty, ty, d, arms)
 }
 
+/// A select over a pair of one integer type built for a bound or-arm:
+/// `(l0, x) | (x, l1)`, then a final arm binding both.
+fn or_pair_select(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, d: usize) -> String {
+    let nt = loop {
+        let t = types::numeric_type(rng);
+        if !matches!(&t, GenType::Num(n) if n.is_float()) {
+            break t;
+        }
+    };
+    let (a, b) = (exprs::gen_typed(ctx, rng, &nt, d), exprs::gen_typed(ctx, rng, &nt, d));
+    let (l0, l1) = (types::literal(rng, &nt), types::literal(rng, &nt));
+    let mut inner = ctx.clone();
+    let mark = inner.mark();
+    let x = bind_name(&mut inner, rng, mark);
+    inner.push(x.clone(), nt.clone());
+    let or_body = exprs::gen_typed(&inner, rng, ty, d);
+    let mut inner = ctx.clone();
+    let y = bind_name(&mut inner, rng, mark);
+    inner.push(y.clone(), nt.clone());
+    let z = bind_name(&mut inner, rng, mark);
+    inner.push(z.clone(), nt.clone());
+    let fin = exprs::gen_typed(&inner, rng, ty, d);
+    format!(
+        "select ({a}, {b}) {{ ({l0}, {x}) | ({x}, {l1}) => {or_body}, ({y}, {z}) => {fin} }}"
+    )
+}
+
 /// A select over an array whose slice patterns' lengths cover it with no
 /// final arm: `[]` then a head and a rest, a one-element arm then a two-
 /// element head and a rest, or an init and a last.
@@ -342,7 +370,8 @@ fn array_ladder(
         let mut parts = Vec::new();
         for &rest in *shape {
             let n = bind_name(&mut inner, rng, mark);
-            let (p, t) = if rest { (format!("{n}.."), scrut_ty) } else { (n.clone(), elt) };
+            let (p, t) =
+                if rest { (format!("{n}.."), scrut_ty) } else { (n.clone(), elt) };
             inner.push(n, t.clone());
             parts.push(p);
         }
@@ -380,13 +409,18 @@ pub(super) fn full_coverage_select(
     while i < tags.len() {
         let mut inner = ctx.clone();
         let mark = inner.mark();
-        // sometimes group two consecutive tags into one or-arm;
-        // the payloads bind nothing, so same-binds holds
+        // sometimes group two consecutive tags into one or-arm; one
+        // payload of one type each binds the same name, others bind nothing
         if i + 1 < tags.len() && rng.below(3) == 0 {
             let (t0, a0) = &tags[i];
             let (t1, a1) = &tags[i + 1];
-            let text =
-                format!("{} | {}", wild_text(t0, a0.len()), wild_text(t1, a1.len()));
+            let text = if a0.len() == 1 && a1.len() == 1 && a0[0] == a1[0] {
+                let x = bind_name(&mut inner, rng, mark);
+                inner.push(x.clone(), a0[0].clone());
+                format!("`{t0}({x}) | `{t1}({x})")
+            } else {
+                format!("{} | {}", wild_text(t0, a0.len()), wild_text(t1, a1.len()))
+            };
             let body = exprs::gen_typed(&inner, rng, ty, d);
             arms.push(format!("{text} => {body}"));
             i += 2;
@@ -425,18 +459,7 @@ fn general_select(
     // a bound or-alternation over an equal-typed integer pair: both
     // alternatives bind the same name at the same type; structurally
     // distinct and refutable
-    // CR claude for claude: [test-gap/medium] This is the generator's only or-pattern
-    // whose alternatives bind names. It needs a scrutinee that is a 2-tuple of one
-    // integer type, which random_type almost never draws: it occurred 0 times in `gen
-    // 20000 7`. Shared-name or-pattern binds therefore get no generated coverage. The
-    // module doc's premise is also false: the refutable arm drawn next can be `(l0, _)`
-    // or `(_, l1)`, and Reach refuses it as an unreachable arm because the or-arm
-    // already matches those values. Fix: give the or-arm its own scrutinee (`select
-    // (e0, e1) {..}` with e0 and e1 at one integer type) or use any tuple with two
-    // equal integer positions. Draw the following refutable arm so it avoids l0 in
-    // position 0 and l1 in position 1, or skip it after an or-arm. Correct the module
-    // doc, and add variant binding or-arms (`` `A(x) | `B(x) ``) where payload types
-    // allow. probe: design/review-2026-10-12/repro/fuzz-gen-b-02.gx (fuzz-gen-b-03)
+    let mut or_arm = false;
     if let GenType::Tuple(es) = &scrut_ty {
         if es.len() == 2
             && es[0].render() == es[1].render()
@@ -451,9 +474,10 @@ fn general_select(
             let l1 = types::literal(rng, &es[1]);
             let body = exprs::gen_typed(&inner, rng, ty, d);
             arms.push(format!("({l0}, {x}) | ({x}, {l1}) => {body}"));
+            or_arm = true;
         }
     }
-    if rng.below(2) == 0 {
+    if !or_arm && rng.below(2) == 0 {
         let (a, refutable) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, false);
         if refutable {
             arms.push(a);
