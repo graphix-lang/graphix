@@ -108,6 +108,7 @@ fn to_json(
             Ok(serde_json::Value::Array(vals.drain(..).collect()))
         }
         Shape::Leaf => leaf_to_json(value),
+        Shape::Ref => Err("a reference cannot be written as JSON".into()),
     }
 }
 

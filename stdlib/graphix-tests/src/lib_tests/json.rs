@@ -258,3 +258,15 @@ run!(f32_written_as_held, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == r#"{"c":0.1} c = 0.1 true"#)
 }; FuseExpect::Jit);
+
+// A reference is not data: the writers refuse it rather than write its
+// cell's id as a number.
+run!(writers_refuse_references, r#"{
+    let x = 5;
+    let j = select json::write_str({a: &x, b: 1}) { error as e => "[e]", s => s };
+    let t = select toml::write_str({a: &x, b: 1}) { error as e => "[e]", s => s };
+    let h = select hbs::render("{{a}}", {a: &x, b: 1}) { error as e => "[e]", s => s };
+    "[j]|[t]|[h]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:["JsonErr", "a reference cannot be written as JSON"]|error:["TomlErr", "a reference cannot be written as TOML"]|error:["HbsErr", "a reference cannot be written as JSON"]"#)
+}; FuseExpect::Jit);

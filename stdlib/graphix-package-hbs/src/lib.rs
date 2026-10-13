@@ -43,7 +43,7 @@ fn register_partials(
             }
             Ok(())
         }
-        Shape::Seq(_) | Shape::Leaf => {
+        Shape::Seq(_) | Shape::Leaf | Shape::Ref => {
             Err(format!("partials must be a struct, map, or null, got {partials}"))
         }
     }

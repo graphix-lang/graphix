@@ -487,11 +487,13 @@ pub fn is_struct(arr: &ValArray) -> bool {
 }
 
 /// How a writer serializes a value: an object's entries or a sequence's
-/// elements, each with the type that directs it, or a leaf.
+/// elements, each with the type that directs it, or a leaf; or a
+/// reference, which is not data and no writer writes.
 pub enum Shape {
     Object(LPooled<Vec<(ArcStr, Value, Option<Type>)>>, Keys),
     Seq(LPooled<Vec<(Value, Option<Type>)>>),
     Leaf,
+    Ref,
 }
 
 /// Whose keys an object's are: a struct's fields, which a cast reads
@@ -513,21 +515,10 @@ pub fn f32_as_written(n: f32) -> f64 {
 /// payload a sequence; a union reads as the first member `v` inhabits.
 /// Where the type says nothing (`None`, `Any`, an open variable), a
 /// non-empty array of `(string, _)` pairs in key order reads as an object.
-// CR claude for claude: [bug/medium] `shape` has no arm for `Type::ByRef`, so a
-// reference falls to `untyped_shape` and becomes a `Shape::Leaf` holding its cell's
-// BindId. The json, toml and hbs writers then write that id as a number:
-// `json::write_str({a: &x, b: 1})` gives `{"a":4611686018427392013,"b":1}`. The number
-// differs per `&x`, per engine and per image (graphix-fuzz answers UNSURE), and it
-// cannot be read back. A reference is not a number, and a cast already refuses one
-// through `Type::holds_ref`, so the writers should refuse it too. Fix: give `Shape` a
-// refusal for a `ByRef` type, and have json `encode`, toml `encode` and hbs `fc_render`
-// turn it into their JsonErr/TomlErr/HbsErr. Better still, refuse at check time with a
-// bound on the writers' value variable that excludes references, as `'b: Concrete` does
-// for the reads. probe: design/review-2026-10-12/repro/small-pkgs-04.gx Also reported
-// as (x-fix-stdlib-04). (small-pkgs-04)
 pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
     let typed = t.and_then(|t| constructor(env, t));
     match (typed.as_ref(), v) {
+        (Some(Type::ByRef(..)), _) => Shape::Ref,
         // CR claude for claude: [perf/low] A union picks its member with a full is_a
         // walk of the value. Writers recurse through shape() level by level, so a value
         // of a recursive union type (`type J = [.., Array<J>, Map<string, J>]`)

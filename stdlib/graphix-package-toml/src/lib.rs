@@ -101,6 +101,7 @@ fn to_toml(
             Ok(toml::Value::Array(vals.drain(..).collect()))
         }
         Shape::Leaf => leaf_to_toml(value),
+        Shape::Ref => Err("a reference cannot be written as TOML".into()),
     }
 }
 
