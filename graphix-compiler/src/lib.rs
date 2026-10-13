@@ -27,7 +27,7 @@ pub mod node;
 pub mod node_shape;
 pub(crate) mod perfdbg;
 
-pub use node::{error::diagnostic_site, module::check_script_sig};
+pub use node::{WriteTarget, error::diagnostic_site, module::check_script_sig};
 pub use stack::{Budget, Control, CtlFlag, ParMode, with_control};
 pub use stack::{set_activation_budget, set_stack_budget};
 pub mod tval;
@@ -1857,6 +1857,18 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// replaced by what it names, `[root, step..]` (a reference's value
     /// is its own cell): equal results mean equal values, references
     /// equal when they name one place.
+    /// Where a write through the reference cell `cell` lands: its
+    /// registered place, else the binding its byref chain ends at, else
+    /// the cell itself.
+    pub fn write_target(&self, cell: BindId) -> WriteTarget {
+        match self.rt.ref_path(&cell) {
+            Some((root, path)) => WriteTarget::Place(*root, path.clone()),
+            None => WriteTarget::Bind(
+                self.env.byref_chain.get(&cell).copied().unwrap_or(cell),
+            ),
+        }
+    }
+
     pub fn ref_targets(&self, t: &Type, v: &Value) -> Value {
         use node::place::Step;
         t.map_refs(&self.env, v, &mut |r| match r {

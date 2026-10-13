@@ -75,7 +75,7 @@ fn write_count<R: Rt, E: UserEvent>(
 ) {
     if let Some((r, depth)) = w {
         let v = Value::I64(depth);
-        match crate::write_target(ctx, r) {
+        match ctx.write_target(r) {
             // CR claude for claude: [bug/medium] A place target for #count is written
             // with Rt::patch_var, which queues an ordinary write. A binding target uses
             // Rt::set_level instead. Several depth changes in one cycle therefore queue
@@ -86,10 +86,10 @@ fn write_count<R: Rt, E: UserEvent>(
             // (push_level with VarUpdate::Patch, replacing a waiting level patch), call
             // it here, and add a place variant of the queuefn_count_ref pin. probe:
             // design/review-2026-10-12/repro/core-aux-04.sh (core-aux-04)
-            crate::WriteTarget::Place(root, path) => {
+            graphix_compiler::WriteTarget::Place(root, path) => {
                 ctx.rt.patch_var(root, path, v, None)
             }
-            crate::WriteTarget::Var(target) => ctx.rt.set_level(target, v),
+            graphix_compiler::WriteTarget::Bind(target) => ctx.rt.set_level(target, v),
         }
     }
 }

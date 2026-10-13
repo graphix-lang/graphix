@@ -11,7 +11,7 @@ use futures::{
 };
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastFn, IoSite, Node, Refs, Rt, Scope,
-    Tag, TagValue, TagView, TypedFastFn, UserEvent,
+    Tag, TagValue, TagView, TypedFastFn, UserEvent, WriteTarget,
     effects::{Effect, IoCall},
     env::Env,
     err, errf,
@@ -661,46 +661,9 @@ pub(crate) fn write_through<R: Rt, E: UserEvent>(
     r: BindId,
     v: Value,
 ) {
-    match write_target(ctx, r) {
+    match ctx.write_target(r) {
         WriteTarget::Place(root, path) => ctx.rt.patch_var(root, path, v, None),
-        WriteTarget::Var(target) => ctx.rt.set_var(target, v),
-    }
-}
-
-/// Where a write through the reference cell `r` lands.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum WriteTarget {
-    /// The place `r` stands for: its root and the path in it.
-    Place(BindId, graphix_compiler::node::place::Path),
-    /// The variable `r`'s byref chain reaches.
-    Var(BindId),
-}
-
-// CR claude for claude: [structure/low] The rule 'a reference cell writes to its
-// registered place, else to the binding at the end of its byref chain, else to itself'
-// is written out again here, with its own WriteTarget enum. graphix-compiler has the
-// same rule in `node::bind::ref_target` and in `ConnectDeref::resolve` (with another
-// `WriteTarget`), and buffer.rs `Decoder::target`/`Decoder::put` check a narrower
-// version that has already drifted (it refuses a chainless cell). Fix: make one public
-// resolver in graphix-compiler (`ref_target`, or a `WriteTarget` built on it), delete
-// this copy and `ConnectDeref::resolve`, and have `Decoder` validate and write through
-// that resolver. (tests-lib-b1-02)
-// CR claude for claude: [structure/low] `write_target` repeats the rule 'the cell's
-// place if it has one, else its byref chain, else the cell'. That rule is also in the
-// compiler's `node::bind::ref_target` and in `ConnectDeref::resolve`, which has its own
-// `WriteTarget` enum. If one copy changes, for example to follow a longer byref chain,
-// `buffer::decode` and `queuefn` writes would go to a different binding than `*r <- v`,
-// and `==` on references would compare a third answer. Make one public function in
-// graphix-compiler (an `ExecCtx` method returning the target) and use it from all three
-// places. Then delete `WriteTarget` and `write_target` here, and the compiler's private
-// enum. (core-lib-07)
-pub(crate) fn write_target<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<'_, R, E>,
-    r: BindId,
-) -> WriteTarget {
-    match ctx.rt.ref_path(&r).cloned() {
-        Some((root, path)) => WriteTarget::Place(root, path),
-        None => WriteTarget::Var(ctx.env.byref_chain.get(&r).copied().unwrap_or(r)),
+        WriteTarget::Bind(target) => ctx.rt.set_var(target, v),
     }
 }
 

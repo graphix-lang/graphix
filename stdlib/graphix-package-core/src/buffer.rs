@@ -3,8 +3,8 @@ use arcstr::ArcStr;
 use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::Effect, errf};
 use netidx_value::{PBytes, ValArray, Value};
 
-use crate::{CachedArgs, CachedVals, EvalCached, WriteTarget, fast_get, write_target};
-use graphix_compiler::node::place::read_path;
+use crate::{CachedArgs, CachedVals, EvalCached, fast_get};
+use graphix_compiler::{WriteTarget, node::place::read_path};
 
 fn fc_bytes_to_string(args: &[Value]) -> Option<Value> {
     let b = fast_get::<Bytes>(args, 0)?;
@@ -178,11 +178,11 @@ impl<'a> Decoder<'a> {
         ctx: &ExecCtx<'_, R, E>,
         r: &Value,
     ) -> Result<Option<usize>, Value> {
-        let target = write_target(ctx, reference(r)?);
+        let target = ctx.write_target(reference(r)?);
         let v = match self.written.iter().rev().find(|(_, t, _)| *t == target) {
             Some((_, _, v)) => Some(v.clone()),
             None => match &target {
-                WriteTarget::Var(b) => ctx.rt.store_value(b),
+                WriteTarget::Bind(b) => ctx.rt.store_value(b),
                 WriteTarget::Place(root, path) => {
                     ctx.rt.store_value(root).and_then(|rv| read_path(&rv, path).ok())
                 }
@@ -212,7 +212,7 @@ impl<'a> Decoder<'a> {
         v: Value,
     ) -> Result<(), Value> {
         let r = reference(r)?;
-        self.written.push((r, write_target(ctx, r), v));
+        self.written.push((r, ctx.write_target(r), v));
         Ok(())
     }
 
@@ -341,7 +341,7 @@ fn decode<R: Rt, E: UserEvent>(
                     .rt
                     .store_value(root)
                     .is_some_and(|rv| read_path(&rv, path).is_ok_and(|c| c == v)),
-                WriteTarget::Var(_) => false,
+                WriteTarget::Bind(_) => false,
             };
             if !unchanged {
                 crate::write_through(ctx, r, v);

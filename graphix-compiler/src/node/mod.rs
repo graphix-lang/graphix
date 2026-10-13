@@ -1638,7 +1638,7 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
 /// Where a write through a reference lands: a bound variable, or a
 /// place inside one (`design/place_references.md`).
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum WriteTarget {
+pub enum WriteTarget {
     Bind(BindId),
     Place(BindId, place::Path),
 }
@@ -1732,10 +1732,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             Value::U64(id) => Some(BindId::from(*id)),
             _ => None,
         })?;
-        if let Some((root, path)) = ctx.rt.ref_path(&cell) {
-            return Some(WriteTarget::Place(*root, path.clone()));
-        }
-        Some(WriteTarget::Bind(ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell)))
+        Some(ctx.write_target(cell))
     }
 }
 
