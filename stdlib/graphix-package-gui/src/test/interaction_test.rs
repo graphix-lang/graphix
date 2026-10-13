@@ -816,16 +816,12 @@ async fn checkbox_clicks_outrun_their_echoes() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let _ = h.watch("test::c").await?;
-    for _ in 0..2 {
+    for expected in [true, false] {
         let msgs = h.click(WIDGET_HIT);
+        expect_call_with_args(&msgs, |args| args.first() == Some(&Value::Bool(expected)));
         h.apply(&msgs);
     }
     h.drain().await?;
-    // CR claude for claude: [test-gap/low] c starts false, so this assertion also holds
-    // when no click produces a Call at all, for example a missed hit, on_toggle ignored
-    // while an echo is pending, or apply dropping the calls. The only failure it can
-    // catch is both calls carrying true. Collect each click's Call argument and assert
-    // they are [true, false] before draining. (tests-gui-b-03)
     assert_eq!(h.get_watched("test::c"), Some(&Value::Bool(false)));
     Ok(())
 }
