@@ -422,6 +422,24 @@ async fn context_menu_renders() -> Result<()> {
 /// numbers, are refused as updates and the last good ones kept.
 #[tokio::test(flavor = "current_thread")]
 async fn bad_sizes_and_coordinates_are_refused() -> Result<()> {
+    use crate::widgets::{
+        canvas::{CanvasShape, CanvasW},
+        text::TextW,
+    };
+    use graphix_rt::NoExt;
+
+    let retained_value = |h: &GuiTestHarness| {
+        let widget = h.widget.as_any();
+        if let Some(text) = widget.downcast_ref::<TextW<NoExt>>() {
+            text.text_size().expect("explicit text size")
+        } else {
+            let canvas = widget.downcast_ref::<CanvasW<NoExt>>().expect("canvas");
+            match canvas.shapes().expect("shapes") {
+                [CanvasShape::Circle { center, .. }] => center.0.x,
+                _ => panic!("one circle"),
+            }
+        }
+    };
     for (decls, widget, var, bad) in [
         ("let s = 16.0", r#"text(#size: &s, &"t")"#, "test::s", Value::F64(0.0)),
         ("let s = 16.0", r#"text(#size: &s, &"t")"#, "test::s", Value::F64(-2.0)),
@@ -436,19 +454,11 @@ async fn bad_sizes_and_coordinates_are_refused() -> Result<()> {
         let code = format!("{IMPORTS};\n{decls};\nlet result = {widget}");
         let mut h = GuiTestHarness::new(&code).await?;
         h.drain().await?;
+        let good = retained_value(&h);
         let bid = testing::find_bind_id(&h.compiled.env, var)?;
         h.gx.compile_ref(bid).await?.set(bad.clone())?;
-        // CR claude for claude: [test-gap/low] The doc promises the bad update is
-        // refused and the last good value kept, but the test checks only that drain
-        // errors and that the next render does not panic. A widget that stored size 0
-        // or the NaN coordinate and then returned Err would pass. After the refusal,
-        // assert the widget still holds the good value, either through a test accessor
-        // or by writing the same good value and expecting drain to report no change.
-        // The harness drain (testing::drain_idle) also stops at the first handle_update
-        // error and drops the rest of the batch, whereas the event loop logs each error
-        // and continues. A harness drain that logs and continues, with the errors
-        // collected for the test, would match production. (tests-gui-b-06)
         assert!(h.drain().await.is_err(), "{widget} takes {bad:?}");
+        assert_eq!(retained_value(&h), good, "{widget} retains its last good value");
         h.render().await?;
     }
     Ok(())
@@ -466,4 +476,52 @@ fn image_sources_compare_by_content() {
     assert!(
         !ImageSourceV::Path("a.png".into()).same_as(&ImageSourceV::Svg("a.png".into()))
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_refused_update_does_not_drop_the_rest_of_the_batch() -> Result<()> {
+    use crate::widgets::{GuiWidget, IcedElement};
+    use anyhow::bail;
+    use graphix_compiler::expr::ExprId;
+    use graphix_rt::{GXEvent, NoExt};
+    use poolshark::global::GPooled;
+    use tokio::sync::mpsc;
+
+    struct Counter(usize);
+    impl GuiWidget<NoExt> for Counter {
+        fn handle_update(
+            &mut self,
+            _: &tokio::runtime::Handle,
+            _: ExprId,
+            value: &Value,
+        ) -> Result<bool> {
+            self.0 += 1;
+            if value == &Value::Bool(false) {
+                bail!("refused update");
+            }
+            Ok(true)
+        }
+
+        fn view(&self) -> IcedElement<'_> {
+            iced_widget::Space::new().into()
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    let mut h = harness(r#"text(&"test")"#).await?;
+    h.drain().await?;
+    h.widget = Box::new(Counter(0));
+    let (tx, rx) = mpsc::channel(1);
+    h.rx = rx;
+    let mut batch: GPooled<Vec<GXEvent>> = GPooled::take();
+    for value in [false, true] {
+        batch.push(GXEvent::Updated(ExprId::new(), Value::Bool(value)));
+    }
+    tx.send(batch).await?;
+    assert!(h.drain().await.is_err());
+    assert_eq!(h.widget.as_any().downcast_ref::<Counter>().unwrap().0, 2);
+    Ok(())
 }

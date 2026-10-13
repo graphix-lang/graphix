@@ -131,7 +131,12 @@ pub(crate) struct CanvasW<X: GXExt> {
 impl<X: GXExt> CanvasW<X> {
     #[cfg(test)]
     pub(crate) fn shape_count(&self) -> Option<usize> {
-        self.p.shapes.t.as_ref().map(|shapes| shapes.0.len())
+        self.shapes().map(<[CanvasShape]>::len)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shapes(&self) -> Option<&[CanvasShape]> {
+        self.p.shapes.t.as_ref().map(|shapes| shapes.0.as_slice())
     }
 
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {

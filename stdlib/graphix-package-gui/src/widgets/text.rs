@@ -23,12 +23,22 @@ graphix_rt::props! {
 pub(crate) struct TextW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> TextW<X> {
+    #[cfg(test)]
+    pub(crate) fn text_size(&self) -> Option<f32> {
+        self.0.size.t.flatten().map(|size| size.0)
+    }
+
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         Ok(Box::new(Self(Props::compile(&gx, &source).await.context("text")?)))
     }
 }
 
 impl<X: GXExt> super::GuiWidget<X> for TextW<X> {
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn handle_update(
         &mut self,
         _rt: &tokio::runtime::Handle,

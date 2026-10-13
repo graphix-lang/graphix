@@ -161,11 +161,23 @@ impl GuiTestHarness {
     /// it with `wait_until`.
     async fn drain(&mut self) -> Result<bool> {
         let Self { gx, rx, widget, rt_handle, watches, .. } = self;
+        let mut first_error = None;
         let deliver = async |id, v: Value| {
             watches.note(id, &v);
-            update_widget(widget, rt_handle, id, &v)
+            match update_widget(widget, rt_handle, id, &v) {
+                Ok(changed) => Ok(changed),
+                Err(e) => {
+                    log::error!(target: graphix_compiler::FAILURE_TARGET, "{e:#}");
+                    first_error.get_or_insert(e);
+                    Ok(false)
+                }
+            }
         };
-        Ok(testing::drain_idle(gx, rx, deliver).await?.0)
+        let (changed, _) = testing::drain_idle(gx, rx, deliver).await?;
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(changed),
+        }
     }
 
     /// Watch a module-qualified variable such as "test::released" and
