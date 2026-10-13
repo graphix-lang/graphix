@@ -10,6 +10,7 @@ use iced_core::{Color, Point, Rectangle, Size, clipboard, mouse};
 use iced_runtime::user_interface::Cache;
 use iced_wgpu::graphics::Viewport;
 use iced_widget::canvas::Program;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 
 fn chart(h: &GuiTestHarness) -> &ChartW<NoExt> {
     h.widget.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart")
@@ -417,16 +418,8 @@ let result = chart(
 }
 
 /// A view panned on one chart is not the view of a chart drawn after it
-/// from the same state, nor of the same chart once its mode changes.
+/// from the same state.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] The doc says the panned view is also not the
-// view of the same chart once its mode changes, but the test only draws a different
-// chart, so the mode half of ChartState's (chart id, mode) owner reset is untested.
-// double_clicks_are_clicks_in_one_place likewise says a press that moves is a drag, yet
-// no step presses and moves. Add the two cases: pan a chart, then change its data from
-// numeric to a time series and assert x_view is not reused; and press, move past
-// CLICK_SLOP and release twice at one spot, asserting the view is not reset. Otherwise
-// trim both docs to what the tests do. (tests-gui-b-07)
 async fn a_view_belongs_to_its_chart() -> Result<()> {
     use iced_core::{event::Event, mouse::Event as ME};
     let numeric = chart_harness("&[line(&[(0.0, 0.0), (10.0, 10.0)])]").await?;
@@ -448,6 +441,43 @@ async fn a_view_belongs_to_its_chart() -> Result<()> {
     let _ = state.handle_event(c, &moved, bounds, at);
     assert!(state.x_view.is_some(), "the drag panned");
     assert_eq!(draw_in(&time, &state, size).await.map(|i| i.x_range), Some(base));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_view_belongs_to_its_chart_mode() -> Result<()> {
+    use iced_core::{event::Event, mouse::Event as ME};
+    let mut h = GuiTestHarness::new(r#"
+        use gui::chart::{chart, line};
+        let data: [Array<(f64, f64)>, Array<(datetime, f64)>] = [(0.0, 0.0), (10.0, 10.0)];
+        let change = |t: Any| data <- t ~ [(datetime:"2024-01-01T00:00:00Z", 1.0),
+                                          (datetime:"2024-01-02T00:00:00Z", 2.0)];
+        let result = chart(&[line(&data)])
+    "#).await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let bounds = Rectangle::new(Point::ORIGIN, size);
+    draw_in(&h, &state, size).await.expect("numeric plot");
+    let start = Point::new(100.0, 100.0);
+    let end = Point::new(200.0, 100.0);
+    for (ev, p) in [
+        (ME::ButtonPressed(mouse::Button::Left), start),
+        (ME::CursorMoved { position: end }, end),
+        (ME::ButtonReleased(mouse::Button::Left), end),
+    ] {
+        state.handle_event(
+            chart(&h),
+            &Event::Mouse(ev),
+            bounds,
+            mouse::Cursor::Available(p),
+        );
+    }
+    assert!(state.x_view.is_some());
+    let change = h.compile_named_callable("test::change").await?;
+    h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
+    assert_eq!(chart(&h).mode(), ChartMode::TimeSeries);
+    assert_eq!(state.view_for(chart(&h)).x, None);
+    assert!(draw_in(&h, &state, size).await.expect("time plot").x_range.0 > 1e12);
     Ok(())
 }
 
@@ -479,6 +509,19 @@ async fn double_clicks_are_clicks_in_one_place() -> Result<()> {
     assert_eq!(state.x_view, Some((1.0, 2.0)), "clicks apart keep the view");
     click(&mut state, Point::new(250.0, 100.0));
     assert_eq!(state.x_view, None, "a double-click resets it");
+    state.x_view = Some((1.0, 2.0));
+    for _ in 0..2 {
+        let start = Point::new(100.0, 100.0);
+        let end = Point::new(200.0, 100.0);
+        for (ev, p) in [
+            (ME::ButtonPressed(mouse::Button::Left), start),
+            (ME::CursorMoved { position: end }, end),
+            (ME::ButtonReleased(mouse::Button::Left), end),
+        ] {
+            state.handle_event(c, &Event::Mouse(ev), bounds, mouse::Cursor::Available(p));
+        }
+        assert!(state.x_view.is_some(), "a drag must not count as a reset click");
+    }
     Ok(())
 }
 
