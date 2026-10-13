@@ -2472,6 +2472,11 @@ fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
     (d.bisect(), d.reference.kind(), d.tested.kind(), td)
 }
 
+/// A divergence's [`Finding::key`]: its pair and [`bucket`].
+fn finding_key(d: &Divergence) -> String {
+    format!("{:?} {:?}", d.pair, bucket(d))
+}
+
 /// The minimizations a campaign spends on one [`Finding::key`]; later
 /// findings with the key are counted, not minimized.
 const MINIMIZE_PER_KEY: usize = 3;
@@ -2493,7 +2498,7 @@ impl Finding {
     pub fn of(d: &Divergence) -> Self {
         let (la, lb) = d.labels();
         Finding {
-            key: format!("{:?} {:?}", d.pair, bucket(d)),
+            key: finding_key(d),
             bisect: d.bisect().to_string(),
             labels: (la.to_string(), lb.to_string()),
             reference: render(&d.reference),
@@ -2535,22 +2540,25 @@ impl Finding {
 /// bucket. The headers are split off before parsing and reattached
 /// around every candidate. Returns the minimized wrapper and the number
 /// of oracle checks spent (capped by `budget`).
-pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, usize) {
+///
+/// With `want`, a [`Finding::key`], a program whose divergence has
+/// another key comes back unchanged. `progress` sees each smaller
+/// program the minimizer settles on.
+pub async fn minimize(
+    code: &str,
+    timeout: Duration,
+    budget: usize,
+    want: Option<&str>,
+    progress: &(dyn Fn(&str) + Sync),
+) -> (String, usize) {
     let d0 = match check(code, timeout).await {
         Some(d) => d,
         None => return (code.to_string(), 1),
     };
-    // CR claude for claude: [risk/low] The target comes from this process's own
-    // re-check, not from the Finding that derive_suspect claimed and will record.
-    // bucket leaves out the pair, so Cold/Warm across routes, or Par/JitPar, share a
-    // bucket. If the re-check here first diverges on another comparison (under load, or
-    // on another first-differing pair), the program is minimized toward that bug.
-    // Corpus::record then files it under the original Finding's key, labels and
-    // outcomes, which is the bug-A-into-bug-B morph the design forbids. Fix: pass the
-    // encoded Finding to minimize-one, compare candidates by the full Finding::key
-    // (pair plus bucket), and return the input unchanged when the first re-check does
-    // not reproduce that key. (fuzz-lib-b-06)
-    let target = bucket(&d0);
+    let target = finding_key(&d0);
+    if want.is_some_and(|w| w != target) {
+        return (code.to_string(), 1);
+    }
     let Ok((mut sched, body)) = schedule::Schedule::parse(code) else {
         return (code.to_string(), 1);
     };
@@ -2577,11 +2585,13 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                 break 'sched;
             }
             calls += 1;
-            if let Some(d) = check(&reattach(cand.render(&body_text)), timeout).await {
-                if bucket(&d) == target {
-                    sched = cand;
-                    continue 'sched; // restart from the smaller schedule
-                }
+            let text = reattach(cand.render(&body_text));
+            if let Some(d) = check(&text, timeout).await
+                && finding_key(&d) == target
+            {
+                progress(&text);
+                sched = cand;
+                continue 'sched; // restart from the smaller schedule
             }
         }
         break;
@@ -2602,8 +2612,9 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                 calls += 1;
                 let text = reattach(sched.render(&files::render(&body_text, &cand)));
                 if let Some(d) = check(&text, timeout).await
-                    && bucket(&d) == target
+                    && finding_key(&d) == target
                 {
+                    progress(&text);
                     files = cand;
                     continue 'files; // restart from the smaller file set
                 }
@@ -2628,6 +2639,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                 timeout,
                 &mut calls,
                 cap,
+                progress,
             )
             .await
         };
@@ -2653,6 +2665,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                     timeout,
                     &mut calls,
                     cap,
+                    progress,
                 )
                 .await
             };
@@ -2738,10 +2751,11 @@ fn ops(prog: &Expr) -> Vec<Op> {
 async fn shrink(
     mut current: Expr,
     build: &impl Fn(&Expr) -> Option<String>,
-    target: &(&'static str, u8, u8, Option<trace::TraceDiff>),
+    target: &str,
     timeout: Duration,
     calls: &mut usize,
     budget: usize,
+    progress: &(dyn Fn(&str) + Sync),
 ) -> Expr {
     // A candidate must render strictly shorter: several reductions are
     // identities on some nodes, and an identity reproduces the
@@ -2749,7 +2763,7 @@ async fn shrink(
     let hits = async |e: &Expr, cur: usize, calls: &mut usize| match build(e) {
         Some(text) if text.len() < cur => {
             *calls += 1;
-            check(&text, timeout).await.is_some_and(|d| bucket(&d) == *target)
+            check(&text, timeout).await.is_some_and(|d| finding_key(&d) == target)
         }
         _ => false,
     };
@@ -2774,6 +2788,9 @@ async fn shrink(
             kept.truncate(kept.len() / 2);
         }
         current = apply_ops(&current, &kept);
+        if let Some(t) = build(&current) {
+            progress(&t);
+        }
         // interactive progress only: `minimize-one` runs with stderr null
         eprintln!(
             "  minimize: {} checks, {} bytes",
@@ -4662,24 +4679,17 @@ pub const CAMPAIGN_MINIMIZE_BUDGET: usize = 80;
 /// itself be a crasher and the minimizer checks candidates in-process.
 /// `None` = the child died or wedged; the caller records the
 /// unminimized mutant instead.
-async fn minimize_isolated(prog: &str, timeout: Duration) -> (Option<String>, Duration) {
+async fn minimize_isolated(
+    prog: &str,
+    key: &str,
+    timeout: Duration,
+) -> (Option<String>, Duration) {
     // worst case the whole budget is bottom programs sleeping the
     // per-mode timeout
-    // CR claude for claude: [risk/medium] This deadline assumes each minimizer check
-    // costs about two per-mode timeouts. For a one-sided Timeout divergence (a JIT
-    // wedge), every check that keeps the hang runs Oracle::settle's ladder: a remake at
-    // slow_budget, which has a 60 s floor, then the reference again. That is about 63 s
-    // per check, so the child is killed after roughly 8 of its CAMPAIGN_MINIMIZE_BUDGET
-    // checks. minimize-one writes its verdict only when minimize returns, so the kill
-    // discards every accepted reduction and derive_suspect records the raw mutant. Fix:
-    // have minimize write its current best to the verdict file after each accepted
-    // reduction, and switch this to a Deadline::Stall on file growth (or read whatever
-    // is there after a kill), so a killed child still returns a partial minimum.
-    // (fuzz-lib-b-05)
     let deadline = Deadline::Fixed(
         timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60),
     );
-    let c = run_child("minimize-one", &[], &[], prog, false, deadline).await;
+    let c = run_child("minimize-one", &[key], &[], prog, false, deadline).await;
     let min = c.verdict.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
     (min, c.cpu)
 }
@@ -4995,7 +5005,7 @@ async fn derive_suspect(
                 tally.known.fetch_add(1, Relaxed);
                 return (true, cpu);
             }
-            let (min, min_cpu) = minimize_isolated(prog, timeout).await;
+            let (min, min_cpu) = minimize_isolated(prog, &f.key, timeout).await;
             let min = min.unwrap_or_else(|| prog.to_string());
             if corpus.record(&f, prog, &min) {
                 println!("DIVERGENCE — {}", f.bisect);

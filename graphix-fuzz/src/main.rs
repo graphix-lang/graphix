@@ -853,9 +853,24 @@ async fn main() -> Result<()> {
         // isolated minimizer: program on stdin, reduced program written
         // to the file named by argv[2]
         Some("minimize-one") => {
+            // the best so far is the verdict, so a child killed at its
+            // deadline still returns a partial minimum
             let code = read_stdin()?;
-            let (min, _) =
-                minimize(code.trim(), campaign_timeout(), CAMPAIGN_MINIMIZE_BUDGET).await;
+            let path = args.get(2).cloned().unwrap_or_default();
+            let progress = |text: &str| {
+                let tmp = format!("{path}.tmp");
+                if std::fs::write(&tmp, text).is_ok() {
+                    let _ = std::fs::rename(&tmp, &path);
+                }
+            };
+            let (min, _) = minimize(
+                code.trim(),
+                campaign_timeout(),
+                CAMPAIGN_MINIMIZE_BUDGET,
+                args.get(3).map(String::as_str),
+                &progress,
+            )
+            .await;
             finish_child(&args, &min)?;
         }
         Some(cmd @ ("generate" | "fuzz")) => {
@@ -963,7 +978,8 @@ async fn main() -> Result<()> {
             // the budget is oracle checks; interactive, so generous
             let budget = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4000);
             let code = std::fs::read_to_string(path)?;
-            let (min, calls) = minimize(code.trim(), timeout(), budget).await;
+            let (min, calls) =
+                minimize(code.trim(), timeout(), budget, None, &|_| ()).await;
             match check(&min, timeout()).await {
                 None => println!("no divergence to minimize (program agrees)"),
                 Some(d) => {
