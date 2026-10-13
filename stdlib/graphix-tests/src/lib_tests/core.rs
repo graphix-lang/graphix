@@ -873,3 +873,12 @@ run!(
     };
     FuseExpect::None
 );
+
+// Two references to one variable, taken at two sites, are equal to all
+// as they are to `==`.
+run!(all_compares_references_by_what_they_name, r#"{
+    let a = 1;
+    let r1 = &a;
+    let r2 = &a;
+    *all(r1, r2)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);

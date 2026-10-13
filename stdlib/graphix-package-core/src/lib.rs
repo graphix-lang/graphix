@@ -2101,15 +2101,6 @@ impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
     }
 }
 
-// CR claude for claude: [bug/low] `all` tests its arguments with raw `==` on the
-// values, so references compare by their per-site ids. Two references to one variable
-// are "different" here, though `r1 == r2` is true and `uniq` treats them as equal
-// through `ExecCtx::ref_targets`. As a result, `all(&a, &a)` written at two sites never
-// produces. Fix: mirror `Uniq`. At init, record the argument type when
-// `Type::compares_refs` holds, and compare `ctx.ref_targets(t, v)` in a custom
-// `EvalCached::eval`, keeping the fast fn for the other types. The alternative is to
-// bound `all` by `'a: Ordered` so references are refused. probe:
-// design/review-2026-10-12/repro/x-builtin-effects-05.gx (x-builtin-effects-05)
 fn fc_all(args: &[Value]) -> Option<Value> {
     match args {
         [] => None,
@@ -2123,7 +2114,59 @@ fn fc_all(args: &[Value]) -> Option<Value> {
     }
 }
 
-crate::fast_builtin!(All, AllEv, "core_all", fc_all);
+/// `all`: its first argument when every argument equals it, references
+/// compared by what they name, as `==` compares them.
+#[derive(Debug, Default)]
+pub(crate) struct AllEv {
+    /// the argument type, when it holds references
+    refs: Option<Type>,
+}
+
+impl ImageState for AllEv {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.refs.encode(buf)
+    }
+
+    fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        Ok(Self { refs: Pack::decode(buf)? })
+    }
+}
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
+    const EFFECT: Effect =
+        Effect::Stateless(Some(graphix_compiler::FastCall::Plain(fc_all)));
+    const NAME: &str = "core_all";
+
+    fn init(
+        ctx: &mut CompileCtx<R, E>,
+        _typ: &FnType,
+        _resolved: Option<&FnType>,
+        _scope: &Scope,
+        from: &[Node<R, E>],
+        _top_id: ExprId,
+    ) -> Self {
+        let refs = from.first().map(|n| n.typ()).filter(|t| t.compares_refs(&ctx.env));
+        Self { refs: refs.cloned() }
+    }
+
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        let Some(t) = &self.refs else { return fast_eval(ctx, fc_all, from) };
+        let [hd, tl @ ..] = &from.0[..] else { return None };
+        let hd = hd.as_ref()?;
+        let named = ctx.ref_targets(t, hd);
+        for v in tl {
+            if ctx.ref_targets(t, v.as_ref()?) != named {
+                return None;
+            }
+        }
+        Some(hd.clone())
+    }
+}
+
+pub(crate) type All = CachedArgs<AllEv>;
 
 /// The arguments with every array spread into its elements.
 fn flat(args: &[Value]) -> impl Iterator<Item = Value> + '_ {
