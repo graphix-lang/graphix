@@ -526,12 +526,15 @@ async fn handle_http_request(
     if declared.is_some_and(|n| n > max_body as u64) {
         return text_response(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large");
     }
-    let raw = match Limited::new(body, max_body).collect().await {
-        Ok(b) => b.to_bytes(),
-        Err(e) if e.is::<LengthLimitError>() => {
+    let body =
+        tokio::time::timeout(BODY_READ_TIMEOUT, Limited::new(body, max_body).collect());
+    let raw = match body.await {
+        Err(_) => return text_response(StatusCode::REQUEST_TIMEOUT, "Request Timeout"),
+        Ok(Ok(b)) => b.to_bytes(),
+        Ok(Err(e)) if e.is::<LengthLimitError>() => {
             return text_response(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large");
         }
-        Err(e) => return text_response(StatusCode::BAD_REQUEST, e),
+        Ok(Err(e)) => return text_response(StatusCode::BAD_REQUEST, e),
     };
     // CR claude for eric: [risk/medium] Every connection collects its whole body (up to
     // `max_body`) before dispatch, and a UTF-8 body is then copied a second time into
@@ -677,31 +680,6 @@ async fn serve_connection(
         let resp = handle_http_request(req, tx.clone(), id, max_body);
         async move { Ok::<_, std::convert::Infallible>(resp.await) }
     });
-    // CR claude for claude: [bug/medium] The http1 builder has no timer. Without one,
-    // hyper applies no header_read_timeout: its 30 s default only takes effect once a
-    // timer is set. Nothing else bounds keep-alive idle time or a slow body either. A
-    // peer that connects and sends nothing therefore keeps its #max_connections permit,
-    // which serve_loop moves into the connection task, until it hangs up.
-    // #max_connections silent sockets lock out every other client indefinitely. Only
-    // the TLS handshake has a timeout. Fix: set
-    // `.timer(hyper_util::rt::TokioTimer::new())` and a `header_read_timeout`, bound
-    // the body collect in handle_http_request with tokio::time::timeout, and bound
-    // keep-alive idle time (or the connection's idle time overall). Pin it with a test
-    // that holds idle sockets past the timeout. probe:
-    // design/review-2026-10-12/repro/x-fix-stdlib-02.gx (driver x-fix-stdlib-02.py)
-    // (x-fix-stdlib-02)
-    // CR claude for claude: [bug/medium] This builder has no timer, so hyper's default
-    // 30 s header_read_timeout never runs (hyper's Time::check drops a default timeout
-    // when no timer is set). Nothing else bounds an idle keep-alive connection either.
-    // Each accepted connection holds its max_connections permit in serve_loop until the
-    // peer closes it. So #max_connections silent or slow sockets (768 by default) leave
-    // serve_loop stuck in acquire_owned, and no new client is ever served. The fix is
-    // `.timer(hyper_util::rt::TokioTimer::new())` on the builder, which turns the
-    // header read timeout on, plus an idle bound for keep-alive connections, for
-    // example a timeout around serve_connection that resets on each request. Probe:
-    // design/review-2026-10-12/repro/http-sqlite-db1-04.sh. With #max_connections: 1
-    // and one silent socket, a GET at 33 s gets no answer, and the socket is closed
-    // only when the program exits. (http-sqlite-db1-04)
     // CR claude for eric: [bug/high] This connection builder has no timer, so hyper
     // drops its default 30 s header-read timeout ("has default, but no timer set").
     // Nothing else limits how long a connection may stay idle. Each of these holds its
@@ -715,7 +693,16 @@ async fn serve_connection(
     // `tokio::time::timeout`; - bound keep-alive idle time between requests. Whether
     // these are `serve` arguments with defaults is a policy call. Probe:
     // design/review-2026-10-12/repro/x-security-01.py (x-security-01)
+    // 2026-10-13 claude: the builder now has a timer and a 30 s header read timeout
+    // (HEADER_READ_TIMEOUT, which also closes a keep-alive connection idle that long),
+    // and a body has 60 s to arrive (BODY_READ_TIMEOUT, else 408). Fixed values: whether
+    // they are serve arguments is the policy call above. Pin:
+    // lib_tests::http::http_silent_socket_releases_its_permit (slow-tests).
+    // a connection waiting on a request's headers, a silent one or one idle
+    // between requests, is closed past the header timeout: it holds a permit
     if let Err(e) = hyper::server::conn::http1::Builder::new()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT)
         .serve_connection(hyper_util::rt::TokioIo::new(io), service)
         .await
     {
@@ -803,6 +790,13 @@ impl<'a> Settings<'a> {
 }
 
 const DEFAULT_MAX_BODY: usize = 16 * 1024 * 1024;
+
+/// How long a connection may take to send a request's headers, counted
+/// from when it may send them: a new connection, or the last response.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a request may take to send its body.
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The bound socket, kept across restarts so one on the same address
 /// reuses it rather than racing the old loop's drop, and the connections

@@ -363,3 +363,31 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
     }
     Ok(())
 }
+
+/// A connection that never sends a request gives its permit back at the
+/// header read timeout: with one permit, a request after it is served.
+#[tokio::test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
+async fn http_silent_socket_releases_its_permit() -> Result<()> {
+    const CODE: &str = r#"{
+    let handler = |req: http::Request| {body: "served", headers: [], status: u16:200, url: ""};
+    let server = http::serve(#addr: "127.0.0.1:0", #max_connections: 1, #handler: handler)$;
+    let addr = http::server_addr(server);
+    let silent = sys::tcp::connect(addr)$;
+    let client = http::default_client(null)$;
+    let later = sys::time::timer(duration:32.s, false);
+    let resp = http::request(#timeout: duration:10.s, client, (later ~ silent) ~ "http://[addr]/");
+    select resp { error as e => "[e]", r => r.body }
+}"#;
+    // the modes wait out the timeout together
+    let run = |mode| {
+        let first = Collect::First(1);
+        collect(CODE, crate::TEST_REGISTER, mode, first, Duration::from_secs(120))
+    };
+    let [interp, jit, par, jit_par] = Mode::ALL;
+    let (a, b, c, d) = tokio::join!(run(interp), run(jit), run(par), run(jit_par));
+    for got in [a?, b?, c?, d?] {
+        assert_eq!(got, [Value::String("served".into())]);
+    }
+    Ok(())
+}
