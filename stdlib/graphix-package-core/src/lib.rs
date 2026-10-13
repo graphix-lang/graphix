@@ -821,10 +821,10 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // an element owed to a collection that fired earlier delivers;
+        // a bottom collection stands in place of a ride
         let x = from[0].update(ctx);
-        if let Some(bottom) = bottom_of([x.tag()]) {
-            return bottom;
-        }
+        let bottom = bottom_of([x.tag()]);
         if let Some(v) = seam_tick(x).map(|tv| tv.value_cloned())
             && let Some(mut c) = C::cursor(v)
         {
@@ -837,7 +837,10 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
         }
         match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
+            None => match bottom {
+                Some(bottom) => bottom,
+                None => self.out.ride(),
+            },
         }
     }
 
@@ -930,9 +933,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
         {
             self.queue.push_back(c);
         }
-        if let Some(bottom) = bottom_of([x_tag]) {
-            return bottom;
-        }
+        let bottom = bottom_of([x_tag]);
         while self.triggered > 0
             && let Some(c) = self.queue.front_mut()
         {
@@ -951,7 +952,10 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
         }
         match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
+            None => match bottom {
+                Some(bottom) => bottom,
+                None => self.out.ride(),
+            },
         }
     }
 
@@ -2587,16 +2591,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         if let Some(tv) = seam_tick(x) {
             self.queue.push_back(tv.value_cloned());
         }
-        if let Some(bottom) = bottom_of([x_tag]) {
-            return bottom;
-        }
+        let bottom = bottom_of([x_tag]);
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
             ctx.rt.set_var(self.id, self.queue.pop_front().unwrap());
         }
         match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
+            None => match bottom {
+                Some(bottom) => bottom,
+                None => self.out.ride(),
+            },
         }
     }
 
@@ -2890,29 +2895,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        macro_rules! emit_cached {
-            ($cause:expr) => {{
-                match self.last_v.clone() {
-                    Some(v) => return self.out.set(caused(v, $cause)),
-                    None => return self.out.ride(),
-                }
-            }};
-        }
-        macro_rules! maybe_schedule {
-            ($last:expr, $cause:expr) => {{
-                let now = Instant::now();
-                if now - *$last >= self.wait {
-                    *$last = now;
-                    emit_cached!($cause)
-                } else {
-                    let id = BindId::new();
-                    ctx.rt.ref_var(id, self.top_id);
-                    ctx.rt.set_timer(id, self.wait - (now - *$last));
-                    self.tid = Some(id);
-                    return self.out.ride();
-                }
-            }};
-        }
         // A fired duration retunes the wait; any value-bearing delivery
         // of the throttled arg lands in `last_v`, but only a fired one
         // is an event to throttle.
@@ -2935,14 +2917,39 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             up1 = tv.is_fired().then(|| tv.tag());
             self.last_v = Some(tv.value_cloned());
         }
-        if let Some(bottom) = bottom_of([rate_tag, x_tag]) {
-            if let Some(id) = self.tid
-                && ctx.event.variables.contains_key(&id)
-            {
-                ctx.release_var(id, self.top_id);
-                self.tid = None;
-            }
-            return bottom;
+        // a value held for a timer delivers; a bottom stands in place of
+        // a ride
+        let bottom = bottom_of([rate_tag, x_tag]);
+        macro_rules! ride {
+            () => {
+                return match bottom {
+                    Some(bottom) => bottom,
+                    None => self.out.ride(),
+                }
+            };
+        }
+        macro_rules! emit_cached {
+            ($cause:expr) => {{
+                match self.last_v.clone() {
+                    Some(v) => return self.out.set(caused(v, $cause)),
+                    None => ride!(),
+                }
+            }};
+        }
+        macro_rules! maybe_schedule {
+            ($last:expr, $cause:expr) => {{
+                let now = Instant::now();
+                if now - *$last >= self.wait {
+                    *$last = now;
+                    emit_cached!($cause)
+                } else {
+                    let id = BindId::new();
+                    ctx.rt.ref_var(id, self.top_id);
+                    ctx.rt.set_timer(id, self.wait - (now - *$last));
+                    self.tid = Some(id);
+                    ride!()
+                }
+            }};
         }
         if let Some((d, cause)) = new_wait {
             self.wait = d;
@@ -2972,7 +2979,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             self.last = Some(Instant::now());
             emit_cached!(Tag::FIRED)
         }
-        self.out.ride()
+        ride!()
     }
 
     // CR claude for claude: [perf/low] `Throttle` arms timers with `ctx.rt.set_timer`

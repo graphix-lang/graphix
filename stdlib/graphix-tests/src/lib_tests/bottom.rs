@@ -355,3 +355,30 @@ async fn restart_builtins_go_bottom_with_their_input() -> Result<()> {
     }
     Ok(())
 }
+
+/// An element owed to a collection that fired before its source went
+/// bottom still delivers: the bottom stands only where a ride would.
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_elements_deliver_through_a_bottom_source() -> Result<()> {
+    const CODE: &str = r#"{
+  let t = 0;
+  let xs = select t { 0 => [1, 2, 3], _ => never() };
+  t <- xs ~ 1;
+  let e = array::iter(xs);
+  let log: Array<i64> = [];
+  log <- e ~ array::push(log, e);
+  log
+}"#;
+    for mode in Mode::ALL {
+        let quiet = Collect::Quiet(Duration::from_millis(200));
+        let got =
+            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
+                .await?;
+        assert_eq!(
+            got.last().map(|v| v.to_string()).as_deref(),
+            Some("[i64:1, i64:2, i64:3]"),
+            "{mode:?}: {got:?}"
+        );
+    }
+    Ok(())
+}

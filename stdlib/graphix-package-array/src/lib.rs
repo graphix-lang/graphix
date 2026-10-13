@@ -347,12 +347,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 }
             }
         };
-        if let Some(bottom) = bottom_of([x_tag]) {
-            return bottom;
-        }
+        // a group of earlier elements delivers; a bottom input stands in
+        // place of a ride
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
+            None => match bottom_of([x_tag]) {
+                Some(bottom) => bottom,
+                None => self.out.ride(),
+            },
         }
     }
 
