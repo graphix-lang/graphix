@@ -197,7 +197,7 @@ run!(missing_on_untaken_arm_string, MISSING_ON_UNTAKEN_ARM_STRING, |v: Result<
 const SELECT_TUPLE_DESTRUCTURE: &str = r#"
 {
   let t = (3, 4);
-  select t {
+  #[native] select t {
     (0, y) => y,
     (x, y) => x + y
   }
@@ -211,7 +211,7 @@ run!(select_tuple_destructure, SELECT_TUPLE_DESTRUCTURE, |v: Result<&Value>| {
 const SELECT_TUPLE_LITERAL_ARM: &str = r#"
 {
   let t = (0, 9);
-  select t {
+  #[native] select t {
     (0, y) => y,
     (x, y) => x + y
   }
@@ -225,7 +225,7 @@ run!(select_tuple_literal_arm, SELECT_TUPLE_LITERAL_ARM, |v: Result<&Value>| {
 const SELECT_TUPLE_GUARD: &str = r#"
 {
   let t = (5, 2);
-  select t {
+  #[native] select t {
     (x, y) if x > y => x - y,
     (x, y) => y - x
   }
@@ -239,7 +239,7 @@ run!(select_tuple_guard, SELECT_TUPLE_GUARD, |v: Result<&Value>| {
 const SELECT_STRUCT_DESTRUCTURE: &str = r#"
 {
   let p = { x: 0, y: 42 };
-  select p {
+  #[native] select p {
     { x: 0, y } => y,
     { x, y } => x + y
   }
@@ -253,7 +253,7 @@ run!(select_struct_destructure, SELECT_STRUCT_DESTRUCTURE, |v: Result<&Value>| {
 const SELECT_SLICE_LEN_DISPATCH: &str = r#"
 {
   let a = [10, 20];
-  select a {
+  #[native] select a {
     [x] => x,
     [x, y] => x + y,
     _ => 0
@@ -269,7 +269,7 @@ run!(select_slice_len_dispatch, SELECT_SLICE_LEN_DISPATCH, |v: Result<&Value>| {
 const SELECT_SLICE_MISS: &str = r#"
 {
   let a = [1, 2, 3, 4];
-  select a {
+  #[native] select a {
     [x] => x,
     [x, y, z] => x + y + z,
     _ => -1
@@ -285,7 +285,7 @@ run!(select_slice_miss, SELECT_SLICE_MISS, |v: Result<&Value>| {
 const SELECT_SLICE_PREFIX: &str = r#"
 {
   let a = [7, 8, 9];
-  select a {
+  #[native] select a {
     [x, ..] => x,
     _ => 0
   }
@@ -300,7 +300,7 @@ run!(select_slice_prefix, SELECT_SLICE_PREFIX, |v: Result<&Value>| {
 const SELECT_SLICE_SUFFIX: &str = r#"
 {
   let a = [7, 8, 9];
-  select a {
+  #[native] select a {
     [.., x] => x,
     _ => 0
   }
@@ -315,7 +315,7 @@ run!(select_slice_suffix, SELECT_SLICE_SUFFIX, |v: Result<&Value>| {
 const SELECT_SLICE_EMPTY: &str = r#"
 {
   let a: Array<i64> = [];
-  select a {
+  #[native] select a {
     [x] => x,
     [] => -7,
     _ => 0
@@ -345,7 +345,7 @@ run!(select_slice_named_rest, SELECT_SLICE_NAMED_REST, |v: Result<&Value>| {
 const SELECT_SUFFIX_NAMED_HEAD: &str = r#"
 {
   let a = [7, 8, 9];
-  select a {
+  #[native] select a {
     [init.., x] => x * 100 + array::len(init),
     _ => 0
   }
@@ -360,7 +360,7 @@ run!(select_suffix_named_head, SELECT_SUFFIX_NAMED_HEAD, |v: Result<&Value>| {
 const SELECT_SUFFIX_EXACT_LEN: &str = r#"
 {
   let a = [1, 2];
-  select a {
+  #[native] select a {
     [.., x, y] => x * 10 + y,
     _ => 0
   }
@@ -378,7 +378,7 @@ run!(select_suffix_exact_len, SELECT_SUFFIX_EXACT_LEN, |v: Result<&Value>| {
 const SELECT_SLICE_COVER_FUSED: &str = r#"
 {
   let a = [7, 8, 9];
-  select a {
+  #[native] select a {
     [x, ..] => x,
     [] => -1
   }
@@ -610,7 +610,7 @@ run!(
 const SELECT_NESTED_TUPLE: &str = r#"
 {
   let t = ((1, 2), 30);
-  select t {
+  #[native] select t {
     ((0, b), c) => b + c,
     ((a, b), c) => a + b + c
   }
@@ -625,7 +625,7 @@ run!(select_nested_tuple, SELECT_NESTED_TUPLE, |v: Result<&Value>| {
 const SELECT_NESTED_STRUCT_SLICE: &str = r#"
 {
   let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 };
-  select x {
+  #[native] select x {
     { foo: [a, b, ..], bar: _, baz: _ } => a + b,
     _ => 0.0
   }
@@ -640,7 +640,7 @@ run!(select_nested_struct_slice, SELECT_NESTED_STRUCT_SLICE, |v: Result<&Value>|
 const SELECT_NESTED_LITERAL: &str = r#"
 {
   let t = ((7, 2), 5);
-  select t {
+  #[native] select t {
     ((7, b), c) => b * c,
     ((a, b), c) => a + b + c
   }
@@ -657,7 +657,7 @@ run!(select_nested_literal, SELECT_NESTED_LITERAL, |v: Result<&Value>| {
 const SELECT_OWNED_TUPLE: &str = r#"
 {
   let a = 3;
-  select (a, a * 2) {
+  #[native] select (a, a * 2) {
     (0, y) => y,
     (x, y) => x + y
   }
@@ -672,7 +672,7 @@ run!(select_owned_tuple, SELECT_OWNED_TUPLE, |v: Result<&Value>| {
 const SELECT_OWNED_HOF_RESULT: &str = r#"
 {
   let a = [1, 2];
-  select array::map(a, |x| x * 10) {
+  #[native] select array::map(a, |x| x * 10) {
     [x, y] => x + y,
     _ => 0
   }
@@ -687,7 +687,7 @@ run!(select_owned_hof_result, SELECT_OWNED_HOF_RESULT, |v: Result<&Value>| {
 const SELECT_OWNED_VARIANT: &str = r#"
 {
   let n = 5;
-  select `Foo(n + 1) {
+  #[native] select `Foo(n + 1) {
     `Foo(x) => x * 2
   }
 }
@@ -702,7 +702,7 @@ run!(select_owned_variant, SELECT_OWNED_VARIANT, |v: Result<&Value>| {
 const SELECT_OWNED_MISS: &str = r#"
 {
   let a = [1, 2, 3];
-  select array::filter(a, |x| x > 10) {
+  #[native] select array::filter(a, |x| x > 10) {
     [x] => x,
     _ => -1
   }
@@ -1779,7 +1779,7 @@ const SELECT_VARIANT_UNION_PAYLOAD: &str = r#"
   type Panel = [`Q, `D, `R];
   type Screen = [`Connect, `Panel(Panel)];
   let s: Screen = `Panel(`D);
-  select s {
+  #[native] select s {
     `Connect => 0,
     `Panel(`Q) => 1,
     `Panel(`D) => 2,
@@ -1801,7 +1801,7 @@ const SELECT_VARIANT_UNION_RECT: &str = r#"
 {
   type T = [`P([`A, `B], [`X, `Y]), `N];
   let v: T = `P(`B, `Y);
-  select v {
+  #[native] select v {
     `P(`A, x) => 1,
     `P(`B, x) => 2,
     `N => 0
@@ -1836,16 +1836,9 @@ run!(
     FuseExpect::None
 );
 
-// The same through a tuple head.
-// CR claude for claude: [test-gap/medium] The comment above inherits 'fuses' from
-// select_variant_union_payload, but this select does not fuse: under #[native] it is
-// refused with 'expression did not fully fuse'. The test passes only because
-// FuseExpect::Jit accepts any fused region. The same holds for every fixture in this
-// file whose comment says its select fuses (the structural, nested and owned-scrutinee
-// blocks, select_variant_union_payload/rect): a de-fusion would go unnoticed. Put
-// #[native] on the select in each of them. Here, either close the gap (the `null as _`
-// arm over the tuple union node-walks) or correct the comment and pin the select's
-// de-fusion. (tests-select-04)
+// The same through a tuple head. A structural pattern over a nullable
+// composite has no kernel lowering, so this select node-walks; the
+// #[native] twin pins that.
 const SELECT_TUPLE_UNION_MEMBER: &str = r#"
 {
   let v: [([`A, `B], i64), null] = (`B, 7);
@@ -1863,6 +1856,20 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(9))) };
     FuseExpect::Jit
 );
+
+const SELECT_TUPLE_UNION_MEMBER_NATIVE: &str = r#"
+{
+  let v: [([`A, `B], i64), null] = (`B, 7);
+  #[native] select v {
+    null as _ => 0,
+    (`A, n) => n + 1,
+    (`B, n) => n + 2
+  }
+}
+"#;
+
+run!(select_tuple_union_member_node_walks, SELECT_TUPLE_UNION_MEMBER_NATIVE,
+    refused("did not fully fuse to native code"); FuseExpect::None; jit_only);
 
 // An @-capture in an or-arm types as the union of its per-alternative
 // narrowed types.
