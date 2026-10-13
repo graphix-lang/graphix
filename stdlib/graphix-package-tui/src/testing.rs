@@ -83,6 +83,10 @@ impl TuiTestHarness {
     // or callable lifetime has to be made twice. Put a `testing::Fixture` holding those
     // fields and methods in graphix-package-core, and have each harness hold one plus
     // its own widget tree. (x-dup-10)
+    // 2026-10-13 codex: Confirmed the duplicate constructor, watches and
+    // callable storage in graphix-package-gui/src/test/mod.rs. Sharing them
+    // requires adding Fixture in graphix-package-core/src/testing.rs and
+    // migrating the GUI harness, both outside this worktree's allowed scope.
     pub async fn with_register(
         code: &str,
         register: &[PackageRef],
