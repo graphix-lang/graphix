@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-71e82a1e.js";
+            window.path_to_searchindex_js = "searchindex-1b40a41c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -17014,8 +17014,8 @@ graphix package build-standalone
 <p>This builds a release-optimized binary named after your package’s short
 name (<code>mylib</code> here) in the current directory that includes your local
 package and all its dependencies. The build enables the <code>standalone</code> cargo feature on your
-package, which causes the contents of <code>main.gx</code> to be appended to the
-root module as the entry point program.</p>
+package, which embeds <code>main.gx</code> as the program the binary runs: every
+argument the binary is given is the program’s own (<code>sys::args()</code>).</p>
 <p>Scaffolded packages already include <code>[features] standalone = []</code> in their
 <code>Cargo.toml</code>. If you created your package before this feature existed, add it
 manually:</p>
