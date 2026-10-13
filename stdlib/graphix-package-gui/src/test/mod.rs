@@ -343,13 +343,6 @@ struct InteractionHarness {
     renderer: widgets::Renderer,
     cache: user_interface::Cache,
     viewport: Size,
-    // CR claude for claude: [dead/low] This field is assigned by click, drag_live,
-    // move_cursor and drag_horizontal, but nothing reads it. The pointer every frame
-    // uses is `cursor`, which track_cursor derives from the events. Having two cursor
-    // fields invites fixing the wrong one. Delete the field and its assignments. In
-    // sliders_are_f64_and_continuous, `let id = expect_call(&msgs); let _ = id;` is the
-    // same kind of leftover: write `expect_call(&msgs);`. (tests-gui-b-08)
-    cursor_position: Point,
     /// The pointer as the event loop tracks it from the events sent.
     cursor: mouse::Cursor,
     clipboard: TestClipboard,
@@ -383,7 +376,6 @@ impl InteractionHarness {
             renderer,
             cache: user_interface::Cache::default(),
             viewport,
-            cursor_position: Point::ORIGIN,
             cursor: mouse::Cursor::Unavailable,
             clipboard: TestClipboard::default(),
         })
@@ -471,7 +463,6 @@ impl InteractionHarness {
     }
 
     fn click(&mut self, pos: Point) -> Vec<Message> {
-        self.cursor_position = pos;
         let mut all = Vec::new();
         // One UI frame per event so pressed → released transitions.
         all.extend(self.process_events(&[Event::Mouse(mouse::Event::CursorMoved {
@@ -516,7 +507,6 @@ impl InteractionHarness {
             events.push(Event::Mouse(mouse::Event::CursorMoved { position }));
         }
         events.push(Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)));
-        self.cursor_position = to;
         self.live(&events).await
     }
 
@@ -599,7 +589,6 @@ impl InteractionHarness {
     }
 
     fn move_cursor(&mut self, pos: Point) -> Vec<Message> {
-        self.cursor_position = pos;
         self.process_events(&[Event::Mouse(mouse::Event::CursorMoved { position: pos })])
     }
 
@@ -625,7 +614,6 @@ impl InteractionHarness {
 
     fn drag_horizontal(&mut self, from: Point, to_x: f32, steps: u32) -> Vec<Message> {
         let mut all_msgs = Vec::new();
-        self.cursor_position = from;
         all_msgs.extend(self.process_events(&[Event::Mouse(
             mouse::Event::CursorMoved { position: from },
         )]));
@@ -635,7 +623,6 @@ impl InteractionHarness {
         let dx = (to_x - from.x) / steps as f32;
         for i in 1..=steps {
             let pos = Point::new(from.x + dx * i as f32, from.y);
-            self.cursor_position = pos;
             all_msgs.extend(self.process_events(&[Event::Mouse(
                 mouse::Event::CursorMoved { position: pos },
             )]));

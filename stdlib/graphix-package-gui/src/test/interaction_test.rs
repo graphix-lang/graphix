@@ -912,8 +912,7 @@ async fn sliders_are_f64_and_continuous() -> Result<()> {
         let mut h =
             InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
         let msgs = h.click(Point::new(x, 10.0));
-        let id = expect_call(&msgs);
-        let _ = id;
+        expect_call(&msgs);
         match msgs.iter().find_map(|m| match m {
             super::Message::Call(_, a) => a.first().cloned(),
             _ => None,
