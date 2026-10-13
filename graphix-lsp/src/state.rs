@@ -19,7 +19,7 @@ use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use graphix_compiler::{
     env::Env,
-    expr::{BufferOverrides, Source},
+    expr::{BufferOverrides, Origin, Source, parser},
     ide::Ide,
 };
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
@@ -136,23 +136,14 @@ impl ServerState {
 
     /// The roots a file is checked under: every project containing it,
     /// else the file itself. An interface is checked with its
-    /// implementation, and is never a root of its own.
+    /// implementation, and is a root of its own only before it has one.
     fn roots_of(&self, path: &Path) -> Vec<PathBuf> {
         if path.extension().is_some_and(|e| e == "gxi") {
             let gx = path.with_extension("gx");
             let known = self.documents.contains_key(&gx)
                 || self.workspace.file_to_projects.contains_key(&gx)
                 || gx.exists();
-            // CR claude for claude: [bug/low] An interface whose implementation does
-            // not exist yet gets no roots. So it is never dirty, never checked and
-            // never published, and a syntax error in it shows nothing: an api.gxi
-            // holding `val x: i64 = ;` alone publishes no diagnostics, while with
-            // api.gx beside it the parse error appears at 0:11. Writing the interface
-            // first is a natural order. Fix: when the .gxi has no implementation, parse
-            // it with parser::parse_sig (as symbols.rs does) and publish its parse
-            // error. probe: design/review-2026-10-12/repro/x-lsp-probe.py lone-gxi
-            // (x-lsp-probe-06)
-            return if known { self.roots_of(&gx) } else { vec![] };
+            return if known { self.roots_of(&gx) } else { vec![path.to_path_buf()] };
         }
         match self.workspace.file_to_projects.get(path) {
             Some(idxs) if !idxs.is_empty() => {
@@ -251,22 +242,40 @@ impl ServerState {
     /// check and, when this one failed, the error: a buffer that stops
     /// compiling keeps its warnings.
     fn check(&mut self, root: &Path) -> AHashSet<PathBuf> {
-        let package = detect_package_scope(root);
-        let result = self.backend.typecheck_project(root, package);
+        let result = match root.extension().is_some_and(|e| e == "gxi") {
+            // an interface with no implementation yet: only its syntax
+            true => self.parse_interface(root).map(|()| None),
+            false => {
+                self.backend.typecheck_project(root, detect_package_scope(root)).map(Some)
+            }
+        };
         let mut files: AHashSet<PathBuf> = AHashSet::default();
         if let Some(r) = self.roots.get(root) {
             files.extend(r.files().cloned());
         }
         let error = result.as_ref().err().map(|e| self.diagnostic(e, root));
-        let warnings = result.as_ref().ok().map(|c| self.warned(c));
+        let warnings = result
+            .as_ref()
+            .ok()
+            .map(|c| c.as_ref().map(|c| self.warned(c)).unwrap_or_default());
         let r = self.roots.entry(root.to_path_buf()).or_default();
         if let (Ok(checked), Some(warnings)) = (result, warnings) {
-            r.checked = Some(checked);
+            r.checked = checked;
             r.warnings = warnings;
         }
         r.error = error;
         files.extend(r.files().cloned());
         files
+    }
+
+    /// Parse the interface `path`, its buffer when it is open.
+    fn parse_interface(&self, path: &Path) -> anyhow::Result<()> {
+        let text = match self.documents.get(path) {
+            Some(doc) => ArcStr::from(doc.text.as_str()),
+            None => ArcStr::from(std::fs::read_to_string(path)?),
+        };
+        let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
+        parser::parse_sig(ori).map(|_| ())
     }
 
     /// Publish each of `files`: every root's diagnostics on it, errors

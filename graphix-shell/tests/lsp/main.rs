@@ -636,6 +636,18 @@ fn a_watched_change_rescans() {
     assert_eq!(c.diagnostics("helper.gx"), vec![]);
 }
 
+/// An interface written before its implementation has its syntax
+/// checked, and a clean one publishes nothing.
+#[test]
+fn a_lone_interface_reports_its_parse_error() {
+    let mut c = Client::start(&[("api.gxi", "val x: i64 = ;\n")]);
+    c.open("api.gxi");
+    assert_eq!(c.diagnostics("api.gxi").len(), 1);
+    let mut c = Client::start(&[("api.gxi", "val x: i64;\n")]);
+    c.open("api.gxi");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+}
+
 /// An interface is checked with its implementation, never as a program
 /// of its own.
 #[test]
