@@ -2,9 +2,10 @@ use anyhow::Result;
 use arcstr::literal;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{Collect, FuseExpect, Mode, collect, refused},
 };
 use netidx::subscriber::Value;
+use std::time::Duration;
 
 const MAP_LEN: &str = r#"
 {
@@ -352,3 +353,31 @@ run!(map_map_last_key_wins, MAP_MAP_LAST_KEY_WINS, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => s == "bb",
     _ => false,
 });
+
+/// `map::iter` walks every pair of a map keyed by a user `Ord`, in that
+/// order.
+#[tokio::test(flavor = "multi_thread")]
+async fn iter_walks_a_user_ordered_map() -> Result<()> {
+    const CODE: &str = r#"{
+  type T = Abstract<i64>;
+  impl Ord for T {
+    let cmp = |x, y| select (x.0, y.0) {
+      (a, b) if a < b => `Greater,
+      (a, b) if a > b => `Less,
+      _ => `Equal
+    }
+  };
+  let m = {T(0) => 0, T(1) => 1, T(2) => 2, T(3) => 3};
+  let (k, v) = map::iter(m);
+  v
+}"#;
+    let want: Vec<Value> = [3, 2, 1, 0].into_iter().map(Value::I64).collect();
+    for mode in Mode::ALL {
+        let quiet = Collect::Quiet(Duration::from_millis(300));
+        let got =
+            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
+                .await?;
+        assert_eq!(got, want, "{mode:?}");
+    }
+    Ok(())
+}

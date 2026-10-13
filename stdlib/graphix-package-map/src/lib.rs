@@ -46,43 +46,35 @@ fn fc_remove(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove);
 
-/// A map's `(key, value)` pairs in key order; the cursor holds the map and
-/// the last key it gave, so a queued map is never copied.
+/// A map's `(key, value)` pairs in key order. The cursor walks the pairs
+/// by position, taken when the map's turn comes: finding the next key by
+/// a search would compare keys outside the core-trait hooks, in an order
+/// other than the one a user `Ord` built the map in.
 #[derive(Debug)]
 struct MapElems;
 
 impl graphix_package_core::Elements for MapElems {
     const ITER: &str = "map_iter";
     const ITERQ: &str = "map_iterq";
-    type Cursor = (immutable_chunkmap::map::Map<Value, Value, 32>, Option<Value>);
+    type Cursor = (usize, ValArray);
 
     fn cursor(v: Value) -> Option<Self::Cursor> {
         match v {
-            Value::Map(m) if m.len() > 0 => Some((m, None)),
+            Value::Map(m) if m.len() > 0 => {
+                let pair = |(k, v): (&Value, &Value)| {
+                    Value::Array(ValArray::from_iter_exact(
+                        [k.clone(), v.clone()].into_iter(),
+                    ))
+                };
+                Some((0, graphix_compiler::valarray_of(m.len(), m.into_iter().map(pair))))
+            }
             _ => None,
         }
     }
 
-    // CR claude for claude: [bug/high] The next pair is found by a key search (`range`
-    // from the last key), and that compares keys with Value::cmp. Iter::update and
-    // IterQ::update call this without a coretraits::with_hooks loan, so an abstract key
-    // with a user Ord is compared by its structural payload order, while the tree was
-    // built under the user order. With a reversed Ord, map::iter and map::iterq yield
-    // only the first pair and drop the rest. Other orders can skip or repeat pairs.
-    // Make the cursor positional: snapshot the pairs when cursor() is called, or keep
-    // an index into an in-order traversal, and walk it like ArrayElems. That removes
-    // the dependence on the hooks and the O(log n) search per step. Add a pin in
-    // lang/traits.rs next to core_map_hof_keyed_by_ord. probe:
-    // design/review-2026-10-12/repro/collections-str-01.gx (collections-str-01)
-    fn next((m, last): &mut Self::Cursor) -> Option<Value> {
-        use std::ops::Bound::{Excluded, Unbounded};
-        let (k, v) = match last {
-            None => m.into_iter().next()?,
-            Some(l) => m.range::<Value, _>((Excluded(&*l), Unbounded)).next()?,
-        };
-        let pair =
-            Value::Array(ValArray::from_iter_exact([k.clone(), v.clone()].into_iter()));
-        *last = Some(k.clone());
+    fn next((i, pairs): &mut Self::Cursor) -> Option<Value> {
+        let pair = pairs.get(*i)?.clone();
+        *i += 1;
         Some(pair)
     }
 }
