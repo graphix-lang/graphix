@@ -25,16 +25,11 @@ let types = |mods: Array<input_handler::KeyModifier>| -> bool {
 let step = |st: State, e: input_handler::Event| -> [State, null] {
     let st = { st with cursor: max(0, min(st.cursor, str::char_len(st.value))) };
     select e {
-    // CR claude for claude: [bug/medium] Only "\n" becomes a space here. Terminals send
-    // line breaks in a bracketed paste as CR, and Windows clipboards send CRLF.
-    // crossterm passes those bytes through unchanged, so the single-line editor's value
-    // keeps a raw '\r'. That '\r' is then drawn and submitted. Fix: replace "\r\n"
-    // first, then "\r", then "\n", or drop every control character from a paste (see
-    // tests-tui-03). Then extend line_edit_takes_a_paste with "a\r\nb" and "a\rb"
-    // cases, since today it pins only the LF form. Same defect as gx-ui-04. probe:
-    // design/review-2026-10-12/repro/tests-tui-02.sh (prints LF=2 CRLF=1 CR=1; 1 means
-    // the value holds '\r'). Also reported as (gx-ui-04). (tests-tui-02)
-    `Paste(text) => insert(st, str::replace(#pat: "\n", #rep: " ", text)),
+    `Paste(text) => {
+        let text = str::replace(#pat: "\r\n", #rep: " ", text);
+        let text = str::replace(#pat: "\r", #rep: " ", text);
+        insert(st, str::replace(#pat: "\n", #rep: " ", text))
+    },
     `Key(k) => select k.kind {
         `Press => select k.code {
             `Char(ch) if types(k.modifiers) => insert(st, ch),

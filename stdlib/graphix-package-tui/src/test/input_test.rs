@@ -261,12 +261,14 @@ async fn line_edit_leaves_chords_to_the_caller() -> Result<()> {
 /// A paste inserts its text at the cursor, line breaks as spaces.
 #[tokio::test]
 async fn line_edit_takes_a_paste() -> Result<()> {
-    let mut h = TuiTestHarness::new(EDITOR).await?;
-    h.watch("test::v").await?;
-    h.watch("test::cur").await?;
-    h.dispatch_event(Event::Paste("a\nb".into())).await?;
-    assert_eq!(h.get_watched("test::v"), Some(&Value::from("hééa b")));
-    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(6)));
+    for pasted in ["a\nb", "a\r\nb", "a\rb"] {
+        let mut h = TuiTestHarness::new(EDITOR).await?;
+        h.watch("test::v").await?;
+        h.watch("test::cur").await?;
+        h.dispatch_event(Event::Paste(pasted.into())).await?;
+        assert_eq!(h.get_watched("test::v"), Some(&Value::from("hééa b")));
+        assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(6)));
+    }
     Ok(())
 }
 
