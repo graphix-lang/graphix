@@ -11,19 +11,7 @@ let radio = |
   // the widget calls back with its own value, which this radio holds typed
   let on_select = select on_select {
     null as _ => null,
-    // CR claude for claude: [bug/high] This wrapper never reads `v`, so its body fires
-    // only when `*value` or `f` fires. The GUI compiles the handler once as a
-    // long-lived callable (GXRt::compile_callable), and a click only sets the
-    // argument's variable. So the user's on_select runs once at startup with no click,
-    // and never on a click. In book/src/examples/gui/radio.gx, size ends at `Large and
-    // dir at `Horizontal before any input, and clicking a radio changes nothing. Fix:
-    // derive the call from the click, `f => |v: Any| f(v ~ *value)`. Add a test that
-    // dispatches the calls: two radios sharing one state, click A, B, A; assert nothing
-    // fires at startup and check the state after each click.
-    // radio_on_select_produces_call only checks that a Message::Call is produced.
-    // Probe: design/review-2026-10-12/repro/gx-ui-01.rs (and
-    // gx-ui-01-radio-wrapper-fires-once.gx). (gx-ui-01)
-    f => |v: Any| f(*value)
+    f => |v: Any| f(v ~ *value)
   };
   `Radio({ value, label, on_select: &on_select, selected, width, size, spacing, disabled })
 }

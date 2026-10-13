@@ -283,6 +283,40 @@ async fn radio_click_no_panic() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn radio_dispatches_every_click_without_initial_selection() -> Result<()> {
+    let code = r#"
+        use gui::{column::column, radio::radio};
+        let selected = "none";
+        let calls = 0;
+        let pick = |v| { selected <- v; calls <- v ~ calls + 1; null };
+        let result = column(#spacing: &20.0, &[
+            radio(#label: &"A", #size: &20.0, #selected: &selected, #on_select: pick, &"a"),
+            radio(#label: &"B", #size: &20.0, #selected: &selected, #on_select: pick, &"b")
+        ])
+    "#;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(300.0, 100.0)).await?;
+    h.watch("test::selected").await?;
+    h.watch("test::calls").await?;
+    assert_eq!(h.get_watched("test::selected"), Some(&Value::from("none")));
+    assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(0)));
+    for (i, (point, selected)) in [
+        (Point::new(10.0, 10.0), "a"),
+        (Point::new(10.0, 50.0), "b"),
+        (Point::new(10.0, 10.0), "a"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let msgs = h.click(point);
+        expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from(selected)));
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(h.get_watched("test::selected"), Some(&Value::from(selected)));
+        assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(i as i64 + 1)));
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 // CR claude for claude: [test-gap/medium] This test only checks that a click produces a
 // Call with the right argument. It never dispatches the call, so it cannot see whether
 // radio's wrapped on_select runs once per click and never at init, and the radio
