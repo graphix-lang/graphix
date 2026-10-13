@@ -1,15 +1,13 @@
 use super::{
-    LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, into_borrowed_line,
-    validate::Index,
+    LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, compile_each,
+    into_borrowed_line, validate::Index,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use futures::future;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
 use ratatui::{Frame, layout::Rect, widgets::Tabs};
-use smallvec::SmallVec;
 
 graphix_rt::props! {
     struct Props {
@@ -43,7 +41,6 @@ impl<X: GXExt> TabsW<X> {
     }
 
     async fn set_tabs(&mut self, v: Value) -> Result<()> {
-        let arr = v.cast_to::<SmallVec<[(LineV, Value); 8]>>()?;
         // CR claude for claude: [bug/medium] set_tabs compiles every child widget again
         // each time the tabs array fires. A tab title is a plain Line inside that
         // array, so a badge count in a title rebuilds every tab's widget tree. The
@@ -55,10 +52,13 @@ impl<X: GXExt> TabsW<X> {
         // position is equal, so that only the titles change. ChildW::update and the
         // compile_each users (layout children, overlay layers) have the same
         // rebuild-on-refire shape and need the same reuse. (tui-widgets-01)
-        self.tabs = future::try_join_all(arr.into_iter().map(|(l, v)| {
+        self.tabs = compile_each(v, |v| {
             let gx = self.gx.clone();
-            async move { Ok::<_, anyhow::Error>((l, compile(gx, v).await?)) }
-        }))
+            async move {
+                let (l, v) = v.cast_to::<(LineV, Value)>()?;
+                Ok((l, compile(gx, v).await?))
+            }
+        })
         .await?;
         Ok(())
     }

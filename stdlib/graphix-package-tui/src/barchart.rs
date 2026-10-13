@@ -1,11 +1,10 @@
 use super::{
-    DirectionV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line,
+    DirectionV, LineV, StyleV, TuiW, TuiWidget, compile_each, into_borrowed_line,
     validate::{Dim, Index},
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use futures::future::try_join_all;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
@@ -55,11 +54,12 @@ impl<X: GXExt> BarGroupW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
         #[derive(FromValue)]
         struct Fields {
-            bars: SmallVec<[Value; 8]>,
+            bars: Value,
             label: Option<LineV>,
         }
         let Fields { bars, label } = v.cast_to().context("bargroup fields")?;
-        let bars = try_join_all(bars.iter().map(|b| BarProps::compile(gx, b))).await?;
+        let bars = compile_each(bars, |b| async move { BarProps::compile(gx, &b).await })
+            .await?;
         Ok(Self { label, bars })
     }
 }
@@ -102,19 +102,7 @@ impl<X: GXExt> BarChartW<X> {
     }
 
     async fn set_data(&mut self, v: Value) -> Result<()> {
-        // CR claude for claude: [structure/low] This repeats compile_each (cast to an
-        // array, then try_join_all a compile over it). The same hand-rolled copy is in
-        // chart.rs DatasetsW set_datasets, canvas.rs CanvasW::set_shapes, tabs.rs
-        // set_tabs and BarGroupW::compile, so a change to how widget arrays compile has
-        // to be made in each of them. Route them all through compile_each. Here that is
-        // `compile_each(v, |g| BarGroupW::compile(&self.gx, g))`. canvas takes the
-        // table.rs set_rows form. tabs casts each element to (LineV, Value) inside the
-        // closure. BarGroupW takes its `bars` field as a Value. Then drop the
-        // try_join_all imports. (tui-widgets-05)
-        let groups = v.cast_to::<SmallVec<[Value; 8]>>()?;
-        self.data =
-            try_join_all(groups.into_iter().map(|g| BarGroupW::compile(&self.gx, g)))
-                .await?;
+        self.data = compile_each(v, |g| BarGroupW::compile(&self.gx, g)).await?;
         Ok(())
     }
 }

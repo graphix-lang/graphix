@@ -1,11 +1,10 @@
 use super::{
-    AlignmentV, BoundsV, LineV, MarkerV, StyleV, TuiW, TuiWidget, into_borrowed_line,
-    layout::ConstraintV,
+    AlignmentV, BoundsV, LineV, MarkerV, StyleV, TuiW, TuiWidget, compile_each,
+    into_borrowed_line, layout::ConstraintV,
 };
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use futures::future::try_join_all;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
@@ -15,7 +14,6 @@ use ratatui::{
     layout::Rect,
     widgets::{Axis, Chart, Dataset, GraphType, LegendPosition},
 };
-use smallvec::SmallVec;
 
 #[derive(Clone, Copy)]
 struct GraphTypeV(GraphType);
@@ -201,9 +199,7 @@ impl<X: GXExt> ChartW<X> {
     }
 
     async fn set_datasets(&mut self, v: Value) -> Result<()> {
-        let ds = v.cast_to::<SmallVec<[Value; 8]>>()?;
-        self.datasets =
-            try_join_all(ds.into_iter().map(|d| DatasetW::compile(&self.gx, d))).await?;
+        self.datasets = compile_each(v, |d| DatasetW::compile(&self.gx, d)).await?;
         Ok(())
     }
 }

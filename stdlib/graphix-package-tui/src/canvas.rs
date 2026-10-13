@@ -1,7 +1,6 @@
-use super::{BoundsV, ColorV, LineV, MarkerV, TuiW, TuiWidget};
+use super::{BoundsV, ColorV, LineV, MarkerV, TuiW, TuiWidget, compile_each};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use futures::future::try_join_all;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
@@ -13,7 +12,6 @@ use ratatui::{
         Canvas, Circle, Context as CanvasContext, Line, Points, Rectangle,
     },
 };
-use smallvec::SmallVec;
 
 #[derive(Clone)]
 struct CanvasLineV(Line);
@@ -177,10 +175,11 @@ impl<X: GXExt> CanvasW<X> {
     }
 
     async fn set_shapes(&mut self, v: Value) -> Result<()> {
-        let ids = v.cast_to::<SmallVec<[u64; 8]>>()?;
-        let refs =
-            try_join_all(ids.into_iter().map(|id| self.gx.compile_ref(id))).await?;
-        self.shapes = refs.into_iter().map(TRef::new).collect::<Result<_>>()?;
+        self.shapes = compile_each(v, |id| {
+            let gx = self.gx.clone();
+            async move { TRef::new(gx.compile_ref(id.cast_to::<u64>()?).await?) }
+        })
+        .await?;
         Ok(())
     }
 }
