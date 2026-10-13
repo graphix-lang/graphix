@@ -1458,17 +1458,28 @@ impl GraphixPM {
         }
     }
 
-    /// Read the version from a package crate's Cargo.toml at the given path
-    async fn read_package_version(path: &Path) -> Result<CompactString> {
+    /// The version in the Cargo.toml at `path`, which must be crate `crate_name`'s
+    async fn read_package_version(
+        path: &Path,
+        crate_name: &str,
+    ) -> Result<CompactString> {
         let cargo_toml_path = path.join("Cargo.toml");
         let contents = fs::read_to_string(&cargo_toml_path)
             .await
             .with_context(|| format!("reading {}", cargo_toml_path.display()))?;
         let doc: toml::Value =
             toml::from_str(&contents).context("parsing package Cargo.toml")?;
-        doc.get("package")
-            .and_then(|p| p.get("version"))
-            .and_then(|v| v.as_str())
+        let field =
+            |f| doc.get("package").and_then(|p| p.get(f)).and_then(|v| v.as_str());
+        match field("name") {
+            Some(name) if name == crate_name => (),
+            name => bail!(
+                "{} names the crate {}, not {crate_name}",
+                cargo_toml_path.display(),
+                name.unwrap_or("nothing")
+            ),
+        }
+        field("version")
             .map(|s| s.to_compact_string())
             .ok_or_else(|| anyhow!("no version found in {}", cargo_toml_path.display()))
     }
@@ -1506,19 +1517,8 @@ impl GraphixPM {
                 let path = path
                     .canonicalize()
                     .with_context(|| format!("resolving path {}", path.display()))?;
-                // CR claude for claude: [bug/low] `add --path` records the path under
-                // whatever name the user typed. read_package_version reads the crate's
-                // version but ignores its [package].name. `graphix package add foo
-                // --path ./graphix-package-bar` therefore unpacks the shell source and
-                // only then fails with cargo's 'no matching package named
-                // graphix-package-foo'. The shell CLI (handle_package) also applies one
-                // --path to every name listed, so `add a b --path ./x` records both,
-                // and it drops any @version without a word. Fix: read [package].name in
-                // the same parse as the version and require it to equal
-                // PackageId::crate_name, or take the name from the manifest. Refuse
-                // more than one name, or an @version, together with --path.
-                // (package-09)
-                let version = Self::read_package_version(&path).await?;
+                let version =
+                    Self::read_package_version(&path, &pkg.crate_name()).await?;
                 println!("Adding {name} @ path {} (version {version})", path.display());
                 PackageEntry::Path(path)
             } else if skip_crates_io_check {

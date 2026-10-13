@@ -297,14 +297,13 @@ async fn handle_package(action: PackageAction) -> Result<()> {
     match action {
         PackageAction::Add { packages, skip_crates_io_check, path } => {
             let pm = pm().await?;
-            let ids: Vec<_> = if let Some(ref path) = path {
-                packages
-                    .iter()
-                    .map(|s| {
-                        let name = s.split('@').next().unwrap();
-                        PackageId::with_path(name, path.clone())
-                    })
-                    .collect()
+            let ids: Vec<_> = if let Some(path) = path {
+                match &packages[..] {
+                    [name] if !name.contains('@') => {
+                        vec![PackageId::with_path(name, path)]
+                    }
+                    _ => bail!("--path takes one package name, without a version"),
+                }
             } else {
                 packages.iter().map(|s| parse_package_arg(s)).collect()
             };
