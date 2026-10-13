@@ -31,17 +31,6 @@ impl<'a> OwnedContextMenu<'a> {
     }
 }
 
-// CR claude for claude: [bug/medium] This impl does not override `operate`, and iced's
-// default `Widget::operate` does nothing. Every Operation therefore stops at the
-// context menu and never reaches the child. That includes the frame's
-// `WidgetOp::ScrollTo` and `WidgetOp::Focus`, iced's focus traversal and text-input
-// operations. One effect: a data_table wrapped in `menu::context_menu` does not scroll
-// to follow its selection, and its cell editor never gets focus. Fix: forward it the
-// way `KeyboardArea` does, `self.child.as_widget_mut().operate(&mut tree.children[0],
-// layout, renderer, operation)`. Probe:
-// design/review-2026-10-12/repro/gui-widgets-a-05.sh (test
-// operations_reach_context_menu_child in gui-widgets-a.rs: it finds 1 focusable, should
-// find 2). (gui-widgets-a-05)
 impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<State>()
@@ -70,6 +59,21 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
         limits: &layout::Limits,
     ) -> layout::Node {
         self.child.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.child.as_widget_mut().operate(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            operation,
+        );
     }
 
     fn draw(

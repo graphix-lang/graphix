@@ -118,8 +118,7 @@ fn touch_phases_reach_the_widgets_at_logical_positions() {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn deferred_focus_applies_before_keyboard_input() -> Result<()> {
+async fn assert_deferred_focus(context_menu: bool) -> Result<()> {
     use super::InteractionHarness;
     use crate::widgets::{GuiWidget, IcedElement, Message, WidgetOp};
     use graphix_compiler::expr::ExprId;
@@ -130,6 +129,7 @@ async fn deferred_focus_applies_before_keyboard_input() -> Result<()> {
     struct FocusInput {
         id: Id,
         prepared: bool,
+        context_menu: bool,
     }
 
     impl GuiWidget<NoExt> for FocusInput {
@@ -154,10 +154,19 @@ async fn deferred_focus_applies_before_keyboard_input() -> Result<()> {
         }
 
         fn view(&self) -> IcedElement<'_> {
-            iced_widget::text_input("", "")
+            let input = iced_widget::text_input("", "")
                 .id(self.id.clone())
                 .on_input(|_| Message::Nop)
+                .into();
+            if self.context_menu {
+                crate::widgets::context_menu_widget::OwnedContextMenu::new(
+                    input,
+                    Vec::new(),
+                )
                 .into()
+            } else {
+                input
+            }
         }
     }
 
@@ -165,7 +174,18 @@ async fn deferred_focus_applies_before_keyboard_input() -> Result<()> {
         r#"use gui::text::text; let result = text(&"placeholder")"#,
     )
     .await?;
-    h.inner.widget = Box::new(FocusInput { id: Id::unique(), prepared: false });
+    h.inner.widget =
+        Box::new(FocusInput { id: Id::unique(), prepared: false, context_menu });
     assert!(matches!(h.type_text("a").as_slice(), [Message::Nop]));
     Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deferred_focus_applies_before_keyboard_input() -> Result<()> {
+    assert_deferred_focus(false).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn context_menu_forwards_widget_operations() -> Result<()> {
+    assert_deferred_focus(true).await
 }
