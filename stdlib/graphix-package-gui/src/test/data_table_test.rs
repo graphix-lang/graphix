@@ -2399,3 +2399,25 @@ async fn table_updates_preserve_surviving_column_widths() -> Result<()> {
     assert_eq!(h.dt().dt_set_cached_width("gone", 200.0), None);
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn changed_stored_sort_sources_reorder_rows() -> Result<()> {
+    for source in ["m", "`Netidx(m)"] {
+        let code = format_compact!(
+            r#"
+            let m = {{"r0" => 3, "r1" => 1, "r2" => 2}};
+            let change = |t: Any| m <- t ~ {{"r0" => 0, "r1" => 1, "r2" => 2}};
+            let tbl = {{ rows: ["r0", "r1", "r2"], columns: [text_column(#name: "score", #source: &{source})] }};
+            let result = data_table(#sort_by: &[{{column: "score", direction: `Ascending}}], #table: &tbl)
+        "#
+        );
+        let mut h = dt(&code).await?;
+        assert_eq!(h.dt_snapshot().row_basenames, ["r1", "r2", "r0"]);
+        let change = h.compile_named_callable("test::change").await?;
+        h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
+        let snap = h.dt_snapshot();
+        assert_eq!(snap.row_basenames, ["r0", "r1", "r2"]);
+        assert_eq!(snap.grid, [["0"], ["1"], ["2"]]);
+    }
+    Ok(())
+}

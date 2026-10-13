@@ -341,7 +341,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 let was_netidx = e.parsed.is_netidx();
                 e.r.last = Some(v.clone());
                 e.refresh_from_last();
-                // CR claude for claude: [bug/high] A source fire re-sorts only when the
+                // XCR claude for claude: [bug/high] A source fire re-sorts only when the
                 // source switches between netidx and stored. A stored column (a
                 // `string` or `Map` source, or a `Netidx(map)` fallback that virtual
                 // rows read) has no SortMarker subscription to set `sort_col_dirty`, so
@@ -354,7 +354,11 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 // add a pin. Probe: design/review-2026-10-12/repro/gui-datatable-02.rs
                 // (after p0 <- "0" the column reads 1 2 0 instead of 0 1 2).
                 // (gui-datatable-02)
-                reconcile |= was_netidx != e.parsed.is_netidx();
+                // 2026-10-13 codex: changed_stored_sort_sources_reorder_rows covers stored and Netidx
+                // fallback maps without refiring the table. It compiles; before/after
+                // assertions require resolver sockets unavailable in this sandbox.
+                reconcile |= was_netidx != e.parsed.is_netidx()
+                    || self.sort_by.iter().any(|s| s.column == c.spec.name);
                 source_fired = true;
                 changed = true;
             }
