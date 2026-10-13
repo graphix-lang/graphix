@@ -89,8 +89,7 @@ run!(default_ill_typed_at_definition, DEFAULT_ILL_TYPED_AT_DEFINITION, |v: Resul
 const DEFAULT_IN_CONSTRAINT_SET: &str = r#"
 {
   let f = 'a: [Int, Float] |#start: 'a = 0.0, x: 'a| -> 'a start + x;
-  let g = 'a: [Int, Float] |#start: 'a = 0.0, x: 'a| -> 'a start + x;
-  select (f(1.5), g(#start: 1, 1)) {
+  select (f(1.5), f(#start: 1, 1)) {
     (f64:1.5, i64:2) => 1,
     _ => 0
   }
@@ -796,14 +795,13 @@ const ABANDONED_KERNEL_CLOSURE: &str = r#"
     m => (m + f(m - i64:1))
   };
   let v = f(i64:8);
-  false
+  (v, false)
 }
 "#;
 
-run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::Bool(false))
-); FuseExpect::Jit);
+run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:38, false]"
+}; FuseExpect::Jit);
 
 // Taint escalation: a locally-unconsumed bottom bottoms only the
 // consuming path, never the whole kernel.
@@ -1630,13 +1628,13 @@ const ABSTRACT_UNION_RETURN_IS_FINE: &str = r#"
     };
     s(i64:100, i64:20)
   };
-  f("foo")
+  "[f("foo")]"
 }
 "#;
 
 run!(abstract_union_return_is_fine, ABSTRACT_UNION_RETURN_IS_FINE, |v: Result<
     &Value,
->| matches!(v, Ok(_)));
+>| matches!(v, Ok(Value::String(s)) if s.as_str() == r#"[<"foo">]"#));
 
 // A declared return type must be proven when the body reaches it
 // through a call whose callee return is still open: `-> i64` over an
@@ -1690,7 +1688,7 @@ const OPEN_CALLEE_OBLIGATION_IS_PER_INSTANCE: &str = r#"
 run!(
     open_callee_obligation_is_per_instance,
     OPEN_CALLEE_OBLIGATION_IS_PER_INSTANCE,
-    |v: Result<&Value>| matches!(v, Ok(_))
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[[i64:1], ["two"]]"#
 );
 
 // A collection callback's element goes to its positional parameter;
@@ -2530,7 +2528,7 @@ run!(
         let rows = [{domain: "a"}, {domain: "b"}];
         array::map(rows, |d| f(d.domain))
     }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 2)
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["ok", "ok"]"#
 );
 
 // A binding that aliases a lambda resolves statically, annotated or not.
@@ -2632,7 +2630,7 @@ const WIDEST_ARGUMENT_ANY_ORDER: &str = r#"
 "#;
 
 run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if a.len() == 3)
+    format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:1, f64:2.], [i64:3, i64:1]]"
 }; FuseExpect::Jit);
 
 // A default omitted through a fn type reaches the callee's own
@@ -2748,20 +2746,8 @@ const BUILTIN_BOUND_WITHOUT_ITS_DEFAULT: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap/low] This checks only that the result has length 3,
-// so losing `array::rotate`'s omitted `#n = 1` (a result of [1, 2, 3]) would pass. Pin
-// "[i64:3, i64:1, i64:2]". The same looseness appears in other fixtures in this file.
-// widest_argument_any_order checks only len 3; pin "[[i64:1, i64:1], [i64:1, f64:2.],
-// [i64:3, i64:1]]". instance_node_narrower_than_its_row checks only len 2; pin ["ok",
-// "ok"]. abstract_union_return_is_fine and open_callee_obligation_is_per_instance
-// accept any Ok; pin their values. abandoned_kernel_closure never reads the `v` it
-// computes; return `(v, false)` and expect [38, false]. DEFAULT_IN_CONSTRAINT_SET
-// defines identical `f` and `g`, so one definition never serves both the omitting site
-// and the passing site its comment describes. Call `f` twice instead (that form gives 1
-// today). (tests-functions-05)
-run!(builtin_bound_without_its_default, BUILTIN_BOUND_WITHOUT_ITS_DEFAULT, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => a.len() == 3,
-    _ => false,
+run!(builtin_bound_without_its_default, BUILTIN_BOUND_WITHOUT_ITS_DEFAULT, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:3, i64:1, i64:2]"
 }; FuseExpect::None);
 
 // A builtin's variadic type is written like its other types: a trait
