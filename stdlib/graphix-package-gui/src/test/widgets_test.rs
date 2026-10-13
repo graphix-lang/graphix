@@ -1,55 +1,7 @@
-use super::GuiTestHarness;
+use super::{GuiTestHarness, IMPORTS, gui_harness as harness};
 use anyhow::Result;
 use graphix_package_core::testing;
 use netidx::publisher::Value;
-
-// CR claude for claude: [structure/low] interaction_test has its own IMPORTS and
-// harness() that overlap these, so adding a widget module means editing two lists. Put
-// one IMPORTS (the union) and one harness() for each harness type in test/mod.rs. The
-// view! macro below only wraps `h.render().await?`, yet it shares a name with
-// GuiTestHarness::view, which builds an element without drawing. Replace its uses with
-// `h.render().await?`. In interaction_test, button_press_rotates_seq and
-// button_press_rotates_sampled are the same test apart from the on_press handler: drive
-// both from one helper that takes the handler. table_cell_count_mismatch_lays_out
-// builds its programs with `replacen("], [", "], &[", 1)`. Write the `&` into the cases
-// instead. (tests-gui-b-11)
-const IMPORTS: &str = "\
-use gui::*;\n\
-use gui::text::{self, *};\n\
-use gui::button::{self, *};\n\
-use gui::checkbox::{self, *};\n\
-use gui::toggler::{self, *};\n\
-use gui::text_input::{self, *};\n\
-use gui::slider::{self, *};\n\
-use gui::radio::{self, *};\n\
-use gui::pick_list::{self, *};\n\
-use gui::progress_bar::{self, *};\n\
-use gui::text_editor::{self, *};\n\
-use gui::row::{self, *};\n\
-use gui::column::{self, *};\n\
-use gui::container::{self, *};\n\
-use gui::scrollable::{self, *};\n\
-use gui::space::{self, *};\n\
-use gui::rule::{self, *};\n\
-use gui::stack::{self, *};\n\
-use gui::tooltip::{self, *};\n\
-use gui::vertical_slider::{self, *};\n\
-use gui::combo_box::{self, *};\n\
-use gui::mouse_area::{self, *};\n\
-use gui::canvas::{self, *};\n\
-use gui::chart::{self, *};\n\
-use gui::image::{self, *};\n\
-use gui::grid::{self, *};\n\
-use gui::qr_code::{self, *};\n\
-use gui::markdown::{self, *};\n\
-use gui::table::{self, *};\n\
-use gui::menu::{self, *}";
-
-/// Compile `let result = <widget_expr>` under the standard imports.
-async fn harness(widget_expr: &str) -> Result<GuiTestHarness> {
-    let code = format!("{IMPORTS};\nlet result = {widget_expr}");
-    GuiTestHarness::new(&code).await
-}
 
 /// The widget built from `decls` and `widget` takes the update when the
 /// program writes `value` to `var`, and draws after it.
@@ -64,45 +16,38 @@ async fn reacts(decls: &str, widget: &str, var: &str, value: Value) -> Result<()
     h.render().await
 }
 
-/// Build, lay out and draw the tree.
-macro_rules! view {
-    ($h:expr) => {{
-        $h.render().await?;
-    }};
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn text_renders() -> Result<()> {
     let mut h = harness(r#"text(&"hello world")"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_with_styling() -> Result<()> {
     let mut h = harness(r#"text(#size: &24.0, #width: &`Fill, &"styled")"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn button_renders() -> Result<()> {
     let mut h = harness(r#"button(#on_press: |_| null, &text(&"Click me"))"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn checkbox_renders() -> Result<()> {
     let mut h = harness(r#"checkbox(#label: &"Accept", &false)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn toggler_renders() -> Result<()> {
     let mut h = harness(r#"toggler(#label: &"Dark mode", &true)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -110,14 +55,14 @@ async fn toggler_renders() -> Result<()> {
 async fn text_input_renders() -> Result<()> {
     let mut h =
         harness(r#"text_input(#placeholder: &"Type here...", &"initial")"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn slider_renders() -> Result<()> {
     let mut h = harness(r#"slider(#min: &0.0, #max: &100.0, &50.0)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -125,7 +70,7 @@ async fn slider_renders() -> Result<()> {
 async fn slider_with_step() -> Result<()> {
     let mut h =
         harness(r#"slider(#min: &0.0, #max: &100.0, #step: &5.0, &25.0)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -134,7 +79,7 @@ async fn radio_renders() -> Result<()> {
     let mut h =
         harness(r#"radio(#label: &"Option A", #selected: &"option_a", &"option_a")"#)
             .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -147,14 +92,14 @@ async fn pick_list_renders() -> Result<()> {
             &[\"Red\", \"Green\", \"Blue\"])",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn progress_bar_renders() -> Result<()> {
     let mut h = harness(r#"progress_bar(#min: &0.0, #max: &1.0, &0.5)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -162,7 +107,7 @@ async fn progress_bar_renders() -> Result<()> {
 async fn text_editor_renders() -> Result<()> {
     let mut h =
         harness(r#"text_editor(#placeholder: &"Edit...", &"Hello\nWorld")"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -170,7 +115,7 @@ async fn text_editor_renders() -> Result<()> {
 async fn row_with_children() -> Result<()> {
     let mut h =
         harness("row(#spacing: &10.0, &[text(&\"Left\"), text(&\"Right\")])").await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -178,7 +123,7 @@ async fn row_with_children() -> Result<()> {
 async fn column_with_children() -> Result<()> {
     let mut h =
         harness("column(#spacing: &10.0, &[text(&\"Top\"), text(&\"Bottom\")])").await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -187,42 +132,42 @@ async fn container_renders() -> Result<()> {
     let mut h =
         harness("container(#halign: &`Center, #valign: &`Center, &text(&\"Centered\"))")
             .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn scrollable_renders() -> Result<()> {
     let mut h = harness(r#"scrollable(&text(&"Scrollable content"))"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn space_renders() -> Result<()> {
     let mut h = harness(r#"space(#width: &`Fill, #height: &`Fixed(20.0))"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn horizontal_rule_renders() -> Result<()> {
     let mut h = harness(r#"horizontal_rule(#height: &2.0)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn vertical_rule_renders() -> Result<()> {
     let mut h = harness(r#"vertical_rule(#width: &2.0)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn stack_renders() -> Result<()> {
     let mut h = harness("stack(&[text(&\"Background\"), text(&\"Foreground\")])").await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -232,14 +177,14 @@ async fn tooltip_renders() -> Result<()> {
         "tooltip(#tip: &text(&\"Tooltip text\"), #position: &`Top, &text(&\"Hover me\"))",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn vertical_slider_renders() -> Result<()> {
     let mut h = harness(r#"vertical_slider(#min: &0.0, #max: &100.0, &50.0)"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -252,7 +197,7 @@ async fn combo_box_renders() -> Result<()> {
             &[\"Alpha\", \"Beta\", \"Gamma\"])",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -260,7 +205,7 @@ async fn combo_box_renders() -> Result<()> {
 async fn mouse_area_renders() -> Result<()> {
     let mut h =
         harness("mouse_area(#on_press: |_| null, &text(&\"Click zone\"))").await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -350,14 +295,14 @@ let items = select n { 1 => [text(&"one")], _ => [text(&"one"), text(&"two")] }"
 #[tokio::test(flavor = "current_thread")]
 async fn image_renders() -> Result<()> {
     let mut h = harness(r#"image(&"/dev/null")"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn svg_renders() -> Result<()> {
     let mut h = harness(r#"image(&`Svg("<svg></svg>"))"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -365,7 +310,7 @@ async fn svg_renders() -> Result<()> {
 async fn grid_renders() -> Result<()> {
     let mut h =
         harness(r#"grid(#columns: &`Fixed(2), &[text(&"A"), text(&"B")])"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -380,28 +325,28 @@ async fn grid_with_params() -> Result<()> {
             &[text(&\"One\"), text(&\"Two\"), text(&\"Three\")])",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn qr_code_renders() -> Result<()> {
     let mut h = harness(r#"qr_code(&"hello")"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn qr_code_with_cell_size() -> Result<()> {
     let mut h = harness(r#"qr_code(#cell_size: &4.0, &"test data")"#).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn markdown_renders() -> Result<()> {
     let mut h = harness(r##"markdown(&"# Hello\n**bold**")"##).await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -415,7 +360,7 @@ async fn markdown_with_params() -> Result<()> {
             &\"Some *markdown* text\")",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -427,7 +372,7 @@ async fn table_renders() -> Result<()> {
             &[[text(&\"a\"), text(&\"1\")]])",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -441,7 +386,7 @@ async fn table_with_params() -> Result<()> {
             &[[text(&\"val\")]])",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -457,7 +402,7 @@ async fn menu_bar_renders() -> Result<()> {
         ])",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 
@@ -469,7 +414,7 @@ async fn context_menu_renders() -> Result<()> {
             &text(&\"Right-click me\"))",
     )
     .await?;
-    view!(h);
+    h.render().await?;
     Ok(())
 }
 

@@ -1,34 +1,12 @@
-use super::{InteractionHarness, expect_call, expect_call_with_args};
+use super::{
+    IMPORTS, InteractionHarness, expect_call, expect_call_with_args,
+    interaction_harness as harness,
+};
 use anyhow::Result;
 use compact_str::format_compact;
 use graphix_rt::NoExt;
 use iced_core::{Event, Point, Size, mouse};
 use netidx::publisher::Value;
-
-const IMPORTS: &str = "\
-use gui::*;\n\
-use gui::text::{self, *};\n\
-use gui::button::{self, *};\n\
-use gui::checkbox::{self, *};\n\
-use gui::toggler::{self, *};\n\
-use gui::text_input::{self, *};\n\
-use gui::slider::{self, *};\n\
-use gui::radio::{self, *};\n\
-use gui::pick_list::{self, *};\n\
-use gui::text_editor::{self, *};\n\
-use gui::vertical_slider::{self, *};\n\
-use gui::mouse_area::{self, *};\n\
-use gui::keyboard_area::{self, *};\n\
-use gui::scrollable::{self, *};\n\
-use gui::combo_box::{self, *};\n\
-use gui::progress_bar::{self, *};\n\
-use gui::menu::{self, *};\n\
-use gui::column::{self, *}";
-
-async fn harness(widget_expr: &str) -> Result<InteractionHarness> {
-    let code = format!("{IMPORTS};\nlet result = {widget_expr}");
-    InteractionHarness::new(&code).await
-}
 
 /// Widgets use Shrink sizing and sit at (0,0); the viewport center
 /// misses them.
@@ -58,17 +36,14 @@ async fn button_click_produces_call() -> Result<()> {
 async fn table_cell_count_mismatch_lays_out() -> Result<()> {
     let cases = [
         "[table_column(&text(&\"A\")), table_column(&text(&\"B\")), table_column(&text(&\"C\"))], \
-         [[text(&\"1\"), text(&\"2\")]]",
-        "[table_column(&text(&\"Only\"))], [[text(&\"a\"), text(&\"b\"), text(&\"c\")]]",
+         &[[text(&\"1\"), text(&\"2\")]]",
+        "[table_column(&text(&\"Only\"))], &[[text(&\"a\"), text(&\"b\"), text(&\"c\")]]",
         "[table_column(&text(&\"A\")), table_column(&text(&\"B\"))], \
-         [[], [text(&\"1\")], [text(&\"1\"), text(&\"2\"), text(&\"3\")]]",
-        "[], [[text(&\"orphan\")]]",
+         &[[], [text(&\"1\")], [text(&\"1\"), text(&\"2\"), text(&\"3\")]]",
+        "[], &[[text(&\"orphan\")]]",
     ];
     for case in cases {
-        let code = format!(
-            "{IMPORTS};\nuse gui::table::{{self, *}};\nlet result = table(&{})",
-            case.replacen("], [", "], &[", 1)
-        );
+        let code = format_compact!("{IMPORTS};\nlet result = table(&{case})");
         let mut h = InteractionHarness::new(&code).await?;
         let _ = h.view();
         let _ = h.click(WIDGET_HIT);
@@ -630,13 +605,12 @@ async fn keyboard_area_on_key_release_produces_call() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn button_press_rotates_seq() -> Result<()> {
-    let code = format!(
+async fn button_press_rotates(handler: &str) -> Result<()> {
+    let code = format_compact!(
         "{IMPORTS};\n\
          let charts = [1, 2, 3];\n\
          let result = button(\
-             #on_press: |e| seq e {{ charts <- array::rotate(charts) }}, \
+             #on_press: {handler}, \
              &text(&\">\"))"
     );
     let mut h = InteractionHarness::new(&code).await?;
@@ -654,26 +628,13 @@ async fn button_press_rotates_seq() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn button_press_rotates_seq() -> Result<()> {
+    button_press_rotates("|e| seq e { charts <- array::rotate(charts) }").await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn button_press_rotates_sampled() -> Result<()> {
-    let code = format!(
-        "{IMPORTS};\n\
-         let charts = [1, 2, 3];\n\
-         let result = button(\
-             #on_press: |e| charts <- e ~ array::rotate(charts), \
-             &text(&\">\"))"
-    );
-    let mut h = InteractionHarness::new(&code).await?;
-    let initial = h.watch("test::charts").await?;
-    assert_eq!(initial.clone().cast_to::<[i64; 3]>()?, [1, 2, 3]);
-    let msgs = h.click(WIDGET_HIT);
-    h.dispatch_calls(&msgs).await?;
-    let v = h.get_watched("test::charts").unwrap().clone().cast_to::<[i64; 3]>()?;
-    assert_eq!(v, [3, 1, 2]);
-    let msgs = h.click(WIDGET_HIT);
-    h.dispatch_calls(&msgs).await?;
-    let v = h.get_watched("test::charts").unwrap().clone().cast_to::<[i64; 3]>()?;
-    assert_eq!(v, [2, 3, 1]);
-    Ok(())
+    button_press_rotates("|e| charts <- e ~ array::rotate(charts)").await
 }
 
 #[tokio::test(flavor = "multi_thread")]

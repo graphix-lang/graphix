@@ -1,5 +1,6 @@
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::expr::{ExprId, VfsResolver};
 use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CallableId, CompRes, GXEvent, NoExt, Ref};
@@ -21,6 +22,51 @@ mod frame_test;
 mod interaction_test;
 mod theme_test;
 mod widgets_test;
+
+const IMPORTS: &str = "\
+use gui::*;\n\
+use gui::text::{self, *};\n\
+use gui::button::{self, *};\n\
+use gui::checkbox::{self, *};\n\
+use gui::toggler::{self, *};\n\
+use gui::text_input::{self, *};\n\
+use gui::slider::{self, *};\n\
+use gui::radio::{self, *};\n\
+use gui::pick_list::{self, *};\n\
+use gui::progress_bar::{self, *};\n\
+use gui::text_editor::{self, *};\n\
+use gui::row::{self, *};\n\
+use gui::column::{self, *};\n\
+use gui::container::{self, *};\n\
+use gui::scrollable::{self, *};\n\
+use gui::space::{self, *};\n\
+use gui::rule::{self, *};\n\
+use gui::stack::{self, *};\n\
+use gui::tooltip::{self, *};\n\
+use gui::vertical_slider::{self, *};\n\
+use gui::combo_box::{self, *};\n\
+use gui::mouse_area::{self, *};\n\
+use gui::canvas::{self, *};\n\
+use gui::chart::{self, *};\n\
+use gui::image::{self, *};\n\
+use gui::grid::{self, *};\n\
+use gui::qr_code::{self, *};\n\
+use gui::markdown::{self, *};\n\
+use gui::table::{self, *};\n\
+use gui::keyboard_area::{self, *};\n\
+use gui::menu::{self, *}";
+
+fn widget_code(widget_expr: &str) -> CompactString {
+    format_compact!("{IMPORTS};\nlet result = {widget_expr}")
+}
+
+async fn gui_harness(widget_expr: &str) -> Result<GuiTestHarness> {
+    GuiTestHarness::new(&widget_code(widget_expr)).await
+}
+
+async fn interaction_harness(widget_expr: &str) -> Result<InteractionHarness> {
+    InteractionHarness::new(&widget_code(widget_expr)).await
+}
 
 const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
     &graphix_package_core::P,
