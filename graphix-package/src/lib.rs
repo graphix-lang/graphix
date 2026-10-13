@@ -575,21 +575,6 @@ async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<Compact
 /// Parse the shell `[features]` table into forward edges: each feature
 /// mapped to the package features it directly enables. Only bare feature
 /// references are edges; `dep:`, `crate/feat` and `crate?/feat` are ignored.
-// CR claude for claude: [bug/medium] The removal cascade takes its dependency graph
-// from graphix-shell's [features] table. What a build actually registers is decided by
-// each stdlib crate's [dependencies], because defpackage!'s register registers every
-// graphix-package-* runtime dep. The two graphs disagree for 7 of 18 packages.
-// [features] is missing http->array, gui->sys and tui->str, and it has
-// json/toml/pack/xls->sys, which none of those crates uses. Effects: `graphix package
-// remove sys` also removes json, toml, pack, xls and hbs, none of which needs sys. It
-// leaves gui installed, and gui keeps registering sys while the record lists sys as
-// removed. In the same way, `remove array` leaves http registering array, and `remove
-// str` leaves tui registering str. Fix: correct the [features] table
-// (http=[dep,"array"], gui=[dep,"str","sys"], tui=[dep,"array","str","sys"], and drop
-// "sys" from json/toml/pack/xls). Add a test that each feature's bare edges equal its
-// crate's graphix-package-* deps minus core. Better, derive the edges from the stdlib
-// manifests so the two graphs cannot drift. probe:
-// design/review-2026-10-12/repro/package-01.py (package-01)
 fn feature_edges(
     content: &str,
 ) -> Result<BTreeMap<CompactString, BTreeSet<CompactString>>> {

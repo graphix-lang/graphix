@@ -418,6 +418,27 @@ mod pure {
         parse_packages(s).unwrap().1
     }
 
+    /// The removal cascade's graph, the shell's features, is what each
+    /// stdlib crate registers: its package dependencies.
+    #[test]
+    fn feature_edges_are_crate_dependencies() {
+        let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let shell = std::fs::read_to_string(ws.join("graphix-shell/Cargo.toml")).unwrap();
+        let edges = feature_edges(&shell).unwrap();
+        for name in stdlib_packages_in_cargo_toml(&shell).unwrap() {
+            if name == "core" {
+                continue;
+            }
+            let manifest = ws.join(format!("stdlib/graphix-package-{name}/Cargo.toml"));
+            let mut deps = stdlib_packages_in_cargo_toml(
+                &std::fs::read_to_string(manifest).unwrap(),
+            )
+            .unwrap();
+            deps.remove("core");
+            assert_eq!(edges.get(&name), Some(&deps), "{name}");
+        }
+    }
+
     #[test]
     fn migrate_all_default_stdlib() {
         let mut toml = String::from("[packages]\n");
