@@ -547,3 +547,28 @@ pub(super) fn value_to_f64(v: &Value) -> Option<f64> {
         _ => v.clone().cast_to::<f64>().ok(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparkline_bursts_retain_a_bounded_history() {
+        let mut history: LPooled<VecDeque<(Instant, f64)>> = LPooled::take();
+        let base = Instant::now();
+        for burst in [0..2000_u64, 2000..2500] {
+            for i in burst {
+                push_sparkline_point(
+                    &mut history,
+                    base + Duration::from_micros(i),
+                    i as f64,
+                    60.0,
+                );
+            }
+            assert!(
+                (MAX_SPARKLINE_POINTS / 2..=MAX_SPARKLINE_POINTS)
+                    .contains(&history.len())
+            );
+        }
+    }
+}

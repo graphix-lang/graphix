@@ -61,7 +61,7 @@ const DEFAULT_VISIBLE_ROWS: usize = 30;
 const DEFAULT_VISIBLE_COLS: usize = 20;
 /// Max points kept per sparkline; `decimate_sparkline` halves the
 /// count when exceeded.
-const MAX_SPARKLINE_POINTS: usize = 512;
+pub(crate) const MAX_SPARKLINE_POINTS: usize = 512;
 
 /// Horizontal padding inside each cell, left + right.
 const CELL_H_PADDING: f32 = 10.0;

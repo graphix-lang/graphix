@@ -43,11 +43,11 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Record a sparkline point as a live update would, at `when`.
     pub fn dt_push_sparkline(&self, row: &str, col: &str, when: Instant, v: f64) {
-        let Some(key) = self.sparkline_key_for(row, col) else { return };
+        let key = self.sparkline_key_for(row, col).expect("unknown sparkline row");
         let Some(ColumnType::Sparkline { history_seconds, .. }) =
             self.columns.get(col).map(|c| &c.spec.typ)
         else {
-            return;
+            panic!("unknown sparkline column {col}");
         };
         let mut inner = self.cells.inner.lock();
         let history = inner.sparklines.entry(key).or_insert_with(LPooled::take);

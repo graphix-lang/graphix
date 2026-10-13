@@ -767,10 +767,6 @@ fn sparkline_decimation() {
     decimate_sparkline(&mut history);
     assert_eq!(history.len(), 26);
 
-    for (_, v) in &history {
-        assert!(*v >= -100.0 && *v <= 100.0);
-    }
-
     let times: Vec<_> = history.iter().map(|(t, _)| *t).collect();
     for w in times.windows(2) {
         assert!(w[1] >= w[0], "times not monotonic");
@@ -1385,7 +1381,7 @@ let result = data_table(
 
 /// Decimation caps stored sparkline points at `MAX_SPARKLINE_POINTS`.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] This test checks only `len <= 512`, read through
+// XCR claude for claude: [test-gap/low] This test checks only `len <= 512`, read through
 // `unwrap_or(0)`. `dt_push_sparkline` returns silently when the row or column does not
 // resolve. So a push that stores nothing, or aging that drops everything, still passes.
 // Make `dt_push_sparkline` panic on an unknown cell, and assert `len >=
@@ -1394,7 +1390,12 @@ let result = data_table(
 // and stride-2 decimation keeps 1023. Delete it in favour of
 // `sparkline_decimation_keeps_spikes`, and drop the range loop in
 // `sparkline_decimation`, which `sin * 100` satisfies for any input. (tests-gui-a-07)
+// 2026-10-13 codex: sparkline_bursts_retain_a_bounded_history fails when each
+// push clears history; restored code passes. Kept sparkline_decimation_keeps_spikes
+// and strengthened sparkline_decimation_caps_length. The latter and the accessor
+// panic paths still need netidx sockets, which this sandbox refuses.
 async fn sparkline_decimation_caps_length() -> Result<()> {
+    use crate::widgets::data_table::MAX_SPARKLINE_POINTS;
     use std::time::{Duration, Instant};
     let code = r#"
 
@@ -1415,44 +1416,13 @@ let result = data_table(
     for i in 0..2000_u64 {
         dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
     }
-    let len = dt_w.dt_sparkline_len("r0", "load").unwrap_or(0);
-    assert!(len <= 512, "decimation should cap len <= 512, got {len}");
+    let len = dt_w.dt_sparkline_len("r0", "load").expect("sparkline history");
+    assert!((MAX_SPARKLINE_POINTS / 2..=MAX_SPARKLINE_POINTS).contains(&len), "{len}");
     for i in 2000..2500_u64 {
         dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
     }
-    let len = dt_w.dt_sparkline_len("r0", "load").unwrap_or(0);
-    assert!(len <= 512, "after second burst, len <= 512, got {len}");
-    Ok(())
-}
-
-/// Decimation preserves the extremes of the input.
-#[tokio::test(flavor = "current_thread")]
-async fn sparkline_decimation_preserves_extremes() -> Result<()> {
-    use std::time::{Duration, Instant};
-    let code = r#"
-
-let tbl = { rows: ["r0"], columns: [
-        "anchor",
-        { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
-            display_name: null,
-            source: &"0.0",
-            on_resize: &null, width: &null }
-    ] };
-let result = data_table(
-#table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let dt_w = h.dt();
-    let base = Instant::now();
-    for i in 0..1024_u64 {
-        dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
-    }
-    let vals = dt_w.dt_sparkline_values("r0", "load").expect("sparkline values present");
-    let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    assert!(min <= 1.0, "min should be near 0 after decimation, got {min}");
-    assert!(max >= 1022.0, "max should be near 1023 after decimation, got {max}");
+    let len = dt_w.dt_sparkline_len("r0", "load").expect("sparkline history");
+    assert!((MAX_SPARKLINE_POINTS / 2..=MAX_SPARKLINE_POINTS).contains(&len), "{len}");
     Ok(())
 }
 
