@@ -88,6 +88,11 @@ pub struct GenCfg {
     /// A statement slot builds and consumes a value of a shape
     /// `random_type` never draws (see [`funcs::gen_shape_template`]).
     pub p_shape: f64,
+    /// A statement slot emits sibling calls of one `queuefn` wrapper, the
+    /// ORDERED builtin: they never fork.
+    pub p_queuefn: f64,
+    /// A subprogram block carries `#[serial]`.
+    pub p_serial: f64,
     /// Statement slots per program: a geometric count with mean
     /// max_lets/2, capped at min(4 * max_lets, 48) (template slots may
     /// emit several statements).
@@ -130,6 +135,8 @@ impl Default for GenCfg {
             p_dynmod: 0.08,
             p_ref: 0.1,
             p_shape: 0.08,
+            p_queuefn: 0.03,
+            p_serial: 0.1,
             max_lets: 6,
             type_depth: 2,
             p_subprogram: 0.10,
@@ -453,14 +460,6 @@ pub(crate) fn geo_slots(rng: &mut Rng, mean: usize, cap: usize) -> usize {
 /// One run of statement slots. `files` present = top level (module arms
 /// enabled; `mod` statements only parse at the program's top level);
 /// `None` = a nested subprogram block.
-// CR claude for claude: [test-gap/low] No generated program calls queuefn, the ORDERED
-// builtin, or carries #[parallel]/#[serial]. The forked runs exercise fork points in
-// general. But the plan_block rule that two siblings both reaching an ORDERED builtin
-// never fork is guarded only by hand-written pins: a regression would reorder their
-// effects under Pair::Par, and no generated subject has that shape. Fix: add a low-rate
-// slot (both lanes) with two sibling statements that share one queuefn, plus an
-// occasional `#[serial]` on a block, which is legal anywhere. `#[parallel]` needs a
-// known fork point, or it is a compile error. (fuzz-gen-b-06)
 fn gen_slots(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -486,6 +485,8 @@ fn gen_slots(
             stmts.push(gen_subprogram_stmt(ctx, rng, cfg, stats));
         } else if !ctx.codecs && chance(rng, cfg.p_ref) {
             stmts.extend(funcs::gen_ref_stmts(ctx, rng, cfg, stats));
+        } else if chance(rng, cfg.p_queuefn) {
+            stmts.extend(funcs::gen_queuefn_siblings(ctx, rng));
         } else if chance(rng, cfg.p_shape) {
             stmts.extend(funcs::gen_shape_template(ctx, rng, stats));
         } else if chance(rng, cfg.p_rec) {
@@ -599,8 +600,9 @@ fn gen_subprogram_stmt(
         ctx.next = inner.next;
         b
     };
+    let serial = if chance(rng, cfg.p_serial) { "#[serial] " } else { "" };
     let name = ctx.name_for_bind(rng, cfg);
-    let stmt = format!("let {name}: {} = {block}", ty.render());
+    let stmt = format!("let {name}: {} = {serial}{block}", ty.render());
     ctx.push(name, ty);
     stmt
 }

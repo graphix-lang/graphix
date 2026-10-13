@@ -3149,8 +3149,7 @@ async fn must_reject(
 ) -> Vec<Probed<Option<String>>> {
     use graphix_compiler::expr::ErrorSite;
     let mut out = Vec::new();
-    let TmCheck::Done(Ok(checked)) =
-        tm_check(ctx, &compose(body), true, per_check).await
+    let TmCheck::Done(Ok(checked)) = tm_check(ctx, &compose(body), true, per_check).await
     else {
         return out;
     };

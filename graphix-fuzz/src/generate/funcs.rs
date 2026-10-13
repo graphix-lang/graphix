@@ -391,7 +391,8 @@ pub(super) fn gen_error_arm_lambda(
     );
     // call so the ok arm or the error arm is taken, then consume the union
     let arg = if rng.below(2) == 0 { "i64:0" } else { "i64:1" };
-    let consume = exprs::consume_fallible(ctx, rng, &format!("{f}({arg})"), &ret, "error", 1);
+    let consume =
+        exprs::consume_fallible(ctx, rng, &format!("{f}({arg})"), &ret, "error", 1);
     let call = ctx.fresh();
     let stmts = vec![lam, format!("let {call} = {consume}")];
     ctx.push(call, ret);
@@ -644,5 +645,34 @@ pub(super) fn gen_shape_template(
         }
     };
     ctx.push(r, I64);
+    stmts
+}
+
+/// Sibling calls of one `queuefn` wrapper, its trigger and arguments drawn
+/// from the program: the calls reach one ORDERED builtin, so they run in
+/// order whatever forks around them.
+pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<String> {
+    let (qf, x) = (ctx.fresh(), ctx.fresh());
+    let trigger = exprs::gen_typed(ctx, rng, &I64, 1);
+    let body = exprs::gen_typed(ctx, rng, &I64, 1);
+    let mut stmts = vec![format!(
+        "let {qf} = queuefn(#trigger: {trigger}, |{x}: i64| -> i64 {x} + {body})"
+    )];
+    let calls: Vec<String> = (0..2 + rng.below(2))
+        .map(|_| format!("{qf}({})", exprs::gen_typed(ctx, rng, &I64, 1)))
+        .collect();
+    let r = ctx.fresh();
+    let ty = match rng.below(2) {
+        0 => {
+            stmts.push(format!("let {r} = ({})", calls.join(", ")));
+            GenType::Tuple(vec![I64; calls.len()])
+        }
+        _ => {
+            stmts.push(format!("let {r} = [{}]", calls.join(", ")));
+            GenType::Array(Box::new(I64))
+        }
+    };
+    ctx.push_entry(qf, super::Entry::Opaque);
+    ctx.push(r, ty);
     stmts
 }

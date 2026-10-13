@@ -256,7 +256,10 @@ pub enum GenType {
     /// A reference `&T`, or `&mut T` when `mutable`, with a scalar inner
     /// type. Never produced by `random_type`; introduced by dedicated
     /// statements, ref-typed params, and `&literal` leaves.
-    Ref { inner: Box<GenType>, mutable: bool },
+    Ref {
+        inner: Box<GenType>,
+        mutable: bool,
+    },
     /// A generated module's abstract type, identified by its module:
     /// its `T`, or with `boxed` its `B<i64>`. Produced only by
     /// `<module>::mk(i64)` (`mkb`); the only structural consumer is

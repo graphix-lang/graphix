@@ -513,7 +513,14 @@ pub(super) fn gen_typed(
                 let op = *rng.pick(&["+?", "-?", "*?", "/?", "%?"]);
                 let a = gen_typed(ctx, rng, ty, d);
                 let b = gen_typed(ctx, rng, ty, d);
-                return consume_fallible(ctx, rng, &format!("({a} {op} {b})"), ty, "error", d);
+                return consume_fallible(
+                    ctx,
+                    rng,
+                    &format!("({a} {op} {b})"),
+                    ty,
+                    "error",
+                    d,
+                );
             }
             // unary minus: signed/float only; parenthesized so `-(i64:5)`
             // stays a `Neg` rather than a negative literal
@@ -531,7 +538,11 @@ pub(super) fn gen_typed(
             )
         }
         GenType::Bool => match rng.below(3) {
-            0 if rng.below(8) == 0 && let Some(c) = ref_comparison(ctx, rng) => c,
+            0 if rng.below(8) == 0
+                && let Some(c) = ref_comparison(ctx, rng) =>
+            {
+                c
+            }
             0 => {
                 let op = *rng.pick(&["<", ">", "<=", ">=", "==", "!="]);
                 let nt = match rng.below(12) {
@@ -540,12 +551,14 @@ pub(super) fn gen_typed(
                     _ => types::numeric_type(rng),
                 };
                 if nt.is_numeric() {
-                    let (a, b) = (gen_typed(ctx, rng, &nt, d), gen_typed(ctx, rng, &nt, d));
+                    let (a, b) =
+                        (gen_typed(ctx, rng, &nt, d), gen_typed(ctx, rng, &nt, d));
                     format!("({a} {op} {b})")
                 } else {
                     // annotated operands: a bare `null` or tag is not the union
                     let t = nt.render();
-                    let (a, b) = (gen_typed(ctx, rng, &nt, d), gen_typed(ctx, rng, &nt, d));
+                    let (a, b) =
+                        (gen_typed(ctx, rng, &nt, d), gen_typed(ctx, rng, &nt, d));
                     format!("({{ let l: {t} = {a}; l }} {op} {{ let r: {t} = {b}; r }})")
                 }
             }
@@ -807,7 +820,8 @@ fn ref_comparison(ctx: &GenCtx, rng: &mut Rng) -> Option<String> {
         return None;
     }
     let (a, ta) = refs[rng.below(refs.len())];
-    let same: Vec<&str> = refs.iter().filter(|(_, t)| *t == ta).map(|(n, _)| *n).collect();
+    let same: Vec<&str> =
+        refs.iter().filter(|(_, t)| *t == ta).map(|(n, _)| *n).collect();
     let b = same[rng.below(same.len())];
     let op = *rng.pick(&["==", "!="]);
     Some(format!("({a} {op} {b})"))
