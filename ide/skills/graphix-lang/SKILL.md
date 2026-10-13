@@ -16,8 +16,12 @@ unless an input does. Read the book (`book/src/`) and the examples
 graphix --check prog.gx     # parse + typecheck only
 graphix prog.gx             # run
 graphix --expand prog.gx    # check, and print every seq's lowered machine
-graphix --no-fusion prog.gx # node-walk only (swallowed-error diagnostics live here)
+graphix --no-fusion prog.gx # node-walk only (unchecked-arithmetic diagnostics live here)
+graphix fmt prog.gx         # format in place (--check, --stdout)
 ```
+
+`#[native]` on an expression asserts it fuses whole into native code: a
+build refuses it where anything stays in the node-walk.
 
 A program under test must exit or the harness learns nothing:
 `sys::exit(sys::time::after_idle(duration:100.ms, 0))` at the end (a
@@ -92,17 +96,12 @@ constant argument to `exit` runs at init — always gate it).
   [`Local(loc), `Remote(rem)]` written by a key snaps back to the initial
   order whenever anything inside `loc` or `rem` changes. Store a tag
   (`let front: [`Local, `Remote] = `Local`) and select the struct by it.
-<!-- CR claude for claude: [doc-drift/low] The comment-site list leaves out trait
-methods and interface items, which are both legal. The skill's own ```graphix blocks
-(Basics, Types, Literals, Functions, Select, seq, Idioms) annotate with trailing `//`
-comments. This line calls those parse errors, and the parser agrees, so an example
-copied verbatim does not parse. Add the two sites, and either move each explanation onto
-its own line above the item or mark those blocks as annotated pseudo-code.
-(lang-skill-09) (lang-skill-09) -->
 - **Comments** are legal only on their own line above an expression, a
-  select arm, an impl method or a struct-literal field. Trailing,
-  interior and dangling comments are parse errors. `///` doc comments
-  only in `.gxi`.
+  select arm, an impl or trait method, a struct-literal field or an
+  interface item. Trailing, interior and dangling comments are parse
+  errors. `///` doc comments only in `.gxi`. The examples in this skill
+  annotate lines with trailing `// ..` notes for brevity: those notes are
+  explanations, not Graphix; copied code puts a comment on its own line.
 
 ## Basics
 
@@ -174,14 +173,10 @@ datetime:"2020-01-01T00:00:00Z"  duration:1.0s  duration:500.ms   // units: ns u
 * *? / /? % %?     + +? - -?     < > <= >=     == !=     &&     ||     ~ ~!
 ```
 
-<!-- CR claude for claude: [doc-drift/low] Unchecked `+ - *` wrap; they do not bottom.
-Integer `/` by zero and `MIN / -1` bottom, `x % -1` is 0, and only the node-walk logs
-that diagnostic. Say so here. The `--no-fusion` comment under "Running and checking" is
-backwards: `$` and handler-less `?` log from both engines, and it is the
-unchecked-arithmetic diagnostics that need `--no-fusion`. Probe:
-design/review-2026-10-12/repro/lang-skill-05.gx. (lang-skill-05) (lang-skill-05) -->
-Unchecked arithmetic logs and bottoms on failure; checked (`+?` …)
-returns `[T, Error<`ArithError(string)>]`. `&&`/`||` are strict
+Unchecked `+ - *` wrap; integer `/` by zero and `MIN / -1` bottom, and
+`x % -1` is 0 (only the node-walk logs those diagnostics); checked
+(`+?` …) returns `[T, Error<`ArithError(string)>]`. `$` and a
+handler-less `?` log the error they swallow from both engines. `&&`/`||` are strict
 (`false && ⊥ = ⊥`). Both operands of an operator are ONE type (cast one
 side). Comparison is exact: `x == 3` over `x: [i64, null]` and `` v ==
 `Red `` over `` [`Green, `Red] `` are refused — `opt::is_some`,
@@ -205,13 +200,9 @@ error form, so a nullable one is annotated: `|t, scope: [Scope, null]|
 -> duration`, `add`/`sub` for datetime ± duration. A duration prints in
 its largest whole-ish unit (`duration:1800.s` prints `30.m`).
 
-<!-- CR claude for claude: [doc-drift/low] `a[i]` and `a[-1]` are Results too (`[T,
-Error<`ArrayIndexError(string)>]`), so `a[1] + 1` is refused. Only the slice `a[1..3]`
-is a plain array. Mark the index forms as Results and show the unwrap (`a[i]$`,
-`a[i]?`). Probe: design/review-2026-10-12/repro/lang-skill-10.gx. (lang-skill-06)
-(lang-skill-06) -->
-Access: `s.f`, `t.0`, `a[i]`, `a[-1]`, `a[1..3]`, `m{"k"}` (Result),
-`mod::name`.
+Access: `s.f`, `t.0`, `mod::name`. `a[i]`, `a[-1]`, `a[1..3]` and
+`m{"k"}` are Results (`[T, Error<`ArrayIndexError(string)>]` and the
+like), so `a[1] + 1` is refused: unwrap, `a[i]$` or `a[i]?`.
 
 ## Functions
 
@@ -289,21 +280,21 @@ what it names.
 
 ## Select
 
-<!-- CR claude for claude: [doc-drift/medium] The sleep rules here and under Connect are
-incomplete. Any arm with state, an effect or a raise sleeps, not only one with `<-`.
-Sleep is not always a pause: the restart builtins (count, once, take, skip, uniq, hold)
-and a seq start over when their arm wakes, net subscriptions and publishes are torn
-down, and async calls are abandoned. Several other rules that change what a program does
-are missing: an arm cannot tell apart types that share a runtime form (a tuple or struct
-vs an array, a bare variant vs a string; wrap them in variants), references and
-functions cannot be compared, sorted or used as map keys, and `_` in a type is bottom,
-not 'infer' (`Error<_>` is `Error<⊥>`). Add short bullets for these, and one line on
-`#[native]` and `graphix fmt` under "Running and checking". Probe:
-design/review-2026-10-12/repro/lang-skill-06.gx. (lang-skill-04) (lang-skill-04) -->
 The only branching construct. Arms are consulted top down, structure
-first, guard second; must be exhaustive with no dead arms; unselected
-arms sleep (subscriptions paused); a bottom scrutinee yields a bottom
-select (put `hold` on the scrutinee to persist across a bottom cycle).
+first, guard second; must be exhaustive with no dead arms; a bottom
+scrutinee yields a bottom select (put `hold` on the scrutinee to persist
+across a bottom cycle).
+
+- An unselected arm with state, an effect or a raise sleeps. Sleep is a
+  pause for values, but the restart builtins (`count`, `once`, `take`,
+  `skip`, `uniq`, `hold`) and a seq start over when the arm wakes, and an
+  async call clears its output and starts again over its present
+  arguments.
+- No arm may tell apart two types that share a runtime form: a tuple,
+  struct, list or payload variant and an array, a bare variant and a
+  string, two function types. Wrap them in distinct variants.
+- References and functions cannot be ordered, sorted or used as map
+  keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 
 ```graphix
 select x {
