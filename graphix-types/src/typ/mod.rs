@@ -212,8 +212,10 @@ impl<H: IsoPoolable> RefHist<H> {
     /// A stable id for a type: a Ref keys on its definition and params
     /// (the cell is filled first, so one ref has one id in a walk); a
     /// bound cell is its binding; an open cell keys on the cell, a
-    /// primitive on its bits, anything else on its content. `None` only
-    /// for an unresolvable name, a constructor application or a hole.
+    /// primitive on its bits, anything else (a constructor application
+    /// and a hole included) on its content. `None` only for an
+    /// unresolvable name, which expands to nothing, so no walk recurses
+    /// under its key.
     fn ref_id(&mut self, t: &Type, env: &Env) -> Option<usize> {
         let d = mem::discriminant(t);
         let k = match t {
@@ -253,7 +255,6 @@ impl<H: IsoPoolable> RefHist<H> {
                 (d, (**params).as_ptr().addr(), id.0 as usize)
             }
             Type::Any | Type::Bottom => (d, 0, 0),
-            Type::App(..) | Type::Hole => return None,
             t => {
                 let h = shape_hash(t);
                 let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {

@@ -20,20 +20,10 @@ and keep the *structure* lazy.
 
 ## The cell
 
-<!-- CR claude for claude: [doc-drift/low] This doc differs from the code in four
-places. The cell is Arc<Mutex<Resolution>> (Open, Def(Weak), Trait), not an
-Option<Weak>. The snapshot is read through Env::resolve_type_name, not resolve_visible.
-TypeRef::cells_agree compares ResolvedRef::def_key, and same_def does not exist. In the
-'Same definition' section, RefHist::ref_id returns None for an unresolvable ref, and
-also for a constructor application or a hole, and the ref-pair memos (contains'
-`assuming`, setops, matches) use that None as a key like any other, so it IS a shared
-cycle key. Fix the text to match. For the last point, either say that None pairs share a
-key, or make `assuming` and the other memos skip the memo when either id is None, which
-also stops two different constructor applications sharing one coinductive assumption.
-(t-typ-mod-06) -->
-`TypeRef.resolved: Arc<Mutex<Option<Weak<ResolvedRef>>>>` (`typ/mod.rs`).
-`ResolvedRef` snapshots exactly what `lookup_ref` reads from the env
-via `resolve_visible`: the def's formal params and constraints, the body
+`TypeRef.resolved: Arc<Mutex<Resolution>>` (`typ/mod.rs`): `Open`,
+`Def(Weak<ResolvedRef>)` or `Trait`. `ResolvedRef` snapshots exactly
+what `lookup_ref` reads from the env via `Env::resolve_type_name`: the
+def's formal params and constraints, the body
 `Type`, the canonical scope, and the def's pos/ori (so `TypeRefSite`
 recording survives cache hits). Substitution (`replace_tvars`), the
 arity check and constraint registration stay per call — pure given the
@@ -125,9 +115,9 @@ expands it.
 
 Name equality no longer implies same meaning (REPL redefinition,
 cross-env views), so the Ref×Ref name fast paths in `contains`/`union`/
-`diff`/`could_match` are gated by `TypeRef::cells_agree`, which uses
-`ResolvedRef::same_def` — structural, shortcutting to pointer compares
-because the content Arcs are shared for one `TypeDef`. Disagreement
+`diff`/`could_match` are gated by `TypeRef::cells_agree`, which compares
+the resolutions' `ResolvedRef::def_key` (the params allocation every
+cell filled from one `TypeDef` shares). Disagreement
 falls through to the expansion arms. `sig_matches_int`'s fast path is
 deliberately NOT gated: sig-vs-impl matching intends to relate two
 views of one name. A DIFFERENT definition found in a stale env is a
@@ -137,9 +127,11 @@ true meaning and wins.
 `RefHist::ref_id` fills the cell first and derives a ref's identity
 from the resolution's definition (`ResolvedRef::def_key`, the params
 allocation every cell filled from one `TypeDef` shares) and its
-params, so one ref has one identity in a walk, a ref unresolvable in
-the ambient env has none rather than a shared `None` cycle key, and an
-old-cell ref never aliases a redefined def's identity. The value walks
+params, so one ref has one identity in a walk and an old-cell ref never
+aliases a redefined def's identity. A constructor application and a
+hole key on their content like any other type; only a ref unresolvable
+in the ambient env has no identity (`None`), and it expands to nothing,
+so no walk recurses under that key. The value walks
 (`is_a`, casts, typed printing, union flattening) key the path of names
 they expand on the same `def_key`.
 
