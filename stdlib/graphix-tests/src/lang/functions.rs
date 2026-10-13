@@ -2861,33 +2861,18 @@ run!(
 /// An embedder bounds the activations its runtime holds: a node-walked
 /// recursion without end aborts the runtime at the budget, where it would
 /// otherwise fill memory, and the count follows the program.
-// CR claude for claude: [test-gap/low] The budget bounds calls, slots and kernel
-// blocks, but this test, the only one that sets it, builds with CFlag::FusionDisabled,
-// so a change that stopped counting kernel blocks in a fused non-tail recursion would
-// pass every gate. Run it over Mode::Interp and Mode::Jit, with a non-tail runaway as
-// the JIT case (`let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) };
-// f(-1)`, which stops at 2000 today). Also assert that `compile` succeeds, so a refused
-// program fails at once instead of after a 30 s wait with 'not stopped', and call
-// ctx.shutdown() as run! does. (tests-functions-08)
-#[tokio::test(flavor = "multi_thread")]
-async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
-    use graphix_compiler::CFlag;
+/// `code` under a 2000-activation budget, built with `flags`: the runtime
+/// stops it there.
+async fn budget_stops(
+    flags: enumflags2::BitFlags<graphix_compiler::CFlag>,
+    code: &str,
+) -> anyhow::Result<()> {
     use graphix_package_core::testing::init_with_flags_and_setup;
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let ctx = init_with_flags_and_setup(
-        tx,
-        &crate::TEST_REGISTER,
-        vec![],
-        CFlag::FusionDisabled.into(),
-        |_| {},
-    )
-    .await?;
+    let ctx = init_with_flags_and_setup(tx, &crate::TEST_REGISTER, vec![], flags, |_| {})
+        .await?;
     ctx.rt.control().set_activation_budget(2000);
-    let code = r#"{
-        let rec go = |n: i64, acc: string| -> string select n { 0 => acc, _ => go(n - 1, "x") };
-        go(-1, "x")
-    }"#;
-    let _ = ctx.rt.compile(arcstr::ArcStr::from(code)).await;
+    ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while !ctx.rt.budget_aborted() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -2895,7 +2880,34 @@ async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
     assert!(ctx.rt.budget_aborted(), "the runaway recursion was not stopped");
     let live = ctx.rt.control().live_activations();
     assert!((2000..10_000).contains(&live), "{live} live activations");
+    ctx.shutdown().await;
     Ok(())
+}
+
+/// The node-walk counts a recursion's calls.
+#[tokio::test(flavor = "multi_thread")]
+async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
+    budget_stops(
+        graphix_compiler::CFlag::FusionDisabled.into(),
+        r#"{
+            let rec go = |n: i64, acc: string| -> string select n { 0 => acc, _ => go(n - 1, "x") };
+            go(-1, "x")
+        }"#,
+    )
+    .await
+}
+
+/// A fused non-tail recursion counts its kernel blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn activation_budget_stops_a_fused_runaway_recursion() -> anyhow::Result<()> {
+    budget_stops(
+        Default::default(),
+        r#"{
+            let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) };
+            f(-1)
+        }"#,
+    )
+    .await
 }
 
 // A sampled function value is written without parens: a lambda is the last
