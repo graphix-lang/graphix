@@ -384,16 +384,12 @@ direction is safe: the child is already parallel inside. True work
 accounting (each branch summing its leaves' time) is possible later if
 the wall-time bias turns out to cost.
 
-<!-- CR claude for claude: [doc-drift/low] This section and §3.3's 'kept in the node,
-not imaged' are wrong for blocks. Block::image_encode writes the analysis plan
-(Block::planned) and image_decode restores it. Only a block no analysis reached plans at
-its first update. The histograms and the ForkSite sibling verdicts are what a warm start
-relearns. Restate both places to match. Note that this is why warm blocks keep their
-cold verdicts while call, constructor and operator fork sites decide again
-(x-parallel-03). (x-parallel-09) -->
-**Not imaged.** Histograms are run-time state; a warm start relearns
-them. Fork plans (§3.3) are not imaged either: a block plans at its
-first update that may fork, cold or warm (`Block::image_encode`).
+**Not imaged.** Histograms are run-time state, and so are a
+`ForkSite`'s sibling verdicts; a warm start relearns them, so call,
+constructor and operator fork sites decide again. A block's plan
+(§3.3) is imaged (`Block::image_encode` writes `Block::planned`,
+`image_decode` restores it), so a warm block keeps its cold verdicts;
+only a block no analysis reached plans at its first update.
 
 **Before there is data,** a fork point runs serially, unless an
 attribute forces it.
