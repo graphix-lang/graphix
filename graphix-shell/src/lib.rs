@@ -275,7 +275,7 @@ impl<X: GXExt> ShellBuilder<X> {
     }
 
     /// Append packages onto the default stdlib set — e.g.
-    /// `graphix_shell::packages!()` for an embedder's own `graphix-package-*`
+    /// `graphix_package::packages!()` for an embedder's own `graphix-package-*`
     /// dependencies.
     pub fn add_packages(mut self, packages: Vec<Box<dyn Package<X>>>) -> Self {
         self.packages.get_or_insert_with(stdlib_packages::<X>).extend(packages);

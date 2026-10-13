@@ -8,20 +8,12 @@ application.
 
 Using the
 [graphix-shell](https://docs.rs/graphix-shell/latest/graphix_shell) crate you
-can build a custom Graphix application. All installed packages are
-automatically registered, so your application gets the full standard library and
-any additional packages out of the box.
+can build a custom Graphix application. A `ShellBuilder` starts with
+the standard library's packages (`graphix_shell::stdlib_packages()`);
+add your own with `add_packages`, e.g.
+`.add_packages(graphix_package::packages!())` for your `graphix-package-*`
+dependencies, or replace the set with `packages(..)`.
 
-<!-- CR claude for claude: [doc-drift/medium] The embedding listings on this page are
-broken in five ways. (1) The VfsResolver keys `/myapp` and `/myapp/util` never resolve,
-because the resolver looks up `{name}.gx` or `{name}/mod.gx` (`MODULE_LAYOUTS`). They
-need to be `/myapp/mod.gx` and `/myapp/util.gx`. (2) `Source` has no `From` impl, so
-write `Source::File(PathBuf::from("main.gx"))`. (3) `MainThreadHandle` is imported from
-`graphix_package`, not `graphix_shell`. (4) `Shell::run` returns `Result<Option<i32>>`,
-so `tokio_main` cannot return `Result<()>` as written. (5) The intro says all installed
-packages are registered automatically. An embedder in fact gets `stdlib_packages()` and
-adds its own with `ShellBuilder::add_packages(graphix_package::packages!())` or
-`packages(..)`, which the page should document. (book-modules-udt-06) -->
 ## Basic Application
 
 The shell needs a `MainThreadHandle` so widgets that must run on the
@@ -32,12 +24,15 @@ and pump the main-thread queue from `main`:
 ```rust
 use anyhow::Result;
 use graphix_compiler::expr::Source;
+use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
-use graphix_shell::{MainThreadHandle, Mode, ShellBuilder};
+use graphix_shell::{Mode, ShellBuilder};
+use std::path::PathBuf;
 
-async fn tokio_main(run_on_main: MainThreadHandle) -> Result<()> {
+// the exit code a script asked for with `sys::exit`, if any
+async fn tokio_main(run_on_main: MainThreadHandle) -> Result<Option<i32>> {
     ShellBuilder::<NoExt>::default()
-        .mode(Mode::Script(Source::from("main.gx")))
+        .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
         .no_init(true)
         .build()?
         .run(run_on_main)
@@ -58,7 +53,10 @@ fn main() -> Result<()> {
     while let Ok(f) = main_rx.recv() {
         f();
     }
-    tokio_thread.join().expect("tokio thread panicked")
+    if let Some(code) = tokio_thread.join().expect("tokio thread panicked")? {
+        std::process::exit(code)
+    }
+    Ok(())
 }
 ```
 
@@ -85,7 +83,7 @@ use netidx::publisher::DesiredAuth;
 
 let config = netidx::config::Config::load_default()?;
 ShellBuilder::<NoExt>::default()
-    .mode(Mode::Script(Source::from("main.gx")))
+    .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
     .setup_context(Box::new(move |ctx| {
         ctx.libstate.set(NetConfig::Config {
             config,
@@ -117,14 +115,14 @@ use netidx_core::path::Path;
 
 fn my_modules() -> ResolverRef {
     VfsResolver::new(AHashMap::from_iter([
-        (Path::from("/myapp"), literal!(include_str!("myapp/mod.gx")).into()),
-        (Path::from("/myapp/util"), literal!(include_str!("myapp/util.gx")).into()),
+        (Path::from("/myapp/mod.gx"), literal!(include_str!("myapp/mod.gx")).into()),
+        (Path::from("/myapp/util.gx"), literal!(include_str!("myapp/util.gx")).into()),
     ]))
 }
 
 ShellBuilder::<NoExt>::default()
     .module_resolvers(vec![my_modules()])
-    .mode(Mode::Script(Source::from("main.gx")))
+    .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
     .build()?
     .run(run_on_main)
     .await
@@ -136,7 +134,9 @@ trait, so a resolver can load source from anywhere — the `sys` package
 ships one that loads modules published in netidx (the shell's
 `netidx:` scheme).
 
-You can have as many module resolvers as you like. When loading modules they are
+A VFS key is a file path as the resolver looks it up: module `m` is
+`/m.gx` or `/m/mod.gx`, and `m::n` is `/m/n.gx` or `/m/n/mod.gx`. You
+can have as many module resolvers as you like. When loading modules they are
 checked in order, so earlier ones shadow later ones.
 
 Note that for most cases, creating a [package](../packages/creating.md) is
@@ -157,8 +157,8 @@ ShellBuilder::<NoExt>::default()
     .await
 ```
 
-This gives you a REPL with the standard library, all installed packages, and
-your additional modules available.
+This gives you a REPL with the builder's packages and your additional
+modules available.
 
 ## Compiler Flags
 
