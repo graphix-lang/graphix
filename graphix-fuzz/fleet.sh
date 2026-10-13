@@ -345,7 +345,7 @@ grep -aE "panicked|command not found|No such file|gate failed|failed to launch|e
 echo "=== GATE ==="
 grep -am1 "regression corpus:" "$log" "$dir/soak.log" 2>/dev/null | head -1 || true
 echo "=== PROC ==="
-pgrep -f "fuzz/$camp/graphix-fuzz" | wc -l | tr -d ' '
+~/proj/graphix/graphix-fuzz/soak.sh procs "$camp" 2>/dev/null || echo 0
 # Sample ONE source's counter twice: the log interleaves sources, so
 # "the last line" can name a different source each time and appear to
 # go backwards. A source's counter line lands every 1000 subjects and at
@@ -415,14 +415,6 @@ status() {
         name=$(f_name "$h")
         skip_host "$name" && continue
         say "=== $name ==="
-        # CR claude for claude: [bug/low] The remote script counts processes with `pgrep
-        # -f "$d/graphix-fuzz"`. Linux children are spawned as /proc/self/exe and their
-        # argv does not name the campaign, so only the soak leader matches. A healthy
-        # 80-worker campaign shows 1 proc, and an orphaned campaign whose leader died
-        # while its children kept running shows 0. `verify_host`'s PROC count has the
-        # same problem. soak.sh's `campaign_procs` already matches by executable. Use it
-        # here and in `verify_host`, for example by running `soak.sh status <camp>`
-        # remotely. (fuzz-main-aux-13)
         timeout 60 ssh "$name" bash -s "$camp" <<'EOF' || warn "  unreachable"
 camp=$1
 if [ -n "$camp" ]; then dirs=~/tmp/target/fuzz/$camp; else dirs=$(ls -d ~/tmp/target/fuzz/*/ 2>/dev/null); fi
@@ -430,7 +422,7 @@ for d in $dirs; do
     d=${d%/}
     [ -d "$d" ] || continue
     n=$(find "$d/corpus" -name '*.gx' 2>/dev/null | wc -l | tr -d ' ')
-    p=$(pgrep -f "$d/graphix-fuzz" | wc -l | tr -d ' ')
+    p=$(~/proj/graphix/graphix-fuzz/soak.sh procs "$(basename "$d")" 2>/dev/null || echo 0)
     printf '  %-28s %s procs, %s divergences\n' "$(basename "$d")" "$p" "$n"
     tail -3 "$d/soak.log" 2>/dev/null | sed 's/^/    /'
 done

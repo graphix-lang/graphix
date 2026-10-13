@@ -27,6 +27,7 @@ usage() {
     echo "usage: $0 start <campaign> [workers] [base-seed] [fuzz:generate:reactive:typemorph]" >&2
     echo "       $0 stop <campaign>" >&2
     echo "       $0 status <campaign>" >&2
+    echo "       $0 procs <campaign>" >&2
     exit 2
 }
 
@@ -358,11 +359,18 @@ status() {
     fi
 }
 
+# How many processes the campaign runs, its leader and every child.
+procs() {
+    [[ $# == 1 ]] || usage
+    campaign_procs "$(campaign_dir "$1")" | wc -l | tr -d ' '
+}
+
 command=${1:-}
 shift || true
 case $command in
     start) start "$@" ;;
     stop) stop "$@" ;;
     status) status "$@" ;;
+    procs) procs "$@" ;;
     *) usage ;;
 esac
