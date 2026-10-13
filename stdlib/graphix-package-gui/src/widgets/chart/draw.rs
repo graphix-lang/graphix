@@ -1,7 +1,7 @@
 use super::{
     ChartW,
     clip::{View, clip_area, clip_polyline},
-    dataset::{ChartMode, DatasetEntry, XYKind, pie_slices, pie_start_angle},
+    dataset::{ChartMode, DatasetEntry, XYKind, first_pie, pie_slices, pie_start_angle},
     interact::{ChartState, PlotInfo, draw_tooltip},
     plotters_backend::{IcedBackend, estimate_text},
     ranges::*,
@@ -717,26 +717,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     draw_legend(&mut chart, self, chart_style, label_sz);
                 }
                 ChartMode::Pie => {
-                    // CR claude for claude: [bug/low] The pie is chosen in two places
-                    // that disagree. This find_map takes the first Pie entry whose data
-                    // is Some, even when that data is empty or has no positive slice.
-                    // find_nearest_point instead hit-tests every pie with mode() ==
-                    // Some(Pie) and keeps the last. With two pies the chart draws the
-                    // first and hovering shows the second's categories. With an empty
-                    // first pie the mode is Pie but nothing is drawn. Choose the pie
-                    // once, in a helper filtering ds.mode() == Some(ChartMode::Pie)
-                    // that both draw and find_nearest_point call. Or refuse two pies
-                    // with data as a mode conflict, as ChartMode::of refuses mixed
-                    // kinds, and say so in the book. probe:
-                    // design/review-2026-10-12/repro/gui-chart-05.gx (gui-chart-05)
-                    let Some((pie_data, pie_style)) =
-                        self.datasets.iter().find_map(|ds| match ds {
-                            DatasetEntry::Pie { data, style } => {
-                                data.t.as_ref().map(|d| (d, style))
-                            }
-                            _ => None,
-                        })
-                    else {
+                    let Some((_, pie_data, pie_style)) = first_pie(&self.datasets) else {
                         return;
                     };
                     let title_h = match title {

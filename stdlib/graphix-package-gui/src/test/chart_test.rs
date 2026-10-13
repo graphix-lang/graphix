@@ -761,3 +761,34 @@ async fn a_single_bar_label_is_centered_in_the_plot() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn pie_drawing_skips_empty_and_nonpositive_datasets() -> Result<()> {
+    for empty in ["[]", "[(\"zero\", 0.0), (\"negative\", -1.0)]"] {
+        assert_same_series_pixels(
+            &format_compact!("pie(&{empty}), pie(&[(\"first\", 1.0)])"),
+            "pie(&[(\"first\", 1.0)])",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pie_tooltip_uses_the_drawn_dataset() -> Result<()> {
+    let h = chart_harness(r#"&[pie(&[("first", 1.0)]), pie(&[("other", 2.0)])]"#).await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let info = draw_in(&h, &state, size).await.unwrap();
+    let p = info.rect.center();
+    state.handle_event(
+        chart(&h),
+        &iced_core::Event::Mouse(mouse::Event::CursorMoved { position: p }),
+        Rectangle::with_size(size),
+        mouse::Cursor::Available(p),
+    );
+    let snap = state.snap_point.unwrap();
+    assert_eq!(snap.label, "first");
+    assert_eq!(snap.value, "1.00 (100.0%)");
+    Ok(())
+}

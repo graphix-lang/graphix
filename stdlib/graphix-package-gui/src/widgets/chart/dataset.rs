@@ -213,6 +213,19 @@ impl BarSlots {
     }
 }
 
+pub fn first_pie<X: GXExt>(
+    datasets: &[DatasetEntry<X>],
+) -> Option<(usize, &BarData, &PieStyleV)> {
+    datasets.iter().enumerate().find_map(|(i, ds)| match ds {
+        DatasetEntry::Pie { data, style } => data
+            .t
+            .as_ref()
+            .filter(|d| pie_slices(d).next().is_some())
+            .map(|d| (i, d, style)),
+        _ => None,
+    })
+}
+
 /// The slices a pie draws: finite and positive.
 pub fn pie_slices(bd: &BarData) -> impl Iterator<Item = (&str, f64)> {
     bd.0.iter().filter(|(_, v)| v.is_finite() && *v > 0.0).map(|(l, v)| (l.as_str(), *v))

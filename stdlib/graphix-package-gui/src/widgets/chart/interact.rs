@@ -1,6 +1,6 @@
 use super::{
     ChartW,
-    dataset::{ChartMode, DatasetEntry, pie_slices, pie_start_angle},
+    dataset::{ChartMode, DatasetEntry, first_pie, pie_slices, pie_start_angle},
     ranges::checked_range,
     types::*,
 };
@@ -382,6 +382,7 @@ fn find_nearest_point<X: GXExt>(
     let categories = chart.bar_categories();
     let mut bar: Option<Hit> = None;
     let mut pie: Option<Hit> = None;
+    let pie_index = first_pie(&chart.datasets).map(|(i, _, _)| i);
     for (i, ds) in chart.datasets.iter().enumerate() {
         if ds.mode() != Some(mode) {
             continue;
@@ -425,6 +426,9 @@ fn find_nearest_point<X: GXExt>(
                 }
             }
             DatasetEntry::Pie { data, style } => {
+                if pie_index != Some(i) {
+                    continue;
+                }
                 let Some(bd) = data.t.as_ref() else { continue };
                 let total: f64 = pie_slices(bd).map(|(_, v)| v).sum();
                 if !(total > 0.0 && total.is_finite()) {
