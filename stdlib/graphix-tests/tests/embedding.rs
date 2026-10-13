@@ -107,6 +107,34 @@ async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
     Ok(())
 }
 
+/// An input that fails to compile changes nothing: no statement before
+/// the failure runs or keeps a name, and a `catch` in it handles nothing
+/// later.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_input_changes_nothing() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = runtime(tx).await?;
+    let gx = ctx.rt.clone();
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let s0 = gx.env_stats().await?.store_len;
+    if gx.compile(literal!("let b = 5; let d = nosuch")).await.is_ok() {
+        bail!("an undefined name compiled");
+    }
+    if gx.compile(literal!("catch(e) e; let w = nosuch")).await.is_ok() {
+        bail!("an undefined name compiled");
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let s1 = gx.env_stats().await?.store_len;
+    if s1 != s0 {
+        bail!("failed inputs left {} store entries", s1 - s0);
+    }
+    gx.compile(literal!("error(`Boom)?")).await.context("a `?` after a failed catch")?;
+    ctx.shutdown().await;
+    drain.abort();
+    Ok(())
+}
+
 /// A write still waiting when its expression is deleted goes with it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_deleted_writer_leaves_no_store_entry() -> Result<()> {

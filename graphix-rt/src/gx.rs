@@ -853,9 +853,8 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
-    /// Compile and install each statement of `text`. The statements
-    /// before one that fails are installed, as they would be entered one
-    /// at a time, and the failure is returned.
+    /// Compile and install the statements of `text`, all or none: a
+    /// failure leaves the session as it was.
     async fn compile(&mut self, rt: GXHandle<X>, text: ArcStr) -> Result<CompRes<X>> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = expr::parser::parse(ori.clone())?;
@@ -864,6 +863,8 @@ impl<X: GXExt> GX<X> {
                 .await?;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
+        let scope = self.scope.clone();
+        let saved = Saved::take(&self.ctx.cx);
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         let mut failed = None;
         for e in exprs.iter() {
@@ -873,27 +874,6 @@ impl<X: GXExt> GX<X> {
                 &self.scope,
                 e.clone(),
             );
-            // CR claude for claude: [bug/medium] c-lib-04 regressed: failed REPL input
-            // runs earlier statements, drops their names, leaves a dead catch.
-            // GX::compile's doc (gx.rs) says the statements before a failing one are
-            // installed, as if entered one at a time. What actually happens differs.
-            // The earlier statements' nodes are installed and run (`println("hi"); let
-            // c = nosuch` prints hi), but their names are gone from the env afterwards
-            // (`let b = 5; let d = nosuch` then `b` gives `b not defined`). A `catch`
-            // in the failed input stays in `self.scope` as the handler for every later
-            // input while its bind is gone, so every later `?` is refused with an
-            // internal error: `BUG: catch BindId(..) has no inferred bind`. Failure:
-            // REPL: `catch(e) println("caught [e]"); let w = nosuch` (error, as
-            // expected), then `error(`Boom)?` gives `error: ... BUG: catch
-            // BindId(4611686018427392006) has no inferred bind`. Every later input
-            // using `?` fails the same way for the rest of the session. `let b = 5; let
-            // d = nosuch` installs a node for b whose name no later input can reach.
-            // Fix: Make the input atomic: on failure, delete the nodes already compiled
-            // for this input and restore `self.scope` and the env to their pre-input
-            // values. Or make it truly partial: keep the env and scope those statements
-            // produced. The code currently does half of each. Then fix the doc comment
-            // to match. Unverified: the reviewer's report, not checked by a verifier.
-            // (x-rerun-1-02)
             match stmt.with_context(|| ori.clone()) {
                 Ok((n, advanced)) => {
                     self.scope = advanced;
@@ -904,6 +884,14 @@ impl<X: GXExt> GX<X> {
                     break;
                 }
             }
+        }
+        if let Some(e) = failed {
+            for mut n in nodes.drain(..) {
+                n.delete(&mut self.ctx.view());
+            }
+            self.scope = scope;
+            saved.restore(&mut self.ctx.cx);
+            return Err(e);
         }
         let comp_exprs = exprs
             .iter()
@@ -916,23 +904,7 @@ impl<X: GXExt> GX<X> {
                 CompExp { id: e.id, output, typ, rt: rt.clone() }
             })
             .collect::<SmallVec<[_; 1]>>();
-        match failed {
-            // CR claude for claude: [bug/medium] Returning Err here drops comp_exprs.
-            // Each CompExp's Drop sends ToGX::Delete, so the statements this function
-            // just installed are deleted again. self.scope still points past them,
-            // which contradicts the doc comment above. As a result, after `catch(e)
-            // println("caught [e]"); let w = nosuch`, every later `?` in the session is
-            // refused with "BUG: catch .. has no inferred bind". After `let x = 41; let
-            // y = nosuch`, `x` is not defined. Choose one behaviour: - Keep the
-            // installed statements: return their CompExps together with the failure,
-            // for example a CompRes that carries the error, so the shell holds them. -
-            // Roll the whole input back: save self.scope (and the env) before the loop,
-            // and on failure delete the nodes, restore both, and drop the deferred
-            // refs. Then make the doc comment match. Probe:
-            // design/review-2026-10-12/repro/rt-02.py (rt-02)
-            Some(e) => Err(e),
-            None => Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() }),
-        }
+        Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() })
     }
 
     async fn load_exprs(
