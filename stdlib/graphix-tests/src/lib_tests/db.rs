@@ -1430,3 +1430,21 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+run_with_tempdir!(
+    name: db_subscription_identical_inputs_keep_identity,
+    code: r#"{{
+        let d = db::open("{}")?;
+        let t: db::Tree<string, i64> = db::tree(d, null)?;
+        let prefix: [string, null] = null;
+        let sub = db::subscription::new(#prefix: prefix, t);
+        let first = once(sub);
+        prefix <- first ~ null;
+        sys::time::after_idle(duration:50.ms, first == sub)
+    }}"#,
+    setup: |td| { td.path().join("stable_subscription.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::Bool(true));
+        Ok(())
+    }
+);

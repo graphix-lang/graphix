@@ -6,7 +6,7 @@ use futures::{
 };
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
-    Node, Rt, Scope, TagValue, UserEvent,
+    Node, Rt, Scope, Tag, TagValue, UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -280,6 +280,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        let previous = [self.args.0[0].clone(), self.args.0[1].clone()];
         match self.args.update(ctx, from) {
             Invocation::Bottom { fresh } => {
                 self.stop();
@@ -287,21 +288,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
             }
             Invocation::Fired => {
                 self.slept = false;
-                // CR claude for claude: [bug/medium] Every fire of an argument mints a
-                // new bind id and restarts the watch, even when the tree and prefix are
-                // the values already cached. stop() aborts the old task, which drops
-                // the events it was buffering. Batches already sent under the old id
-                // are dropped too, because the accessors switch to the new id in the
-                // same cycle. A write that completes just before a re-fire therefore
-                // never reaches on_change. That breaks the subscription.gxi promise
-                // that a copy applying the deliveries holds what the tree holds. probe:
-                // design/review-2026-10-12/repro/db2-05.gx loses "k1" in about half its
-                // runs when `#prefix` re-fires with the same null; without the re-fire
-                // it loses nothing. Fix: on Invocation::Fired, compare the new (tree,
-                // prefix) with the previous pair and keep the running watch and bind id
-                // when they are equal; restart only on a real change, and say in the
-                // doc that a change of tree or prefix discards the events still
-                // pending. (db2-05)
+                if self.abort.is_some() && self.args.0.as_ref() == previous {
+                    return self.out.retag(Tag::FIRED);
+                }
                 self.bind_id = BindId::new();
                 self.watch(ctx);
                 let sub = SubscriptionValue { bind_id: self.bind_id };
