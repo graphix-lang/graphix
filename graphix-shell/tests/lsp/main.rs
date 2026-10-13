@@ -581,6 +581,21 @@ fn a_save_rechecks_only_what_it_changes() {
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
 }
 
+/// A check that fails however it fails, a checker panic included,
+/// leaves the server checking every other file.
+#[test]
+fn a_failed_check_leaves_the_server_running() {
+    let mut c = Client::start(&[
+        ("bad.gx", "let g = |a: i64, f: fn() -> i64| -> i64 'array_group;\n0\n"),
+        ("main.gx", "let x = 1;\nx + 1\n"),
+    ]);
+    c.open("bad.gx");
+    assert_eq!(c.diagnostics("bad.gx").len(), 1);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), ["bad.gx"]);
+    hover_is(&mut c, "|x + 1", "x: i64");
+}
+
 #[test]
 fn closing_a_file_clears_its_diagnostics() {
     let mut c = Client::start(&[("a.gx", "let a = 1"), ("b.gx", "let b = 1")]);

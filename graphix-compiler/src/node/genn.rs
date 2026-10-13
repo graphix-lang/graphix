@@ -102,6 +102,14 @@ fn apply_inner<R: Rt, E: UserEvent>(
     rtype: Type,
     top_id: ExprId,
 ) -> Node<R, E> {
+    // CR claude for claude: [bug/medium] A user program reaches this assert: `let g =
+    // |a: i64, f: fn() -> i64| -> i64 'array_group;` binds the collection intrinsic with
+    // a callback whose arity is not the one the intrinsic calls, and checking it panics
+    // here ("left: 2, right: 0"). The check now answers the panic as an error and the
+    // runtime survives (lsp-02's fix), but a run still aborts. Refuse a marker lambda
+    // whose callback signature is not the intrinsic's, with a message, where the marker
+    // body is recognized (node/collection.rs), so no generated call is ever built
+    // short. probe: design/review-2026-10-12/repro/lsp-02.py (genn-arity-01)
     assert_eq!(args.len(), typ.args.len(), "a generated call supplies every formal");
     let mut spec = ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter(

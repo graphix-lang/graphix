@@ -3,7 +3,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use enumflags2::BitFlags;
-use futures::{StreamExt, future::try_join_all};
+use futures::{FutureExt, StreamExt, future::try_join_all};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
     View, diagnostic_site,
@@ -29,7 +29,9 @@ use poolshark::{
     local::LPooled,
 };
 use smallvec::{SmallVec, smallvec};
-use std::{collections::VecDeque, future, mem, result, time::Duration};
+use std::{
+    collections::VecDeque, future, mem, panic::AssertUnwindSafe, result, time::Duration,
+};
 use tokio::{
     select,
     sync::{
@@ -686,47 +688,6 @@ impl<X: GXExt> GX<X> {
                 ToGX::GetEnv { res } => {
                     let _ = res.send(self.ctx.env.clone());
                 }
-                // CR claude for claude: [risk/low] A panic anywhere in the check
-                // (parse, resolve, typecheck) unwinds out of the runtime task, because
-                // nothing catches it here. Every later GXHandle::exec then fails with
-                // 'runtime is dead', and the language server publishes that at 0:0 of
-                // every root until the editor restarts it. The server's own handlers
-                // are guarded so one bad input never ends it. A buffer of half-typed
-                // code is the input most likely to reach a checker bug, so the check is
-                // where that guard matters most. Fix: run the check under
-                // FutureExt::catch_unwind and restore its Saved on unwind, returning
-                // the panic as an error. Or have ShellLspBackend rebuild its runtime
-                // when exec reports it dead, which also survives a panic that leaves
-                // the context inconsistent. (x-lsp-probe-08)
-                // CR claude for claude: [risk/low] The check runs inside the runtime's
-                // spawned task with no unwind guard. Any panic during parse, resolve or
-                // typecheck therefore ends the task for good: this check answers
-                // "runtime did not respond", and every later exec on the handle answers
-                // "runtime is dead". ShellLspBackend keeps one GXHandle and never
-                // rebuilds it. After one buffer triggers a check-time panic, every root
-                // is published with that error, and env() quietly falls back to an
-                // empty Env until the editor restarts the server. The server's
-                // `guarded` cannot help, because it only covers the server thread. No
-                // check-time panic is known at HEAD, but the fuzz corpus shows
-                // compile-time panics have happened before. Fix: wrap this arm's future
-                // in `AssertUnwindSafe(..).catch_unwind()`. On a panic, restore the
-                // `Saved` taken in check_inner and send an Err, so the session
-                // survives. (lsp-02)
-                // CR claude for claude: [risk/medium] A panic anywhere in a check
-                // (parser, resolution, checker, a builtin's typecheck) unwinds out of
-                // this arm and ends the GX task, because GXConfig::start spawns it with
-                // no guard. The server's `guarded` only covers its own thread. The
-                // request then answers "runtime did not respond", and every later check
-                // of any root publishes "runtime is dead" at 0:0 with hovers returning
-                // nothing, until the editor restarts the server. One buffer that hits a
-                // checker bug, such as lsp-02's genn assert, disables the language
-                // server. The fix is to run check_inner under catch_unwind
-                // (AssertUnwindSafe over the future, e.g. FutureExt::catch_unwind),
-                // restore `Saved` and the env on unwind, and answer `res` with a "the
-                // check panicked" error; otherwise the LSP backend must rebuild its
-                // runtime when it finds it dead. probe:
-                // design/review-2026-10-12/repro/x-fix-tools-06.sh (same root as
-                // lsp-02) (x-fix-tools-06)
                 ToGX::Check { path, resolvers, initial_scope, expr_types, res } => {
                     let r = self.check(&path, resolvers, initial_scope, expr_types).await;
                     let _ = res.send(r);
@@ -1145,7 +1106,20 @@ impl<X: GXExt> GX<X> {
             }
             Ok((Arc::from_iter(exprs), crate::CheckResult { env, ide }))
         };
-        let res = go.await;
+        // a checker bug in one buffer must not end the runtime: the check
+        // answers the panic and the session is put back
+        let res = match AssertUnwindSafe(go).catch_unwind().await {
+            Ok(res) => res,
+            Err(panic) => {
+                self.ctx.view().drop_deferred();
+                let what = panic
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("a panic");
+                Err(anyhow!("the check panicked: {what}"))
+            }
+        };
         saved.restore(&mut self.ctx.cx);
         res
     }
