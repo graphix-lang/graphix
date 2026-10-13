@@ -155,18 +155,11 @@ crashes surface, and divergences never record. The Excluded list is empirical an
 `selfcheck` polices it: a missing marker shows up as a finals-strength
 flake.
 
-<!-- CR claude for claude: [doc-drift/low] This paragraph's exception names only a
-node-walk StackBudget, and it ends by saying a one-sided ActivationBudget stays a
-divergence. Oracle::settle now treats a node-walk Timeout(StackBudget |
-ActivationBudget) beside a JIT trace as CONTAINED (the deep tail-loop pin). Name both
-budgets in the node-walk exception, and keep the divergence rule only for an
-ActivationBudget on the JIT side (and the Par exemption's StackBudget-only rule as it
-is). (fuzz-lib-a-09) -->
 **`Timeout` narrowly means a wedged evaluator** — or a runaway the
 stack or activation budget aborted: any failed request to a runtime
 whose `Control` reports `budget_aborted()` is `Timeout(ActivationBudget)`
-when its live activations passed their budget, else `Timeout(StackBudget)`
-(the driver maps it, in one place), because the deadline and the budget are the same
+or `Timeout(StackBudget)` by the budget the abort recorded
+(`Control::aborted_by`; the driver maps it, in one place), because the deadline and the budget are the same
 containment and which one stops an unbounded descent first is a race
 between the engines' descent speeds, not a property of the program.
 Timeout==Timeout is AGREE whatever stopped each side; a Timeout beside
@@ -174,13 +167,14 @@ anything else never agrees, a bottom or a print-only trace included.
 Read a bench timeout as an unexplained failure, not a pass. An
 asymmetric hang is a top-tier finding: fusion adding or removing
 nontermination — with one exception the kinds make legible: a
-node-walk `StackBudget` beside a JIT trace is CONTAINED, unrefuted and
-not recorded, without the slow retry; and in a forked comparison
-(`Pair::Par`) a `StackBudget` on either side beside a trace is CONTAINED
-too, since the stack budget charges by thread (the serial cycle's 2 MB
-worker pays a 32 MB segment early, a forked part's 16 MB pool stack
-later). The activation budget counts what the program holds, so a
-one-sided `ActivationBudget` stays a divergence.
+node-walk `StackBudget` or `ActivationBudget` beside a JIT trace is
+CONTAINED, unrefuted and not recorded, without the slow retry; and in a
+forked comparison (`Pair::Par`) a `StackBudget` on either side beside a
+trace is CONTAINED too, since the stack budget charges by thread (the
+serial cycle's 2 MB worker pays a 32 MB segment early, a forked part's
+16 MB pool stack later). The activation budget counts what the program
+holds, so an `ActivationBudget` on the JIT side, or on either side of a
+forked comparison, stays a divergence.
 The node-walk's frame per recursion level is kilobytes (`update_call`
 alone is 3.6KB under LTO) where a native kernel's is words, so a depth
 only the kernel reaches says nothing about either engine's answer. A
