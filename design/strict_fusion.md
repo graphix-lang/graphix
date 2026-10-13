@@ -173,50 +173,15 @@ mode (`par_loop::PAR_LOAN`, the invoking context's `ParLoan`). Wire slot 0
 bit 1 is the wake view (the kernel's own `slept` bit or the arm's), so a wake delivers standing args
 STALE and a stateless re-eval's STALE result (`wake_catchup.md`).
 
-<!-- CR claude for claude: [readability/low] design/README.md says these docs describe
-the rule as built and that past arcs live in `git log`. This section is an inventory of
-about 20 deleted identifiers (`DispatcherState`, `CastApply`, `SelWord`,
-`graphix_set_var`, ...), so a reader cannot tell current names from dead ones, and any
-name check (x-doc-drift-14) needs an allowlist for it. Cut it to the rationale: a kernel
-holds no `Apply`, no selection memory and no replay words, because each was a stateful
-interior that strict fusion excludes. Leave the inventory to git log.
-tail_calls_are_calls.md's 'Why' and 'The work' sections narrate the removed frame
-machinery (`Event::enter_frame`, `run_tail_loop`, `tail_arg_order`) the same way and
-need the same cut. Update the README's index row for this doc to match. (x-doc-drift-15)
--->
-## What was deleted, and why
+## What a kernel does not hold
 
-- **The DynCall dispatcher** (`graphix_dyncall`, `DispatcherState`,
-  `DynCallSlot`, the site-id mint, the pooled arg marshal, the region-
-  wide slot table, `CastApply`/`QopDeliverApply`): an inner `Apply`
-  per site inside a kernel was the stateful interior in its entirety;
-  the one admission predicate replaces the dispatcher and every gate
-  that guarded it.
-- **Site identity and wake hints** (`emit_dyncall_site_word`,
-  `claim_slot_site_words`, the key-0 bucket, `WAKE_HINT`/
-  `DISPATCH_WAKE`): existed only to give inner Applies per-site
-  multiplicity and sleep routing.
-- **The interior gates** (`sleep_restarts`/`stateless` site info,
-  `arm_depth`, `saw_*_reach`, `has_{restart,stateful}_reach`, the P7
-  deferred checks): classifiers over a kind of kernel that no longer
-  exists.
-- **Selection memory** (`SelWord` claims, `record`/`woke`/`eff_init`,
-  `init_override`/`wake_override`): a fused select claims nothing; its
-  firing is organic (`organic_firing.md`).
-- **Arm-lift** (`collect_lifted_connect_targets`, `arm_region`,
-  `KernelSig::lifted`, the minted per-instance BindIds,
-  `emit_connect_node`, `graphix_set_var`): `Connect::emit_clif` refuses
-  — connect is an effect.
-- **Replay words** (`replay_state_words`, the `SiteLayout`/`SelfBlock`
-  replay lists, honor headers, `reset_self_block_tree`,
-  `drop_replay_values`): with the DynCall result caches and the rides
-  gone they had no caller.
-- **The permissive hatch** (`GRAPHIX_PERMISSIVE_FUSE`): two fusion
-  regimes would have been two semantics to soak; the deletion happened
-  before the soak on Eric's call, because git holds the old tree.
-- **The mid-kernel `?` write through the dispatcher**
-  (`emit_qop_deliver`, `FnSource::QopDeliver`): replaced by the delivery
-  queue above.
+A kernel holds no inner `Apply`, no selection memory and no replay
+words: each was a stateful interior, and strict fusion admits none. A
+fused select claims nothing; its firing is organic
+(`organic_firing.md`). A connect is an effect, so `Connect::emit_clif`
+refuses it. A mid-kernel `?` delivers through the queue above. The
+machinery that held those, and the permissive hatch beside it, are in
+`git log`.
 
 What survives regardless is the interp semantics built alongside
 (wake catch-up, the birth rule, the sys::net level effects) — language
@@ -233,7 +198,7 @@ semantics, engine-independent.
   loops fast, and predictable performance is a core value. Fusion
   stays, narrowed to the regime where its rent is paid. The shell fuses
   every program, UIs included, unless `--no-fusion` is given
-  (`CFlag::FusionDisabled`) or the host is Windows.
+  (`CFlag::FusionDisabled`).
 - **Admitting stateful builtins as fast fns with per-site memory:** a
   fast fn that remembers is a DynCall slot by another name — the same
   multiplicity questions return.

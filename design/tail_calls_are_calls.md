@@ -19,28 +19,16 @@ that, with the node-walk as the reference.
 
 ## Why
 
-A framed tail loop ran every iteration of a stateless tail recursion
-through ONE activation: the formals rebound in a private overlay
-(`Event::enter_frame`), `event.init` forced and the real one carried in
-`ctx.dispatch_init`, replay caches cleared between passes
-(`Update::reset_replay`), handler errors parked in `ctx.frame_outbox`,
-a resumed recursion flagged across cycles (`resumes_mid_recursion`),
-the result's tag rebuilt from the tail spine (`tail_scrut_fired`). The
-premise was that a stateless body cannot tell one activation from many.
-It can: an activation's select keeps its selection and its wake
-catch-up bits, and one select standing for every depth answered
-differently (sep25b: a fire bit an arm consumed only inside a frame
-was delivered two cycles later).
-
-What the machinery cost: 73 sites in 11 compiler files read frame
-state, every node and every builtin implements `reset_replay` (115
-impls, the stdlib and external packages included), and 18 finding
-directories (44 pins) are frame or tail-loop bugs. What it bought
-since stacker: memory and time. An activation is ~25 KB and ~50 µs
-(fusion off, `sum(i - 1, acc + i)` at depth 100k: 49 MB / 0.2 s framed,
-2.5 GB / 5.1 s as activations). Programs run with fusion on (images
-made its startup free, UIs included), and a fused tail loop is a
-native loop, so the cost falls only on tail loops that do not fuse.
+A tail loop that ran every iteration of a stateless tail recursion
+through one activation assumed a stateless body cannot tell one
+activation from many. It can: an activation's select keeps its
+selection and its wake catch-up bits, and one select standing for
+every depth answers differently (sep25b: a fire bit an arm consumed
+only at one depth was delivered two cycles later). Activations cost
+memory and time instead: ~25 KB and ~50 µs each (fusion off,
+`sum(i - 1, acc + i)` at depth 100k: 2.5 GB / 5.1 s). Programs run with
+fusion on, and a fused tail loop is a native loop, so the cost falls
+only on tail loops that do not fuse.
 
 ## Who pays
 
@@ -64,28 +52,16 @@ raises to a handler, writes an outer variable or calls a builtin with
 no fast call runs as activations, one per level. That, a fusion-off
 embedder, and the fuzzer's interp engine are the whole cost.
 
-## The work
+## As built
 
-1. **The node-walk without frames.** `GXLambda::update` dispatches the
-   body once; `run_tail_loop`, `PendingTailCall`, the call site's tail
-   interception (`tail_arg_order`) and `Select::tail_dispatch_select`
-   go. `ExecCtx::{frame_depth, dispatch_init, frame_outbox,
-   tail_scrut_fired, pending_tail_call}`, `Event::{frames,
-   enter_frame, exit_frame}` and `ExecCtx::in_frame` go; every branch on
-   them keeps its depth-0 arm. `Update::reset_replay` and
-   `Apply::reset_replay` go, in every node, builtin and package.
-   `TrackedFires` loses its frame exclusion. `GXLambda::tail_loop`
-   stays: it is the JIT's gate (`KernelSig::has_tail_loop`) and what
-   `#[tail_recursive]` asserts.
-2. **The JIT answers what the activations answer.** With the node-walk
-   recursing, the corpus (508 programs) and the fixtures agree across
-   engines with no JIT change beyond deleting its frame mirrors: the
-   context word's quiet bit had no reader (the wake bit is now bit 1),
-   and `FusedKernel::update`'s frame-depth reads went with
-   `frame_depth`. Where a loop is ever found to answer differently, the
-   body recurses natively instead (the path a stateful tail loop
-   takes).
-3. **Close G1–G4**, each with a probe that node-walks today and a
+1. **The node-walk has no frames.** `GXLambda::update` dispatches the
+   body once per activation. `GXLambda::tail_loop` is the JIT's gate
+   (`KernelSig::has_tail_loop`) and what `#[tail_recursive]` asserts.
+2. **The JIT answers what the activations answer.** The corpus and the
+   fixtures agree across engines; where a loop is ever found to answer
+   differently, the body recurses natively instead (the path a
+   stateful tail loop takes).
+3. **G1–G4 are closed**, each with a probe that node-walks today and a
    fusion pin (`FuseExpect::Jit`, `#[native]`) that holds it.
    - G1 and G2, built: a node that does not fuse whole descends
      (`fusion::fuse_parts`, the `fuse` of every node with children
@@ -109,13 +85,10 @@ embedder, and the fuzzer's interp engine are the whole cost.
      the kernel does not read (a skipped invariant fn formal) would
      drop its effect, so the call then stays whole in the node-walk.
      Pin: `lang::fusion::call_fed_by_node_walked_args`.
-   - G4: the function-valued `let` is closed by G2's rule. "A tail and
-     a non-tail self call together" was a select nested in tail
-     position losing its outer arm's binds: the tail jump truncated the
-     compile-time env to the loop's formals, so a sibling arm emitted
-     after it read an undefined local. The jump now drops those locals
-     at run time only and leaves compile-time scope to its callers
-     (`emit_tail_rebind_jump`). Pin:
+   - G4: the function-valued `let` is closed by G2's rule. A select
+     nested in tail position keeps its outer arm's binds: the tail jump
+     drops the locals at run time only and leaves compile-time scope to
+     its callers (`emit_tail_rebind_jump`). Pin:
      `lang::fusion::nested_tail_select_keeps_outer_binds`; leak witness
      `nested-tail-select-payload`. The rest, built: a nullable's
      non-scalar payload binds as an owned local (`NullableValue`); a
@@ -147,9 +120,7 @@ embedder, and the fuzzer's interp engine are the whole cost.
      witness `select-nested-variant-binds`.
 
    - A collection callback that does not fuse whole, built: its slots
-     bind the callback at run time, after fusion, so their instances
-     used to node-walk everything, a loop in the callback included. The
-     prototype (the call the typecheck resolves, never run) is an
+     bind the callback at run time, after fusion. The prototype (the call the typecheck resolves, never run) is an
      instance of the same definition at the same type; its fusion now
      runs, and the collection keeps the kernels it built by the ordinal
      of the attempt that built each (`fusion/share.rs`). A slot's

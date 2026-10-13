@@ -24,7 +24,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 |---|---|
 | `atomic_recursion.md` | evaluation is atomic within a cycle; containment is the cooperative interrupt |
 | `recursive_activations.md` | activations are collection slots; shrink = delete; no depth limit; `trait Collection` |
-| `tail_calls_are_calls.md` | the node-walk has no frames: every call is an activation; the JIT's native loop must answer the same; the fusion gaps that kept loops in the node-walk |
+| `tail_calls_are_calls.md` | the node-walk has no frames: every call is an activation; the JIT's native loop must answer the same; what keeps a loop in the node-walk |
 | `kernel_instance_state.md` | per-instance / per-call-site / per-activation kernel words for firing exactness |
 | `collection_intrinsics.md` | MapQ/FoldQ as compiler nodes; inline CLIF loops |
 | `queue_fn.md` | `queuefn` |
@@ -36,7 +36,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `final_jit_architecture.md` | `Expr → node graph → CLIF`; one IR, two evaluators |
 | `distributed_jit.md` | `emit_clif`/`fuse` per node; the emit contracts |
 | `jit_startup.md` | full compiler startup profiles, early rejection, and block liveness costs |
-| `strict_fusion.md` | fusion is pure computation + fast fns only; what was deleted and why |
+| `strict_fusion.md` | fusion is pure computation + fast fns only; what a kernel does not hold |
 | `unified_value_abi.md` | the (disc, payload) Value ABI across the JIT boundary |
 | `helper_abi_portability.md` | no two-word value crosses the helper seam by value: a pair goes in by pointer and comes back through an out-pointer, so fusion runs on every Cranelift host |
 
