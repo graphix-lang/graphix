@@ -287,9 +287,10 @@ across a bottom cycle).
 
 - An unselected arm with state, an effect or a raise sleeps. Sleep is a
   pause for values, but the restart builtins (`count`, `once`, `take`,
-  `skip`, `uniq`, `hold`) and a seq start over when the arm wakes, and an
+  `skip`, `uniq`, `hold`) and a seq start over when the arm wakes; an
   async call clears its output and starts again over its present
-  arguments.
+  arguments; a net subscription or publication is torn down and an rpc
+  call in flight dropped.
 - No arm may tell apart two types that share a runtime form: a tuple,
   struct, list or payload variant and an array, a bare variant and a
   string, two function types. Wrap them in distinct variants.
@@ -502,16 +503,13 @@ Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 docs; types and mods from the gxi are in scope in the impl. A hidden
 type must be `Abstract<..>` or Rust-backed.
 
-<!-- CR claude for claude: [doc-drift/medium] The skill never says that a trait's
-methods live under the trait's name. Outside the trait's default bodies and its impls,
-`show(x)` is `show not defined`; the caller writes `Show::show(x)` or imports with `use
-Show::{show}`. Add that sentence here. The undefined-name error could also suggest
-`Trait::name` when a trait in scope declares that method. Probe:
-design/review-2026-10-12/repro/lang-skill-07.gx. (lang-skill-03) (lang-skill-03) -->
 Traits: `trait Show { val show: fn(self) -> string; val twice: fn(self)
 -> string = |s| "[show(s)] [show(s)]" }`, `impl Show for Counter { let
 show = |c| .. }`, `impl<'a: Show> Show for Array<'a> { .. }`, bounds
-`'a: Show + Eq`, `|x: Show|` sugar. Dispatch is static on the self
+`'a: Show + Eq`, `|x: Show|` sugar. A trait's methods live under its
+name: outside its default bodies and impls, call `Show::show(x)` (or
+`use Show::{show}`); a bare `show(x)` is "show not defined". Dispatch is
+static on the self
 argument's type; a union self compiles to a select. Core `Eq`/`Ord`/
 `Display` ride the value everywhere (map keys, sort, operators,
 printing); only abstract types may implement them outside core. The io
@@ -535,33 +533,22 @@ forward only to be dropped is unwrapped at the source, once: `let dir =
 d$`, and every reader (a later seq step included) takes `dir` (unless
 an event samples it: see the banking exception under `$` gates).
 
-<!-- CR claude for claude: [doc-drift/low] `window(#n, trig, v)` misnames its second
-argument. The signature is `window(#n: i64, a: Array<'a>, @args: 'a)`: the second
-argument is the array being windowed (usually `t ~ data`), and the values after it are
-variadic. Passing a timer as `trig` is a type error. List it as `window(#n, arr, @v)`.
-(lang-skill-10) (lang-skill-10) -->
 `array`: map filter filter_map fold flatten find find_map concat push
-window(#n, trig, v) len iter iterq sort enumerate zip. `map`, `str`
+window(#n, arr, @v) len iter iterq sort enumerate zip (`window`'s second
+argument is the array windowed, usually `t ~ data`, and its values
+after it are variadic). `map`, `str`
 (`contains split trim replace join len parse ..`), `re`, `rand`.
 
-<!-- CR claude for claude: [doc-drift/medium] This paragraph does not match the .gxi
-files. `timer`'s timeout is `[duration, Number]`, so a null timeout is refused rather
-than stopping the timer; a finite repeat count or an arm stops it. `now` takes a trigger
-(`now(t)`). `sys::net` paths are `string`, so a null path is refused. An unselected arm
-also tears effects down: Subscribe::sleep unsubscribes, Publish::sleep unpublishes and
-RpcCall::sleep drops the call in flight. json and toml have no `write`: they have
-`read(string|bytes)` (async) and `write_str`/`write_bytes` (pure), and pack has
-`read(bytes)` and `write_bytes`. Rewrite the paragraph from time.gxi, net.gxi and the
-json/toml/pack mod.gxi. Probes: design/review-2026-10-12/repro/lang-skill-03.gx (null
-timeout) and lang-skill-04.gx (publish in a sleeping arm). (lang-skill-02)
-(lang-skill-02) -->
-`sys::time`: `timer(timeout, repeat)` (a `null` timeout STOPS it),
-`after_idle(timeout, v)`, `now()`, `diff`, `add`, `sub`.
-`sys::net`: `subscribe(path)`, `publish(path, v)`, `rpc`, `list`,
-`write` — a `null` path tears the effect down; an arm never pauses
-them. `sys::fs`, `sys::tcp`, `sys::tls`, `sys::process` (`spawn`,
-`options`, `Proc`, `wait`), `http`, `json`/`toml`/`pack` (`read(bytes)`
-async; `write` pure).
+`sys::time`: `timer(timeout: [duration, Number], repeat)` (a finite
+repeat count, or the arm sleeping, stops it), `after_idle(timeout, v)`,
+`now(trigger)`, and the pure arithmetic `add`, `sub`, `add_dur`,
+`sub_dur`, `diff`, `scale`. `sys::net`: `subscribe(path)`,
+`publish(path, v)`, `rpc`, `list`, `write`, every path a `string`; an
+unselected arm tears a subscription or publication down and drops an rpc
+call in flight. `sys::fs`, `sys::tcp`, `sys::tls`, `sys::process`
+(`spawn`, `options`, `Proc`, `wait`), `http`. `json` and `toml`:
+`read(string | bytes)` (async), `write_str` and `write_bytes` (pure);
+`pack`: `read(bytes)` (async) and `write_bytes`.
 
 A sync variadic builtin called with no positional argument is a compile
 error (`str::concat()`); it could never fire.
@@ -636,16 +623,10 @@ let known: Book = seq {
 known <- edit
 ```
 
-<!-- CR claude for claude: [doc-drift/low] The second half of this paragraph is stale.
-An annotation on the outer `let` does reach `json::read` through a nested seq and `try`,
-and the quoted message ('json read requires a concrete return type') exists nowhere in
-the tree. Delete that sentence, or replace it with the real rule: a type-directed read's
-target must not settle open (its `'b: Concrete` bound). Probe:
-design/review-2026-10-12/repro/lang-skill-09.gx. (lang-skill-07) (lang-skill-07) -->
 A guard cannot bind (`_ if !is_err(is_file(p)) => .. file ..` has no
-`file`): select on the Result. `json::read` needs its type where it is
-called; an annotation on the outer `let` does not reach through a nested
-seq or `try` (`json read requires a concrete return type`).
+`file`): select on the Result. A type-directed read (`json::read`,
+`str::parse`) takes its target from the annotation it reaches, and the
+target must settle concrete (its `'b: Concrete` bound).
 
 Derive, do not add a second writer. Two unordered writers to one
 variable race when one replaces it wholesale (a file load landing after
