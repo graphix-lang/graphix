@@ -3473,3 +3473,50 @@ run!(written_slice_of_tuples_covers_no_union_length, "{ type U = [(i64, i64), (i
 // a structure test that passes another member's runtime form
 run!(structure_test_passing_another_members_form, "{ let v: [`A(i64), (string, i64)] = (\"A\", 5); select v { [`A(i64), (string, i64)] as `A(x) => x, _ => 0 } }",
     refused("can't tell"); FuseExpect::None);
+
+// An abstract's parameters are invariant: a value built as one
+// instantiation passes a type test only for that instantiation.
+run!(
+    abstract_params_test_invariantly,
+    r#"{
+    type Box<'a> = Abstract<'a>;
+    let f = |x: [Box<[i64, string]>, Box<i64>]| select x {
+        Box<[i64, string]> as a => "wide",
+        Box<i64> as b => "narrow"
+    };
+    let n: Box<i64> = Box(1);
+    f(n)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "narrow")
+);
+
+run!(
+    abstract_ref_params_test_invariantly,
+    r#"{
+    type Cell<'a> = Abstract<&mut 'a>;
+    let x: i64 = 41;
+    let ci: Cell<i64> = Cell(&mut x);
+    let u: [Cell<[i64, null]>, Cell<i64>] = ci;
+    let r = select u {
+        Cell<[i64, null]> as b => { let p = b.0; *p <- null; "arm1" },
+        Cell<i64> as c => "arm2"
+    };
+    (r, x + 1)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["arm2", i64:42]"#)
+);
+
+run!(
+    abstract_any_test_is_invariant,
+    r#"{
+    type C<'a> = Abstract<&mut 'a>;
+    let y: i64 = 1;
+    let p: Any = C(&mut y);
+    let r = select p {
+        C<[i64, string]> as q => { let rr = q.0; *rr <- "hello"; 0 },
+        _ => 1
+    };
+    (r, y + 1)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2]")
+);

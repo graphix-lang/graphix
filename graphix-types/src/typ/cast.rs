@@ -1034,50 +1034,13 @@ impl Type {
                         Some(g) => {
                             g.id == *id
                                 && g.params.len() == params.len()
-                                // CR claude for claude: [bug/high] This runtime type
-                                // test compares an abstract value's carried parameters
-                                // by one-way containment, which is covariant. The
-                                // static check (the Abstract arm of contains_int, via
-                                // equal_int) and design/nominal_abstract_types.md both
-                                // make the parameters invariant. So a value built as
-                                // `C<i64>` passes `C<[i64, string]> as q`, and the arm
-                                // is typed with the wider parameter. With `type C<'a> =
-                                // Abstract<&mut 'a>`, that arm writes a string into an
-                                // i64 variable. The fused run then panics in the kernel
-                                // ("runtime String does not match the compiled
-                                // Scalar(I64) slot") and the runtime dies. The
-                                // node-walk computes on a string where it expects an
-                                // i64. Over `[Box<[i64, string]>, Box<i64>]`, a
-                                // Box<i64> takes the first arm, although the checker
-                                // treats the second arm as live. Fix: compare each
-                                // parameter for type equality (containment both ways,
-                                // as equal_int does) instead of
-                                // `p.contains_with_flags(.., gp)`, and pin both
-                                // programs. Probes:
-                                // design/review-2026-10-12/repro/x-fix-types-02.gx and
-                                // x-fix-types-02b.gx. (x-fix-types-02)
-                                // CR claude for claude: [bug/critical] This test of a
-                                // Graphix-minted abstract checks params one way only:
-                                // the tested param must contain the value's param.
-                                // Params are invariant
-                                // (design/nominal_abstract_types.md), and rep_collision
-                                // accepts a select over two params of one abstract
-                                // because it assumes this test tells them apart. So
-                                // `select u { Cell<[i64, null]> as b => .., Cell<i64>
-                                // as c => .. }` sends a Cell<i64> to the first arm, and
-                                // `*b.0 <- null` writes null into an i64. The node-walk
-                                // then logs "can't add null". The JIT panics in
-                                // kernel.rs ("runtime Null does not match the compiled
-                                // Scalar(I64) slot") and the runtime dies. Fix: compare
-                                // each param pair invariantly, for example by
-                                // containment both ways or by union_identical after
-                                // resolve_tvars, so the test is the one rep_collision
-                                // assumes. probe:
-                                // design/review-2026-10-12/repro/t-cast-setops-01.gx
-                                // (t-cast-setops-01)
+                                // parameters are invariant: each one equal
                                 && params.iter().zip(g.params.iter()).all(|(p, gp)| {
-                                    p.contains_with_flags(BitFlags::empty(), env, gp)
-                                        .unwrap_or(false)
+                                    let holds = |a: &Type, b: &Type| {
+                                        a.contains_with_flags(BitFlags::empty(), env, b)
+                                            .unwrap_or(false)
+                                    };
+                                    holds(p, gp) && holds(gp, p)
                                 })
                         }
                         None => {
