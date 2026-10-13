@@ -30,7 +30,7 @@ val table: fn(
 
 ## `table_column` Parameters
 
-- **`#width`** -- Width of this column. Accepts `Length` values: `` `Fill ``, `` `Shrink ``, or `` `Fixed(f64) ``. Defaults to `` `Shrink ``.
+- **`#width`** -- Width of this column. Accepts `Length` values: `` `Fill ``, `` `FillPortion(i64) ``, `` `Shrink ``, or `` `Fixed(f64) ``. Defaults to `` `Shrink ``.
 - **`#halign`** -- Horizontal alignment of content within this column: `` `Left ``, `` `Center ``, or `` `Right ``. Defaults to `` `Left ``.
 - **`#valign`** -- Vertical alignment of content within this column: `` `Top ``, `` `Center ``, or `` `Bottom ``. Defaults to `` `Top ``.
 - **positional `&Widget`** -- The header widget for this column, typically a styled `text` widget.
@@ -38,14 +38,8 @@ val table: fn(
 ## `table` Parameters
 
 - **`#width`** -- Total width of the table. Accepts `Length` values. Defaults to `` `Shrink ``.
-<!-- CR claude for claude: [doc-drift/low] null does not mean 'no padding' or 'no
-separators'. The table widget leaves iced's defaults in place, which are 10x5 px cell
-padding and 1 px lines, and `#separator` sets the lines between columns as well as
-between rows. Write 'null for iced's default (10x5 px padding, 1 px lines); 0.0 for
-none' and 'thickness of the lines between rows and between columns'. The `table_column`
-`#width` line should also list `` `FillPortion(i64) ``. (book-ui-a-10) -->
-- **`#padding`** -- Padding in pixels around each cell, or `null` for no padding.
-- **`#separator`** -- Thickness in pixels of the line between rows, or `null` for no separators.
+- **`#padding`** -- Padding in pixels around each cell, `0.0` for none, or `null` for iced's default (10 px across, 5 px down).
+- **`#separator`** -- Thickness in pixels of the lines between rows and between columns, `0.0` for none, or `null` for iced's default (1 px).
 - **positional `&Array<TableColumn>`** -- Column definitions created with `table_column`.
 - **positional `&Array<Array<Widget>>`** -- Row data. Each inner array has one widget per column.
 
