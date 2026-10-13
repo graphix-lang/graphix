@@ -402,25 +402,12 @@ const NET_RESUBSCRIBE: &str = r#"
   n <- sys::time::timer(duration:100.ms, 2) ~ n + 1;
   path <- n ~ select n { 1 => "/local/resub/b", _ => "/local/resub/a" };
   let v: string = sys::net::subscribe(path)?;
-  sys::time::after_idle(duration:300.ms, v) ~ [path, v]
+  array::group(v, |n, _| n == 3)
 }
 "#;
 
-// CR claude for claude: [test-gap/medium] net_resubscribe cannot fail when the
-// subscription ignores path changes. A subscribe that keeps its first Dval delivers "a"
-// once at init. after_idle then fires 300 ms later, when path is back at
-// /local/resub/a, and the result is the same [path, "a"]. Nothing checks that "b" was
-// ever seen. Fix: end NET_RESUBSCRIBE with `array::group(v, |n, _| n == 3)` and pin
-// ["a", "b", "a"]. A probe gives exactly that with the moving path, and nothing with
-// the path fixed. (tests-lib-b2-05)
 run!(net_resubscribe, NET_RESUBSCRIBE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::String(p), Value::String(v)] => &**p == "/local/resub/a" && &**v == "a",
-            _ => false,
-        },
-        _ => false,
-    }
+    matches!(v, Ok(v) if v.to_string() == r#"["a", "b", "a"]"#)
 }; FuseExpect::Jit);
 
 // A subscription moving between busy paths never answers with a value of
