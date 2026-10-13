@@ -4284,6 +4284,18 @@ fn mem_limit() -> u64 {
         .unwrap_or(8 << 30)
 }
 
+/// Cap this process like the children, unless the environment says
+/// otherwise, so an in-process runaway recursion aborts to a containment
+/// instead of growing stack segments or activations.
+pub fn set_budgets() {
+    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
+        graphix_compiler::set_stack_budget(1 << 30);
+    }
+    if std::env::var_os("GRAPHIX_ACTIVATION_BUDGET").is_none() {
+        graphix_compiler::set_activation_budget(ACTIVATION_BUDGET);
+    }
+}
+
 /// The child's own address-space limit, applied by the child itself
 /// rather than through a `pre_exec` hook so the parent keeps
 /// posix_spawn's vfork fast path. Called once at startup by every
@@ -5566,6 +5578,7 @@ mod tests {
     /// the oracle records nothing.
     #[tokio::test(flavor = "multi_thread")]
     async fn tail_recursive_loop_is_the_jits() {
+        set_budgets();
         for code in [
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
              select n { 0 => acc, _ => f(n - 1, *(&acc) + 1) }; f(10, 0) }",
@@ -5573,21 +5586,13 @@ mod tests {
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 f(n, *(&acc)); \
              f(0, 0) }",
         ] {
-            // CR claude for claude: [test-gap/low] The second case's comment says the
-            // activation budget stops the node-walk's runaway, but no budget is set
-            // here. Only main.rs and child_resource_env set ACTIVATION_BUDGET, and
-            // check_verdict runs the subjects in-process at the default unlimited
-            // budget. So the interp run grows for the full 10 s, reaching about 2 GB,
-            // and ends as a Deadline timeout, which the tail-loop exemption in settle
-            // accepts. The containment path is never tested, and a regression in how
-            // settle treats Timeout(ActivationBudget) beside the JIT's refusal would
-            // pass. Fix: set the fuzzer's budgets for the unit tests the way main.rs
-            // does (graphix_compiler::set_activation_budget(ACTIVATION_BUDGET) and
-            // set_stack_budget in a shared test init), and assert that the node-walk's
-            // outcome is Timeout(ActivationBudget). (x-fix-fuzz-tests-05)
             let (d, _) = check_verdict(code, Duration::from_secs(10)).await;
             assert!(d.is_none(), "{code}: {d:?}");
         }
+        let runaway = "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
+                       f(n, *(&acc)); f(0, 0) }";
+        let o = run_program(runaway, Mode::Interp, Duration::from_secs(10)).await;
+        assert!(matches!(o, Outcome::Timeout(Containment::ActivationBudget)), "{o:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
