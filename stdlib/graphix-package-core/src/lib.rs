@@ -623,6 +623,21 @@ pub fn caused(v: Value, cause: Tag) -> TagValue {
     TagValue::tagged(v, cause.fresh_or_wake())
 }
 
+/// The production of a raw builtin whose consumed values are `tags`
+/// (a trigger's fire is not a value), when any of them is bottom: a bottom (a fresh one if any
+/// bottom fired), which the builtin returns in place of an emission,
+/// after taking in what fired, leaving its resident to re-surface once
+/// they return.
+pub fn bottom_of(tags: impl IntoIterator<Item = Tag>) -> Option<&'static TagValue> {
+    let mut bottom = None;
+    for t in tags {
+        if t.is_bottom() {
+            bottom = Some(bottom.unwrap_or(false) || t.triggers());
+        }
+    }
+    bottom.map(TagValue::bottom_null)
+}
+
 /// The TICK view of a production at a builtin's arg seam — `Some` iff
 /// this delivery is an event that advances the builtin's state. Only
 /// `Fired` ticks; stale deliveries and bottoms do not.
@@ -810,7 +825,11 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if let Some(v) = seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned())
+        let x = from[0].update(ctx);
+        if let Some(bottom) = bottom_of([x.tag()]) {
+            return bottom;
+        }
+        if let Some(v) = seam_tick(x).map(|tv| tv.value_cloned())
             && let Some(mut c) = C::cursor(v)
         {
             while let Some(e) = C::next(&mut c) {
@@ -904,13 +923,19 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx)).is_some() {
+        let fired = seam_tick(from[0].update(ctx)).is_some();
+        let x = from[1].update(ctx);
+        let x_tag = x.tag();
+        if fired {
             self.triggered += 1;
         }
-        if let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
+        if let Some(v) = seam_tick(x).map(|tv| tv.value_cloned())
             && let Some(c) = C::cursor(v)
         {
             self.queue.push_back(c);
+        }
+        if let Some(bottom) = bottom_of([x_tag]) {
+            return bottom;
         }
         while self.triggered > 0
             && let Some(c) = self.queue.front_mut()
@@ -1923,7 +1948,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        match seam_tick(from[0].update(ctx)).and_then(|tv| match tv.value_cloned() {
+        let x = from[0].update(ctx);
+        if let Some(bottom) = bottom_of([x.tag()]) {
+            return bottom;
+        }
+        match seam_tick(x).and_then(|tv| match tv.value_cloned() {
             v @ Value::Error(_) => Some(caused(v, tv.tag())),
             _ => None,
         }) {
@@ -1983,14 +2012,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         let res = match from {
-            [s] => seam_tick(s.update(ctx)).and_then(|tv| {
-                if self.val {
-                    None
-                } else {
-                    self.val = true;
-                    Some(caused(tv.value_cloned(), tv.tag()))
+            [s] => {
+                let x = s.update(ctx);
+                if let Some(bottom) = bottom_of([x.tag()]) {
+                    return bottom;
                 }
-            }),
+                seam_tick(x).and_then(|tv| {
+                    if self.val {
+                        None
+                    } else {
+                        self.val = true;
+                        Some(caused(tv.value_cloned(), tv.tag()))
+                    }
+                })
+            }
             _ => None,
         };
         match res {
@@ -2064,22 +2099,14 @@ impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        seed_count(from[0].update(ctx), &mut self.n);
-        // CR claude for claude: [bug/medium] A bottom input rides the old output here.
-        // seam_tick answers None for a bottom as well as for a stale delivery, and the
-        // None branch calls `self.out.ride()`, which re-surfaces the last value as
-        // STALE. So `(c, take(#n: 5, x))` prints `(2, 1)` in the cycle where x is
-        // bottom. design/activation_state.md Ruling 1 (bottom in, bottom out; only hold
-        // rides) and design/dense_delivery.md delta 13 both rule that out, and uniq, `x
-        // + 0` and every CachedArgs builtin print nothing in that cycle. once, count,
-        // Filter, FilterErr and throttle share the defect through the same `None =>
-        // self.out.ride()` path. Fix: in each raw builtin except hold, check the
-        // consumed input's tag before seam_tick and return
-        // `self.out.set_bottom(tag.triggers())` on a bottom, as Uniq::update does. A
-        // seam helper that hands the bottom back as an Err would make this hard to
-        // miss. Pin it in lib_tests/bottom.rs. probe:
-        // design/review-2026-10-12/repro/core-lib-02.gx (core-lib-02)
-        let res = seam_tick(from[1].update(ctx)).and_then(|tv| {
+        let n = from[0].update(ctx);
+        let n_tag = n.tag();
+        seed_count(n, &mut self.n);
+        let x = from[1].update(ctx);
+        if let Some(bottom) = bottom_of([n_tag, x.tag()]) {
+            return bottom;
+        }
+        let res = seam_tick(x).and_then(|tv| {
             let counting = matches!(self.n, Some(n) if n > 0);
             if let Some(n) = &mut self.n
                 && *n > 0
@@ -2404,62 +2431,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
             ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
             ctx.event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
-        // CR claude for claude: [bug/medium] When the input delivers a bottom,
-        // `seam_value` skips it and the update falls through to `self.out.ride()`, so
-        // filter keeps delivering its last accepted value as Stale while the input it
-        // consumed is bottom. That breaks the bottom-out rule
-        // (design/activation_state.md Ruling 1, dense_delivery delta 13): hold is the
-        // only builtin that rides over bottoms. `OptHof::update` gets this right: it
-        // reads `input.tag().is_bottom()` before the seam, still ticks the callback,
-        // and returns `self.out.set_bottom(trig)`. Do the same here. `array::group`'s
-        // update has the same shape (`seam_tick` on the input, then `ride()`) and needs
-        // the same gate; its queue and buf should survive the bottom. Probe:
-        // design/review-2026-10-12/repro/x-dup-03.gx (at n=2, filter and group print
-        // stale values and opt::filter prints nothing). A shared callback-HOF scaffold
-        // (x-dup-04) would put this rule in one place. (x-dup-03)
-        if let Some(tv) = seam_value(from[0].update(ctx)) {
+        let x = from[0].update(ctx);
+        let x_tag = x.tag();
+        if let Some(tv) = seam_value(x) {
             let tag = tv.tag();
             let v = tv.value_cloned();
             self.pending = Some(v.clone());
             ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
             ctx.event.variables.insert(self.x, TagValue::tagged(v, tag));
         }
-        let res = seam_tick(self.pred.update(ctx)).and_then(|b| match b.value_cloned() {
+        let pred = self.pred.update(ctx);
+        if let Some(bottom) = bottom_of([x_tag, pred.tag()]) {
+            return bottom;
+        }
+        let res = seam_tick(pred).and_then(|b| match b.value_cloned() {
             Value::Bool(true) => self.pending.clone().map(|v| caused(v, b.tag())),
             _ => None,
         });
         match res {
             Some(tv) => self.out.set(tv),
-            // CR claude for claude: [bug/medium] core-lib-03/core-aux-08 variant: core
-            // filter and raw-Apply builtins ride their last value through a bottom
-            // input. bfb34d1d made range bottom on a bottomed argument, and 274ab649
-            // made the opt HOFs and queuefn bottom too. The same R3 rule
-            // (design/dense_delivery.md R3 and ruled delta 13: "Builtins bottom on any
-            // bottomed argument"; CLAUDE.md: "a bottom input SETS a node's resident,
-            // never rides it") is still broken by the other raw-Apply builtins. They
-            // read inputs with seam_tick or seam_value and fall to `self.out.ride()` on
-            // a bottom. Core `filter` (Filter::update, lib.rs) does this for a bottomed
-            // value AND for a bottomed predicate; opt::filter now bottoms in both
-            // cases. once (1776), count (2645-2655), take/skip, queue, throttle,
-            // filter_err (1709), array::group, array::iter and array::iterq all keep
-            // re-delivering their last output as a value while the input stands bottom.
-            // R3 allows exactly three Held rides (scrutinee, guard, `~`); hold is the
-            // documented bottom-riding tool. None of these is either. Failure: s turns
-            // null at c=2, so s$ is a fresh, then standing, bottom. Each tuple below
-            // should be silent from then on, as `(uniq(s$), s)`, `(str::len(s$), s)`
-            // and `(opt::filter(s$, ..), s)` are. Instead they print {once: (5, null)},
-            // {count: (1, null)}, {take: (5, null)}, {skip: (5, null)}, {queue: (5,
-            // null)}, {throttle: (5, null)}, {group: ([5], null)}, {iterq: (5, null)},
-            // {iter: (5, null)}, {err: (error:5, null)}, and core filter prints ("5",
-            // null). A filter predicate that bottoms (`|t| parse(t) > 0` over "x")
-            // gives ("5", "x") where opt::filter is silent. Fix: Give the raw-Apply
-            // builtins the gate range got: read every argument through one helper that
-            // reports Invocation::Bottom { fresh }, and return
-            // `self.out.set_bottom(fresh)` before any state change. For filter, also
-            // bottom when the predicate's answer is bottom. Leave hold as the only
-            // designated ride. Add a bottom.rs pin that iterates the restart and
-            // iteration builtins over a bottomed input. Unverified: the reviewer's
-            // report, not checked by a verifier. (x-rerun-2-03)
             None => self.out.ride(),
         }
     }
@@ -2556,14 +2546,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx)).is_some() {
+        let fired = seam_tick(from[0].update(ctx)).is_some();
+        let cleared = seam_tick(from[1].update(ctx)).is_some();
+        let x = from[2].update(ctx);
+        let x_tag = x.tag();
+        if fired {
             self.triggered += 1;
         }
-        if seam_tick(from[1].update(ctx)).is_some() {
+        if cleared {
             self.queue.clear();
         }
-        if let Some(tv) = seam_tick(from[2].update(ctx)) {
+        if let Some(tv) = seam_tick(x) {
             self.queue.push_back(tv.value_cloned());
+        }
+        if let Some(bottom) = bottom_of([x_tag]) {
+            return bottom;
         }
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
@@ -2893,7 +2890,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         // is an event to throttle.
         // a standing rate this throttle has not taken (a sibling consumed
         // its fire) is taken as a fired one is
-        let new_wait = seam_value(from[0].update(ctx))
+        let rate = from[0].update(ctx);
+        let rate_tag = rate.tag();
+        let new_wait = seam_value(rate)
             .and_then(|tv| {
                 tv.with_value(|v| match v {
                     Value::Duration(d) => Some((**d, tv.tag())),
@@ -2901,10 +2900,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 })
             })
             .filter(|(d, _)| *d != self.wait);
+        let x = from[1].update(ctx);
+        let x_tag = x.tag();
         let mut up1 = None;
-        if let Some(tv) = seam_value(from[1].update(ctx)) {
+        if let Some(tv) = seam_value(x) {
             up1 = tv.is_fired().then(|| tv.tag());
             self.last_v = Some(tv.value_cloned());
+        }
+        if let Some(bottom) = bottom_of([rate_tag, x_tag]) {
+            if let Some(id) = self.tid
+                && ctx.event.variables.contains_key(&id)
+            {
+                ctx.release_var(id, self.top_id);
+                self.tid = None;
+            }
+            return bottom;
         }
         if let Some((d, cause)) = new_wait {
             self.wait = d;
@@ -3010,7 +3020,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        match seam_tick(from[0].update(ctx)) {
+        let x = from[0].update(ctx);
+        if let Some(bottom) = bottom_of([x.tag()]) {
+            return bottom;
+        }
+        match seam_tick(x) {
             Some(tv) => {
                 self.count += 1;
                 self.out.set(caused(Value::I64(self.count), tv.tag()))

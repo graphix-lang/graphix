@@ -315,3 +315,43 @@ async fn rand_picks_go_bottom_with_their_input() -> Result<()> {
     }
     Ok(())
 }
+
+/// The restart and iteration builtins go bottom with their input instead
+/// of re-delivering their last value: once `x` is gone the tuple holding
+/// them delivers nothing, so no value carries `y`'s later 1.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_builtins_go_bottom_with_their_input() -> Result<()> {
+    const CODE: &str = r#"{
+  let t = 0;
+  t <- sys::time::timer(duration:20.ms, false) ~ 1;
+  let x = select t { 0 => 7, _ => never() };
+  let xs = select t { 0 => [7], _ => never() };
+  let y = 0;
+  y <- sys::time::timer(duration:80.ms, false) ~ 1;
+  (
+    y,
+    once(x),
+    count(x),
+    take(#n: 5, x),
+    skip(#n: 0, x),
+    queue(#clock: x, x),
+    throttle(x),
+    filter(x, |v| v > 0),
+    array::group(x, |n, _| n >= 1),
+    array::iter(xs),
+    array::iterq(#clock: x, xs)
+  )
+}"#;
+    for mode in Mode::ALL {
+        let quiet = Collect::Quiet(Duration::from_millis(300));
+        let got =
+            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
+                .await?;
+        assert!(!got.is_empty(), "{mode:?}: nothing before x went");
+        for v in &got {
+            let Value::Array(a) = v else { panic!("{mode:?}: {v}") };
+            assert_eq!(a[0], Value::I64(0), "{mode:?}: delivered after x went: {v}");
+        }
+    }
+    Ok(())
+}

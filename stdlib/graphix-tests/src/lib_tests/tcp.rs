@@ -190,7 +190,8 @@ const TCP_ACCEPT_DELETED: &str = r#"
     let pending = sys::tcp::accept(l, null);
     sys::tcp::listener_addr(l)?
   });
-  let first = once(las[0]$);
+  let first = never();
+  first <- once(las[0]$);
   addrs <- first ~ [];
   let settled = sys::time::after_idle(duration:300.ms, array::len(las));
   is_err(sys::tcp::connect(settled ~ first))

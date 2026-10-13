@@ -13,7 +13,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{seam_tick, seam_value, sort_values};
+use graphix_package_core::{bottom_of, seam_tick, seam_value, sort_values};
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_core::pack::{Pack, PackError};
@@ -300,7 +300,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 ctx.event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
-        if let Some(tv) = seam_tick(from[0].update(ctx)) {
+        let x = from[0].update(ctx);
+        let x_tag = x.tag();
+        if let Some(tv) = seam_tick(x) {
             self.queue.push_back(tv.value_cloned());
         }
         if let Some(tv) = seam_value(from[1].update(ctx)) {
@@ -345,6 +347,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 }
             }
         };
+        if let Some(bottom) = bottom_of([x_tag]) {
+            return bottom;
+        }
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
