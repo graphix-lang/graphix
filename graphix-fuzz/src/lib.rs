@@ -3373,6 +3373,41 @@ pub async fn typemorph_scan(
     out
 }
 
+/// The regression pins being checked now, so a panic that aborts the
+/// process can say which pins it may be.
+static PINS_IN_FLIGHT: std::sync::Mutex<BTreeMap<&'static str, usize>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// The regression pins being checked now.
+pub fn pins_in_flight() -> Vec<&'static str> {
+    PINS_IN_FLIGHT.lock().map(|m| m.keys().copied().collect()).unwrap_or_default()
+}
+
+/// A pin in [`pins_in_flight`] while this lives.
+struct InFlight(&'static str);
+
+impl InFlight {
+    fn enter(pin: &'static str) -> Self {
+        if let Ok(mut m) = PINS_IN_FLIGHT.lock() {
+            *m.entry(pin).or_default() += 1;
+        }
+        InFlight(pin)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Ok(mut m) = PINS_IN_FLIGHT.lock()
+            && let Some(n) = m.get_mut(self.0)
+        {
+            *n -= 1;
+            if *n == 0 {
+                m.remove(self.0);
+            }
+        }
+    }
+}
+
 /// What `regress` concluded: the pins that now diverge, and every pin's
 /// verdict for the outcome manifest.
 pub struct Regression {
@@ -3392,22 +3427,14 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
     let mut regressions = Vec::new();
     let mut verdicts: Vec<Option<Verdict>> = vec![None; entries.len()];
     let mut suspect: Vec<usize> = Vec::new();
-    let job = |i: usize| async move { check_verdict(entries[i].1, timeout).await };
+    let job = |i: usize| async move {
+        let _pin = InFlight::enter(entries[i].0);
+        check_verdict(entries[i].1, timeout).await
+    };
     windowed(entries.len(), regress_parallelism(), job, |i, res| {
         let (d, v) = match res {
             Ok(r) => r,
-            // CR claude for claude: [dead/low] This arm cannot be reached from the CLI.
-            // main installs an abort-on-panic hook for `regress` (and `fusecheck`), so
-            // a pin whose check panics aborts the whole process, and panicked() is used
-            // only by its unit test. The abort's backtrace does not say which pin it
-            // was, and the other pins' regressions and the outcome-manifest comparison
-            // are never printed. Fix: log the pin name to stderr before each job starts
-            // (so the abort names it), then delete this arm and panicked(). Or take
-            // `regress` out of the abort hook and keep them. (fuzz-lib-b-09)
-            Err(e) => {
-                return regressions
-                    .push((entries[i].0.to_string(), panicked(entries[i].1, e)));
-            }
+            Err(e) => panic!("regress {}: {e}", entries[i].0),
         };
         let trusted = match v {
             Verdict::Ran | Verdict::Excluded => true,
@@ -3448,19 +3475,6 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
         .filter_map(|((name, _), v)| v.map(|v| (name.to_string(), v)))
         .collect();
     Regression { regressions, verdicts }
-}
-
-/// A check that panicked, as the regression it is: both sides carry the
-/// panic.
-fn panicked(prog: &str, e: String) -> Divergence {
-    let o = Outcome::RuntimeErr(format!("check panicked: {e}"));
-    Divergence {
-        code: prog.to_string(),
-        reference: o.clone(),
-        tested: o,
-        tier: oracle_tier(prog),
-        pair: Pair::Engine,
-    }
 }
 
 /// The checked-in outcome manifest: one `verdict<TAB>name` line per
@@ -6806,7 +6820,14 @@ mod fusecheck_test {
     #[test]
     fn outcome_mismatches_skip_regressed_pins() {
         let manifest = "trace\tholds\ncontained\tchanged\nunsure\tvouched\ntrace\tregressed\ntrace\tgone\n";
-        let regressed = panicked("regressed", "stub".to_string());
+        let o = Outcome::RuntimeErr("stub".to_string());
+        let regressed = Divergence {
+            code: "regressed".to_string(),
+            reference: o.clone(),
+            tested: o,
+            tier: OracleTier::Exact,
+            pair: Pair::Engine,
+        };
         let r = Regression {
             regressions: vec![("regressed".to_string(), regressed)],
             verdicts: [

@@ -165,16 +165,17 @@ fn reject_key(err: &str) -> String {
     last[..end].to_string()
 }
 
-/// Where a campaign records findings: `GRAPHIX_FUZZ_CORPUS`, else outside
-/// the synced repo. Concurrent campaigns must not share one (colliding
+/// Where a campaign records findings: `GRAPHIX_FUZZ_CORPUS` (a relative
+/// one under `cwd`, the launch directory), else outside the synced repo. Concurrent campaigns must not share one (colliding
 /// finding indices).
-fn corpus_dir() -> std::path::PathBuf {
-    match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
+fn corpus_dir(cwd: &std::path::Path) -> std::path::PathBuf {
+    let dir: std::path::PathBuf = match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
         Some(p) => p.into(),
         None => std::env::home_dir()
             .map(|h| h.join("tmp/target/fuzz/crashes"))
             .unwrap_or_else(|| "fuzz/crashes".into()),
-    }
+    };
+    cwd.join(dir)
 }
 
 /// Per-feature compile rates for gen-check/reactive-check, bucketed by
@@ -258,6 +259,36 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
+/// Whether subcommand `cmd` runs subjects in this process: the check
+/// children, the gates, and the interactive checks.
+fn runs_subjects_in_process(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "check-one"
+            | "run-one"
+            | "gen-batch"
+            | "detcheck-one"
+            | "selfcheck-one"
+            | "minimize-one"
+            | "typemorph-one"
+            | "gen-check"
+            | "reactive-check"
+            | "regress"
+            | "fusecheck"
+            | "check"
+            | "run"
+            | "minimize"
+            | "soak"
+            | "fuzz"
+            | "generate"
+    )
+}
+
+/// Whether subcommand `cmd` takes a program file as its argument.
+fn takes_path(cmd: &str) -> bool {
+    matches!(cmd, "check" | "run" | "minimize")
+}
+
 // Two worker threads on purpose: the work is in the children, each
 // with its own runtime, and every parent thread is one stolen from them
 // (measured: per-core sizing was a 7.5x throughput regression).
@@ -273,66 +304,35 @@ async fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
     let reactive = args.iter().any(|a| a == "--reactive");
     args.retain(|a| a != "--reactive");
-    // A panic on a subject's runtime thread is caught by tokio and both
-    // engines then fail alike, which a verdict reads as AGREE. A worker
-    // aborts instead, so the pool records the program as a crash.
-    // CR claude for claude: [structure/medium] Two hand-written subcommand lists decide
-    // two things: whether a panic aborts (here) and whether the process chdirs into a
-    // sandbox (`sandbox_cwd` below). They have drifted. `soak`, `fuzz` and `generate`
-    // are in neither list, but each runs the regression gate in-process through
-    // `print_regression` -> `check_verdict`. A pin that panics on its runtime thread
-    // therefore reads as AGREE at a soak's startup gate, even though `regress` aborts
-    // on the same pin, and those pins write files into the launch cwd. `minimize` runs
-    // `check` in-process with no abort hook either. `leakcheck` is in both lists
-    // although it runs no subject in-process. Fix: classify each subcommand once, for
-    // example `fn runs_subjects_in_process(&str) -> bool` or an enum parsed from argv,
-    // and derive both the hook and the sandbox from that one classification.
-    // (fuzz-main-aux-07)
-    if matches!(
-        args.get(1).map(String::as_str),
-        Some(
-            "check-one"
-                | "run-one"
-                | "gen-batch"
-                | "detcheck-one"
-                | "selfcheck-one"
-                | "minimize-one"
-                | "typemorph-one"
-                | "gen-check"
-                | "regress"
-                | "fusecheck"
-                | "leakcheck"
-                | "check"
-                | "run"
-        )
-    ) {
+    // A subcommand that runs subjects in this process (a check child, a
+    // gate, an interactive check) aborts on a panic and runs in a sandbox
+    // cwd: a panic on a subject's runtime thread is caught by tokio and both
+    // engines then fail alike, which a verdict reads as AGREE, and a
+    // generated program writes files at arbitrary paths. One that only
+    // spawns children leaves both to them.
+    let in_process = args.get(1).is_some_and(|c| runs_subjects_in_process(c));
+    if in_process {
         let report = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             report(info);
+            let pins = graphix_fuzz::pins_in_flight();
+            if !pins.is_empty() {
+                eprintln!("regression pins in flight: {}", pins.join(", "));
+            }
             std::process::abort()
         }));
     }
-    // Generated programs call `sys::fs::write_all` & co. with arbitrary
-    // paths. Worker processes are sandboxed by the spawning campaign
-    // (GRAPHIX_FUZZ_SANDBOXED); this covers manual invocations.
-    let sandbox_cwd = std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none()
-        && match args.get(1).map(String::as_str) {
-            Some(
-                "check-one" | "run-one" | "gen-batch" | "detcheck-one" | "selfcheck-one"
-                | "minimize-one" | "typemorph-one" | "gen-check" | "regress"
-                | "fusecheck",
-            ) => true,
-            // the path argument is resolved before the chdir
-            Some("check" | "check-isolated" | "run" | "minimize" | "leakcheck") => {
-                if let Some(f) = args.get_mut(2) {
-                    if let Ok(abs) = std::fs::canonicalize(&*f) {
-                        *f = abs.to_string_lossy().into_owned();
-                    }
-                }
-                true
-            }
-            _ => false,
-        };
+    // Worker processes are sandboxed by the spawning campaign
+    // (GRAPHIX_FUZZ_SANDBOXED); this covers manual invocations. A path
+    // argument is resolved before the chdir.
+    let sandbox_cwd = std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none() && in_process;
+    if sandbox_cwd
+        && takes_path(args.get(1).map(String::as_str).unwrap_or(""))
+        && let Some(f) = args.get_mut(2)
+        && let Ok(abs) = std::fs::canonicalize(&*f)
+    {
+        *f = abs.to_string_lossy().into_owned();
+    }
     // captured before the sandbox chdir: `fusecheck --bless` and
     // `regress --bless` write here
     let orig_cwd = std::env::current_dir()?;
@@ -867,7 +867,7 @@ async fn main() -> Result<()> {
             // front so a finding is never re-reported
             let iters = parse_iters(args.get(2), if cmd == "fuzz" { 50 } else { 100 });
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let out = corpus_dir();
+            let out = corpus_dir(&orig_cwd);
             let corpus = Arc::new(Corpus::load(&out));
             println!(
                 "corpus: {} existing divergences loaded from {}/",
@@ -909,7 +909,7 @@ async fn main() -> Result<()> {
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let mix = args.get(4).map(String::as_str).unwrap_or(DEFAULT_MIX).to_string();
             let w = parse_mix(&mix)?;
-            let out = corpus_dir();
+            let out = corpus_dir(&orig_cwd);
             let corpus = Arc::new(Corpus::load(&out));
             println!(
                 "corpus: {} existing divergences loaded from {}/",
