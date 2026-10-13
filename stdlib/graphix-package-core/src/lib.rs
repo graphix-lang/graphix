@@ -618,10 +618,10 @@ pub fn caused(v: Value, cause: Tag) -> TagValue {
 }
 
 /// The production of a raw builtin whose consumed values are `tags`
-/// (a trigger's fire is not a value), when any of them is bottom: a bottom (a fresh one if any
-/// bottom fired), which the builtin returns in place of an emission,
-/// after taking in what fired, leaving its resident to re-surface once
-/// they return.
+/// (a trigger's fire is not a value), when any of them is bottom: a
+/// bottom (a fresh one if any bottom fired), which the builtin returns
+/// where it would ride. An emission owed to an earlier input still
+/// delivers, and the resident re-surfaces once the values return.
 pub fn bottom_of(tags: impl IntoIterator<Item = Tag>) -> Option<&'static TagValue> {
     let mut bottom = None;
     for t in tags {
