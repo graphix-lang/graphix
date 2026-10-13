@@ -348,19 +348,10 @@ impl<'a> Query<'a> {
         match self.target()?.0 {
             Target::Bind(id) => {
                 let decl = self.bind_location(id);
-                // CR claude for claude: [bug/low] `here` compares only the line. A
-                // reference on the same line as its declaration counts as the
-                // declaration and jumps to the interface `val`. With `let bump = ..;
-                // let twice = |n: i64| -> i64 bump(bump(n));` on one line, definition
-                // on `bump(` returns util.gxi, not util.gx. Fix: have target() say
-                // whether it matched a bind site (the ide.binds pass) and go to the sig
-                // partner only then. Failing that, test that the cursor is inside the
-                // declaration's range, not just on its line. probe:
-                // design/review-2026-10-12/repro/x-lsp-probe.py same-line-def
-                // (x-lsp-probe-04)
-                let here = decl.as_ref().is_some_and(|l| {
-                    uri_to_path(&l.uri).as_deref() == Some(self.file)
-                        && l.range.start.line == self.cursor.line
+                // on the declaration itself, not merely on its line
+                let here = self.bind(id).is_some_and(|b| {
+                    in_file(&b.ori, self.file)
+                        && covers(zero_based(b.pos), b.name.chars().count(), self.cursor)
                 });
                 match self.sig_partner(id) {
                     Some(partner) if here => self.bind_location(partner).or(decl),

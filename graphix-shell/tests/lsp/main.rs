@@ -421,6 +421,26 @@ fn queries_answer_while_the_buffer_is_broken() {
     assert_eq!(c.definition("main.gx", "|y * 2"), Some(c.site("main.gx", "let |y")));
 }
 
+/// A reference on its declaration's line goes to the declaration, not
+/// to the interface `val` the declaration itself goes to.
+#[test]
+fn a_reference_beside_its_declaration_is_a_reference() {
+    let mut c = Client::start(&[
+        ("main.gx", "mod api;\napi::quad(2)\n"),
+        ("api.gxi", "val double: fn(n: i64) -> i64;\nval quad: fn(n: i64) -> i64;\n"),
+        (
+            "api.gx",
+            "let double = |n: i64| -> i64 n * 2; \
+             let quad = |n: i64| -> i64 double(double(n));\n",
+        ),
+    ]);
+    c.open("api.gx");
+    let decl = c.site("api.gx", "let |double");
+    assert_eq!(c.definition("api.gx", "|double(double"), Some(decl));
+    let val = c.site("api.gxi", "val |double");
+    assert_eq!(c.definition("api.gx", "let |double"), Some(val));
+}
+
 #[test]
 fn an_interface_val_and_its_implementation_are_one_symbol() {
     let mut c = Client::start(&[
