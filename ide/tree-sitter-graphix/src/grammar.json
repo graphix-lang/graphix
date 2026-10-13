@@ -7094,7 +7094,7 @@
     },
     "identifier": {
       "type": "PATTERN",
-      "value": "[\\p{Ll}\\p{Lt}\\p{Lm}\\p{Lo}_][\\p{L}\\p{N}_]*"
+      "value": "[\\p{Ll}\\p{Lt}\\p{Lm}\\p{Lo}_\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7A3][\\p{L}\\p{N}_\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7A3]*"
     },
     "_binding_name": {
       "type": "CHOICE",

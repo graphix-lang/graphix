@@ -1235,16 +1235,11 @@ module.exports = grammar({
     )),
 
     // Identifiers
-    // CR claude for claude: [bug/low] tree-sitter-cli 0.24.7 compiles `\p{Lo}` into a
-    // table that keeps only the endpoints of the UnicodeData range entries.
-    // src/parser.c has {0x4e00,0x4e00},{0x9fff,..} and {0xac00,0xac00},{0xd7a3,0xd7a3},
-    // so the CJK ideograph and Hangul syllable blocks do not lex, apart from their
-    // first and last code points. `let 名前 = 1` passes `graphix --check`, but it is an
-    // ERROR in every tree-sitter editor. Fix: spell those ranges explicitly in the
-    // class (U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+20000-2A6DF), or regenerate with
-    // a CLI that expands range entries, and pin one such identifier in ts_tree_shapes.
-    // probe: design/review-2026-10-12/repro/ide-tooling-05.gx (ide-tooling-05)
-    identifier: $ => /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_][\p{L}\p{N}_]*/,
+    // The CJK ideograph and Hangul syllable blocks are spelled out:
+    // tree-sitter-cli keeps only the endpoints of UnicodeData's range
+    // entries in \p{Lo}.
+    identifier: $ =>
+      /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3][\p{L}\p{N}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3]*/,
 
     // Type-name keywords are legal BINDING names (2026-08-18): let,
     // params, labeled args, pattern binds, tvar names, module path

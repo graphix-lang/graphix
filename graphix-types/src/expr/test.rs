@@ -2651,6 +2651,7 @@ mod tree_sitter_compat {
             // every primary takes a postfix
             ("any(a, b).f", "(struct_ref (any"),
             ("-0XFF", "(number)"),
+            ("let 名前 = 한글", "(pattern_bind name: (identifier))) value: (reference"),
         ] {
             let tree = parser.parse(src, None).unwrap();
             let sexp = tree.root_node().to_sexp();
