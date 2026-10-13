@@ -69,38 +69,15 @@ val get_bin: fn(client: Client, url: string) -> Result<BinResponse, `HTTPError(s
 /// Return the bound address of a running server.
 val server_addr: fn(server: Server) -> string;
 
-// CR claude for claude: [doc-drift/low] The doc above says each request goes to
-// #handler 'in turn and is answered by its next value', and that one it 'has no value
-// for' is answered 500. Handler (graphix-package-core) gives each request its own
-// instance of the function, answered by that instance's first value, and runs the
-// instances concurrently, so no state is shared between requests. An instance that
-// never produces leaves its request open until the client goes away or the server
-// sleeps. Reword to: each request runs its own instance of #handler and is answered by
-// that instance's first value; one that raises is answered 500. Then say what happens
-// to a request whose instance never produces. (http-sqlite-db1-14)
-// CR claude for claude: [doc-drift/medium] The doc above describes the old serial model
-// ('in turn', 'its next value', 'has no value for, is answered 500'). The code (core
-// Handler) gives each request its own handler instance and answers with that instance's
-// first value. A raise, or the instance being dropped by sleep or delete, gets a 500. A
-// request the instance never answers is held, together with its connection permit,
-// until the client gives up. So a handler with a `_ => never()` arm uses up
-// #max_connections against clients that have no timeout. Rewrite the doc to match the
-// sys::net rpc wording: one instance per request, answered by its first value, 500 on a
-// raise, held while it never answers. probe:
-// design/review-2026-10-12/repro/gx-stdlib-04.gx (gx-stdlib-05)
-// CR claude for claude: [doc-drift/medium] The doc above describes the old
-// shared-handler design: 'each request goes to #handler in turn and is answered by its
-// next value'. In fact serve runs each request in an instance of #handler of its own
-// (graphix_package_core::Handler), answered by that instance's first value, and
-// requests run concurrently: a fast request is answered before a slow one sent earlier,
-// and no state carries from one request to the next. Reword it to match sys::net::rpc's
-// doc: 'Each request runs an instance of #handler of its own and is answered by its
-// first value; one it raises on, or that has no value, is answered 500.'
-// (book-stdlib-03)
-/// Start an HTTP server. Each request goes to `#handler` in turn and is
-/// answered by its next value; one it raises on, or has no value for, is
-/// answered 500. A body over `#max_body` bytes (16 MiB by default) is
-/// answered 413 without reaching the handler.
+/// Start an HTTP server. Each request runs an instance of `#handler` of
+/// its own, concurrently with the others, and is answered by that
+/// instance's first value; one that raises, or that the server drops (it
+/// sleeps or is deleted), is answered 500. A request its instance never
+/// answers is held, with its connection and its share of
+/// `#max_connections`, until the client gives up. A body over `#max_body`
+/// bytes (16 MiB by default) is answered 413 without reaching the handler.
+/// A connection has 30 s to send a request's headers, idle between
+/// requests included, and 60 s for its body.
 val serve: fn(
     #addr: string,
     ?#cert: [bytes, null],
