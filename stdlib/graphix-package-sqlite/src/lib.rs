@@ -61,27 +61,31 @@ fn sqlite_to_value(
     })
 }
 
-// CR claude for claude: [perf/low] Every exec/query copies each string param
-// (to_string) and blob param (to_vec) into an owned rusqlite Value. collect_params then
-// builds a second vector of &dyn ToSql over the copies. The `_ => Null` arm stores SQL
-// NULL for any value SqlVal does not allow, a silent default that would hide a future
-// signature change. Bind borrowed instead: a newtype over &Value whose ToSql returns
-// ToSqlOutput::Borrowed(ValueRef::..) for the five SqlVal members and Err for anything
-// else, passed through rusqlite::params_from_iter. Then collect_params and both
-// param_refs vectors go away. (http-sqlite-db1-13)
-fn value_to_sqlite(v: &Value) -> rusqlite::types::Value {
-    match v {
-        Value::I64(i) => rusqlite::types::Value::Integer(*i),
-        Value::F64(f) => rusqlite::types::Value::Real(*f),
-        Value::String(s) => rusqlite::types::Value::Text(s.to_string()),
-        Value::Bytes(b) => rusqlite::types::Value::Blob(b.to_vec()),
-        Value::Null => rusqlite::types::Value::Null,
-        _ => rusqlite::types::Value::Null,
+/// A parameter bound as it stands, borrowed: an `SqlVal` member, refused
+/// otherwise.
+struct Param<'a>(&'a Value);
+
+impl rusqlite::types::ToSql for Param<'_> {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        use rusqlite::types::{ToSqlOutput::Borrowed, ValueRef};
+        Ok(Borrowed(match self.0 {
+            Value::I64(i) => ValueRef::Integer(*i),
+            Value::F64(f) => ValueRef::Real(*f),
+            Value::String(s) => ValueRef::Text(s.as_bytes()),
+            Value::Bytes(b) => ValueRef::Blob(b),
+            Value::Null => ValueRef::Null,
+            v => {
+                return Err(rusqlite::Error::ToSqlConversionFailure(
+                    format!("{v} is not an SqlVal").into(),
+                ));
+            }
+        }))
     }
 }
 
-fn collect_params(params: &ValArray) -> LPooled<Vec<rusqlite::types::Value>> {
-    params.iter().map(value_to_sqlite).collect()
+/// `ps`, bound borrowed.
+fn params(ps: &ValArray) -> impl rusqlite::Params + '_ {
+    rusqlite::params_from_iter(ps.iter().map(Param))
 }
 
 async fn with_conn<F>(conn_arc: Arc<Mutex<Option<rusqlite::Connection>>>, f: F) -> Value
@@ -147,17 +151,12 @@ impl EvalCachedAsync for SqliteExecEv {
 
     fn eval((conn_arc, sql, params): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            with_conn(conn_arc, move |conn| {
-                let params = collect_params(&params);
-                let param_refs: LPooled<Vec<&dyn rusqlite::types::ToSql>> =
-                    params.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-                match conn.prepare_cached(&sql) {
+            with_conn(conn_arc, move |conn| match conn.prepare_cached(&sql) {
+                Err(e) => errf!("SqliteError", "{e}"),
+                Ok(mut stmt) => match stmt.execute(self::params(&params)) {
                     Err(e) => errf!("SqliteError", "{e}"),
-                    Ok(mut stmt) => match stmt.execute(param_refs.as_slice()) {
-                        Err(e) => errf!("SqliteError", "{e}"),
-                        Ok(n) => Value::U64(n as u64),
-                    },
-                }
+                    Ok(n) => Value::U64(n as u64),
+                },
             })
             .await
         }
@@ -211,14 +210,11 @@ impl ReadFormat for Query {
     fn parse((conn_arc, sql, params): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             with_conn(conn_arc, move |conn| {
-                let params = collect_params(&params);
-                let param_refs: LPooled<Vec<&dyn rusqlite::types::ToSql>> =
-                    params.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
                 let mut stmt = match conn.prepare_cached(&sql) {
                     Ok(s) => s,
                     Err(e) => return errf!("SqliteError", "{e}"),
                 };
-                let mut rows = match stmt.query(param_refs.as_slice()) {
+                let mut rows = match stmt.query(self::params(&params)) {
                     Ok(r) => r,
                     Err(e) => return errf!("SqliteError", "{e}"),
                 };
