@@ -378,36 +378,29 @@ fn draw_xy<'a, DB, C, X>(
                     pick(style.loss_color, DEFAULT_LOSS),
                 );
                 let bw = style.bar_width.unwrap_or(5.0) as u32;
-                // CR claude for claude: [bug/medium] Candlesticks and error bars
-                // filter only on x, and `View::clamp_y` keeps NaN. plotters'
-                // `RangedCoordf64::map` turns a NaN y into `limit.0`, so a candle
-                // with a NaN low or close, or an error bar with a NaN min, is drawn
-                // to the bottom edge of the plot. Because open and close are
-                // clamped separately, a gain candle whose body lies wholly past one
-                // edge compares Equal in `CandleStick::new` and gets the loss
-                // style. The 3D series (Scatter3D/Line3D below) filter nothing:
-                // `Cartesian3d::map_3d` maps NaN to the axis minimum corner, and a
-                // point outside a user x/y/z range projects outside the cube.
-                // `compute_3d_ranges` skips those same points, so the drawing and
-                // the range disagree. Fix: apply the 2D XY rule everywhere. Leave
-                // out a candle or error bar with any non-finite y. Choose the gain
-                // or loss style from the unclamped open and close. For 3D, skip
-                // non-finite points (break Line3D runs as `clip_polyline` does) and
-                // drop or clip points outside the 3D ranges. Probe:
-                // design/review-2026-10-12/repro/gui-chart-04.gx. (gui-chart-04)
                 let y = |v: f64| view.clamp_y(v);
-                let candles = d.pts.iter().filter(|p| view.contains_x(p.x)).map(|p| {
-                    CandleStick::new(
-                        to_x(p.x),
-                        y(p.open),
-                        y(p.high),
-                        y(p.low),
-                        y(p.close),
-                        gain,
-                        loss,
-                        bw,
-                    )
-                });
+                let candles = d
+                    .pts
+                    .iter()
+                    .filter(|p| {
+                        view.contains_x(p.x)
+                            && [p.open, p.high, p.low, p.close]
+                                .iter()
+                                .all(|y| y.is_finite())
+                    })
+                    .map(|p| {
+                        let color = if p.open < p.close { gain } else { loss };
+                        CandleStick::new(
+                            to_x(p.x),
+                            y(p.open),
+                            y(p.high),
+                            y(p.low),
+                            y(p.close),
+                            color,
+                            color,
+                            bw,
+                        )
+                    });
                 annotate(
                     chart.draw_series(candles),
                     style.label.as_deref(),
@@ -421,16 +414,23 @@ fn draw_xy<'a, DB, C, X>(
                     .stroke_width(stroke(style));
                 let caps = style.point_size.map_or(stroke(style), |p| p as u32);
                 let y = |v: f64| view.clamp_y(v);
-                let bars = d.pts.iter().filter(|p| view.contains_x(p.x)).map(|p| {
-                    ErrorBar::new_vertical(
-                        to_x(p.x),
-                        y(p.min),
-                        y(p.avg),
-                        y(p.max),
-                        line,
-                        caps,
-                    )
-                });
+                let bars = d
+                    .pts
+                    .iter()
+                    .filter(|p| {
+                        view.contains_x(p.x)
+                            && [p.min, p.avg, p.max].iter().all(|y| y.is_finite())
+                    })
+                    .map(|p| {
+                        ErrorBar::new_vertical(
+                            to_x(p.x),
+                            y(p.min),
+                            y(p.avg),
+                            y(p.max),
+                            line,
+                            caps,
+                        )
+                    });
                 annotate(
                     chart.draw_series(bars),
                     style.label.as_deref(),
@@ -846,6 +846,14 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                             error!("chart 3d axes draw: {e:?}");
                         }
                     }
+                    let contains = |p: &(f64, f64, f64)| {
+                        x.0 <= p.0
+                            && p.0 <= x.1
+                            && y.0 <= p.1
+                            && p.1 <= y.1
+                            && z_min <= p.2
+                            && p.2 <= z_max
+                    };
                     let up = |&(x, y, z): &(f64, f64, f64)| (x, z, y);
                     for (i, ds) in self.datasets.iter().enumerate() {
                         match ds {
@@ -858,8 +866,11 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                 ))
                                 .filled();
                                 let ps = style.point_size.unwrap_or(3.0) as u32;
-                                let dots =
-                                    pts.0.iter().map(|p| Circle::new(up(p), ps, fill));
+                                let dots = pts
+                                    .0
+                                    .iter()
+                                    .filter(|p| contains(p))
+                                    .map(|p| Circle::new(up(p), ps, fill));
                                 annotate(
                                     chart.draw_series(dots),
                                     style.label.as_deref(),
@@ -873,20 +884,24 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                 let line =
                                     ShapeStyle::from(color).stroke_width(stroke(style));
                                 let fill = ShapeStyle::from(color).filled();
-                                annotate(
-                                    chart.draw_series(LineSeries::new(
-                                        pts.0.iter().map(up),
-                                        line,
-                                    )),
-                                    style.label.as_deref(),
-                                    line_mark(line),
-                                    "line3d",
-                                );
+                                let mut label = style.label.as_deref();
+                                for run in pts.0.split(|p| !contains(p)) {
+                                    annotate(
+                                        chart.draw_series(LineSeries::new(
+                                            run.iter().map(up),
+                                            line,
+                                        )),
+                                        label.take(),
+                                        line_mark(line),
+                                        "line3d",
+                                    );
+                                }
                                 let ps = marker_size(style.point_size, pts.0.len());
                                 if ps > 0 {
                                     let dots = pts
                                         .0
                                         .iter()
+                                        .filter(|p| contains(p))
                                         .map(|p| Circle::new(up(p), ps, fill));
                                     annotate(
                                         chart.draw_series(dots),
@@ -920,13 +935,14 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                     let n = a.len().min(b.len());
                                     (1..n).map(move |j| [a[j - 1], a[j], b[j], b[j - 1]])
                                 });
-                                let quads = cells.map(|q| {
-                                    let z = q.iter().map(|p| p.2).sum::<f64>() / 4.0;
-                                    Polygon::new(
-                                        q.iter().map(up).collect::<Vec<_>>(),
-                                        shade(z),
-                                    )
-                                });
+                                let quads =
+                                    cells.filter(|q| q.iter().all(contains)).map(|q| {
+                                        let z = q.iter().map(|p| p.2).sum::<f64>() / 4.0;
+                                        Polygon::new(
+                                            q.iter().map(up).collect::<Vec<_>>(),
+                                            shade(z),
+                                        )
+                                    });
                                 annotate(
                                     chart.draw_series(quads),
                                     style.label.as_deref(),

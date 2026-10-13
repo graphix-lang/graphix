@@ -1,5 +1,6 @@
 use super::GuiTestHarness;
 use anyhow::Result;
+use compact_str::format_compact;
 
 use crate::{
     theme::GraphixTheme,
@@ -620,5 +621,76 @@ async fn bar_slots_sum_duplicates_and_follow_data_changes() -> Result<()> {
     assert_eq!(c.bar_categories(), ["c", "b"]);
     assert_eq!([c.bar_value(0, 0), c.bar_value(0, 1)], [Some(15.0), None]);
     assert_eq!([c.bar_value(1, 0), c.bar_value(1, 1)], [Some(20.0), Some(10.0)]);
+    Ok(())
+}
+
+async fn assert_same_series_pixels(actual: &str, expected: &str) -> Result<()> {
+    let args = |data| {
+        format_compact!(
+            "#width: &`Fill, #height: &`Fixed(200.0), \
+         #x_range: &{{min: 0.0, max: 5.0}}, \
+         #y_range: &{{min: 0.0, max: 5.0}}, \
+         #z_range: &{{min: 0.0, max: 5.0}}, &[{data}]"
+        )
+    };
+    let mut actual = chart_harness(&args(actual)).await?;
+    let mut expected = chart_harness(&args(expected)).await?;
+    assert!(screenshot(&mut actual).await == screenshot(&mut expected).await);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nonfinite_candles_and_error_bars_are_omitted() -> Result<()> {
+    for (constructor, point) in [
+        ("candlestick", "{x: 2.0, open: 1.0, high: 4.0, low: 0.0 / 0.0, close: 3.0}"),
+        ("error_bar", "{x: 2.0, min: 0.0 / 0.0, avg: 2.0, max: 4.0}"),
+    ] {
+        assert_same_series_pixels(
+            &format_compact!("line(&[(1.0, 1.0)]), {constructor}(&[{point}])"),
+            "line(&[(1.0, 1.0)])",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn clipped_candles_keep_their_gain_color() -> Result<()> {
+    let mut h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #x_range: &{min: 0.0, max: 5.0}, #y_range: &{min: 0.0, max: 5.0}, \
+         &[candlestick(#gain_color: color(#r: 0.0, #g: 1.0, #b: 0.0)$, \
+           #loss_color: color(#r: 1.0, #g: 0.0, #b: 1.0)$, #bar_width: 20.0, \
+           &[{x: 2.0, open: 6.0, high: 8.0, low: 2.0, close: 7.0}])]",
+    )
+    .await?;
+    let pixels = screenshot(&mut h).await;
+    assert!(color_pixels(&pixels, [0, 255, 0]) > 10);
+    assert_eq!(color_pixels(&pixels, [255, 0, 255]), 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_3d_points_are_omitted_and_break_lines() -> Result<()> {
+    for invalid in ["(2.0, 0.0 / 0.0, 2.0)", "(20.0, 20.0, 20.0)"] {
+        assert_same_series_pixels(
+            &format_compact!("scatter3d(&[(1.0, 1.0, 1.0), {invalid}])"),
+            "scatter3d(&[(1.0, 1.0, 1.0)])",
+        )
+        .await?;
+        assert_same_series_pixels(
+            &format_compact!(
+                "line3d(#point_size: 0.0, &[(1.0, 1.0, 1.0), {invalid}, (3.0, 3.0, 3.0)])"
+            ),
+            "line3d(#point_size: 0.0, &[(1.0, 1.0, 1.0)])",
+        )
+        .await?;
+        assert_same_series_pixels(
+            &format_compact!(
+                "surface(&[[(1.0, 1.0, 1.0), (2.0, 1.0, 2.0)], [(1.0, 2.0, 2.0), {invalid}]])"
+            ),
+            "line3d(#point_size: 0.0, &[(1.0, 1.0, 1.0)])",
+        ).await?;
+    }
     Ok(())
 }
