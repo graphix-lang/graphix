@@ -416,40 +416,88 @@ pub(crate) async fn reconcile<T, F: Future<Output = Result<T>>>(
     Ok(())
 }
 
-/// The width `text` lays out to at `size` in `font`, unwrapped. Widths
-/// are remembered per thread, up to `MEASURED` of them, since a layout
-/// measures the same cells again every frame.
-pub(crate) fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 {
-    const MEASURED: usize = 8192;
-    type Key = (CompactString, u32, iced_core::Font);
-    thread_local! {
-        static WIDTHS: std::cell::RefCell<ahash::AHashMap<Key, f32>> =
-            std::cell::RefCell::new(ahash::AHashMap::default());
+const MEASURED: usize = 8192;
+type WidthMap =
+    indexmap::IndexMap<(ArcStr, u32, iced_core::Font), f32, ahash::RandomState>;
+
+#[derive(Hash)]
+struct WidthKey<'a>(&'a str, u32, iced_core::Font);
+
+impl indexmap::Equivalent<(ArcStr, u32, iced_core::Font)> for WidthKey<'_> {
+    fn equivalent(&self, key: &(ArcStr, u32, iced_core::Font)) -> bool {
+        self.0 == key.0.as_str() && self.1 == key.1 && self.2 == key.2
     }
-    let key = (CompactString::from(text), size.to_bits(), font);
-    if let Some(w) = WIDTHS.with(|m| m.borrow().get(&key).copied()) {
-        return w;
-    }
-    let w = shape_width(text, size, font);
-    WIDTHS.with(|m| {
-        let mut m = m.borrow_mut();
-        // CR claude for claude: [perf/low] When the width cache fills it clears
-        // everything. A data_table frame measures every visible cell, plus about
-        // log2(len) prefixes for each truncated one through truncate_to_width. Once a
-        // frame needs more than MEASURED widths, each frame clears the cache partway
-        // through and re-shapes nearly every string with cosmic-text: a cliff, not
-        // gradual decay. Separately, every lookup builds a CompactString key, which
-        // heap-allocates on a hit for any text over 24 bytes. Fix: keep two generations
-        // (on overflow the current map becomes the old one, and a hit in the old one is
-        // promoted) so the last frame's working set survives. Look up without building
-        // an owned key, e.g. by a precomputed hash of (text, size, font) or a hashbrown
-        // map with an Equivalent borrowed key. (gui-widgets-a-08)
-        if m.len() >= MEASURED {
-            m.clear();
+}
+
+#[derive(Default)]
+struct WidthCache {
+    current: WidthMap,
+    old: WidthMap,
+}
+
+impl WidthCache {
+    fn measure(&mut self, key: WidthKey<'_>, shape: impl FnOnce() -> f32) -> f32 {
+        if let Some(w) = self.current.get(&key) {
+            return *w;
         }
-        m.insert(key, w);
-    });
-    w
+        let (key, w) = self
+            .old
+            .swap_remove_entry(&key)
+            .unwrap_or_else(|| ((key.0.into(), key.1, key.2), shape()));
+        if self.current.len() >= MEASURED {
+            self.old.clear();
+            std::mem::swap(&mut self.current, &mut self.old);
+        }
+        self.current.insert(key, w);
+        w
+    }
+}
+
+/// The unwrapped width of `text`, cached per thread in two bounded generations.
+pub(crate) fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 {
+    thread_local! {
+        static WIDTHS: std::cell::RefCell<WidthCache> = std::cell::RefCell::default();
+    }
+    WIDTHS.with(|m| {
+        m.borrow_mut().measure(WidthKey(text, size.to_bits(), font), || {
+            shape_width(text, size, font)
+        })
+    })
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+    use compact_str::format_compact;
+
+    #[test]
+    fn width_cache_retains_more_than_one_generation() {
+        let mut cache = WidthCache::default();
+        let font = iced_core::Font::default();
+        for i in 0..=MEASURED {
+            let text = format_compact!("a long cell value over twenty-four bytes {i}");
+            assert_eq!(cache.measure(WidthKey(&text, 16, font), || i as f32), i as f32);
+        }
+        for _ in 0..3 {
+            for i in 0..=MEASURED {
+                let text =
+                    format_compact!("a long cell value over twenty-four bytes {i}");
+                assert_eq!(
+                    cache.measure(WidthKey(&text, 16, font), || panic!("reshaped {i}")),
+                    i as f32
+                );
+            }
+        }
+        assert!(cache.current.len() <= MEASURED);
+        assert!(cache.old.len() <= MEASURED);
+        assert_eq!(
+            cache.measure(
+                WidthKey("a long cell value over twenty-four bytes 0", 17, font),
+                || 42.0
+            ),
+            42.0
+        );
+    }
 }
 
 fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
