@@ -809,7 +809,6 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
             assert!(feats.contains_key(name), "no [features] entry for {name}");
             assert!(all.contains(name), "`all` is missing stdlib package {name}");
         }
-        // bench is internal but must still be registered by a default build
         // is_stdlib_package routes by the hand-kept lists: they are the
         // shell's stdlib packages, no more and no fewer
         let shipped = stdlib_packages_in_cargo_toml(&content).unwrap();

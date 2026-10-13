@@ -287,8 +287,7 @@ const DEFAULT_PACKAGES: &[&str] = &[
 /// (`fs`/`net`/`time` are submodules of `sys`).
 const LEGACY_REMAP: &[(&str, &str)] = &[("fs", "sys"), ("net", "sys"), ("time", "sys")];
 
-/// True if `name` is a stdlib package (user-facing or internal). Stdlib
-/// packages track the shell version and are recorded by name only.
+/// True if `name` is a stdlib package. Stdlib packages track the shell version and are recorded by name only.
 fn is_stdlib_package(name: &str) -> bool {
     DEFAULT_PACKAGES.contains(&name)
 }
@@ -639,13 +638,13 @@ fn with_external(
         .as_table_mut()
         .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
     for (name, entry) in external {
-        let crate_name = format!("graphix-package-{name}");
-        if deps.contains_key(&crate_name) {
+        let dep = crate_name(name);
+        if deps.contains_key(&dep) {
             bail!("the package {name} is already a dependency of the shell")
         }
         match entry {
             PackageEntry::Version(version) => {
-                deps[&crate_name] = toml_edit::value(version.as_str());
+                deps[&dep] = toml_edit::value(version.as_str());
             }
             PackageEntry::Path(path) => {
                 let mut tbl = toml_edit::InlineTable::new();
@@ -653,7 +652,7 @@ fn with_external(
                     "path",
                     toml_edit::Value::from(path.to_string_lossy().as_ref()),
                 );
-                deps[&crate_name] = toml_edit::Item::Value(tbl.into());
+                deps[&dep] = toml_edit::Item::Value(tbl.into());
             }
         }
     }
@@ -759,32 +758,21 @@ fn version_gt(a: &str, b: &str) -> bool {
     }
 }
 
+/// The build directory under `graphix_data_dir`, created, and where the
+/// source of graphix-shell `version` unpacks in it.
+async fn build_dirs(
+    graphix_data_dir: &Path,
+    version: &str,
+) -> Result<(PathBuf, PathBuf)> {
+    let build_dir = graphix_data_dir.join("build");
+    fs::create_dir_all(&build_dir).await?;
+    let graphix_dir = build_dir.join(format!("graphix-shell-{version}"));
+    Ok((build_dir, graphix_dir))
+}
+
 // fetch our source from the local cargo cache (preferred method)
 async fn extract_local_source(cargo: &Path, version: &str) -> Result<PathBuf> {
-    let graphix_build_dir = graphix_data_dir()?.join("build");
-    let graphix_dir = graphix_build_dir.join(format!("graphix-shell-{version}"));
-    match fs::metadata(&graphix_build_dir).await {
-        Err(_) => fs::create_dir_all(&graphix_build_dir).await?,
-        Ok(md) if !md.is_dir() => bail!("{graphix_build_dir:?} isn't a directory"),
-        Ok(_) => (),
-    }
-    // CR claude for claude: [structure/low] extract_local_source and download_source
-    // repeat the same build-dir and graphix_dir setup. The 'graphix_dir exists ->
-    // return it' branch in each can never run, because their only route is
-    // prepare_source, which deletes the whole build dir first. That branch suggests the
-    // unpacked source is cached when it is not. Fix: make one helper that prepares the
-    // build dir and returns graphix_dir, and drop the early returns. Also,
-    // PackageId::new and PackageId::with_path repeat the graphix-package- prefix strip,
-    // and with_external and update spell out the crate name again: use one short-name
-    // fn and one crate-name fn. confirm_yn's non-terminal check is dead, since its only
-    // caller bails first. In test.rs, the 'bench is internal' comment and
-    // is_stdlib_package's 'user-facing or internal' doc are stale and should be
-    // deleted. (package-10)
-    match fs::metadata(&graphix_dir).await {
-        Ok(md) if !md.is_dir() => bail!("{graphix_dir:?} isn't a directory"),
-        Ok(_) => return Ok(graphix_dir),
-        Err(_) => (),
-    }
+    let (_, graphix_dir) = build_dirs(&graphix_data_dir()?, version).await?;
     let package = format!("graphix-shell-{version}");
     let cargo_root = cargo
         .parent()
@@ -830,19 +818,7 @@ async fn download_source(
     graphix_data_dir: &Path,
     version: &str,
 ) -> Result<PathBuf> {
-    let package = format!("graphix-shell-{version}");
-    let graphix_build_dir = graphix_data_dir.join("build");
-    let graphix_dir = graphix_build_dir.join(&package);
-    match fs::metadata(&graphix_build_dir).await {
-        Err(_) => fs::create_dir_all(&graphix_build_dir).await?,
-        Ok(md) if !md.is_dir() => bail!("{graphix_build_dir:?} isn't a directory"),
-        Ok(_) => (),
-    }
-    match fs::metadata(&graphix_dir).await {
-        Ok(md) if !md.is_dir() => bail!("{graphix_dir:?} isn't a directory"),
-        Ok(_) => return Ok(graphix_dir),
-        Err(_) => (),
-    }
+    let (graphix_build_dir, graphix_dir) = build_dirs(graphix_data_dir, version).await?;
     let cr = crates_io.get_crate("graphix-shell").await?;
     let cr_version = cr
         .versions
@@ -893,24 +869,24 @@ pub struct PackageId {
     path: Option<PathBuf>,
 }
 
+/// A package's short name, its crate name less `graphix-package-`.
+fn short_name(name: &str) -> CompactString {
+    name.strip_prefix("graphix-package-").unwrap_or(name).into()
+}
+
+/// The crate of the package with short name `name`.
+fn crate_name(name: &str) -> CompactString {
+    format_compact!("graphix-package-{name}")
+}
+
 impl PackageId {
     pub fn new(name: &str, version: Option<&str>) -> Self {
-        let name = if name.starts_with("graphix-package-") {
-            CompactString::from(name.strip_prefix("graphix-package-").unwrap())
-        } else {
-            CompactString::from(name)
-        };
         let version = version.map(CompactString::from);
-        Self { name, version, path: None }
+        Self { name: short_name(name), version, path: None }
     }
 
     pub fn with_path(name: &str, path: PathBuf) -> Self {
-        let name = if name.starts_with("graphix-package-") {
-            CompactString::from(name.strip_prefix("graphix-package-").unwrap())
-        } else {
-            CompactString::from(name)
-        };
-        Self { name, version: None, path: Some(path) }
+        Self { name: short_name(name), version: None, path: Some(path) }
     }
 
     /// Short name without graphix-package- prefix
@@ -920,7 +896,7 @@ impl PackageId {
 
     /// The full crate name
     pub fn crate_name(&self) -> CompactString {
-        format_compact!("graphix-package-{}", self.name)
+        crate_name(&self.name)
     }
 
     pub fn version(&self) -> Option<&str> {
@@ -1141,13 +1117,8 @@ async fn prompt_line() -> Result<Option<String>> {
     .await?
 }
 
-/// Prompt for a yes/no confirmation, defaulting to no. Returns `false` without
-/// prompting when stdin is not a terminal, so a scripted/CI removal never
-/// cascades silently.
+/// Prompt for a yes/no confirmation, defaulting to no.
 async fn confirm_yn(prompt: &str) -> Result<bool> {
-    if !std::io::stdin().is_terminal() {
-        return Ok(false);
-    }
     print!("{prompt} [y/N] ");
     flush_stdout();
     match prompt_line().await? {
@@ -1684,10 +1655,14 @@ impl GraphixPM {
 
     /// Search crates.io for graphix packages
     pub async fn search(&self, query: &str) -> Result<()> {
-        let search_query = format!("graphix-package-{query}");
+        let search_query = crate_name(query);
         let results = self
             .cratesio
-            .crates(crates_io_api::CratesQuery::builder().search(&search_query).build())
+            .crates(
+                crates_io_api::CratesQuery::builder()
+                    .search(search_query.as_str())
+                    .build(),
+            )
             .await?;
         if results.crates.is_empty() {
             println!("No packages found matching '{query}'");
@@ -1895,8 +1870,7 @@ impl GraphixPM {
         let mut external_latest = BTreeMap::new();
         for (name, entry) in &packages.external {
             if let PackageEntry::Version(_) = entry {
-                let crate_name = format!("graphix-package-{name}");
-                match self.latest_version(&crate_name).await {
+                match self.latest_version(&crate_name(name)).await {
                     Ok(v) => {
                         external_latest.insert(name.clone(), v);
                     }
