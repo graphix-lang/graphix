@@ -1,38 +1,19 @@
+use super::struct_field;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_package_core::{ProgramArgs, testing};
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 
-fn get_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
-    match v {
-        Value::Array(a) => {
-            for pair in a.iter() {
-                if let Value::Array(kv) = pair {
-                    if kv.len() == 2 {
-                        if let Value::String(k) = &kv[0] {
-                            if &**k == name {
-                                return Some(&kv[1]);
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
 fn get_command(v: &Value) -> Result<&[Value]> {
-    match get_field(v, "command") {
+    match struct_field(v, "command") {
         Some(Value::Array(a)) => Ok(a),
         other => bail!("expected command array, got {other:?}"),
     }
 }
 
 fn get_values(v: &Value) -> Result<&CMap<Value, Value, 32>> {
-    match get_field(v, "values") {
+    match struct_field(v, "values") {
         Some(Value::Map(m)) => Ok(m),
         other => bail!("expected values map, got {other:?}"),
     }

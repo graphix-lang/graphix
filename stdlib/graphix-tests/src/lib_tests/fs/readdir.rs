@@ -1,4 +1,5 @@
-use anyhow::{Result, bail};
+use crate::lib_tests::struct_field;
+use anyhow::{Context, Result, bail};
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;
 use std::collections::HashSet;
@@ -10,32 +11,6 @@ fn extract_direntry_array(v: &Value) -> Result<Vec<&Value>> {
         Ok(arr.iter().collect())
     } else {
         bail!("expected Array value, got: {v:?}")
-    }
-}
-
-/// A field of a DirEntry struct.
-// CR claude for claude: [structure/low] This struct-field lookup is written three
-// times: here, `get_field` in args.rs, and `metadata_to_map` in fs/metadata.rs (which
-// also allocates a HashMap to do it). Move one `struct_field(&Value, &str) ->
-// Option<&Value>` into lib_tests/mod.rs and use it in all three.
-// test_readdir_follow_symlinks below also builds a `names` set it never reads: either
-// assert that real_dir and link_dir are in it, or delete it. (tests-lib-b1-09)
-fn get_field<'a>(entry: &'a Value, field: &str) -> Result<&'a Value> {
-    if let Value::Array(arr) = entry {
-        for item in arr.iter() {
-            if let Value::Array(pair) = item {
-                if pair.len() == 2 {
-                    if let Value::String(key) = &pair[0] {
-                        if &**key == field {
-                            return Ok(&pair[1]);
-                        }
-                    }
-                }
-            }
-        }
-        bail!("field {field} not found in entry")
-    } else {
-        bail!("expected struct (array), got: {entry:?}")
     }
 }
 
@@ -55,11 +30,11 @@ run_with_tempdir! {
 
         let mut names = HashSet::new();
         for entry in &entries {
-            let file_name = get_field(entry, "file_name")?;
+            let file_name = struct_field(entry, "file_name").context("file_name")?;
             if let Value::String(s) = file_name {
                 names.insert(s.to_string());
             }
-            let depth = get_field(entry, "depth")?;
+            let depth = struct_field(entry, "depth").context("depth")?;
             assert!(matches!(depth, Value::I64(1)), "expected depth=1, got: {depth:?}");
         }
 
@@ -111,11 +86,11 @@ run_with_tempdir! {
         let mut names = HashSet::new();
         let mut max_depth = 0i64;
         for entry in &entries {
-            let file_name = get_field(entry, "file_name")?;
+            let file_name = struct_field(entry, "file_name").context("file_name")?;
             if let Value::String(s) = file_name {
                 names.insert(s.to_string());
             }
-            let depth = get_field(entry, "depth")?;
+            let depth = struct_field(entry, "depth").context("depth")?;
             if let Value::I64(d) = depth {
                 max_depth = max_depth.max(*d);
             }
@@ -147,11 +122,11 @@ run_with_tempdir! {
         let mut names = HashSet::new();
         let mut min_depth = i64::MAX;
         for entry in &entries {
-            let file_name = get_field(entry, "file_name")?;
+            let file_name = struct_field(entry, "file_name").context("file_name")?;
             if let Value::String(s) = file_name {
                 names.insert(s.to_string());
             }
-            let depth = get_field(entry, "depth")?;
+            let depth = struct_field(entry, "depth").context("depth")?;
             if let Value::I64(d) = depth {
                 min_depth = min_depth.min(*d);
             }
@@ -181,7 +156,7 @@ run_with_tempdir! {
         let mut file_idx = None;
         let mut dir_idx = None;
         for (i, entry) in entries.iter().enumerate() {
-            let file_name = get_field(entry, "file_name")?;
+            let file_name = struct_field(entry, "file_name").context("file_name")?;
             if let Value::String(s) = file_name {
                 if &**s == "file.txt" {
                     file_idx = Some(i);
@@ -217,7 +192,7 @@ run_with_tempdir! {
 
         let mut names = HashSet::new();
         for entry in &entries {
-            let file_name = get_field(entry, "file_name")?;
+            let file_name = struct_field(entry, "file_name").context("file_name")?;
             if let Value::String(s) = file_name {
                 names.insert(s.to_string());
             }
@@ -226,7 +201,7 @@ run_with_tempdir! {
         // with follow_symlinks=true file.txt appears under real_dir and
         // under link_dir
         let file_count = entries.iter().filter(|e| {
-            if let Ok(Value::String(s)) = get_field(e, "file_name") {
+            if let Some(Value::String(s)) = struct_field(e, "file_name") {
                 &**s == "file.txt"
             } else {
                 false
@@ -234,6 +209,8 @@ run_with_tempdir! {
         }).count();
 
         assert_eq!(file_count, 2, "should see file.txt twice when following symlinks");
+        assert!(names.contains("real_dir"), "missing real_dir");
+        assert!(names.contains("link_dir"), "missing link_dir");
         Ok(())
     }
 }
@@ -254,7 +231,7 @@ run_with_tempdir! {
 
         // With follow_symlinks=false, we should only see file.txt once
         let file_count = entries.iter().filter(|e| {
-            if let Ok(Value::String(s)) = get_field(e, "file_name") {
+            if let Some(Value::String(s)) = struct_field(e, "file_name") {
                 &**s == "file.txt"
             } else {
                 false
@@ -282,7 +259,7 @@ run_with_tempdir! {
 
         let mut names = HashSet::new();
         for entry in &entries {
-            let file_name = get_field(entry, "file_name")?;
+            let file_name = struct_field(entry, "file_name").context("file_name")?;
             if let Value::String(s) = file_name {
                 names.insert(s.to_string());
             }
@@ -333,8 +310,8 @@ run_with_tempdir! {
         let mut found_symlink = false;
 
         for entry in &entries {
-            let file_name = get_field(entry, "file_name")?;
-            let kind = get_field(entry, "kind")?;
+            let file_name = struct_field(entry, "file_name").context("file_name")?;
+            let kind = struct_field(entry, "kind").context("kind")?;
 
             if let (Value::String(name), Value::String(k)) = (file_name, kind) {
                 match &**name {
@@ -376,7 +353,7 @@ run_with_tempdir! {
         let entries = extract_direntry_array(&v)?;
         assert_eq!(entries.len(), 1, "expected 1 entry");
 
-        let path = get_field(entries[0], "path")?;
+        let path = struct_field(entries[0], "path").context("path")?;
         if let Value::String(s) = path {
             assert!(s.ends_with("file.txt"), "path should end with file.txt");
             assert!(s.contains('/') || s.contains('\\'), "path should be absolute/full");
@@ -440,7 +417,7 @@ run_with_tempdir! {
 
         let mut depth_counts = std::collections::HashMap::new();
         for entry in &entries {
-            let depth = get_field(entry, "depth")?;
+            let depth = struct_field(entry, "depth").context("depth")?;
             if let Value::I64(d) = depth {
                 *depth_counts.entry(d).or_insert(0) += 1;
             }

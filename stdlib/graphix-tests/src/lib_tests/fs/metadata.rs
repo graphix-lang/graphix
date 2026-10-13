@@ -1,27 +1,8 @@
+use crate::lib_tests::struct_field;
 use anyhow::Result;
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;
-use std::collections::HashMap;
 use tokio::{fs, time::Duration};
-
-/// The metadata array as a map.
-fn metadata_to_map(v: &Value) -> Option<HashMap<String, Value>> {
-    if let Value::Array(arr) = v {
-        let mut map = HashMap::new();
-        for item in arr.iter() {
-            if let Value::Array(pair) = item {
-                if pair.len() == 2 {
-                    if let (Value::String(key), val) = (&pair[0], &pair[1]) {
-                        map.insert(key.to_string(), val.clone());
-                    }
-                }
-            }
-        }
-        Some(map)
-    } else {
-        None
-    }
-}
 
 run_with_tempdir! {
     name: test_is_file_basic,
@@ -161,12 +142,11 @@ run_with_tempdir! {
         test_file
     },
     expect: |v: Value| -> Result<()> {
-        let fields = metadata_to_map(&v).expect("expected metadata array");
 
-        let kind = fields.get("kind").expect("kind field missing");
+        let kind = struct_field(&v, "kind").expect("kind field missing");
         assert!(matches!(kind, Value::String(s) if s.as_str() == "File"), "expected kind=File, got: {kind:?}");
 
-        let len = fields.get("len").expect("len field missing");
+        let len = struct_field(&v, "len").expect("len field missing");
         assert!(matches!(len, Value::U64(11)), "expected len=11, got: {len:?}");
 
         Ok(())
@@ -182,8 +162,7 @@ run_with_tempdir! {
         test_dir
     },
     expect: |v: Value| -> Result<()> {
-        let fields = metadata_to_map(&v).expect("expected metadata array");
-        let kind = fields.get("kind").expect("kind field missing");
+        let kind = struct_field(&v, "kind").expect("kind field missing");
         assert!(matches!(kind, Value::String(s) if s.as_str() == "Dir"), "expected kind=Dir, got: {kind:?}");
         Ok(())
     }
@@ -210,8 +189,7 @@ run_with_tempdir! {
         link
     },
     expect: |v: Value| -> Result<()> {
-        let fields = metadata_to_map(&v).expect("expected metadata array");
-        let kind = fields.get("kind").expect("kind field missing");
+        let kind = struct_field(&v, "kind").expect("kind field missing");
         assert!(matches!(kind, Value::String(s) if s.as_str() == "File"), "expected kind=File (followed), got: {kind:?}");
         Ok(())
     }
@@ -229,8 +207,7 @@ run_with_tempdir! {
         link
     },
     expect: |v: Value| -> Result<()> {
-        let fields = metadata_to_map(&v).expect("expected metadata array");
-        let kind = fields.get("kind").expect("kind field missing");
+        let kind = struct_field(&v, "kind").expect("kind field missing");
         assert!(
             matches!(kind, Value::String(s) if s.as_str() == "Symlink"),
             "expected kind=Symlink (not followed), got: {kind:?}"
@@ -253,8 +230,7 @@ run_with_tempdir! {
         test_file
     },
     expect: |v: Value| -> Result<()> {
-        let fields = metadata_to_map(&v).expect("expected metadata array");
-        let permissions = fields.get("permissions").expect("permissions field missing");
+        let permissions = struct_field(&v, "permissions").expect("permissions field missing");
         if let Value::U32(mode) = permissions {
             assert_eq!(mode & 0o777, 0o644, "expected mode 0o644, got: {mode:#o}");
             Ok(())
@@ -274,10 +250,9 @@ run_with_tempdir! {
         test_file
     },
     expect: |v: Value| -> Result<()> {
-        let fields = metadata_to_map(&v).expect("expected metadata array");
-        assert!(fields.contains_key("accessed"), "missing accessed field");
-        assert!(fields.contains_key("created"), "missing created field");
-        assert!(fields.contains_key("modified"), "missing modified field");
+        assert!(struct_field(&v, "accessed").is_some(), "missing accessed field");
+        assert!(struct_field(&v, "created").is_some(), "missing created field");
+        assert!(struct_field(&v, "modified").is_some(), "missing modified field");
         Ok(())
     }
 }

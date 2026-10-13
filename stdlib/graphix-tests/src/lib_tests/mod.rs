@@ -1,3 +1,5 @@
+use netidx::subscriber::Value;
+
 mod args;
 mod arith;
 mod array;
@@ -38,6 +40,18 @@ mod toml;
 mod typecheck;
 mod wake;
 mod xls;
+
+/// The field `name` of a struct value, an array of `[name, value]` pairs.
+fn struct_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
+    let Value::Array(fields) = v else { return None };
+    fields.iter().find_map(|f| match f {
+        Value::Array(kv) => match &kv[..] {
+            [Value::String(k), v] if &**k == name => Some(v),
+            _ => None,
+        },
+        _ => None,
+    })
+}
 
 /// The test certificates, written once to a directory of their own so a
 /// test binary run away from its source tree has them; escaped for a
