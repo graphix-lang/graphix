@@ -160,6 +160,22 @@ impl<X: GXExt> Output<X> {
     }
 }
 
+/// Stops the runtime and the Ctrl-C task when a run ends, whichever way:
+/// the Ctrl-C task holds a handle, so the runtime would outlive the run.
+/// `abort()` breaks a cycle still spinning before stopping the runtime;
+/// the tokio runtime's drop would block on it.
+struct Teardown<X: GXExt> {
+    gx: GXHandle<X>,
+    sigint: tokio::task::JoinHandle<()>,
+}
+
+impl<X: GXExt> Drop for Teardown<X> {
+    fn drop(&mut self) {
+        self.gx.abort();
+        self.sigint.abort();
+    }
+}
+
 /// The signals that ask the process to end (SIGTERM, SIGHUP): the shell
 /// stops as it would at Ctrl-D, so a display gives the terminal back.
 /// The answer is the exit code a shell reports for the signal.
@@ -577,16 +593,6 @@ impl<X: GXExt> Shell<X> {
         }
         // Armed before the first cycle: a program may wedge inside
         // `load_env`, before the input loop exists.
-        // CR claude for claude: [risk/low] Two error exits skip the gx.abort() and
-        // sigint.abort() at the end of run: the `?` on load_env, which is any script
-        // that fails to compile, and the `return Err(gx.stopped(..))` arm. The sigint
-        // task holds a GXHandle clone, so the runtime never sees its last handle drop.
-        // In an embedder or a test calling Shell::run, the runtime task and the Ctrl-C
-        // handler live for the rest of the process. Every cycle with work then logs
-        // 'could not send batch' to a dropped receiver. Fix: once the sigint task is
-        // armed, hold a guard whose Drop calls gx.abort() and sigint.abort(), so every
-        // exit, `?` included, stops both. See x-concurrency-09 for the runtime's send
-        // loop ignoring abort. (x-concurrency-08)
         let sigint = {
             let gx = gx.clone();
             tokio::spawn(async move {
@@ -595,6 +601,7 @@ impl<X: GXExt> Shell<X> {
                 }
             })
         };
+        let _teardown = Teardown { gx: gx.clone(), sigint };
         let mut terminated = Terminated::new()?;
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
@@ -607,8 +614,6 @@ impl<X: GXExt> Shell<X> {
             env = self.load_env(&gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => env?,
             code = terminated.recv() => {
                 gx.interrupt();
-                gx.abort();
-                sigint.abort();
                 return Ok(code)
             }
         };
@@ -707,10 +712,6 @@ impl<X: GXExt> Shell<X> {
         // `output.clear()`.
         gx.interrupt();
         output.clear().await;
-        // `abort()` breaks a cycle still spinning before stopping the
-        // runtime; the tokio runtime's drop would block on it.
-        gx.abort();
-        sigint.abort();
         exit
     }
 }
