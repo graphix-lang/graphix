@@ -21,18 +21,13 @@ val text_editor: fn(
 ## Parameters
 
 - **`#placeholder`** -- Hint text displayed when the editor is empty.
-- **`#on_edit`** -- Callback invoked on every edit. Receives the full content as a `string`. Use with `<-` to keep state in sync: `#on_edit: |v| content <- v`.
+- **`#on_edit`** -- Callback invoked on every edit. Receives the full content as a `string`. Use with `<-` to keep state in sync: `#on_edit: |v| content <- v`. Without `#on_edit` the editor is read-only, as a disabled one is.
 - **`#width`** -- Width in pixels as `f64`, or `null` for automatic sizing. Note: this is `&[f64, null]`, not `&Length` -- the text editor uses fixed pixel dimensions rather than the layout-based `Length` type.
 - **`#height`** -- Height in pixels as `f64`, or `null` for automatic sizing. Same `&[f64, null]` type as width.
 - **`#padding`** -- Interior padding around the text content. Accepts `Padding` values.
 - **`#font`** -- Font to use, or `null` for the default font.
 - **`#size`** -- Font size in pixels, or `null` for the default size.
-<!-- CR claude for claude: [doc-drift/low] A disabled editor can still be clicked, and
-its text scrolled, selected and copied. Only edits are refused. An editor without
-`#on_edit` is read-only in the same way, and the `#on_edit` line does not say so. Write:
-'disabled: edits are refused; the text can still be scrolled, selected and copied.
-Without #on_edit the editor is read-only in the same way.' (book-ui-a-13) -->
-- **`#disabled`** -- When `true`, the editor cannot be focused or edited. Defaults to `false`.
+- **`#disabled`** -- When `true`, edits are refused; the text can still be scrolled, selected and copied. Defaults to `false`.
 - **positional `&string`** -- Reference to the current content. The editor displays this text and you update it from the `#on_edit` callback.
 
 ## Examples
