@@ -3,10 +3,11 @@
 
 use super::*;
 use anyhow::Result;
-use std::time::Duration;
+use compact_str::{CompactString, format_compact};
+use poolshark::local::LPooled;
+use std::{fmt::Write, time::Duration};
 
-/// Harness drained until the snapshot is steady.
-// CR claude for claude: [style/low] Almost every fixture opens with `use gui::*; use
+// XCR claude for claude: [style/low] Almost every fixture opens with `use gui::*; use
 // gui::data_table::{self, *}; use sys::*;`, and most never use `sys`; the few that do
 // write `sys::net::publish` in full anyway. The column record `{ name: .., typ: ..,
 // display_name: null, source: .., on_resize: &null, width: &null }` is written by hand
@@ -15,8 +16,19 @@ use std::time::Duration;
 // shared import line (without `sys`), and build columns through a single
 // `text_col(name, source)` helper that `stored_column_table` also uses.
 // (tests-gui-a-12)
+// 2026-10-13 codex: Centralized imports and replaced the copied Text records with
+// the existing text_column constructor, including stored_column_table. Pins:
+// default_value_uniform, default_value_per_row, on_edit_text_column. Runtime
+// assertions are unverified here because netidx resolver sockets are refused.
+fn table_code(code: &str) -> CompactString {
+    format_compact!(
+        "use gui::data_table::{{SortBy, SortDirection, data_table, text_column}};\n{code}"
+    )
+}
+
+/// Harness drained until the snapshot is steady.
 async fn dt(code: &str) -> Result<GuiTestHarness> {
-    let mut h = GuiTestHarness::new(code).await?;
+    let mut h = GuiTestHarness::new(&table_code(code)).await?;
     let mut prev = h.dt_snapshot();
     for _ in 0..20 {
         h.drain().await?;
@@ -32,7 +44,7 @@ async fn dt(code: &str) -> Result<GuiTestHarness> {
 #[tokio::test(flavor = "current_thread")]
 async fn basic_structure() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1", "r2"], columns: ["c0", "c1"] };
 let result = data_table(#table: &tbl)
 "#;
@@ -49,7 +61,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn empty_table() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: [], columns: [] };
 let result = data_table(#table: &tbl)
 "#;
@@ -64,7 +76,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn value_mode() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["a", "b"], columns: [] };
 let result = data_table(#table: &tbl)
 "#;
@@ -81,7 +93,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn default_preserves_table_order() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["z", "a", "m"], columns: ["c", "a"] };
 let result = data_table(#table: &tbl)
 "#;
@@ -95,9 +107,9 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_uniform() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }), display_name: null, source: &"DEF", on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &"DEF")
     ] };
 let result = data_table(
 #table: &tbl
@@ -115,16 +127,10 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn netidx_source_placeholder() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1"], columns: [
-        { name: "loading", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &`Netidx("…"),
-            on_resize: &null, width: &null },
-        { name: "blank", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &`Netidx(null),
-            on_resize: &null, width: &null }
+        text_column(#name: "loading", #source: &`Netidx("…")),
+        text_column(#name: "blank", #source: &`Netidx(null))
     ] };
 let result = data_table(#table: &tbl)
 "#;
@@ -144,13 +150,10 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn netidx_source_map_fallback() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let m = {"r0" => "alpha", "r1" => "beta"};
 let tbl = { rows: ["r0", "r1"], columns: [
-        { name: "score", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &`Netidx(m),
-            on_resize: &null, width: &null }
+        text_column(#name: "score", #source: &`Netidx(m))
     ] };
 let result = data_table(#table: &tbl)
 "#;
@@ -165,14 +168,11 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_per_row() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let a = "val_a";
 let b = "val_b";
 let tbl = { rows: ["r0", "r1"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &{"r0" => a, "r1" => b },
-            on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &{"r0" => a, "r1" => b })
     ] };
 let result = data_table(
 #table: &tbl
@@ -187,15 +187,12 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn virtual_column() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let a = "calc_a";
 let b = "calc_b";
 let tbl = { rows: ["r0", "r1"], columns: [
         "real",
-        { name: "virtual", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &{"r0" => a, "r1" => b },
-            on_resize: &null, width: &null }
+        text_column(#name: "virtual", #source: &{"r0" => a, "r1" => b })
     ] };
 let result = data_table(
 #table: &tbl
@@ -214,7 +211,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn selection_initial_empty() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let sel = [];
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(#selection: &sel, #table: &tbl)
@@ -228,7 +225,7 @@ let result = data_table(#selection: &sel, #table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn selection_from_graphix() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let sel = ["r0/c0"];
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(#selection: &sel, #table: &tbl)
@@ -243,7 +240,7 @@ let result = data_table(#selection: &sel, #table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn on_select_fires_on_click() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let sel = [];
 let last_clicked = "";
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
@@ -276,7 +273,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_activate_fires_on_name_click() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let activated = "";
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(
@@ -304,7 +301,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_header_click_fires() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let clicked_col = "";
 let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
 let result = data_table(
@@ -312,9 +309,11 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(400.0, 200.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(400.0, 200.0),
+    )
+    .await?;
     let _ = h.inner.watch("test::clicked_col").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -337,7 +336,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn header_click_cycles_sort_state() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*; use array::*;
+
 let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
 let sort_by: Array<SortBy> = [];
 let result = data_table(
@@ -363,9 +362,11 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(400.0, 200.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(400.0, 200.0),
+    )
+    .await?;
     h.inner.drain().await?;
     let _ = h.view();
     let bounds = h.inner.dt().dt_cell_bounds(0, "c1").expect("c1 visible");
@@ -409,16 +410,13 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_virtual_column_ascending() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let p0 = "3";
 let p1 = "1";
 let p2 = "2";
 let tbl = { rows: ["r0", "r1", "r2"], columns: [
         "real",
-        { name: "priority", typ: `Text({ on_edit: null }),
-            display_name: "Priority",
-            source: &{"r0" => p0, "r1" => p1, "r2" => p2 },
-            on_resize: &null, width: &null }
+        text_column(#name: "priority", #source: &{"r0" => p0, "r1" => p1, "r2" => p2 }, #display_name: "Priority")
     ] };
 let result = data_table(
     #sort_by: &[{ column: "priority", direction: `Ascending }],
@@ -434,16 +432,13 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_virtual_column_descending() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let s0 = "10";
 let s1 = "30";
 let s2 = "20";
 let tbl = { rows: ["r0", "r1", "r2"], columns: [
         "real",
-        { name: "score", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &{"r0" => s0, "r1" => s1, "r2" => s2 },
-            on_resize: &null, width: &null }
+        text_column(#name: "score", #source: &{"r0" => s0, "r1" => s1, "r2" => s2 })
     ] };
 let result = data_table(
     #sort_by: &[{ column: "score", direction: `Descending }],
@@ -459,16 +454,13 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_virtual_column_lexicographic() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let l0 = "cherry";
 let l1 = "apple";
 let l2 = "banana";
 let tbl = { rows: ["r0", "r1", "r2"], columns: [
         "data",
-        { name: "label", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &{"r0" => l0, "r1" => l1, "r2" => l2 },
-            on_resize: &null, width: &null }
+        text_column(#name: "label", #source: &{"r0" => l0, "r1" => l1, "r2" => l2 })
     ] };
 let result = data_table(
     #sort_by: &[{ column: "label", direction: `Ascending }],
@@ -485,7 +477,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_indicator_absent_by_default() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
 let result = data_table(#table: &tbl)
 "#;
@@ -499,7 +491,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn sort_indicator_single_column() -> Result<()> {
     let ascending = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
 let result = data_table(
     #sort_by: &[{ column: "name", direction: `Ascending }],
@@ -511,7 +503,7 @@ let result = data_table(
     assert_eq!(h.dt().dt_sort_indicator("env"), None);
 
     let descending = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
 let result = data_table(
     #sort_by: &[{ column: "env", direction: `Descending }],
@@ -528,7 +520,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_indicator_multi_column_shows_priority() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env", "score"] };
 let result = data_table(
     #sort_by: &[
@@ -551,7 +543,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_subscribed_column_reorders_on_update() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let v0 = f64:30.0;
 let v1 = f64:10.0;
 let v2 = f64:20.0;
@@ -626,7 +618,7 @@ async fn sort_subscribes_newly_visible_rows() -> Result<()> {
     }
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 {publishes}
 let tbl = {{ rows: [{rows}], columns: ["cpu", "mem"] }};
 let result = data_table(
@@ -683,7 +675,7 @@ async fn sort_by_change_resorts_offscreen_rows() -> Result<()> {
     }
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 {publishes}
 let sort_col = "alpha";
 let sort_dir: SortDirection = `Ascending;
@@ -790,14 +782,11 @@ fn sparkline_decimation() {
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: edit }),
-            display_name: null,
-            source: &"old",
-            on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &"old", #on_edit: edit)
     ] };
 let result = data_table(
 #table: &tbl
@@ -823,14 +812,11 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column_parses_number() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let got: Any = null;
 let edit = |#path: string, #value: Any| got <- value;
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: edit }),
-            display_name: null,
-            source: &"1",
-            on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &"1", #on_edit: edit)
     ] };
 let result = data_table(
 #table: &tbl
@@ -851,14 +837,11 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_cancel() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: edit }),
-            display_name: null,
-            source: &"x",
-            on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &"x", #on_edit: edit)
     ] };
 let result = data_table(
 #table: &tbl
@@ -884,7 +867,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_toggle_column() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = "";
 let toggled = |#path: string, #value: bool| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -897,9 +880,11 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(500.0, 200.0),
+    )
+    .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -925,7 +910,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_combo_column() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = "";
 let pick = |#path: string, #value: string| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -941,9 +926,11 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 300.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(500.0, 300.0),
+    )
+    .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -979,7 +966,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_spin_column() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = "";
 let bumped = |#path: string, #value: f64| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -992,9 +979,11 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(500.0, 200.0),
+    )
+    .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -1037,7 +1026,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_click_button_column() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = "";
 let pressed = |#path: string, #value: Any| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -1050,9 +1039,11 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(500.0, 200.0),
+    )
+    .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -1077,7 +1068,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_update_fires_for_subscribed_cell() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = "";
 sys::net::publish("/local/dt7/r0/c0", v64:42);
 let tbl = { rows: ["/local/dt7/r0"], columns: ["c0"] };
@@ -1107,13 +1098,10 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_per_row_ref_updates() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let a = "v1";
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &{"r0" => a},
-            on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &{"r0" => a})
     ] };
 let result = data_table(
 #table: &tbl
@@ -1139,12 +1127,9 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn virtual_columns_prevent_value_mode() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1"], columns: [
-        { name: "region", typ: `Text({ on_edit: null }),
-            display_name: "Region",
-            source: &"prod",
-            on_resize: &null, width: &null }
+        text_column(#name: "region", #source: &"prod", #display_name: "Region")
     ] };
 let result = data_table(
 #table: &tbl
@@ -1166,7 +1151,7 @@ let result = data_table(
 async fn default_value_reactive_via_connect() -> Result<()> {
     // Absolute (subscribed) row paths are required to reproduce.
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*; use map::*; use opt;
+
 sys::net::publish("/local/dt8b/r0/c0", v64:0);
 sys::net::publish("/local/dt8b/r1/c0", v64:0);
 let data: Map<string, Map<string, i64>> = {};
@@ -1178,11 +1163,7 @@ let tbl = {
     rows: ["/local/dt8b/r0", "/local/dt8b/r1"],
     columns: [
         "c0",
-        { name: "sum", typ: `Text({ on_edit: null }),
-            display_name: "A + B",
-            source: &opt::or_default(map::get(data, "sum"), {}),
-            on_resize: &null,
-            width: &null }
+        text_column(#name: "sum", #source: &opt::or_default(map::get(data, "sum"), {}), #display_name: "A + B")
     ]
 };
 let result = data_table(
@@ -1255,12 +1236,9 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_uniform_string() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1", "r2"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &"UNI",
-            on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &"UNI")
     ] };
 let result = data_table(
 #table: &tbl
@@ -1278,14 +1256,10 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn column_width_ref_controlled() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let w = 120.0;
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &`Netidx(null),
-            on_resize: &null,
-            width: &w }
+        text_column(#name: "c0", #source: &`Netidx(null), #width: &w)
     ] };
 let result = data_table(
 #table: &tbl
@@ -1301,22 +1275,20 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_resize_fires_on_drag() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let log = 0.0;
 let on_w = |new_w: f64| log <- new_w;
 let w = 100.0;
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &"x",
-            on_resize: &on_w,
-            width: &w }
+        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: &on_w)
     ] };
 let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(600.0, 200.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(code), Size::new(600.0, 200.0))
+            .await?;
     let _ = h.watch("test::log").await?;
     h.drain().await?;
     let _ = h.view();
@@ -1339,7 +1311,7 @@ let result = data_table(
 // history is exactly [7.5] rather than `len >= 1`. (tests-gui-a-06)
 async fn sparkline_accumulates() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let c = 0;
 sys::net::publish("/local/dt17/r0/load", c);
 let tbl = { rows: ["/local/dt17/r0"], columns: [
@@ -1380,7 +1352,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_default_value_seeds_history() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0"], columns: [
         "anchor",
         { name: "spark", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
@@ -1415,7 +1387,7 @@ let result = data_table(
 async fn sparkline_decimation_caps_length() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0"], columns: [
         "anchor",
         { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
@@ -1448,7 +1420,7 @@ let result = data_table(
 async fn sparkline_decimation_preserves_extremes() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0"], columns: [
         "anchor",
         { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
@@ -1480,7 +1452,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_nav_arrows_and_enter() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let sel = [];
 let selected = "";
 let activated = "";
@@ -1495,9 +1467,11 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(500.0, 200.0),
+    )
+    .await?;
     let _ = h.watch("test::selected").await?;
     let _ = h.watch("test::activated").await?;
     h.inner.drain().await?;
@@ -1533,7 +1507,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn name_click_activate_only() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let sel_log = "";
 let act_log = "";
 let tbl = { rows: ["r0"], columns: ["c0"] };
@@ -1566,13 +1540,10 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn resize_handle_double_click_autofits() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let long = "wider than MIN_COL_WIDTH default";
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &long,
-            on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &long)
     ] };
 let result = data_table(
 #table: &tbl
@@ -1594,12 +1565,14 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn viewport_metrics_update_on_resize() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0", "r1", "r2", "r3", "r4"], columns: ["c0", "c1", "c2"] };
 let result = data_table(#table: &tbl)
 "#;
     use iced_core::Size;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(800.0, 400.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(code), Size::new(800.0, 400.0))
+            .await?;
     for _ in 0..20 {
         h.drain().await?;
     }
@@ -1629,17 +1602,11 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn horizontal_scroll_variable_width() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r"], columns: [
-        { name: "a", typ: `Text({ on_edit: null }),
-            display_name: null, source: &"a",
-            on_resize: &null, width: &null },
-        { name: "b", typ: `Text({ on_edit: null }),
-            display_name: null, source: &"b",
-            on_resize: &null, width: &null },
-        { name: "c", typ: `Text({ on_edit: null }),
-            display_name: null, source: &"c",
-            on_resize: &null, width: &null }
+        text_column(#name: "a", #source: &"a"),
+        text_column(#name: "b", #source: &"b"),
+        text_column(#name: "c", #source: &"c")
     ] };
 let result = data_table(
 #table: &tbl
@@ -1673,9 +1640,9 @@ let result = data_table(
 // points, so call it `dt_restamp_sparklines`. (tests-gui-a-09)
 async fn sparkline_history_seconds_rejects_negative() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*; use sys::time::{self, *};
+
 let c = 0;
-c <- time::timer(duration:100.ms, false) ~ 5;
+c <- sys::time::timer(duration:100.ms, false) ~ 5;
 sys::net::publish("/local/dt_hs/r0/load", c);
 let tbl = { rows: ["/local/dt_hs/r0"], columns: [
         { name: "load", typ: `Sparkline({ history_seconds: -1.0, min: null, max: null }),
@@ -1705,7 +1672,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn button_column_passes_typed_raw_value() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let pressed_val: Any = null;
 let pressed = |#path: string, #value: Any| {
     pressed_val <- value;
@@ -1721,9 +1688,11 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h =
-        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
-            .await?;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(500.0, 200.0),
+    )
+    .await?;
     let _ = h.inner.watch("test::pressed_val").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -1752,15 +1721,12 @@ async fn virtual_col_does_not_create_subscription() -> Result<()> {
     // A publication at the virtual column's would-be path must not
     // shadow its default.
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 sys::net::publish("/local/dt_virt/r0/real", "real-val");
 sys::net::publish("/local/dt_virt/r0/ghost", "from-publisher");
 let tbl = { rows: ["/local/dt_virt/r0"], columns: [
         "real",
-        { name: "ghost", typ: `Text({ on_edit: null }),
-            display_name: null,
-            source: &"from-default",
-            on_resize: &null, width: &null }
+        text_column(#name: "ghost", #source: &"from-default")
     ] };
 let result = data_table(
 #table: &tbl
@@ -1850,17 +1816,19 @@ fn left_click(at: Point) -> [Event; 3] {
 }
 
 /// A table whose one column `k` holds the stored values `vals` per row.
-fn stored_column_table(vals: &[(&str, &str)]) -> String {
-    let rows: Vec<String> = vals.iter().map(|(r, _)| format!("\"{r}\"")).collect();
-    let map: Vec<String> =
-        vals.iter().map(|(r, v)| format!("\"{r}\" => \"{v}\"")).collect();
-    format!(
-        r#"{{ rows: [{}], columns: [
-        {{ name: "k", typ: `Text({{ on_edit: null }}), display_name: null,
-            source: &{{{}}}, on_resize: &null, width: &null }}
-    ] }}"#,
-        rows.join(", "),
-        map.join(", ")
+fn stored_column_table(vals: &[(&str, &str)]) -> CompactString {
+    let mut rows: LPooled<String> = LPooled::take();
+    let mut entries: LPooled<String> = LPooled::take();
+    for (i, (row, value)) in vals.iter().enumerate() {
+        if i > 0 {
+            rows.push_str(", ");
+            entries.push_str(", ");
+        }
+        write!(rows, "\"{row}\"").unwrap();
+        write!(entries, "\"{row}\" => \"{value}\"").unwrap();
+    }
+    format_compact!(
+        r#"{{ rows: [{rows}], columns: [text_column(#name: "k", #source: &{{{entries}}})] }}"#
     )
 }
 
@@ -1879,7 +1847,7 @@ async fn sort_is_a_total_order() -> Result<()> {
         vals.iter().map(|(r, v)| (r.as_str(), v.as_str())).collect();
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let tbl = {};
 let result = data_table(
     #sort_by: &[{{ column: "k", direction: `Ascending }}],
@@ -1904,7 +1872,7 @@ let result = data_table(
 async fn empty_sort_by_restores_table_order() -> Result<()> {
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let sort_by: Array<SortBy> = [{{ column: "k", direction: `Descending }}];
 let tbl = {};
 let result = data_table(#sort_by: &sort_by, #table: &tbl)
@@ -1927,14 +1895,12 @@ async fn stored_sort_column_subscribes_nothing() -> Result<()> {
     let p = "/local/dt_stored_sort";
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 sys::net::publish("{p}/r0/k", "raw0");
 sys::net::publish("{p}/r1/k", "raw1");
 sys::net::publish("{p}/r2/k", "raw2");
 let tbl = {{ rows: ["{p}/r0", "{p}/r1", "{p}/r2"], columns: [
-        {{ name: "k", typ: `Text({{ on_edit: null }}), display_name: null,
-            source: &{{"r0" => "c", "r1" => "a", "r2" => "b"}},
-            on_resize: &null, width: &null }}
+        text_column(#name: "k", #source: &{{"r0" => "c", "r1" => "a", "r2" => "b"}})
     ] }};
 let result = data_table(
     #sort_by: &[{{ column: "k", direction: `Ascending }}],
@@ -1960,15 +1926,11 @@ let result = data_table(
 #[tokio::test(flavor = "multi_thread")]
 async fn table_update_reconciles() -> Result<()> {
     let p = "/local/dt_upd";
-    let col1 = |e: &str| {
-        format!(
-            r#"{{ name: "c1", typ: `Text({{ on_edit: {e} }}), display_name: null,
-            source: &"x", on_resize: &null, width: &null }}"#
-        )
-    };
+    let col1 =
+        |e: &str| format!(r#"text_column(#name: "c1", #source: &"x", #on_edit: {e})"#);
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let got1: Any = null;
 let got2: Any = null;
 let e1 = |#path: string, #value: Any| got1 <- value;
@@ -2021,10 +1983,9 @@ async fn table_update_keeps_view_and_edit() -> Result<()> {
         |n: usize| (0..n).map(|i| format!("\"r{i}\"")).collect::<Vec<_>>().join(", ");
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let e = |#path: string, #value: Any| null;
-let col = {{ name: "c0", typ: `Text({{ on_edit: e }}), display_name: null,
-    source: &"x", on_resize: &null, width: &null }};
+let col = text_column(#name: "c0", #source: &"x", #on_edit: e);
 let phase = 0;
 let tbl = select phase {{
     0 => {{ rows: [{r100}], columns: [col] }},
@@ -2054,7 +2015,7 @@ async fn keyboard_scroll_moves_the_overlay() -> Result<()> {
     let rows = (0..100).map(|i| format!("\"r{i}\"")).collect::<Vec<_>>().join(", ");
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let sel: Array<string> = [];
 let tbl = {{ rows: [{rows}], columns: ["c0"] }};
 let result = data_table(
@@ -2064,7 +2025,9 @@ let result = data_table(
 )
 "#
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(&code), Size::new(400.0, 300.0))
+            .await?;
     let _ = h.view();
     let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     h.live(&left_click(Point::new(b.x + 10.0, b.y + 10.0))).await?;
@@ -2088,11 +2051,13 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn resize_ends_on_a_release_outside() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
 let result = data_table(#table: &tbl)
 "#;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(600.0, 200.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(code), Size::new(600.0, 200.0))
+            .await?;
     let _ = h.view();
     let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
     let handle = Point::new(b.x + b.width - 7.5, 14.0);
@@ -2116,7 +2081,7 @@ async fn sparkline_histories_follow_the_table() -> Result<()> {
     let p = "/local/dt_spark_prune";
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 sys::net::publish("{p}/live/load", 1.0);
 let col = {{ name: "load",
     typ: `Sparkline({{ history_seconds: 60.0, min: null, max: null }}),
@@ -2129,7 +2094,9 @@ let tbl = select phase {{
 let result = data_table(#table: &tbl)
 "#
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 200.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(&code), Size::new(400.0, 200.0))
+            .await?;
     settle(&mut h.inner, "the live value", |h| {
         h.dt().dt_sparkline_values("live", "load").unwrap_or_default().contains(&1.0)
     })
@@ -2152,7 +2119,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn a_column_named_name_is_not_the_row_name() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let sel = "";
 let act = "";
 let tbl = { rows: ["r0"], columns: ["name"] };
@@ -2186,7 +2153,7 @@ async fn selection_scrolls_to_its_exact_row() -> Result<()> {
         .collect();
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let sel: Array<string> = [];
 let tbl = {{ rows: [{}], columns: ["c0"] }};
 let result = data_table(#selection: &sel, #table: &tbl)
@@ -2240,14 +2207,13 @@ fn sparkline_decimation_keeps_spikes() {
 async fn table_keys_and_the_cell_editor() -> Result<()> {
     use iced_core::keyboard::key::Named;
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use gui::keyboard_area::{self, *}; use sys::*;
+  use gui::keyboard_area::{KeyEvent, keyboard_area};
 let key = "";
 let got: Any = null;
 let sel: Array<string> = [];
 let edit = |#path: string, #value: Any| got <- value;
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: edit }), display_name: null,
-            source: &`Netidx(null), on_resize: &null, width: &null }
+        text_column(#name: "c0", #source: &`Netidx(null), #on_edit: edit)
     ] };
 let result = keyboard_area(
     #on_key_press: |e: KeyEvent| key <- e.key,
@@ -2258,7 +2224,9 @@ let result = keyboard_area(
     )
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(code, Size::new(400.0, 200.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(code), Size::new(400.0, 200.0))
+            .await?;
     let _ = h.watch("test::key").await?;
     let _ = h.watch("test::got").await?;
     let _ = h.process_events(&[]);
@@ -2279,23 +2247,22 @@ let result = keyboard_area(
 #[tokio::test(flavor = "current_thread")]
 async fn columns_draw_by_their_widths() -> Result<()> {
     let col = |n: usize, w: f64| {
-        format!(
-            r#"{{ name: "c{n}", typ: `Text({{ on_edit: null }}), display_name: null,
-            source: &"x", on_resize: &null, width: &{w:.1} }}"#
-        )
+        format!(r#"text_column(#name: "c{n}", #source: &"x", #width: &{w:.1})"#)
     };
     let wide: Vec<String> =
         (0..11).map(|n| col(n, if n >= 9 { 300.0 } else { 80.0 })).collect();
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let sel = ["r0/c9"];
 let tbl = {{ rows: ["r0"], columns: [{}] }};
 let result = data_table(#selection: &sel, #table: &tbl)
 "#,
         wide.join(", ")
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(800.0, 200.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(&code), Size::new(800.0, 200.0))
+            .await?;
     let _ = h.view();
     h.inner.dt_mut().handle_table_key(&crate::widgets::TableKeyAction::Right);
     let _ = h.view();
@@ -2304,13 +2271,15 @@ let result = data_table(#selection: &sel, #table: &tbl)
     let narrow: Vec<String> = (0..10).map(|n| col(n, 40.0)).collect();
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+
 let tbl = {{ rows: ["r0"], columns: [{}] }};
 let result = data_table(#table: &tbl)
 "#,
         narrow.join(", ")
     );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(800.0, 200.0)).await?;
+    let mut h =
+        InteractionHarness::with_viewport(&table_code(&code), Size::new(800.0, 200.0))
+            .await?;
     let _ = h.view();
     assert!(h.inner.dt().dt_cell_bounds(0, "c9").is_some(), "the tenth 40 px column");
     Ok(())
@@ -2320,7 +2289,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn a_huge_sparkline_window_keeps_everything() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let tbl = { rows: ["r0"], columns: [
         { name: "load", typ: `Sparkline({ history_seconds: 1e19, min: null, max: null }),
             display_name: null, source: &"2.0", on_resize: &null, width: &null }
@@ -2338,12 +2307,11 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn a_width_ref_wins_over_a_drag() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let w = 100.0;
 let clamp = |x: f64| w <- select x > 150.0 { true => 150.0, false => x };
 let tbl = { rows: ["r0"], columns: [
-        { name: "c0", typ: `Text({ on_edit: null }), display_name: null,
-            source: &"x", on_resize: &clamp, width: &w }
+        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: &clamp)
     ] };
 let result = data_table(#table: &tbl)
 "#;
@@ -2384,7 +2352,7 @@ fn truncation_respects_characters() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_value_cell_selects_its_row_path() -> Result<()> {
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*;
+
 let sel = "";
 let tbl = { rows: ["r0"], columns: [] };
 let result = data_table(#on_select: |#path: string| sel <- path, #table: &tbl)
@@ -2405,8 +2373,8 @@ async fn a_data_table_in_a_table_cell_sorts_live() -> Result<()> {
     let p = "/local/dt_in_table";
     let code = format!(
         r#"
-use gui::*; use gui::data_table::{{self, *}}; use gui::table::{{self, *}};
-use gui::text::{{self, *}}; use sys::*;
+  use gui::table::{{table, table_column}};
+use gui::text::text;
 let v0 = f64:30.0;
 let v1 = f64:10.0;
 sys::net::publish("{p}/r0/cpu", v0);
@@ -2419,7 +2387,7 @@ let dt = data_table(
 let result = table(&[table_column(&text(&"t"))], &[[dt]])
 "#
     );
-    let mut h = GuiTestHarness::new(&code).await?;
+    let mut h = GuiTestHarness::new(&table_code(&code)).await?;
     fn order(w: &crate::widgets::GuiW<NoExt>) -> Option<Vec<String>> {
         if let Some(s) = w.data_table_snapshot() {
             return Some(s.row_basenames);
