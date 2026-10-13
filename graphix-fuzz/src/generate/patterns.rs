@@ -282,13 +282,6 @@ pub(super) fn maybe_select(
         }
     }
     // list ladder mode: `[<>]` + `[<h, t..>]` cover every length, no wildcard
-    // CR claude for claude: [test-gap/low] Only lists get a ladder mode. An Array
-    // scrutinee gets at most one slice arm followed by an irrefutable final arm, so the
-    // checker rule that slice-pattern length ladders over an array count as coverage is
-    // never exercised. A Reach regression that stopped counting `[] , [h, t..]` (or
-    // `[], [a], [a, b, rest..]`, or the suffix form `[init.., last]`) as exhaustive
-    // would refuse valid programs and no generated subject would notice. Fix: add an
-    // array ladder mode beside this one, with no final arm. (fuzz-gen-b-07)
     if let GenType::List(e) = &scrut_ty {
         if rng.below(2) == 0 {
             for _ in 0..rng.below(2) {
@@ -308,6 +301,11 @@ pub(super) fn maybe_select(
             return Some(format!("select {scrut} {{ {} }}", arms.join(", ")));
         }
     }
+    if let GenType::Array(e) = &scrut_ty
+        && rng.below(2) == 0
+    {
+        return Some(array_ladder(ctx, rng, &scrut, &scrut_ty, e, ty, d, arms));
+    }
     if let GenType::Variant(tags) = &scrut_ty
         && rng.below(2) == 0
     {
@@ -316,6 +314,42 @@ pub(super) fn maybe_select(
     // general mode: guarded arms first, then ≤1 unguarded refutable,
     // then the irrefutable final
     general_select(ctx, rng, scrut, scrut_ty, ty, d, arms)
+}
+
+/// A select over an array whose slice patterns' lengths cover it with no
+/// final arm: `[]` then a head and a rest, a one-element arm then a two-
+/// element head and a rest, or an init and a last.
+fn array_ladder(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    scrut: &str,
+    scrut_ty: &GenType,
+    elt: &GenType,
+    ty: &GenType,
+    d: usize,
+    mut arms: Vec<String>,
+) -> String {
+    arms.push(format!("[] => {}", exprs::gen_typed(ctx, rng, ty, d)));
+    // each arm's binds, element or rest, in pattern order
+    let shapes: &[&[bool]] = match rng.below(3) {
+        0 => &[&[false, true]],
+        1 => &[&[false], &[false, false, true]],
+        _ => &[&[true, false]],
+    };
+    for shape in shapes {
+        let mut inner = ctx.clone();
+        let mark = inner.mark();
+        let mut parts = Vec::new();
+        for &rest in *shape {
+            let n = bind_name(&mut inner, rng, mark);
+            let (p, t) = if rest { (format!("{n}.."), scrut_ty) } else { (n.clone(), elt) };
+            inner.push(n, t.clone());
+            parts.push(p);
+        }
+        let body = exprs::gen_typed(&inner, rng, ty, d);
+        arms.push(format!("[{}] => {body}", parts.join(", ")));
+    }
+    format!("select {scrut} {{ {} }}", arms.join(", "))
 }
 
 /// A select over a variant value covering every tag once, with no
