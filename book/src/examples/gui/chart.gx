@@ -5,15 +5,7 @@ let rate = 0.;
 let clock = sys::time::timer(1. - rate, true);
 let x = cast<f64>(count(clock))$;
 
-// CR claude for claude: [readability/low] The examples are the idiom corpus, and some
-// spellings here are heavier than the language needs. This lambda's annotations, and
-// those on rn in data_table_dashboard.gx (`|start: f64, end: f64| -> f64`), are not
-// needed: both files check with them removed, and chart_styles.gx writes the same
-// helper bare. image.gx builds its Rgba width and height with `cast<u32>(4)$`, a
-// run-time cast plus `$`, where the literal `u32:4` says it. markdown.gx's sample links
-// to https://graphix.dev, which is not the project's site; point it at
-// https://graphix-lang.github.io/graphix. (examples-gui-08)
-let series = |start: f64, end: f64| -> Array<(f64, f64)> {
+let series = |start, end| {
     let d = [];
     let y = rand::rand(#start, #end, #clock);
     d <- array::window(#n:20, clock ~ d, (x, y));
