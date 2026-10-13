@@ -4,10 +4,7 @@ The `hbs` module provides [Handlebars](https://handlebarsjs.com/) template
 rendering.
 
 ```graphix
-/// Render a Handlebars template with the given data context.
-/// Use #partials to register named partial templates (as a struct or map).
-/// Use #strict to error on missing variables instead of rendering empty strings.
-val render: fn(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -> Result<string, `HbsErr(string)>;
+{{#include ../../../stdlib/graphix-package-hbs/src/graphix/mod.gxi}}
 ```
 
 ## Example
