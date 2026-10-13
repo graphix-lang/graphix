@@ -402,24 +402,17 @@ let unwrap = |b: Box<'a>| -> 'a b.0.value
 
 ### Constrained Type Parameters
 
-<!-- CR claude for claude: [doc-drift/medium] The NumericWrapper example below does not
-compile. `double`'s body `w.0 + w.0` needs `'a: Number + Singleton`, and an interface
-must declare every bound its implementation needs, so the check refuses `val double:
-fn(w: NumericWrapper<'a>) -> 'a` (probe:
-design/review-2026-10-12/repro/book-modules-udt-numeric-wrapper/). Fix: write `val
-double: fn<'a: Number + Singleton>(w: NumericWrapper<'a>) -> 'a;` with the matching
-bound on the .gx lambda, and explain in a sentence why arithmetic needs Singleton.
-Separately, the refusal prints the declared and the implemented type identically
-('declared fn(..) -> 'a but implemented fn(..) -> 'a'). Printing the bounds in both
-would make it readable. (book-modules-udt-08) -->
 Type parameters on abstract types can have constraints. The interface and
-implementation must have matching constraints:
+implementation must have matching constraints, and a `val` declares every
+bound its implementation needs. `double` adds a value to itself, and
+arithmetic takes operands of exactly one numeric type, so it needs
+`Singleton` as well as `Number`:
 
 ```graphix
 // interface - constraint required
 type NumericWrapper<'a: Number>;
 val wrap: fn(x: 'a) -> NumericWrapper<'a>;
-val double: fn(w: NumericWrapper<'a>) -> 'a;
+val double: fn<'a: Number + Singleton>(w: NumericWrapper<'a>) -> 'a;
 ```
 
 ```graphix
