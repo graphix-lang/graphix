@@ -1420,18 +1420,15 @@ const SELECT_RECURSIVE_ADT_CHAIN: &str = r#"
       (sa, sb) => `M(sa, sb)
     }
   };
-  f(g(`M(`M(`A(`V, `N(1.0)), `V), `V)))
+  "[f(g(`M(`M(`A(`V, `N(1.0)), `V), `V)))]"
 }
 "#;
 
 run!(
     select_recursive_adt_chain,
     SELECT_RECURSIVE_ADT_CHAIN,
-    // CR claude for claude: [test-gap/low] Every payload variant is an array at run
-    // time, so this predicate accepts any result, a wrong rewrite included. Pin the
-    // printed value: `A(`M(`A(`M(`N(1.), `V), `M(`A(`V, `N(1.)), `N(1.))), `V),
-    // `M(`M(`A(`V, `N(1.)), `V), `N(1.))). (tests-select-10)
-    |v: Result<&Value>| matches!(v, Ok(Value::Array(_)));
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s.as_str()
+        == "`A(`M(`A(`M(`N(1), `V), `M(`A(`V, `N(1)), `N(1))), `V), `M(`M(`A(`V, `N(1)), `V), `N(1)))");
     FuseExpect::Jit
 );
 
