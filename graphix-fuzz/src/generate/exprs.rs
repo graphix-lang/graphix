@@ -766,10 +766,6 @@ fn try_map_builtin(
     }
 }
 
-/// A value of `ty` through a format and its async, type-directed reader:
-/// json for any data, toml for a struct (its documents are tables), pack
-/// for any data. The reader's target is the annotation, so the imaged cast
-/// target meets the cold/warm comparison.
 /// A value of `ty` from `x`, which may instead be `absent` (`error` or
 /// `null`): `$`, a type-match select with a fallback arm, or a `?` under
 /// a catch, whose handler's value goes nowhere (the block is bottom when
@@ -827,6 +823,10 @@ fn ref_comparison(ctx: &GenCtx, rng: &mut Rng) -> Option<String> {
     Some(format!("({a} {op} {b})"))
 }
 
+/// A value of `ty` through a format and its async, type-directed reader:
+/// json for any data, toml for a struct (its documents are tables), pack
+/// for any data. The reader's target is the annotation, so the imaged cast
+/// target meets the cold/warm comparison.
 fn try_format_round_trip(
     ctx: &GenCtx,
     rng: &mut Rng,
