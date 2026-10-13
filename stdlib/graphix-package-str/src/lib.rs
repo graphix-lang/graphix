@@ -189,19 +189,10 @@ fn fc_row_col(args: &[Value]) -> Option<Value> {
 graphix_package_core::fast_builtin!(RowCol, RowColEv, "str_row_col", fc_row_col);
 
 fn fc_join(args: &[Value]) -> Option<Value> {
-    let [sep, parts @ ..] = args else { return None };
+    let [Value::String(sep), parts @ ..] = args else { return None };
     if parts.is_empty() {
         return None;
     }
-    // CR claude for claude: [dead/low] str::join declares #sep: string, so the arm that
-    // casts a non-string separator can never run. It suggests separators of other types
-    // are supported, and it makes the normal path clone the separator. Match
-    // [Value::String(sep), parts @ ..] in the slice pattern, borrow sep, and return
-    // None otherwise. (collections-str-10)
-    let sep = match sep {
-        Value::String(c) => c.clone(),
-        sep => sep.clone().cast_to::<ArcStr>().ok()?,
-    };
     let mut buf: LPooled<String> = LPooled::take();
     let mut first = true;
     let mut push = |c: &str| {
