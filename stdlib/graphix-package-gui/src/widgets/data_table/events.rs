@@ -3,7 +3,9 @@
 
 use super::{
     DataTableW, DisplayMode, HEADER_HEIGHT, MIN_COL_WIDTH, ROW_NAME_KEY, VALUE_COL_KEY,
-    types::{ResizeDrag, ViewportMetrics, cell_path, is_cell_path, parse_or_quote},
+    types::{
+        ColumnType, ResizeDrag, ViewportMetrics, cell_path, is_cell_path, parse_or_quote,
+    },
 };
 use crate::widgets::TableKeyAction;
 use arcstr::ArcStr;
@@ -95,7 +97,7 @@ impl<X: GXExt> DataTableW<X> {
             }
             TableKeyAction::Space => {
                 let col = &cols[cur_col];
-                // CR claude for claude: [bug/medium] data_table: Space on a non-Text
+                // XCR claude for claude: [bug/medium] data_table: Space on a non-Text
                 // editable cell opens an invisible editor and kills table keys.
                 // `TableKeyAction::Space` opens the editor on any column whose
                 // `callback` is set: `self.columns.get(col).is_some_and(|c|
@@ -123,7 +125,10 @@ impl<X: GXExt> DataTableW<X> {
                 // `table_keys_and_the_cell_editor` (test/data_table_test.rs) that
                 // presses Space on a toggle cell and then an arrow key. Unverified: the
                 // reviewer's report, not checked by a verifier. (book-ui-b-02)
-                // CR claude for claude: [bug/medium] Space opens an edit on any column
+                // 2026-10-13 codex: space_on_toggle_keeps_table_navigation exercises Space then Down.
+                // The Graphix fixture compiles but resolver sockets block its assertions.
+                // Space now delegates to the Text-only edit admission check.
+                // XCR claude for claude: [bug/medium] Space opens an edit on any column
                 // with a callback, but only a ColumnType::Text cell renders an editor
                 // (render_cell). On a Toggle, Combo, Spin or Button column
                 // (toggle_column with an #on_edit, for example), Space sets `editing`,
@@ -139,9 +144,10 @@ impl<X: GXExt> DataTableW<X> {
                 // review_space_on_toggle_does_not_open_a_hidden_edit in
                 // design/review-2026-10-12/repro/gui-datatable-02.rs.
                 // (gui-datatable-04)
-                if self.columns.get(col).is_some_and(|c| c.callback.is_some()) {
-                    self.handle_cell_edit(cur_row, col.clone());
-                }
+                // 2026-10-13 codex: space_on_toggle_keeps_table_navigation and
+                // clicking_another_cell_cancels_text_edit cover both paths. They compile
+                // but require resolver sockets; before/after assertions are unverified.
+                self.handle_cell_edit(cur_row, col.clone());
                 true
             }
             TableKeyAction::Escape => self.handle_cell_edit_cancel(),
@@ -150,23 +156,20 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Open the editor on a cell, holding its current text, and focus it.
     pub(crate) fn handle_cell_edit(&mut self, row: usize, col: ArcStr) -> bool {
+        if !self.columns.get(&col).is_some_and(|c| {
+            matches!(c.spec.typ, ColumnType::Text) && c.callback.is_some()
+        }) {
+            return false;
+        }
         let Some(row_path) = self.row_paths.get(row).cloned() else { return false };
-        self.edit_buffer = match self.columns.contains_key(&col) {
-            false => CompactString::new(""),
-            true => {
-                let mut inner = self.cells.inner.lock();
-                let id = inner.cells.get(&(row_path.clone(), col.clone())).copied();
-                match id.and_then(|id| inner.formatted_for(id)) {
-                    Some(s) => s.as_str().into(),
-                    None => {
-                        drop(inner);
-                        self.default_for(&col, super::types::row_basename(&row_path))
-                            .as_str()
-                            .into()
-                    }
-                }
-            }
+        let text = {
+            let mut inner = self.cells.inner.lock();
+            let id = inner.cells.get(&(row_path.clone(), col.clone())).copied();
+            id.and_then(|id| inner.formatted_for(id)).unwrap_or_else(|| {
+                self.default_for(&col, super::types::row_basename(&row_path))
+            })
         };
+        self.edit_buffer = text.as_str().into();
         self.editing = Some((row_path, col));
         self.focus_editor = true;
         true
@@ -191,12 +194,14 @@ impl<X: GXExt> DataTableW<X> {
     pub(crate) fn handle_cell_edit_cancel(&mut self) -> bool {
         let was_editing = self.editing.take().is_some();
         self.edit_buffer.clear();
+        self.focus_editor = false;
         was_editing
     }
 
     /// A click on the row-name cell activates the row when there is an
     /// `on_activate`; any other click selects the cell.
     pub(crate) fn handle_cell_click(&mut self, row: usize, col: ArcStr) -> bool {
+        self.handle_cell_edit_cancel();
         if col == ROW_NAME_KEY
             && let (Some(cid), Some(row_path)) =
                 (self.on_activate.id(), self.row_paths.get(row))

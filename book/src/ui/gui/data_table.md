@@ -177,8 +177,10 @@ The widget is focusable: clicking into it grants keyboard focus.
 Arrow keys move the selection among the data columns (the
 currently-rendered selected cell scrolls into view as needed); they
 never land on the row-name column. `Enter` fires `on_activate` for
-the selected cell's row; `Space` on an editable cell opens its editor,
+the selected cell's row; `Space` on an editable Text cell opens its editor,
 which takes the typed keys, `Enter` to commit and `Escape` to cancel.
+On other column types, `Space` does nothing. Clicking another cell cancels
+an open Text editor.
 Other keys go on to an enclosing `keyboard_area`, so application
 shortcuts keep working while the table has focus.
 

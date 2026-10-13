@@ -2484,3 +2484,49 @@ async fn only_declared_column_headers_call_the_program() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn space_on_toggle_keeps_table_navigation() -> Result<()> {
+    use iced_core::keyboard::key::Named;
+    let code = table_code(
+        r#"
+        use gui::data_table::toggle_column;
+        let sel = ["r0/on"];
+        let tbl = {rows: ["r0", "r1"], columns: [toggle_column(#name: "on", #source: &"false", #on_edit: |#path: string, #value: bool| null)]};
+        let result = data_table(#show_row_name: &false, #selection: &sel, #on_select: |#path: string| sel <- [path], #table: &tbl)
+    "#,
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 150.0)).await?;
+    h.inner.drain().await?;
+    h.live(&left_click(Point::new(10.0, 14.0))).await?;
+    h.live(&[named_key(Named::Space)]).await?;
+    assert_eq!(h.inner.dt().dt_editing(), None);
+    h.live(&[named_key(Named::ArrowDown)]).await?;
+    assert_eq!(h.inner.dt_snapshot().selection, ["r1/on"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn clicking_another_cell_cancels_text_edit() -> Result<()> {
+    use iced_core::keyboard::key::Named;
+    let code = table_code(
+        r#"
+        let sel = ["r0/a"];
+        let edit = |#path: string, #value: Any| null;
+        let tbl = {rows: ["r0", "r1"], columns: [text_column(#name: "a", #source: &"a", #on_edit: edit), text_column(#name: "b", #source: &"b", #on_edit: edit)]};
+        let result = data_table(#show_row_name: &false, #selection: &sel, #on_select: |#path: string| sel <- [path], #table: &tbl)
+    "#,
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 150.0)).await?;
+    h.inner.drain().await?;
+    h.live(&left_click(Point::new(10.0, 14.0))).await?;
+    h.live(&[named_key(Named::Space)]).await?;
+    assert_eq!(h.inner.dt().dt_editing(), Some(("r0".into(), "a".into())));
+    h.view();
+    let target = h.inner.dt().dt_cell_bounds(0, "b").unwrap().center();
+    h.live(&left_click(target)).await?;
+    assert_eq!(h.inner.dt().dt_editing(), None);
+    h.live(&[named_key(Named::ArrowDown)]).await?;
+    assert_eq!(h.inner.dt_snapshot().selection, ["r1/b"]);
+    Ok(())
+}
