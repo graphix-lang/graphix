@@ -53,8 +53,9 @@ fn json_to_value(json: serde_json::Value) -> Value {
     }
 }
 
-/// The deepest nesting a value writes as JSON: as deep as json::read reads,
-/// and short of the serializer's recursion running out of stack.
+/// How many containers deep a value may not nest to be written as JSON:
+/// where json::read's recursion limit refuses, short of the serializer's
+/// recursion running out of stack.
 const MAX_DEPTH: usize = 128;
 
 /// `value` as JSON, written as its type `typ` says (`None` reads the
@@ -81,15 +82,10 @@ fn to_json(
     value: &Value,
     depth: usize,
 ) -> Result<serde_json::Value, String> {
-    // CR claude for claude: [bug/low] to_json counts depth from 0 and refuses only past
-    // MAX_DEPTH, so a value with 128 nested containers is written. serde_json's
-    // recursion limit refuses that same text on read. The comment on MAX_DEPTH says the
-    // limit matches what json::read reads, but json::write_str emits text that
-    // json::read rejects. Fix: refuse at `depth >= MAX_DEPTH`, which counts containers
-    // rather than levels, and add a pin that writes the deepest allowed value and reads
-    // it back. probe: design/review-2026-10-12/repro/small-pkgs-07.gx (small-pkgs-07)
-    if depth > MAX_DEPTH {
-        return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
+    // a value at depth n sits under n containers: MAX_DEPTH of them is
+    // where json::read stops
+    if depth >= MAX_DEPTH {
+        return Err(format!("the value nests {MAX_DEPTH} containers deep or more"));
     }
     match shape(env, typ, value) {
         Shape::Object(mut entries, _) => {
