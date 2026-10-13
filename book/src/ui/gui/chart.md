@@ -215,7 +215,7 @@ Used with the chart `#projection` parameter for 3D charts:
 
 ## ChartStyle Fields
 
-- **background** — Background color as a `Color` struct. Defaults to white when null.
+- **background** — Background color, a `Color` made with `gui::color`. Defaults to white when null.
 - **margin** — Margin in pixels around the plot area. Defaults to 10.
 - **title_size** — Font size for the chart title. Defaults to 16.
 - **title_color** — Color of the chart title text. Defaults to black when null.
