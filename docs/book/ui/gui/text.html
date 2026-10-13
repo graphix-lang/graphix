@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
+            window.path_to_searchindex_js = "../../searchindex-37e0ebcb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -189,6 +189,7 @@ type Text = {
   valign: &amp;VAlign
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -202,7 +203,7 @@ val text: fn(
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
-<li><strong>size</strong> - Font size in pixels. Defaults to the theme’s standard text size when null.</li>
+<li><strong>size</strong> - Font size in pixels, finite and greater than zero, up to 4096. Defaults to the theme’s standard text size when null.</li>
 <li><strong>color</strong> - Text color, a <code>Color</code> made with <code>gui::color(#r, #g, #b, #a)</code>, each component a float from 0.0 to 1.0 (<code>color</code> returns an error for one out of range, so unwrap it: <code>color(#r: 1.0)$</code>). Defaults to the theme’s text color when null.</li>
 <li><strong>font</strong> - A <code>Font</code> struct controlling the typeface:
 <ul>

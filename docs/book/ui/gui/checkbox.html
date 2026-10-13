@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
+            window.path_to_searchindex_js = "../../searchindex-37e0ebcb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -188,6 +188,7 @@ type Checkbox = {
   spacing: &amp;[f64, null]
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],

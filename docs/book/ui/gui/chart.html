@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
+            window.path_to_searchindex_js = "../../searchindex-37e0ebcb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -362,6 +362,7 @@ val error_bar: fn(
   data: &amp;[Array&lt;ErrorBarPoint&lt;f64&gt;&gt;, Array&lt;ErrorBarPoint&lt;datetime&gt;&gt;]
 ) -&gt; Dataset;
 
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val mesh_style: fn(
   ?#show_x_grid: [bool, null],
   ?#show_y_grid: [bool, null],
@@ -411,6 +412,7 @@ val surface: fn(
   data: &amp;Array&lt;Array&lt;(f64, f64, f64)&gt;&gt;
 ) -&gt; Dataset;
 
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val legend_style: fn(
   ?#background: [Color, null],
   ?#border: [Color, null],
@@ -420,6 +422,7 @@ val legend_style: fn(
 
 /// Every appearance knob of a chart in one record, so one style can be
 /// shared by every chart in a program and varied with `{ s with .. }`.
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val chart_style: fn(
   ?#background: [Color, null],
   ?#margin: [f64, null],
@@ -570,7 +573,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <ul>
 <li><strong>background</strong> — Background color, a <code>Color</code> made with <code>gui::color</code>. Defaults to white when null.</li>
 <li><strong>margin</strong> — Margin in pixels around the plot area. Defaults to 10.</li>
-<li><strong>title_size</strong> — Font size for the chart title. Defaults to 16.</li>
+<li><strong>title_size</strong> — Font size for the chart title. Defaults to 16. Must be finite, positive and at most 4096 pixels.</li>
 <li><strong>title_color</strong> — Color of the chart title text. Defaults to black when null.</li>
 <li><strong>palette</strong> — Colors assigned, in order, to series that set no <code>#color</code> of their own, and to pie slices without <code>#colors</code>. Cycles when there are more series than colors. When null, a built-in eight-color palette is used.</li>
 <li><strong>legend_position</strong> — Position of the series legend. Defaults to <code>`UpperLeft</code> when null.</li>
@@ -585,7 +588,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>bold_line_color</strong> — Color of the bold grid lines drawn at each labeled position.</li>
 <li><strong>axis_color</strong> — Color of axis lines. 2D charts only.</li>
 <li><strong>label_color</strong> — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.</li>
-<li><strong>label_size</strong> — Font size for axis labels.</li>
+<li><strong>label_size</strong> — Font size for axis labels. Must be finite, positive and at most 4096 pixels.</li>
 <li><strong>x_label_area_size</strong> — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.</li>
 <li><strong>x_labels</strong> — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
 <li><strong>x_light_lines</strong> — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.</li>
@@ -600,7 +603,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>background</strong> — Legend background color. Defaults to white when null.</li>
 <li><strong>border</strong> — Legend border color. Defaults to black when null.</li>
 <li><strong>label_color</strong> — Color of legend text labels. Defaults to plotters default (black) when null.</li>
-<li><strong>label_size</strong> — Font size for legend labels. When null, plotters default is used.</li>
+<li><strong>label_size</strong> — Font size for legend labels. Must be finite, positive and at most 4096 pixels. When null, the axis label size is used.</li>
 </ul>
 <h2 id="interaction"><a class="header" href="#interaction">Interaction</a></h2>
 <p>A chart responds to the mouse:</p>

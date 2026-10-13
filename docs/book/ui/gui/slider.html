@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
+            window.path_to_searchindex_js = "../../searchindex-37e0ebcb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -208,7 +208,7 @@ val slider: fn(
 <ul>
 <li><strong><code>#min</code></strong> – Minimum value of the range. Defaults to <code>0.0</code>.</li>
 <li><strong><code>#max</code></strong> – Maximum value of the range. Defaults to <code>100.0</code>.</li>
-<li><strong><code>#step</code></strong> – Snap increment. When set, the slider snaps to multiples of this value. <code>null</code> means continuous (no snapping).</li>
+<li><strong><code>#step</code></strong> – Snap increment. When set, the slider snaps to multiples of this value. <code>null</code> means continuous dragging. With the pointer over the track, Up/Down arrows and Ctrl+wheel move by one percent of the range.</li>
 <li><strong><code>#on_change</code></strong> – Callback invoked as the handle is dragged. Receives the current <code>f64</code> value. Typically: <code>#on_change: |v| volume &lt;- v</code>.</li>
 <li><strong><code>#on_release</code></strong> – Callback invoked when the user releases the handle. Receives <code>null</code>. Useful for committing a value only after the user finishes adjusting.</li>
 <li><strong><code>#width</code></strong> – Width of the slider track. Accepts <code>Length</code> values. Defaults to <code>`Fill</code>.</li>
@@ -216,6 +216,7 @@ val slider: fn(
 <li><strong><code>#disabled</code></strong> – When <code>true</code>, the slider cannot be dragged. Defaults to <code>false</code>.</li>
 <li><strong>positional <code>&amp;f64</code></strong> – Reference to the current value. Must be within the <code>#min</code>..<code>#max</code> range.</li>
 </ul>
+<p>A range with <code>#min &gt; #max</code> or a non-finite bound displays an empty, inert track. Neither <code>#on_change</code> nor <code>#on_release</code> fires for that range.</p>
 <h2 id="vertical-slider"><a class="header" href="#vertical-slider">Vertical Slider</a></h2>
 <p>A vertical slider – identical to <code>slider</code> but oriented top-to-bottom. Note the width and height types are swapped: <code>#width</code> is <code>&amp;[f64, null]</code> (fixed pixels) and <code>#height</code> is <code>&amp;Length</code> (layout-based).</p>
 <h3 id="interface-1"><a class="header" href="#interface-1">Interface</a></h3>

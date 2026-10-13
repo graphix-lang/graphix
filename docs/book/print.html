@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5f7acb93.js";
+            window.path_to_searchindex_js = "searchindex-37e0ebcb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -5510,14 +5510,8 @@ val acos: fn(x: f64) -&gt; f64;
 /// Inverse tangent. Result in radians, (-π/2, π/2).
 val atan: fn(x: f64) -&gt; f64;
 
-// CR claude for claude: [doc-drift/low] atan2's range is [-π, π], not (-π, π]:
-// atan2(-0.0, -1.0) is -π. Further down, math::min and math::max return the non-NaN
-// operand. Core min and max follow the language's total order (NaN below every number),
-// so min(math::nan, 1.0) is NaN while math::min gives 1. Their docs point users to core
-// min for 'n-ary polymorphic behaviour over Number', which is stale (it is 'a: Ordered)
-// and does not mention the opposite NaN handling. Correct the range and add that
-// contrast. (gx-stdlib-11)
-/// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, (-π, π].
+/// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, [-π, π]
+/// (`atan2(-0.0, -1.0)` is -π).
 val atan2: fn(y: f64, x: f64) -&gt; f64;
 
 /// Hyperbolic sine.
@@ -5599,11 +5593,14 @@ val signum: fn(x: f64) -&gt; f64;
 val copysign: fn(x: f64, y: f64) -&gt; f64;
 
 /// Smaller of two f64 values, returning the non-NaN operand if one is NaN.
-/// For n-ary polymorphic behaviour over `Number`, use the top-level `min` from core.
+/// Core `min` takes any number of `'a: Ordered` values and follows the
+/// language's total order, where NaN is below every number: `min(math::nan,
+/// 1.0)` is NaN where `math::min` gives 1.
 val min: fn(x: f64, y: f64) -&gt; f64;
 
 /// Larger of two f64 values, returning the non-NaN operand if one is NaN.
-/// For n-ary polymorphic behaviour over `Number`, use the top-level `max` from core.
+/// Core `max` takes any number of `'a: Ordered` values and follows the
+/// language's total order, where NaN is below every number.
 val max: fn(x: f64, y: f64) -&gt; f64;
 
 /// Clamp `x` to the closed interval `[lo, hi]`. Returns a catchable
@@ -5675,7 +5672,7 @@ val is_none: fn(v: ['a, null]) -&gt; bool;
 
 /// true if v is not null and equals x. Produces false when v is null,
 /// whatever x is.
-val contains: fn(v: ['a, null], x: 'a) -&gt; bool;
+val contains: fn&lt;'a: Discernible&gt;(v: ['a, null], x: 'a) -&gt; bool;
 
 /// or_default(v, d): if v is null return d, otherwise return v
 val or_default: fn(v: ['a, null], d: 'a) -&gt; 'a;
@@ -11909,6 +11906,7 @@ type Text = {
   valign: &amp;VAlign
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -11922,7 +11920,7 @@ val text: fn(
 </code></pre>
 <h2 id="parameters-16"><a class="header" href="#parameters-16">Parameters</a></h2>
 <ul>
-<li><strong>size</strong> - Font size in pixels. Defaults to the theme’s standard text size when null.</li>
+<li><strong>size</strong> - Font size in pixels, finite and greater than zero, up to 4096. Defaults to the theme’s standard text size when null.</li>
 <li><strong>color</strong> - Text color, a <code>Color</code> made with <code>gui::color(#r, #g, #b, #a)</code>, each component a float from 0.0 to 1.0 (<code>color</code> returns an error for one out of range, so unwrap it: <code>color(#r: 1.0)$</code>). Defaults to the theme’s text color when null.</li>
 <li><strong>font</strong> - A <code>Font</code> struct controlling the typeface:
 <ul>
@@ -12057,6 +12055,7 @@ type TextInput = {
   font: &amp;[Font, null]
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_input: fn(
   ?#placeholder: &amp;string,
   ?#on_input: [fn(s: string) -&gt; Any, null],
@@ -12127,6 +12126,7 @@ type TextEditor = {
   size: &amp;[f64, null]
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val text_editor: fn(
   ?#placeholder: &amp;string,
   ?#on_edit: [fn(s: string) -&gt; Any, null],
@@ -12198,6 +12198,7 @@ type Checkbox = {
   spacing: &amp;[f64, null]
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],
@@ -12262,6 +12263,7 @@ type Toggler = {
   spacing: &amp;[f64, null]
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val toggler: fn(
   ?#label: &amp;string,
   ?#on_toggle: [fn(b: bool) -&gt; Any, null],
@@ -12326,6 +12328,7 @@ type Radio = {
   spacing: &amp;[f64, null]
 };
 
+// A non-null #size must be finite, positive and at most 4096 pixels.
 val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;['a, null],
@@ -12417,7 +12420,7 @@ val slider: fn(
 <ul>
 <li><strong><code>#min</code></strong> – Minimum value of the range. Defaults to <code>0.0</code>.</li>
 <li><strong><code>#max</code></strong> – Maximum value of the range. Defaults to <code>100.0</code>.</li>
-<li><strong><code>#step</code></strong> – Snap increment. When set, the slider snaps to multiples of this value. <code>null</code> means continuous (no snapping).</li>
+<li><strong><code>#step</code></strong> – Snap increment. When set, the slider snaps to multiples of this value. <code>null</code> means continuous dragging. With the pointer over the track, Up/Down arrows and Ctrl+wheel move by one percent of the range.</li>
 <li><strong><code>#on_change</code></strong> – Callback invoked as the handle is dragged. Receives the current <code>f64</code> value. Typically: <code>#on_change: |v| volume &lt;- v</code>.</li>
 <li><strong><code>#on_release</code></strong> – Callback invoked when the user releases the handle. Receives <code>null</code>. Useful for committing a value only after the user finishes adjusting.</li>
 <li><strong><code>#width</code></strong> – Width of the slider track. Accepts <code>Length</code> values. Defaults to <code>`Fill</code>.</li>
@@ -12425,6 +12428,7 @@ val slider: fn(
 <li><strong><code>#disabled</code></strong> – When <code>true</code>, the slider cannot be dragged. Defaults to <code>false</code>.</li>
 <li><strong>positional <code>&amp;f64</code></strong> – Reference to the current value. Must be within the <code>#min</code>..<code>#max</code> range.</li>
 </ul>
+<p>A range with <code>#min &gt; #max</code> or a non-finite bound displays an empty, inert track. Neither <code>#on_change</code> nor <code>#on_release</code> fires for that range.</p>
 <h2 id="vertical-slider"><a class="header" href="#vertical-slider">Vertical Slider</a></h2>
 <p>A vertical slider – identical to <code>slider</code> but oriented top-to-bottom. Note the width and height types are swapped: <code>#width</code> is <code>&amp;[f64, null]</code> (fixed pixels) and <code>#height</code> is <code>&amp;Length</code> (layout-based).</p>
 <h3 id="interface-1-1"><a class="header" href="#interface-1-1">Interface</a></h3>
@@ -13184,6 +13188,7 @@ type PathSegment = [
   `Close
 ];
 
+// A Text shape's size must be finite, positive and at most 4096 pixels.
 type CanvasShape = [
   `Line({ from: {x: f64, y: f64}, to: {x: f64, y: f64}, color: Color, width: f64 }),
   `Circle({ center: {x: f64, y: f64}, radius: f64, fill: [Color, null], stroke: [{color: Color, width: f64}, null] }),
@@ -13605,6 +13610,7 @@ val error_bar: fn(
   data: &amp;[Array&lt;ErrorBarPoint&lt;f64&gt;&gt;, Array&lt;ErrorBarPoint&lt;datetime&gt;&gt;]
 ) -&gt; Dataset;
 
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val mesh_style: fn(
   ?#show_x_grid: [bool, null],
   ?#show_y_grid: [bool, null],
@@ -13654,6 +13660,7 @@ val surface: fn(
   data: &amp;Array&lt;Array&lt;(f64, f64, f64)&gt;&gt;
 ) -&gt; Dataset;
 
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val legend_style: fn(
   ?#background: [Color, null],
   ?#border: [Color, null],
@@ -13663,6 +13670,7 @@ val legend_style: fn(
 
 /// Every appearance knob of a chart in one record, so one style can be
 /// shared by every chart in a program and varied with `{ s with .. }`.
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val chart_style: fn(
   ?#background: [Color, null],
   ?#margin: [f64, null],
@@ -13813,7 +13821,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <ul>
 <li><strong>background</strong> — Background color, a <code>Color</code> made with <code>gui::color</code>. Defaults to white when null.</li>
 <li><strong>margin</strong> — Margin in pixels around the plot area. Defaults to 10.</li>
-<li><strong>title_size</strong> — Font size for the chart title. Defaults to 16.</li>
+<li><strong>title_size</strong> — Font size for the chart title. Defaults to 16. Must be finite, positive and at most 4096 pixels.</li>
 <li><strong>title_color</strong> — Color of the chart title text. Defaults to black when null.</li>
 <li><strong>palette</strong> — Colors assigned, in order, to series that set no <code>#color</code> of their own, and to pie slices without <code>#colors</code>. Cycles when there are more series than colors. When null, a built-in eight-color palette is used.</li>
 <li><strong>legend_position</strong> — Position of the series legend. Defaults to <code>`UpperLeft</code> when null.</li>
@@ -13828,7 +13836,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>bold_line_color</strong> — Color of the bold grid lines drawn at each labeled position.</li>
 <li><strong>axis_color</strong> — Color of axis lines. 2D charts only.</li>
 <li><strong>label_color</strong> — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.</li>
-<li><strong>label_size</strong> — Font size for axis labels.</li>
+<li><strong>label_size</strong> — Font size for axis labels. Must be finite, positive and at most 4096 pixels.</li>
 <li><strong>x_label_area_size</strong> — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.</li>
 <li><strong>x_labels</strong> — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
 <li><strong>x_light_lines</strong> — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.</li>
@@ -13843,7 +13851,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>background</strong> — Legend background color. Defaults to white when null.</li>
 <li><strong>border</strong> — Legend border color. Defaults to black when null.</li>
 <li><strong>label_color</strong> — Color of legend text labels. Defaults to plotters default (black) when null.</li>
-<li><strong>label_size</strong> — Font size for legend labels. When null, plotters default is used.</li>
+<li><strong>label_size</strong> — Font size for legend labels. Must be finite, positive and at most 4096 pixels. When null, the axis label size is used.</li>
 </ul>
 <h2 id="interaction"><a class="header" href="#interaction">Interaction</a></h2>
 <p>A chart responds to the mouse:</p>
@@ -14835,6 +14843,7 @@ type Markdown = {
   width: &amp;Length
 };
 
+// A non-null #text_size must be finite, positive and at most 4096 pixels.
 val markdown: fn(
   ?#on_link: [fn(url: string) -&gt; Any, null],
   ?#spacing: &amp;[f64, null],
@@ -15007,6 +15016,8 @@ every column whose <code>source</code> is <code>`Netidx</code>. Non-absolute row
 render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>string</code> or
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
+<p>With rows and no declared columns, the table shows each row path’s own value
+in one synthesized column. Its “value” header does not invoke <code>on_header_click</code>.</p>
 <h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
 <pre><code class="language-graphix">use super::Widget;
 type SortDirection = [`Ascending, `Descending];
@@ -15272,6 +15283,8 @@ helper constructors. All constructors take <code>#name: string</code> plus
 their kind-specific args (<code>#on_edit</code> / <code>#on_click</code> / <code>#choices</code> /
 etc.) and the common appearance options (<code>#display_name</code>, <code>#source</code>,
 <code>#width</code>, <code>#on_resize</code>).</p>
+<p>A column name must be one nonempty netidx path component. Use netidx path
+escaping for a slash inside a name. Invalid names are ignored with a warning.</p>
 <ul>
 <li>
 <p><strong><code>text_column</code></strong> – Plain text. With <code>on_edit</code> the cell becomes
@@ -15363,8 +15376,10 @@ cell’s history holds only its live values, never the fallback.</p>
 Arrow keys move the selection among the data columns (the
 currently-rendered selected cell scrolls into view as needed); they
 never land on the row-name column. <code>Enter</code> fires <code>on_activate</code> for
-the selected cell’s row; <code>Space</code> on an editable cell opens its editor,
+the selected cell’s row; <code>Space</code> on an editable Text cell opens its editor,
 which takes the typed keys, <code>Enter</code> to commit and <code>Escape</code> to cancel.
+On other column types, <code>Space</code> does nothing. Clicking another cell cancels
+an open Text editor.
 Other keys go on to an enclosing <code>keyboard_area</code>, so application
 shortcuts keep working while the table has focus.</p>
 <h2 id="examples-42"><a class="header" href="#examples-42">Examples</a></h2>
@@ -16138,6 +16153,9 @@ widgets, no netidx subscriptions.</li>
 <li><a href="#sysnet---netidx-operations"><code>sys::net</code></a> – the <code>Table</code> record and
 <code>list_table</code> helper consumed by <code>#table</code>.</li>
 </ul>
+<p>With multiple selected cells, keyboard navigation starts at the first valid
+cell in the program’s selection array. If none of the selected cells is fully
+visible, the table scrolls to that first cell.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
@@ -16193,7 +16211,7 @@ val context_menu: fn(items: &amp;Array&lt;MenuItem&gt;, child: &amp;Widget) -&gt
 val bar: fn(?#width: &amp;Length, menus: &amp;Array&lt;MenuGroup&gt;) -&gt; Widget
 </code></pre>
 <h2 id="menushortcut"><a class="header" href="#menushortcut"><code>menu::shortcut</code></a></h2>
-<p>Creates a keyboard shortcut from modifier flags and a single character key; any one character, <code>é</code> or <code>€</code> included.</p>
+<p>Creates a keyboard shortcut from modifier flags and a single character key; any one character, <code>é</code> or <code>€</code> included. Matching accepts the unmodified key or the character produced by Shift or AltGr, ignoring letter case. The modifier flags must still match: for example, use <code>#ctrl: true, #shift: true</code> with <code>"?"</code> for Ctrl+Shift+? on a US layout.</p>
 <ul>
 <li><strong><code>#ctrl</code></strong> – Hold Ctrl. Defaults to <code>false</code>.</li>
 <li><strong><code>#shift</code></strong> – Hold Shift. Defaults to <code>false</code>.</li>

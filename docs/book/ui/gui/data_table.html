@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
+            window.path_to_searchindex_js = "../../searchindex-37e0ebcb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -194,6 +194,8 @@ every column whose <code>source</code> is <code>`Netidx</code>. Non-absolute row
 render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>string</code> or
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
+<p>With rows and no declared columns, the table shows each row path’s own value
+in one synthesized column. Its “value” header does not invoke <code>on_header_click</code>.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
 <pre><code class="language-graphix">use super::Widget;
 type SortDirection = [`Ascending, `Descending];
@@ -459,6 +461,8 @@ helper constructors. All constructors take <code>#name: string</code> plus
 their kind-specific args (<code>#on_edit</code> / <code>#on_click</code> / <code>#choices</code> /
 etc.) and the common appearance options (<code>#display_name</code>, <code>#source</code>,
 <code>#width</code>, <code>#on_resize</code>).</p>
+<p>A column name must be one nonempty netidx path component. Use netidx path
+escaping for a slash inside a name. Invalid names are ignored with a warning.</p>
 <ul>
 <li>
 <p><strong><code>text_column</code></strong> – Plain text. With <code>on_edit</code> the cell becomes
@@ -550,8 +554,10 @@ cell’s history holds only its live values, never the fallback.</p>
 Arrow keys move the selection among the data columns (the
 currently-rendered selected cell scrolls into view as needed); they
 never land on the row-name column. <code>Enter</code> fires <code>on_activate</code> for
-the selected cell’s row; <code>Space</code> on an editable cell opens its editor,
+the selected cell’s row; <code>Space</code> on an editable Text cell opens its editor,
 which takes the typed keys, <code>Enter</code> to commit and <code>Escape</code> to cancel.
+On other column types, <code>Space</code> does nothing. Clicking another cell cancels
+an open Text editor.
 Other keys go on to an enclosing <code>keyboard_area</code>, so application
 shortcuts keep working while the table has focus.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
@@ -1325,6 +1331,9 @@ widgets, no netidx subscriptions.</li>
 <li><a href="../../stdlib/sys/net.html"><code>sys::net</code></a> – the <code>Table</code> record and
 <code>list_table</code> helper consumed by <code>#table</code>.</li>
 </ul>
+<p>With multiple selected cells, keyboard navigation starts at the first valid
+cell in the program’s selection array. If none of the selected cells is fully
+visible, the table scrolls to that first cell.</p>
 
                     </main>
 

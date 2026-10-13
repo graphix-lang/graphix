@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
+            window.path_to_searchindex_js = "../../searchindex-37e0ebcb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -228,7 +228,7 @@ val context_menu: fn(items: &amp;Array&lt;MenuItem&gt;, child: &amp;Widget) -&gt
 val bar: fn(?#width: &amp;Length, menus: &amp;Array&lt;MenuGroup&gt;) -&gt; Widget
 </code></pre>
 <h2 id="menushortcut"><a class="header" href="#menushortcut"><code>menu::shortcut</code></a></h2>
-<p>Creates a keyboard shortcut from modifier flags and a single character key; any one character, <code>é</code> or <code>€</code> included.</p>
+<p>Creates a keyboard shortcut from modifier flags and a single character key; any one character, <code>é</code> or <code>€</code> included. Matching accepts the unmodified key or the character produced by Shift or AltGr, ignoring letter case. The modifier flags must still match: for example, use <code>#ctrl: true, #shift: true</code> with <code>"?"</code> for Ctrl+Shift+? on a US layout.</p>
 <ul>
 <li><strong><code>#ctrl</code></strong> – Hold Ctrl. Defaults to <code>false</code>.</li>
 <li><strong><code>#shift</code></strong> – Hold Shift. Defaults to <code>false</code>.</li>
