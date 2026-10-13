@@ -396,21 +396,16 @@ run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, |v: Result<&Value>|
 
 // A place indexed past i64::MAX addresses nothing, never from the end:
 // its read is bottom and the sample banks.
-// CR claude for claude: [test-gap/low] The write `obs <- t1 ~ *r` and the read `t2 ~
-// obs` are ordered by 20 ms and 50 ms timers. When a stall puts both timer fires in one
-// cycle, the read sees obs before the write lands and the fixture yields null whatever
-// `*r` reads. A regression that indexed `&a[u64::MAX]` from the end and read 30 would
-// pass under load. Use the `step` counter idiom the neighbouring fixtures use: t1 at
-// step 2, t2 at step 5. probe: design/review-2026-10-12/repro/x-rerun-6-09.gx
-// (x-rerun-6-09)
 const PLACE_INDEX_U64_ABOVE_I64_MAX: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let a = [10, 20, 30];
   let r = &a[u64:18446744073709551615];
-  let t1 = sys::time::timer(duration:0.02s, false);
+  let t1 = select step { 2 => null, _ => never() };
   let obs: [i64, null] = null;
   obs <- t1 ~ *r;
-  let t2 = sys::time::timer(duration:0.05s, false);
+  let t2 = select step { 5 => null, _ => never() };
   t2 ~ obs
 }
 "#;
