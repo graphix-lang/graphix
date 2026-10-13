@@ -5603,19 +5603,8 @@ mod tests {
         agree_fused("i64:10 / i64:0").await;
         agree_fused("{ let a = i64:7; a > i64:3 && a < i64:10 }").await;
         agree_fused("f64:3.0 + f64:1.0").await;
-        // `cast` node-walks: deliberate fallback
-        // CR claude for claude: [test-gap/low] This probe and several others are
-        // written as agree (no fusion assertion), with comments saying the construct
-        // node-walks or is an ASPIRE gap. All of them fuse cleanly today: `graphix-fuzz
-        // run` shows fused=1, with only module-statement noise. The others are the
-        // nested map and destructured callback in jit_map_probes, the destructured
-        // predicate and fold callbacks, jit_flat_map_probes, the HOF-in-callee and
-        // lambda-in-callback probes, and jit_destructure_probes (the composite leaf
-        // included). Because they check values only, a change that de-fuses any of
-        // these shapes passes. Switch each one that fuses to agree_fused_clean and
-        // delete the stale node-walks/ASPIRE comments and doc lines. Keep agree only
-        // where a probe really does not fuse. (fuzz-lib-b-08)
-        agree("cast<f64>(i64:7)$ + f64:1.0").await;
+        // a cast
+        agree_fused_clean("cast<f64>(i64:7)$ + f64:1.0").await;
         // the inner block reads `outer`, a scalar kernel param
         agree_fused("{ let outer = i64:100; { let t = outer - i64:1; t * i64:2 } }")
             .await;
@@ -5756,8 +5745,8 @@ mod tests {
              _ => i64:0 } }",
         )
         .await;
-        // a may-bottom interpolated part: the interpolation node-walks
-        agree(r#"{ let x = i64:5; "v=[(x +? i64:1)$]" }"#).await;
+        // a may-bottom interpolated part
+        agree_fused_clean(r#"{ let x = i64:5; "v=[(x +? i64:1)$]" }"#).await;
     }
 
     /// Composite lets and accessors fuse as one region.
@@ -5785,8 +5774,8 @@ mod tests {
              array::map(a, |p| p.0 + p.1) }",
         )
         .await;
-        // Nullable out: node-walks (ASPIRE: value residents in slot chains)
-        agree(
+        // nullable out
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; \
              array::map(a, |x| select x { i64:1 => i64:10, _ => null }) }",
         )
@@ -5797,8 +5786,8 @@ mod tests {
              array::map(a, |x| x * k) }",
         )
         .await;
-        // nested map-in-map: the inner site is not resolved at emission
-        agree(
+        // nested map-in-map
+        agree_fused_clean(
             "{ let a = [[i64:1, i64:2], [i64:3]]; \
              array::map(a, |row| array::map(row, |x| x + i64:1)) }",
         )
@@ -5813,8 +5802,9 @@ mod tests {
             "{ let a = [i64:1, i64:2, i64:3]; array::map((a[1..])$, |x| x) }",
         )
         .await;
-        // destructured callback (ASPIRE: instance-body inlining)
-        agree("{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }").await;
+        // destructured callback
+        agree_fused_clean("{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }")
+            .await;
     }
 
     /// Inline `array::filter` emission. A may-bottom predicate de-fuses
@@ -5844,29 +5834,32 @@ mod tests {
              array::filter(a, |x| select x { i64:2 => false, _ => true }) }",
         )
         .await;
-        // statically may-bottom predicate with no zero present: de-fuses
-        // and node-walks to a real value
-        agree(
+        // statically may-bottom predicate with no zero present
+        agree_fused_clean(
             "{ let a = [i64:1, i64:5, i64:20]; \
              array::filter(a, |x| i64:10 / x > i64:1) }",
         )
         .await;
         // with an actual 0 the output never fires in any mode
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:0, i64:1, i64:5]; \
              array::filter(a, |x| i64:10 / x > i64:1) }",
         )
         .await;
-        // string element: node-walks
-        agree(r#"{ let a = ["aa", "b"]; array::filter(a, |s| s == "aa") }"#).await;
+        // string element
+        agree_fused_clean(r#"{ let a = ["aa", "b"]; array::filter(a, |s| s == "aa") }"#)
+            .await;
         // owned input array
         agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter((a[1..])$, |x| x > i64:1) }",
         )
         .await;
-        // destructured predicate (ASPIRE: instance-body inlining)
-        agree("{ let a = [(i64:1, i64:2)]; array::filter(a, |(k, v)| k < v) }").await;
+        // destructured predicate
+        agree_fused_clean(
+            "{ let a = [(i64:1, i64:2)]; array::filter(a, |(k, v)| k < v) }",
+        )
+        .await;
     }
 
     /// Inline `array::fold` emission. A may-bottom init or body
@@ -5922,70 +5915,71 @@ mod tests {
         )
         .await;
         // statically may-bottom body: de-fuses
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; \
              array::fold(a, i64:100, |acc, x| acc / x) }",
         )
         .await;
         // statically may-bottom init
-        agree(
+        agree_fused_clean(
             "{ let n = i64:2; let a = [i64:1, i64:2]; \
              array::fold(a, i64:10 / n, |acc, x| acc + x) }",
         )
         .await;
         // string accumulator
-        agree(r#"{ let a = [i64:1, i64:2]; array::fold(a, "", |acc, x| "[acc][x]") }"#)
-            .await;
+        agree_fused_clean(
+            r#"{ let a = [i64:1, i64:2]; array::fold(a, "", |acc, x| "[acc][x]") }"#,
+        )
+        .await;
         // owned input array
         agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::fold((a[1..])$, i64:0, |acc, x| acc + x) }",
         )
         .await;
-        // destructured callback (ASPIRE: instance-body inlining)
-        agree(
+        // destructured callback
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::fold(a, i64:0, |acc, (k, v)| acc + k * v) }",
         )
         .await;
     }
 
-    /// Inline `array::flat_map` emission (ASPIRE: instance-body inlining;
-    /// value agreement only for now).
+    /// Inline `array::flat_map` emission.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn jit_flat_map_probes() {
         // scalar element, fresh array body
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; \
              array::flat_map(a, |x| [x, x * i64:10]) }",
         )
         .await;
         // composite element flattened to its fields
-        agree(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
              array::flat_map(a, |p| [p.0, p.1]) }",
         )
         .await;
         // capture
-        agree(
+        agree_fused_clean(
             "{ let k = i64:2; let a = [i64:1, i64:2]; \
              array::flat_map(a, |x| [x * k]) }",
         )
         .await;
         // borrowed body source, cloned per iteration
-        agree(
+        agree_fused_clean(
             "{ let b = [i64:9]; let a = [i64:1, i64:2]; \
              array::flat_map(a, |x| b) }",
         )
         .await;
         // owned input array
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::flat_map((a[1..])$, |x| [x]) }",
         )
         .await;
         // destructured callback
-        agree(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::flat_map(a, |(k, v)| [k, v]) }",
         )
@@ -6007,8 +6001,8 @@ mod tests {
              f([i64:1, i64:2, i64:3]) }",
         )
         .await;
-        // HOF inside the callee body: node-walks
-        agree(
+        // HOF inside the callee body
+        agree_fused_clean(
             "{ let f = |a: Array<i64>| \
                array::fold(a, i64:0, |acc, x| acc + x); \
              f([i64:1, i64:2, i64:3]) }",
@@ -6020,8 +6014,8 @@ mod tests {
              f(#k: i64:3, i64:2) + f(i64:2) }",
         )
         .await;
-        // nullable return from a select body: node-walks
-        agree(
+        // nullable return from a select body
+        agree_fused_clean(
             "{ let f = |x: i64| -> [i64, null] \
                select x { i64:0 => null, _ => x }; \
              f(i64:5) }",
@@ -6058,13 +6052,13 @@ mod tests {
         )
         .await;
         // shadowed lambda name: f2's body calls the outer f; de-fuses
-        agree(
+        agree_fused_clean(
             "{ let f = |x: i64| -> i64 x + i64:1; \
              let f = |n: i64| -> i64 f(n) * i64:2; f(i64:3) }",
         )
         .await;
-        // lambda call inside a HOF callback body: node-walks
-        agree(
+        // lambda call inside a HOF callback body
+        agree_fused_clean(
             "{ let f = |x: i64| x * i64:2; let a = [i64:1, i64:2]; \
              array::map(a, |x| f(x)) }",
         )
@@ -6118,69 +6112,67 @@ mod tests {
         );
     }
 
-    /// Destructured `|(k, v)|` callbacks (ASPIRE: instance-body
-    /// inlining; value agreement only for now).
+    /// Destructured `|(k, v)|` callbacks.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn jit_destructure_probes() {
         // mixed-prim leaves
-        agree(
+        agree_fused_clean(
             "{ let a = [(i64:1, f64:2.5), (i64:3, f64:0.5)]; \
              array::map(a, |(k, v)| v) }",
         )
         .await;
         // sparse leaves: `_` positions get no bind
-        agree(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
              array::map(a, |(k, _)| k * i64:10) }",
         )
         .await;
         // find with a destructured predicate yields the whole tuple
-        agree(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
              array::find(a, |(k, v)| k > v) }",
         )
         .await;
         // 3-leaf tuple through fold
-        agree(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2, i64:3), (i64:4, i64:5, i64:6)]; \
              array::fold(a, i64:0, |acc, (x, y, z)| acc + x * y + z) }",
         )
         .await;
-        // composite leaf: node-walks
-        agree(
+        // composite leaf
+        agree_fused_clean(
             "{ let a = [((i64:1, i64:2), i64:3)]; \
              array::map(a, |(p, x)| x) }",
         )
         .await;
     }
 
-    /// Inline `array::filter_map` emission (ASPIRE: instance-body
-    /// inlining; value agreement only for now).
+    /// Inline `array::filter_map` emission.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn jit_filter_map_probes() {
         // keep evens doubled
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
              array::filter_map(a, |x| \
                select x % i64:2 { i64:0 => x * i64:10, _ => null }) }",
         )
         .await;
         // capture
-        agree(
+        agree_fused_clean(
             "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
              array::filter_map(a, |x| \
                select x { i64:2 => x * k, _ => null }) }",
         )
         .await;
-        // composite element: node-walks
-        agree(
+        // composite element
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::filter_map(a, |p| \
                select p.0 { i64:1 => p.1, _ => null }) }",
         )
         .await;
         // owned input array
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter_map((a[1..])$, |x| \
                select x { i64:2 => x, _ => null }) }",
@@ -6193,27 +6185,28 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn jit_find_probes() {
         // found
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:5, i64:3]; \
              array::find(a, |x| x > i64:2) }",
         )
         .await;
         // not found
-        agree("{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }").await;
+        agree_fused_clean("{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }")
+            .await;
         // composite element
-        agree(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
              array::find(a, |p| p.0 > p.1) }",
         )
         .await;
         // may-bottom predicate: de-fuses
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:5]; \
              array::find(a, |x| i64:10 / x > i64:4) }",
         )
         .await;
         // owned input array
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find((a[1..])$, |x| x > i64:1) }",
         )
@@ -6224,21 +6217,21 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn jit_find_map_probes() {
         // found: first even, doubled
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find_map(a, |x| \
                select x % i64:2 { i64:0 => x * i64:10, _ => null }) }",
         )
         .await;
         // not found
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:3]; \
              array::find_map(a, |x| \
                select x % i64:2 { i64:0 => x, _ => null }) }",
         )
         .await;
         // owned input array
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find_map((a[1..])$, |x| \
                select x { i64:2 => x, _ => null }) }",
@@ -6266,17 +6259,17 @@ mod tests {
         )
         .await;
         // find over an inlined filter
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
              array::find(array::filter(a, |x| x % i64:2 == i64:0), \
                |x| x > i64:2) }",
         )
         .await;
         // init's output into flat_map
-        agree("array::flat_map(array::init(i64:3, |i| i), |x| [x, x])").await;
+        agree_fused_clean("array::flat_map(array::init(i64:3, |i| i), |x| [x, x])").await;
         // the outer map's body bottom-aborts mid-loop while the inner
         // map's result is adopted: the pending cleanup must free it
-        agree(
+        agree_fused_clean(
             "{ let a = [i64:9223372036854775807, i64:1]; \
              array::map(array::map(a, |x| x), |x| (x +? i64:1)$) }",
         )
@@ -6293,7 +6286,7 @@ mod tests {
         // negative n clamps to the empty array
         agree_fused_clean("array::init(i64:0 - i64:2, |i| i)").await;
         // may-bottom n: de-fuses
-        agree("{ let d = i64:2; array::init(i64:4 / d, |i| i) }").await;
+        agree_fused_clean("{ let d = i64:2; array::init(i64:4 / d, |i| i) }").await;
     }
 
     /// Broad differential sweep over generated programs: Interp and Jit
