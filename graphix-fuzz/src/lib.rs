@@ -5234,6 +5234,25 @@ mod tests {
                 "{ let s: [string, i64] = \"a\"; let r = select s { string as x => 1, y => 2 }; r }",
                 "same-form#",
             ),
+            // a callee with an unannotated parameter widens the cell it
+            // shares with the environment, however the call reaches it
+            (
+                "{ let z = never(); let f = |y| z <- y; let r = f(1); (r, z) }",
+                "widen-consumer#",
+            ),
+            (
+                "{ let z = never(); let s = {f: |y| z <- y}; let r = s.f(1); (r, z) }",
+                "widen-consumer#",
+            ),
+            ("{ let z = never(); let r = (|y| z <- y)(1); (r, z) }", "widen-consumer#"),
+            (
+                "{ let z = never(); let f = |y| z <- y; let g = f; let r = g(1); (r, z) }",
+                "widen-consumer#",
+            ),
+            (
+                "{ let z = never(); let f = { let k = 0; |y| z <- y }; let r = f(1); (r, z) }",
+                "widen-consumer#",
+            ),
             // the annotation would decide the open referent
             ("{ let x = never(); let r = &mut x; *r <- 2; x }", "ref-widen#"),
         ] {

@@ -995,37 +995,30 @@ fn widen_consumer(
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
-    // a lambda with an unannotated parameter: the parameter may be a cell
-    // shared with the environment (`|y| z <- y` over `let z = never()`),
-    // which a call widens rather than refuses
-    // CR claude for claude: [bug/medium] The skip for a callee with an unannotated
-    // parameter is built only from top-level `let f = <lambda literal>` names and
-    // matched only when the callee is a bare `Ref` to one of them. A callee that
-    // reaches the same shared cell another way is not skipped: a struct field
-    // (`s.f(..)`), a lambda literal applied directly, an alias (`let g = f; g(..)`), or
-    // a lambda under a block (`let f = { ..; |y| z <- y }`). Over `let z = never()` the
-    // call rightly widens z's cell to `[i64, string]`, the checker accepts, and
-    // typemorph reports `FLIP widen-consumer#N LEAK: accepted at call`, a false
-    // unsoundness report that lands in triage and the typeflip corpus. Fix: decide the
-    // skip from the callee's definition, not its name: take the Apply consumer only for
-    // a builtin or module path or a let-bound lambda whose parameter at that position
-    // is annotated, and skip every other callee shape; add the four bodies as must-skip
-    // cases to the lib test. probe: design/review-2026-10-12/repro/fuzz-mutate-01.sh
-    // (fuzz-mutate-01)
-    let inferred: AHashSet<&str> = pre
-        .iter()
-        .filter_map(|e| match &e.kind {
-            ExprKind::Bind(b) => match (&b.pattern, &typemorph::unparen(&b.value).kind) {
-                (StructurePattern::Bind(f), ExprKind::Lambda(l))
-                    if l.args.iter().any(|a| a.constraint.is_none()) =>
-                {
-                    Some(f.as_str())
-                }
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect();
+    // A callee's parameter may be a cell shared with the environment
+    // (`|y| z <- y` over `let z = never()`), which a call widens rather
+    // than refuses. A call is a consumer only through a module path, a
+    // builtin the body does not rebind, or a let-bound lambda literal whose
+    // every parameter is annotated; any other name the body binds may be
+    // such a lambda (an alias, a block's value, a field).
+    let mut untyped: AHashSet<&str> = AHashSet::default();
+    for e in pre {
+        let ExprKind::Bind(b) = &e.kind else { continue };
+        let StructurePattern::Bind(f) = &b.pattern else { continue };
+        match &typemorph::unparen(&b.value).kind {
+            ExprKind::Lambda(l) if l.args.iter().all(|a| a.constraint.is_some()) => (),
+            _ => {
+                untyped.insert(f.as_str());
+            }
+        }
+    }
+    let consumer_callee = |f: &Expr| match &typemorph::unparen(f).kind {
+        ExprKind::Ref { name } => {
+            let name = name.to_string();
+            name.contains("::") || !untyped.contains(name.as_str())
+        }
+        _ => false,
+    };
     let mut taken = 0usize;
     for i in spread(pre.len()) {
         if taken >= cap {
@@ -1054,12 +1047,7 @@ fn widen_consumer(
             // a callee whose type its uses decided (a monomorphic value's
             // cell) has the parameter this very call gave it
             ExprKind::Apply(ap) if types.cell(&ap.function) => None,
-            ExprKind::Apply(ap)
-                if matches!(&typemorph::unparen(&ap.function).kind,
-                    ExprKind::Ref { name } if inferred.contains(name.to_string().as_str())) =>
-            {
-                None
-            }
+            ExprKind::Apply(ap) if !consumer_callee(&ap.function) => None,
             ExprKind::Apply(ap) => {
                 // the first argument whose parameter is a concrete primitive
                 let Some(ft) = callee_type(types, ap) else { continue };
