@@ -457,24 +457,9 @@ fn migrate_old(doc: &toml::Value) -> Result<Packages> {
             external.insert(k.as_str().into(), entry);
         }
     }
-    // Stdlib names absent from the old file were removed by the user.
-    // CR claude for claude: [bug/low] The old flat format was written once, from that
-    // era's defaults, and never grew. So a name it lacks was usually not shipped when
-    // the file was written, and the user did not remove it. A file from the first
-    // package manager (core array str map fs time net re rand tui) migrates with args
-    // db gui hbs http json list pack sqlite toml xls in stdlib_removed. `graphix
-    // package list` then shows them as removed. reconcile's note and
-    // compute_update_plan's new_stdlib both skip removed names, so the user is never
-    // told these packages exist. Fix: leave a name the old file does not mention
-    // untracked, in neither set. It is still not built, but reconcile announces it and
-    // update offers it. Also drop the comment above, which states the wrong premise.
-    // Probe: design/review-2026-10-12/repro/package-02.sh (package-02)
-    let stdlib_removed = DEFAULT_PACKAGES
-        .iter()
-        .filter(|n| !stdlib_installed.contains(**n))
-        .map(|n| n.to_compact_string())
-        .collect();
-    let mut p = Packages { stdlib_installed, stdlib_removed, external };
+    // the old file was written from its era's defaults, so a name it lacks
+    // is untracked, never removed: reconcile announces it, update offers it
+    let mut p = Packages { stdlib_installed, stdlib_removed: BTreeSet::new(), external };
     p.enforce_invariants();
     Ok(p)
 }

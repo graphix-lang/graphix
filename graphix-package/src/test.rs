@@ -431,15 +431,14 @@ mod pure {
     }
 
     #[test]
-    fn migrate_missing_stdlib_goes_to_removed() {
+    fn migrate_missing_stdlib_is_untracked() {
         let toml = "[packages]\ncore = \"0.4.0\"\narray = \"0.4.0\"\nfoo = \"1.0.0\"\n";
         let p = parse(toml);
         assert!(p.stdlib_installed.contains("core"));
         assert!(p.stdlib_installed.contains("array"));
         assert!(!p.stdlib_installed.contains("gui"));
-        // stdlib names absent from the old file land in removed
-        assert!(p.stdlib_removed.contains("gui"));
-        assert!(p.stdlib_removed.contains("xls"));
+        // stdlib names absent from the old file are neither installed nor removed
+        assert!(p.stdlib_removed.is_empty());
         // unknown names are preserved as external
         assert_eq!(p.external.get("foo"), Some(&ver("1.0.0")));
     }
