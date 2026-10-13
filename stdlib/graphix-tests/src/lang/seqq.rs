@@ -252,19 +252,13 @@ async fn function_captures_stay_static(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// CR claude for claude: [structure/low] This test re-derives the fusion flag from
-// `mode.node_walk()` by hand and never sets the par mode, so its par and jit_par
-// variants are copies of interp and jit. Use `mode.flags() | CFlag::WarnUnhandled |
-// CFlag::WarningsAreErrors`, and set `ctx.control.set_par_mode(mode.par())` in the
-// setup closure as `fixture_runtime` does. Or run it once as a plain test instead of
-// under modes!. (tests-seq-10)
 async fn unhandled_warnings(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(100);
-    let mut flags = CFlag::WarnUnhandled | CFlag::WarningsAreErrors;
-    if mode.node_walk() {
-        flags.insert(CFlag::FusionDisabled);
-    }
-    let ctx = init_with_flags_and_setup(tx, &crate::TEST_REGISTER, vec![], flags, |_| {})
+    let flags = mode.flags() | CFlag::WarnUnhandled | CFlag::WarningsAreErrors;
+    let ctx =
+        init_with_flags_and_setup(tx, &crate::TEST_REGISTER, vec![], flags, |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })
         .await?;
     for code in [
         "seq { 42 }",
