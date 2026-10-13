@@ -724,6 +724,7 @@ pub(crate) fn write_through<R: Rt, E: UserEvent>(
 }
 
 /// Where a write through the reference cell `r` lands.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WriteTarget {
     /// The place `r` stands for: its root and the path in it.
     Place(BindId, graphix_compiler::node::place::Path),
@@ -1264,8 +1265,6 @@ impl FireOnce {
         self.0 = false
     }
 }
-
-pub type ByRefChain = graphix_compiler::env::Map<BindId, BindId>;
 
 /// Typed argument read for a fast fn (clone + cast).
 pub fn fast_get<T: FromValue>(args: &[Value], i: usize) -> Option<T> {

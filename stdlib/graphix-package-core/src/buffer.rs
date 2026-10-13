@@ -3,7 +3,10 @@ use arcstr::ArcStr;
 use graphix_compiler::{BindId, ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
 use netidx_value::{PBytes, ValArray, Value};
 
-use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached, fast_eval, fast_get};
+use crate::{
+    CachedArgs, CachedVals, EvalCached, WriteTarget, fast_eval, fast_get, write_target,
+};
+use graphix_compiler::node::place::read_path;
 
 fn fc_bytes_to_string(args: &[Value]) -> Option<Value> {
     let b = fast_get::<Bytes>(args, 0)?;
@@ -174,65 +177,22 @@ crate::fast_builtin!(pub(crate) BufferEncode, EncodeEv, "core_buffer_encode", fc
 struct Decoder<'a> {
     buf: &'a Bytes,
     pos: usize,
-    chain: &'a ByRefChain,
-    /// each write's reference, the binding it names (none for a place),
-    /// and the value
-    written: poolshark::local::LPooled<Vec<(BindId, Option<BindId>, Value)>>,
+    /// each write's reference, where it lands, and the value
+    written: poolshark::local::LPooled<Vec<(BindId, WriteTarget, Value)>>,
 }
 
 fn decode_err(msg: impl std::fmt::Display) -> Value {
     errf!("DecodeError", "{msg}")
 }
 
-impl<'a> Decoder<'a> {
-    // CR claude for claude: [bug/medium] buffer::decode refuses well-typed refs: &mut
-    // over a value, &place and &literal as lengths. `Decoder::target` (buffer.rs)
-    // resolves a length reference only through the by-ref chain to a let binding.
-    // `Decoder::put` (buffer.rs) also accepts a place, but refuses anything else. The
-    // `Decode` type takes `&mut T` / `&u64`, and CLAUDE.md (References) says `&mut e`
-    // over a non-place expression is a fresh writable cell its uses type, and that
-    // `&s.f` is a place. So programs the checker accepts fail at run time with a
-    // DecodeError. Four cases fail: (1) `` `U8(&mut u8:0) ``, a fresh cell that `*r <-
-    // v` writes correctly; (2) `` `Bytes(&hdr.n, ..) `` with the length in a struct
-    // field, the ordinary length-prefixed header shape; (3) `` `Skip(&u64:0) ``; (4) ``
-    // `U64(fresh), `Bytes(fresh, ..) `` with `let fresh = &mut u64:0`. A place can be
-    // written as a target, but its write cannot be read back as a length later in the
-    // same pass: `len()` only matches written entries whose target is `Some(binding)`.
-    // The test `decode_ref_to_literal` (stdlib/graphix-tests/src/lib_tests/buffer.rs)
-    // pins the refusal as intended ('A ref to a literal in a decode spec is a runtime
-    // decode error'), and that contradicts the reference semantics. The gxi doc ('Each
-    // decoded field is written through its &mut') states no such restriction. Failure:
-    // `let hdr = {n: u64:0, tag: u8:0}; let d: bytes = never(); buffer::decode(encoded,
-    // [`U64(&mut hdr.n), `Bytes(&hdr.n, &mut d)])` type-checks and returns
-    // error:["DecodeError", "ref does not point to a let binding"] in both engines.
-    // `let r = &mut u8:0; buffer::decode(enc, [`U8(r)])` returns DecodeError, while `*r
-    // <- u8:5` on the same reference works. Fix: Resolve every spec reference the way
-    // `==` does (`bind::ref_target`: the place, else the by-ref chain's binding, else
-    // the cell itself). Key `written` by that resolved target, so a place or a fresh
-    // cell can be both written and read back as a length within one pass. Then change
-    // `decode_ref_to_literal` to assert the decode succeeds and that `*r` reads the
-    // decoded value. Add a pin for a length held in a struct field. Unverified: the
-    // reviewer's report, not checked by a verifier. (tests-lib-b1-01)
-    /// The binding a spec's reference names.
-    // CR claude for claude: [bug/low] Decoder::target resolves a length reference only
-    // through the byref chain of let bindings, so a place reference (`&s.n`, `&a[i]`)
-    // used as a `Bytes` or `Skip` length is refused with "ref does not point to a let
-    // binding". The Decode type admits any `&u64`, and Decoder::put accepts the same
-    // place, so `U64(&mut s.n)` followed by `Bytes(&s.n, ..)` fails while the
-    // let-binding version works. Decoder::len also cannot find a length written earlier
-    // in the same pass, because a place write records `None` as its target. Fix: key
-    // both the written records and the length lookups by crate::write_target (a binding
-    // or a root plus path). Read a place length from this pass's writes first, else
-    // from the root's store value through place::read_path. probe:
-    // design/review-2026-10-12/repro/core-aux-04.gx (core-aux-07)
-    fn target(&self, r: &Value) -> Result<BindId, Value> {
-        let Value::U64(id) = r else { return Err(decode_err("not a reference")) };
-        self.chain
-            .get(&BindId::from(*id))
-            .copied()
-            .ok_or_else(|| decode_err("ref does not point to a let binding"))
+fn reference(r: &Value) -> Result<BindId, Value> {
+    match r {
+        Value::U64(id) => Ok(BindId::from(*id)),
+        _ => Err(decode_err("not a reference")),
     }
+}
 
+impl<'a> Decoder<'a> {
     /// The length a reference holds: this pass's write first, else the
     /// store; `None` when it has not arrived.
     fn len<R: Rt, E: UserEvent>(
@@ -240,10 +200,15 @@ impl<'a> Decoder<'a> {
         ctx: &ExecCtx<'_, R, E>,
         r: &Value,
     ) -> Result<Option<usize>, Value> {
-        let target = self.target(r)?;
-        let v = match self.written.iter().rev().find(|(_, t, _)| *t == Some(target)) {
+        let target = write_target(ctx, reference(r)?);
+        let v = match self.written.iter().rev().find(|(_, t, _)| *t == target) {
             Some((_, _, v)) => Some(v.clone()),
-            None => ctx.rt.store_value(&target),
+            None => match &target {
+                WriteTarget::Var(b) => ctx.rt.store_value(b),
+                WriteTarget::Place(root, path) => {
+                    ctx.rt.store_value(root).and_then(|rv| read_path(&rv, path).ok())
+                }
+            },
         };
         match v {
             None => Ok(None),
@@ -261,20 +226,15 @@ impl<'a> Decoder<'a> {
         Ok(bytes)
     }
 
-    /// A write through `r`, to a binding or a place (`&s.f`, `&a[i]`).
+    /// A write through `r`, to where `*r <- v` would land.
     fn put<R: Rt, E: UserEvent>(
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         r: &Value,
         v: Value,
     ) -> Result<(), Value> {
-        let Value::U64(id) = r else { return Err(decode_err("not a reference")) };
-        let r = BindId::from(*id);
-        let target = self.chain.get(&r).copied();
-        if target.is_none() && ctx.rt.ref_path(&r).is_none() {
-            return Err(decode_err("ref does not point to a let binding or a place"));
-        }
-        self.written.push((r, target, v));
+        let r = reference(r)?;
+        self.written.push((r, write_target(ctx, r), v));
         Ok(())
     }
 
@@ -385,8 +345,7 @@ fn decode<R: Rt, E: UserEvent>(
 ) -> Option<Value> {
     let buf = from.get::<Bytes>(0)?;
     let Value::Array(spec) = from.0.get(1)?.as_ref()? else { return None };
-    let chain = ctx.env.byref_chain.clone();
-    let mut d = Decoder { buf: &buf, pos: 0, chain: &chain, written: Default::default() };
+    let mut d = Decoder { buf: &buf, pos: 0, written: Default::default() };
     for elem in spec.iter() {
         let (tag, args) = variant_tag(elem)?;
         match d.element(ctx, tag, args) {
@@ -396,15 +355,16 @@ fn decode<R: Rt, E: UserEvent>(
         }
     }
     if commit {
-        for (r, _, v) in d.written.drain(..) {
+        for (r, target, v) in d.written.drain(..) {
             // a place reference fires with its root, so a place already
             // holding the value is left alone, or decode would feed itself
-            let unchanged = ctx.rt.ref_path(&r).is_some_and(|(root, path)| {
-                ctx.rt.store_value(root).is_some_and(|rv| {
-                    graphix_compiler::node::place::read_path(&rv, path)
-                        .is_ok_and(|c| c == v)
-                })
-            });
+            let unchanged = match &target {
+                WriteTarget::Place(root, path) => ctx
+                    .rt
+                    .store_value(root)
+                    .is_some_and(|rv| read_path(&rv, path).is_ok_and(|c| c == v)),
+                WriteTarget::Var(_) => false,
+            };
             if !unchanged {
                 crate::write_through(ctx, r, v);
             }

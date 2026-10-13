@@ -341,14 +341,33 @@ run!(varint_length_prefixed, VARINT_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello")
 }; FuseExpect::Jit);
 
-// A ref to a literal in a decode spec is a runtime decode error.
+// A decode writes through a fresh cell (`&mut` over a literal) as `*r <-`
+// does, and reads a length back from one it wrote this pass.
 const DECODE_REF_TO_LITERAL: &str = r#"{
-  let encoded = buffer::encode([`U8(u8:1)]);
-  is_err(buffer::decode(encoded, [`U8(&mut u8:0)]))
+  let encoded = buffer::encode([`U8(u8:7), `U64(u64:2), `Bytes(bytes:AQI=)]);
+  let r = &mut u8:0;
+  let n = &mut u64:0;
+  let d: bytes = never();
+  buffer::decode(encoded, [`U8(r), `U64(n), `Bytes(n, &mut d)])?;
+  (*r, *n, d)
 }"#;
 
 run!(decode_ref_to_literal, DECODE_REF_TO_LITERAL, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
+    matches!(v, Ok(v) if v.to_string() == "[u8:7, u64:2, bytes:AQI=]")
+}; FuseExpect::Jit);
+
+// A length held in a struct field is written and read back through the
+// place, the length-prefixed header shape.
+const DECODE_PLACE_LENGTH: &str = r#"{
+  let encoded = buffer::encode([`U64(u64:3), `Bytes(bytes:YWJj)]);
+  let hdr = {n: u64:0, tag: u8:0};
+  let s: string = never();
+  buffer::decode(encoded, [`U64(&mut hdr.n), `UTF8(&hdr.n, &mut s)])?;
+  (hdr.n, s)
+}"#;
+
+run!(decode_place_length, DECODE_PLACE_LENGTH, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"[u64:3, "abc"]"#)
 }; FuseExpect::Jit);
 
 // A decoded field is discarded by writing to an unused let binding.
