@@ -494,26 +494,22 @@ fn to_toml_string(p: &Packages) -> Result<String> {
     Ok(toml::to_string_pretty(&toml::Value::Table(doc))?)
 }
 
-/// Read packages.toml, creating it with defaults (and migrating if needed).
-/// An old-format file is upgraded to v2 in place on first read (best-effort —
-/// a write failure doesn't fail the read), so migration runs exactly once.
 /// The record, migrated from an old format or the defaults when there is
-/// none. Nothing is written here: the commands that change the record
-/// write it, under the package lock.
-// CR claude for claude: [doc-drift/low] The doc comment above this function contradicts
-// itself. Its first paragraph says an old-format file is upgraded to v2 in place on
-// first read, so migration runs once. The second says nothing is written here, which is
-// what the code does. As a result, a read-only command such as `graphix package list`
-// migrates the old file on every run and prints the fs/net/time LEGACY_REMAP warnings
-// each time (shown by
-// design/review-2026-10-12/repro/package-migrate-marks-unseen-removed.sh).
-// parse_packages' 'migrated' bool is used only by tests. Fix: delete the stale
-// paragraph. Then either write the migrated record under the package lock when the bool
-// is true, which gives the bool a use, or drop the bool. (package-08)
+/// none. A migrated record is written back when the package lock is free;
+/// a command holding it writes the record itself.
 async fn read_packages() -> Result<Packages> {
     let path = packages_toml_path()?;
     match fs::read_to_string(&path).await {
-        Ok(contents) => Ok(parse_packages(&contents)?.0),
+        Ok(contents) => {
+            let (p, migrated) = parse_packages(&contents)?;
+            if migrated
+                && let Ok(mut lock) = GraphixPM::lock_file()
+                && let Ok(_guard) = lock.try_write()
+            {
+                write_packages(&p).await?;
+            }
+            Ok(p)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut p = Packages::default();
             p.stdlib_installed =
