@@ -2,9 +2,19 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{Collect, FuseExpect, Mode, collect, refused},
 };
 use netidx::subscriber::Value;
+use std::time::Duration;
+
+/// The last value of `code`'s result in `mode` once the runtime is quiet.
+async fn settled(code: &str, mode: Mode) -> Result<Value> {
+    let quiet = Collect::Quiet(Duration::from_millis(500));
+    collect(code, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(5))
+        .await?
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("no update before the runtime went quiet"))
+}
 
 const LIST_NIL: &str = r#"
   list::is_empty(list::nil(null))
@@ -630,31 +640,23 @@ run!(list_iterq, LIST_ITERQ, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // `list::fold`'s init changes 0 -> 100 on the second cycle and the fold
-// recomputes (106); `eval_converged` reads the settled value.
-// CR claude for claude: [test-gap/low] This test and list_fold_resize_converges go
-// through testing::eval_converged, which hard-codes Mode::Jit. As a result, the
-// node-walk (the canonical engine) and the forked modes never run these pins of fold
-// re-firing on an init change or a resize. A node-walk regression there passes both.
-// Fix: give eval_converged a Mode parameter and run these under every mode, or express
-// them with run! and a predicate that waits for the settled value. (tests-lib-a-05)
-#[tokio::test]
-async fn list_fold_dynamic_init_converges() {
+// recomputes (106); the settled value is read in every mode.
+async fn list_fold_dynamic_init_converges(mode: Mode) -> Result<()> {
     let prog = "{ \
         let init = 0; \
         init <- select init { 0 => init ~ 100, _ => never() }; \
         list::fold(list::from_array([1, 2, 3]), init, |acc, x| x + acc) \
     }";
-    let (v, ctx) =
-        graphix_package_core::testing::eval_converged(prog, crate::TEST_REGISTER)
-            .await
-            .expect("eval_converged");
+    let v = settled(prog, mode).await?;
     assert_eq!(
         v,
         Value::I64(106),
         "fold must re-fire the accumulator chain when init changes"
     );
-    ctx.shutdown().await;
+    Ok(())
 }
+
+modes!(list_fold_dynamic_init_converges);
 
 // A composite callback return shape.
 const LIST_FIND_MAP_TUPLE: &str = r#"
@@ -753,17 +755,15 @@ run!(list_fold_map_acc, LIST_FOLD_MAP_ACC, |v: Result<&Value>| {
 });
 
 // The list grows a cycle in; the fold re-fires with the new length.
-#[tokio::test]
-async fn list_fold_resize_converges() {
+async fn list_fold_resize_converges(mode: Mode) -> Result<()> {
     let prog = "{ \
         let l = list::from_array([1, 2, 3]); \
         l <- select list::len(l) { 3 => l ~ list::from_array([1, 2, 3, 4]), _ => never() }; \
         list::fold(l, 0, |acc, x| acc + x) \
     }";
-    let (v, ctx) =
-        graphix_package_core::testing::eval_converged(prog, crate::TEST_REGISTER)
-            .await
-            .expect("eval_converged");
+    let v = settled(prog, mode).await?;
     assert_eq!(v, Value::I64(10), "fold must re-fire when the list resizes");
-    ctx.shutdown().await;
+    Ok(())
 }
+
+modes!(list_fold_resize_converges);

@@ -752,30 +752,6 @@ pub async fn collect(
     Ok(values)
 }
 
-/// Like [`eval`], but for a program that converges over several cycles:
-/// the LAST value of the result once the runtime has gone quiet.
-pub async fn eval_converged(
-    code: &str,
-    register: &[PackageRef],
-) -> Result<(Value, TestCtx)> {
-    let (ctx, mut rx) =
-        fixture_runtime([("/test.gx", result_source(code))], register, Mode::Jit, |_| {})
-            .await?;
-    let res = compile_result(&ctx).await?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut values = updates_until_quiet(
-        &mut rx,
-        res.exprs[0].id,
-        Duration::from_millis(500),
-        deadline,
-    )
-    .await?;
-    match values.pop() {
-        Some(v) => Ok((v, ctx)),
-        None => bail!("no update before the runtime went quiet"),
-    }
-}
-
 /// Like [`eval`], but ships the `/test.gx` module as a packed pre-parsed
 /// AST (`serialize::pack_module`) rather than source, so the resolver
 /// takes its `unpack_module` path. The result must match [`eval`].
