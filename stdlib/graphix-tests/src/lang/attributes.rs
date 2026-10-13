@@ -164,7 +164,7 @@ run!(sync_builtin_callbacks_stay_sync, r#"{
     (g(1), ap(2, |x| x * 10))
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(20)])
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A dynamic module runs code its source delivers at run time.
 const SYNC_ON_DYNAMIC_MODULE: &str = r#"

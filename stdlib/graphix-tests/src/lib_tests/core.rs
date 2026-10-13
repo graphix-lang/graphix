@@ -945,3 +945,22 @@ run!(queuefn_sleeping_site_drops_its_calls, r#"{
     let r = select mode { `A => q(xa), `B => q(xb) };
     select r { 10 => c, _ => never() }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::Jit);
+
+// The option HOFs answer every delivery of their input, as their select
+// spellings do, even when the callback ignores its argument: after a
+// null they take the new value.
+run!(opt_hofs_answer_every_input, r#"{
+    let c = 0;
+    c <- select c { n if n < 4 => n + 1, _ => never() };
+    let v: [i64, null] = select c { 2 => null, n => n };
+    let k = 100;
+    let enabled = true;
+    let m = opt::map(v, |_| k);
+    let sa = opt::is_some_and(v, |_| k > 0);
+    let no = opt::is_none_or(v, |_| k < 0);
+    let fl = opt::filter(v, |_| enabled);
+    let fm = opt::flat_map(v, |_| k);
+    select c { 4 => (m, sa, no, fl, fm), _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:100, true, false, i64:4, i64:100]")
+}; FuseExpect::Jit);

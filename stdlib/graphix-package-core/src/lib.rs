@@ -3592,13 +3592,8 @@ graphix_derive::defpackage! {
         opt::OkOr,
         opt::Zip,
         opt::Unzip,
-        opt::OptMap as opt::OptMap<GXRt<X>, X::UserEvent>,
-        opt::OptFlatMap as opt::OptFlatMap<GXRt<X>, X::UserEvent>,
-        opt::OptFilter as opt::OptFilter<GXRt<X>, X::UserEvent>,
         opt::OptOrElse as opt::OptOrElse<GXRt<X>, X::UserEvent>,
         opt::OptOkOrElse as opt::OptOkOrElse<GXRt<X>, X::UserEvent>,
-        opt::OptIsSomeAnd as opt::OptIsSomeAnd<GXRt<X>, X::UserEvent>,
-        opt::OptIsNoneOr as opt::OptIsNoneOr<GXRt<X>, X::UserEvent>,
     ],
 }
 

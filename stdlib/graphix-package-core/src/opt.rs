@@ -104,205 +104,6 @@ fn fc_ok_or(args: &[Value]) -> Option<Value> {
 
 crate::fast_builtin!(pub(crate) OkOr, OkOrEv, "core_opt_ok_or", fc_ok_or);
 
-/// The input a unary option HOF last saw.
-#[derive(Debug)]
-enum Input {
-    /// nothing yet, or bottom
-    Unset,
-    Null,
-    Value(Value),
-}
-
-/// A unary option HOF: `f` over the option's value, and what a null
-/// answers.
-pub(crate) trait Unary: std::fmt::Debug + Send + Sync + 'static {
-    const NAME: &str;
-
-    fn on_null() -> Value;
-
-    /// What the callback's answer `r` to the input `x` makes.
-    fn answer(_x: &Value, r: Value) -> Value {
-        r
-    }
-}
-
-/// `f` fed the option's inner value; latest-wins: a new input while the
-/// callback is in flight overwrites `x` (wrap with `queue` for ordered
-/// delivery). The output follows the input the way the select spelling
-/// does: a null answers `on_null` and silences the callback, and a stale
-/// production surfaces as stale, at a first entry or a wake.
-#[derive(Debug)]
-// CR claude for claude: [perf/medium] `OptHof` and `OrElse` re-implement the select
-// spelling in about 300 lines of feed/bind/answer bookkeeping. They are `Effect::Sync`
-// with no fast call, so any lambda calling `opt::map`, `flat_map`, `filter`,
-// `is_some_and`, `is_none_or`, `or_else` or `ok_or_else` cannot fuse ("builtin
-// `opt::map` has no fast-call entry"), and an arm holding one sleeps. The select
-// spelling, `|v: ['a, null], f: fn(x: 'a) -> 'b throws 'e| -> ['b, null] throws 'e
-// select v { null as _ => null, x => f(x) }`, typechecks as a definition in opt.gx,
-// gives the same trace and fuses. Fix: define the seven HOFs in opt.gx over select and
-// delete `OptHof`, `OrElse`, `Unary` and the kinds. Do the same for core `filter_err`
-// (`select r { error as e => e, _ => never() }`). probe:
-// design/review-2026-10-12/repro/x-builtin-effects-07-opt-map-defuses.gx
-// (x-builtin-effects-06)
-pub(crate) struct OptHof<K, R: Rt, E: UserEvent> {
-    inner: Node<R, E>,
-    fid: BindId,
-    x: BindId,
-    input: Input,
-    out: TagValue,
-    kind: std::marker::PhantomData<fn() -> K>,
-}
-
-impl<K: Unary, R: Rt, E: UserEvent> BuiltIn<R, E> for OptHof<K, R, E> {
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let inner = image::decode_node(ctx, buf)?;
-        let fid = BindId::decode(buf)?;
-        let x = BindId::decode(buf)?;
-        Ok(Box::new(Self {
-            inner,
-            fid,
-            x,
-            input: Input::Unset,
-            out: TagValue::phantom(),
-            kind: std::marker::PhantomData,
-        }))
-    }
-
-    const EFFECT: Effect = Effect::Sync;
-    const NAME: &str = K::NAME;
-
-    fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
-        typ: &'a FnType,
-        resolved: Option<&'d FnType>,
-        scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        if from.len() != 2 {
-            bail!("expected two arguments");
-        }
-        let typ = resolved.unwrap_or(typ);
-        let ptyp = match &typ.args[1].typ {
-            Type::Fn(ft) => ft.clone(),
-            t => bail!("expected a function not {t}"),
-        };
-        if ptyp.args.is_empty() {
-            bail!("expected unary callback");
-        }
-        let x_typ = ptyp.args[0].typ.clone();
-        let (x, xn) = genn::bind(ctx, &scope.lexical, "x", x_typ, top_id);
-        let fid = BindId::new();
-        let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
-        let inner =
-            genn::apply(fnode, scope.clone(), smallvec::smallvec![xn], &ptyp, top_id);
-        Ok(Box::new(Self {
-            inner,
-            fid,
-            x,
-            input: Input::Unset,
-            out: TagValue::phantom(),
-            kind: std::marker::PhantomData,
-        }))
-    }
-}
-
-impl<K: Unary, R: Rt, E: UserEvent> Apply<R, E> for OptHof<K, R, E> {
-    /// The input seen exists only once a cycle has run.
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if !matches!(self.input, Input::Unset) {
-            return Err(PackError::Application(image::NOT_QUIESCENT));
-        }
-        self.inner.image_encode(buf)?;
-        self.fid.encode(buf)?;
-        self.x.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        let f = produced(from[1].update(ctx));
-        feed(ctx, self.fid, f);
-        let input = from[0].update(ctx);
-        let (bottom, trig) = (input.tag().is_bottom(), input.tag().triggers());
-        let direct = match seam_value(input) {
-            Some(tv) => match tv.value_cloned() {
-                Value::Null => {
-                    self.input = Input::Null;
-                    Some(TagValue::tagged(K::on_null(), tv.tag()))
-                }
-                v => {
-                    feed(ctx, self.x, Some((v.clone(), tv.tag())));
-                    self.input = Input::Value(v);
-                    None
-                }
-            },
-            None => {
-                self.input = Input::Unset;
-                None
-            }
-        };
-        let answer = self.inner.update(ctx);
-        if bottom {
-            return self.out.set_bottom(trig);
-        }
-        if let Some(tv) = direct {
-            return self.out.set(tv);
-        }
-        match (&self.input, seam_value(answer)) {
-            (Input::Value(x), Some(r)) => {
-                // CR claude for claude: [bug/high] The answer to a new input takes the
-                // callback's tag alone. When the callback ignores its argument (`|_|
-                // k`, `|_| enabled`), r is stale, so a fired input yields a stale
-                // output and the binding never takes the new answer. After a null,
-                // opt::map, opt::is_some_and and opt::filter keep answering null/false
-                // while v holds values again, and filter misses a changed x even
-                // without a null. The select twins fire on every scrutinee delivery, as
-                // the doc above OptHof and opt.gxi promise. Fire the output when the
-                // input fired (`trig`) or the answer fired, as OrElse::update does, and
-                // pin an argument-ignoring callback across a null transition for map,
-                // is_some_and and filter. probe:
-                // design/review-2026-10-12/repro/core-aux-02.gx (core-aux-01)
-                self.out.set(TagValue::tagged(K::answer(x, r.value_cloned()), r.tag()))
-            }
-            // the callback has not answered this input yet
-            (Input::Value(_), None) => self.out.set_bottom(answer.tag().triggers()),
-            // while the input is null, the callback's own fires answer nothing
-            (Input::Null | Input::Unset, _) => self.out.ride(),
-        }
-    }
-
-    fn typecheck0(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        self.inner.typecheck0(ctx)
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.inner.refs(refs);
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.rt.store_remove(&self.fid);
-        ctx.rt.store_remove(&self.x);
-        ctx.env.unbind_variable(self.x);
-        self.inner.delete(ctx);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.input = Input::Unset;
-        self.inner.sleep(ctx);
-    }
-}
-
 /// A production's value and tag, when it has a value.
 fn produced(tv: &TagValue) -> Option<(Value, Tag)> {
     seam_value(tv).map(|tv| (tv.value_cloned(), tv.tag()))
@@ -320,48 +121,6 @@ fn feed<R: Rt, E: UserEvent>(
     }
 }
 
-macro_rules! unary {
-    ($kind:ident, $alias:ident, $name:literal, $on_null:expr) => {
-        #[derive(Debug)]
-        pub(crate) struct $kind;
-
-        impl Unary for $kind {
-            const NAME: &str = $name;
-
-            fn on_null() -> Value {
-                $on_null
-            }
-        }
-
-        pub(crate) type $alias<R, E> = OptHof<$kind, R, E>;
-    };
-}
-
-unary!(MapKind, OptMap, "core_opt_map", Value::Null);
-unary!(FlatMapKind, OptFlatMap, "core_opt_flat_map", Value::Null);
-unary!(IsSomeAndKind, OptIsSomeAnd, "core_opt_is_some_and", Value::Bool(false));
-unary!(IsNoneOrKind, OptIsNoneOr, "core_opt_is_none_or", Value::Bool(true));
-
-#[derive(Debug)]
-pub(crate) struct FilterKind;
-
-impl Unary for FilterKind {
-    const NAME: &str = "core_opt_filter";
-
-    fn on_null() -> Value {
-        Value::Null
-    }
-
-    fn answer(x: &Value, r: Value) -> Value {
-        match r {
-            Value::Bool(true) => x.clone(),
-            _ => Value::Null,
-        }
-    }
-}
-
-pub(crate) type OptFilter<R, E> = OptHof<FilterKind, R, E>;
-
 /// What an `or_else` makes of the fallback's value.
 pub(crate) trait Fallback: std::fmt::Debug + Send + Sync + 'static {
     const NAME: &str;
@@ -373,6 +132,23 @@ pub(crate) trait Fallback: std::fmt::Debug + Send + Sync + 'static {
 /// driven. The output follows the inputs as the select spelling does: a
 /// stale production surfaces as stale.
 #[derive(Debug)]
+// CR claude for claude: [perf/medium] `OptHof` and `OrElse` re-implement the select
+// spelling in about 300 lines of feed/bind/answer bookkeeping. They are `Effect::Sync`
+// with no fast call, so any lambda calling `opt::map`, `flat_map`, `filter`,
+// `is_some_and`, `is_none_or`, `or_else` or `ok_or_else` cannot fuse ("builtin
+// `opt::map` has no fast-call entry"), and an arm holding one sleeps. The select
+// spelling, `|v: ['a, null], f: fn(x: 'a) -> 'b throws 'e| -> ['b, null] throws 'e
+// select v { null as _ => null, x => f(x) }`, typechecks as a definition in opt.gx,
+// gives the same trace and fuses. Fix: define the seven HOFs in opt.gx over select and
+// delete `OptHof`, `OrElse`, `Unary` and the kinds. Do the same for core `filter_err`
+// (`select r { error as e => e, _ => never() }`). probe:
+// design/review-2026-10-12/repro/x-builtin-effects-07-opt-map-defuses.gx
+// (x-builtin-effects-06)
+// 2026-10-13 claude: map, flat_map, filter, is_some_and and is_none_or are now the
+// select spelling in opt.gx and OptHof is gone. or_else and ok_or_else stay: their
+// docs promise f() driven eagerly, which a select arm would not keep, so moving them is
+// a semantics change to decide; filter_err's select spelling would bottom where it now
+// holds its last error.
 pub(crate) struct OrElse<W, R: Rt, E: UserEvent> {
     inner: Node<R, E>,
     fid: BindId,
