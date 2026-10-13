@@ -348,25 +348,17 @@ async fn far_points_outside_the_view_draw() -> Result<()> {
     Ok(())
 }
 
-/// A pie whose slices sum to nothing, or with a non-finite start angle,
-/// draws nothing rather than looping forever.
+/// A degenerate pie draws the usable slices without looping.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [doc-drift/low] The name and doc say a degenerate pie draws
-// nothing, but the second case asserts the pie draws: pie_start_angle maps a non-finite
-// angle to 0. The first case is not a zero-sum pie as far as the code is concerned,
-// because pie_slices drops the negative slice and draws the positive one. Its result,
-// and the 20px case's, are thrown away. As written, the test checks only that nothing
-// hangs. Rename it after that (a degenerate pie draws what it can, without looping).
-// Assert the first case is_some, so a pie_slices that stopped dropping the negative
-// slice is caught. Add an all-zero pie and assert what the draw records for it.
-// (tests-gui-b-04)
-async fn degenerate_pies_draw_nothing() -> Result<()> {
+async fn degenerate_pies_draw_what_they_can() -> Result<()> {
     let h = chart_harness(r#"&[pie(&[("in", 100.0), ("out", -100.0)])]"#).await?;
-    let _ = draw(&h).await;
+    assert!(draw(&h).await.is_some());
     let h =
         chart_harness(r#"&[pie(#start_angle: 1.0 / 0.0, &[("a", 1.0), ("b", 2.0)])]"#)
             .await?;
     assert!(draw(&h).await.is_some());
+    let h = chart_harness(r#"&[pie(&[("a", 0.0), ("b", 0.0)])]"#).await?;
+    assert!(draw(&h).await.is_none());
     let h = chart_harness(r#"#title: &"pie", &[pie(&[("a", 1.0)])]"#).await?;
     let _ = draw_in(&h, &ChartState::default(), Size::new(400.0, 20.0)).await;
     Ok(())
