@@ -2421,3 +2421,41 @@ async fn changed_stored_sort_sources_reorder_rows() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
+    let mut h = dt(r#"
+        use gui::data_table::ColumnType;
+        let typ: ColumnType = `Text({on_edit: null});
+        let change = |t: Any| typ <- t ~ `Sparkline({history_seconds: 60.0, min: null, max: null});
+        let c = 0;
+        sys::net::publish("/local/dt_review06/r0/load", c);
+        let tbl = {rows: ["/local/dt_review06/r0"], columns: [{name: "load", typ: typ, display_name: null, source: &`Netidx(null), width: &null, on_resize: &null}]};
+        let result = data_table(#table: &tbl)
+    "#).await?;
+    h.wait_until(
+        |h| h.dt_snapshot().grid[0][0] == "0",
+        Duration::from_secs(5),
+        "initial live value",
+    )
+    .await?;
+    let change = h.compile_named_callable("test::change").await?;
+    h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
+    let bid = testing::find_bind_id(&h.compiled.env, "test::c")?;
+    let mut c = h.gx.compile_ref(bid).await?;
+    for v in [1, 2] {
+        c.set(Value::I64(v))?;
+        h.wait_until(
+            |h| {
+                h.dt()
+                    .dt_sparkline_values("r0", "load")
+                    .is_some_and(|vs| vs.last() == Some(&(v as f64)))
+            },
+            Duration::from_secs(5),
+            "sparkline point after type change",
+        )
+        .await?;
+    }
+    assert!(h.dt().dt_sparkline_values("r0", "load").unwrap().ends_with(&[1.0, 2.0]));
+    Ok(())
+}

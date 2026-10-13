@@ -57,8 +57,8 @@ pub(super) enum SubRole {
 }
 
 impl SubRole {
-    fn is_grid_of(&self, row: &Path, col: &str) -> bool {
-        matches!(self, SubRole::Grid { row_path, col_name, .. } if row_path == row && col_name == col)
+    fn is_grid(&self, row: &Path, col: &str, history: Option<f64>) -> bool {
+        matches!(self, SubRole::Grid { row_path, col_name, sparkline_history_secs } if row_path == row && col_name == col && *sparkline_history_secs == history)
     }
 
     fn is_sort_of(&self, row: &Path, col: &str) -> bool {
@@ -547,8 +547,8 @@ impl<X: GXExt> DataTableW<X> {
         let mut inner = self.cells.inner.lock();
         let inner = &mut *inner;
         inner.routing.retain(|_, roles| {
-            roles.retain(|r| match r {
-                // CR claude for claude: [bug/medium] This retain keeps a Grid role
+            roles.retain(|r| match &*r {
+                // XCR claude for claude: [bug/medium] This retain keeps a Grid role
                 // while its row is in the window and its column is shown. It never
                 // checks the role's sparkline_history_secs against the column's current
                 // `shown` entry, and SubRole::is_grid_of also ignores that field, so no
@@ -565,8 +565,15 @@ impl<X: GXExt> DataTableW<X> {
                 // data_table_test that flips a column's typ variable and asserts
                 // dt_sparkline_len grows. Not executed: the dt() harness is
                 // cfg(test)-only. (gui-datatable-06)
+                // 2026-10-13 codex: grid_roles_include_the_history_window fails with the old matcher
+                // and passes with full role matching. The live pin
+                // switching_a_live_column_to_sparkline_records_updates needs resolver
+                // sockets; its assertions remain unverified here.
                 SubRole::Grid { row_path, col_name, .. } => {
-                    window.contains(row_path) && shown.contains_key(col_name)
+                    window.contains(row_path)
+                        && shown
+                            .get(col_name)
+                            .is_some_and(|hs| r.is_grid(row_path, col_name, *hs))
                 }
                 SubRole::SortMarker { row_path, col_name } => {
                     rows.contains(row_path) && sort_cols.contains(col_name)
@@ -588,7 +595,7 @@ impl<X: GXExt> DataTableW<X> {
         });
         for row in self.row_paths[s.min(e)..e].iter().filter(|p| Path::is_absolute(p)) {
             for (col, hs) in shown.iter() {
-                if !inner.has_role(row, col, |r| r.is_grid_of(row, col)) {
+                if !inner.has_role(row, col, |r| r.is_grid(row, col, *hs)) {
                     let path = Path::from(cell_path(row, col));
                     let role = SubRole::Grid {
                         row_path: row.clone(),
@@ -841,6 +848,27 @@ mod order_tests {
                         assert!(a.cmp(c).is_le());
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+    use arcstr::literal;
+
+    #[test]
+    fn grid_roles_include_the_history_window() {
+        let row = Path::from("/r0");
+        for history in [None, Some(60.0), Some(120.0)] {
+            let role = SubRole::Grid {
+                row_path: row.clone(),
+                col_name: literal!("load"),
+                sparkline_history_secs: history,
+            };
+            for desired in [None, Some(60.0), Some(120.0)] {
+                assert_eq!(role.is_grid(&row, "load", desired), history == desired);
             }
         }
     }
