@@ -667,6 +667,51 @@ where
     Ok((v, ctx))
 }
 
+/// [`eval`] in every [`Mode`], the check held to the build's verdict in
+/// [`Mode::Interp`] as [`run!`] holds it: the first value, or the
+/// refusal's message. The modes must agree on which, and on the value.
+pub async fn eval_modes(
+    code: &str,
+    register: &[PackageRef],
+) -> Result<std::result::Result<Value, String>> {
+    let mut first: Option<std::result::Result<Value, String>> = None;
+    for mode in Mode::ALL {
+        let (ctx, mut rx) =
+            fixture_runtime([("/test.gx", result_source(code))], register, mode, |_| {})
+                .await?;
+        let checked = match mode {
+            Mode::Interp => Some(check_fixture(&ctx).await),
+            _ => None,
+        };
+        let built = compile_result(&ctx).await;
+        if let Some(checked) = checked {
+            verdicts_agree(checked, built.as_ref().map(|_| ()))
+                .with_context(|| format!("{code}"))?;
+        }
+        let got = match built {
+            Ok(res) => Ok(next_update(
+                &mut rx,
+                res.exprs[0].id,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await?),
+            Err(e) => Err(format!("{e:#}")),
+        };
+        ctx.shutdown().await;
+        match &first {
+            None => first = Some(got),
+            // printed: a function value equals only itself, in its runtime
+            Some(Ok(v)) if got.as_ref().is_ok_and(|g| g.to_string() == v.to_string()) => {
+            }
+            Some(Err(_)) if got.is_err() => (),
+            Some(prior) => {
+                bail!("{mode:?} gives {got:?} where Interp gives {prior:?}: {code}")
+            }
+        }
+    }
+    Ok(first.expect("Mode::ALL is not empty"))
+}
+
 /// Like [`eval`], but for a program that converges over several cycles:
 /// the LAST value of the result once the runtime has gone quiet.
 pub async fn eval_converged(

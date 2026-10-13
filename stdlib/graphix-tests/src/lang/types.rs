@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval, refused},
+    testing::{FuseExpect, eval_modes, refused},
 };
 use netidx::publisher::Value;
 
@@ -411,9 +411,9 @@ async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
         r#"{ let p = 'b: Concrete |s: string| -> Result<'b, `ParseError(string)> str::parse(s); p("1") }"#,
         r#"{ let m = {"a" => 1}; map::map(m, |(k, v)| (json::read("1"), v)) }"#,
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(
             msg.contains("must be fully known here"),
@@ -434,9 +434,9 @@ async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
             42,
         ),
     ] {
-        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
         assert_eq!(v, Value::I64(expected), "{src}");
-        ctx.shutdown().await;
     }
     Ok(())
 }
@@ -453,9 +453,9 @@ async fn function_bounds_admit_only_functions() -> Result<()> {
         r#"{ let g = |h| queuefn(#trigger: 0, h); g(1) }"#,
         r#"{ let k: [fn(x: i64) -> i64, null] = null; queuefn(#trigger: 0, k) }"#,
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(
             msg.contains("Function does not contain")
@@ -467,9 +467,9 @@ async fn function_bounds_admit_only_functions() -> Result<()> {
         r#"{ type F = fn(x: i64) -> i64; let k: F = |x| x + 1; queuefn(#trigger: 0, k)(41) }"#,
         r#"{ let g = |h| queuefn(#trigger: 0, h); g(|x: i64| x + 1)(41) }"#,
     ] {
-        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
         assert_eq!(v, Value::I64(42), "{src}");
-        ctx.shutdown().await;
     }
     Ok(())
 }
@@ -484,11 +484,11 @@ async fn function_bounded_builtin_passed_as_a_value() -> Result<()> {
         let n = g(#trigger: null, |s: string| str::len(s));
         inc(40) + n("a")
     }"#;
-    let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+    let v = eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
     assert_eq!(v, Value::I64(42));
-    ctx.shutdown().await;
-    let (_, ctx) = eval("filter(queuefn, |x| true)", crate::TEST_REGISTER).await?;
-    ctx.shutdown().await;
+    eval_modes("filter(queuefn, |x| true)", crate::TEST_REGISTER)
+        .await?
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -502,15 +502,11 @@ async fn a_signature_types_its_calls() -> Result<()> {
         r#"{ let tm = |x| [x, x]; let r: Array<string> = tm(1); 0 }"#,
         r#"{ let g = |(k, v)| select k == 2 { true => v, false => null }; let r: [string, null] = g((2, 3)); 0 }"#,
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(msg.contains("does not contain"), "wrong refusal for {src}: {msg}");
-        assert!(
-            !msg.contains("in the instance of"),
-            "refused by elaboration: {src}: {msg}"
-        );
     }
     for (src, expected) in [
         (r#"{ let first = |xs| xs[0]$; let n: string = first(["a"]); str::len(n) }"#, 1),
@@ -520,9 +516,9 @@ async fn a_signature_types_its_calls() -> Result<()> {
             3,
         ),
     ] {
-        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
         assert_eq!(v, Value::I64(expected), "{src}");
-        ctx.shutdown().await;
     }
     Ok(())
 }
@@ -819,7 +815,7 @@ run!(
 // Unifying an inferred `List<'a>` against a value whose deep tail is a
 // Fn rejects at every depth.
 #[tokio::test]
-async fn recursive_fn_tail_rejected_at_every_depth() {
+async fn recursive_fn_tail_rejected_at_every_depth() -> Result<()> {
     let program = |tail: &str| {
         format!(
             r#"{{
@@ -835,23 +831,21 @@ async fn recursive_fn_tail_rejected_at_every_depth() {
     };
     for tail in ["once", "`Cons(i64:3, once)", "`Cons(i64:3, `Cons(i64:5, once))"] {
         let src = program(tail);
-        match eval(&src, crate::TEST_REGISTER).await {
-            Err(e) => {
-                let msg = format!("{e:#}");
+        match eval_modes(&src, crate::TEST_REGISTER).await? {
+            Err(msg) => {
                 assert!(
                     msg.contains("L<'a: unbound> does not contain `Cons(i64"),
                     "{tail}: {msg}"
                 )
             }
-            Ok((v, _)) => {
-                panic!("a Fn in a recursive tail must be refused: {tail} => {v:?}")
-            }
+            Ok(v) => panic!("a Fn in a recursive tail must be refused: {tail} => {v:?}"),
         }
     }
-    match eval(&program("`Nil"), crate::TEST_REGISTER).await {
-        Ok((Value::I64(0), _)) => (),
-        r => panic!("a `Nil tail checks and finds 0: {:?}", r.map(|(v, _)| v)),
+    match eval_modes(&program("`Nil"), crate::TEST_REGISTER).await? {
+        Ok(Value::I64(0)) => (),
+        r => panic!("a `Nil tail checks and finds 0: {r:?}"),
     }
+    Ok(())
 }
 
 // find over a well-formed API-built list.
@@ -1503,21 +1497,6 @@ const TRAIT_BESIDE_WITNESS: &str = r#"{
 }"#;
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/medium] This table and the other eval-based tables in
-// this file and in lang/inference.rs (a_signature_types_its_calls,
-// concrete_targets_are_known_where_they_settle, function_bounds_admit_only_functions,
-// discernible_refuses_one_runtime_form, singleton_open_members_merge,
-// comparison_operands_are_one_type, arithmetic_operands_are_one_type,
-// recursive_fn_tail_rejected_at_every_depth, annotations_the_checker_asks_for,
-// rigid_type_variables_survive_a_cell_merge) go through testing::eval. It builds in
-// Mode::Jit only and never runs check_fixture. None of these programs is held to the
-// rule that the check refuses exactly when the build does, and the accepted ones never
-// run under interp, par or jit_par. If CheckOnly dropped a rule such as
-// Type::rep_collision, every refusal here would still pass, and so would --check and
-// the LSP. Fix: give eval a table-driven twin that runs check_fixture (verdicts_agree)
-// and loops over Mode::ALL against the expected value, or move the rows to run!
-// fixtures with refused(..) predicates. The `!msg.contains("in the instance of")` test
-// in a_signature_types_its_calls then becomes redundant. (tests-types-04)
 async fn unsound_acceptances_are_refused() -> Result<()> {
     for (src, refusal) in [
         (NON_CONTRACTIVE, "refers back to itself"),
@@ -1546,9 +1525,9 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(msg.contains(refusal), "wrong refusal for {src}: {msg}");
     }
@@ -1569,9 +1548,9 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_TWO_CALLS, 3),
         (TRAIT_BESIDE_WITNESS, 0),
     ] {
-        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
         assert_eq!(v, Value::I64(expected), "{src}");
-        ctx.shutdown().await;
     }
     Ok(())
 }
@@ -1594,9 +1573,9 @@ async fn declared_bounds_print_in_the_header() -> Result<()> {
         (PRINTED_BOUND, "fn<'a: Number + Singleton>("),
         (PRINTED_BOUNDS, "fn<'a: Eq + Ord + Ordered>("),
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(msg.contains(header), "no {header} in: {msg}");
         assert!(!msg.contains("Number & Number"), "a doubled bound in: {msg}");
@@ -1613,12 +1592,11 @@ async fn comparison_operands_are_one_type() -> Result<()> {
         "{ let v: [`Green, `Red] = `Red; v == `Red }",
         "{ let r: [string, Error<`E>] = \"a\"; r != \"a\" }",
     ] {
-        match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => {
-                let msg = format!("{e:#}");
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => {
                 assert!(msg.contains("cannot compare"), "{src}: {msg}")
             }
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
     Ok(())
@@ -1693,12 +1671,11 @@ async fn arithmetic_operands_are_one_type() -> Result<()> {
         "{ let f = |a: Number, b: Number| a + b; f(1, 2) }",
         "{ let t: (Number, Number) = (1, 2.5); t.0 % t.1 }",
     ] {
-        match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => {
-                let msg = format!("{e:#}");
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => {
                 assert!(msg.contains("cannot compute"), "{src}: {msg}")
             }
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
     Ok(())
@@ -1816,12 +1793,11 @@ async fn discernible_refuses_one_runtime_form() -> Result<()> {
             "annotate it",
         ),
     ] {
-        match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => {
-                let msg = format!("{e:#}");
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => {
                 assert!(msg.contains(says), "{src}: {msg}")
             }
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
     Ok(())
@@ -1880,12 +1856,11 @@ async fn singleton_open_members_merge() -> Result<()> {
             "must be one type",
         ),
     ] {
-        match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => {
-                let msg = format!("{e:#}");
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => {
                 assert!(msg.contains(says), "{src}: {msg}")
             }
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
     Ok(())

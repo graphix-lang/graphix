@@ -3,7 +3,7 @@
 // in ide/skills/graphix-lang/SKILL.md, Annotations and Gotchas).
 
 use anyhow::Result;
-use graphix_package_core::testing::eval;
+use graphix_package_core::testing::eval_modes;
 use netidx::publisher::Value;
 
 // A never() arm adds nothing to a select's type: the reader that
@@ -117,13 +117,13 @@ async fn rigid_type_variables_survive_a_cell_merge() -> Result<()> {
         (RIGID_ALIAS_UNION_RETURN, Value::I64(1)),
         (RIGID_ALIAS_EMPTY_SLICE, Value::from("x")),
     ] {
-        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
         assert_eq!(v, expected, "{src}");
-        ctx.shutdown().await;
     }
-    let msg = match eval(RIGID_ALIAS_FOREIGN_MEMBER, crate::TEST_REGISTER).await {
-        Err(e) => format!("{e:#}"),
-        Ok((v, _)) => panic!("must be refused: {v:?}"),
+    let msg = match eval_modes(RIGID_ALIAS_FOREIGN_MEMBER, crate::TEST_REGISTER).await? {
+        Err(msg) => msg,
+        Ok(v) => panic!("must be refused: {v:?}"),
     };
     assert!(msg.contains("does not contain"), "{msg}");
     Ok(())
@@ -175,9 +175,9 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
         (STRIP_OVER_AN_OPEN_OPERAND, "the operand of $ has type"),
         (RAISE_OVER_AN_OPEN_OPERAND, "the operand of ? has type"),
     ] {
-        let msg = match eval(src, crate::TEST_REGISTER).await {
-            Err(e) => format!("{e:#}"),
-            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(msg.contains(refusal), "wrong refusal for {src}: {msg}");
     }
@@ -190,9 +190,9 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
         (EMPTY_ARRAY_ARM, 0),
         (WRITER_TARGET_DECLARED, 1),
     ] {
-        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
         assert_eq!(v, Value::I64(expected), "{src}");
-        ctx.shutdown().await;
     }
     Ok(())
 }
