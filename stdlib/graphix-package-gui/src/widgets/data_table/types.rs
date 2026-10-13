@@ -281,15 +281,8 @@ pub(super) fn parse_table_columns(v: &Value) -> LPooled<Vec<ColumnSpec>> {
     out
 }
 
-// CR claude for claude: [bug/low] `str::parse::<f64>` accepts "inf", "infinity" and
-// "nan" in any case, with an optional sign. `SortKey::of` therefore files ordinary
-// words such as "Nan", "Inf" or "Infinity" as numbers. Numbers sort before all text,
-// and NaN sorts below every number, so a name column ["Bob", "Nan", "Alice"] sorted
-// ascending reads Nan, Alice, Bob. Accept only finite results, plus the exact spellings
-// `format_value` prints for a non-finite value. Pin "Nan" and "inf" as text next to
-// `sort_is_a_total_order`. (tests-gui-a-03)
 pub(super) fn numeric_key(s: &str) -> Option<f64> {
-    s.parse::<f64>().ok()
+    s.parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
 /// The basename of a row path, or the whole path when it has no

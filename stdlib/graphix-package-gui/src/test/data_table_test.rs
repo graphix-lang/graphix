@@ -1804,7 +1804,7 @@ fn stored_column_table(vals: &[(&str, &str)]) -> CompactString {
 }
 
 /// Sorting is a total order whatever the cells hold: numbers before text,
-/// NaN below every number, text by its bytes. More than 20 rows, where a
+/// text by its bytes. More than 20 rows, where a
 /// comparator that is not a total order makes the sort panic.
 #[tokio::test(flavor = "current_thread")]
 async fn sort_is_a_total_order() -> Result<()> {
@@ -1831,9 +1831,8 @@ let result = data_table(
     let mut numbers: Vec<(f64, &str)> =
         vals[3..].iter().map(|(r, v)| (v.parse::<f64>().unwrap(), r.as_str())).collect();
     numbers.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut expected = vec!["r0"];
-    expected.extend(numbers.iter().map(|(_, r)| *r));
-    expected.extend(["r2", "r1"]);
+    let mut expected: Vec<_> = numbers.iter().map(|(_, r)| *r).collect();
+    expected.extend(["r2", "r1", "r0"]);
     assert_eq!(h.dt_snapshot().row_basenames, expected);
     Ok(())
 }

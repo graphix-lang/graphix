@@ -241,29 +241,63 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
 /// Graphix's float order (NaN below every number), text by its bytes.
 #[derive(PartialEq)]
 enum SortKey {
+    Int(i128),
     Num(f64),
     Text(ArcStr),
 }
 
 impl SortKey {
-    fn of(s: ArcStr) -> Self {
-        match numeric_key(&s) {
-            Some(n) => SortKey::Num(n),
-            None => SortKey::Text(s),
+    fn of_value(v: &Value) -> Self {
+        match v {
+            Value::U8(v) => Self::Int(*v as i128),
+            Value::I8(v) => Self::Int(*v as i128),
+            Value::U16(v) => Self::Int(*v as i128),
+            Value::I16(v) => Self::Int(*v as i128),
+            Value::U32(v) | Value::V32(v) => Self::Int(*v as i128),
+            Value::I32(v) | Value::Z32(v) => Self::Int(*v as i128),
+            Value::U64(v) | Value::V64(v) => Self::Int(*v as i128),
+            Value::I64(v) | Value::Z64(v) => Self::Int(*v as i128),
+            Value::F32(v) => Self::Num(*v as f64),
+            Value::F64(v) => Self::Num(*v),
+            Value::Duration(v) => Self::Int(v.as_nanos() as i128),
+            Value::DateTime(v) => Self::Int(
+                v.timestamp() as i128 * 1_000_000_000
+                    + v.timestamp_subsec_nanos() as i128,
+            ),
+            Value::String(s) => match s.parse::<i128>() {
+                Ok(n) => Self::Int(n),
+                Err(_) => match numeric_key(s) {
+                    Some(n) => Self::Num(n),
+                    None => Self::Text(s.clone()),
+                },
+            },
+            v => Self::Text(format_value(v)),
         }
     }
 
     fn cmp(&self, other: &Self) -> CmpOrdering {
+        let int_float = |i: i128, f: f64| {
+            if f.is_nan() || f < i128::MIN as f64 {
+                return CmpOrdering::Greater;
+            }
+            if f >= i128::MAX as f64 {
+                return CmpOrdering::Less;
+            }
+            i.cmp(&(f as i128)).then_with(|| (i as f64).total_cmp(&f))
+        };
         match (self, other) {
-            (SortKey::Num(a), SortKey::Num(b)) => match (a.is_nan(), b.is_nan()) {
+            (Self::Int(a), Self::Int(b)) => a.cmp(b),
+            (Self::Int(a), Self::Num(b)) => int_float(*a, *b),
+            (Self::Num(a), Self::Int(b)) => int_float(*b, *a).reverse(),
+            (Self::Num(a), Self::Num(b)) => match (a.is_nan(), b.is_nan()) {
                 (true, true) => CmpOrdering::Equal,
                 (true, false) => CmpOrdering::Less,
                 (false, true) => CmpOrdering::Greater,
                 (false, false) => a.total_cmp(b),
             },
-            (SortKey::Num(_), SortKey::Text(_)) => CmpOrdering::Less,
-            (SortKey::Text(_), SortKey::Num(_)) => CmpOrdering::Greater,
-            (SortKey::Text(a), SortKey::Text(b)) => a.cmp(b),
+            (Self::Int(_) | Self::Num(_), Self::Text(_)) => CmpOrdering::Less,
+            (Self::Text(_), Self::Int(_) | Self::Num(_)) => CmpOrdering::Greater,
+            (Self::Text(a), Self::Text(b)) => a.cmp(b),
         }
     }
 }
@@ -673,7 +707,7 @@ impl<X: GXExt> DataTableW<X> {
         let mut keys: LPooled<Vec<SortKey>> = LPooled::take();
         for row in self.table_rows.iter() {
             for sb in self.sort_by.iter() {
-                // CR claude for claude: [bug/medium] The sort key is the cell's
+                // XCR claude for claude: [bug/medium] The sort key is the cell's
                 // formatted text re-parsed as f64. The format and parse round trip
                 // loses the value, and the order comes out wrong in three ways. A
                 // Duration prints as "1.m", "2.s" or "500.ms", which does not parse, so
@@ -688,7 +722,12 @@ impl<X: GXExt> DataTableW<X> {
                 // becomes text. That also stops formatting every sort cell of every row
                 // on each sort. probe:
                 // design/review-2026-10-12/repro/gui-datatable-03.rs (gui-datatable-03)
-                keys.push(SortKey::of(self.sort_value_for(row, &sb.column)));
+                // 2026-10-13 codex: raw_numeric_sort_keys_preserve_precision_and_units and numeric_words_stay_text
+                // pin exact raw keys without sockets. The sort_is_a_total_order fixture now
+                // treats string NaN as text; live sorting still needs netidx sockets and
+                // could not be verified here.
+                let value = self.raw_value_for(row, &sb.column).unwrap_or(Value::Null);
+                keys.push(SortKey::of_value(&value));
             }
         }
         let mut order: LPooled<Vec<usize>> = (0..self.table_rows.len()).collect();
@@ -706,5 +745,90 @@ impl<X: GXExt> DataTableW<X> {
         });
         self.row_paths.extend(order.iter().map(|&i| self.table_rows[i].clone()));
         self.cells.dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn raw_numeric_sort_keys_preserve_precision_and_units() {
+        let less = |a, b| {
+            assert_eq!(
+                SortKey::of_value(&a).cmp(&SortKey::of_value(&b)),
+                CmpOrdering::Less,
+                "{a:?} < {b:?}"
+            )
+        };
+        less(Value::U64((1 << 53) + 1), Value::U64((1 << 53) + 2));
+        less(Value::U64(1 << 53), Value::U64((1 << 53) + 1));
+        less(Value::I64(-((1 << 53) + 1)), Value::I64(-(1 << 53)));
+        less(
+            Value::from(Duration::from_millis(500)),
+            Value::from(Duration::from_secs(2)),
+        );
+        less(Value::from(Duration::from_secs(2)), Value::from(Duration::from_secs(60)));
+        less(Value::F64(f64::NAN), Value::F64(f64::NEG_INFINITY));
+        less(Value::F64(f64::NEG_INFINITY), Value::I64(i64::MIN));
+        less(Value::U64(u64::MAX), Value::F64(f64::INFINITY));
+        less(Value::F64(-0.5), Value::I64(0));
+        less(Value::I64(0), Value::F64(0.5));
+        less(Value::from("Alice"), Value::from("Nan"));
+        less(Value::from("Bob"), Value::from("inf"));
+        less(Value::from("Bob"), Value::from("NaN"));
+        less(Value::from("2"), Value::from("10"));
+    }
+
+    #[test]
+    fn numeric_words_stay_text() {
+        for word in
+            ["Nan", "nan", "NaN", "inf", "Inf", "Infinity", "+inf", "-inf", "1e999"]
+        {
+            assert_eq!(numeric_key(word), None, "{word}");
+        }
+        assert_eq!(numeric_key("1.25"), Some(1.25));
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_sort_keys_are_a_total_order() {
+        let values = [
+            Value::F64(f64::NAN),
+            Value::F64(f64::NEG_INFINITY),
+            Value::F64(-1e100),
+            Value::I64(i64::MIN),
+            Value::F64(-0.5),
+            Value::F64(-0.0),
+            Value::I64(0),
+            Value::F64(0.0),
+            Value::F64(0.5),
+            Value::U64(1 << 53),
+            Value::F64((1_u64 << 53) as f64),
+            Value::U64((1 << 53) + 1),
+            Value::I64(i64::MAX),
+            Value::U64(u64::MAX),
+            Value::F64(u64::MAX as f64),
+            Value::F64(1e100),
+            Value::F64(f64::INFINITY),
+            Value::from("Nan"),
+            Value::from("inf"),
+        ];
+        let keys: LPooled<Vec<_>> = values.iter().map(SortKey::of_value).collect();
+        for a in &*keys {
+            for b in &*keys {
+                assert_eq!(a.cmp(b), b.cmp(a).reverse());
+                for c in &*keys {
+                    if a.cmp(b).is_le() && b.cmp(c).is_le() {
+                        assert!(a.cmp(c).is_le());
+                    }
+                }
+            }
+        }
     }
 }
