@@ -136,22 +136,19 @@ impl GuiTestHarness {
 
     /// Dispatch iced Messages through the runtime and widget as
     /// `GuiHandler::about_to_wait` does, then drain.
-    // CR claude for claude: [structure/low] This body is InteractionHarness::apply
-    // followed by a drain: the same apply_messages closure over MessageShell and
-    // on_message appears twice. A change to how messages are applied, such as honouring
-    // on_message's redraw answer, then has to be made in both places. Move apply onto
-    // GuiTestHarness, make dispatch_calls `self.apply(msgs); self.drain().await`, and
-    // have InteractionHarness::apply forward to it. (tests-gui-b-09)
     async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
-        // the event loop's own drain
+        self.apply(msgs);
+        self.drain().await?;
+        Ok(())
+    }
+
+    fn apply(&mut self, msgs: &[Message]) {
         let widget = &mut self.widget;
         crate::frame::apply_messages(&self.gx, msgs.iter().cloned(), |msg, pending| {
             let mut shell = MessageShell::default();
             widget.on_message(msg, &mut shell);
             pending.extend(shell.out.drain(..));
         });
-        self.drain().await?;
-        Ok(())
     }
 
     /// Build, lay out and draw the widget tree once, as a window frame
@@ -505,16 +502,7 @@ impl InteractionHarness {
     /// calls sent to the runtime without letting it run: the next frame
     /// comes before their echoes, as fast input does.
     fn apply(&mut self, msgs: &[Message]) {
-        let widget = &mut self.inner.widget;
-        crate::frame::apply_messages(
-            &self.inner.gx,
-            msgs.iter().cloned(),
-            |msg, pending| {
-                let mut shell = MessageShell::default();
-                widget.on_message(msg, &mut shell);
-                pending.extend(shell.out.drain(..));
-            },
-        );
+        self.inner.apply(msgs);
     }
 
     /// A left-button drag from `from` to `to`, live.
