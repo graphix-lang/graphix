@@ -88,7 +88,7 @@ pub(crate) fn extent(text: &str, start: Position) -> Position {
 }
 
 /// What is being typed at the cursor.
-pub(crate) struct Typed {
+pub struct Typed {
     /// The path left of the cursor (`array::ma`, `array::`, or empty).
     pub path: String,
     /// The field chain the path hangs off (`["p", "inner"]` for
@@ -96,7 +96,7 @@ pub(crate) struct Typed {
     pub receiver: Vec<String>,
 }
 
-pub(crate) fn typed_before(text: &str, cursor: Position) -> Option<Typed> {
+pub fn typed_before(text: &str, cursor: Position) -> Option<Typed> {
     let chars = line_chars(text, cursor.line)?;
     let col = (cursor.character as usize).min(chars.len());
     let start = path_start(&chars, col);
@@ -183,7 +183,7 @@ pub(crate) fn use_path(text: &str, cursor: Position) -> Option<UsePath> {
 /// The callee path (`foo`, `array::map`) if the cursor is inside an open
 /// `(`'s argument list; `None` inside `[`/`{` or past a statement
 /// boundary. String literals are not parsed.
-pub(crate) fn call_context(text: &str, cursor: Position) -> Option<String> {
+pub fn call_context(text: &str, cursor: Position) -> Option<String> {
     let mut chars: LPooled<Vec<char>> = LPooled::take();
     chars.extend(text.chars());
     let (mut offset, mut line, mut col) = (0usize, 0u32, 0u32);
@@ -221,7 +221,7 @@ pub(crate) fn call_context(text: &str, cursor: Position) -> Option<String> {
 
 /// The start of the `#label` being typed at the cursor. `?#label` is a
 /// fn type's syntax, not a call's.
-pub(crate) fn label_start(text: &str, cursor: Position) -> Option<Position> {
+pub fn label_start(text: &str, cursor: Position) -> Option<Position> {
     let chars = line_chars(text, cursor.line)?;
     let col = (cursor.character as usize).min(chars.len());
     let mut start = col;

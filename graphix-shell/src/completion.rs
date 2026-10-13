@@ -1,55 +1,31 @@
 use arcstr::ArcStr;
 use graphix_compiler::{env::Env, expr::ModPath, typ::Type};
+use graphix_lsp::text;
 use log::debug;
+use lsp_types::Position;
 use netidx::path::Path;
 use reedline::{Completer, Span, Suggestion};
 
 #[derive(Debug)]
-enum CompletionContext<'a> {
-    Bind(Span, &'a str),
-    ArgLbl { span: Span, function: &'a str, arg: &'a str },
+enum CompletionContext {
+    Bind(Span, String),
+    ArgLbl { span: Span, function: String, arg: String },
 }
 
-/// Where the name ending at the end of `s` starts.
-// CR claude for claude: [structure/low] This, and CompletionContext::from_str below it,
-// re-derive cursor context that graphix-lsp's text module already computes more
-// carefully. Here any ':' counts as a name character, only parentheses are counted,
-// there is no `[`/`{`/`;` boundary and `?#` (a fn type's label) is not excluded. The
-// LSP's path_start, call_context and label_start handle all of these. So in the REPL
-// `f([a, #` proposes f's labels, where the LSP proposes none. graphix-shell already
-// depends on graphix-lsp. Make those three functions public over a &str and an offset,
-// and build this CompletionContext from them. (x-dup-16)
-fn name_start(s: &str) -> usize {
-    s.char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == ':')
-        .last()
-        .map_or(s.len(), |(i, _)| i)
-}
-
-impl<'a> CompletionContext<'a> {
+impl CompletionContext {
     /// The name being typed at the end of `s`: a label after `#`, of the
-    /// call whose `(` is open there, or else a binding.
-    fn from_str(s: &'a str) -> Self {
-        let start = name_start(s);
-        let span = Span { start, end: s.len() };
-        let name = &s[start..];
-        if let Some(before) = s[..start].strip_suffix('#') {
-            let mut depth = 0usize;
-            for (i, c) in before.char_indices().rev() {
-                match c {
-                    ')' => depth += 1,
-                    '(' if depth > 0 => depth -= 1,
-                    '(' => {
-                        let f = &before[..i];
-                        let function = &f[name_start(f)..];
-                        return Self::ArgLbl { span, function, arg: name };
-                    }
-                    _ => (),
-                }
+    /// call whose `(` is open there, or else a binding (the language
+    /// server's reading of the text, over one line).
+    fn from_str(s: &str) -> Option<Self> {
+        let cursor = Position { line: 0, character: s.chars().count() as u32 };
+        let path = text::typed_before(s, cursor)?.path;
+        let span = Span { start: s.len() - path.len(), end: s.len() };
+        Some(match text::label_start(s, cursor) {
+            Some(_) => {
+                Self::ArgLbl { span, function: text::call_context(s, cursor)?, arg: path }
             }
-        }
-        Self::Bind(span, name)
+            None => Self::Bind(span, path),
+        })
     }
 }
 
@@ -65,7 +41,8 @@ impl Completer for BComplete {
             let cc = CompletionContext::from_str(s);
             debug!("{cc:?}");
             match cc {
-                CompletionContext::Bind(span, s) => {
+                None => (),
+                Some(CompletionContext::Bind(span, s)) => {
                     let part = ModPath::from_iter(s.split("::"));
                     for m in self.0.lookup_matching_modules(&ModPath::root(), &part) {
                         let value = format!("{m}");
@@ -118,7 +95,7 @@ impl Completer for BComplete {
                         })
                     }
                 }
-                CompletionContext::ArgLbl { span, function, arg: part } => {
+                Some(CompletionContext::ArgLbl { span, function, arg: part }) => {
                     let function = ModPath::from_iter(function.split("::"));
                     if let Some((_, b)) =
                         self.0.lookup_bind(&ModPath::root(), &function).ok().flatten()
@@ -126,7 +103,7 @@ impl Completer for BComplete {
                         if let Type::Fn(ft) = &b.typ {
                             for arg in ft.args.iter() {
                                 if let Some(lbl) = arg.label() {
-                                    if lbl.starts_with(part) {
+                                    if lbl.starts_with(part.as_str()) {
                                         let description = Some(format!("{}", arg.typ));
                                         res.push(Suggestion {
                                             span,
@@ -156,8 +133,9 @@ mod tests {
 
     fn ctx(s: &str) -> String {
         match CompletionContext::from_str(s) {
-            Bind(span, b) => format!("bind {b:?} at {}", span.start),
-            ArgLbl { span, function, arg } => {
+            None => "none".into(),
+            Some(Bind(span, b)) => format!("bind {b:?} at {}", span.start),
+            Some(ArgLbl { span, function, arg }) => {
                 format!("label {arg:?} of {function:?} at {}", span.start)
             }
         }
@@ -171,6 +149,10 @@ mod tests {
         assert_eq!(ctx("str::join(#se"), r#"label "se" of "str::join" at 11"#);
         assert_eq!(ctx("f(g(1), #"), r#"label "" of "f" at 9"#);
         assert_eq!(ctx("f(g(#a"), r#"label "a" of "g" at 5"#);
-        assert_eq!(ctx("#a"), r#"bind "a" at 1"#);
+        // a label outside a call's parentheses, or in a nested bracket,
+        // names nothing; `?#` is a fn type's
+        assert_eq!(ctx("#a"), "none");
+        assert_eq!(ctx("f([a, #"), "none");
+        assert_eq!(ctx("let t: fn(?#"), r#"bind "" at 12"#);
     }
 }

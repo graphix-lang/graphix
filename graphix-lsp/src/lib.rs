@@ -11,7 +11,7 @@ mod query;
 mod server;
 mod state;
 mod symbols;
-mod text;
+pub mod text;
 pub mod uri;
 pub mod workspace;
 
