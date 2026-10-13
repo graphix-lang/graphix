@@ -22,7 +22,7 @@ use graphix_compiler::{
     typ::{TVar, Type, TypeRef},
 };
 use netidx_core::path::Path;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,29 +247,23 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     }
     // a let over ⊥ (or an empty collection) is a cell its first reader
     // decides, so two of its readers do not commute
-    // CR claude for claude: [bug/medium] `open` holds only lets whose own value is
-    // open. A let that reads an open name is left out, whether it is a lambda capturing
-    // it (`let f = |x: i64| z`) or an alias (`let v = z`). `permutable` and
-    // let-inline's `opens` check compare `open` with the names a statement mentions
-    // directly. So two statements that reach `z` through `f` or `v` still swap or
-    // inline, the first reader of `z` changes, and the mutant is refused. These are
-    // false TYPEFLIPs (stmt-permute and let-inline). Fix: make `open` transitive over
-    // the statement list, so any let whose value reads an open name (lambda bodies
-    // included) adds its own names, as `mustreject.rs::affected_stmts` does. Both
-    // guards then use that closure. Probe:
-    // design/review-2026-10-12/repro/fuzz-mutate-07.sh (fuzz-mutate-07)
-    let open: HashSet<String> = stmts
-        .iter()
-        .filter_map(|st| match &st.kind {
-            ExprKind::Bind(b) if b.typ.is_none() && open_value(&b.value) => {
-                match &b.pattern {
-                    StructurePattern::Bind(n) => Some(n.to_string()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        })
-        .collect();
+    // each open let's cell, and the cells every let reading one reaches
+    // (a lambda capturing it, an alias): their first reader decides them
+    let mut open: Open = HashMap::new();
+    for st in stmts.iter() {
+        let ExprKind::Bind(b) = &st.kind else { continue };
+        let mut cells = cells_of(&open, &stmt_names(st).refs);
+        if b.typ.is_none() && open_value(&b.value) {
+            b.pattern.with_names(&mut |n| {
+                cells.insert(n.to_string());
+            });
+        }
+        if !cells.is_empty() {
+            b.pattern.with_names(&mut |n| {
+                open.insert(n.to_string(), cells.clone());
+            });
+        }
+    }
     // let-inline: substitute a single-use, unannotated, non-shadowed
     // `let x = e` into its one later use
     {
@@ -319,12 +313,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let uj = (si..stmts.len())
                 .find(|&j| gi < offsets[j] + sizes[offsets[j]])
                 .unwrap_or(si);
-            let opens: Vec<&String> =
-                vrefs.iter().filter(|r| open.contains(*r)).collect();
+            let opens = cells_of(&open, &vrefs);
             if !opens.is_empty()
                 && stmts[si + 1..=uj]
                     .iter()
-                    .any(|st| opens.iter().any(|r| stmt_names(st).refs.contains(*r)))
+                    .any(|st| !cells_of(&open, &stmt_names(st).refs).is_disjoint(&opens))
             {
                 continue;
             }
@@ -646,7 +639,15 @@ fn stmt_names(e: &Expr) -> StmtNames {
     StmtNames { bound, refs, connects }
 }
 
-fn permutable(a: &Expr, b: &Expr, open: &HashSet<String>) -> bool {
+/// Each open name and the cells of open lets it reaches.
+type Open = HashMap<String, HashSet<String>>;
+
+/// The open cells `refs` reach.
+fn cells_of(open: &Open, refs: &HashSet<String>) -> HashSet<String> {
+    refs.iter().filter_map(|r| open.get(r)).flatten().cloned().collect()
+}
+
+fn permutable(a: &Expr, b: &Expr, open: &Open) -> bool {
     let kind_ok = |e: &Expr| {
         !matches!(
             e.kind,
@@ -675,7 +676,7 @@ fn permutable(a: &Expr, b: &Expr, open: &HashSet<String>) -> bool {
             !nb.refs.contains(&n) && !bb.iter().any(|m| m.as_str() == n)
         })
         && bb.iter().all(|n| !na.refs.contains(&n.to_string()))
-        && !na.refs.iter().any(|r| open.contains(r) && nb.refs.contains(r))
+        && cells_of(open, &na.refs).is_disjoint(&cells_of(open, &nb.refs))
 }
 
 /// Does this subtree introduce names the enclosing statement list can

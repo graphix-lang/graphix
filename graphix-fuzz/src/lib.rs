@@ -5218,6 +5218,29 @@ mod tests {
         }
     }
 
+    /// A rewrite that changes which statement first reads an open cell
+    /// (`let z = never()`) changes its type: the cell is reached through a
+    /// lambda capturing it or an alias as well as by name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typemorph_keeps_the_first_reader_of_an_open_cell() {
+        let per = Duration::from_secs(60);
+        for prog in [
+            "{ let z = never(); let f = |x: i64| z; let b: i64 = f(2); let a: [i64, string] = f(1); (a, b) }",
+            "{ let z = never(); let v = z; let b: i64 = z; let a: [i64, string] = v; (a, b) }",
+            "{ let z = never(); let f = |x: i64| z; let v = { let q: i64 = f(1); q }; \
+             let a: [i64, string] = f(2); let b = v; (a, b) }",
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            assert!(rep.base == TmVerdict::Accept, "{prog}");
+            let flips = tm_flips(&rep.render());
+            assert!(
+                flips.is_empty(),
+                "{prog}: {:?}",
+                flips.iter().map(|f| &f.id).collect::<Vec<_>>()
+            );
+        }
+    }
+
     /// Where a family's rule does not apply it makes no mutant there, or
     /// its mutant is refused for the rule's reason: a site the rule cannot
     /// refuse would read as a leak, and a refusal for another reason
