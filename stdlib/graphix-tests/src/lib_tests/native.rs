@@ -1,10 +1,13 @@
 //! The `#[native]` attribute: the decorated expression must compile to
 //! one fused kernel with zero node-walk residue, else it is a compile
 //! error. It may decorate a value-producing computation or a call, not
-//! a function definition. Tested via `eval` (fusion on), since the
-//! attribute is mode-dependent.
+//! a function definition. Its refusals are tested via `eval` (fusion
+//! on); the fixtures it accepts run in every mode and pin their values.
 
-use graphix_package_core::testing::{eval, refusal};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, eval, refusal},
+};
 use netidx::subscriber::Value;
 
 // A pure computation that fully fuses satisfies `#[native]`.
@@ -83,114 +86,37 @@ async fn unknown_attribute_is_error() {
 
 // `#[native]` inside a HOF callback body is checked: a wholly sync
 // `list::map` callback satisfies it.
-// CR claude for claude: [test-gap/medium] From here down, 13 positive #[native] tests
-// (native_hof_callback_fusable_ok through native_hof_composite_leaf_ok) assert only
-// `r.is_ok()`. A JIT emission bug that reads the wrong element in `{ foo: [a, b, ..],
-// .. } => a + b`, or copies the wrong field in a struct-with, still builds natively and
-// passes. These are exactly the fused paths where a miscompile is the risk, and they
-// run only in eval's serial Jit mode. Fix: pin each value ([3,5,7]; [0,0,0,0]; [1,2,5];
-// 6; 1; {x:1,y:10,z:3}; {name:"x",n:2}; [1,2,3]; 7; 3.0; 3.0; 0.0; [11,23]). Better,
-// make them run! fixtures so every mode holds the value, as lists.rs
-// list_flat_map_native does. While there, fix native_transitive_callee_dyncall_ok's
-// message (it says 'DynCall'; the callee holds a cast) and the 'conditional final arm'
-// comment (the final arm is unconditional). (tests-lib-b2-04)
-#[tokio::test]
-async fn native_hof_callback_fusable_ok() {
-    let prog = "list::to_array(list::map(list::from_array([1, 2, 3]), \
-                |x| #[native] { let y = x * 2; y + 1 }))";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "#[native] on a fully-fusing HOF callback body must compile, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_hof_callback_fusable, "list::to_array(list::map(list::from_array([1, 2, 3]), \
+                |x| #[native] { let y = x * 2; y + 1 }))", |v: anyhow::Result<&Value>| format!("{}", v.unwrap()) == "[i64:3, i64:5, i64:7]"; FuseExpect::Jit);
 
 // An `array::init` callback calling a recursive lambda defined in an
 // earlier top-level statement fully fuses.
-#[tokio::test]
-async fn native_hof_callback_recursive_call_fuses_ok() {
-    let prog = "{ \
+run!(native_hof_callback_recursive_call_fuses, "{ \
                 let rec f = |n: i64| -> i64 select n { 0 => 0, _ => f(n - 1) }; \
                 array::init(4, |idx| #[native] { let a = idx * 2; f(a) }) \
-                }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "#[native] on a callback that calls a recursive lambda must compile, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+                }", |v: anyhow::Result<&Value>| format!("{}", v.unwrap()) == "[i64:0, i64:0, i64:0, i64:0]"; FuseExpect::Jit);
 
 // Compiler-owned collection nodes inline their statically instantiated
 // callback body into the enclosing region.
-#[tokio::test]
-async fn native_inlining_hof_callsite_ok() {
-    let r =
-        eval("#[native]\narray::init(3, |i| i * i + i64:1)", crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "#[native] on a compiler-owned collection call must compile, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_inlining_hof_callsite, "#[native]\narray::init(3, |i| i * i + i64:1)", |v: anyhow::Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:2, i64:5]"; FuseExpect::Jit);
 
 // A wholly synchronous callback inside a compiler-owned `list::fold`
 // can satisfy `#[native]`.
-#[tokio::test]
-async fn native_fold_callback_fusable_ok() {
-    let prog = "list::fold(list::from_array([1, 2, 3]), 0, \
-                |acc, x| #[native] { let s = x + acc; s + i64:0 })";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "#[native] on a fully-fusing fold callback body must compile, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_fold_callback_fusable, "list::fold(list::from_array([1, 2, 3]), 0, \
+                |acc, x| #[native] { let s = x + acc; s + i64:0 })", |v: anyhow::Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
 
 // A callee whose body contains a cast fuses; the decorated computation
 // calling it is native.
-#[tokio::test]
-async fn native_transitive_callee_dyncall_ok() {
-    let prog = "{ \
+run!(native_transitive_callee_cast, "{ \
                 let g = |b: bool| cast<i64>(b)$; \
                 #[native] (g(true) + g(false)) \
-                }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "#[native] on a computation calling a callee with a body DynCall must \
-         compile, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+                }", |v: anyhow::Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
 
 // An all-scalar `{ s with f: v }` over a fused source struct fuses.
-#[tokio::test]
-async fn native_structwith_ok() {
-    let prog =
-        "#[native]\n{ let s = { x: i64:1, y: i64:2, z: i64:3 }; { s with y: i64:10 } }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "#[native] on a scalar struct-with must compile, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_structwith, "#[native]\n{ let s = { x: i64:1, y: i64:2, z: i64:3 }; { s with y: i64:10 } }", |v: anyhow::Result<&Value>| format!("{}", v.unwrap()) == r#"[["x", i64:1], ["y", i64:10], ["z", i64:3]]"#; FuseExpect::Jit);
 
 // A struct-with whose source has a string field copied unchanged fuses.
-#[tokio::test]
-async fn native_structwith_string_field_ok() {
-    let prog = "#[native]\n{ let s = { name: \"x\", n: i64:1 }; { s with n: i64:2 } }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "#[native] on a struct-with copying an unchanged string field must \
-         compile, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_structwith_string_field, "#[native]\n{ let s = { name: \"x\", n: i64:1 }; { s with n: i64:2 } }", |v: anyhow::Result<&Value>| format!("{}", v.unwrap()) == r#"[["n", i64:2], ["name", "x"]]"#; FuseExpect::Jit);
 
 // A connect inside a map callback.
 #[tokio::test]
@@ -205,82 +131,28 @@ async fn native_connect_in_callback_is_error() {
 }
 
 // String elements use the collection scaffold's owned ArcStr binding.
-#[tokio::test]
-async fn native_hof_string_element_ok() {
-    let prog = "#[native]\narray::map([\"a\", \"bb\", \"ccc\"], |s| str::len(s))";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "a string-element map must compile natively, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_hof_string_element, "#[native]\narray::map([\"a\", \"bb\", \"ccc\"], |s| str::len(s))", |v: anyhow::Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:2, i64:3]"; FuseExpect::Jit);
 
 // A tuple pattern over a borrowed scrutinee fuses.
-#[tokio::test]
-async fn native_select_destructure_ok() {
-    let prog = "#[native]\n{ let t = (3, 4); select t { (0, y) => y, (x, y) => x + y } }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "a tuple-destructuring select must fully fuse, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_select_destructure, "#[native]\n{ let t = (3, 4); select t { (0, y) => y, (x, y) => x + y } }", |v: anyhow::Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
 
 // A nested slice inside a tuple pattern fuses.
-#[tokio::test]
-async fn native_select_nested_tuple_ok() {
-    let prog = "{ let t = ([1.0, 2.0], 42); \
-                #[native] select t { ([a, b], c) => a + b, _ => 0.0 } }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "a nested-slice-in-tuple select must fully fuse, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_select_nested_tuple, "{ let t = ([1.0, 2.0], 42); \
+                #[native] select t { ([a, b], c) => a + b, _ => 0.0 } }", |v: anyhow::Result<&Value>| matches!(v, Ok(Value::F64(f)) if *f == 3.0); FuseExpect::Jit);
 
 // The struct-parent nested case fuses (`_` infers a fresh TVar).
-#[tokio::test]
-async fn native_select_nested_struct_ok() {
-    let prog = "{ let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 }; \
+run!(native_select_nested_struct, "{ let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 }; \
                 #[native] select x { \
-                { foo: [a, b, ..], bar: _, baz: _ } => a + b, _ => 0.0 } }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "the struct-nested select must fully fuse, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+                { foo: [a, b, ..], bar: _, baz: _ } => a + b, _ => 0.0 } }", |v: anyhow::Result<&Value>| matches!(v, Ok(Value::F64(f)) if *f == 3.0); FuseExpect::Jit);
 
-// A float-result select with a conditional final arm.
-#[tokio::test]
-async fn native_select_float_conditional_final_ok() {
-    let prog = "{ let x = { bar: 42, baz: 8.0 }; \
+// A float-result select whose first arm tests a field and whose final
+// arm takes the rest.
+run!(native_select_float_conditional_final, "{ let x = { bar: 42, baz: 8.0 }; \
                 #[native] select x { \
-                { bar: 0, baz } => baz, { bar: _, baz: _ } => 0.0 } }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "a float-result select with a conditional final arm must fuse \
-         (and not panic the verifier), got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+                { bar: 0, baz } => baz, { bar: _, baz: _ } => 0.0 } }", |v: anyhow::Result<&Value>| matches!(v, Ok(Value::F64(f)) if *f == 0.0); FuseExpect::Jit);
 
 // Collection scaffolds bind destructured composite leaves by BindId.
-#[tokio::test]
-async fn native_hof_composite_leaf_ok() {
-    let prog = "#[native]\narray::map([((1, 2), 10), ((3, 4), 20)], |(pt, n)| pt.0 + n)";
-    let r = eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_ok(),
-        "a destructured-formal map must compile natively, got {:?}",
-        r.map(|(v, _)| v)
-    );
-}
+run!(native_hof_composite_leaf, "#[native]\narray::map([((1, 2), 10), ((3, 4), 20)], |(pt, n)| pt.0 + n)", |v: anyhow::Result<&Value>| format!("{}", v.unwrap()) == "[i64:11, i64:23]"; FuseExpect::Jit);
 
 // A named rest binding (`[x, rest..]`) is an owned subslice arm local,
 // so `#[native]` on it compiles.
