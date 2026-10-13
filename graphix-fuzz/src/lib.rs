@@ -4317,18 +4317,10 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
 /// memory as much as crash containment: every in-process `run_program`
 /// keeps its context's JIT pages, so the child pays the leak and exits.
 async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> {
-    // up to 8 in-child runs, each bounded by the per-run timeout
-    // CR claude for claude: [risk/low] The comment above and this bound do not match
-    // selfcheck_one. Each mode and route runs a concurrent pair, then up to two
-    // sequential confirms at 4x the timeout: 9 timeouts each, 18 for a plain program
-    // and 36 for a callable one. Under load, two 4x confirms already pass this
-    // deadline. The killed child leaves no verdict, which is reported as `crash`, a
-    // false determinism failure. Fix: derive the bound from the loop (routes x modes x
-    // 9 timeouts plus slack), or have the child append each mode's result as it
-    // completes and use Deadline::Stall. Also fix detcheck_one_pair's doc: it says a
-    // timeout is 'exit 4' and that exit codes are compared, but the code skips on a
-    // `timeout` verdict and compares verdicts. (fuzz-lib-b-12)
-    let deadline = Deadline::Fixed(timeout * 10 + Duration::from_secs(30));
+    // each engine on each route: a concurrent pair, then two confirms at
+    // 4x, in sequence
+    let combos = 2 * session_routes(prog).len() as u32;
+    let deadline = Deadline::Fixed(timeout * 9 * combos + Duration::from_secs(30));
     // a dead or wedged child left no verdict: nondeterminism by definition
     match run_child("selfcheck-one", &[], &[], prog, false, deadline).await.verdict {
         Some(v) => v
@@ -4458,8 +4450,8 @@ fn first_clif_difference(a: &str, b: &str) -> String {
 
 /// The determinism gate: run `prog` to quiescence in two fresh child
 /// processes with GRAPHIX_DUMP_CLIF=1 and compare the normalized dumps
-/// and exit codes. Fusion shape must be a pure function of the program
-/// text. A wall-clock timeout on either side (exit 4) skips the pair.
+/// and verdicts. Fusion shape must be a pure function of the program
+/// text. A `timeout` verdict on either side skips the pair.
 /// `Some(detail)` = flap.
 pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> {
     async fn compile_child(
