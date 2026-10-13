@@ -189,15 +189,19 @@ impl<X: GXExt> CanvasW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for CanvasW<X> {
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("canvas")?;
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("canvas")?;
         if self.shapes_ref.id == id {
-            self.set_shapes(v.clone()).await?;
+            return Ok(Some(Box::pin(self.set_shapes(v.clone()))));
         }
         for s in &mut self.shapes {
-            s.update(id, &v).context("canvas shape")?;
+            s.update(id, v).context("canvas shape")?;
         }
-        Ok(())
+        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

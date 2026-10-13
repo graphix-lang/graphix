@@ -67,9 +67,13 @@ impl<X: GXExt> TuiWidget for ScrollbarW<X> {
         self.child.w.handle_event(v).await
     }
 
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("scrollbar")?;
-        self.child.update(&self.gx, id, v).await
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("scrollbar")?;
+        self.child.update(&self.gx, id, v)
     }
 
     fn draw(&mut self, frame: &mut Frame, mut rect: Rect) -> Result<()> {

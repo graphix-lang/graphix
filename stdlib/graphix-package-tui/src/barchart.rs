@@ -109,17 +109,21 @@ impl<X: GXExt> BarChartW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for BarChartW<X> {
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("bar_chart")?;
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("bar_chart")?;
         if self.data_ref.id == id {
-            self.set_data(v.clone()).await?;
+            return Ok(Some(Box::pin(self.set_data(v.clone()))));
         }
         for g in self.data.iter_mut() {
             for b in &mut g.bars {
-                b.update(id, &v).context("bar")?;
+                b.update(id, v).context("bar")?;
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

@@ -1,6 +1,6 @@
 use super::{
-    LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, into_borrowed_line,
-    validate::Index,
+    LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, finish_update,
+    into_borrowed_line, update_children, validate::Index,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -79,15 +79,24 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
         Ok(())
     }
 
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("tabs")?;
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("tabs")?;
         if self.tabs_ref.id == id {
-            self.set_tabs(v.clone()).await?;
+            return Ok(Some(Box::pin(async move {
+                self.set_tabs(v.clone()).await?;
+                finish_update(update_children(
+                    self.tabs.iter_mut().map(|(_, _, c)| c),
+                    id,
+                    v,
+                )?)
+                .await
+            })));
         }
-        for (_, _, c) in &mut self.tabs {
-            c.handle_update(id, v.clone()).await?;
-        }
-        Ok(())
+        update_children(self.tabs.iter_mut().map(|(_, _, c)| c), id, v)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

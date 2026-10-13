@@ -39,17 +39,21 @@ impl<X: GXExt> TuiWidget for TextW<X> {
         Ok(())
     }
 
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
         let Self { p, text } = self;
-        if let Some(a) = p.alignment.update(id, &v).context("text alignment")? {
+        if let Some(a) = p.alignment.update(id, v).context("text alignment")? {
             text.alignment = a.map(|a| a.0);
         }
-        if let Some(l) = p.lines.update(id, &v).context("text lines")? {
+        if let Some(l) = p.lines.update(id, v).context("text lines")? {
             text.lines = mem::take(&mut l.0);
         }
-        if let Some(s) = p.style.update(id, &v).context("text style")? {
+        if let Some(s) = p.style.update(id, v).context("text style")? {
             text.style = s.0;
         }
-        Ok(())
+        Ok(None)
     }
 }

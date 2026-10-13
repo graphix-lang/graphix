@@ -422,7 +422,7 @@ trait TuiWidget {
     async fn handle_event(&mut self, _v: Value) -> Result<()> {
         Ok(())
     }
-    // CR claude for claude: [perf/low] handle_update is an async_trait method, so every
+    // XCR claude for claude: [perf/low] handle_update is an async_trait method, so every
     // call allocates a boxed future. LayoutW, OverlayW and BlockW/ChildW pass each
     // update to every child and clone the Value at each level. One program update
     // therefore costs one heap allocation per widget in the tree, although nearly every
@@ -431,8 +431,44 @@ trait TuiWidget {
     // the value and does the rare child recompile (ChildW, LayoutW's children,
     // OverlayW's layers) by blocking on the runtime handle, as the GUI widgets do.
     // (tui-core-08)
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()>;
+    // 2026-10-13 codex: Ordinary updates borrow Value and finish synchronously.
+    // Only recompilation or callback work returns a boxed future, avoiding a
+    // blocking runtime call on current-thread executors. Pin:
+    // testing::tests::ordinary_updates_complete_synchronously.
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<PendingUpdate<'a>>;
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()>;
+}
+
+type PendingUpdate<'a> = Option<Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>>;
+
+async fn finish_update(pending: PendingUpdate<'_>) -> Result<()> {
+    match pending {
+        Some(future) => future.await,
+        None => Ok(()),
+    }
+}
+
+fn update_children<'a>(
+    mut children: impl Iterator<Item = &'a mut TuiW> + Send + 'a,
+    id: ExprId,
+    v: &'a Value,
+) -> Result<PendingUpdate<'a>> {
+    while let Some(child) = children.next() {
+        if let Some(pending) = child.handle_update(id, v)? {
+            return Ok(Some(Box::pin(async move {
+                pending.await?;
+                for child in children {
+                    finish_update(child.handle_update(id, v)?).await?;
+                }
+                Ok(())
+            })));
+        }
+    }
+    Ok(None)
 }
 
 type TuiW = Box<dyn TuiWidget + Send + Sync + 'static>;
@@ -467,8 +503,12 @@ struct EmptyW;
 
 #[async_trait]
 impl TuiWidget for EmptyW {
-    async fn handle_update(&mut self, _id: ExprId, _v: Value) -> Result<()> {
-        Ok(())
+    fn handle_update<'a>(
+        &'a mut self,
+        _id: ExprId,
+        _v: &'a Value,
+    ) -> Result<PendingUpdate<'a>> {
+        Ok(None)
     }
 
     fn draw(&mut self, _frame: &mut Frame, _rect: Rect) -> Result<()> {
@@ -493,15 +533,23 @@ impl<X: GXExt> ChildW<X> {
         Ok(Self { r, w })
     }
 
-    async fn update(&mut self, gx: &GXHandle<X>, id: ExprId, v: Value) -> Result<()> {
+    fn update<'a>(
+        &'a mut self,
+        gx: &'a GXHandle<X>,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<PendingUpdate<'a>> {
         if id == self.r.id {
-            if self.r.last.as_ref() != Some(&v) {
-                self.w = compile(gx.clone(), v.clone()).await.context("child")?;
-                self.r.last = Some(v);
+            if self.r.last.as_ref() != Some(v) {
+                return Ok(Some(Box::pin(async move {
+                    self.w = compile(gx.clone(), v.clone()).await.context("child")?;
+                    self.r.last = Some(v.clone());
+                    Ok(())
+                })));
             }
-            Ok(())
+            Ok(None)
         } else {
-            self.w.handle_update(id, v).await
+            self.w.handle_update(id, v)
         }
     }
 }
@@ -923,7 +971,7 @@ impl<X: GXExt> Screen<X> {
             }
             Ok(())
         } else {
-            self.root.handle_update(id, v).await
+            finish_update(self.root.handle_update(id, &v)?).await
         }
     }
 

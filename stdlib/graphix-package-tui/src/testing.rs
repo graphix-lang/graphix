@@ -366,3 +366,32 @@ fn buffer_lines(buf: &Buffer) -> Vec<String> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graphix_compiler::expr::ExprId;
+
+    #[tokio::test]
+    async fn ordinary_updates_complete_synchronously() -> Result<()> {
+        let mut h = TuiTestHarness::new(
+            r#"
+use tui::{block::block, input_handler::input_handler, layout::{child, layout},
+    overlay::{layer, overlay}, scrollbar::scrollbar, tabs::tabs, text::text};
+let leaf = text(&"body");
+let handle = |e: tui::input_handler::Event| e ~ `Continue;
+let result = layout(&[
+    child(#constraint: `Fill(1), overlay(#layers: &[layer(
+        tabs(&[(tui::line("tab"), input_handler(#handle: &handle, &scrollbar(&block(&leaf))))])
+    )], leaf)),
+    child(#constraint: `Fill(1), tui::gauge::gauge(&0.5))
+])
+"#,
+        )
+        .await?;
+        let value = Value::Null;
+        assert!(h.screen.root.handle_update(ExprId::new(), &value)?.is_none());
+        h.render()?;
+        Ok(())
+    }
+}

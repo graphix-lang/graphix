@@ -227,15 +227,19 @@ impl<X: GXExt> ChartW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for ChartW<X> {
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("chart")?;
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("chart")?;
         if self.datasets_ref.id == id {
-            self.set_datasets(v.clone()).await?;
+            return Ok(Some(Box::pin(self.set_datasets(v.clone()))));
         }
         for d in &mut self.datasets {
-            d.update(id, &v)?;
+            d.update(id, v)?;
         }
-        Ok(())
+        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

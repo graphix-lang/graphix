@@ -42,9 +42,13 @@ impl<X: GXExt> ListW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for ListW<X> {
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("list")?;
-        Ok(())
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("list")?;
+        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

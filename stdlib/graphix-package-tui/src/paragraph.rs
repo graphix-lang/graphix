@@ -51,8 +51,12 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
         Ok(())
     }
 
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.0.update(id, &v).context("paragraph")?;
-        Ok(())
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.0.update(id, v).context("paragraph")?;
+        Ok(None)
     }
 }

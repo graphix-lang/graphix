@@ -91,9 +91,13 @@ impl<X: GXExt> SparklineW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for SparklineW<X> {
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.0.update(id, &v).context("sparkline")?;
-        Ok(())
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.0.update(id, v).context("sparkline")?;
+        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

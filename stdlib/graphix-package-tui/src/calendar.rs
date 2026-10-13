@@ -101,12 +101,16 @@ impl<X: GXExt> CalendarW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for CalendarW<X> {
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("calendar")?;
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("calendar")?;
         if self.events_ref.id == id {
-            self.set_events(&v)?;
+            self.set_events(v)?;
         }
-        Ok(())
+        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

@@ -1,4 +1,4 @@
-use super::{ChildW, TuiW, TuiWidget};
+use super::{ChildW, TuiW, TuiWidget, finish_update};
 use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
 use async_trait::async_trait;
@@ -464,21 +464,30 @@ impl<X: GXExt> TuiWidget for InputHandlerW<X> {
         Ok(())
     }
 
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        if let Some(Some(false)) = self.p.enabled.update(id, &v).context("enabled")? {
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        if let Some(Some(false)) = self.p.enabled.update(id, v).context("enabled")? {
             self.queued.clear();
         }
         if let Some((answer, _)) = &self.in_flight
             && *answer == id
         {
             let (_, ev) = self.in_flight.take().expect("an event in flight");
-            self.answered(ev, v).await?;
-            return self.send_next().await;
+            return Ok(Some(Box::pin(async move {
+                self.answered(ev, v.clone()).await?;
+                self.send_next().await
+            })));
         }
         if id == self.handle_ref.id {
-            self.set_handle(v.clone()).await?;
+            return Ok(Some(Box::pin(async move {
+                self.set_handle(v.clone()).await?;
+                finish_update(self.child.update(&self.gx, id, v)?).await
+            })));
         }
-        self.child.update(&self.gx, id, v).await
+        self.child.update(&self.gx, id, v)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

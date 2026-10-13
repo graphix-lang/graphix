@@ -1,5 +1,6 @@
 use super::{
-    DirectionV, FlexV, SizeReport, TuiW, TuiWidget, compile, reconcile,
+    DirectionV, FlexV, SizeReport, TuiW, TuiWidget, compile, finish_update, reconcile,
+    update_children,
     validate::{Dim, Index, Offset, Percent},
 };
 use anyhow::{Context, Result};
@@ -126,15 +127,24 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
         Ok(())
     }
 
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("layout")?;
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("layout")?;
         if self.children_ref.id == id {
-            self.set_children(v.clone()).await?;
+            return Ok(Some(Box::pin(async move {
+                self.set_children(v.clone()).await?;
+                finish_update(update_children(
+                    self.children.iter_mut().map(|(_, c)| &mut c.child),
+                    id,
+                    v,
+                )?)
+                .await
+            })));
         }
-        for (_, c) in &mut self.children {
-            c.child.handle_update(id, v.clone()).await?
-        }
-        Ok(())
+        update_children(self.children.iter_mut().map(|(_, c)| &mut c.child), id, v)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

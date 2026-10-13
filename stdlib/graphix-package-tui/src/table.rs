@@ -141,28 +141,32 @@ impl<X: GXExt> TableW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for TableW<X> {
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        self.p.update(id, &v).context("table")?;
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
+        self.p.update(id, v).context("table")?;
         let sel = &mut self.sel;
-        if let Some(r) = sel.selected.update(id, &v).context("table selected")? {
+        if let Some(r) = sel.selected.update(id, v).context("table selected")? {
             self.row = r.map(|i| i.0);
         }
-        if let Some(c) = sel.selected_column.update(id, &v).context("table column")? {
+        if let Some(c) = sel.selected_column.update(id, v).context("table column")? {
             self.column = c.map(|i| i.0);
         }
-        if let Some(c) = sel.selected_cell.update(id, &v).context("table cell")? {
+        if let Some(c) = sel.selected_cell.update(id, v).context("table cell")? {
             (self.row, self.column) = match c {
                 Some(c) => (Some(c.y.0), Some(c.x.0)),
                 None => (None, None),
             };
         }
         if self.rows_ref.id == id {
-            self.set_rows(v.clone()).await?;
+            return Ok(Some(Box::pin(self.set_rows(v.clone()))));
         }
         for r in self.rows.iter_mut() {
-            r.update(id, &v)?;
+            r.update(id, v)?;
         }
-        Ok(())
+        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {

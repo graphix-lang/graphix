@@ -1,4 +1,7 @@
-use super::{SizeReport, TuiW, TuiWidget, compile, layout::ConstraintV, reconcile};
+use super::{
+    SizeReport, TuiW, TuiWidget, compile, finish_update, layout::ConstraintV, reconcile,
+    update_children,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::expr::ExprId;
@@ -97,16 +100,32 @@ impl<X: GXExt> TuiWidget for OverlayW<X> {
         }
     }
 
-    async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
+    fn handle_update<'a>(
+        &'a mut self,
+        id: ExprId,
+        v: &'a Value,
+    ) -> Result<crate::PendingUpdate<'a>> {
         if self.layers_ref.id == id {
-            self.set_layers(v.clone()).await?;
+            return Ok(Some(Box::pin(async move {
+                self.set_layers(v.clone()).await?;
+                finish_update(update_children(
+                    std::iter::once(&mut self.base)
+                        .chain(self.layers.iter_mut().map(|(_, l)| &mut l.child)),
+                    id,
+                    v,
+                )?)
+                .await
+            })));
         }
-        self.base.handle_update(id, v.clone()).await?;
         for (_, l) in &mut self.layers {
-            l.p.update(id, &v).context("layer")?;
-            l.child.handle_update(id, v.clone()).await?;
+            l.p.update(id, v).context("layer")?;
         }
-        Ok(())
+        update_children(
+            std::iter::once(&mut self.base)
+                .chain(self.layers.iter_mut().map(|(_, l)| &mut l.child)),
+            id,
+            v,
+        )
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
