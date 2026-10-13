@@ -66,25 +66,7 @@ let handle_command_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
     },
     x@ `Enter => {
         command_mode <- false;
-        // CR claude for claude: [bug/medium] browser_commands: `x ~ selected_path`
-        // banks, so ':w' runs unasked or twice. `run_command(command, x ~
-        // selected_path)` samples selected_path with the banking `~`. selected_path
-        // starts as `never()` and has no value until the browser's async listing gives
-        // it a row. Enter pressed before then banks the trigger. The command then runs
-        // when the row arrives, against whatever row is selected first, with no Enter
-        // for it. If the arm slept in between, the next real Enter runs the command
-        // twice. `command` is also left unsampled, against the skill's rule that an
-        // effect samples its whole input on the trigger. run_command performs
-        // `sys::net::write`, so the phantom run is a netidx write to a path the user
-        // never chose. Failure: Model of the example's key logic. (a) Keys ':', 'a',
-        // Enter while selected_path is absent; 300 ms later selected_path arrives: it
-        // prints `RUN a at /rows/first` with no further key. (b) ':', 'a', Enter (no
-        // selection), Down, rows arrive, ':', 'b', Enter: `RUN b at /rows/first` is
-        // printed twice, so the write would be sent twice. Fix: `run_command(x ~!
-        // command, x ~! selected_path)`: strict sampling, no bank. With it, (a) prints
-        // nothing and (b) prints one RUN. Unverified: the reviewer's report, not
-        // checked by a verifier. (examples-tui-02)
-        run_command(command, x ~ selected_path);
+        run_command(x ~! command, x ~! selected_path);
         `Stop
     },
     e@ `Backspace if command != "" => {
