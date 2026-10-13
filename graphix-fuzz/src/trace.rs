@@ -216,6 +216,8 @@ pub struct Trace {
     /// within one cycle the order is the evaluation's (forked branches
     /// print as they run), so a cycle's calls are a multiset.
     pub stdout: Vec<Printed>,
+    /// The code the program asked `sys::exit` to end with.
+    pub exit: Option<i32>,
 }
 
 impl Trace {
@@ -223,6 +225,7 @@ impl Trace {
         Trace {
             epochs: segs.iter().map(|s| Epoch::from_segment(s, eid)).collect(),
             stdout: Vec::new(),
+            exit: None,
         }
     }
 
@@ -239,6 +242,7 @@ impl Trace {
                         .all(|((ao, av), (bo, bv))| ao == bo && same(av, bv))
             })
             && self.stdout == other.stdout
+            && self.exit == other.exit
     }
 
     /// Per-epoch FINAL value: the last event's value, `None` for a
@@ -270,6 +274,7 @@ impl Trace {
                     (a, b) => a.is_none() && b.is_none(),
                 }
             })
+            && self.exit == other.exit
     }
 
     /// [`Self::first_difference`] at final strength: the bucket key for
@@ -290,6 +295,7 @@ impl Trace {
                 (a, b) => a.is_some() || b.is_some(),
             })
             .map(TraceDiff::FinalValue)
+            .or((self.exit != other.exit).then_some(TraceDiff::Exit))
     }
 
     /// Classify the first difference, `self` = the node-walk reference,
@@ -320,6 +326,9 @@ impl Trace {
         if self.stdout != other.stdout {
             return Some(TraceDiff::Stdout);
         }
+        if self.exit != other.exit {
+            return Some(TraceDiff::Exit);
+        }
         None
     }
 }
@@ -348,6 +357,8 @@ pub enum TraceDiff {
     /// Values and pacing agree but the captured print-family output
     /// differs.
     Stdout,
+    /// Everything else agrees but the `sys::exit` codes differ.
+    Exit,
 }
 
 #[cfg(test)]
@@ -364,6 +375,7 @@ mod tests {
                 })
                 .collect(),
             stdout: Vec::new(),
+            exit: None,
         }
     }
 

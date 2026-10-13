@@ -24,7 +24,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag, FusionStats, ParMode, Scope,
+    FusionStats, ParMode, Scope,
     env::Env,
     expr::{Expr, Origin, VfsEntry, VfsResolver, parser},
 };
@@ -153,6 +153,9 @@ impl fmt::Display for Rendered<'_> {
                 if !t.stdout.is_empty() {
                     f.write_str("]")?;
                 }
+                if let Some(code) = t.exit {
+                    write!(f, "; exit={code}")?;
+                }
                 f.write_str(")")
             }
             Outcome::CompileErr(e) => {
@@ -238,6 +241,7 @@ impl Outcome {
         Outcome::Trace(trace::Trace {
             epochs: vec![trace::Epoch { events: vec![(0, v)], capped: false }],
             stdout: Vec::new(),
+            exit: None,
         })
     }
 
@@ -398,6 +402,11 @@ impl Subject {
         };
         format!("{mods}{inputs}{{ mod {modname}; {modname}::result }}")
     }
+
+    /// [`Self::compile_text`] as the program a session compiles.
+    pub fn program(&self) -> graphix_compiler::expr::Source {
+        graphix_compiler::expr::Source::Program(ArcStr::from(self.compile_text()))
+    }
 }
 
 /// Compile `code` under `mode` without driving it: `None` = compiled
@@ -413,7 +422,7 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
     }
 }
 
-/// Compile `code` the way `--check` does under [`CFlag::CheckOnly`]: the
+/// Compile `code` the way `--check` does under [`graphix_compiler::CFlag::CheckOnly`]: the
 /// check alone, no elaboration, never run. `Err` is the refusal, or a
 /// runtime that failed to start.
 pub async fn check_only(code: &str, timeout: Duration) -> Result<(), String> {
@@ -458,61 +467,97 @@ enum CompileOutcome {
     Failed(String),
 }
 
-/// Compile-only core behind [`compile_program`] and [`run_fusecheck`]:
-/// compile the full drive text under a fresh ctx and return the
-/// program's own compile-time [`FusionStats`] delta. The timeout covers
-/// the construction, where the program compiles, and the first cycle's
-/// result. A stats value is never synthesized from a failure.
-// CR claude for claude: [structure/low] This repeats run_subject's start step by step:
-// parse the Subject, put a VfsResolver over its table, install a PrintSink, get the
-// registration image, build Source::Program(compile_text), call init_session_with_setup
-// with the same sink-and-par-mode setup under the timeout, then shut down with a grace
-// period. A change to how a subject reaches the runtime would have to land in both, or
-// gen-check/fusecheck would judge a different compile than the oracle ran. Factor the
-// start into one function both call, with the image choice and the event limits as
-// arguments. check_only can stay as it is, since it never runs the program.
-// (fuzz-lib-a-14)
-async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> CompileOutcome {
-    let subj = match Subject::parse(code, "test") {
-        Ok(s) => s,
-        Err(e) => return CompileOutcome::Rejected(e, FusionStats::default()),
-    };
-    let (tx, _rx) = mpsc::channel(64);
+/// A subject's runtime, started.
+struct Started {
+    ctx: TestCtx,
+    rx: mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
+    /// The program's print output, kept off the process streams.
+    sink: graphix_package_core::PrintSink,
+    /// The code the program asked `sys::exit` for.
+    exit: oneshot::Receiver<i32>,
+}
+
+/// Start `subj` under `mode` over its VFS, with a print sink, an exit
+/// request and the fuzzer's fork policy. The program compiles (or
+/// restores) at construction under `timeout`; a construction abandoned
+/// at the deadline finishes on its own task and exits, its handle gone.
+async fn start_session(
+    subj: &Subject,
+    mode: Mode,
+    registration: RegistrationImage,
+    program: Option<graphix_compiler::expr::Source>,
+    program_image: Option<oneshot::Sender<anyhow::Result<graphix_rt::ProgramImage>>>,
+    limits: Option<(usize, u64)>,
+    timeout: Duration,
+) -> Result<Started, Outcome> {
+    let (tx, rx) = mpsc::channel(64);
     let resolver = VfsResolver::new(subj.table.clone());
-    // keeps the compile cycle's print output off the process streams
     let sink = graphix_package_core::PrintSink::default();
-    let registration = registration_image_source().await;
-    let program =
-        graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text()));
+    let (exit_req, exit) = graphix_package_core::ExitRequest::new();
+    let seeded = sink.clone();
     let init = init_session_with_setup(
         tx,
         REGISTER,
         vec![resolver],
         mode.flags(),
         registration,
-        Some(program),
-        None,
-        None,
+        program,
+        program_image,
+        limits,
         move |ctx| {
-            // CR claude for claude: [bug/low] The fuzz session installs no
-            // graphix_package_core::ExitRequest. A subject's sys::exit therefore calls
-            // std::process::exit in whatever process runs it. `graphix-fuzz check` on
-            // `let x = 42; sys::exit(x ~ 0); x` prints nothing and exits 0, which reads
-            // as a pass with nothing compared. `check-isolated` reports it as "CRASH —
-            // exit status: 0". Fix: install an ExitRequest here, as the shell's init
-            // does, and end the run's outcome at the requested cycle with the code as
-            // an event, so both engines' exits are compared like any other output.
-            // probe: design/review-2026-10-12/repro/x-rerun-3-06.gx (x-rerun-3-06)
-            ctx.libstate.set(sink);
+            ctx.libstate.set(seeded);
+            ctx.libstate.set(exit_req);
             ctx.control.set_par_mode(fuzz_par(mode));
         },
     );
-    let ctx = match tokio::time::timeout(timeout, init).await {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => {
-            return CompileOutcome::Failed(format!("runtime init failed: {e:?}"));
+    match tokio::time::timeout(timeout, init).await {
+        Ok(Ok(ctx)) => Ok(Started { ctx, rx, sink, exit }),
+        Ok(Err(e)) => Err(Outcome::RuntimeErr(format!("runtime init failed: {e:?}"))),
+        // CR claude for eric: [test-gap/low] A construction timeout (the program's
+        // compile or check) becomes the same Timeout(Deadline) as an evaluator wedge.
+        // Every pair runs the same checker, so the hang is always symmetric and agrees.
+        // In the sessions it ends as SLOW, or, for a deadlock, as a Pair::Warm
+        // divergence against "no program image was written" (see fuzz-lib-a-12).
+        // typemorph_subject treats TmVerdict::Hung as a measurement failure, so
+        // typemorph_work_order writes 'A'. No lane can report the checker going
+        // nonterminating or superlinear, which the rule that the typechecker stays
+        // instant would want caught. Decide whether a construction timeout gets its own
+        // containment (e.g. Containment::Compile) and becomes a single-run finding like
+        // Pair::Twin once it is confirmed at slow_budget, and whether a typemorph base
+        // or probe that hangs again at the slow budget counts as a finding.
+        // (fuzz-lib-a-05)
+        Err(_) => Err(Outcome::Timeout(Containment::Deadline)),
+    }
+}
+
+/// Compile-only core behind [`compile_program`] and [`run_fusecheck`]:
+/// compile the full drive text under a fresh ctx and return the
+/// program's own compile-time [`FusionStats`] delta. The timeout covers
+/// the construction, where the program compiles, and the first cycle's
+/// result. A stats value is never synthesized from a failure.
+async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> CompileOutcome {
+    let subj = match Subject::parse(code, "test") {
+        Ok(s) => s,
+        Err(e) => return CompileOutcome::Rejected(e, FusionStats::default()),
+    };
+    let registration = registration_image_source().await;
+    let program = Some(subj.program());
+    let Started { ctx, .. } = match start_session(
+        &subj,
+        mode,
+        registration,
+        program,
+        None,
+        None,
+        timeout,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(Outcome::Timeout(_)) => {
+            return CompileOutcome::Failed("compile timed out".to_string());
         }
-        Err(_) => return CompileOutcome::Failed("compile timed out".to_string()),
+        Err(o) => return CompileOutcome::Failed(render(&o)),
     };
     let run = async {
         // Debug format is the anyhow chain; gen-check buckets on the
@@ -574,12 +619,16 @@ pub async fn run_program_with_stats_routed(
 async fn drive(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
+    exit: &mut oneshot::Receiver<i32>,
     subj: &Subject,
     route: Route,
     timeout: Duration,
     sink: &graphix_package_core::PrintSink,
 ) -> Outcome {
-    let outcome = drive_inner(ctx, rx, subj, route, timeout, sink).await;
+    let mut outcome = drive_inner(ctx, rx, subj, route, timeout, sink).await;
+    if let Outcome::Trace(t) = &mut outcome {
+        t.exit = exit.try_recv().ok();
+    }
     // A runtime the stack budget aborted answers nothing more: whichever
     // request that failed, the outcome is the containment.
     if matches!(outcome, Outcome::RuntimeErr(_) | Outcome::CompileErr(_))
@@ -1143,14 +1192,7 @@ async fn run_subject(
         Ok(s) => s,
         Err(e) => return SubjectRun::failed(Outcome::CompileErr(e)),
     };
-    let (tx, mut rx) = mpsc::channel(64);
-    let resolver = VfsResolver::new(subj.table.clone());
-    // per-runtime print capture, so two modes running concurrently in
-    // one process keep separate output
-    let sink = graphix_package_core::PrintSink::default();
-    let seeded = sink.clone();
-    let program =
-        Some(graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text())));
+    let program = Some(subj.program());
     let (registration, program, program_image, image_rx) = match image {
         SessionImage::Read(bytes) => (RegistrationImage::load(bytes), None, None, None),
         SessionImage::Write => {
@@ -1159,46 +1201,22 @@ async fn run_subject(
         }
         SessionImage::None => (registration_image_source().await, program, None, None),
     };
-    // The program compiles (or restores) at construction, under the run's
-    // budget; a construction it abandons finishes on its own task and
-    // exits, its handle gone.
-    let init = init_session_with_setup(
-        tx,
-        REGISTER,
-        vec![resolver],
-        mode.flags(),
+    let limits = Some((subj.sched.max_events, subj.sched.max_cycles));
+    let Started { ctx, mut rx, sink, mut exit } = match start_session(
+        &subj,
+        mode,
         registration,
         program,
         program_image,
-        Some((subj.sched.max_events, subj.sched.max_cycles)),
-        move |ctx| {
-            ctx.libstate.set(seeded);
-            ctx.control.set_par_mode(fuzz_par(mode));
-        },
-    );
-    let ctx = match tokio::time::timeout(timeout, init).await {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => {
-            return SubjectRun::failed(Outcome::RuntimeErr(format!(
-                "runtime init failed: {e:?}"
-            )));
-        }
-        // CR claude for eric: [test-gap/low] A construction timeout (the program's
-        // compile or check) becomes the same Timeout(Deadline) as an evaluator wedge.
-        // Every pair runs the same checker, so the hang is always symmetric and agrees.
-        // In the sessions it ends as SLOW, or, for a deadlock, as a Pair::Warm
-        // divergence against "no program image was written" (see fuzz-lib-a-12).
-        // typemorph_subject treats TmVerdict::Hung as a measurement failure, so
-        // typemorph_work_order writes 'A'. No lane can report the checker going
-        // nonterminating or superlinear, which the rule that the typechecker stays
-        // instant would want caught. Decide whether a construction timeout gets its own
-        // containment (e.g. Containment::Compile) and becomes a single-run finding like
-        // Pair::Twin once it is confirmed at slow_budget, and whether a typemorph base
-        // or probe that hangs again at the slow budget counts as a finding.
-        // (fuzz-lib-a-05)
-        Err(_) => return SubjectRun::failed(Outcome::Timeout(Containment::Deadline)),
+        limits,
+        timeout,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(o) => return SubjectRun::failed(o),
     };
-    let outcome = drive(&ctx, &mut rx, &subj, route, timeout, &sink).await;
+    let outcome = drive(&ctx, &mut rx, &mut exit, &subj, route, timeout, &sink).await;
     // A wedged runtime never answers another request: abort first, then
     // never await it without a deadline.
     if matches!(outcome, Outcome::Timeout(_)) {
