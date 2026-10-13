@@ -21,18 +21,7 @@ async fn same_arm_refire_emits(mode: Mode) -> Result<()> {
 
 modes!(same_arm_refire_emits);
 
-// A guard-dep fire with unchanged selection emits; a never-produced
-// guard bottoms the init cycle. count [1, 2, 3].
-// CR claude for claude: [test-gap/medium] This comment, and those on
-// GUARDED_SELECT_SELECTION_MEMORY and GUARDED_SELECT_IN_CALLEE in select.rs, say a
-// never-produced guard bottoms the init cycle. In all three, the guard derives from
-// array::iter, which delivers in the init cycle, so the guard has produced before the
-// first selection. If a never-produced guard read as false, the counts would be the
-// same. The consulted-guard rule (a never-produced guard is unknown, not false) has no
-// pin. Add one whose guard never produces: `let g: i64 = never(); let s = select i64:5
-// { n if g >= i64:0 => n, _ => i64:0 }; (1, any(s, 99))` gives (1, 99) today in both
-// engines, and guard-as-false would give (1, 0). Then correct the three comments.
-// (tests-lang-rest-a-05)
+// A guard-dep fire with unchanged selection emits. count [1, 2, 3].
 const GUARD_FIRE: &str = r#"{
   let x = array::iter([i64:1, i64:2, i64:3]);
   let g = x % i64:2;
@@ -46,6 +35,22 @@ async fn guard_fire_emits(mode: Mode) -> Result<()> {
 }
 
 modes!(guard_fire_emits);
+
+// A guard that never produced is unknown, not false: the select it
+// decides is bottom, so `any` takes the 99 (guard-as-false would give 0).
+const NEVER_PRODUCED_GUARD: &str = r#"{
+  let g: i64 = never();
+  let s = select i64:5 { n if g >= i64:0 => n, _ => i64:0 };
+  any(s, 99)
+}"#;
+
+async fn never_produced_guard_is_unknown(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(NEVER_PRODUCED_GUARD, mode).await?;
+    assert_eq!(as_i64s(&values), vec![99]);
+    Ok(())
+}
+
+modes!(never_produced_guard_is_unknown);
 
 // A gating select samples its arm: the scrutinee fires per x delivery
 // and re-emits the quiet arm's value; count [1, 2, 3].

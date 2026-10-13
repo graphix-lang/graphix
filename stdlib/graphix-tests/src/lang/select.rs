@@ -973,8 +973,8 @@ run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value
     matches!(v, Ok(Value::I64(1)))
 }; FuseExpect::Jit);
 
-// A guard-dep fire emits whether or not the selection changes; a guard
-// that has never produced bottoms the select. m fires per x delivery: 4.
+// A guard-dep fire emits whether or not the selection changes. m fires
+// per x delivery: 4.
 const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1128,8 +1128,7 @@ run!(
     FuseExpect::Jit
 );
 
-// In a callee body: 4. At init m has not produced, so the consulted guard
-// is unknown and the select emits nothing.
+// In a callee body: 4.
 const GUARDED_SELECT_IN_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
