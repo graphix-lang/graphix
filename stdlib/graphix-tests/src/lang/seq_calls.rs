@@ -166,13 +166,6 @@ async fn builtin_writes_through_nested_references(mode: Mode) -> Result<()> {
 
 // Each instance's seqq captures are its own: a second call's plan does not
 // decide the first's.
-// CR claude for claude: [test-gap/low] Both instances here have identical bodies and so
-// need the same live/snapshot verdict. Verdicts joined per definition ('live if any
-// instance writes') would still give 55. Pin the other direction, one definition whose
-// instances need different verdicts: `let x = 0; let run = |go: i64, f: fn(v: i64) ->
-// i64| seqq go { f(1); x }; let a = run(1, |v| { x <- v * 100; v }); let b = run(1, |v|
-// sys::time::after_idle(duration:50.ms, v)); (a, b)` must give (100, 0) with the two
-// lets in either order. It does at HEAD. (tests-seq-11)
 async fn seqq_captures_per_instance(mode: Mode) -> Result<()> {
     let (values, _) = run_delta(
         r#"{
@@ -190,4 +183,32 @@ async fn seqq_captures_per_instance(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(builtin_writes_through_nested_references, seqq_captures_per_instance);
+// One definition whose instances need different verdicts: the instance
+// whose callback writes `x` reads it live (100), the other snapshots it
+// (0), whichever is bound first.
+async fn seqq_verdict_per_instance(mode: Mode) -> Result<()> {
+    let a = "let a = run(1, |v| { x <- v * 100; v });";
+    let b = "let b = run(1, |v| sys::time::after_idle(duration:50.ms, v));";
+    for lets in [[a, b], [b, a]] {
+        let [first, second] = lets;
+        let code = format!(
+            r#"{{
+            let x = 0;
+            let run = |go: i64, f: fn(v: i64) -> i64| seqq go {{ f(1); x }};
+            {first}
+            {second}
+            (a, b)
+        }}"#
+        );
+        let (values, _) = run_delta(&code, mode).await?;
+        let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+        assert_eq!(values, ["[i64:100, i64:0]"], "{first} first");
+    }
+    Ok(())
+}
+
+modes!(
+    builtin_writes_through_nested_references,
+    seqq_captures_per_instance,
+    seqq_verdict_per_instance
+);
