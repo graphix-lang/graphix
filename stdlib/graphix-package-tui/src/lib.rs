@@ -1180,6 +1180,25 @@ impl Term {
     }
 }
 
+struct SuspendReceiver<'a> {
+    control: &'a TuiControl,
+    rx: Option<mpsc::UnboundedReceiver<Suspend>>,
+}
+
+impl<'a> SuspendReceiver<'a> {
+    fn take(control: &'a TuiControl) -> Result<Self> {
+        let rx =
+            control.0.suspend_rx.lock().take().context("a display is already running")?;
+        Ok(Self { control, rx: Some(rx) })
+    }
+}
+
+impl Drop for SuspendReceiver<'_> {
+    fn drop(&mut self) {
+        *self.control.0.suspend_rx.lock() = self.rx.take();
+    }
+}
+
 async fn run<X: GXExt>(
     gx: GXHandle<X>,
     env: Env,
@@ -1187,19 +1206,10 @@ async fn run<X: GXExt>(
     to_rx: mpsc::Receiver<ToTui>,
     control: &TuiControl,
 ) -> Result<()> {
-    // CR claude for claude: [risk/low] The receiver goes back into TuiControl only when
-    // display returns. If the display panics, unwinding drops suspend_rx here while
-    // suspend_tx stays in the control. Every later display in the same runtime (a REPL
-    // session) then gets a dummy receiver from mpsc::unbounded(), and every
-    // tui::suspend(true) fails with "the terminal display has ended" for the rest of
-    // the session. Fix: hold the receiver in a guard whose Drop puts it back into
-    // control.0.suspend_rx, so it survives an unwinding display. (tui-core-13)
-    let mut suspend_rx = match control.0.suspend_rx.lock().take() {
-        Some(rx) => rx,
-        None => mpsc::unbounded().1,
-    };
-    let notify = display(gx, env, root_exp, to_rx, control, &mut suspend_rx).await;
-    *control.0.suspend_rx.lock() = Some(suspend_rx);
+    let mut receiver = SuspendReceiver::take(control)?;
+    let notify =
+        display(gx, env, root_exp, to_rx, control, receiver.rx.as_mut().unwrap()).await;
+    drop(receiver);
     let _ = notify?.send(());
     Ok(())
 }

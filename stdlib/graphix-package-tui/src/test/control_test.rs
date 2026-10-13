@@ -66,3 +66,22 @@ let result = paragraph(&status)
         }
     }
 }
+
+#[tokio::test]
+async fn suspend_receiver_survives_an_unwinding_display() -> Result<()> {
+    use futures::StreamExt;
+    let control = crate::TuiControl::default();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _receiver = crate::SuspendReceiver::take(&control).unwrap();
+        assert!(crate::SuspendReceiver::take(&control).is_err());
+        panic!("display failure");
+    }));
+    let mut receiver = crate::SuspendReceiver::take(&control)?;
+    let (ack, done) = tokio::sync::oneshot::channel();
+    control.0.suspend_tx.unbounded_send(crate::Suspend { ack })?;
+    let request = receiver.rx.as_mut().unwrap().next().await.unwrap();
+    let (resume, _) = tokio::sync::oneshot::channel();
+    request.ack.send(Ok(resume)).unwrap();
+    let _ = done.await??;
+    Ok(())
+}
