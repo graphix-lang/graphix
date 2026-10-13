@@ -4,6 +4,7 @@
 use super::*;
 use crate::widgets::TableKeyAction;
 use anyhow::Result;
+use arcstr::literal;
 use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
 use std::{fmt::Write, time::Duration};
@@ -2556,5 +2557,26 @@ let result = data_table(#table: &tbl, #selection: &sel,
         h.dt_snapshot().selection == ["r91/c"]
     })
     .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn visible_grid_contains_only_drawn_columns() -> Result<()> {
+    let columns: LPooled<Vec<CompactString>> = (0..100)
+        .map(|i| {
+            format_compact!(
+                "text_column(#name: \"c{i}\", #source: &\"v{i}\", #width: &100.0)"
+            )
+        })
+        .collect();
+    let mut h = dt(&format_compact!(
+        "let tbl = {{ rows: [\"r0\", \"r1\"], columns: [{}] }}; let result = data_table(#show_row_name: &false, #table: &tbl)", columns.join(", ")
+    )).await?;
+    h.dt_mut().handle_scroll(700.0, 0.0, 200.0, 300.0);
+    let grid = h.dt().dt_visible_grid();
+    assert_eq!(grid.len(), 2);
+    for row in grid.iter() {
+        assert_eq!(row.as_slice(), [literal!("v7"), literal!("v8")]);
+    }
     Ok(())
 }

@@ -11,10 +11,12 @@ use super::{
         value_to_f64,
     },
 };
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use graphix_rt::GXExt;
 use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
+use std::collections::hash_map::Entry;
 
 impl<X: GXExt> DataTableW<X> {
     /// The rows drawn: from `first_row`, as many as reach into the body,
@@ -286,17 +288,20 @@ impl<X: GXExt> DataTableW<X> {
         let mut fits: LPooled<Vec<(ArcStr, f32)>> = LPooled::take();
         {
             let mut inner = self.cells.inner.lock();
+            let mut widths: LPooled<AHashMap<ArcStr, f32>> = LPooled::take();
             let mut widest = |label: &str, col: &ArcStr| {
-                let mut w = col_header_width(label).max(MIN_COL_WIDTH);
-                for rp in self.row_paths.iter() {
-                    let text = if col == &ROW_NAME_KEY {
+                let texts = self.row_paths.iter().map(|rp| {
+                    if col == &ROW_NAME_KEY {
                         ArcStr::from(row_basename(rp))
                     } else {
                         self.cell_text(&mut inner, rp, col)
-                    };
-                    w = w.max(col_text_width(&text));
-                }
-                w
+                    }
+                });
+                col_header_width(label).max(MIN_COL_WIDTH).max(widest_text(
+                    &mut widths,
+                    texts,
+                    col_text_width,
+                ))
             };
             if self.show_row_name() {
                 fits.push((ROW_NAME_KEY, widest(ROW_NAME_HEADER_LABEL, &ROW_NAME_KEY)));
@@ -345,5 +350,45 @@ impl<X: GXExt> DataTableW<X> {
             )
         });
         if tall { ROW_HEIGHT_CONTROLS } else { ROW_HEIGHT_ESTIMATE }
+    }
+}
+
+fn widest_text(
+    widths: &mut AHashMap<ArcStr, f32>,
+    texts: impl Iterator<Item = ArcStr>,
+    mut measure: impl FnMut(&str) -> f32,
+) -> f32 {
+    texts.fold(0.0, |width, text| {
+        let entry = widths.entry(text);
+        let measured = match entry {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let width = measure(entry.key());
+                *entry.insert(width)
+            }
+        };
+        width.max(measured)
+    })
+}
+
+#[cfg(test)]
+mod auto_fit_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn auto_fit_measures_each_distinct_text_once() {
+        let calls = Cell::new(0);
+        let measure = |text: &str| {
+            calls.set(calls.get() + 1);
+            text.len() as f32
+        };
+        let texts = [arcstr::literal!("short"), arcstr::literal!("widest text")];
+        let mut widths: LPooled<AHashMap<ArcStr, f32>> = LPooled::take();
+        for _ in 0..3 {
+            let rows = texts.iter().cycle().take(30_000).cloned();
+            assert_eq!(widest_text(&mut widths, rows, measure), 11.0);
+        }
+        assert_eq!(calls.get(), 2);
     }
 }

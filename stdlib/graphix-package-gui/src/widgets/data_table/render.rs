@@ -158,6 +158,37 @@ impl<X: GXExt> DataTableW<X> {
             .collect()
     }
 
+    pub(super) fn visible_grid(&self) -> LPooled<Vec<LPooled<Vec<ArcStr>>>> {
+        let (vis_row_start, vis_row_end) = self.display_row_range();
+        let (vis_col_start, vis_col_end) = self.display_col_range();
+        {
+            let mut inner = self.cells.inner.lock();
+            (vis_row_start..vis_row_end)
+                .map(|i| match self.row_paths.get(i) {
+                    None => LPooled::take(),
+                    Some(row_path) => match self.mode {
+                        DisplayMode::Table => self
+                            .columns
+                            .get_range(vis_col_start..vis_col_end)
+                            .unwrap()
+                            .iter()
+                            .map(|(cn, _)| self.cell_text(&mut inner, row_path, cn))
+                            .collect(),
+                        DisplayMode::Value => {
+                            let mut res: LPooled<Vec<ArcStr>> = LPooled::take();
+                            res.push(self.cell_text(
+                                &mut inner,
+                                row_path,
+                                &VALUE_COL_KEY,
+                            ));
+                            res
+                        }
+                    },
+                })
+                .collect()
+        }
+    }
+
     pub(super) fn render_with_size(&self, size: iced_core::Size) -> IcedElement<'_> {
         {
             let mut next = ViewportMetrics::new(size, self.row_height());
@@ -175,7 +206,7 @@ impl<X: GXExt> DataTableW<X> {
         };
         let (vis_row_start, vis_row_end) = self.display_row_range();
         let (vis_col_start, vis_col_end) = self.display_col_range();
-        // CR claude for claude: [perf/medium] The snapshot covers every column for each
+        // XCR claude for claude: [perf/medium] The snapshot covers every column for each
         // visible row, but only vis_col_start..vis_col_end is read. Each hidden cell
         // costs a key clone and a hash lookup on every frame, and a cell with no live
         // value also re-runs default_for, which allocates a new ArcStr for any
@@ -186,30 +217,11 @@ impl<X: GXExt> DataTableW<X> {
         // measure_text's 8192-entry cache, and a table of tens of thousands of rows
         // freezes the UI. Bound it, for example by measuring each distinct text once.
         // (gui-datatable-09)
-        let grid_snapshot: LPooled<Vec<LPooled<Vec<ArcStr>>>> = {
-            let mut inner = self.cells.inner.lock();
-            (vis_row_start..vis_row_end)
-                .map(|i| match self.row_paths.get(i) {
-                    None => LPooled::take(),
-                    Some(row_path) => match self.mode {
-                        DisplayMode::Table => self
-                            .columns
-                            .iter()
-                            .map(|(cn, _)| self.cell_text(&mut inner, row_path, cn))
-                            .collect(),
-                        DisplayMode::Value => {
-                            let mut res: LPooled<Vec<ArcStr>> = LPooled::take();
-                            res.push(self.cell_text(
-                                &mut inner,
-                                row_path,
-                                &VALUE_COL_KEY,
-                            ));
-                            res
-                        }
-                    },
-                })
-                .collect()
-        };
+        // 2026-10-13 codex: auto_fit_measures_each_distinct_text_once rejects 90,000 measurements of two texts and passes with two.
+        // visible_grid_contains_only_drawn_columns pins a horizontally scrolled
+        // snapshot but needs resolver sockets. Width and render indices are relative
+        // to the visible slice; live rendering remains unverified here.
+        let grid_snapshot = self.visible_grid();
         let name_col_offset = if show_row_name { 1 } else { 0 };
         let sort_indicators: LPooled<AHashMap<ArcStr, CompactString>> =
             self.build_sort_indicators();
@@ -251,8 +263,8 @@ impl<X: GXExt> DataTableW<X> {
                             let mut w =
                                 col_header_width(&header).max(MIN_COL_WIDTH).min(max_w);
                             for row in &*grid_snapshot {
-                                if i < row.len() {
-                                    w = w.max(col_min_width(&row[i], max_w));
+                                if let Some(text) = row.get(i - vis_col_start) {
+                                    w = w.max(col_min_width(text, max_w));
                                 }
                             }
                             w
@@ -403,13 +415,11 @@ impl<X: GXExt> DataTableW<X> {
                     self.wrap_cell(inner, col_name, row_idx, *w, row_h, is_sel)
                 } else {
                     let data_col = vis_col_start + ci - name_col_offset;
-                    let text: ArcStr = if vi < grid_snapshot.len()
-                        && data_col < grid_snapshot[vi].len()
-                    {
-                        grid_snapshot[vi][data_col].clone()
-                    } else {
-                        ArcStr::new()
-                    };
+                    let text = grid_snapshot
+                        .get(vi)
+                        .and_then(|row| row.get(data_col - vis_col_start))
+                        .cloned()
+                        .unwrap_or_default();
                     let col_type = if self.mode == DisplayMode::Table {
                         match self.columns.get_index(data_col) {
                             Some((name, _)) => self.col_type_for(name),

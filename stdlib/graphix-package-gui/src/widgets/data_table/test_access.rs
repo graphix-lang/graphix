@@ -11,6 +11,10 @@ use poolshark::local::LPooled;
 use std::time::Instant;
 
 impl<X: GXExt> DataTableW<X> {
+    pub fn dt_visible_grid(&self) -> LPooled<Vec<LPooled<Vec<ArcStr>>>> {
+        self.visible_grid()
+    }
+
     /// The width set by the column's `width` ref, if any.
     pub fn dt_ref_width(&self, col: &str) -> Option<f32> {
         self.columns.get(col).and_then(|c| c.ref_width)
