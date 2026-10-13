@@ -384,35 +384,45 @@ impl<X: GXExt> GX<X> {
 
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
-    // CR claude for claude: [perf/low] Every cycle this walks all of self.nodes and
-    // does an rt.updated lookup per root, even when only a few roots are scheduled or
-    // none are. Each embedder Ref (one per widget property, through compile_field) and
-    // each Callable is a root, so a large GUI pays O(widgets) on every cycle, including
-    // a timer's cycles that wake one root. Iterate the scheduled set instead: map
-    // updated's keys to self.nodes.get_index_of into a pooled Vec, sort it to keep root
-    // order, and update those indices. Return at once when updated is empty. (rt-09)
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
-        for (id, n) in self.nodes.iter_mut() {
-            if let Some(init) = self.ctx.rt.updated.get(id) {
-                self.ctx.event.view = if *init { View::Birth } else { View::Cycle };
-                // Only a FIRED production becomes an event.
-                let tv = n.update(&mut self.ctx.view());
-                if tv.is_fired() {
-                    let v = tv.value_cloned();
-                    let watched = matches!(
-                        self.result_watch.as_ref(),
-                        Some((wid, _)) if wid == id
-                    );
-                    if watched {
-                        if let Some((_, tx)) = self.result_watch.take() {
-                            let _ = tx.send(Some(v.clone()));
-                        }
+        // the scheduled roots past `after`, the next last; a root's update
+        // may schedule a later one this cycle (`Rt::notify_set`)
+        let scheduled = |gx: &Self, after: Option<usize>| {
+            let mut due: LPooled<Vec<(usize, bool)>> = gx
+                .ctx
+                .rt
+                .updated
+                .iter()
+                .filter_map(|(id, init)| Some((gx.nodes.get_index_of(id)?, *init)))
+                .filter(|(i, _)| after.is_none_or(|a| *i > a))
+                .collect();
+            due.sort_unstable_by(|a, b| b.cmp(a));
+            due
+        };
+        let mut due = scheduled(self, None);
+        let mut known = self.ctx.rt.updated.len();
+        while let Some((i, init)) = due.pop() {
+            let (id, n) = self.nodes.get_index_mut(i).expect("scheduled root");
+            self.ctx.event.view = if init { View::Birth } else { View::Cycle };
+            // Only a FIRED production becomes an event.
+            let tv = n.update(&mut self.ctx.view());
+            if tv.is_fired() {
+                let v = tv.value_cloned();
+                let watched =
+                    matches!(self.result_watch.as_ref(), Some((wid, _)) if wid == id);
+                if watched {
+                    if let Some((_, tx)) = self.result_watch.take() {
+                        let _ = tx.send(Some(v.clone()));
                     }
-                    if let Some(tr) = self.trace.as_mut() {
-                        tr.record(self.ctx.rt.cycle, *id, &v);
-                    }
-                    batch.push(GXEvent::Updated(*id, v))
                 }
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.record(self.ctx.rt.cycle, *id, &v);
+                }
+                batch.push(GXEvent::Updated(*id, v))
+            }
+            if self.ctx.rt.updated.len() != known {
+                known = self.ctx.rt.updated.len();
+                due = scheduled(self, Some(i));
             }
         }
     }
