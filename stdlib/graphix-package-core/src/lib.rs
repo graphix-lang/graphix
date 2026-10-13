@@ -773,12 +773,9 @@ pub trait Elements: Debug + Send + Sync + 'static {
     fn next(c: &mut Self::Cursor) -> Option<Value>;
 }
 
-/// `iter`: every element of each collection that fires, in one cycle.
+/// `iter`: each element of every collection that fires, one per cycle,
+/// in order.
 #[derive(Debug)]
-// CR claude for claude: [doc-drift/low] The doc above says the elements come 'in one
-// cycle'. They come one per cycle: each `set_var` to `self.id` queues behind the last,
-// and `array::iter([1, 2, 3])` fires 1, 2, 3 over three cycles. Reword it to 'each
-// element of every collection that fires, one per cycle, in order'. (core-lib-08)
 pub struct Iter<C> {
     id: BindId,
     top_id: ExprId,
@@ -1915,14 +1912,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
         Ok(Box::new(FilterErr::default()))
     }
 
-    // CR claude for claude: [risk/low] `filter_err` keeps its last error and rides it
-    // over later non-error fires and bottoms. Its output depends on what arrived
-    // before, not only on the current argument, the same as `core_filter`, which is
-    // `Sync`. Declaring it `Stateless` gives every lambda that calls it PURE facts
-    // (`analysis::def_body_facts`). An arm holding it then skips sleep, and any future
-    // use of PURE facts to recompute or share calls would treat the held error as
-    // derivable from the current argument. Declare `Effect::Sync`. (core-lib-05)
-    const EFFECT: Effect = Effect::Stateless(None);
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_filter_err";
 
     fn init<'a, 'b, 'c, 'd>(
