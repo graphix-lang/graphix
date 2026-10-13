@@ -1,30 +1,34 @@
 use super::GuiTestHarness;
-use crate::widgets::canvas::{CanvasShape, PathSegment};
+use crate::widgets::canvas::{CanvasShape, CanvasW, PathSegment};
 use anyhow::Result;
 use arcstr::ArcStr;
+use compact_str::format_compact;
+use graphix_rt::NoExt;
 use netidx::publisher::{FromValue, Value};
 
-// CR claude for claude: [test-gap/medium] The render tests only check that `render()`
-// returns. `CanvasW::draw` draws only when `p.shapes.t` holds a value. Every shape
-// builds its colour with `color(...)$`, so a colour that turns into an error makes the
-// shapes array bottom, and the canvas draws nothing. line_renders,
-// path_and_curves_render and the rest still pass. Have the harness assert that the
-// shapes decoded, with the expected count, through a test accessor or by downcasting as
-// the data table tests do, before it renders. (tests-gui-a-05)
-async fn canvas_harness(shapes_expr: &str) -> Result<GuiTestHarness> {
-    let code = format!(
-        "use gui::*;\nuse gui::canvas::{{self, *}};\n\
+async fn canvas_harness(
+    expected_count: usize,
+    shapes_expr: &str,
+) -> Result<GuiTestHarness> {
+    let code = format_compact!(
+        "use gui::{{color, canvas::canvas}};\n\
          let result = canvas(#width: &`Fill, #height: &`Fixed(200.0), &[{shapes_expr}])"
     );
-    GuiTestHarness::new(&code).await
+    let h = GuiTestHarness::new(&code).await?;
+    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().expect("a canvas");
+    assert_eq!(canvas.shape_count(), Some(expected_count));
+    Ok(h)
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn line_renders() -> Result<()> {
-    let h = canvas_harness(concat!(
-        "`Line({from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 50.0}, ",
-        "color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.5})",
-    ))
+    let h = canvas_harness(
+        1,
+        concat!(
+            "`Line({from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 50.0}, ",
+            "color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.5})",
+        ),
+    )
     .await?;
     h.render().await?;
     Ok(())
@@ -32,10 +36,13 @@ async fn line_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_fill_only() -> Result<()> {
-    let h = canvas_harness(concat!(
-        "`Circle({center: {x: 10.0, y: 20.0}, radius: 25.0, ",
-        "fill: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, stroke: null})",
-    ))
+    let h = canvas_harness(
+        1,
+        concat!(
+            "`Circle({center: {x: 10.0, y: 20.0}, radius: 25.0, ",
+            "fill: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, stroke: null})",
+        ),
+    )
     .await?;
     h.render().await?;
     Ok(())
@@ -43,7 +50,7 @@ async fn circle_with_fill_only() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_stroke_only() -> Result<()> {
-    let h = canvas_harness(concat!(
+    let h = canvas_harness(1, concat!(
         "`Circle({center: {x: 0.0, y: 0.0}, radius: 10.0, ",
         "fill: null, stroke: {color: color(#r: 0.0, #g: 0.0, #b: 1.0, #a: 1.0)$, width: 3.0}})",
     ))
@@ -54,11 +61,14 @@ async fn circle_with_stroke_only() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_both() -> Result<()> {
-    let h = canvas_harness(concat!(
-        "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, ",
-        "fill: color(#r: 1.0, #g: 1.0, #b: 1.0, #a: 1.0)$, ",
-        "stroke: {color: color(#r: 0.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 1.0}})",
-    ))
+    let h = canvas_harness(
+        1,
+        concat!(
+            "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, ",
+            "fill: color(#r: 1.0, #g: 1.0, #b: 1.0, #a: 1.0)$, ",
+            "stroke: {color: color(#r: 0.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 1.0}})",
+        ),
+    )
     .await?;
     h.render().await?;
     Ok(())
@@ -67,6 +77,7 @@ async fn circle_with_both() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_neither() -> Result<()> {
     let h = canvas_harness(
+        1,
         "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, fill: null, stroke: null})",
     )
     .await?;
@@ -76,11 +87,14 @@ async fn circle_with_neither() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rect_with_fill() -> Result<()> {
-    let h = canvas_harness(concat!(
-        "`Rect({top_left: {x: 10.0, y: 20.0}, ",
-        "size: {width: 40.0, height: 30.0}, ",
-        "fill: color(#r: 0.5, #g: 0.5, #b: 0.5, #a: 1.0)$, stroke: null})",
-    ))
+    let h = canvas_harness(
+        1,
+        concat!(
+            "`Rect({top_left: {x: 10.0, y: 20.0}, ",
+            "size: {width: 40.0, height: 30.0}, ",
+            "fill: color(#r: 0.5, #g: 0.5, #b: 0.5, #a: 1.0)$, stroke: null})",
+        ),
+    )
     .await?;
     h.render().await?;
     Ok(())
@@ -88,7 +102,7 @@ async fn rect_with_fill() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rect_with_stroke() -> Result<()> {
-    let h = canvas_harness(concat!(
+    let h = canvas_harness(1, concat!(
         "`Rect({top_left: {x: 0.0, y: 0.0}, ",
         "size: {width: 10.0, height: 10.0}, ",
         "fill: null, stroke: {color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.0}})",
@@ -100,10 +114,13 @@ async fn rect_with_stroke() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_renders() -> Result<()> {
-    let h = canvas_harness(concat!(
-        r#"`Text({content: "hello", position: {x: 5.0, y: 10.0}, "#,
-        "color: color(#r: 0.0, #g: 0.0, #b: 0.0, #a: 1.0)$, size: 16.0})",
-    ))
+    let h = canvas_harness(
+        1,
+        concat!(
+            r#"`Text({content: "hello", position: {x: 5.0, y: 10.0}, "#,
+            "color: color(#r: 0.0, #g: 0.0, #b: 0.0, #a: 1.0)$, size: 16.0})",
+        ),
+    )
     .await?;
     h.render().await?;
     Ok(())
@@ -124,7 +141,7 @@ fn malformed_line_errors() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn path_and_curves_render() -> Result<()> {
-    let h = canvas_harness(concat!(
+    let h = canvas_harness(6, concat!(
         "`Path({segments: [`MoveTo({x: 0.0, y: 0.0}), `LineTo({x: 10.0, y: 0.0}), ",
         "`BezierTo({control_a: {x: 1.0, y: 2.0}, control_b: {x: 3.0, y: 4.0}, to: {x: 5.0, y: 6.0}}), ",
         "`QuadraticTo({control: {x: 1.0, y: 1.0}, to: {x: 2.0, y: 2.0}}), ",

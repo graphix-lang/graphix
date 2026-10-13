@@ -129,6 +129,11 @@ pub(crate) struct CanvasW<X: GXExt> {
 }
 
 impl<X: GXExt> CanvasW<X> {
+    #[cfg(test)]
+    pub(crate) fn shape_count(&self) -> Option<usize> {
+        self.p.shapes.t.as_ref().map(|shapes| shapes.0.len())
+    }
+
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let p = Props::compile(&gx, &source).await.context("canvas")?;
         Ok(Box::new(Self { p, cache: iced_canvas::Cache::new() }))
@@ -136,6 +141,11 @@ impl<X: GXExt> CanvasW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for CanvasW<X> {
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn handle_update(
         &mut self,
         _rt: &tokio::runtime::Handle,
