@@ -588,21 +588,6 @@ impl FromValue for ShortcutV {
         if logo {
             modifiers |= iced_core::keyboard::Modifiers::LOGO;
         }
-        // CR claude for claude: [bug/low] menu::shortcut claims any character works,
-        // but matching ignores modifiers, so shifted and AltGr characters never fire.
-        // ShortcutV stores `Key::Character(key.to_lowercase())`. menu_bar_widget.rs
-        // compares it with the event's `key`, which convert.rs builds from winit's
-        // `key_without_modifiers()`. A character that needs a modifier to type
-        // therefore never equals the unmodified key, and that includes '?', '!', and
-        // '€' (AltGr+E on many layouts). menu.md nonetheless says 'any one character,
-        // `é` or `€` included'. Failure: `menu::shortcut(#ctrl: true, "€")` on a German
-        // layout, or `menu::shortcut(#ctrl: true, #shift: true, "?")` on US: the label
-        // shows Ctrl+€ / Ctrl+Shift+?, but pressing those keys never triggers the
-        // action. Fix: Match on the event's `modified_key` (which has every modifier
-        // except Ctrl applied) when the shortcut's character differs from its
-        // unmodified form, or document that the key is the unmodified key on the user's
-        // layout. Unverified: the reviewer's report, not checked by a verifier.
-        // (book-ui-a-18)
         let iced_key = iced_core::keyboard::Key::Character(key.to_lowercase().into());
         Ok(Self { display, key: iced_key, modifiers })
     }

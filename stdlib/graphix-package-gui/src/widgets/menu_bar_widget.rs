@@ -25,10 +25,11 @@ pub(crate) struct MenuGroupDesc<'a> {
     pub items: Vec<MenuItemDesc<'a>>,
 }
 
-/// The enabled action whose shortcut `key` and `modifiers` press.
+/// The enabled action matching either character form and the exact modifiers.
 pub(crate) fn shortcut_action<'a>(
     items: impl IntoIterator<Item = &'a MenuItemDesc<'a>>,
     key: &keyboard::Key,
+    modified_key: &keyboard::Key,
     modifiers: keyboard::Modifiers,
 ) -> Option<CallableId> {
     items.into_iter().find_map(|item| match item {
@@ -37,7 +38,17 @@ pub(crate) fn shortcut_action<'a>(
             callable_id: Some(id),
             disabled: false,
             ..
-        } if *key == sc.key && modifiers == sc.modifiers => Some(*id),
+        } if modifiers == sc.modifiers
+            && [key, modified_key].into_iter().any(|key| match (key, &sc.key) {
+                (
+                    keyboard::Key::Character(actual),
+                    keyboard::Key::Character(expected),
+                ) => actual.chars().flat_map(char::to_lowercase).eq(expected.chars()),
+                _ => false,
+            }) =>
+        {
+            Some(*id)
+        }
         _ => None,
     })
 }
@@ -283,8 +294,15 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_, '_> {
         shell: &mut Shell<'_, Message>,
     ) {
         match event {
-            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if let Some(id) = shortcut_action(self.items, key, *modifiers) {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modified_key,
+                modifiers,
+                ..
+            }) => {
+                if let Some(id) =
+                    shortcut_action(self.items, key, modified_key, *modifiers)
+                {
                     *self.open = false;
                     shell.publish(call(id));
                     shell.capture_event();
@@ -523,9 +541,14 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                     shell.capture_event();
                 }
             }
-            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modified_key,
+                modifiers,
+                ..
+            }) => {
                 let items = self.descs.iter().flat_map(|m| m.items.iter());
-                if let Some(id) = shortcut_action(items, key, *modifiers) {
+                if let Some(id) = shortcut_action(items, key, modified_key, *modifiers) {
                     state.open_menu = None;
                     state.menu_visible = false;
                     shell.publish(call(id));

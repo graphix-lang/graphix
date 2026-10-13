@@ -997,3 +997,51 @@ async fn text_input_keeps_focus_across_resize() -> Result<()> {
     assert_eq!(h.get_watched("test::value"), Some(&Value::from("ab")));
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn menu_shortcuts_match_modified_characters() -> Result<()> {
+    use iced_core::keyboard::{Event as KeyEvent, Key, Modifiers};
+
+    for context in [false, true] {
+        for (shortcut, base, modified, shift) in
+            [("?", "/", "?", true), ("€", "e", "€", false), ("n", "n", "N", true)]
+        {
+            let widget = if context {
+                r#"menu::context_menu(&[action], &text(&"target"))"#
+            } else {
+                r#"menu::bar(&[menu::menu(&"File", &[action])])"#
+            };
+            let code = format_compact!(
+                r#"
+                use gui::{{menu, text::text}};
+                let calls = 0;
+                let action = menu::action(
+                    #shortcut: &menu::shortcut(#ctrl: true, #shift: {shift}, "{shortcut}")$,
+                    #on_click: |t| calls <- t ~ calls + 1,
+                    &"Action");
+                let result = {widget}
+            "#
+            );
+            let mut h =
+                InteractionHarness::with_viewport(&code, Size::new(400.0, 200.0)).await?;
+            assert_eq!(h.watch("test::calls").await?, Value::I64(0));
+            if context {
+                right_click(&mut h, WIDGET_HIT);
+            }
+            let mut event = char_key(base);
+            let Event::Keyboard(KeyEvent::KeyPressed { modified_key, modifiers, .. }) =
+                &mut event
+            else {
+                unreachable!()
+            };
+            *modified_key = Key::Character(modified.into());
+            *modifiers = Modifiers::CTRL
+                | if shift { Modifiers::SHIFT } else { Modifiers::empty() };
+            let msgs = h.process_events(&[event]);
+            expect_call(&msgs);
+            h.dispatch_calls(&msgs).await?;
+            assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(1)));
+        }
+    }
+    Ok(())
+}

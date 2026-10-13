@@ -10,7 +10,7 @@ The `menu` module provides menu bars and context menus. Both are built from the 
 
 ## `menu::shortcut`
 
-Creates a keyboard shortcut from modifier flags and a single character key; any one character, `é` or `€` included.
+Creates a keyboard shortcut from modifier flags and a single character key; any one character, `é` or `€` included. Matching accepts the unmodified key or the character produced by Shift or AltGr, ignoring letter case. The modifier flags must still match: for example, use `#ctrl: true, #shift: true` with `"?"` for Ctrl+Shift+? on a US layout.
 
 - **`#ctrl`** -- Hold Ctrl. Defaults to `false`.
 - **`#shift`** -- Hold Shift. Defaults to `false`.
