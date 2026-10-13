@@ -227,23 +227,16 @@ impl Label {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-// CR claude for claude: [test-gap/low] GenType has no decimal, bytes, duration or
-// datetime, and Map is always `Map<string, V>`. Generated programs therefore never pass
-// a decimal through the kernel ABI's opaque two-word path, never hit datetime/duration
-// arithmetic rules, and never key a map by an i64, tuple or variant, where ordering and
-// hashing go through the core Eq/Ord hooks. Fix: add GenType variants for decimal,
-// bytes and duration, each with a literal pool and a few builtins. Give Map a key type
-// drawn from the Ordered scalars and small tuples, rendered `Map<K, V>`. Draw them at a
-// low rate so the generator still compiles 100%. (fuzz-gen-b-05)
-// 2026-10-12 claude: Done: decimal is a NumTy (fuzz-gen-a-05) and Map carries a key type
-// (string, i64, (i64, string)). Left: duration, datetime and bytes. Their arithmetic is
-// sys::time::{add, sub, add_dur, diff, scale}, and oracle_tier excludes every program
-// that names sys::time, so those leaves need the pure time functions told apart from
-// timer/now first.
 pub enum GenType {
     Num(NumTy),
     Bool,
     Str,
+    /// A `duration`: its arithmetic is `sys::time`'s pure functions.
+    Dur,
+    /// A `datetime`, moved by a duration (`sys::time::add`, `sub`).
+    Time,
+    /// `bytes`, made by the `buffer` functions.
+    Bytes,
     Tuple(Vec<GenType>),
     Array(Box<GenType>),
     /// The native List: produced as `[<..>]` literals / `list::from_array`
@@ -300,6 +293,9 @@ impl GenType {
             GenType::Num(n) => n.render().into(),
             GenType::Bool => "bool".into(),
             GenType::Str => "string".into(),
+            GenType::Dur => "duration".into(),
+            GenType::Time => "datetime".into(),
+            GenType::Bytes => "bytes".into(),
             GenType::Tuple(elems) => {
                 let parts: Vec<_> = elems.iter().map(|e| e.render()).collect();
                 format!("({})", parts.join(", "))
@@ -372,6 +368,9 @@ impl GenType {
             GenType::Num(_)
             | GenType::Bool
             | GenType::Str
+            | GenType::Dur
+            | GenType::Time
+            | GenType::Bytes
             | GenType::Fn { .. }
             | GenType::Abstract { .. } => false,
         }
@@ -381,9 +380,13 @@ impl GenType {
     /// no function and no reference (a reference prints its session id).
     pub(super) fn printable(&self) -> bool {
         match self {
-            GenType::Num(_) | GenType::Bool | GenType::Str | GenType::Abstract { .. } => {
-                true
-            }
+            GenType::Num(_)
+            | GenType::Bool
+            | GenType::Str
+            | GenType::Dur
+            | GenType::Time
+            | GenType::Bytes
+            | GenType::Abstract { .. } => true,
             GenType::Tuple(es) => es.iter().all(|e| e.printable()),
             GenType::Struct(fs) => fs.iter().all(|(_, t)| t.printable()),
             GenType::Variant(ts) => {
@@ -406,9 +409,13 @@ impl GenType {
     /// impls, whose signature must match the inferred type exactly.
     pub(super) fn infers_exact(&self) -> bool {
         match self {
-            GenType::Num(_) | GenType::Bool | GenType::Str | GenType::Abstract { .. } => {
-                true
-            }
+            GenType::Num(_)
+            | GenType::Bool
+            | GenType::Str
+            | GenType::Dur
+            | GenType::Time
+            | GenType::Bytes
+            | GenType::Abstract { .. } => true,
             GenType::Variant(_)
             | GenType::Nullable(_)
             | GenType::Ref { .. }
@@ -541,7 +548,8 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);
     }
-    match rng.below(12) {
+    match rng.below(13) {
+        12 => rng.pick(&[GenType::Dur, GenType::Time, GenType::Bytes]).clone(),
         0 | 1 => I64,
         2 => F64,
         3 => U8,
@@ -565,6 +573,19 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
 pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
     match ty {
         GenType::Num(n) => n.literal(rng),
+        GenType::Dur => {
+            let d = ["0.s", "1.s", "250.ms", "1.5s", "3.us", "2.h"];
+            format!("duration:{}", rng.pick(&d))
+        }
+        GenType::Time => {
+            let t = [
+                "2020-01-01T00:00:00Z",
+                "1999-12-31T23:59:59.5Z",
+                "2024-02-29T12:00:00Z",
+            ];
+            format!("datetime:\"{}\"", rng.pick(&t))
+        }
+        GenType::Bytes => format!("bytes:{}", rng.pick(&["aGVsbG8=", "AA==", "/+8="])),
         GenType::Bool => {
             if rng.below(2) == 0 {
                 "true".into()

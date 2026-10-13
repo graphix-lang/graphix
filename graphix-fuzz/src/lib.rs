@@ -1021,7 +1021,11 @@ fn without_strings(code: &str) -> String {
 /// Excluded list is empirical; selfcheck polices it — a marker missing
 /// from it shows up as a final-strength flake.
 pub fn oracle_tier(code: &str) -> OracleTier {
-    let code = code_only(code);
+    let mut code = code_only(code);
+    // the pure time arithmetic reads no clock
+    for f in ["add_dur", "sub_dur", "add", "sub", "diff", "scale"] {
+        code = code.replace(&format!("sys::time::{f}("), "pure_time(");
+    }
     let code = code.as_str();
     // Value-nondeterministic sources: random values, wall-clock time
     // (`throttle` reads it outside sys::), a create-new open racing the
@@ -6505,6 +6509,8 @@ mod trace_probes {
         assert_eq!(oracle_tier(read), OracleTier::FinalValues);
         let err = "{ let e = error(`X); sys::fs::read_all(\"/x\") }";
         assert_eq!(oracle_tier(err), OracleTier::FinalValues);
+        let pure = "sys::time::add(datetime:\"2020-01-01T00:00:00Z\", duration:1.s)";
+        assert_eq!(oracle_tier(pure), OracleTier::Exact);
         let summed = "{ let t = m0::tsum(i64:1); sys::fs::read_all(\"/x\") }";
         assert_eq!(oracle_tier(summed), OracleTier::FinalValues);
         let counted = "{ let c = count(i64:1); sys::fs::read_all(\"/x\") }";

@@ -48,7 +48,12 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
             params.iter_mut().for_each(|t| map_abstract(t, f));
             map_abstract(ret, f)
         }
-        GenType::Num(_) | GenType::Bool | GenType::Str => (),
+        GenType::Num(_)
+        | GenType::Bool
+        | GenType::Str
+        | GenType::Dur
+        | GenType::Time
+        | GenType::Bytes => (),
     }
 }
 

@@ -171,6 +171,9 @@ fn try_accessor(
             | GenType::Str
             | GenType::Variant(_)
             | GenType::Fn { .. }
+            | GenType::Dur
+            | GenType::Time
+            | GenType::Bytes
             | GenType::Abstract { .. } => {}
         }
     }
@@ -573,6 +576,56 @@ pub(super) fn gen_typed(
             }
             _ => format!("(!{})", gen_typed(ctx, rng, &GenType::Bool, d)),
         },
+        // the pure time arithmetic, its failures consumed
+        GenType::Dur => match rng.below(4) {
+            0 => {
+                let (a, b) = (gen_typed(ctx, rng, ty, d), gen_typed(ctx, rng, ty, d));
+                consume_fallible(
+                    ctx,
+                    rng,
+                    &format!("sys::time::add_dur({a}, {b})"),
+                    ty,
+                    "error",
+                    d,
+                )
+            }
+            1 => {
+                let a = gen_typed(ctx, rng, ty, d);
+                let by = gen_typed(ctx, rng, &types::F64, d);
+                consume_fallible(
+                    ctx,
+                    rng,
+                    &format!("sys::time::scale({a}, {by})"),
+                    ty,
+                    "error",
+                    d,
+                )
+            }
+            2 => {
+                let (a, b) = (gen_typed(ctx, rng, ty, d), gen_typed(ctx, rng, ty, d));
+                format!("sys::time::sub_dur({a}, {b})")
+            }
+            _ => types::literal(rng, ty),
+        },
+        GenType::Time => match rng.below(3) {
+            0 => {
+                let (t, u) =
+                    (gen_typed(ctx, rng, ty, d), gen_typed(ctx, rng, &GenType::Dur, d));
+                let f = rng.pick(&["add", "sub"]);
+                format!("sys::time::{f}({t}, {u})")
+            }
+            _ => types::literal(rng, ty),
+        },
+        GenType::Bytes => match rng.below(3) {
+            0 => {
+                format!("buffer::from_string({})", gen_typed(ctx, rng, &GenType::Str, d))
+            }
+            1 => {
+                let (a, b) = (gen_typed(ctx, rng, ty, d), gen_typed(ctx, rng, ty, d));
+                format!("buffer::concat({a}, {b})")
+            }
+            _ => types::literal(rng, ty),
+        },
         GenType::Str => match rng.below(3) {
             // computed interpolation: 1-2 [expr] parts, occasionally
             // composite, occasionally inside escaped literal brackets
@@ -836,6 +889,7 @@ fn try_format_round_trip(
     fn data(ty: &GenType) -> bool {
         match ty {
             GenType::Num(_) | GenType::Bool | GenType::Str => true,
+            GenType::Dur | GenType::Time | GenType::Bytes => false,
             GenType::Tuple(ts) => ts.iter().all(data),
             GenType::Array(t) | GenType::Nullable(t) => data(t),
             // json and toml keys are strings
