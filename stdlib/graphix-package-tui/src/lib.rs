@@ -39,7 +39,10 @@ use layout::LayoutW;
 use line_gauge::LineGaugeW;
 use list::ListW;
 use log::error;
-use netidx::publisher::{FromValue, Value};
+use netidx::{
+    protocol::valarray::ValArray,
+    publisher::{FromValue, Value},
+};
 use netidx_core::pack::PackError;
 use netidx_derive::{FromValue, IntoValue};
 use paragraph::ParagraphW;
@@ -474,7 +477,7 @@ impl TuiWidget for EmptyW {
 }
 
 /// A widget the struct field `name` refers to, rebuilt when the
-/// reference fires.
+/// reference changes.
 struct ChildW<X: GXExt> {
     r: graphix_rt::Ref<X>,
     w: TuiW,
@@ -482,8 +485,8 @@ struct ChildW<X: GXExt> {
 
 impl<X: GXExt> ChildW<X> {
     async fn compile(gx: &GXHandle<X>, v: &Value, name: &str) -> Result<Self> {
-        let mut r = gx.compile_field(v, name).await?;
-        let w = match r.last.take() {
+        let r = gx.compile_field(v, name).await?;
+        let w = match r.last.clone() {
             Some(v) => compile(gx.clone(), v).await.context("child")?,
             None => Box::new(EmptyW),
         };
@@ -491,23 +494,11 @@ impl<X: GXExt> ChildW<X> {
     }
 
     async fn update(&mut self, gx: &GXHandle<X>, id: ExprId, v: Value) -> Result<()> {
-        // CR claude for claude: [bug/high] The child is recompiled on every fire of its
-        // ref, even when the value equals the one it was built from, and
-        // Screen::update, LayoutW::set_children and OverlayW::set_layers do the same
-        // for the root, each slot and each layer. A select re-emits its arm's value on
-        // every scrutinee fire, so an unchanged widget arrives all the time. Each
-        // rebuild discards list/table scroll state, the input handler's queued events
-        // and every SizeReport's `last`. The fresh SizeReport then writes `#size`
-        // again, so a view that selects on its own size (`select sz { .. =>
-        // block(#size: &sz, ..) }`) rebuilds in a loop at full CPU and never settles.
-        // With a fixed 40x5 terminal it made 5000 size reports in 1.7 s (probe:
-        // design/review-2026-10-12/repro/tui-core-01.gx). Fix: keep the source Value
-        // next to each compiled widget (here, in Screen, and per Slot/LayerW) and skip
-        // the recompile when the new value is equal, the same rule as
-        // GXHandle::update_callable. For the arrays, reuse each slot whose element is
-        // unchanged and compile only the ones that differ. (tui-core-01)
         if id == self.r.id {
-            self.w = compile(gx.clone(), v).await.context("child")?;
+            if self.r.last.as_ref() != Some(&v) {
+                self.w = compile(gx.clone(), v.clone()).await.context("child")?;
+                self.r.last = Some(v);
+            }
             Ok(())
         } else {
             self.w.handle_update(id, v).await
@@ -522,6 +513,26 @@ async fn compile_each<T, F: Future<Output = Result<T>>>(
 ) -> Result<Vec<T>> {
     futures::future::try_join_all(v.cast_to::<SmallVec<[Value; 8]>>()?.into_iter().map(f))
         .await
+}
+
+async fn reconcile<T, F: Future<Output = Result<T>>>(
+    items: &mut Vec<(Value, T)>,
+    v: Value,
+    mut compile: impl FnMut(Value) -> F,
+) -> Result<()> {
+    let values = v.cast_to::<ValArray>()?;
+    items.truncate(values.len());
+    for (i, value) in values.iter().enumerate() {
+        if items.get(i).is_some_and(|(source, _)| source == value) {
+            continue;
+        }
+        let item = (value.clone(), compile(value.clone()).await?);
+        match items.get_mut(i) {
+            Some(slot) => *slot = item,
+            None => items.push(item),
+        }
+    }
+    Ok(())
 }
 
 /// Where a widget tells the program the size its content draws in: the
@@ -883,6 +894,7 @@ pub(crate) struct Screen<X: GXExt> {
     gx: GXHandle<X>,
     root_id: ExprId,
     root: TuiW,
+    source: Option<Value>,
     size: BindId,
     event: BindId,
 }
@@ -893,6 +905,7 @@ impl<X: GXExt> Screen<X> {
             gx,
             root_id,
             root: Box::new(EmptyW),
+            source: None,
             size: get_id(env, &["tui", "size"].into())?,
             event: get_id(env, &["tui", "event"].into())?,
         })
@@ -902,9 +915,12 @@ impl<X: GXExt> Screen<X> {
     /// goes to the widgets.
     pub(crate) async fn update(&mut self, id: ExprId, v: Value) -> Result<()> {
         if id == self.root_id {
-            self.root = compile(self.gx.clone(), v)
-                .await
-                .context("invalid widget specification")?;
+            if self.source.as_ref() != Some(&v) {
+                self.root = compile(self.gx.clone(), v.clone())
+                    .await
+                    .context("invalid widget specification")?;
+                self.source = Some(v);
+            }
             Ok(())
         } else {
             self.root.handle_update(id, v).await

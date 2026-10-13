@@ -1,4 +1,4 @@
-use super::{SizeReport, TuiW, TuiWidget, compile, compile_each, layout::ConstraintV};
+use super::{SizeReport, TuiW, TuiWidget, compile, layout::ConstraintV, reconcile};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::expr::ExprId;
@@ -51,7 +51,7 @@ impl<X: GXExt> LayerW<X> {
 pub(super) struct OverlayW<X: GXExt> {
     gx: GXHandle<X>,
     base: TuiW,
-    layers: Vec<LayerW<X>>,
+    layers: Vec<(Value, LayerW<X>)>,
     layers_ref: Ref<X>,
 }
 
@@ -83,7 +83,7 @@ impl<X: GXExt> OverlayW<X> {
     }
 
     async fn set_layers(&mut self, v: Value) -> Result<()> {
-        self.layers = compile_each(v, |v| LayerW::compile(self.gx.clone(), v)).await?;
+        reconcile(&mut self.layers, v, |v| LayerW::compile(self.gx.clone(), v)).await?;
         Ok(())
     }
 }
@@ -92,7 +92,7 @@ impl<X: GXExt> OverlayW<X> {
 impl<X: GXExt> TuiWidget for OverlayW<X> {
     async fn handle_event(&mut self, v: Value) -> Result<()> {
         match self.layers.last_mut() {
-            Some(l) => l.child.handle_event(v).await,
+            Some((_, l)) => l.child.handle_event(v).await,
             None => self.base.handle_event(v).await,
         }
     }
@@ -102,7 +102,7 @@ impl<X: GXExt> TuiWidget for OverlayW<X> {
             self.set_layers(v.clone()).await?;
         }
         self.base.handle_update(id, v.clone()).await?;
-        for l in &mut self.layers {
+        for (_, l) in &mut self.layers {
             l.p.update(id, &v).context("layer")?;
             l.child.handle_update(id, v.clone()).await?;
         }
@@ -111,7 +111,7 @@ impl<X: GXExt> TuiWidget for OverlayW<X> {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         self.base.draw(frame, rect)?;
-        for l in &mut self.layers {
+        for (_, l) in &mut self.layers {
             let lrect = l.rect(rect);
             l.size.report(lrect)?;
             frame.render_widget(Clear, lrect);

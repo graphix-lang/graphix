@@ -307,3 +307,41 @@ let result = block(#border: &`All, #size: &mut size, &text(&"body"))
     assert_eq!(h.get_watched("test::size"), Some(&crate::SizeV::new(0, 0).into()));
     Ok(())
 }
+
+#[tokio::test]
+async fn unchanged_widgets_keep_their_size_reports() -> Result<()> {
+    use compact_str::format_compact;
+    for body in [
+        "refired",
+        "block(&refired)",
+        "tui::layout::layout(&(tick ~ [tui::layout::child(#constraint: `Fill(1), stable)]))",
+        "tui::overlay::overlay(#layers: &(tick ~ [tui::overlay::layer(stable)]), text(&\"base\"))",
+        "tui::tabs::tabs(&[(tui::line(\"[tick]\"), stable)])",
+    ] {
+        let code = format_compact!(
+            r#"
+use tui::{{Size, block::block, text::text}};
+let tick = 0;
+let pulse = |n: i64| {{ tick <- n; null }};
+let size: Size = never();
+let reports = count(size);
+let stable = block(#size: &mut size, &text(&"body"));
+let refired = tick ~ stable;
+let result = {body}
+"#
+        );
+        let mut h = TuiTestHarness::new(&code).await?;
+        h.watch("test::reports").await?;
+        let pulse = h.compile_named_callable("test::pulse").await?;
+        h.render()?;
+        h.drain().await?;
+        assert_eq!(h.get_watched("test::reports"), Some(&Value::I64(1)), "{body}");
+        for n in 1..=3 {
+            h.call_callback(pulse, ValArray::from_iter([Value::I64(n)])).await?;
+            h.render()?;
+            h.drain().await?;
+            assert_eq!(h.get_watched("test::reports"), Some(&Value::I64(1)), "{body}");
+        }
+    }
+    Ok(())
+}

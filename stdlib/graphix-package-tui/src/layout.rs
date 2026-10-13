@@ -1,5 +1,5 @@
 use super::{
-    DirectionV, FlexV, SizeReport, TuiW, TuiWidget, compile, compile_each,
+    DirectionV, FlexV, SizeReport, TuiW, TuiWidget, compile, reconcile,
     validate::{Dim, Index, Offset, Percent},
 };
 use anyhow::{Context, Result};
@@ -94,7 +94,7 @@ graphix_rt::props! {
 pub(super) struct LayoutW<X: GXExt> {
     gx: GXHandle<X>,
     p: Props<X>,
-    children: Vec<Slot<X>>,
+    children: Vec<(Value, Slot<X>)>,
     children_ref: Ref<X>,
 }
 
@@ -110,7 +110,7 @@ impl<X: GXExt> LayoutW<X> {
     }
 
     async fn set_children(&mut self, v: Value) -> Result<()> {
-        self.children = compile_each(v, |v| Slot::compile(self.gx.clone(), v)).await?;
+        reconcile(&mut self.children, v, |v| Slot::compile(self.gx.clone(), v)).await?;
         Ok(())
     }
 }
@@ -120,7 +120,7 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
     async fn handle_event(&mut self, v: Value) -> Result<()> {
         let focused = self.p.focused.t.flatten().map_or(0, |i| i.0);
         let idx = focused.min(self.children.len().saturating_sub(1));
-        if let Some(c) = self.children.get_mut(idx) {
+        if let Some((_, c)) = self.children.get_mut(idx) {
             c.child.handle_event(v).await?;
         }
         Ok(())
@@ -131,7 +131,7 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
         if self.children_ref.id == id {
             self.set_children(v.clone()).await?;
         }
-        for c in &mut self.children {
+        for (_, c) in &mut self.children {
             c.child.handle_update(id, v.clone()).await?
         }
         Ok(())
@@ -159,9 +159,9 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
         if let Some(Some(m)) = p.vertical_margin.t {
             layout = layout.vertical_margin(m.0);
         }
-        layout = layout.constraints(self.children.iter().map(|c| c.constraint));
+        layout = layout.constraints(self.children.iter().map(|(_, c)| c.constraint));
         let areas = layout.split(rect);
-        for (rect, slot) in areas.iter().zip(self.children.iter_mut()) {
+        for (rect, (_, slot)) in areas.iter().zip(self.children.iter_mut()) {
             slot.size.report(*rect)?;
             slot.child.draw(frame, *rect)?
         }
