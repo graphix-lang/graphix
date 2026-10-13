@@ -37,8 +37,8 @@ graphix package build-standalone
 This builds a release-optimized binary named after your package's short
 name (`mylib` here) in the current directory that includes your local
 package and all its dependencies. The build enables the `standalone` cargo feature on your
-package, which causes the contents of `main.gx` to be appended to the
-root module as the entry point program.
+package, which embeds `main.gx` as the program the binary runs: every
+argument the binary is given is the program's own (`sys::args()`).
 
 Scaffolded packages already include `[features] standalone = []` in their
 `Cargo.toml`. If you created your package before this feature existed, add it

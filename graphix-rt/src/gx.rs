@@ -584,20 +584,11 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    /// Deliver `u` to `id` this cycle: into the store, which advances only
-    /// here (a patch resolves against it now, so patches to one root land
-    /// in order on each other's result), and the event as FIRED. A reply
+    /// Deliver `u` to `id` this cycle: into the store, which advances here
+    /// for a written variable as at a let's publication (a patch resolves
+    /// against it now, so patches to one root land in order on each
+    /// other's result), and the event as FIRED. A reply
     /// nothing references any more goes nowhere.
-    // CR claude for claude: [doc-drift/low] Three runtime docs are stale; in each, the
-    // code is right. (1) This doc says the store 'advances only here', but a let's
-    // publication and a seq machine's pc also call store_insert during the cycle. Say
-    // the store advances here for a written variable, as it does for a let's
-    // publication. (2) GXHandle::call says 'no type or arity checking is performed',
-    // but call_callable checks arity and the ToGX::Call handler logs the refusal. Say
-    // arity is checked (and logged) and types are not. (3) GXConfig::start documents a
-    // `root` parameter it does not take and points at graphix_stdlib::register, which
-    // does not exist. Rewrite that doc around GXConfig's root and program and the
-    // package registration the shell actually uses. (rt-11)
     fn deliver(&mut self, id: BindId, u: VarUpdate, via: Via) {
         // CR claude for claude: [bug/medium] Waiting writes outlive their variable and
         // leave store entries behind. deliver() drops only a Via::Reply write whose

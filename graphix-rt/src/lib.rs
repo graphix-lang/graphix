@@ -1012,7 +1012,8 @@ impl<X: GXExt> GXHandle<X> {
     /// Call a callable by id with the given arguments
     ///
     /// This is a fire-and-forget call that does not wait for the result.
-    /// Unlike `Callable::call`, no type or arity checking is performed.
+    /// The runtime checks the arity, logging a call it refuses; unlike
+    /// `Callable::call`, the argument types are not checked.
     pub fn call(&self, id: CallableId, args: ValArray) -> Result<()> {
         self.0
             .tx
@@ -1126,24 +1127,12 @@ impl<X: GXExt> GXConfig<X> {
         GXConfigBuilder::default().ctx(ctx).sub(sub)
     }
 
-    /// Start the graphix runtime with the specified config,
-    ///
-    /// return a handle capable of interacting with it. root is the text of the
-    /// root module you wish to initially load. This will define the environment
-    /// for the rest of the code compiled by this runtime. The runtime starts
-    /// completely empty, with only the language, no core library, no standard
-    /// library. To build a runtime with the full standard library and nothing
-    /// else simply pass the output of `graphix_stdlib::register` to start.
-    // CR claude for claude: [doc-drift/low] The doc comment above describes an API that
-    // is gone. It says `root` is an argument and tells readers to 'pass the output of
-    // `graphix_stdlib::register` to start'. `start` takes no argument, the root and
-    // program are `GXConfig` builder fields, packages register through
-    // `register_packages`, and no `graphix_stdlib` crate exists. Rewrite it around
-    // `.root(..)`, `.program(..)` and package registration. The same drift is in
-    // book/src/packages/standalone.md, which says main.gx is appended to the root
-    // module. The shell actually runs it as the script
-    // (`Mode::Script(Source::Program(main))`) and only when no file argument was given.
-    // (book-modules-udt-19)
+    /// Start the runtime and return a handle to it. It compiles `root`,
+    /// the module every later compile sees (the package root
+    /// `graphix_package::register_packages` returns, its builtins
+    /// registered in `ctx`), or restores it from the registration image,
+    /// then compiles `program` when one is given. With no root the
+    /// runtime holds the language alone.
     pub async fn start(self) -> Result<GXHandle<X>> {
         // The handle and the running `ExecState` share the control.
         let control = self.ctx.control.clone();
