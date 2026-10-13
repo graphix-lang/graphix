@@ -2017,25 +2017,27 @@ fn slow_budget(timeout: Duration) -> Duration {
     (timeout * 8).max(Duration::from_secs(60))
 }
 
-/// The longest a healthy `check-one` takes: its first runs (the engine
-/// group, two cold-then-warm sessions per route, the forked pair, the
-/// check, a twin's rerun) and one comparison's ladder (a slow retry and
-/// the reference again at the slow budget), each run with its shutdown
-/// grace.
-// CR claude for claude: [risk/low] This deadline budgets one comparison's ladder (two
-// slow-budget runs). Oracle::settle runs a ladder for each comparison check_verdict
-// judges, though, and a remake replaces only the run it names. A callable subject whose
-// node-walk is slow but finishes within slow_budget can therefore owe about seven
-// sequential slow runs: the interp nocache run on each route, each interp Sessions job
-// (cold then warm) on each route, and Par(Par). At the 3 s campaign budget that is more
-// than the 286 s here. check_isolated then records a working program as a "HANG (outer
-// deadline)" crash. Fix: derive the deadline from the comparisons the subject owes (the
-// distinct remakeable reference and tested runs, with Sessions counting twice, times
-// slow_budget plus grace), or have the child report a heartbeat per ladder instead of
-// relying on a fixed wall deadline. (x-rerun-3-05)
-fn check_deadline(timeout: Duration) -> Duration {
+/// The longest a healthy `check-one` of `code` takes: its first runs (the
+/// engine group, two cold-then-warm sessions per route, the forked pair,
+/// the check, a twin's rerun) and every run its comparisons' ladders may
+/// remake at the slow budget (a session's cold and warm runs are one job,
+/// so either remakes both), each run with its shutdown grace.
+fn check_deadline(code: &str, timeout: Duration) -> Duration {
     let grace = Duration::from_secs(5);
-    (timeout + grace) * 12 + (slow_budget(timeout) + grace) * 2 + Duration::from_secs(60)
+    let mut runs: Vec<Run> = Vec::new();
+    for (a, b) in comparisons(code, sessions_enabled()).into_iter().filter_map(Pair::runs)
+    {
+        for r in [a, b] {
+            if !runs.contains(&r) {
+                runs.push(r);
+            }
+        }
+    }
+    let slow =
+        runs.iter().map(|r| if r.session == Session::NoCache { 1 } else { 2 }).sum();
+    (timeout + grace) * 12
+        + (slow_budget(timeout) + grace) * slow
+        + Duration::from_secs(60)
 }
 
 /// Per-subject verdict from a batch child. Only agreement is trusted
@@ -4538,7 +4540,7 @@ pub async fn detcheck(
 async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration) {
     // every run in the child has its own deadline; this one catches a
     // wedged child
-    let deadline = Deadline::Fixed(check_deadline(timeout));
+    let deadline = Deadline::Fixed(check_deadline(prog, timeout));
     let c = run_child("check-one", &[], &[], prog, true, deadline).await;
     let res = match (c.status, c.verdict) {
         (None, _) => PoolResult::Crash("HANG (outer deadline)".into()),
