@@ -8,11 +8,7 @@ use crate::widgets::{ChartId, Renderer};
 use compact_str::{CompactString, format_compact};
 use graphix_rt::GXExt;
 use iced_core::{Point, Rectangle, mouse};
-use iced_widget::canvas as iced_canvas;
-use std::{
-    cell::Cell,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 /// Snap threshold in pixels — how close the cursor must be to a data point.
 const SNAP_THRESHOLD: f32 = 20.0;
@@ -53,14 +49,12 @@ struct Drag {
 /// position in its tree, so the view holds only for the chart and mode
 /// in `owner`.
 pub struct ChartState {
-    pub cache: iced_canvas::Cache<Renderer>,
     owner: Option<(ChartId, ChartMode)>,
     pub x_view: Option<(f64, f64)>,
     pub y_view: Option<(f64, f64)>,
     pub yaw_offset: f64,
     pub pitch_offset: f64,
     pub scale_factor: f64,
-    pub plot_info: Cell<Option<PlotInfo>>,
     pub snap_point: Option<SnapPoint>,
     drag: Option<Drag>,
     press: Option<Point>,
@@ -70,14 +64,12 @@ pub struct ChartState {
 impl Default for ChartState {
     fn default() -> Self {
         Self {
-            cache: iced_canvas::Cache::new(),
             owner: None,
             x_view: None,
             y_view: None,
             yaw_offset: 0.0,
             pitch_offset: 0.0,
             scale_factor: 1.0,
-            plot_info: Cell::new(None),
             snap_point: None,
             drag: None,
             press: None,
@@ -87,6 +79,7 @@ impl Default for ChartState {
 }
 
 /// The view a chart draws through.
+#[derive(Clone, Copy, PartialEq)]
 pub struct ViewState {
     pub x: Option<(f64, f64)>,
     pub y: Option<(f64, f64)>,
@@ -123,7 +116,6 @@ impl ChartState {
         self.yaw_offset = 0.0;
         self.pitch_offset = 0.0;
         self.scale_factor = 1.0;
-        self.cache.clear();
     }
 
     /// Handle a mouse event. Returns an optional Action.
@@ -172,11 +164,11 @@ impl ChartState {
                 let local = Point::new(position.x - bounds.x, position.y - bounds.y);
                 if let Some(d) = &self.drag {
                     let (dx, dy) = (local.x - d.origin.x, local.y - d.origin.y);
-                    self.handle_drag(mode, dx, dy);
-                    self.cache.clear();
+                    self.handle_drag(mode, chart.plot_info.get(), dx, dy);
+                    chart.cache.clear();
                     return Some(Action::request_redraw().and_capture());
                 }
-                if let Some(info) = self.plot_info.get()
+                if let Some(info) = chart.plot_info.get()
                     && mode != ChartMode::ThreeD
                 {
                     self.snap_point = find_nearest_point(chart, &info, local);
@@ -199,10 +191,10 @@ impl ChartState {
                     self.scale_factor =
                         (self.scale_factor * ZOOM_FACTOR.powf(lines)).clamp(0.1, 10.0);
                 } else {
-                    let info = self.plot_info.get()?;
+                    let info = chart.plot_info.get()?;
                     self.handle_zoom(mode, &info, pos, ZOOM_FACTOR.powf(-lines));
                 }
-                self.cache.clear();
+                chart.cache.clear();
                 Some(Action::capture())
             }
             Event::Mouse(ME::ButtonPressed(mouse::Button::Left)) => {
@@ -212,10 +204,10 @@ impl ChartState {
                     origin: pos,
                     x_view: self
                         .x_view
-                        .or_else(|| self.plot_info.get().map(|i| i.x_range)),
+                        .or_else(|| chart.plot_info.get().map(|i| i.x_range)),
                     y_view: self
                         .y_view
-                        .or_else(|| self.plot_info.get().map(|i| i.y_range)),
+                        .or_else(|| chart.plot_info.get().map(|i| i.y_range)),
                     yaw: self.yaw_offset,
                     pitch: self.pitch_offset,
                 });
@@ -250,7 +242,7 @@ impl ChartState {
 
     /// Pan by the cursor's travel `(dx, dy)` since the drag began; a bar
     /// chart's categories stay put, a 3D chart turns.
-    fn handle_drag(&mut self, mode: ChartMode, dx: f32, dy: f32) {
+    fn handle_drag(&mut self, mode: ChartMode, info: Option<PlotInfo>, dx: f32, dy: f32) {
         let Some(d) = &self.drag else { return };
         match mode {
             ChartMode::ThreeD => {
@@ -259,7 +251,7 @@ impl ChartState {
             }
             ChartMode::Pie | ChartMode::Empty => {}
             ChartMode::Numeric | ChartMode::TimeSeries | ChartMode::Bar => {
-                let Some(info) = self.plot_info.get() else { return };
+                let Some(info) = info else { return };
                 if info.rect.width <= 0.0 || info.rect.height <= 0.0 {
                     return;
                 }

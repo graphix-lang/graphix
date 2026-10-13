@@ -8,7 +8,7 @@ pub mod types;
 
 use crate::{
     types::LengthV,
-    widgets::{ChartId, GuiW, GuiWidget, IcedElement},
+    widgets::{ChartId, GuiW, GuiWidget, IcedElement, Renderer},
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -16,6 +16,7 @@ use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use iced_widget::canvas as iced_canvas;
+use interact::ViewState;
 use log::error;
 use netidx::publisher::Value;
 use poolshark::local::LPooled;
@@ -63,8 +64,9 @@ pub(crate) struct ChartW<X: GXExt> {
     mode: ChartMode,
     /// The disagreement last reported, so it is reported once.
     conflict: Option<(ChartMode, ChartMode)>,
-    /// Set to true when data changes; draw() clears the cache and resets.
-    dirty: Cell<bool>,
+    cache: iced_canvas::Cache<Renderer>,
+    plot_info: Cell<Option<PlotInfo>>,
+    cached_view: Cell<Option<ViewState>>,
 }
 
 impl<X: GXExt> ChartW<X> {
@@ -89,7 +91,9 @@ impl<X: GXExt> ChartW<X> {
             id: ChartId::new(),
             mode: ChartMode::Empty,
             conflict: None,
-            dirty: Cell::new(true),
+            cache: iced_canvas::Cache::new(),
+            plot_info: Cell::new(None),
+            cached_view: Cell::new(None),
         };
         chart.refresh_data();
         Ok(Box::new(chart))
@@ -97,6 +101,11 @@ impl<X: GXExt> ChartW<X> {
 
     pub(crate) fn bar_categories(&self) -> &[ArcStr] {
         &self.bars.categories
+    }
+
+    #[cfg(test)]
+    pub(crate) fn plot_info(&self) -> Option<PlotInfo> {
+        self.plot_info.get()
     }
 
     #[cfg(test)]
@@ -158,7 +167,7 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
             self.datasets = rt
                 .block_on(compile_datasets(&self.gx, v.clone()))
                 .context("chart datasets recompile")?;
-            self.dirty.set(true);
+            self.cache.clear();
             changed = true;
         }
         for ds in self.datasets.iter_mut() {
@@ -174,7 +183,7 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
                 DatasetEntry::Surface { data, .. } => data.update(id, v)?.is_some(),
             };
             if updated {
-                self.dirty.set(true);
+                self.cache.clear();
                 changed = true;
             }
         }
@@ -182,7 +191,7 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
             self.refresh_data();
         }
         if self.drawn.update(id, v).context("chart")? {
-            self.dirty.set(true);
+            self.cache.clear();
             changed = true;
         }
         changed |= self.size.update(id, v).context("chart size")?;

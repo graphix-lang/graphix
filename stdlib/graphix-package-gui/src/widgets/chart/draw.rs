@@ -450,7 +450,6 @@ fn draw_xy<'a, DB, C, X>(
 fn draw_xy_chart<DB, R, X>(
     builder: &mut ChartBuilder<'_, '_, DB>,
     w: &ChartW<X>,
-    state: &ChartState,
     cs: Option<&ChartStyleV>,
     view: View,
     x_range: R,
@@ -471,7 +470,7 @@ where
             return false;
         }
     };
-    state.plot_info.set(Some(plot_info(
+    w.plot_info.set(Some(plot_info(
         chart.plotting_area().get_pixel_range(),
         view.x,
         view.y,
@@ -520,25 +519,12 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
         bounds: iced_core::Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<iced_canvas::Geometry<Renderer>> {
-        // CR claude for claude: [bug/high] The geometry cache and plot_info live in
-        // ChartState, and iced keeps that state by position. A chart that
-        // Children::update keeps (keep_equal) but that moves to another chart's index
-        // takes over that chart's filled cache, and its dirty flag is false. If the
-        // bounds are equal, Cache::draw returns the other chart's picture. A swap [a,
-        // b] -> [b, a] shows each chart in the other's place until a mouse event clears
-        // the cache. reset_view also leaves plot_info as the other chart's, so the
-        // first wheel or press zooms or pans from the wrong ranges. Fix: keep the Cache
-        // and plot_info in ChartW, as canvas.rs does. Clear the cache in handle_update
-        // in place of dirty, and in handle_event when the view changes. ChartState then
-        // holds only the owner-checked view and interaction state. probe:
-        // design/review-2026-10-12/repro/gui-chart-02.rs (gui-chart-02)
-        if self.dirty.get() {
-            state.cache.clear();
-            self.dirty.set(false);
-        }
         let view = state.view_for(self);
-        let chart_geom = state.cache.draw(renderer, bounds.size(), |frame| {
-            state.plot_info.set(None);
+        if self.cached_view.replace(Some(view)) != Some(view) {
+            self.cache.clear();
+        }
+        let chart_geom = self.cache.draw(renderer, bounds.size(), |frame| {
+            self.plot_info.set(None);
             let w = frame.width() as u32;
             let h = frame.height() as u32;
             if w == 0 || h == 0 || self.mode == ChartMode::Empty {
@@ -595,7 +581,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         true => draw_xy_chart(
                             &mut builder,
                             self,
-                            state,
                             chart_style,
                             plot,
                             ms_datetime(plot.x.0)..ms_datetime(plot.x.1),
@@ -605,7 +590,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         false => draw_xy_chart(
                             &mut builder,
                             self,
-                            state,
                             chart_style,
                             plot,
                             plot.x.0..plot.x.1,
@@ -657,7 +641,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         Ok(c) => c,
                         Err(e) => return error!("chart build: {e:?}"),
                     };
-                    state.plot_info.set(Some(plot_info(
+                    self.plot_info.set(Some(plot_info(
                         chart.plotting_area().get_pixel_range(),
                         (0.0, categories.len() as f64),
                         y,
@@ -736,7 +720,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         })
                         .map(|c| RGBColor(c.0, c.1, c.2))
                         .collect();
-                    state.plot_info.set(Some(PlotInfo {
+                    self.plot_info.set(Some(PlotInfo {
                         rect: iced_core::Rectangle {
                             x: center.0 as f32 - radius as f32,
                             y: center.1 as f32 - radius as f32,

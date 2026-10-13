@@ -31,7 +31,7 @@ async fn draw_in(h: &GuiTestHarness, state: &ChartState, size: Size) -> Option<P
         bounds,
         mouse::Cursor::Unavailable,
     );
-    state.plot_info.get()
+    chart(h).plot_info()
 }
 
 async fn draw(h: &GuiTestHarness) -> Option<PlotInfo> {
@@ -258,10 +258,6 @@ async fn mesh_style_3d() -> Result<()> {
     Ok(())
 }
 
-/// The geometry cache is `Program::State`, which iced keeps in its
-/// widget tree by position, so a chart compiled into a slot another
-/// chart drew from inherits that chart's cache. Its first draw must
-/// not trust it.
 #[tokio::test(flavor = "current_thread")]
 async fn fresh_chart_redraws_an_inherited_cache() -> Result<()> {
     let tall = chart_harness(r#"&[line(&[(1.0, 1000.0), (2.0, 2000.0)])]"#).await?;
@@ -692,5 +688,47 @@ async fn invalid_3d_points_are_omitted_and_break_lines() -> Result<()> {
             "line3d(#point_size: 0.0, &[(1.0, 1.0, 1.0)])",
         ).await?;
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn kept_charts_keep_their_own_cache() -> Result<()> {
+    let tall = chart_harness("&[line(&[(1.0, 1000.0), (2.0, 2000.0)])]").await?;
+    let short = chart_harness("&[line(&[(1.0, 1.0), (2.0, 2.0)])]").await?;
+    let (mut top, bottom) = (ChartState::default(), ChartState::default());
+    let size = Size::new(400.0, 300.0);
+    let tall_range = draw_in(&tall, &top, size).await.unwrap().y_range;
+    let short_range = draw_in(&short, &bottom, size).await.unwrap().y_range;
+    assert_eq!(draw_in(&short, &top, size).await.unwrap().y_range, short_range);
+    assert_eq!(draw_in(&tall, &bottom, size).await.unwrap().y_range, tall_range);
+    let event = iced_core::Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+    });
+    top.handle_event(
+        chart(&short),
+        &event,
+        Rectangle::with_size(size),
+        mouse::Cursor::Available(Point::new(200.0, 150.0)),
+    );
+    assert!(top.y_view.unwrap().1 < 10.0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_cached_chart_discards_a_view_from_its_previous_slot() -> Result<()> {
+    let h = chart_harness("&[line(&[(1.0, 1.0), (2.0, 2.0)])]").await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let base = draw_in(&h, &state, size).await.unwrap().y_range;
+    state.handle_event(
+        chart(&h),
+        &iced_core::Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+        }),
+        Rectangle::with_size(size),
+        mouse::Cursor::Available(Point::new(200.0, 150.0)),
+    );
+    assert_ne!(draw_in(&h, &state, size).await.unwrap().y_range, base);
+    assert_eq!(draw_in(&h, &ChartState::default(), size).await.unwrap().y_range, base);
     Ok(())
 }
