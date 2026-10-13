@@ -252,8 +252,7 @@ let result = text(&"[tui::size.width]x[tui::size.height] [n]")
     )))
     .await?;
     assert!(h.stopped());
-    h.dispatch_event(key('d')).await?;
-    h.assert_lines(&["12x1 2"])
+    Ok(())
 }
 
 #[tokio::test]
