@@ -4292,22 +4292,13 @@
           "type": "SEQ",
           "members": [
             {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "SYMBOL",
-                  "name": "identifier"
-                },
-                {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_scalar_primitive"
-                  },
-                  "named": true,
-                  "value": "primitive_type"
-                }
-              ]
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_scalar_primitive"
+              },
+              "named": true,
+              "value": "primitive_type"
             },
             {
               "type": "STRING",
@@ -4339,6 +4330,48 @@
               ]
             }
           ]
+        },
+        {
+          "type": "PREC_DYNAMIC",
+          "value": -20,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "identifier"
+              },
+              {
+                "type": "STRING",
+                "value": ":"
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "_typed_value"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "string"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "triple_string"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "value_string"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "raw_string"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "type": "SEQ",

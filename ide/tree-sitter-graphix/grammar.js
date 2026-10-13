@@ -760,34 +760,17 @@ module.exports = grammar({
     // ends with the literal and its unit, so `i64:4/i64:2` is a division.
     type_ascription: $ => choice(
       seq(
-        // CR claude for claude: [bug/medium] `let x: T = v` and `|a: T|` parse as typed
-        // literal `x:T`, losing the binding. The first `type_ascription` alternative
-        // accepts any `$.identifier` as its head, and `_typed_value` accepts
-        // `_binding_name`/`type_identifier` as the value. A let pattern or lambda
-        // parameter written `x: i64`, `x: string` or `x: Foo` therefore matches
-        // `structure_pattern -> type_ascription(identifier, identifier)`, and the
-        // declared conflicts [$._binding_name, $.type_ascription] / [$._field_name,
-        // $.type_ascription] let GLR keep that reading. The real typed-literal heads
-        // are a fixed set (netidx-value parser.rs: the numeric types, bytes, abstract,
-        // error, decimal, datetime, duration), so only `error`/`abstract` need an
-        // identifier head. The let loses its `type:` field, there is no pattern_bind,
-        // and locals.scm records no definition for `x`/`a`. Failure: `let x: i64 = 1;`
-        // gives (let_binding pattern: (structure_pattern (type_ascription (identifier)
-        // (identifier))) value: ..). `|a: i64, b| a + b` marks only `b` as a local
-        // definition. Every annotated let and annotated lambda parameter (common in
-        // stdlib and the netidx-admin package) loses its definition and variable color
-        // in nvim, helix and zed. Fix: Give the identifier-headed alternative negative
-        // dynamic precedence and keep the primitive-headed one as is:
-        // `prec.dynamic(-20, seq($.identifier, ':', choice($._typed_value, ...)))`.
-        // Verified in a scratch copy: `let x: i64` becomes pattern_bind plus `type:
-        // (primitive_type)`, `error:"x"` still parses, and the corpus is unchanged at
-        // 35 ERROR files. Restricting the head to the keywords 'error'/'abstract' broke
-        // 96 files, because keyword extraction steals `error(...)` calls. Unverified:
-        // the reviewer's report, not checked by a verifier. (ide-tooling-02)
-        choice($.identifier, alias($._scalar_primitive, $.primitive_type)),
+        alias($._scalar_primitive, $.primitive_type),
         ':',
         choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
       ),
+      // `error:..`, `abstract:..`: an identifier head, which loses to a
+      // binding (`let x: T`, `|a: T|`) wherever both parse
+      prec.dynamic(-20, seq(
+        $.identifier,
+        ':',
+        choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
+      )),
       seq(
         alias('bytes', $.primitive_type),
         ':',
