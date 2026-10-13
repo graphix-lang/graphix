@@ -2381,3 +2381,21 @@ let result = table(&[table_column(&text(&"t"))], &[[dt]])
     set_var(&h, "test::v1", Value::F64(100.0)).await?;
     h.wait_until(wait(["r0", "r1"]), std::time::Duration::from_secs(5), "re-sort").await
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn table_updates_preserve_surviving_column_widths() -> Result<()> {
+    let mut h = dt(r#"
+        let tbl = { rows: ["r0"], columns: ["a", "b", "c", "d", "e", "f", "gone"] };
+        let change = |t: Any| tbl <- t ~ { rows: ["r1"], columns: ["a", "b", "c", "d", "e", "f"] };
+        let result = data_table(#show_row_name: &false, #table: &tbl)
+    "#).await?;
+    for col in ["a", "b", "c", "d", "e", "f", "gone"] {
+        h.dt().dt_set_cached_width(col, 200.0);
+    }
+    assert_eq!(h.dt().col_at_offset_for_test(800.0), 4);
+    let change = h.compile_named_callable("test::change").await?;
+    h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
+    assert_eq!(h.dt().col_at_offset_for_test(800.0), 4);
+    assert_eq!(h.dt().dt_set_cached_width("gone", 200.0), None);
+    Ok(())
+}

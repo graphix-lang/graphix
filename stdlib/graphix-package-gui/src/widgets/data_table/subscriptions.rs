@@ -7,7 +7,7 @@
 //! what is drawn.
 
 use super::{
-    DataTableW, DisplayMode, VALUE_COL_KEY,
+    DataTableW, DisplayMode, ROW_NAME_KEY, VALUE_COL_KEY,
     types::{
         ColumnState, ColumnType, SortDirection, SourceEntry, cell_path, format_value,
         numeric_key, parse_selection, parse_table_columns, push_sparkline_point,
@@ -314,7 +314,7 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn apply_table_sync(&mut self) -> LPooled<Vec<ArcStr>> {
         let mut pending: LPooled<Vec<ArcStr>> = LPooled::take();
         self.table_rows.clear();
-        // CR claude for claude: [bug/medium] Every table value clears the measured
+        // XCR claude for claude: [bug/medium] Every table value clears the measured
         // width of every column. Render then re-caches only the columns from first_col
         // onward, so column_canonical_width reads MIN_COL_WIDTH for every column left
         // of the view. That breaks col_at_offset, offset_at_col, min_first_col_for_fit
@@ -328,7 +328,9 @@ impl<X: GXExt> DataTableW<X> {
         // design/review-2026-10-12/repro/gui-datatable-02.rs
         // (review_table_update_keeps_column_widths); it must be appended to
         // src/test/data_table_test.rs to run. (gui-datatable-05)
-        self.cached_col_widths.lock().clear();
+        // 2026-10-13 codex: table_updates_preserve_surviving_column_widths pins retained offsets
+        // and removal of stale widths. It compiles but cannot reach its assertions
+        // here because netidx resolver sockets are denied; review with sockets.
         self.selection =
             self.selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
         #[derive(FromValue)]
@@ -385,6 +387,11 @@ impl<X: GXExt> DataTableW<X> {
             };
             self.columns.insert(entry.spec.name.clone(), entry);
         }
+        self.cached_col_widths.lock().retain(|name, _| {
+            name == &ROW_NAME_KEY
+                || name == &VALUE_COL_KEY
+                || self.columns.contains_key(name)
+        });
         for (name, c) in self.columns.iter() {
             let needs = (c.callback.is_none() && c.spec.callback_value.is_some())
                 || (c.source.is_none() && c.spec.source_bid.is_some())
