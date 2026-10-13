@@ -1218,3 +1218,20 @@ async fn handler_presence_changes_request_a_frame() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
+    let code = format_compact!(
+        "{IMPORTS}; let doc = \"abcdef\"; let result = text_editor(#on_edit: |s| doc <- s ~ \"\", &doc)"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    h.watch("test::doc").await?;
+    h.click(WIDGET_HIT);
+    let msgs = h.press_key(iced_core::keyboard::key::Named::End);
+    h.apply(&msgs);
+    h.live(&[char_key("x")]).await?;
+    assert_eq!(h.get_watched("test::doc"), Some(&Value::from("")));
+    h.live(&[char_key("y")]).await?;
+    assert_eq!(h.get_watched("test::doc"), Some(&Value::from("")));
+    Ok(())
+}

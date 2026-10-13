@@ -5,6 +5,7 @@ use arcstr::ArcStr;
 use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
+use iced_core::text::editor::{Cursor, Position};
 use iced_widget::{self as widget, text_editor};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use std::collections::VecDeque;
@@ -74,23 +75,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                 None => {
                     let cursor = self.editor.cursor();
                     self.editor = text_editor::Content::with_text(text);
-                    // CR claude for claude: [bug/high] The cursor and selection from
-                    // the old text move into the new text unchecked. Neither iced's
-                    // Content::move_to nor cosmic-text's set_cursor clamps them. So a
-                    // program write shorter than the text before the cursor leaves the
-                    // cursor past the end. Examples: an on_edit filter or length limit,
-                    // a submit-and-clear, a timer rewrite. The next Insert then panics
-                    // in cosmic-text BufferLine::split_off (is_char_boundary), and
-                    // Backspace panics on an out-of-range slice. The panic poisons
-                    // iced's global font-system lock, so every later text operation in
-                    // the GUI panics too. Fix: clamp before the move. Limit line to
-                    // line_count - 1, then limit column to that line's byte length,
-                    // floored to a char boundary. Drop a selection that falls outside
-                    // the new text. Add a pin in test/interaction_test.rs where on_edit
-                    // writes back a shorter text and the user then types. Probe:
-                    // design/review-2026-10-12/repro/gui-widgets-b-01.rs
-                    // (gui-widgets-b-01)
-                    self.editor.move_to(cursor);
+                    self.editor.move_to(clamp_cursor(&self.editor, cursor));
                     self.pending.clear();
                 }
             }
@@ -154,5 +139,59 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
             }
             Message::Nop | Message::Call(..) | Message::Table(..) => false,
         }
+    }
+}
+
+fn clamp_cursor(editor: &text_editor::Content, mut cursor: Cursor) -> Cursor {
+    let clamp = |position: Position| {
+        let line = position.line.min(editor.line_count().saturating_sub(1));
+        let text = editor.line(line).unwrap_or_default().text;
+        let mut column = position.column.min(text.len());
+        while !text.is_char_boundary(column) {
+            column -= 1;
+        }
+        Position { line, column }
+    };
+    let position = clamp(cursor.position);
+    cursor.selection =
+        cursor.selection.filter(|s| position == cursor.position && clamp(*s) == *s);
+    cursor.position = position;
+    cursor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewritten_editor_clamps_utf8_and_selection() {
+        let editor = text_editor::Content::with_text("a\né");
+        let pos = |line, column| Position { line, column };
+        for (cursor, expected) in [
+            (
+                Cursor { position: pos(5, 8), selection: Some(pos(0, 0)) },
+                Cursor { position: pos(1, 2), selection: None },
+            ),
+            (
+                Cursor { position: pos(1, 1), selection: None },
+                Cursor { position: pos(1, 0), selection: None },
+            ),
+            (
+                Cursor { position: pos(0, 1), selection: Some(pos(1, 1)) },
+                Cursor { position: pos(0, 1), selection: None },
+            ),
+            (
+                Cursor { position: pos(0, 1), selection: Some(pos(1, 2)) },
+                Cursor { position: pos(0, 1), selection: Some(pos(1, 2)) },
+            ),
+        ] {
+            assert_eq!(clamp_cursor(&editor, cursor), expected);
+        }
+        let editor = text_editor::Content::new();
+        assert_eq!(
+            clamp_cursor(&editor, Cursor { position: pos(2, 3), selection: None })
+                .position,
+            pos(0, 0)
+        );
     }
 }
