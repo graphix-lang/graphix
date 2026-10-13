@@ -1241,10 +1241,10 @@ async fn run_session(
 }
 
 /// `code` under `mode` cold (writing the program image) and warm
-/// (restored from it). A program that does not compile has nothing to
-/// restore, so its warm outcome is its cold one; a cold run that compiled
-/// but wrote no image makes the warm outcome the write's failure, which
-/// the cold/warm pair reports.
+/// (restored from it). A program that does not compile, or times out
+/// before writing its image, has nothing to restore, so its warm outcome
+/// is its cold one; a cold run that compiled but wrote no image makes the
+/// warm outcome the write's failure, which the cold/warm pair reports.
 pub async fn cold_warm(
     code: &str,
     mode: Mode,
@@ -1254,17 +1254,8 @@ pub async fn cold_warm(
     let (cold, image) =
         run_session(code, mode, route, SessionImage::Write, timeout).await;
     let warm = match (&cold, image) {
-        // CR claude for claude: [perf/low] Only a CompileErr carries over to warm. A
-        // cold run that timed out before writing an image (the program never finished
-        // compiling) makes warm RuntimeErr("no program image was written"). Pair::Warm
-        // then pays two slow-budget session runs in Oracle::settle, and for a
-        // deadlocked compile it records an image divergence that is not one. Treat a
-        // cold Timeout with no image like a CompileErr (warm = cold). Separately,
-        // run_one for Session::Cold runs the whole cold_warm and discards the warm
-        // restore, which can cost a full slow budget when the warm side is the one that
-        // hangs. Give it a cold-only path through run_session with SessionImage::Write.
-        // (fuzz-lib-a-12)
-        (Outcome::CompileErr(_), _) => cold.clone(),
+        // nothing compiled, so nothing to restore
+        (Outcome::CompileErr(_), _) | (Outcome::Timeout(_), Err(_)) => cold.clone(),
         (_, Ok(image)) => {
             run_session(code, mode, route, SessionImage::Read(image), timeout).await.0
         }
@@ -1705,7 +1696,9 @@ async fn do_job(code: &str, job: Job, timeout: Duration) -> Vec<(Run, Outcome)> 
 async fn run_one(code: &str, run: Run, budget: Duration) -> Outcome {
     match run.session {
         Session::NoCache => run_program_routed(code, run.mode, run.route, budget).await,
-        Session::Cold => cold_warm(code, run.mode, run.route, budget).await.0,
+        Session::Cold => {
+            run_session(code, run.mode, run.route, SessionImage::Write, budget).await.0
+        }
         Session::Warm => cold_warm(code, run.mode, run.route, budget).await.1,
     }
 }
