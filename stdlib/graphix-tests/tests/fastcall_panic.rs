@@ -1,11 +1,13 @@
-// A fast fn that panics fails the runtime the same way under both
-// engines: the panic unwinds out of the update that ran it. Its own test
-// binary, since a panic that cannot unwind aborts the process.
+// A fast fn that panics fails the runtime the same way in every mode: the
+// panic unwinds out of the update that ran it, a forked kernel loop's
+// out of the chunk merge. Its own test binary, since a panic that cannot
+// unwind aborts the process.
 
 use anyhow::{Result, bail};
-use graphix_compiler::{BitFlags, CFlag, Effect, ExecCtx, FastCall, Rt, UserEvent};
+use graphix_compiler::{Effect, ExecCtx, FastCall, Rt, UserEvent};
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, fast_eval, testing::init_with_flags_and_setup,
+    CachedArgs, CachedVals, EvalCached, fast_eval,
+    testing::{Mode, init_with_flags_and_setup},
 };
 use graphix_rt::GXEvent;
 use netidx_value::Value;
@@ -33,26 +35,20 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PanicProbe {
     }
 }
 
-/// The values the program produced before its runtime died, and the
+/// The values `code` produced in `mode` before its runtime died, and the
 /// fused kernel runs it made.
-async fn values_until_death(flags: BitFlags<CFlag>) -> Result<(Vec<Value>, u64)> {
+async fn values_until_death(mode: Mode, code: &'static str) -> Result<(Vec<Value>, u64)> {
     let packages: &[graphix_package_core::testing::PackageRef] =
         graphix_package::package_refs!();
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-    let ctx = init_with_flags_and_setup(tx, packages, vec![], flags, |ctx| {
+    let ctx = init_with_flags_and_setup(tx, packages, vec![], mode.flags(), |ctx| {
+        ctx.control.set_par_mode(mode.par());
         ctx.register_builtin::<CachedArgs<PanicProbe>>().unwrap()
     })
     .await?;
     let rt = ctx.rt.clone();
     rt.control().reset_invocations();
-    let compiled = ctx
-        .rt
-        .compile(arcstr::literal!(
-            "{ let probe = |x: i64| -> i64 'panic_probe; \
-               let x = array::iter([1, 2, 3, 4]); \
-               probe(x) + 1 }"
-        ))
-        .await?;
+    let compiled = ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
     let eid = compiled.exprs[0].id;
     let mut out = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -73,24 +69,30 @@ async fn values_until_death(flags: BitFlags<CFlag>) -> Result<(Vec<Value>, u64)>
     }
 }
 
+/// The panic as a stream element fires: 1 and 2 answer, 3 kills the
+/// runtime.
+const STREAM: &str = "{ let probe = |x: i64| -> i64 'panic_probe; \
+                        let x = array::iter([1, 2, 3, 4]); \
+                        probe(x) + 1 }";
+
+/// The panic in a loop slot, which a forked kernel loop carries across
+/// its chunks: nothing answers.
+const LOOP: &str = "{ let probe = |x: i64| -> i64 'panic_probe; \
+                      array::map([1, 2, 3, 4], |x| probe(x) + 1) }";
+
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] This is the only pin of fast-fn panic
-// propagation, and it runs serially only. par_loop carries a kernel's panic across
-// forked chunks with plumbing of its own (each chunk's take_kernel_panic, then
-// set_kernel_panic at the merge). A change that dropped a chunk's panic would deliver a
-// placeholder value under GRAPHIX_PAR=force, and nothing would notice. Fix:
-// parameterise values_until_death by Mode and set the par mode in the setup closure.
-// Run all four modes, and add a second program, `array::map([1, 2, 3, 4], |x| probe(x)
-// + 1)`, so the panic happens inside a kernel loop slot. (tests-lib-b2-14)
-async fn fast_fn_panic_fails_the_runtime_in_both_engines() -> Result<()> {
-    let (interp, _) = values_until_death(CFlag::FusionDisabled.into()).await?;
-    let (jit, _fused) = values_until_death(BitFlags::empty()).await?;
-    assert_eq!(interp, [Value::I64(2), Value::I64(3)]);
-    assert_eq!(jit, interp);
-    #[cfg(debug_assertions)]
-    assert!(
-        _fused > 0,
-        "the jit run never ran its kernel, so its panic path is untested"
-    );
+async fn fast_fn_panic_fails_the_runtime_in_every_mode() -> Result<()> {
+    for mode in Mode::ALL {
+        for (code, expect) in [(STREAM, &[Value::I64(2), Value::I64(3)][..]), (LOOP, &[])]
+        {
+            let (values, _fused) = values_until_death(mode, code).await?;
+            assert_eq!(values, expect, "{mode:?}: {code}");
+            #[cfg(debug_assertions)]
+            assert!(
+                mode.node_walk() || _fused > 0,
+                "{mode:?} never ran its kernel, so its panic path is untested: {code}"
+            );
+        }
+    }
     Ok(())
 }
