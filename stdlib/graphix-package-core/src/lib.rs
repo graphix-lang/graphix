@@ -2198,16 +2198,11 @@ fn flat(args: &[Value]) -> impl Iterator<Item = Value> + '_ {
     args.iter().flat_map(|v| v.clone().flatten())
 }
 
-/// `op` over the flattened arguments, left to right. A failed step (a
-/// division by zero, an overflow) is logged and the result is nothing,
-/// as the `/` operator does, never an error the type does not admit.
-// CR claude for claude: [doc-drift/low] The doc comment says an overflow is a failed
-// step that is logged and gives nothing. That holds only for decimal and duration
-// overflow, which `Value`'s operators turn into an error. Integer `+` and `*` wrap, so
-// `sum(1, 9223372036854775807)` is `-9223372036854775808` with no log, as the operators
-// do. Reword it to say that integer steps wrap as `+` and `*` do, and that a step the
-// value arithmetic refuses (a division by zero, a decimal or duration overflow) is
-// logged and the result is nothing. (x-builtin-effects-10)
+/// `op` over the flattened arguments, left to right. Integer steps wrap
+/// as `+` and `*` do; a step the value arithmetic refuses (a division by
+/// zero, a decimal or duration overflow) is logged as a failure and the
+/// result is nothing, as the `/` operator does, never an error the type
+/// does not admit.
 fn arith(name: &str, args: &[Value], op: fn(Value, Value) -> Value) -> Option<Value> {
     let mut acc: Option<Value> = None;
     for v in flat(args) {
@@ -2216,19 +2211,7 @@ fn arith(name: &str, args: &[Value], op: fn(Value, Value) -> Value) -> Option<Va
             Some(l) => op(l, v),
         };
         if let Value::Error(e) = &next {
-            // CR claude for claude: [bug/medium] This failure is logged under the
-            // crate's default target, not graphix_compiler::FAILURE_TARGET, so the
-            // shell drops it: its logger is `off, graphix::failure=error`. `divide(7,
-            // 0)` produces nothing and prints nothing, while `7 / 0` prints its arith
-            // error. That breaks the CLAUDE.md rule for a running program's failures
-            // and the "is logged" promise in core's mod.gxi. The message also carries
-            // no source position and only says "arithmetic error". The `Pad` limit in
-            // buffer::encode has the same untargeted log::error!. Fix: log both with
-            // `target: FAILURE_TARGET`, naming the cause. Also add a test that a
-            // failing divide is reported. Probe:
-            // design/review-2026-10-12/repro/tests-lib-a-02.gx Also reported as
-            // (core-lib-04). (tests-lib-a-02)
-            log::error!("{name}: {e}");
+            log::error!(target: graphix_compiler::FAILURE_TARGET, "{name}: {e}");
             return None;
         }
         acc = Some(next);

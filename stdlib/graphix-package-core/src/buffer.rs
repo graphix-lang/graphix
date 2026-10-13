@@ -122,6 +122,7 @@ fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
             const MAX_PAD: u64 = 64 * 1024 * 1024;
             if *n > MAX_PAD {
                 log::error!(
+                    target: graphix_compiler::FAILURE_TARGET,
                     "buffer::encode: Pad({n}) exceeds the {MAX_PAD} byte limit — \
                      producing no value"
                 );

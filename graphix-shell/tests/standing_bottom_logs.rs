@@ -54,3 +54,25 @@ fn a_standing_divide_by_zero_logs_once() {
     assert_eq!(divide_logs(false), 1, "node-walk");
     assert_eq!(divide_logs(true), 1, "fusion");
 }
+
+/// A failing `divide` is reported on stderr, as `/`'s failure is.
+#[test]
+fn a_failing_divide_is_reported() {
+    let dir =
+        std::env::temp_dir().join(format!("gx-divide-report-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("tempdir");
+    let path = dir.join("divide.gx");
+    fs::write(&path, "let z = 0;\nlet r = divide(7, z);\nsys::exit(sys::time::after_idle(duration:100.ms, 0))\n")
+        .expect("write program");
+    let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
+        .arg("--no-cache")
+        .arg("--no-netidx")
+        .arg(&path)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run graphix");
+    let _ = fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("divide:"), "{stderr}");
+}
