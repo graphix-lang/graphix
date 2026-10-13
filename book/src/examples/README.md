@@ -8,6 +8,7 @@ change to the documentation.
 - `gui/`: the GUI chapters (`icon.gx` is a module the gui examples share)
 - `net/`: the `sys::args` page
 - `collection/`: the Collection trait chapter
+- `stdlib/`: the standard library pages
 
 ## The gate
 
