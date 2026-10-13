@@ -1,3 +1,4 @@
+use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use compact_str::CompactString;
@@ -6,7 +7,7 @@ use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
 use serde_derive::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin};
+use std::{future::Future, hash::Hash, pin::Pin};
 
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
@@ -342,30 +343,48 @@ impl<X: GXExt> Children<X> {
 /// Pair each of the `new` values with an old item made from an equal
 /// value, the one at the same index first, else any; `None` where no old
 /// item is left.
-pub(crate) fn keep_equal<T>(
-    old: impl IntoIterator<Item = (Value, T)>,
-    new: &[Value],
+pub(crate) fn keep_equal<K: Eq + Hash, T>(
+    old: impl IntoIterator<Item = (K, T)>,
+    new: &[K],
 ) -> LPooled<Vec<Option<T>>> {
-    let mut old: LPooled<Vec<Option<(Value, T)>>> = old.into_iter().map(Some).collect();
+    let mut keys: LPooled<Vec<K>> = LPooled::take();
+    let mut items: LPooled<Vec<Option<T>>> = LPooled::take();
+    for (key, item) in old {
+        keys.push(key);
+        items.push(Some(item));
+    }
+    let mut index: Option<LPooled<AHashMap<&K, usize>>> = None;
+    let mut next: LPooled<Vec<Option<usize>>> = LPooled::take();
     new.iter()
         .enumerate()
         .map(|(i, val)| {
-            let same = |o: &Option<(Value, T)>| o.as_ref().is_some_and(|(v, _)| v == val);
-            let at = match old.get(i) {
-                Some(o) if same(o) => Some(i),
-                // CR claude for claude: [perf/low] On a miss at index i, `keep_equal`
-                // scans `old` from 0, so a list whose widget values were reordered (a
-                // reversed or re-sorted array of widgets) makes about n^2/2 Value
-                // comparisons on the GUI thread: about 12.5M for a 5000-item column,
-                // with nothing to compile. A prepend costs n^2/2 checks of taken slots
-                // on top. The common array::map case keeps values at the same index and
-                // never gets here. Fix: keep the old[i] check first, and on the first
-                // miss build an index once (a pooled map from &Value to a queue of old
-                // positions), then take positions from it, so a reorder is linear and
-                // an in-place update allocates nothing. (gui-widgets-a-07)
-                _ => old.iter().position(same),
-            };
-            at.and_then(|j| old[j].take()).map(|(_, t)| t)
+            if keys.get(i) == Some(val) && items[i].is_some() {
+                return items[i].take();
+            }
+            let index = index.get_or_insert_with(|| {
+                let mut index: LPooled<AHashMap<&K, usize>> = LPooled::take();
+                next.resize(keys.len(), None);
+                for (j, key) in keys.iter().enumerate().rev() {
+                    if items[j].is_some() {
+                        next[j] = index.insert(key, j);
+                    }
+                }
+                index
+            });
+            while let Some(j) = index.get(val).copied() {
+                match next[j] {
+                    Some(k) => {
+                        index.insert(&keys[j], k);
+                    }
+                    None => {
+                        index.remove(val);
+                    }
+                }
+                if let Some(item) = items[j].take() {
+                    return Some(item);
+                }
+            }
+            None
         })
         .collect()
 }

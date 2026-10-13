@@ -119,3 +119,36 @@ async fn reconciliation_compiles_fresh_entries_concurrently() -> Result<()> {
     assert_eq!(old.len(), 3);
     Ok(())
 }
+
+#[test]
+fn reordered_children_match_in_linear_comparisons() {
+    use crate::widgets::keep_equal;
+    use std::{
+        cell::Cell,
+        hash::{Hash, Hasher},
+    };
+    struct Key<'a>(usize, &'a Cell<usize>);
+    impl PartialEq for Key<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.1.set(self.1.get() + 1);
+            self.0 == other.0
+        }
+    }
+    impl Eq for Key<'_> {}
+    impl Hash for Key<'_> {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state)
+        }
+    }
+    let comparisons = Cell::new(0);
+    let n = 1000;
+    let new: poolshark::local::LPooled<Vec<_>> =
+        (0..n).rev().map(|i| Key(i, &comparisons)).collect();
+    let kept = keep_equal((0..n).map(|i| (Key(i, &comparisons), i)), &new);
+    assert!(kept.iter().copied().eq((0..n).rev().map(Some)));
+    assert!(comparisons.get() < 8 * n, "{} comparisons", comparisons.get());
+    let kept = keep_equal([(1, 'a'), (1, 'b'), (2, 'c')], &[1, 2, 1, 1]);
+    assert_eq!(&**kept, &[Some('a'), Some('c'), Some('b'), None]);
+    let kept = keep_equal([(1, 'a'), (1, 'b'), (2, 'c')], &[2, 1, 1]);
+    assert_eq!(&**kept, &[Some('c'), Some('b'), Some('a')]);
+}
