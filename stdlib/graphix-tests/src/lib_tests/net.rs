@@ -2,7 +2,8 @@ use anyhow::Result;
 use graphix_package_core::{
     run,
     testing::{
-        FuseExpect, Mode, compile_result, fixture_runtime, next_update, result_source,
+        Collect, FuseExpect, Mode, collect, compile_result, fixture_runtime, next_update,
+        result_source,
     },
 };
 use netidx::subscriber::Value;
@@ -394,20 +395,18 @@ const NET_RPC_MISSING: &str = r#"{
 #[tokio::test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn net_rpc_missing_path() -> Result<()> {
-    for mode in [Mode::Interp, Mode::Jit] {
-        let (ctx, mut rx) = fixture_runtime(
-            [("/test.gx", result_source(NET_RPC_MISSING))],
+    for mode in Mode::ALL {
+        let first = Collect::First(1);
+        let v = collect(
+            NET_RPC_MISSING,
             &crate::TEST_REGISTER,
             mode,
-            |_| {},
+            first,
+            Duration::from_secs(20),
         )
         .await?;
-        let res = compile_result(&ctx).await?;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let v = next_update(&mut rx, res.exprs[0].id, deadline).await?;
-        ctx.shutdown().await;
         assert_eq!(
-            v.to_string(),
+            v[0].to_string(),
             r#"error:["RpcError", "timeout subscribing to procedure"]"#,
             "{mode:?}"
         );

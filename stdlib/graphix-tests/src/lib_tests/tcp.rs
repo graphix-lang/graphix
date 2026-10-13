@@ -3,7 +3,7 @@ use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 // Every fixture binds port `:0` and reads the assigned address via
-// `sys::tcp::listener_addr`; the three modes run concurrently.
+// `sys::tcp::listener_addr`; the four modes run concurrently.
 
 // listen + connect + accept.
 const TCP_CONNECT_ACCEPT: &str = r#"

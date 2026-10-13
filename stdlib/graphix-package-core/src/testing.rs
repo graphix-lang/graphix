@@ -712,6 +712,46 @@ pub async fn eval_modes(
     Ok(first.expect("Mode::ALL is not empty"))
 }
 
+/// How long [`collect`] reads a program's result.
+#[derive(Debug, Clone, Copy)]
+pub enum Collect {
+    /// Its first `n` updates.
+    First(usize),
+    /// Every update until none arrives for the window.
+    Quiet(Duration),
+}
+
+/// `code` (as `let result = {code}`) run in `mode`: its result's updates
+/// as `until` says, failing past `deadline` from now.
+pub async fn collect(
+    code: &str,
+    register: &[PackageRef],
+    mode: Mode,
+    until: Collect,
+    deadline: Duration,
+) -> Result<Vec<Value>> {
+    let (ctx, mut rx) =
+        fixture_runtime([("/test.gx", result_source(code))], register, mode, |_| {})
+            .await?;
+    let res = compile_result(&ctx).await?;
+    let id = res.exprs[0].id;
+    let deadline = Instant::now() + deadline;
+    let values = match until {
+        Collect::First(n) => {
+            let mut values = Vec::with_capacity(n);
+            while values.len() < n {
+                values.push(next_update(&mut rx, id, deadline).await?);
+            }
+            values
+        }
+        Collect::Quiet(window) => {
+            updates_until_quiet(&mut rx, id, window, deadline).await?
+        }
+    };
+    ctx.shutdown().await;
+    Ok(values)
+}
+
 /// Like [`eval`], but for a program that converges over several cycles:
 /// the LAST value of the result once the runtime has gone quiet.
 pub async fn eval_converged(

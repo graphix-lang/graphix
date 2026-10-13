@@ -104,9 +104,7 @@ run!(tls_stream_before_cert, { let cd = crate::lib_tests::cert_dir(); format!(r#
 #[tokio::test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn tls_accept_times_out() -> Result<()> {
-    use graphix_package_core::testing::{
-        Mode, compile_result, fixture_runtime, next_update, result_source,
-    };
+    use graphix_package_core::testing::{Collect, Mode, collect};
     use std::time::Duration;
     let cd = crate::lib_tests::cert_dir();
     let code = format!(
@@ -119,20 +117,19 @@ async fn tls_accept_times_out() -> Result<()> {
     sys::tls::accept(#cert: cert, #key: key, conn)
 }}"#
     );
-    let (ctx, mut rx) = fixture_runtime(
-        [("/test.gx", result_source(&code))],
-        &crate::TEST_REGISTER,
-        Mode::Interp,
-        |_| {},
-    )
-    .await?;
-    let res = compile_result(&ctx).await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
-    let v = next_update(&mut rx, res.exprs[0].id, deadline).await?;
-    ctx.shutdown().await;
-    assert_eq!(
-        v.to_string(),
-        r#"error:["TLSError", "TLS handshake timed out after 120s"]"#
-    );
+    // the modes wait out the timeout together
+    let run = |mode| {
+        let first = Collect::First(1);
+        collect(&code, &crate::TEST_REGISTER, mode, first, Duration::from_secs(180))
+    };
+    let [interp, jit, par, jit_par] = Mode::ALL;
+    let got = tokio::try_join!(run(interp), run(jit), run(par), run(jit_par))?;
+    for (mode, v) in Mode::ALL.into_iter().zip([got.0, got.1, got.2, got.3]) {
+        assert_eq!(
+            v[0].to_string(),
+            r#"error:["TLSError", "TLS handshake timed out after 120s"]"#,
+            "{mode:?}"
+        );
+    }
     Ok(())
 }

@@ -7,8 +7,8 @@ use anyhow::{Result, anyhow, bail};
 use graphix_package_core::{
     run,
     testing::{
-        FuseExpect, Mode, compile_result, fixture_runtime, next_update, result_source,
-        updates_until_quiet,
+        Collect, FuseExpect, Mode, collect, compile_result, fixture_runtime, next_update,
+        result_source,
     },
 };
 use netidx_value::Value;
@@ -16,52 +16,15 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 /// The first `n` values of the result of `code` run in `mode`.
-// CR claude for claude: [structure/low] collect_n, collect_settled and collect_n_blocks
-// repeat a sequence that is also written out in net.rs (net_rpc_missing_path,
-// net_no_stale_value), tls.rs (tls_accept_times_out), module_stmt.rs and several lang/
-// tests: fixture_runtime over result_source, compile_result, a deadline, next_update or
-// updates_until_quiet, then shutdown. testing.rs's private first_value and
-// eval_converged do the same, fixed to Jit. Each copy picks its own modes, which is how
-// the net.rs tests skip Par and JitPar. Fix: export one helper from testing.rs that
-// takes a Mode, the code, and either n values or a quiet window, generalising
-// first_value and eval_converged. Loop over Mode::ALL at the callers and delete the
-// copies. Also fix tcp.rs's 'the three modes' comment: there are four.
-// (tests-lib-b2-16)
 async fn collect_n(code: &str, mode: Mode, n: usize) -> Result<Vec<Value>> {
-    let (ctx, mut rx) = fixture_runtime(
-        [("/test.gx", result_source(code))],
-        &crate::TEST_REGISTER,
-        mode,
-        |_| {},
-    )
-    .await?;
-    let res = compile_result(&ctx).await?;
-    let id = res.exprs[0].id;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut out = Vec::new();
-    while out.len() < n {
-        out.push(next_update(&mut rx, id, deadline).await?);
-    }
-    ctx.shutdown().await;
-    Ok(out)
+    collect(code, &crate::TEST_REGISTER, mode, Collect::First(n), Duration::from_secs(10))
+        .await
 }
 
 /// Every value of the result of `code` run in `mode`, to quiescence.
 async fn collect_settled(code: &str, mode: Mode) -> Result<Vec<Value>> {
-    let (ctx, mut rx) = fixture_runtime(
-        [("/test.gx", result_source(code))],
-        &crate::TEST_REGISTER,
-        mode,
-        |_| {},
-    )
-    .await?;
-    let res = compile_result(&ctx).await?;
-    let id = res.exprs[0].id;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let out =
-        updates_until_quiet(&mut rx, id, Duration::from_millis(300), deadline).await?;
-    ctx.shutdown().await;
-    Ok(out)
+    let quiet = Collect::Quiet(Duration::from_millis(300));
+    collect(code, &crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10)).await
 }
 
 fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
