@@ -1593,6 +1593,18 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     // writes). Then generalized_earlier holds only for a real earlier compile, and the
     // refusal in `Connect::typecheck0_with` is worded for that case alone. probe:
     // design/review-2026-10-12/repro/x-fix-types-04.gx (x-fix-types-04)
+    // 2026-10-13 claude: Two more shapes of the use-before-write hole, found writing
+    // tests-functions-04. A forwarding let: `let g = |x| x; let t = g; let r = t("s"); t
+    // <- |x: i64| x + 1; r` checks and prints "s" (forwards() makes t generic before any
+    // writer is seen), and so does `let t = array::len; let r: i64 = t(tick ~ ["a"]); t
+    // <- select count(tick) { 2 => |a: Array<i64>| a[0]$, _ => never() }; r`, whose calls
+    // after the write produce nothing. With the write above the use both are refused.
+    // Separately, a written binding's uses do not share one instance when the cells come
+    // from a callee: `let t = |a| array::len(a); t <- never(); (t([1]), t(["s"]))`
+    // checks, while `let t = |x| [x, x]; t <- never()` used at i64 and string is refused
+    // (pinned as lang::functions::written_callback_is_one_instance). A concrete writer
+    // above the uses is still refused, so that one is a deviation from 'uses share one
+    // instance', not yet a hole.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
