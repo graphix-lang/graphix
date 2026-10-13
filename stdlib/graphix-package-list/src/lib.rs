@@ -4,7 +4,7 @@
 )]
 use graphix_compiler::node::list::{
     Iter as ListIter, cons as make_cons, from_iter as from_iter_back, is_list, is_nil,
-    len as count_list, nil as make_nil, split as get_cons, to_array,
+    nil as make_nil, split as get_cons, to_array,
 };
 use graphix_package_core::sort_values;
 use netidx::subscriber::Value;
@@ -97,12 +97,6 @@ fn fc_nth(args: &[Value]) -> Option<Value> {
 }
 
 graphix_package_core::fast_builtin!(Nth, NthEv, "list_nth", fc_nth);
-
-fn fc_len(args: &[Value]) -> Option<Value> {
-    Some(Value::I64(count_list(&args[0])? as i64))
-}
-
-graphix_package_core::fast_builtin!(Len, LenEv, "list_len", fc_len);
 
 fn fc_reverse(args: &[Value]) -> Option<Value> {
     let list = &args[0];
@@ -316,7 +310,6 @@ graphix_derive::defpackage! {
         FromArray,
         Head,
         IsEmpty,
-        Len,
         ListIterBI,
         ListIterQ,
         Nil,

@@ -58,14 +58,6 @@ impl<'k> Collection for Map<'k, '_> {
     let len = |m| 'core_map_len
 };
 
-// CR claude for claude: [perf/low] This impl overrides every method except len. So
-// `len(l)` under `use Collection::*`, or on a `c: Collection` parameter, takes the
-// derived fold: one callback instance per element, where list::len is one walk. With
-// --no-fusion on 100k elements it roughly doubles the cost of building the list. Array
-// and Map already override len with core_array_len and core_map_len. Add a core builtin
-// over the list rep (core cannot name the list package's 'list_len), use it here as
-// `let len = |l| ...`, and let list::len share it. probe:
-// design/review-2026-10-12/repro/gx-stdlib-06.gx (gx-stdlib-07)
 impl Collection for List<'_> {
     let fold = |l, init, f| 'list_fold;
     let filter_map = |l, f| 'list_filter_map;
@@ -73,5 +65,6 @@ impl Collection for List<'_> {
     let map = |l, f| 'list_map;
     let filter = |l, f| 'list_filter;
     let find = |l, f| 'list_find;
-    let find_map = |l, f| 'list_find_map
+    let find_map = |l, f| 'list_find_map;
+    let len = |l| 'core_list_len
 }

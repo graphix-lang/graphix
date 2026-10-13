@@ -3450,6 +3450,16 @@ fn array_len(args: &[Value]) -> Option<Value> {
 }
 
 crate::fast_builtin!(
+    /// `list::len` — registered here because core's `Collection`
+    /// implementation for `List` needs it; the list package binds the name.
+    ListLen, ListLenEv, "core_list_len", list_len
+);
+
+fn list_len(args: &[Value]) -> Option<Value> {
+    Some(Value::I64(graphix_compiler::node::list::len(&args[0])? as i64))
+}
+
+crate::fast_builtin!(
     /// `map::len` — registered here for the `Collection` implementation
     /// for `Map`; the map package binds the name.
     MapLen, MapLenEv, "core_map_len", map_len
@@ -3481,6 +3491,7 @@ crate::fast_builtin!(MapUnion, MapUnionEv, "core_map_union", fc_map_union);
 graphix_derive::defpackage! {
     builtins => [
         ArrayLen,
+        ListLen,
         MapLen,
         MapUnion,
         IsErr,
