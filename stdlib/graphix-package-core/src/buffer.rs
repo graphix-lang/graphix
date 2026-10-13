@@ -1,11 +1,9 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
-use graphix_compiler::{BindId, ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
+use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::Effect, errf};
 use netidx_value::{PBytes, ValArray, Value};
 
-use crate::{
-    CachedArgs, CachedVals, EvalCached, WriteTarget, fast_eval, fast_get, write_target,
-};
+use crate::{CachedArgs, CachedVals, EvalCached, WriteTarget, fast_get, write_target};
 use graphix_compiler::node::place::read_path;
 
 fn fc_bytes_to_string(args: &[Value]) -> Option<Value> {
@@ -23,28 +21,7 @@ fn fc_bytes_to_string_lossy(args: &[Value]) -> Option<Value> {
     Some(Value::String(ArcStr::from(&*String::from_utf8_lossy(&b))))
 }
 
-// CR claude for claude: [structure/low] BytesToStringLossyEv and its BytesToStringLossy
-// alias are a hand-written copy of what crate::fast_builtin! expands to, while every
-// other builtin in this file uses the macro. A change to the fast-builtin shell would
-// have to be repeated here by hand. Replace the struct, the unit_image_state!, the
-// EvalCached impl and the alias with `crate::fast_builtin!(pub(crate)
-// BytesToStringLossy, BytesToStringLossyEv, "core_bytes_to_string_lossy",
-// fc_bytes_to_string_lossy);`. (core-aux-09)
-#[derive(Debug, Default)]
-pub(crate) struct BytesToStringLossyEv;
-crate::unit_image_state!(BytesToStringLossyEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
-    const EFFECT: Effect =
-        Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_string_lossy)));
-    const NAME: &str = "core_bytes_to_string_lossy";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bytes_to_string_lossy, from)
-    }
-}
-
-pub(crate) type BytesToStringLossy = CachedArgs<BytesToStringLossyEv>;
+crate::fast_builtin!(pub(crate) BytesToStringLossy, BytesToStringLossyEv, "core_bytes_to_string_lossy", fc_bytes_to_string_lossy);
 
 fn fc_bytes_from_string(args: &[Value]) -> Option<Value> {
     let s = fast_get::<ArcStr>(args, 0)?;

@@ -1,8 +1,8 @@
 use crate::{
     encoding::for_batch_ops,
     tree::{
-        Db, KeyTyp, META_TREE, MetaStore, OpenTreeEv, TreeOpener, TreeTypes,
-        abstract_arg, blocking, get_db, insert_arg, key_arg, meta_key, value_or_null,
+        Db, KeyTyp, META_TREE, MetaStore, OpenTreeEv, TreeOpener, TreeTypes, blocking,
+        get_db, insert_arg, key_arg, meta_key, value_or_null,
     },
 };
 use ahash::AHashMap;
@@ -218,7 +218,7 @@ graphix_package_core::impl_abstract_arc!(
 );
 
 fn get_txn(cached: &CachedVals) -> Option<Arc<TxnInner>> {
-    abstract_arg::<TxnValue>(cached, 0).map(|t| t.inner.clone())
+    cached.abstract_arg::<TxnValue>(0).map(|t| t.inner.clone())
 }
 
 pub(crate) struct TxnTreeInner {
@@ -335,7 +335,7 @@ macro_rules! txn_op {
             const NAME: &str = $name;
 
             fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-                let tt = abstract_arg::<TxnTreeValue>(cached, 0)?.inner.clone();
+                let tt = cached.abstract_arg::<TxnTreeValue>(0)?.inner.clone();
                 let arg = $enc(&tt, cached)?;
                 Some((tt, arg))
             }

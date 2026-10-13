@@ -1,6 +1,6 @@
 use crate::{
     encoding::{decode_key, decode_value, encode_key},
-    tree::{Reaped, abstract_arg, blocking, get_tree_inner},
+    tree::{Reaped, blocking, get_tree_inner},
 };
 use anyhow::Result;
 use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect};
@@ -55,7 +55,7 @@ fn wrap_cursor(iter: Option<sled::Iter>, key_typ: Option<Typ>) -> Value {
 }
 
 fn get_cursor(cached: &CachedVals) -> Option<Arc<CursorInner>> {
-    abstract_arg::<CursorValue>(cached, 0).map(|c| c.inner.clone())
+    cached.abstract_arg::<CursorValue>(0).map(|c| c.inner.clone())
 }
 
 #[derive(Debug, Default)]

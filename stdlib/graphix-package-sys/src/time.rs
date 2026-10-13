@@ -3,17 +3,14 @@ use arcstr::literal;
 
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     err,
     expr::ExprId,
     image::{self, ImageBuf},
     typ::FnType,
 };
-use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, fast_eval, seam_arg, seam_tick, seam_value,
-};
+use graphix_package_core::{seam_arg, seam_tick, seam_value};
 use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError};
 use std::time::Duration;
@@ -368,16 +365,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
-// CR claude for claude: [structure/low] `time_fn!` writes out by hand the whole shell
-// that `graphix_package_core::fast_builtin!` produces: the unit struct,
-// `unit_image_state!`, an `EvalCached` with `Stateless(Some(FastCall::Plain(..)))` over
-// `fast_eval`, and the `CachedArgs` alias. So do `escape_fn!` in the str package and
-// `BytesToStringLossyEv` in core's buffer.rs, whose sibling `BytesToString` already
-// uses the macro. A change to how fast builtins are classified or imaged would miss
-// these copies. Fix: have `time_fn!` and `escape_fn!` define only the fast fn and call
-// `fast_builtin!`, as `f64_fn!` in math.rs does, and replace `BytesToStringLossyEv`
-// with one `fast_builtin!` line. netidx-admin's `ParseFingerprintEv`, `IdenticonEv` and
-// `InfoEv` are the same kind of copy. (x-builtin-effects-08)
 macro_rules! time_fn {
     ($ev:ident, $ty:ident, $fc:ident, $name:literal, |$a:ident, $b:ident| $body:expr) => {
         fn $fc(args: &[Value]) -> Option<Value> {
@@ -386,25 +373,7 @@ macro_rules! time_fn {
             Some($body)
         }
 
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-
-        graphix_package_core::unit_image_state!($ev);
-
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));
-            const NAME: &str = $name;
-
-            fn eval(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                fast_eval(ctx, $fc, from)
-            }
-        }
-
-        pub(crate) type $ty = CachedArgs<$ev>;
+        graphix_package_core::fast_builtin!(pub(crate) $ty, $ev, $name, $fc);
     };
 }
 

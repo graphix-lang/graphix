@@ -281,14 +281,6 @@ fn with_escape(esc: &Value, f: impl FnOnce(&Escape) -> Value) -> Value {
     })
 }
 
-// CR claude for claude: [structure/low] escape_fn! writes out the EvalCached impl, the
-// CachedArgs alias and unit_image_state! that fast_builtin! already generates, naming
-// its fc twice. time_fn! in sys::time and BytesToStringLossy in core's buffer.rs do the
-// same. Have escape_fn! and time_fn! define only the fast fn and invoke fast_builtin!,
-// and declare BytesToStringLossy with fast_builtin! like its neighbours. split_fn!
-// below only forwards to fast_builtin!, so delete it and call fast_builtin! from its
-// two sites. abstract_arg is defined twice, in db's tree.rs and http's lib.rs; one copy
-// as a CachedVals method in core would serve both. (x-fix-stdlib-08)
 macro_rules! escape_fn {
     ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $escape:ident) => {
         fn $fc(args: &[Value]) -> Option<Value> {

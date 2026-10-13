@@ -1241,6 +1241,14 @@ impl CachedVals {
         })
     }
 
+    /// Argument `i` as the abstract type `T` it holds.
+    pub fn abstract_arg<T: Any + Send + Sync>(&self, i: usize) -> Option<&T> {
+        match self.0.get(i)?.as_ref()? {
+            Value::Abstract(a) => a.downcast_ref::<T>(),
+            _ => None,
+        }
+    }
+
     pub fn get<T: FromValue>(&self, i: usize) -> Option<T> {
         self.0.get(i).and_then(|v| v.as_ref()).and_then(|v| v.clone().cast_to::<T>().ok())
     }

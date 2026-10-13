@@ -28,7 +28,6 @@ use netidx_value::{FromValue, ValArray, Value};
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
 use std::{
-    any::Any,
     fmt,
     marker::PhantomData,
     pin::Pin,
@@ -51,13 +50,6 @@ graphix_package_core::impl_abstract_arc!(
     ClientValue,
     static CLIENT_WRAPPER = "http::Client"
 );
-
-fn abstract_arg<T: Any + Send + Sync>(cached: &CachedVals, idx: usize) -> Option<&T> {
-    match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => a.downcast_ref::<T>(),
-        _ => None,
-    }
-}
 
 #[derive(Debug)]
 struct ServerHandle {
@@ -251,7 +243,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
         _ctx: &mut ExecCtx<'_, R, E>,
         cached: &CachedVals,
     ) -> Option<Value> {
-        let sv = abstract_arg::<ServerValue>(cached, 0)?;
+        let sv = cached.abstract_arg::<ServerValue>(0)?;
         Some(Value::String(ArcStr::from(sv.inner.addr.to_string().as_str())))
     }
 }
@@ -373,7 +365,7 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
             headers: cached.0.get(1)?.as_ref()?.clone(),
             body: cached.get::<Option<B>>(2)?,
             timeout: cached.get::<Option<Duration>>(3)?,
-            client: abstract_arg::<ClientValue>(cached, 4)?.inner.clone(),
+            client: cached.abstract_arg::<ClientValue>(4)?.inner.clone(),
             url: cached.get::<ArcStr>(5)?,
         })
     }

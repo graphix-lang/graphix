@@ -43,18 +43,8 @@ graphix_package_core::impl_abstract_arc!(
     pub(crate) static DB_WRAPPER = "db::Db"
 );
 
-pub(crate) fn abstract_arg<T: std::any::Any + Send + Sync>(
-    cached: &CachedVals,
-    idx: usize,
-) -> Option<&T> {
-    match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => a.downcast_ref::<T>(),
-        _ => None,
-    }
-}
-
 pub(crate) fn get_db(cached: &CachedVals, idx: usize) -> Option<Db> {
-    abstract_arg::<DbValue>(cached, idx).map(|d| d.inner.clone())
+    cached.abstract_arg::<DbValue>(idx).map(|d| d.inner.clone())
 }
 
 /// One sled handle per database in the process: sled locks a database's
@@ -105,7 +95,7 @@ graphix_package_core::impl_abstract_arc!(
 );
 
 pub(crate) fn get_tree_inner(cached: &CachedVals, idx: usize) -> Option<Arc<TreeInner>> {
-    abstract_arg::<TreeValue>(cached, idx).map(|t| t.inner.clone())
+    cached.abstract_arg::<TreeValue>(idx).map(|t| t.inner.clone())
 }
 
 fn wrap_tree(tree: sled::Tree, key_typ: Option<Typ>) -> Value {
