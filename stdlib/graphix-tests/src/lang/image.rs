@@ -350,26 +350,25 @@ async fn cold_and_warm(
     Ok(((cold_program, cold_values), (warm_program, warm_values)))
 }
 
-/// The header's (heap, instance table, id counts) offsets and where they
-/// sit in `image`.
 /// Where a registration image's checksum is, after its magic and format.
-// CR claude for claude: [test-gap/low] SEAL_AT and with_table's `header + 16` copy
-// write_registration's private header layout. If a field moves, with_table reseals at
-// the wrong offset, and the read then refuses every rewritten image on the checksum.
-// a_bad_registration_image_runs_cold (the huge-count case) and
-// an_instance_outside_the_heap_is_refused expect a refusal, so both stay green without
-// reaching the table checks they are named for. Assert graphix_compiler::image::sealed
-// on each rewritten image before loading it, or export the seal and offsets positions
-// from image::registration. The doc comment above SEAL_AT about the header's offsets
-// belongs on image_offsets. (tests-modules-image-06)
 const SEAL_AT: usize = 5;
 
+/// The header's (heap, instance table, id counts) offsets and where they
+/// sit in `image`. `image` is sealed at [`SEAL_AT`] and its offsets are in
+/// order, or the layout this copies from `write_registration` moved.
 fn image_offsets(image: &Bytes) -> (usize, u64, usize, usize) {
     use bytes::Buf;
+    assert!(graphix_compiler::image::sealed(image, SEAL_AT), "the seal moved");
     let mut b = &image[SEAL_AT + 4..];
     String::decode(&mut b).expect("the isa");
     let header = image.len() - b.len();
-    (header, b.get_u64(), b.get_u64() as usize, b.get_u64() as usize)
+    let (heap_at, table_at, counts_at) =
+        (b.get_u64(), b.get_u64() as usize, b.get_u64() as usize);
+    assert!(
+        heap_at as usize <= table_at && table_at <= counts_at && counts_at <= image.len(),
+        "the header moved: heap {heap_at}, table {table_at}, counts {counts_at}"
+    );
+    (header, heap_at, table_at, counts_at)
 }
 
 /// `image` with its instance table replaced by `rewrite` of it, the
@@ -383,7 +382,9 @@ fn with_table(image: &Bytes, rewrite: impl FnOnce(&[u8]) -> Vec<u8>) -> Bytes {
     out.extend_from_slice(&image[counts_at..]);
     out[header + 16..header + 24].copy_from_slice(&(counts as u64).to_be_bytes());
     graphix_compiler::image::seal(&mut out, SEAL_AT);
-    Bytes::from(out)
+    let out = Bytes::from(out);
+    assert_eq!(image_offsets(&out).3, counts, "the rewrite moved the id counts");
+    out
 }
 
 /// `image` with its first instance's offset `at`.
