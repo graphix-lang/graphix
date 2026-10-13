@@ -130,7 +130,7 @@ enum Command {
         /// the .gx and .gxi files to format
         files: Vec<PathBuf>,
         /// write nothing; list the files that would change and fail if any would
-        #[arg(long)]
+        #[arg(long, conflicts_with = "stdout")]
         check: bool,
         /// print the formatted text instead of rewriting the files
         #[arg(long)]
