@@ -326,8 +326,9 @@ imaged instance imaged. The first dispatch decodes the body
 synchronously inside `update` through the decoder the context retains,
 and binds it; nested sites inside the body are imaged in turn, so
 laziness cascades. A decode failure falls back to fresh static
-resolution. The shell maps the entry into memory, so only the pages a
-restore touches are read.
+resolution. The shell maps the entry into memory, which saves a copy; the
+checksum (`image::sealed`) reads the whole entry once at restore, so
+a lazy decode saves decode work, not I/O.
 
 Measured, the admin TUI (`milestone_image`), optimized without LTO,
 unpinned: cold 500 ms (registration 105, program compile 197, first

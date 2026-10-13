@@ -389,33 +389,11 @@ impl RegistrationCache {
         Some(self.dir().join(format!("{}.img", self.key(entry)?)))
     }
 
-    // CR claude for claude: [doc-drift/low] The comment says only the pages a restore
-    // touches are read. But `decode_registration` checks `image::sealed`, which runs a
-    // CRC over the whole image, so every page is read at load. Rewrite it to say what
-    // is true: the mapping saves a copy, the whole image is checksummed at restore, and
-    // the mapping stays valid because an entry is never rewritten in place. (shell-09)
-    /// The entry mapped into memory, with its path: only the pages a
-    /// restore touches are read, and an instance decoded later reads its
-    /// own. An entry is never rewritten in place (written to a temporary
-    /// file and renamed), so the mapping stays valid. A program entry
-    /// whose sources changed is a miss.
-    // CR claude for claude: [doc-drift/low] The doc above says only the pages a restore
-    // touches are read and that an instance decoded later reads its own. That stopped
-    // being true when decode_registration began checking image::sealed: it hashes every
-    // byte after the header, the instance heap included. So every warm start reads the
-    // whole entry first, and the I/O scales with the image size, not with what is
-    // decoded. design/program_image.md makes the same claim. Correct both to say the
-    // entry is read once in full for the checksum. If lazy reads matter for large
-    // images, a crc per instance-heap record, checked at its lazy decode, with the
-    // eager part sealed at load, would bring them back. (x-fix-fusion-06)
-    // CR claude for claude: [doc-drift/low] The doc above says only the pages a restore
-    // touches are read, and that an instance decoded later reads its own.
-    // design/program_image.md says the same. But decode_registration calls
-    // image::sealed before decoding, and sealed runs crc32 over everything after the
-    // header. Every page of the entry is therefore read on every warm start, and lazy
-    // instance decode saves decode work but no I/O. Fix both texts to say the checksum
-    // reads the whole entry. If the I/O matters, the alternative is a checksum per
-    // region that is verified when the region is first decoded. (t-image-06)
+    /// The entry mapped into memory, with its path. The mapping saves a
+    /// copy; the restore's checksum reads the whole entry once. An entry is
+    /// never rewritten in place (written to a temporary file and renamed),
+    /// so the mapping stays valid. A program entry whose sources changed
+    /// is a miss.
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = match fs::File::open(&path) {
