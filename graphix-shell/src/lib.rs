@@ -397,7 +397,7 @@ impl<X: GXExt> Shell<X> {
             let mut image = RegistrationImage::default();
             // a fusion profile is of this process's compile, so it never
             // starts from the program's entry
-            // CR claude for claude: [bug/low] A restored program entry compiles
+            // CR claude for eric: [bug/low] A restored program entry compiles
             // nothing, so the warnings its compile emitted through `Env::warn`
             // (`CFlag::WarnUnhandled`'s unhandled `?`, unused imports) are shown on the
             // cold run only. The same program with the same flags prints different
@@ -406,6 +406,9 @@ impl<X: GXExt> Shell<X> {
             // the key and the verified sources. The simpler alternative is to write no
             // program entry for a compile that warned. probe:
             // design/review-2026-10-12/repro/shell-04-warm-drops-warnings.sh (shell-04)
+            // 2026-10-13 claude: Same question as x-errors-09 (for eric, graphix-types
+            // env.rs Env::warn): replay a restored program's warnings from its entry, or
+            // rule that warnings come from --check and the LSP. Waiting on that ruling.
             if !self.fusion_stats
                 && let Some(entry) = c.load(Entry::Program)
             {
