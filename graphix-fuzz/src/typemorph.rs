@@ -443,15 +443,8 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 break;
             }
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
-            // CR claude for claude: [bug/low] alias-swap hoists any let annotation into
-            // `type Tm__0 = T` with no parameters. When `T` names a type variable (`let
-            // a: Array<'b> = [1]`), the typedef is refused with 'undeclared type
-            // variable', so the probe flips on a sound base. That is a false flip the
-            // scan records. Either skip an annotation that holds a TVar, or make its
-            // free variables the typedef's params and write `Tm__0<'b>` at the use.
-            // probe: design/review-2026-10-12/repro/fuzz-mutate-alias-swap-tvar.gx
-            // (fuzz-mutate-08)
-            let Some(t) = &b.typ else { continue };
+            // a typedef with no parameters names no type variable
+            let Some(t) = b.typ.as_ref().filter(|t| t.tvar_free()) else { continue };
             let td = ExprKind::TypeDef(Arc::new(TypeDefExpr {
                 name: Name::from(TYP),
                 params: Arc::from_iter(std::iter::empty::<(TVar, Option<Type>)>()),
@@ -728,38 +721,44 @@ pub(crate) fn for_each_reached(
             reached &= !binds_after(st, f);
         }
     }
-    // CR claude for claude: [test-gap/low] One `inner` flag for all children hides the
-    // parts of a binding form that the outer `f` still reaches. Examples: a select's
-    // scrutinee and the arms whose pattern does not bind `f`, a seq's trigger
-    // expression when its trigger pattern binds `f`, and the value of a non-rec `let f
-    // = f(..)`. calls_reached and mustreject's uses_reached then miss those uses.
-    // Typemorph offers fewer call sites, and MonoReuse builds its expected refusal
-    // sites from an incomplete value-use list, so a refusal at a missed use can read as
-    // MISPLACED. Fix: scope per child. For Select, visit the arg with `reached` and
-    // each arm with `reached && !pattern_binds(arm pattern, f)`. For a non-rec Bind,
-    // visit the value with `reached`. For Seq, visit the trigger expression with
-    // `reached`, and visit abort, flush and body with the trigger-bind test.
-    // (x-expr-walks-07)
-    let inner = reached && !binds(e, f);
+    // each child is under the binding of `f` its own scope sees
+    let mut child = |c: &Expr, reached: bool, idx: &mut usize| {
+        for_each_reached(c, f, reached, idx, visit)
+    };
     match &e.kind {
         ExprKind::Block { exprs } => stmts(exprs, f, reached, idx, visit),
         ExprKind::Seq(s) => {
             let SeqExpr { kind, trigger, abort, body } = &**s;
-            let heads = trigger
-                .iter()
-                .map(|t| t.expr())
-                .chain(abort.iter().map(|a| &**a))
-                .chain(kind.flush().into_iter().map(|a| &**a));
-            for h in heads {
-                for_each_reached(h, f, inner, idx, visit);
+            let inner = reached && !binds(e, f);
+            if let Some(t) = trigger {
+                child(t.expr(), reached, idx);
+            }
+            for h in
+                abort.iter().map(|a| &**a).chain(kind.flush().into_iter().map(|a| &**a))
+            {
+                child(h, inner, idx);
             }
             stmts(body, f, inner, idx, visit)
         }
         ExprKind::TryWith(t) => {
-            stmts(&t.body, f, inner, idx, visit);
-            stmts(&t.handler, f, inner, idx, visit)
+            stmts(&t.body, f, reached, idx, visit);
+            stmts(&t.handler, f, reached && *t.bind != *f, idx, visit)
         }
-        _ => e.for_each_child(&mut |c| for_each_reached(c, f, inner, idx, visit)),
+        ExprKind::Select(se) => {
+            child(&se.arg, reached, idx);
+            for (p, body) in se.arms.iter() {
+                let arm = reached && !pattern_binds(&p.structure_predicate, f);
+                if let Some(g) = &p.guard {
+                    child(g, arm, idx);
+                }
+                child(body, arm, idx);
+            }
+        }
+        ExprKind::Bind(b) if !b.rec => child(&b.value, reached, idx),
+        _ => {
+            let inner = reached && !binds(e, f);
+            e.for_each_child(&mut |c| child(c, inner, idx))
+        }
     }
 }
 
