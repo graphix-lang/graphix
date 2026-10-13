@@ -23,12 +23,14 @@
 //
 // Fix: 00's part (1). `now` gates on its trigger producing; a stale
 // trigger delivered as `TagValue::stale` stops the resample.
+//
+// 2026-10-12: neither builtin has a fast-call entry now (strict fusion),
+// so the region never fuses; the pin keeps the program without #[native].
 {
   let n = 0;
   select n { x if x < 2 => n <- (x ~ n) + 1, _ => never() };
   let trig = i64:1;
   let r =
-  #[native]
   { let t = sys::time::now(trig); (n, t) };
   println("@[r]");
   i64:0

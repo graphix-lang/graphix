@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: divergence (interp != jit) — FIXED, kept as regress pin.
 // Found by soak aug14d (hz0 fuzz divergence_000005) and PARKED as an
 // open question; the aug14e fix for 00/01 resolved it, and re-reading

@@ -957,11 +957,45 @@ impl Strength {
 }
 
 /// Whether `code` names `marker` as a whole name: not as the tail of a
-/// longer identifier (`error(` does not name `or(`).
+/// longer identifier (`error(` does not name `or(`); a `::member` marker
+/// is a path's member wherever it stands.
 fn mentions(code: &str, marker: &str) -> bool {
     code.match_indices(marker).any(|(i, _)| {
-        !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+        marker.starts_with("::")
+            || !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
     })
+}
+
+/// `code` with every string literal's contents blanked, so a marker in
+/// text is not a call.
+fn without_strings(code: &str) -> String {
+    let b = code.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0;
+    while i < b.len() {
+        // a raw string r#"..."#, closed by a quote and as many hashes
+        let hashes = b[i..].iter().skip(1).take_while(|&&c| c == b'#').count();
+        let raw = b[i] == b'r' && hashes > 0 && b.get(i + 1 + hashes) == Some(&b'"');
+        if raw || b[i] == b'"' {
+            let close: Vec<u8> = std::iter::once(b'"')
+                .chain(std::iter::repeat_n(b'#', if raw { hashes } else { 0 }))
+                .collect();
+            let mut j = if raw { i + hashes + 2 } else { i + 1 };
+            while j < b.len() && !b[j..].starts_with(&close) {
+                let esc = !raw && b[j] == b'\\';
+                out[j] = b' ';
+                if esc && j + 1 < b.len() {
+                    out[j + 1] = b' ';
+                    j += 1;
+                }
+                j += 1;
+            }
+            i = j + close.len();
+        } else {
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("ASCII replaced ASCII and whole UTF-8 runs")
 }
 
 /// Classify a program. Markers are matched on code lines only. The
@@ -978,7 +1012,8 @@ pub fn oracle_tier(code: &str) -> OracleTier {
             stripped.push('\n');
         }
     }
-    let code = stripped.as_str();
+    let code = without_strings(&stripped);
+    let code = code.as_str();
     // Value-nondeterministic sources: random values, wall-clock time
     // (`throttle` reads it outside sys::), a create-new open racing the
     // sibling engine in the shared sandbox, generated temp paths, netidx
@@ -993,10 +1028,10 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         "sys::time",
         "sys::net",
         "sys::process::spawn",
-        "tempdir",
-        "listener_addr",
-        "local_addr",
-        "peer_addr",
+        "::tempdir",
+        "::listener_addr",
+        "::local_addr",
+        "::peer_addr",
     ];
     if excluded.iter().any(|m| mentions(code, m)) {
         return OracleTier::Excluded;
@@ -1347,6 +1382,9 @@ pub enum Pair {
     /// hold the rejection) without saying `// expect: reject`: a rejection agrees
     /// with itself, so a pin that stopped compiling would otherwise pass.
     Rejected,
+    /// A corpus pin marked `// expect: reject` that both engines accept
+    /// (`reference` and `tested` both hold the node-walk's outcome).
+    Accepted,
     /// The check alone accepted (`reference` holds [`Outcome::Checked`])
     /// a program both engines' builds refused (`tested` holds the refusal):
     /// elaboration refused what the check accepted, a type-system bug.
@@ -1402,6 +1440,10 @@ impl Divergence {
                 "corpus pin rejected by both engines without `// expect: reject` \
                      (it no longer compiles or runs, so it pins nothing)"
             }
+            (Pair::Accepted, _) => {
+                "corpus pin marked `// expect: reject` that both engines accept \
+                     (the refusal it pins regressed)"
+            }
             (Pair::Check, _) => {
                 "the check accepted what the build refused (elaboration refused \
                      a program the definition and call-site checks passed: a \
@@ -1448,7 +1490,7 @@ impl Divergence {
             Pair::EngineDispatch => ("interp/dispatch", "jit/dispatch"),
             Pair::Route => ("in-language", "dispatch"),
             Pair::Twin => ("trace", "trace"),
-            Pair::Rejected => ("interp", "jit"),
+            Pair::Rejected | Pair::Accepted => ("interp", "jit"),
             Pair::Check => ("check", "build"),
             Pair::Par(Mode::Par) => ("interp", "interp/par"),
             Pair::Par(_) => ("interp", "jit/par"),
@@ -1548,7 +1590,7 @@ pub async fn check_verdict(
     timeout: Duration,
 ) -> (Option<Divergence>, Verdict) {
     let tier = oracle_tier(code);
-    let pairs = comparisons(code, tier, sessions_enabled());
+    let pairs = comparisons(code, sessions_enabled());
     let mut o = Oracle::new(code, tier, timeout);
     o.make(&[Pair::Engine]).await;
     if let Some(d) = o.check_pair().await {
@@ -1607,7 +1649,7 @@ impl Pair {
             Pair::Warm(m, r) => {
                 (session(m, r, Session::Cold), session(m, r, Session::Warm))
             }
-            Pair::Twin | Pair::Rejected | Pair::Check => return None,
+            Pair::Twin | Pair::Rejected | Pair::Accepted | Pair::Check => return None,
         })
     }
 
@@ -1625,30 +1667,13 @@ impl Pair {
 /// Every comparison a subject owes, in the order they are judged: the
 /// engines, then (a callable) the dispatch route's engines and the route
 /// pair, then each engine's image sessions, then the forked runs. A
-/// program whose values are not comparable owes only its sessions, at
-/// kind strength.
-fn comparisons(code: &str, tier: OracleTier, sessions: bool) -> Vec<Pair> {
-    // CR claude for claude: [bug/medium] An Excluded program owes no Pair::Engine (or
-    // Par) comparison at all. Its interp and jit runs are made, but they feed only
-    // check_pair, which looks at the case where both engines refuse. So one engine
-    // running while the other refuses to compile or fails at run time is never
-    // reported. That covers every rand::, sys::time, sys::net and tempdir program.
-    // Strength::of already maps Excluded to Strength::Kind, which compares no values,
-    // so Engine and Par should be pushed for every tier, with only the twin check
-    // staying value-gated. The tier itself is also over-wide: oracle_tier matches
-    // markers with `contains` on the source, so a string literal (`"throttle"`) or a
-    // binding name (`local_addr`, `tempdir`) turns a pure program Excluded. Matching on
-    // the parsed program's paths, outside literals and binding names, would fix that.
-    // Probe: design/review-2026-10-12/repro/fuzz-lib-a-03.sh shows a #[native]
-    // interp-vs-jit split that prints DIVERGENCE plain and EXCLUDED with `let s =
-    // "throttle";` added or with the binding renamed `local_addr`. (fuzz-lib-a-03)
-    let values = tier != OracleTier::Excluded;
-    let mut out = Vec::new();
-    if values {
-        out.push(Pair::Engine);
-        if callable::has_header(code) {
-            out.extend([Pair::EngineDispatch, Pair::Route]);
-        }
+/// program whose values are not comparable owes them all at kind
+/// strength.
+fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
+    // an Excluded program still owes every comparison of outcome kinds
+    let mut out = vec![Pair::Engine];
+    if callable::has_header(code) {
+        out.extend([Pair::EngineDispatch, Pair::Route]);
     }
     if sessions {
         for &route in session_routes(code) {
@@ -1657,7 +1682,7 @@ fn comparisons(code: &str, tier: OracleTier, sessions: bool) -> Vec<Pair> {
             }
         }
     }
-    if values && par_enabled() {
+    if par_enabled() {
         out.extend([Pair::Par(Mode::Par), Pair::Par(Mode::JitPar)]);
     }
     out
@@ -1969,43 +1994,16 @@ impl<'a> Oracle<'a> {
     /// decided something or the program is excluded. A contained callable
     /// is unsure: its runs are four, the budget's race decides it.
     fn verdict(&self) -> Verdict {
-        // CR claude for claude: [bug/low] The Excluded tier wins here before the Engine
-        // runs are read. Two engines that both reject an excluded program therefore get
-        // Verdict::Excluded, never Rejected. `run_regression` calls
-        // `undeclared_rejection` only for Rejected, so an excluded pin that stopped
-        // compiling, or now fails at run time in both engines, passes the outcome half
-        // of regress. The manifest row stays "excluded". Only the fusion half can still
-        // catch it, and only when the pin's recorded fused count was non-zero: it then
-        // reports "LOST fusion", which names the wrong cause. A rejection is a compile
-        // verdict, and design/graphix_fuzz.md runs compile verdicts at every tier. Fix:
-        // match on `Verdict::of` for the Engine runs first, and return Excluded only in
-        // place of Ran, Contained or Unsure. Probe:
-        // design/review-2026-10-12/repro/fuzz-lib-a-04.sh (`let t = sys::time::now(); t
-        // + 1` prints EXCLUDED; the same error without sys::time prints AGREE
-        // (reject)). (fuzz-lib-a-04)
-        // CR claude for claude: [bug/medium] The Excluded tier returns before the
-        // engines' outcomes are read, so an Excluded program that both engines reject
-        // gets verdict `excluded`, the same as one that compiles and runs.
-        // run_regression calls undeclared_rejection only for Verdict::Rejected, and the
-        // outcome manifest records `excluded` either way. As a result `// expect:
-        // reject` is not enforced in either direction on an Excluded pin. An unmarked
-        // pin that stopped compiling is never flagged. A marked pin that starts
-        // compiling, like
-        // select-guard-prenarrow-bind-aug2026/02_guard_leaks_fn_value.gx (excluded by
-        // `sys::` plus `iter(`), passes at Kind strength. A compile verdict owes
-        // nothing to values, as check_pair already says. Fix: return Rejected when both
-        // engine runs are CompileErr, whatever the tier. Also make run_regression fail
-        // a pin carrying EXPECT_REJECT whose engine pair is not CompileErr/CompileErr.
-        // Then re-bless the outcome manifest. probe:
-        // design/review-2026-10-12/repro/fuzz-lib-b-02.sh (fuzz-lib-b-02)
+        let Some((a, b)) = Pair::Engine.runs() else { unreachable!() };
+        let v = Verdict::of(self.get(a), self.get(b));
+        // a rejection is a compile verdict, owed at every tier
         if self.tier == OracleTier::Excluded {
-            return Verdict::Excluded;
+            return if v == Verdict::Rejected { v } else { Verdict::Excluded };
         }
         if self.confirmed {
             return Verdict::Unsure;
         }
-        let Some((a, b)) = Pair::Engine.runs() else { unreachable!() };
-        match Verdict::of(self.get(a), self.get(b)) {
+        match v {
             Verdict::Contained if callable::has_header(self.code) => Verdict::Unsure,
             v => v,
         }
@@ -2077,7 +2075,7 @@ async fn first_pass(
     sessions: bool,
     timeout: Duration,
 ) -> BatchVerdict {
-    let pairs = comparisons(code, tier, sessions);
+    let pairs = comparisons(code, sessions);
     let mut o = Oracle::new(code, tier, timeout);
     o.make(&[Pair::Engine]).await;
     if o.check_pair().await.is_some() {
@@ -3341,9 +3339,8 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
         }
     }
     for (i, v) in verdicts.iter().enumerate() {
-        if *v == Some(Verdict::Rejected)
-            && let Some(d) = undeclared_rejection(entries[i].1, timeout * 4).await
-        {
+        let Some(v) = v else { continue };
+        if let Some(d) = misdeclared(entries[i].1, *v, timeout * 4).await {
             regressions.push((entries[i].0.to_string(), d));
         }
     }
@@ -3437,13 +3434,19 @@ pub fn outcome_mismatches(manifest: &str, r: &Regression) -> Vec<String> {
 /// reject it (a typechecker refusal pinned as a refusal).
 pub const EXPECT_REJECT: &str = "// expect: reject";
 
-/// A pin both engines reject that does not say so, as a divergence.
-async fn undeclared_rejection(prog: &str, timeout: Duration) -> Option<Divergence> {
-    if prog.lines().any(|l| l.trim() == EXPECT_REJECT) {
-        return None;
-    }
+/// A pin whose verdict contradicts its `// expect: reject` marker: both
+/// engines reject a pin without it, or run one with it. A rejection
+/// agrees with itself, so the marker is what tells the two apart.
+async fn misdeclared(prog: &str, verdict: Verdict, timeout: Duration) -> Option<Divergence> {
+    let marked = prog.lines().any(|l| l.trim() == EXPECT_REJECT);
+    let pair = match (marked, verdict) {
+        (false, Verdict::Rejected) => Pair::Rejected,
+        (true, Verdict::Ran | Verdict::Contained) => Pair::Accepted,
+        _ => return None,
+    };
     let outcome = run_program(prog, Mode::Interp, timeout).await;
-    if !matches!(outcome, Outcome::CompileErr(_) | Outcome::RuntimeErr(_)) {
+    let rejected = matches!(outcome, Outcome::CompileErr(_) | Outcome::RuntimeErr(_));
+    if rejected != (pair == Pair::Rejected) {
         return None;
     }
     Some(Divergence {
@@ -3451,7 +3454,7 @@ async fn undeclared_rejection(prog: &str, timeout: Duration) -> Option<Divergenc
         reference: outcome.clone(),
         tested: outcome,
         tier: oracle_tier(prog),
-        pair: Pair::Rejected,
+        pair,
     })
 }
 
@@ -6295,9 +6298,15 @@ mod trace_probes {
         }
     }
 
-    /// A marker names a builtin, not the tail of a longer name.
+    /// A marker names a builtin, not the tail of a longer name, a string's
+    /// text or a binding's name.
     #[test]
     fn oracle_markers_are_whole_names() {
+        assert_eq!(oracle_tier("{ let s = \"throttle\"; s }"), OracleTier::Exact);
+        assert_eq!(oracle_tier("{ let s = r#\"rand::\"#; s }"), OracleTier::Exact);
+        assert_eq!(oracle_tier("{ let local_addr = 1; local_addr }"), OracleTier::Exact);
+        assert_eq!(oracle_tier("{ let s = \"\\\"rand::\"; s }"), OracleTier::Exact);
+        assert_eq!(oracle_tier("rand::rand()"), OracleTier::Excluded);
         let read = "sys::fs::read_all(\"/x\")";
         assert_eq!(oracle_tier(read), OracleTier::FinalValues);
         let err = "{ let e = error(`X); sys::fs::read_all(\"/x\") }";
