@@ -637,15 +637,8 @@ run!(
     array_map_union_callback_push_front,
     ARRAY_MAP_UNION_CALLBACK_PUSH_FRONT,
     |v: Result<&Value>| {
-        match v {
-            Ok(Value::Array(a)) => matches!(
-                &a[..],
-                [Value::Array(_), Value::Array(_), Value::String(s)] if &**s == "b"
-            ),
-            _ => false,
-        }
-    };
-    FuseExpect::Jit
+        format!("{}", v.unwrap()) == r#"[[["name", "z"]], [["name", "a"]], "b"]"#
+    }
 );
 
 const ARRAY_WINDOW0: &str = r#"
@@ -1046,6 +1039,14 @@ run!(hof_str_find, HOF_STR_FIND, |v: Result<&Value>| matches!(
     Ok(Value::String(s)) if &**s == "bb"
 ));
 
+// found at the last element
+const HOF_STR_FIND_LAST: &str =
+    r#"array::find(["a", "bb", "ccc"], |s| str::len(s) == 3)"#;
+run!(hof_str_find_last, HOF_STR_FIND_LAST, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::String(s)) if &**s == "ccc"
+));
+
 const HOF_STR_FIND_NONE: &str = r#"array::find(["a", "b"], |s| str::len(s) == 9)"#;
 run!(hof_str_find_none, HOF_STR_FIND_NONE, |v: Result<&Value>| matches!(
     v,
@@ -1079,7 +1080,7 @@ const HOF_VARIANT_FILTER: &str = r#"
 array::filter([`Red, `Green, `Red], |v| select v { `Red => true, _ => false })
 "#;
 run!(hof_variant_filter, HOF_VARIANT_FILTER, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if a.len() == 2)
+    format!("{}", v.unwrap()) == r#"["Red", "Red"]"#
 });
 
 // A Value-shape variant element returned by find after a dropped
@@ -1256,23 +1257,28 @@ run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
     Ok(Value::I64(6))
 ); FuseExpect::Jit);
 
-// filter: the leaf drops on both edges; no-match and all-match covered.
-// CR claude for claude: [test-gap/low] The comment above claims no-match and all-match
-// coverage, but this filter has one match and one non-match, and the predicate checks
-// only `a.len() == 1`. A filter that kept ((1, 2), 0) instead of ((5, 6), 1) would
-// pass. The HOF block's heading promises a found-at-last path, but every find in it
-// matches a middle element (hof_str_find, hof_variant_find). hof_variant_filter checks
-// only the length (`[`Red, `Green]` would pass), and
-// array_map_union_callback_push_front checks only its last element. Fix: pin exact
-// values in these predicates, and add a found-at-last find plus no-match and all-match
-// filters, or correct the comments. (tests-lib-a-06)
+// filter over a tuple leaf keeps a match whole; a no-match and an
+// all-match filter too.
 const HOF_LEAF_FILTER: &str = r#"
 array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 3)
 "#;
-run!(hof_leaf_filter, HOF_LEAF_FILTER, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::Array(a)) if a.len() == 1
-));
+run!(hof_leaf_filter, HOF_LEAF_FILTER, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[[i64:5, i64:6], i64:1]]"
+});
+
+const HOF_LEAF_FILTER_NONE: &str = r#"
+array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 9)
+"#;
+run!(hof_leaf_filter_none, HOF_LEAF_FILTER_NONE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[]"
+});
+
+const HOF_LEAF_FILTER_ALL: &str = r#"
+array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 0)
+"#;
+run!(hof_leaf_filter_all, HOF_LEAF_FILTER_ALL, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[[i64:1, i64:2], i64:0], [[i64:5, i64:6], i64:1]]"
+});
 
 // A string leaf read twice in the body.
 const HOF_LEAF_STRING_TWICE: &str = r#"
