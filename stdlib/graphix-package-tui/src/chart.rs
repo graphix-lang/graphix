@@ -118,13 +118,9 @@ struct DatasetW<X: GXExt> {
 
 impl<X: GXExt> DatasetW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
-        #[derive(FromValue)]
-        struct Fields {
-            data: u64,
-        }
         let p = DatasetProps::compile(gx, &v).await.context("dataset")?;
-        let Fields { data } = v.cast_to()?;
-        let mut t = Self { p, data_ref: gx.compile_ref(data).await?, data: vec![] };
+        let mut t =
+            Self { p, data_ref: gx.compile_field(&v, "data").await?, data: vec![] };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(&v)?;
         }
@@ -205,13 +201,8 @@ pub(super) struct ChartW<X: GXExt> {
 
 impl<X: GXExt> ChartW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            datasets: u64,
-        }
         let p = Props::compile(&gx, &v).await.context("chart")?;
-        let Fields { datasets } = v.cast_to()?;
-        let datasets_ref = gx.compile_ref(datasets).await?;
+        let datasets_ref = gx.compile_field(&v, "datasets").await?;
         let mut t = Self { gx, p, datasets_ref, datasets: vec![] };
         if let Some(v) = t.datasets_ref.last.take() {
             t.set_datasets(v).await?;

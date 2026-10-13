@@ -163,13 +163,8 @@ pub(super) struct CanvasW<X: GXExt> {
 
 impl<X: GXExt> CanvasW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            shapes: u64,
-        }
         let p = Props::compile(&gx, &v).await.context("canvas")?;
-        let Fields { shapes } = v.cast_to()?;
-        let shapes_ref = gx.compile_ref(shapes).await?;
+        let shapes_ref = gx.compile_field(&v, "shapes").await?;
         let mut t = Self { gx, p, shapes_ref, shapes: Vec::new() };
         if let Some(v) = t.shapes_ref.last.take() {
             t.set_shapes(v).await?;

@@ -87,13 +87,8 @@ pub(super) struct BarChartW<X: GXExt> {
 
 impl<X: GXExt> BarChartW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Data {
-            data: u64,
-        }
         let p = Props::compile(&gx, &v).await.context("bar_chart")?;
-        let Data { data } = v.cast_to().context("bar_chart data")?;
-        let data_ref = gx.compile_ref(data).await?;
+        let data_ref = gx.compile_field(&v, "data").await?;
         let mut t = Self { gx, p, data_ref, data: vec![] };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(v).await?;

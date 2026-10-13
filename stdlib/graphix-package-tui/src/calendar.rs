@@ -69,13 +69,8 @@ pub(super) struct CalendarW<X: GXExt> {
 
 impl<X: GXExt> CalendarW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            events: u64,
-        }
         let p = Props::compile(&gx, &v).await.context("calendar")?;
-        let Fields { events } = v.cast_to().context("calendar fields")?;
-        let events_ref = gx.compile_ref(events).await?;
+        let events_ref = gx.compile_field(&v, "events").await?;
         let mut t = Self { p, events_ref, events: CalendarEventStore::default() };
         if let Some(v) = t.events_ref.last.take() {
             t.set_events(&v)?;
