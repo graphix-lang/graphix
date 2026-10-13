@@ -20,7 +20,7 @@ use poolshark::global::GPooled;
 use ratatui::{
     Terminal,
     backend::{Backend, TestBackend},
-    buffer::Buffer,
+    buffer::{Buffer, Cell},
     layout::Rect,
 };
 use std::time::{Duration, Instant};
@@ -292,18 +292,18 @@ impl TuiTestHarness {
         Ok(())
     }
 
-    /// Quick "did anything render at this cell" probe.
-    // CR claude for claude: [dead/low] Neither cell_at nor render_through_updates has a
-    // caller in graphix or in netidx's graphix-package-netidx-admin.
-    // render_through_updates also paces updates with fixed 10 ms sleeps, which
-    // next_update replaced. Delete render_through_updates. Delete cell_at, or turn it
-    // into the style-aware cell accessor tests-tui-06 asks for. (tests-tui-09)
-    pub fn cell_at(&mut self, x: u16, y: u16) -> Result<String> {
+    pub fn assert_cell(&mut self, x: u16, y: u16, expected: &Cell) -> Result<()> {
         let buf = self.render()?;
         if x >= buf.area.width || y >= buf.area.height {
             bail!("cell ({x}, {y}) outside render area {:?}", buf.area);
         }
-        Ok(buf[(x, y)].symbol().to_string())
+        let actual = &buf[(x, y)];
+        assert_eq!(
+            (actual.symbol(), actual.fg, actual.bg, actual.modifier),
+            (expected.symbol(), expected.fg, expected.bg, expected.modifier),
+            "cell ({x}, {y})"
+        );
+        Ok(())
     }
 
     /// Compile a graphix-defined function (lambda) by its module-qualified
@@ -332,30 +332,11 @@ impl TuiTestHarness {
         self.gx.call(id, args)?;
         self.drain().await
     }
-
-    /// Drive the widget through several reactive update cycles,
-    /// rendering after each.
-    pub async fn render_through_updates(&mut self, ticks: usize) -> Result<()> {
-        for _ in 0..ticks {
-            self.drain().await?;
-            let _ = self.render()?;
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        Ok(())
-    }
 }
 
 /// Render a `Buffer` into one `String` per row by concatenating each
 /// cell's `symbol()`. Empty / overdrawn cells render as a single space;
 /// a wide glyph leaves a trailing space for the cell after it.
-// CR claude for claude: [test-gap/low] Every TUI test asserts through this symbol-only
-// rendering, so no test can see a style. A broken ColorV/ModifierV/StyleV decode (a
-// wrong Rgb channel or a renamed field) passes the whole suite, as does every #style
-// and #highlight_style prop. The list and table #selected cases in widgets_test cannot
-// fail when the selection is ignored. Add a style-aware assertion to TuiTestHarness
-// that compares (symbol, fg, bg, modifiers) per cell. Pin one Rgb + Bold span, one
-// Indexed color, and one highlight_style selection each for list and table. This
-// accessor could replace cell_at (see tests-tui-09). (tests-tui-06)
 fn buffer_lines(buf: &Buffer) -> Vec<String> {
     let mut out = Vec::with_capacity(buf.area.height as usize);
     for y in 0..buf.area.height {

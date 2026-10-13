@@ -6,6 +6,10 @@
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
+use ratatui::{
+    buffer::Cell,
+    style::{Color, Modifier, Style},
+};
 
 #[tokio::test]
 async fn text_compiles_and_renders() -> Result<()> {
@@ -519,4 +523,69 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
         "the child saw an event"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn span_styles_keep_rgb_indexed_and_bold() -> Result<()> {
+    let mut h = TuiTestHarness::new(r#"
+use tui::{line, span, style, text::text};
+let result = text(&[line([
+  span(#style: style(#fg: `Rgb({r: 12, g: 34, b: 56}), #bg: `Indexed(123), #add_modifier: [`Bold]), "R"),
+  span(#style: style(#fg: `Indexed(67)), "I")
+])])
+"#).await?;
+    h.assert_cell(
+        0,
+        0,
+        Cell::new("R").set_style(
+            Style::new()
+                .fg(Color::Rgb(12, 34, 56))
+                .bg(Color::Indexed(123))
+                .add_modifier(Modifier::BOLD),
+        ),
+    )?;
+    h.assert_cell(1, 0, Cell::new("I").set_style(Style::new().fg(Color::Indexed(67))))?;
+    h.assert_cell(2, 0, &Cell::new(" "))
+}
+
+#[tokio::test]
+async fn list_styles_highlight_only_the_selected_row() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::{line, style, list::list};
+let result = list(#selected: &1,
+  #highlight_style: &style(#fg: `Yellow, #bg: `Blue, #add_modifier: [`Bold]),
+  &[line("A"), line("B")])
+"#,
+    )
+    .await?;
+    h.assert_cell(0, 0, &Cell::new("A"))?;
+    h.assert_cell(
+        0,
+        1,
+        Cell::new("B").set_style(
+            Style::new().fg(Color::Yellow).bg(Color::Blue).add_modifier(Modifier::BOLD),
+        ),
+    )
+}
+
+#[tokio::test]
+async fn table_styles_highlight_only_the_selected_row() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::{line, style, table::{cell, row, table}};
+let result = table(#selected: &1,
+  #row_highlight_style: &style(#fg: `Green, #bg: `Red, #add_modifier: [`Reversed]),
+  &[&row([cell(line("A"))]), &row([cell(line("B"))])])
+"#,
+    )
+    .await?;
+    h.assert_cell(0, 0, &Cell::new("A"))?;
+    h.assert_cell(
+        0,
+        1,
+        Cell::new("B").set_style(
+            Style::new().fg(Color::Green).bg(Color::Red).add_modifier(Modifier::REVERSED),
+        ),
+    )
 }

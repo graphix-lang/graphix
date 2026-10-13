@@ -5,7 +5,7 @@ use crate::testing::TuiTestHarness;
 use anyhow::{Context, Result, bail};
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use graphix_package_core::testing::PackageRef;
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Duration};
 
 const VIEWPORT: (u16, u16) = (80, 24);
 
@@ -53,9 +53,17 @@ async fn every_example_renders() -> Result<()> {
     assert!(names.len() >= 60, "examples dir looks wrong: {} files", names.len());
     let mut failures = vec![];
     for name in names {
-        let r = async {
+        let r: Result<()> = async {
             let mut h = harness(&name).await?;
-            h.render_through_updates(3).await
+            h.drain().await?;
+            h.render()?;
+            for _ in 0..3 {
+                if !h.next_update(Duration::from_millis(10)).await? {
+                    break;
+                }
+                h.render()?;
+            }
+            Ok(())
         }
         .await;
         if let Err(e) = r {
