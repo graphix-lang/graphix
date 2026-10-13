@@ -287,18 +287,12 @@ Falls back to this mode when tree-sitter is not available.
                         "]" @font-lock-misc-punctuation-face)))
     "Tree-sitter font-lock rules for Graphix.")
 
-  ;; CR claude for claude: [bug/low] No rule covers a line whose parent is trait_def,
-  ;; impl_def, use_group, union_type, struct_pattern or a variant payload. It falls
-  ;; through to `no-node`, so indent-region puts the members of `trait Show {..}`, `impl
-  ;; Show for i64 {..}` and `use sys::{..}` at column 0. Add `parent-is` rules for those
-  ;; nodes. The shared queries/indents.scm has the same holes, plus try_with and list,
-  ;; so Helix and Zed do not indent inside `try { .. } with(e) { .. }` or `[< .. >]`;
-  ;; add them to its @indent list too. (ide-tooling-08)
   (defvar graphix--treesit-indent-rules
     `((graphix
        ((node-is "}") parent-bol 0)
        ((node-is "]") parent-bol 0)
        ((node-is ")") parent-bol 0)
+       ((node-is ">]") parent-bol 0)
        ((parent-is "sig_block") parent-bol ,graphix-indent-offset)
        ((parent-is "block") parent-bol ,graphix-indent-offset)
        ((parent-is "select") parent-bol ,graphix-indent-offset)
@@ -314,6 +308,14 @@ Falls back to this mode when tree-sitter is not available.
        ((parent-is "apply_args") parent-bol ,graphix-indent-offset)
        ((parent-is "lambda") parent-bol ,graphix-indent-offset)
        ((parent-is "match_arm") parent-bol ,graphix-indent-offset)
+       ((parent-is "trait_def") parent-bol ,graphix-indent-offset)
+       ((parent-is "impl_def") parent-bol ,graphix-indent-offset)
+       ((parent-is "use_group") parent-bol ,graphix-indent-offset)
+       ((parent-is "union_type") parent-bol ,graphix-indent-offset)
+       ((parent-is "struct_pattern") parent-bol ,graphix-indent-offset)
+       ((parent-is "variant") parent-bol ,graphix-indent-offset)
+       ((parent-is "variant_pattern") parent-bol ,graphix-indent-offset)
+       ((parent-is "variant_type") parent-bol ,graphix-indent-offset)
        (no-node parent-bol 0)))
     "Tree-sitter indentation rules for Graphix.")
 
