@@ -767,33 +767,21 @@ struct Settings<'a> {
 impl<'a> Settings<'a> {
     fn of(
         addr: &'a ArcStr,
-        cert: &Option<Value>,
-        key: &Option<Value>,
-        max_connections: &Option<Value>,
-        max_body: &Option<Value>,
+        cert: &Value,
+        key: &Value,
+        max_connections: &Value,
+        max_body: &Value,
     ) -> std::result::Result<Self, Value> {
+        // plain HTTP only when both are null, never because one is missing
         let tls = match (cert, key) {
-            (Some(Value::Bytes(cert)), Some(Value::Bytes(key))) => {
+            (Value::Bytes(cert), Value::Bytes(key)) => {
                 Some(build_tls_acceptor(cert, key)?)
             }
-            // CR claude for claude: [bug/high] An absent cert or key (bottom, or an
-            // async read not yet answered) is treated as an explicit null, so
-            // HttpServe::update starts a plaintext server whenever addr is a string.
-            // With #cert/#key read by sys::fs::read_all_bin(..)$ the server serves
-            // plain HTTP until the reads land, and forever if one fails: a deployment
-            // configured for TLS exposes its handler unencrypted. It also answers
-            // Ok(server) fired while arguments are bottom, against the rule that a
-            // bottomed argument bottoms the invocation; absent max_connections/max_body
-            // silently take defaults the same way. Fix: in HttpServe::update start only
-            // when every argument holds a value (bottom otherwise, server stopped, as
-            // the Invocation helper in graphix-package-core decides), and here accept
-            // only (Some(Null), Some(Null)) as plain HTTP. probe:
-            // design/review-2026-10-12/repro/http-sqlite-db1-01.gx (http-sqlite-db1-01)
-            (Some(Value::Null) | None, Some(Value::Null) | None) => None,
+            (Value::Null, Value::Null) => None,
             _ => return Err(http_err("both cert and key must be provided for TLS")),
         };
         let max_connections = match max_connections {
-            Some(Value::I64(n)) => usize::try_from(*n)
+            Value::I64(n) => usize::try_from(*n)
                 .ok()
                 .filter(|n| (1..=Semaphore::MAX_PERMITS).contains(n))
                 .ok_or_else(|| {
@@ -805,7 +793,7 @@ impl<'a> Settings<'a> {
             _ => 768,
         };
         let max_body = match max_body {
-            Some(Value::I64(n)) => usize::try_from(*n).map_err(|_| {
+            Value::I64(n) => usize::try_from(*n).map_err(|_| {
                 http_err(format_args!("max_body must be at least 0, got {n}"))
             })?,
             _ => DEFAULT_MAX_BODY,
@@ -975,10 +963,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
             || max_body_fired
         {
             self.stop();
-            if let Some(Value::String(addr)) = &addr {
-                let s = Settings::of(addr, &cert, &key, &max_conns, &max_body);
-                started = Some(s.and_then(|s| self.start(ctx, s)).unwrap_or_else(|e| e));
-            }
+            // a bottom argument bottoms the call, and no server runs
+            started = Some(match (&addr, &cert, &key, &max_conns, &max_body) {
+                (
+                    Some(Value::String(addr)),
+                    Some(cert),
+                    Some(key),
+                    Some(mc),
+                    Some(mb),
+                ) => {
+                    let s = Settings::of(addr, cert, key, mc, mb);
+                    Some(s.and_then(|s| self.start(ctx, s)).unwrap_or_else(|e| e))
+                }
+                _ => None,
+            });
         }
         // CR claude for claude: [perf/medium] Each connection sends its own
         // HttpReqEvent under the server's one BindId, and the runtime delivers one
@@ -999,7 +997,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         }
         self.handler.update(ctx);
         match started {
-            Some(v) => self.out.set(TagValue::fired(v)),
+            Some(Some(v)) => self.out.set(TagValue::fired(v)),
+            Some(None) => self.out.set_bottom(true),
             None => self.out.ride(),
         }
     }
@@ -1025,15 +1024,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
 
     /// The server stops, its connections and pending requests dropped, and
     /// starts again at the wake on the socket it keeps.
-    // CR claude for claude: [bug/low] `sleep` aborts the server and its connections but
-    // keeps `self.out`. At a wake where `addr` is not a string (bottom), `update`
-    // starts nothing and rides the old output, so the aborted server's handle stands as
-    // the call's value. `http::server_addr` then reports an address nothing serves, and
-    // a request to it fails. design/async_sleep_outputs.md lists the HTTP server among
-    // the builtins that must clear their output in `sleep`. Set `self.out =
-    // TagValue::phantom()` here, as `Throttle::sleep` and the other restarting builtins
-    // do. probe: design/review-2026-10-12/repro/x-node-contract-03.gx
-    // (x-node-contract-03)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
@@ -1043,6 +1033,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
             l.conns.0.lock().abort_all();
         }
         self.slept = true;
+        self.out = TagValue::phantom();
         self.handler.sleep(ctx);
     }
 }

@@ -1,6 +1,10 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{Collect, FuseExpect, Mode, collect},
+};
 use netidx::subscriber::Value;
+use std::time::Duration;
 
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
@@ -309,3 +313,53 @@ run!(http_rest_post, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "POST true true x")
 }; FuseExpect::Jit);
+
+// A cert that has not arrived is not a missing one: no server runs, plain
+// or otherwise, until every argument holds a value.
+run!(http_serve_waits_for_its_cert, r#"{
+    let cert: [bytes, null] = never();
+    let server = http::serve(
+        #addr: "127.0.0.1:0",
+        #cert: cert,
+        #key: null,
+        #handler: |req: http::Request| {body: "plain", headers: [], status: u16:200, url: ""}
+    );
+    any(server ~ "started", sys::time::timer(duration:200.ms, false) ~ "waiting")
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "waiting")
+}; FuseExpect::None);
+
+/// A server that slept and wakes with no address gives no handle: the old
+/// one, aborted at the sleep, does not stand as its value.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_serve_forgets_its_server_asleep() -> Result<()> {
+    const CODE: &str = r#"{
+    let n = 0;
+    n <- sys::time::timer(duration:300.ms, false) ~ 1;
+    n <- sys::time::timer(duration:600.ms, false) ~ 2;
+    let addr = select n { 0 => "127.0.0.1:0", _ => never() };
+    let handler = |req: http::Request| {body: "hello", headers: [], status: u16:200, url: ""};
+    let v = select n % 2 == 0 {
+        true => http::server_addr(http::serve(#addr: addr, #handler: handler)$),
+        false => "asleep"
+    };
+    let client = http::default_client(null)$;
+    select v {
+        "asleep" => "-",
+        a => {
+            let resp = http::request(#timeout: duration:200.ms, client, "http://[a]/");
+            select resp { error as _ => "error", rs => rs.body }
+        }
+    }
+}"#;
+    for mode in Mode::ALL {
+        let quiet = Collect::Quiet(Duration::from_millis(1000));
+        let got =
+            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
+                .await?;
+        let want: Vec<Value> =
+            ["hello", "-"].into_iter().map(|s| Value::String(s.into())).collect();
+        assert_eq!(got, want, "{mode:?}");
+    }
+    Ok(())
+}
