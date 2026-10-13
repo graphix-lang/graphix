@@ -12,7 +12,7 @@ use crate::{
 };
 use ahash::AHashMap;
 use anyhow::{Context, Result};
-use graphix_compiler::BindId;
+use graphix_compiler::{BindId, FAILURE_TARGET};
 use graphix_package::Stop;
 use graphix_rt::{CompExp, GXExt, GXHandle, Ref};
 use iced_core::{InputMethod, Size, clipboard, mouse, window};
@@ -134,6 +134,42 @@ const RESIZE_RENDER_PERIOD: Duration = Duration::from_millis(16);
 /// `RESIZE_RENDER_PERIOD`. The size ref is written once per drag.
 const RESIZE_END_DEBOUNCE: Duration = Duration::from_millis(200);
 
+fn open_windows(
+    bids: &[BindId],
+    mut open: impl FnMut(BindId) -> Result<()>,
+) -> Result<()> {
+    let mut first_error = None;
+    for &bid in bids {
+        if let Err(e) = open(bid) {
+            error!(target: FAILURE_TARGET, "open window: {e:?}");
+            first_error.get_or_insert(e);
+        }
+    }
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_window_does_not_skip_later_windows() {
+        let bids = [BindId::new(), BindId::new(), BindId::new()];
+        let mut visited = 0;
+        let result = open_windows(&bids, |bid| {
+            assert_eq!(bid, bids[visited]);
+            visited += 1;
+            if visited == 2 { Ok(()) } else { anyhow::bail!("window {visited}") }
+        });
+        assert_eq!(visited, 3);
+        assert_eq!(result.unwrap_err().to_string(), "window 1");
+        assert!(open_windows(&bids, |_| Ok(())).is_ok());
+    }
+}
+
 impl<X: GXExt> GuiHandler<X> {
     fn window_mut(&mut self, id: WindowId) -> Option<&mut TrackedWindow<X>> {
         self.windows.get_mut(self.win_to_bid.get(&id)?)
@@ -149,13 +185,13 @@ impl<X: GXExt> GuiHandler<X> {
         }
     }
 
-    fn finish(&mut self, event_loop: &ActiveEventLoop) {
+    fn finish(&mut self, event_loop: &ActiveEventLoop, result: Result<()>) {
         self.windows.clear();
         self.win_to_bid.clear();
         self.pending.clear();
         self.gpu = None;
         if let Some(s) = self.stop.take() {
-            let _ = s.send(Ok(()));
+            let _ = s.send(result);
         }
         event_loop.exit();
     }
@@ -214,18 +250,18 @@ impl<X: GXExt> GuiHandler<X> {
         }
         self.closed.retain(|bid| bids.contains(bid));
         self.pending.retain(|bid, _| bids.contains(bid));
-        for &bid in bids.iter() {
+        open_windows(&bids, |bid| {
             if self.windows.contains_key(&bid)
                 || self.closed.contains(&bid)
                 || self.pending.contains_key(&bid)
             {
-                continue;
+                return Ok(());
             }
             let wref = self
                 .rt
                 .block_on(self.gx.compile_ref(bid))
                 .context("compile_ref for window bind id")?;
-            // CR claude for claude: [bug/medium] The first window that fails to open
+            // XCR claude for claude: [bug/medium] The first window that fails to open
             // (ResolvedWindow::compile refusing a property, create_window, gpu init,
             // surface creation) returns from reconcile here. Every window after it in
             // the root array stays unopened, and each later root fire repeats the same
@@ -238,9 +274,12 @@ impl<X: GXExt> GuiHandler<X> {
             // set_deref). When no window can be shown, end the display with Stop's Err.
             // probe: design/review-2026-10-12/repro/gui-core-05.gx (run it through
             // gui-core-03.sh). (gui-core-05)
-            self.open(event_loop, bid, wref)?;
-        }
-        Ok(())
+            // 2026-10-13 codex: a_failed_window_does_not_skip_later_windows fails
+            // before open_windows continues after errors, and passes after. The OS
+            // probe gui-core-03.sh cannot start: D-Bus socket binding is refused.
+            // Review the real-window and Stop error paths outside the sandbox.
+            self.open(event_loop, bid, wref)
+        })
     }
 
     /// Render a window that needs it; the time it next wants a frame.
@@ -393,7 +432,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 self.remove(bid);
             }
             if self.windows.is_empty() {
-                self.finish(event_loop);
+                self.finish(event_loop, Ok(()));
             }
             return;
         }
@@ -436,7 +475,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
         match event {
             ToGui::Stop(tx) => {
                 let _ = tx.send(());
-                self.finish(event_loop);
+                self.finish(event_loop, Ok(()));
             }
             ToGui::ResizeRenderTick(window_id) => {
                 if let Some(tw) = self.window_mut(window_id) {
@@ -450,7 +489,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         tw.last_set_size = Some(sz);
                         // through the reference, to what it names
                         if let Err(e) = tw.size.set_deref(sz) {
-                            error!("failed to set window size: {e:?}");
+                            error!(target: FAILURE_TARGET, "failed to set window size: {e:?}");
                         }
                     }
                     tw.needs_redraw = true;
@@ -464,7 +503,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
             ToGui::Update(id, v) => {
                 if id == self.root_exp.id {
                     if let Err(e) = self.reconcile(event_loop, v) {
-                        error!("reconcile windows: {e:?}");
+                        error!(target: FAILURE_TARGET, "reconcile windows: {e:?}");
+                        if self.windows.is_empty() && self.pending.is_empty() {
+                            self.finish(event_loop, Err(e));
+                        }
                     }
                     return;
                 }
@@ -475,7 +517,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 {
                     wref.last = Some(v);
                     if let Err(e) = self.open(event_loop, bid, wref) {
-                        error!("open window: {e:?}");
+                        error!(target: FAILURE_TARGET, "open window: {e:?}");
+                        if self.windows.is_empty() && self.pending.is_empty() {
+                            self.finish(event_loop, Err(e));
+                        }
                     }
                     return;
                 }
@@ -491,7 +536,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 // index has to track widget recompiles. (gui-core-08)
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
-                        error!("handle_update: {e:?}");
+                        error!(target: FAILURE_TARGET, "handle_update: {e:?}");
                     }
                 }
             }
