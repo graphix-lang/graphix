@@ -26,23 +26,6 @@ fn strings(v: &[&str]) -> Value {
 #[tokio::test]
 async fn a_guard_refire_answers_nothing() -> Result<()> {
     let mut h = TuiTestHarness::new(
-        // CR claude for claude: [test-gap/medium] a_guard_refire_answers_nothing cannot
-        // fail: a misattributed re-fire yields the same counts. The test should catch a
-        // guard re-fire's second answer (`Continue) being taken as the answer to the
-        // next event. Every event after Up correctly gets `Continue as well, so
-        // misattribution only shifts each answer one event later and the inner handler
-        // still sees x and y: inner_hits = 2 and sel = 0 either way. I traced the
-        // pre-38041142 handler, which consumed the queue front on every call-site
-        // update (the CR's bug): queue [Up, x, y]. Stop pops Up. The re-fire's
-        // `Continue pops x, so inner sees x. x's answer pops y, so inner sees y. Same
-        // totals, so the test passes on the code it was written to reject. Failure:
-        // Bring back an input handler that takes any production of the handler's call
-        // site as the answer for the head of the queue: this test still passes. Fix:
-        // Make the event after Up one that outer answers `Stop, so a misattributed
-        // `Continue becomes visible. For example, add an arm `` `Char("x") => `Stop ``
-        // to outer and dispatch [Up, x]: the correct inner_hits is 0, a misattribution
-        // gives 1. Unverified: the reviewer's report, not checked by a verifier.
-        // (tests-tui-04)
         r#"
 use tui::input_handler::{self, *};
 use tui::text::text;
@@ -54,6 +37,7 @@ let inner = |e: Event| -> [`Stop, `Continue] on_press(e, |k| {
 });
 let outer = |e: Event| -> [`Stop, `Continue] on_press(e, |k| select k.code {
   kk@ `Up if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop },
+  `Char("x") => `Stop,
   _ => `Continue
 });
 let result = input_handler(#handle: &outer, &input_handler(#handle: &inner, &text(&"x")))
@@ -62,9 +46,11 @@ let result = input_handler(#handle: &outer, &input_handler(#handle: &inner, &tex
     .await?;
     h.watch("test::sel").await?;
     h.watch("test::inner_hits").await?;
-    h.dispatch_events([key(KeyCode::Up), ch('x'), ch('y')]).await?;
+    h.dispatch_events([key(KeyCode::Up), ch('x')]).await?;
     assert_eq!(h.get_watched("test::sel"), Some(&Value::I64(0)));
-    assert_eq!(h.get_watched("test::inner_hits"), Some(&Value::I64(2)));
+    assert_eq!(h.get_watched("test::inner_hits"), Some(&Value::I64(0)));
+    h.dispatch_event(ch('y')).await?;
+    assert_eq!(h.get_watched("test::inner_hits"), Some(&Value::I64(1)));
     Ok(())
 }
 
