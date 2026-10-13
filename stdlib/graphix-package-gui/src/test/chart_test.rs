@@ -19,7 +19,7 @@ fn chart(h: &GuiTestHarness) -> &ChartW<NoExt> {
 /// Draw the chart through its program into `state` at `size`, returning
 /// the plot area the draw recorded.
 async fn draw_in(h: &GuiTestHarness, state: &ChartState, size: Size) -> Option<PlotInfo> {
-    let renderer = super::headless_gpu().await.create_renderer();
+    let renderer = h.renderer().await.borrow();
     let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
     let bounds = Rectangle::new(Point::ORIGIN, size);
     let _ = Program::draw(
@@ -38,7 +38,7 @@ async fn draw(h: &GuiTestHarness) -> Option<PlotInfo> {
 }
 
 async fn screenshot(h: &GuiTestHarness) -> Vec<u8> {
-    let mut renderer = super::headless_gpu().await.create_renderer();
+    let mut renderer = h.renderer().await.borrow_mut();
     let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
     crate::frame::frame(
         h.widget.view(),

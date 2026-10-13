@@ -8,7 +8,7 @@ use iced_runtime::user_interface;
 use iced_wgpu::{graphics::Shell, wgpu};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::global::GPooled;
-use std::time::Duration;
+use std::{cell::RefCell, time::Duration};
 use tokio::sync::{OnceCell, mpsc};
 
 use crate::widgets::{self, GuiW, Message, MessageShell};
@@ -61,6 +61,7 @@ struct GuiTestHarness {
     watches: testing::Watches,
     _refs: Vec<Ref<NoExt>>,
     _callables: Vec<Callable<NoExt>>,
+    renderer: OnceCell<RefCell<widgets::Renderer>>,
 }
 
 impl GuiTestHarness {
@@ -104,6 +105,7 @@ impl GuiTestHarness {
             watches: testing::Watches::default(),
             _refs: Vec::new(),
             _callables: Vec::new(),
+            renderer: OnceCell::const_new(),
         })
     }
 
@@ -151,18 +153,18 @@ impl GuiTestHarness {
         });
     }
 
+    async fn renderer(&self) -> &RefCell<widgets::Renderer> {
+        self.renderer
+            .get_or_init(|| async {
+                RefCell::new(headless_gpu().await.create_renderer())
+            })
+            .await
+    }
+
     /// Build, lay out and draw the widget tree once, as a window frame
     /// does, on a headless renderer.
     async fn render(&self) -> Result<()> {
-        // CR claude for claude: [perf/low] Each render builds a fresh iced_wgpu Engine,
-        // which creates all of its pipelines, and chart_test::draw_in does the same on
-        // every draw. Tests that render or draw several times, such as reacts,
-        // bad_sizes_and_coordinates_are_refused and zero_and_negative_mesh_counts_draw,
-        // pay that cost each time on a software adapter, while InteractionHarness keeps
-        // one renderer. Keep a lazily created renderer on GuiTestHarness, with render
-        // taking &mut self, and have draw_in take a renderer created once per test.
-        // (tests-gui-b-12)
-        let mut renderer = headless_gpu().await.create_renderer();
+        let mut renderer = self.renderer().await.borrow_mut();
         let theme =
             crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
         crate::frame::frame(
