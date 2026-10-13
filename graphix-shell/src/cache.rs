@@ -527,15 +527,13 @@ impl RegistrationCache {
                 let _ = fs::remove_file(path);
             }
         }
-        // CR claude for claude: [risk/low] This removes every empty build directory,
-        // including this build's own `self.dir()`. Another process of the same build
-        // may have just run `create_dir_all` for it in `store` and not yet created its
-        // temporary file. Its `File::create` then fails with NotFound and the entry is
-        // lost; under `--warm` the run fails. Skip `self.dir()` here: it is about to
-        // hold an entry anyway. (shell-08)
+        // only an empty directory is removed, never this build's: another
+        // process may be about to write its entry there
+        let own = self.dir();
         for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
-            // only an empty directory is removed
-            let _ = fs::remove_dir(build.path());
+            if build.path() != own {
+                let _ = fs::remove_dir(build.path());
+            }
         }
     }
 }
