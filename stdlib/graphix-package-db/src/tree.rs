@@ -21,8 +21,6 @@ use poolshark::{global::GPooled, local::LPooled};
 use std::{
     fmt,
     marker::PhantomData,
-    mem::ManuallyDrop,
-    ops::Deref,
     path::PathBuf,
     sync::{Arc, LazyLock, Weak},
 };
@@ -31,41 +29,7 @@ use crate::encoding::{
     ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
-/// A sled handle whose drop runs on a blocking thread: dropping the last
-/// handle flushes the log and joins sled's flusher, which can wait for a
-/// transaction's lock, and must never stall the runtime.
-pub(crate) struct Reaped<T: Send + 'static>(ManuallyDrop<T>);
-
-impl<T: Send + 'static> Reaped<T> {
-    pub(crate) fn new(t: T) -> Self {
-        Self(ManuallyDrop::new(t))
-    }
-}
-
-impl<T: Send + 'static> Deref for Reaped<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-impl<T: Send + 'static> Drop for Reaped<T> {
-    fn drop(&mut self) {
-        // SAFETY: the value is not touched again
-        let t = unsafe { ManuallyDrop::take(&mut self.0) };
-        match tokio::runtime::Handle::try_current() {
-            Ok(rt) => drop(rt.spawn_blocking(move || drop(t))),
-            Err(_) => drop(t),
-        }
-    }
-}
-
-impl<T: Send + 'static> fmt::Debug for Reaped<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Reaped<{}>", std::any::type_name::<T>())
-    }
-}
+pub(crate) use graphix_package_core::Reaped;
 
 pub(crate) type Db = Arc<Reaped<sled::Db>>;
 

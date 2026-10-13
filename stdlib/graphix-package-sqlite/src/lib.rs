@@ -5,23 +5,20 @@
 use arcstr::{ArcStr, literal};
 use graphix_compiler::errf;
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, EvalCachedAsync, ReadFormat, TypedRead,
+    CachedArgsAsync, CachedVals, EvalCachedAsync, ReadFormat, Reaped, TypedRead,
 };
 use netidx_value::{ValArray, Value};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::sync::Arc;
 
+/// A connection, closed on a blocking thread when the last handle goes:
+/// closing a WAL database checkpoints and syncs.
+type Conn = Arc<Reaped<Mutex<Option<rusqlite::Connection>>>>;
+
 #[derive(Debug)]
 struct ConnectionValue {
-    // CR claude for claude: [risk/low] A connection not closed with sqlite::close drops
-    // wherever its last Arc goes, usually the runtime thread when the abstract value is
-    // replaced or its node deleted. Closing the last connection to a WAL database
-    // checkpoints and syncs, which is blocking disk I/O inside a cycle.
-    // graphix-package-db's Reaped already handles this for sled (its drop runs on
-    // spawn_blocking). Move Reaped to graphix-package-core and hold the connection as
-    // Arc<Reaped<Mutex<Option<Connection>>>>. (http-sqlite-db1-11)
-    inner: Arc<Mutex<Option<rusqlite::Connection>>>,
+    inner: Conn,
 }
 
 graphix_package_core::impl_abstract_arc!(
@@ -29,10 +26,7 @@ graphix_package_core::impl_abstract_arc!(
     static CONNECTION_WRAPPER = "sqlite::Connection"
 );
 
-fn get_conn_arc(
-    cached: &CachedVals,
-    idx: usize,
-) -> Option<Arc<Mutex<Option<rusqlite::Connection>>>> {
+fn get_conn_arc(cached: &CachedVals, idx: usize) -> Option<Conn> {
     match cached.0.get(idx)?.as_ref()? {
         Value::Abstract(a) => {
             let cv = a.downcast_ref::<ConnectionValue>()?;
@@ -88,7 +82,7 @@ fn params(ps: &ValArray) -> impl rusqlite::Params + '_ {
     rusqlite::params_from_iter(ps.iter().map(Param))
 }
 
-async fn with_conn<F>(conn_arc: Arc<Mutex<Option<rusqlite::Connection>>>, f: F) -> Value
+async fn with_conn<F>(conn_arc: Conn, f: F) -> Value
 where
     F: FnOnce(&mut rusqlite::Connection) -> Value + Send + 'static,
 {
@@ -125,8 +119,9 @@ impl EvalCachedAsync for SqliteOpenEv {
             {
                 Err(e) => errf!("SqliteError", "spawn_blocking failed: {e}"),
                 Ok(Err(e)) => errf!("SqliteError", "{e}"),
-                Ok(Ok(conn)) => CONNECTION_WRAPPER
-                    .wrap(ConnectionValue { inner: Arc::new(Mutex::new(Some(conn))) }),
+                Ok(Ok(conn)) => CONNECTION_WRAPPER.wrap(ConnectionValue {
+                    inner: Arc::new(Reaped::new(Mutex::new(Some(conn)))),
+                }),
             }
         }
     }
@@ -138,7 +133,7 @@ type SqliteOpen = CachedArgsAsync<SqliteOpenEv>;
 struct SqliteExecEv;
 
 impl EvalCachedAsync for SqliteExecEv {
-    type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
+    type Args = (Conn, ArcStr, ValArray);
 
     const NAME: &str = "sqlite_exec";
 
@@ -169,7 +164,7 @@ type SqliteExec = CachedArgsAsync<SqliteExecEv>;
 struct SqliteExecBatchEv;
 
 impl EvalCachedAsync for SqliteExecBatchEv {
-    type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr);
+    type Args = (Conn, ArcStr);
 
     const NAME: &str = "sqlite_exec_batch";
 
@@ -198,7 +193,7 @@ struct Query;
 impl ReadFormat for Query {
     const NAME: &str = "sqlite_query";
     const TAG: ArcStr = literal!("SqliteError");
-    type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
+    type Args = (Conn, ArcStr, ValArray);
 
     fn prepare_args(cached: &CachedVals) -> Option<Self::Args> {
         let conn = get_conn_arc(cached, 0)?;
@@ -273,7 +268,7 @@ macro_rules! simple_sql_builtin {
         struct $ev_name;
 
         impl EvalCachedAsync for $ev_name {
-            type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
+            type Args = Conn;
 
             const NAME: &str = $builtin_name;
 
@@ -306,7 +301,7 @@ simple_sql_builtin!(SqliteRollbackEv, SqliteRollback, "sqlite_rollback", "ROLLBA
 struct SqliteCloseEv;
 
 impl EvalCachedAsync for SqliteCloseEv {
-    type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
+    type Args = Conn;
 
     const NAME: &str = "sqlite_close";
 

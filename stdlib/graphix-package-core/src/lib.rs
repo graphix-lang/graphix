@@ -3605,3 +3605,39 @@ impl std::fmt::Debug for NetConfig {
 pub struct NetTimeouts {
     pub publish: Option<std::time::Duration>,
 }
+
+/// A value whose drop runs on a blocking thread, when there is a runtime:
+/// dropping the last handle to a database flushes and syncs (sled's log,
+/// a WAL checkpoint), which must never stall a cycle.
+pub struct Reaped<T: Send + 'static>(std::mem::ManuallyDrop<T>);
+
+impl<T: Send + 'static> Reaped<T> {
+    pub fn new(t: T) -> Self {
+        Self(std::mem::ManuallyDrop::new(t))
+    }
+}
+
+impl<T: Send + 'static> std::ops::Deref for Reaped<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Send + 'static> Drop for Reaped<T> {
+    fn drop(&mut self) {
+        // SAFETY: the value is not touched again
+        let t = unsafe { std::mem::ManuallyDrop::take(&mut self.0) };
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn_blocking(move || drop(t))),
+            Err(_) => drop(t),
+        }
+    }
+}
+
+impl<T: Send + 'static> Debug for Reaped<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Reaped<{}>", std::any::type_name::<T>())
+    }
+}
