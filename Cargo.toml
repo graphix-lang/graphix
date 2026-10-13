@@ -100,6 +100,7 @@ serde = { version = "1", features = ["rc"] }
 sled = { version = "0.34" }
 smallvec = { version = "1", features = ["const_generics", "union"] }
 semver = "1"
+sha2 = "0.10"
 stacker = "0.1"
 tar = "0.4"
 tempfile = "3"

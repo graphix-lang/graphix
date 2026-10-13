@@ -825,18 +825,22 @@ async fn download_source(
         .into_iter()
         .find(|v| v.num == version)
         .ok_or_else(|| anyhow!("can't find version {version} on crates.io"))?;
-    // CR claude for claude: [risk/low] The downloaded graphix-shell tarball is unpacked
-    // and then compiled into the user's binary without comparing it to
-    // `cr_version.checksum`, the sha256 the index publishes and cargo always checks.
-    // Integrity rests on TLS alone, including whatever CDN `dl_path` redirects to. The
-    // response status is not checked either (`.bytes()` returns an error page's body as
-    // data). Call `error_for_status()`, hash the bytes with sha256, and bail unless the
-    // hash equals `cr_version.checksum` before unpacking. (x-security-12)
     let crate_data_tar_gz =
         reqwest::get(Url::parse("https://crates.io")?.join(&cr_version.dl_path)?)
             .await?
+            .error_for_status()?
             .bytes()
             .await?;
+    let hex = format_compact!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(&crate_data_tar_gz)
+    );
+    if hex != cr_version.checksum {
+        bail!(
+            "graphix-shell {version} from crates.io has sha256 {hex}, the index says {}",
+            cr_version.checksum
+        )
+    }
     let r = task::spawn_blocking({
         let graphix_build_dir = graphix_build_dir.clone();
         let cargo_toml = graphix_dir.join("Cargo.toml");
