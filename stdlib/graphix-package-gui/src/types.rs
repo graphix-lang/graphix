@@ -10,21 +10,12 @@ use iced_core::{
 use iced_widget::{scrollable, tooltip};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::{FromValue, IntoValue};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
-use std::{
-    collections::HashSet,
-    sync::{LazyLock, Mutex},
-};
+use std::{collections::HashSet, sync::LazyLock};
 use triomphe::Arc;
 
-// CR claude for claude: [style/low] This is a std::sync::Mutex, locked with `.unwrap()`
-// in the font conversion, where the repo's default is parking_lot::Mutex. parking_lot
-// is already a dependency of this crate, and it has no poisoning and no unwrap. Each
-// distinct family name is also leaked with Box::leak, because iced's Family::Name needs
-// `&'static str`. That leak is bounded only by the number of distinct names, so a
-// program that builds `Name(..)` fonts from data grows it without limit. Switch to
-// parking_lot::Mutex, and add a short invariant comment saying the set is deliberately
-// leaked (one allocation per distinct name). (x-alloc-11)
+// iced requires static family names; each distinct name is allocated once and never freed.
 static FONT_NAMES: LazyLock<Mutex<HashSet<&'static str>>> =
     LazyLock::new(Default::default);
 
@@ -219,7 +210,7 @@ impl FromValue for FontV {
             v => match v.cast_to::<(ArcStr, Value)>()? {
                 (s, v) if &*s == "Name" => {
                     let name = v.cast_to::<ArcStr>()?;
-                    let mut cache = FONT_NAMES.lock().unwrap();
+                    let mut cache = FONT_NAMES.lock();
                     let interned = match cache.get(name.as_str()) {
                         Some(&s) => s,
                         None => {
