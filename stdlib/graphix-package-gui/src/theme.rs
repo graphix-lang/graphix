@@ -1,5 +1,5 @@
 use crate::types::ColorV;
-use iced_core::Color;
+use iced_core::{Border, Color};
 use iced_widget::{
     button, checkbox, combo_box, container, markdown, overlay::menu, pick_list,
     progress_bar, qr_code, radio, rule, scrollable, slider, svg, table, text_editor,
@@ -214,6 +214,23 @@ fn dim(color: Color) -> Color {
 // Each resolve starts from iced's default style for the theme + status
 // and overrides only user-specified fields.
 
+fn apply_border(
+    border: &mut Border,
+    color: Option<ColorV>,
+    width: Option<f32>,
+    radius: Option<f32>,
+) {
+    if let Some(ColorV(color)) = color {
+        border.color = color;
+    }
+    if let Some(width) = width {
+        border.width = width;
+    }
+    if let Some(radius) = radius {
+        border.radius = radius.into();
+    }
+}
+
 impl ButtonSpec {
     fn resolve(&self, theme: &iced_core::Theme, status: button::Status) -> button::Style {
         let is_dark = theme.extended_palette().is_dark;
@@ -230,15 +247,12 @@ impl ButtonSpec {
             s.text_color =
                 if matches!(status, button::Status::Disabled) { dim(tc) } else { tc };
         }
-        if let Some(ColorV(bc)) = self.border_color {
-            s.border.color = bc;
-        }
-        if let Some(bw) = self.border_width {
-            s.border.width = bw;
-        }
-        if let Some(br) = self.border_radius {
-            s.border.radius = br.into();
-        }
+        apply_border(
+            &mut s.border,
+            self.border_color,
+            self.border_width,
+            self.border_radius,
+        );
         s
     }
 }
@@ -299,15 +313,13 @@ impl CheckboxSpec {
         if let Some(ColorV(tc)) = self.text_color {
             s.text_color = Some(if is_disabled { dim(tc) } else { tc });
         }
-        if let Some(ColorV(bc)) = self.border_color {
-            s.border.color = if is_disabled { dim(bc) } else { bc };
-        }
-        if let Some(bw) = self.border_width {
-            s.border.width = bw;
-        }
-        if let Some(br) = self.border_radius {
-            s.border.radius = br.into();
-        }
+        apply_border(
+            &mut s.border,
+            self.border_color
+                .map(|ColorV(bc)| ColorV(if is_disabled { dim(bc) } else { bc })),
+            self.border_width,
+            self.border_radius,
+        );
         s
     }
 }
@@ -330,15 +342,12 @@ impl TextInputSpec {
             }
             .into();
         }
-        if let Some(ColorV(bc)) = self.border_color {
-            s.border.color = bc;
-        }
-        if let Some(bw) = self.border_width {
-            s.border.width = bw;
-        }
-        if let Some(br) = self.border_radius {
-            s.border.radius = br.into();
-        }
+        apply_border(
+            &mut s.border,
+            self.border_color,
+            self.border_width,
+            self.border_radius,
+        );
         if let Some(ColorV(ic)) = self.icon_color {
             s.icon = ic;
         }
@@ -473,15 +482,12 @@ impl PickListSpec {
         if let Some(ColorV(hc)) = self.handle_color {
             s.handle_color = hc;
         }
-        if let Some(ColorV(bc)) = self.border_color {
-            s.border.color = bc;
-        }
-        if let Some(bw) = self.border_width {
-            s.border.width = bw;
-        }
-        if let Some(br) = self.border_radius {
-            s.border.radius = br.into();
-        }
+        apply_border(
+            &mut s.border,
+            self.border_color,
+            self.border_width,
+            self.border_radius,
+        );
         s
     }
 }
@@ -504,15 +510,12 @@ impl TextEditorSpec {
             }
             .into();
         }
-        if let Some(ColorV(bc)) = self.border_color {
-            s.border.color = bc;
-        }
-        if let Some(bw) = self.border_width {
-            s.border.width = bw;
-        }
-        if let Some(br) = self.border_radius {
-            s.border.radius = br.into();
-        }
+        apply_border(
+            &mut s.border,
+            self.border_color,
+            self.border_width,
+            self.border_radius,
+        );
         if let Some(ColorV(pc)) = self.placeholder_color {
             s.placeholder = pc;
         }
@@ -535,15 +538,12 @@ impl ContainerSpec {
         if let Some(ColorV(tc)) = self.text_color {
             s.text_color = Some(tc);
         }
-        if let Some(ColorV(bc)) = self.border_color {
-            s.border.color = bc;
-        }
-        if let Some(bw) = self.border_width {
-            s.border.width = bw;
-        }
-        if let Some(br) = self.border_radius {
-            s.border.radius = br.into();
-        }
+        apply_border(
+            &mut s.border,
+            self.border_color,
+            self.border_width,
+            self.border_radius,
+        );
         s
     }
 }
@@ -560,15 +560,12 @@ impl ScrollableSpec {
             if let Some(ColorV(bg)) = self.background {
                 rail.background = Some(bg.into());
             }
-            if let Some(ColorV(bc)) = self.border_color {
-                rail.border.color = bc;
-            }
-            if let Some(bw) = self.border_width {
-                rail.border.width = bw;
-            }
-            if let Some(br) = self.border_radius {
-                rail.border.radius = br.into();
-            }
+            apply_border(
+                &mut rail.border,
+                self.border_color,
+                self.border_width,
+                self.border_radius,
+            );
             if let Some(ColorV(sc)) = self.scroller_color {
                 let is_hovered = matches!(status, scrollable::Status::Hovered { .. });
                 let sc = if is_hovered { hover_adjust(sc, is_dark) } else { sc };
@@ -617,15 +614,12 @@ impl MenuSpec {
         if let Some(ColorV(bg)) = self.background {
             s.background = bg.into();
         }
-        if let Some(ColorV(bc)) = self.border_color {
-            s.border.color = bc;
-        }
-        if let Some(bw) = self.border_width {
-            s.border.width = bw;
-        }
-        if let Some(br) = self.border_radius {
-            s.border.radius = br.into();
-        }
+        apply_border(
+            &mut s.border,
+            self.border_color,
+            self.border_width,
+            self.border_radius,
+        );
         if let Some(ColorV(tc)) = self.text_color {
             s.text_color = tc;
         }
@@ -644,7 +638,7 @@ macro_rules! impl_catalog_with_status {
         impl $module::Catalog for GraphixTheme {
             type Class<'a> = $module::StyleFn<'a, Self>;
 
-            fn default<'a>() -> Self::Class<'a> {
+            fn default<'a>() -> <Self as $module::Catalog>::Class<'a> {
                 Box::new(|theme, status| {
                     if let Some(spec) =
                         theme.overrides.as_ref().and_then(|o| o.$field.as_ref())
@@ -659,7 +653,7 @@ macro_rules! impl_catalog_with_status {
 
             fn style(
                 &self,
-                class: &Self::Class<'_>,
+                class: &<Self as $module::Catalog>::Class<'_>,
                 status: $module::Status,
             ) -> $module::Style {
                 class(self, status)
@@ -673,7 +667,7 @@ macro_rules! impl_catalog_no_status {
         impl $module::Catalog for GraphixTheme {
             type Class<'a> = $module::StyleFn<'a, Self>;
 
-            fn default<'a>() -> Self::Class<'a> {
+            fn default<'a>() -> <Self as $module::Catalog>::Class<'a> {
                 Box::new(|theme| {
                     if let Some(spec) =
                         theme.overrides.as_ref().and_then(|o| o.$field.as_ref())
@@ -686,7 +680,10 @@ macro_rules! impl_catalog_no_status {
                 })
             }
 
-            fn style(&self, class: &Self::Class<'_>) -> $module::Style {
+            fn style(
+                &self,
+                class: &<Self as $module::Catalog>::Class<'_>,
+            ) -> $module::Style {
                 class(self)
             }
         }
@@ -699,86 +696,16 @@ impl_catalog_with_status!(text_input, text_input, text_input::default);
 impl_catalog_with_status!(toggler, toggler, toggler::default);
 impl_catalog_with_status!(slider, slider, slider::default);
 impl_catalog_with_status!(radio, radio, radio::default);
-// pick_list: needs fully qualified paths due to supertrait ambiguity
-// CR claude for claude: [structure/low] The pick_list, scrollable and menu Catalog
-// impls are hand copies of impl_catalog_with_status! and impl_catalog_no_status!. Only
-// pick_list and menu need the qualified <Self as X::Catalog>::Class because of
-// supertrait ambiguity, and scrollable needs nothing. Write the two macros with <Self
-// as $module::Catalog>::Class and use them for all three. The resolve methods also
-// repeat the same border_color/border_width/border_radius block, which only some of
-// them dim when disabled. A helper like apply_border(&mut Border, color, width, radius)
-// keeps the Graphix spec structs flat and puts the rule in one place. (gui-core-09)
-impl pick_list::Catalog for GraphixTheme {
-    type Class<'a> = pick_list::StyleFn<'a, Self>;
-
-    fn default<'a>() -> <Self as pick_list::Catalog>::Class<'a> {
-        Box::new(|theme, status| {
-            if let Some(spec) =
-                theme.overrides.as_ref().and_then(|o| o.pick_list.as_ref())
-            {
-                spec.resolve(&theme.inner, status)
-            } else {
-                pick_list::default(&theme.inner, status)
-            }
-        })
-    }
-
-    fn style(
-        &self,
-        class: &<Self as pick_list::Catalog>::Class<'_>,
-        status: pick_list::Status,
-    ) -> pick_list::Style {
-        class(self, status)
-    }
-}
+impl_catalog_with_status!(pick_list, pick_list, pick_list::default);
 impl_catalog_with_status!(text_editor, text_editor, text_editor::default);
 
-impl scrollable::Catalog for GraphixTheme {
-    type Class<'a> = scrollable::StyleFn<'a, Self>;
-
-    fn default<'a>() -> Self::Class<'a> {
-        Box::new(|theme, status| {
-            if let Some(spec) =
-                theme.overrides.as_ref().and_then(|o| o.scrollable.as_ref())
-            {
-                spec.resolve(&theme.inner, status)
-            } else {
-                scrollable::default(&theme.inner, status)
-            }
-        })
-    }
-
-    fn style(
-        &self,
-        class: &Self::Class<'_>,
-        status: scrollable::Status,
-    ) -> scrollable::Style {
-        class(self, status)
-    }
-}
+impl_catalog_with_status!(scrollable, scrollable, scrollable::default);
 
 impl_catalog_no_status!(container, container, container::transparent);
 impl_catalog_no_status!(progress_bar, progress_bar, progress_bar::primary);
 impl_catalog_no_status!(rule, rule, rule::default);
 
-// Menu: needs fully qualified paths due to supertrait ambiguity with scrollable
-impl menu::Catalog for GraphixTheme {
-    type Class<'a> = menu::StyleFn<'a, Self>;
-
-    fn default<'a>() -> <Self as menu::Catalog>::Class<'a> {
-        Box::new(|theme| {
-            if let Some(spec) = theme.overrides.as_ref().and_then(|o| o.menu.as_ref()) {
-                spec.resolve(&theme.inner)
-            } else {
-                menu::default(&theme.inner)
-            }
-        })
-    }
-
-    fn style(&self, class: &<Self as menu::Catalog>::Class<'_>) -> menu::Style {
-        class(self)
-    }
-}
+impl_catalog_no_status!(menu, menu, menu::default);
 
 // ComboBox: supertrait of text_input + menu; empty impl uses defaults
 impl combo_box::Catalog for GraphixTheme {}
