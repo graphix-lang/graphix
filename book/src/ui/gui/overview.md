@@ -13,30 +13,15 @@ Graphix includes a GUI library built on the Rust [iced](https://iced.rs) framewo
 
 ## The Window Type
 
-<!-- CR claude for claude: [doc-drift/medium] The Window block below omits `icon:
-&ImageSource` and `?#icon: &ImageSource`, which `window` in gui's mod.gxi has. Nothing
-in the book documents `#icon` or `ImageSource`, yet nearly every GUI example, hello.gx
-included, starts with `mod icon;` and passes `#icon: &icon::icon`. A reader who copies
-the minimal program gets 'module icon could not be found'. Add `#icon` and a sentence on
-`ImageSource` here. Then either drop `mod icon`/`#icon` from the examples the book shows
-(keeping one that demonstrates it), or explain the sibling icon.gx on this page. Also
-say that `#size` is `&mut` because the runtime writes the window's real size back on
-resize. (book-ui-a-06) -->
 Every GUI program is built around windows. The `Window` type describes a window and its content:
 
 ```graphix
-type Window = { title: &string, size: &mut Size, theme: &Theme, content: &Widget };
-type Gui = Array<&Window>;
-
-val window: fn(
-  ?#title: &string,
-  ?#size: &mut Size,
-  ?#theme: &Theme,
-  a: &Widget
-) -> Window;
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/mod.gxi:window}}
 ```
 
-All parameters except the content widget are optional. Defaults are `"Graphix"` for the title, `{ width: 800.0, height: 600.0 }` for the size, and `` `Dark `` for the theme.
+All parameters except the content widget are optional. Defaults are `"Graphix"` for the title, `{ width: 800.0, height: 600.0 }` for the size, and `` `Dark `` for the theme. `#size` is `&mut` because the runtime writes the window's real size back when the user resizes it.
+
+`#icon` is the window's icon, an `ImageSource`: a file path (a `string`), encoded image `` `Bytes ``, `` `Svg `` source text, or raw `` `Rgba `` pixels. Most of the book's examples pass `#icon: &icon::icon` from `icon.gx`, a module beside them that holds the Graphix logo as an `` `Svg ``; leave `#icon` out and the window has the platform's default icon.
 
 The final expression of your program should be an `Array<&Window>` -- the shell sees this type and launches the GUI runtime.
 
