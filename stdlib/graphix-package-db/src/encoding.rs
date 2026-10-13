@@ -212,6 +212,9 @@ fn read_decimal(data: &mut &[u8]) -> Result<Decimal> {
         }
     }
     let mut scale = n - e;
+    if scale < -(29 - n) || scale > 28 {
+        bail!("undecodable key: bad decimal exponent")
+    }
     while scale < 0 {
         mantissa *= 10;
         scale += 1;
@@ -317,21 +320,11 @@ fn read_payload(t: Typ, data: &mut &[u8], depth: usize) -> Result<Value> {
         }
         Typ::Duration => {
             let secs = unsigned!(u64, 8);
-            // CR claude for claude: [bug/low] The key decoder trusts stored bytes that
-            // only a corrupted or foreign db file could get wrong. Here, nanos >=
-            // 1_000_000_000 is not refused: Duration::new folds the extra into secs, so
-            // it decodes a different key than the bytes say, and it panics when secs is
-            // near u64::MAX. read_decimal accepts any exponent byte, but a valid
-            // Decimal never has e above 29. With e = 127, the `while scale < 0 {
-            // mantissa *= 10 }` loop multiplies 126 times. That panics with overflow
-            // checks on (dev and soak), and in release it wraps into a mantissa
-            // try_from_i128_with_scale may accept as a wrong key. Cursors and
-            // subscriptions decode stored keys, and a panic in a subscription's watch
-            // task ends that subscription silently. Fix: bail with "undecodable key"
-            // when nanos >= 1_000_000_000, and in read_decimal when the exponent is
-            // outside what write_decimal can produce (scale < -(29 - n) or scale > 28),
-            // or use checked_mul. (x-panics-06)
-            Value::Duration(Arc::new(Duration::new(secs, unsigned!(u32, 4))))
+            let nanos = unsigned!(u32, 4);
+            if nanos >= 1_000_000_000 {
+                bail!("undecodable key: bad duration nanoseconds")
+            }
+            Value::Duration(Arc::new(Duration::new(secs, nanos)))
         }
         Typ::Error => Value::Error(ValError::new(read_tagged(data, depth + 1)?)),
         Typ::Array => {
@@ -497,6 +490,38 @@ mod test {
                     assert_eq!(a.cmp(b), typed(a).cmp(&typed(b)), "typed {a} vs {b}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn malformed_duration_keys_are_refused() {
+        for secs in [u64::MAX, 0] {
+            for nanos in [1_000_000_000u32, u32::MAX] {
+                let mut key = [0; 12];
+                key[..8].copy_from_slice(&secs.to_be_bytes());
+                key[8..].copy_from_slice(&nanos.to_be_bytes());
+                assert!(decode_key(Some(Typ::Duration), &key).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_decimal_keys_are_refused() {
+        for e in [255, 158, 100, 0] {
+            for neg in [false, true] {
+                let mut key = [2, e, b'1', 0];
+                if neg {
+                    key[0] = 0;
+                    for b in &mut key[1..] {
+                        *b = !*b;
+                    }
+                }
+                assert!(decode_key(Some(Typ::Decimal), &key).is_err());
+            }
+        }
+        for d in [Decimal::MAX, Decimal::MIN, Decimal::new(1, 28), Decimal::new(10, 0)] {
+            let v = Value::Decimal(Arc::new(d));
+            assert_eq!(decode_key(Some(Typ::Decimal), &typed(&v)).unwrap(), v);
         }
     }
 
