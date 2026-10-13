@@ -151,17 +151,8 @@ const NESTEDMATCH2: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap/low] This predicate accepts any error, a parse error
-// or an unrelated type error included, so it does not pin why the program is refused.
-// Replace it with refused("refutable patterns are not allowed in let") and drop the
-// dbg!. (tests-select-07)
-run!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
-    Err(e) => {
-        dbg!(e);
-        true
-    }
-    _ => false,
-}; FuseExpect::None);
+run!(nestedmatch2, NESTEDMATCH2, refused("refutable patterns are not allowed in let");
+    FuseExpect::None);
 
 const NESTEDMATCH3: &str = r#"
 {
