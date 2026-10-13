@@ -476,27 +476,17 @@ O(log(N)) performance for all operations regardless of map size.
 
 ## Chaining Access Operators
 
-<!-- CR claude for claude: [doc-drift/low] Most of this section's examples are refused.
-Array and map indexing return a Result, so `data.users[0].name` fails ('expected struct
-not [{ name: string }, Error<`ArrayIndexError(string)>]'), as do `config{"db"}.port` and
-`matrix[i][j]`. A trailing `?` does not apply to the whole chain: `d.users[0].name?` is
-refused too, and the `?`/`$` must sit right after the fallible access
-(`data.users[0]?.name`). `(40 + 2).0` is a type error ('expected tuple not i64'). Fix:
-rewrite the examples with `?`/`$` at the index, explain where they go, and use a real
-tuple source such as `(a, b).0`. functions/overview.md also says a function stored in a
-struct sometimes needs `(s.f)(1, 1)`, but `s.f(1, 1)` works, so that advice can go.
-(book-core-12) -->
 The postfix access operators — struct field `.name`, tuple index `.0`, array
 index/slice `[i]` / `[i..j]`, map index `{key}`, and function call `(args)` —
 can be chained directly, left to right, without intermediate parentheses:
 
-```graphix
+```graphix,ignore
 // field, then index, then field
-data.users[0].name
+data.users[0]$.name
 // map index, then field
-config{"db"}.port
+config{"db"}$.port
 // nested array index
-matrix[i][j]
+matrix[i]$[j]$
 // tuple index, then field
 point.0.x
 // a call whose result is itself called
@@ -504,13 +494,13 @@ make_handler(cfg)(event)
 ```
 
 Each operator applies to the value produced by everything to its left, so a
-chain reads in evaluation order. A trailing `?` or `$` applies to the whole
-chain: `data.users[0]?` propagates an error from the indexing.
+chain reads in evaluation order. Array and map indexing return a Result, so
+the `?` or `$` that unwraps one sits right after that access, before the
+chain goes on: `data.users[0]?.name` propagates an error from the indexing.
 
 Parentheses are only needed when the *source* of an access is not itself a
-simple value or another access — for example `(a + b).0` (index into the
-result of an addition) or `(40 + 2).0`. A bare identifier or an existing chain
-never needs them.
+simple value or another access, for example `(a, b).0` (index into a tuple
+literal). A bare identifier or an existing chain never needs them.
 
 ## Error
 

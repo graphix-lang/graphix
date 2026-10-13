@@ -36,11 +36,5 @@ Functions are called with the following syntax.
 f(1, 1)
 ```
 
-Would return 3. If the function is stored in a data structure, then sometimes
-you need parenthesis to call it.
-
-```graphix
-(s.f)(1, 1)
-```
-
-Would call the function `f` in the struct `s`.
+Would return 3. A function stored in a data structure is called the same
+way, `s.f(1, 1)` calls the function `f` in the struct `s`.
