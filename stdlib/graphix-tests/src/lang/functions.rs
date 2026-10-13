@@ -2563,16 +2563,32 @@ run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, |v: Result<&Value>| matches!(v,
 
 // A fresh bind runs each omitted default once: a counting default in a
 // collection callback reads 1 in every slot, in every mode.
-// CR claude for claude: [test-gap/medium] Nothing pins the rule that a labeled default
-// is born with the binding and delivers FIRED at a fresh callee's first dispatch. If
-// the bound dispatch went back to seeding defaults STALE, `let d = 5; let f = |#k = d,
-// x: i64| k ~ x; select array::iter([0, 1]) { 0 => 0, _ => f(10) }` would yield [0]
-// instead of [0, 10]. That would happen on both engines, so the fuzzer sees agreement.
-// The default-arg-birth-sep2026 corpus pins exercise it, but regress only compares
-// their verdict class. Add a run_delta fixture over that program asserting [0, 10],
-// plus a rebind variant (`g <- select t { 1 => |#k = d, x| k ~ (x + 1), _ => never()
-// }`, expecting [10, 11]). Probe: design/review-2026-10-12/repro/tests-functions-03.gx.
-// (tests-functions-03)
+// A labeled default is born with the binding and delivers FIRED at a
+// fresh callee's first dispatch: an arm's first selection and a rebind
+// each sample it. A stale default would give [0] and [10] on both
+// engines alike.
+async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let d = 5;
+        let f = |#k = d, x: i64| k ~ x;
+        select array::iter([0, 1]) { 0 => 0, _ => f(10) }
+    }"#;
+    let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), [0, 10]);
+    let code = r#"{
+        let t = array::iter([0, 1]);
+        let d = 5;
+        let g = |#k = d, x: i64| k ~ x;
+        g <- select t { 1 => |#k = d, x: i64| k ~ (x + 1), _ => never() };
+        g(10)
+    }"#;
+    let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), [10, 11]);
+    Ok(())
+}
+
+modes!(default_fires_at_first_dispatch);
+
 const DEFAULT_RUNS_ONCE_PER_BIND: &str = r#"
 {
     let f = |#n = count(1), x: i64| (x, n);
