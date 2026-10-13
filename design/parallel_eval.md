@@ -219,16 +219,10 @@ into the parent (a delta, a log, or the root's state):
 - **Deltas.** Overlay (`Layered::merge`), store and ref-path entries
   (`RtView::merge`) insert into the parent. Two branches publishing the
   same id is an analysis bug, except for error handlers. Here the
-  <!-- CR claude for claude: [doc-drift/low] `fork_join`'s `delivered_in_both` does not
-  exist. The serial rule for a handler that two branches both deliver to is
-  `branch::merge_in_order`: it re-queues a later branch's delivery with
-  `ForkRt::queue_first`. `Layered::merge` alone overwrites. The seq-machine paragraph
-  further down names `ExecCtx::serial`, which also does not exist; the flag is
-  `ForkFlags::seq`, which a callee body clears through `ForkFlags::body`. Cite the real
-  names in both places. (x-doc-drift-11) -->
   serial rule is reproduced: the left (earlier) delivery keeps the
-  slot, and the right's becomes a queued write (`fork_join`'s
-  `delivered_in_both`), as `deliver_error`'s `Occupied` arm does. A
+  slot, and the right's becomes a queued write (`branch::merge_in_order`
+  re-queues it with `ForkRt::queue_first`; `Layered::merge` alone would
+  overwrite), as `deliver_error`'s `Occupied` arm does. A
   removal removes the key.
 - **Log.** The right log concatenates after the left. At the root, the
   log (`RtOp`s) replays into `Rt` in order. That covers the queue order of
@@ -339,7 +333,7 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
   no branch view isolates, in serial order: forked, a raise could land
   after a sibling's guard had read the generation
   (`lang::seq_errors::continuations` lost a block's write). A machine
-  updates with `ExecCtx::serial` set; a lambda body clears it, so a
+  updates with `ForkFlags::seq` set; a callee body clears it (`ForkFlags::body`), so a
   callee forks again. Beside the machine, its `SeqAbort` and the
   machine itself are ordered in the block plan: the abort must fail the
   guards before the machine updates.
