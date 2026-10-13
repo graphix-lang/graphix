@@ -1383,3 +1383,50 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+run_with_tempdir!(
+    name: db_cursor_tagged_prefix,
+    code: r#"{{
+        let d = db::open("{}")?;
+        seq {{
+            let t: db::Tree<[string, i64], i64> = db::tree(d, "strings")?;
+            db::batch(t, [`Insert("aa1", 1), `Insert("aa2", 2), `Insert("ab", 3)])?;
+            let prefix: [string, i64] = "aa";
+            let c = db::cursor::new(#prefix: prefix, t);
+            let strings = db::cursor::read_many(c, 10)?;
+            let a: db::Tree<Array<string>, i64> = db::tree(d, "arrays")?;
+            db::batch(a, [`Insert(["x", "a"], 1), `Insert(["x", "b"], 2), `Insert(["xy"], 3)])?;
+            let c = db::cursor::new(#prefix: ["x"], a);
+            let arrays = db::cursor::read_many(c, 10)?;
+            (array::map(strings, |(_, v)| v), array::map(arrays, |(_, v)| v))
+        }}
+    }}"#,
+    setup: |td| { td.path().join("tagged_prefix.db") },
+    expect: |v: Value| -> Result<()> {
+        let entries = Value::Array([Value::I64(1), Value::I64(2)].into());
+        assert_eq!(v, Value::Array([entries.clone(), entries].into()));
+        Ok(())
+    }
+);
+
+run_with_tempdir!(
+    name: db_subscription_tagged_prefix,
+    code: r#"{{
+        let d = db::open("{}")?;
+        let t: db::Tree<[string, i64], i64> = db::tree(d, "strings")?;
+        let prefix: [string, i64] = "aa";
+        let sub = db::subscription::new(#prefix: prefix, t);
+        db::insert(sub ~ t, "aa1", 1)?;
+        db::subscription::on_insert(sub)?
+    }}"#,
+    setup: |td| { td.path().join("tagged_subscription.db") },
+    expect: |v: Value| -> Result<()> {
+        let Value::Array(events) = v else { panic!("expected events") };
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], Value::Array([
+            Value::Array([Value::from("key"), Value::from("aa1")].into()),
+            Value::Array([Value::from("value"), Value::I64(1)].into()),
+        ].into()));
+        Ok(())
+    }
+);

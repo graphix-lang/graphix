@@ -3,6 +3,10 @@ use super::Tree;
 type Subscription<'k, 'v>;
 
 /// Subscribe to changes on a tree, optionally filtering by key prefix.
+/// Strings and bytes match by their byte prefix, including in union key types.
+/// Arrays match initial whole elements; maps match initial whole key/value pairs
+/// in key order. Other keys match exactly. Use cursor::range for compound ranges.
+/// A null prefix disables filtering, including when the key type contains null.
 val new: fn(?#prefix: ['k, null], t: Tree<'k, 'v>) -> Subscription<'k, 'v>;
 
 /// Fires with the changes each delivery carries, each key's in the order

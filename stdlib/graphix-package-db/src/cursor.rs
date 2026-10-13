@@ -1,5 +1,5 @@
 use crate::{
-    encoding::{decode_key, decode_value, encode_key},
+    encoding::{decode_key, decode_value, encode_key, encode_prefix},
     tree::{Reaped, blocking, get_tree_inner},
 };
 use anyhow::Result;
@@ -69,21 +69,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
         let tree = get_tree_inner(from, 1)?;
         let iter = match from.0.first()?.as_ref()? {
             Value::Null => Some(tree.tree.iter()),
-            // CR claude for claude: [bug/medium] The prefix is encoded with encode_key.
-            // That is a byte prefix only when the tree's key type is exactly string or
-            // bytes. For any other key type the encoding is tagged and self-delimiting:
-            // a string ends with the 0 0 of write_delimited, and an array or map ends
-            // with 0. So #prefix matches only the identical key. On a Tree<[string,
-            // i64], _> or a Tree<Array<string>, _>, `#prefix: "aa"` / `#prefix: ["x"]`
-            // finds nothing while a Tree<string, _> finds aaa and aab.
-            // DbSubscribe::watch passes the same encoding to watch_prefix and has the
-            // same problem. Fix: add an encode_prefix in encoding.rs that drops the
-            // outermost terminator of the tagged form (the trailing 0 0 of a
-            // string/bytes, the 0 of an array/map), and use it in both places. Pin it
-            // with tagged-key prefix tests, and say in cursor.gxi/subscription.gxi what
-            // a prefix means for a non-string key. probe:
-            // design/review-2026-10-12/repro/http-sqlite-db1-06.gx (http-sqlite-db1-06)
-            v => encode_key(tree.key_typ, v).ok().map(|p| tree.tree.scan_prefix(&*p)),
+            v => encode_prefix(tree.key_typ, v).ok().map(|p| tree.tree.scan_prefix(&*p)),
         };
         Some(wrap_cursor(iter, tree.key_typ))
     }

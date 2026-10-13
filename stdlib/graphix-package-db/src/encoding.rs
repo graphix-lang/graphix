@@ -37,18 +37,6 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // any other key type stores each value tagged by its type and
 // self-delimiting.
 
-// CR claude for claude: [bug/medium] db_cursor_new and the subscription's watch encode
-// #prefix with encode_key. For a tree whose key type is not a single primitive (e.g.
-// Tree<[string, i64], _>), a string prefix is written tagged with write_delimited's `0
-// 0` end marker. The prefix then matches only the exact key: #prefix "aa" finds "aa1"
-// in Tree<string, _> but nothing in Tree<[string, i64], _>, and the interfaces just say
-// "filtering by key prefix". Fix: add an encode_prefix that leaves off the outermost
-// string/bytes terminator, so a tagged string prefix is a byte prefix of every key it
-// should match. Then document what a prefix means for the other key types: an exact key
-// for fixed-width ones, and, unless an array's trailing 0 is also dropped, an exact key
-// for arrays and tuples. A null #prefix on a nullable key type means "no filter", which
-// is worth saying in cursor.gxi and subscription.gxi too. probe:
-// design/review-2026-10-12/repro/db2-04.gx (db2-04)
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {
@@ -58,6 +46,19 @@ pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<
         (Some(t), v) => bail!("a key of type {t:?} cannot be {v}"),
         (None, v) => write_tagged(v, &mut buf, 0)?,
     }
+    Ok(buf)
+}
+
+pub(crate) fn encode_prefix(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
+    let mut buf = encode_key(key_typ, v)?;
+    let terminator = match (key_typ, v) {
+        (Some(Typ::String | Typ::Bytes), _) => 0,
+        (_, Value::String(_) | Value::Bytes(_)) => 2,
+        (_, Value::Array(_) | Value::Map(_)) => 1,
+        _ => 0,
+    };
+    let len = buf.len() - terminator;
+    buf.truncate(len);
     Ok(buf)
 }
 
@@ -461,6 +462,29 @@ mod test {
         Value::Map(netidx_value::Map::from_iter(
             kvs.iter().map(|(k, v)| (Value::I64(*k), Value::String(ArcStr::from(*v)))),
         ))
+    }
+
+    #[test]
+    fn prefixes_match_only_complete_outer_parts() {
+        let bytes = |b: &'static [u8]| Value::Bytes(bytes::Bytes::from_static(b).into());
+        let array = |s: &'static str| Value::Array([Value::from(s)].into());
+        for (prefix, key, other) in [
+            (Value::from("a\0"), Value::from("a\0b"), Value::from("ab")),
+            (bytes(b"a\0"), bytes(b"a\0b"), bytes(b"ab")),
+            (
+                array("a"),
+                Value::Array([Value::from("a"), Value::from("b")].into()),
+                array("ab"),
+            ),
+            (map(&[(1, "a")]), map(&[(1, "a"), (2, "b")]), map(&[(1, "ab")])),
+            (Value::I64(1), Value::I64(1), Value::I64(2)),
+        ] {
+            for typ in [None, Some(Typ::get(&key))] {
+                let prefix = encode_prefix(typ, &prefix).unwrap();
+                assert!(encode_key(typ, &key).unwrap().starts_with(&prefix));
+                assert!(!encode_key(typ, &other).unwrap().starts_with(&prefix));
+            }
+        }
     }
 
     #[test]

@@ -32,7 +32,7 @@ use std::{
 };
 
 use crate::{
-    encoding::{decode_key, decode_value, encode_key},
+    encoding::{decode_key, decode_value, encode_prefix},
     tree::get_tree_inner,
 };
 
@@ -251,7 +251,7 @@ impl DbSubscribe {
         let prefix = match self.args.0[0].as_ref() {
             None => return,
             Some(Value::Null) => Ok(GPooled::orphan(vec![])),
-            Some(v) => encode_key(tree.key_typ, v),
+            Some(v) => encode_prefix(tree.key_typ, v),
         };
         let Ok(prefix) = prefix else { return };
         let subscriber = tree.tree.watch_prefix(&*prefix);
@@ -494,7 +494,7 @@ db_event_accessor!(DbOnRemove, "db_subscription_on_remove", |se| match se {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::encoding::encode_value;
+    use crate::encoding::{encode_key, encode_value};
     use std::{sync::mpsc as std_mpsc, thread, time::Duration};
 
     /// The runtime never takes a delivery, yet writes to the tree finish:
