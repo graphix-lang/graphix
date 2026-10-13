@@ -44,50 +44,18 @@ use tokio::sync::{mpsc, oneshot};
 /// `#[cfg(test)]`-gated and so not importable).
 pub const REGISTER: &[&dyn Package<NoExt>] = graphix_package::package_refs!();
 
-/// The mode a program was run under. The single `FusionDisabled` flag
-/// toggles all of fusion: there is no "fuse but don't JIT" mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// CR claude for claude: [structure/low] This enum repeats
-// graphix_package_core::testing::Mode: the same four variants and the same flags() and
-// node_walk(). Only par() differs, and on purpose: the fuzzer's JitPar is Auto over
-// AUTO_T and its serial modes ignore GRAPHIX_PAR. A fifth mode or a flag change made in
-// one copy and not the other makes the fuzzer and the tests disagree on what a mode
-// means. Use testing::Mode here and keep the fuzzer's policy as one `fn fuzz_par(Mode)
-// -> ParMode`. (x-dup-11)
-pub enum Mode {
-    /// Node-walk interpreter (`CFlag::FusionDisabled`) — the reference.
-    Interp,
-    /// Fusion + cranelift JIT (no flags) — the system under test.
-    Jit,
-    /// The node-walk with every fork point forked
-    /// (`design/parallel_eval.md`): what serial evaluation computes.
-    Par,
-    /// Fusion + JIT with every fork point forked, kernel loops' slots
-    /// included.
-    JitPar,
-}
+pub use graphix_package_core::testing::Mode;
 
-impl Mode {
-    pub fn flags(self) -> BitFlags<CFlag> {
-        match self {
-            Mode::Interp | Mode::Par => CFlag::FusionDisabled.into(),
-            Mode::Jit | Mode::JitPar => BitFlags::empty(),
-        }
-    }
-
-    pub fn node_walk(self) -> bool {
-        matches!(self, Mode::Interp | Mode::Par)
-    }
-
-    /// The node-walk's parallel runs fork every fork point; the JIT's run
-    /// the default mode over a tiny fixed threshold ([`AUTO_T`]), so every
-    /// site probes and then forks along `Auto`'s own shapes.
-    pub fn par(self) -> ParMode {
-        match self {
-            Mode::Par => ParMode::Force,
-            Mode::JitPar => ParMode::Auto,
-            Mode::Interp | Mode::Jit => ParMode::Off,
-        }
+/// The fork mode the fuzzer runs `mode` in: the node-walk's parallel runs
+/// fork every fork point; the JIT's run the default mode over a tiny
+/// fixed threshold ([`AUTO_T`]), so every site probes and then forks
+/// along `Auto`'s own shapes; the serial modes fork nothing, whatever
+/// `GRAPHIX_PAR` says.
+pub fn fuzz_par(mode: Mode) -> ParMode {
+    match mode {
+        Mode::Par => ParMode::Force,
+        Mode::JitPar => ParMode::Auto,
+        Mode::Interp | Mode::Jit => ParMode::Off,
     }
 }
 
@@ -536,7 +504,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
             // an event, so both engines' exits are compared like any other output.
             // probe: design/review-2026-10-12/repro/x-rerun-3-06.gx (x-rerun-3-06)
             ctx.libstate.set(sink);
-            ctx.control.set_par_mode(mode.par());
+            ctx.control.set_par_mode(fuzz_par(mode));
         },
     );
     let ctx = match tokio::time::timeout(timeout, init).await {
@@ -1205,7 +1173,7 @@ async fn run_subject(
         Some((subj.sched.max_events, subj.sched.max_cycles)),
         move |ctx| {
             ctx.libstate.set(seeded);
-            ctx.control.set_par_mode(mode.par());
+            ctx.control.set_par_mode(fuzz_par(mode));
         },
     );
     let ctx = match tokio::time::timeout(timeout, init).await {
@@ -6259,7 +6227,7 @@ mod trace_probes {
             REGISTER,
             vec![resolver],
             mode.flags(),
-            move |ctx| ctx.control.set_par_mode(mode.par()),
+            move |ctx| ctx.control.set_par_mode(fuzz_par(mode)),
         )
         .await
         .expect("runtime init");
