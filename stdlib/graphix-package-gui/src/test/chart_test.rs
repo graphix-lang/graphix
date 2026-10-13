@@ -6,7 +6,9 @@ use crate::{
     widgets::chart::{ChartMode, ChartState, ChartW, PlotInfo},
 };
 use graphix_rt::NoExt;
-use iced_core::{Point, Rectangle, Size, mouse};
+use iced_core::{Color, Point, Rectangle, Size, clipboard, mouse};
+use iced_runtime::user_interface::Cache;
+use iced_wgpu::graphics::Viewport;
 use iced_widget::canvas::Program;
 
 fn chart(h: &GuiTestHarness) -> &ChartW<NoExt> {
@@ -34,6 +36,29 @@ async fn draw(h: &GuiTestHarness) -> Option<PlotInfo> {
     draw_in(h, &ChartState::default(), Size::new(400.0, 300.0)).await
 }
 
+async fn screenshot(h: &GuiTestHarness) -> Vec<u8> {
+    let mut renderer = super::headless_gpu().await.create_renderer();
+    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+    crate::frame::frame(
+        h.widget.view(),
+        Size::new(400.0, 200.0),
+        &mut Cache::default(),
+        &mut renderer,
+        &mut Vec::new(),
+        &[],
+        mouse::Cursor::Unavailable,
+        &mut clipboard::Null,
+        &mut Vec::new(),
+        &theme,
+    );
+    renderer
+        .screenshot(&Viewport::with_physical_size(Size::new(400, 200), 1.0), Color::BLACK)
+}
+
+fn color_pixels(rgba: &[u8], color: [u8; 3]) -> usize {
+    rgba.chunks_exact(4).filter(|px| px[..3] == color).count()
+}
+
 async fn chart_harness(args: &str) -> Result<GuiTestHarness> {
     let code = format!(
         "use gui::*;\nuse gui::chart::{{self, *}};\n\
@@ -57,7 +82,7 @@ async fn axis_range_renders() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dataset_meta_renders() -> Result<()> {
+async fn empty_line_draws_nothing() -> Result<()> {
     let h = chart_harness(concat!(
         "#width: &`Fill, #height: &`Fixed(200.0), ",
         r#"&[chart::line(#label: "test", &[])]"#,
@@ -69,7 +94,7 @@ async fn dataset_meta_renders() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dataset_meta_with_color() -> Result<()> {
+async fn empty_colored_scatter_draws_nothing() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
          &[chart::scatter(#color: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, &[])]",
@@ -131,23 +156,14 @@ async fn series_style_stroke_width() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] This test, mesh_style,
-// dark_background_label_colors, legend_style and series_style_stroke_width assert only
-// that the draw recorded a plot area. That holds whether or not the background, mesh,
-// legend or stroke settings are applied, so a draw that ignored chart_style.background
-// would leave them all green. They do check that the style parses. Screenshot the chart
-// as frame_test::draw does and assert the dominant colour of the plot interior is the
-// requested background, and likewise for one legend or mesh property.
-// dataset_meta_with_color draws an empty series, so its colour is never used. Name the
-// two empty-data tests after what they check, which is that an empty series draws
-// nothing. (tests-gui-b-05)
 async fn background_color() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
-         #style: &chart_style(#background: color(#r: 0.1, #g: 0.1, #b: 0.1, #a: 1.0)$), \
+         #style: &chart_style(#background: color(#r: 1.0, #g: 0.0, #b: 1.0, #a: 1.0)$), \
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
+    assert!(color_pixels(&screenshot(&h).await, [255, 0, 255]) > 40_000);
     assert!(draw(&h).await.is_some());
     Ok(())
 }
@@ -157,7 +173,7 @@ async fn mesh_style() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
          #style: &chart_style(#mesh: {show_x_grid: true, show_y_grid: false, \
-                   grid_color: null, bold_line_color: color(#r: 0.5, #g: 0.5, #b: 0.5)$, \
+                   grid_color: null, bold_line_color: color(#r: 0.0, #g: 1.0, #b: 0.0)$, \
                    axis_color: null, \
                    label_color: null, label_size: 12.0, \
                    x_label_area_size: null, x_labels: 5, x_light_lines: 0, \
@@ -166,6 +182,7 @@ async fn mesh_style() -> Result<()> {
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
+    assert!(color_pixels(&screenshot(&h).await, [0, 255, 0]) > 100);
     assert!(draw(&h).await.is_some());
     Ok(())
 }
