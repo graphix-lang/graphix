@@ -89,29 +89,20 @@ widget(#height: 50, "text")
 
 ## Required Labeled Arguments
 
-<!-- CR claude for claude: [doc-drift/low] Several signatures on this page do not match
-the code, and some are not syntax. input_handler is really `fn(?#enabled: .., #handle:
-&fn(e: Event) -> [`Stop, `Continue], child: &Tui) -> Tui`, so the call below needs
-`#handle: &my_handler` and fails as written. The table example's `&Row`/`&i64`/`->
-Widget` are `&[Row, null]`/`&[i64, null]`/`-> Tui` in table.gxi. The 'Function
-Constraints' form `let sum<'a: Number>(@args: 'a) -> 'a` and the summary row `fn(?#x:
-i64 = 0)` are parse errors: write a constraint as `val sum: fn<'a: Number>(@args: 'a) ->
-'a`, and show a default only on a lambda. The shell transcript after the Singleton text
-still shows three independent Number variables. Fix: paste the current signatures from
-the .gxi files and the current REPL output. (book-core-13) -->
 Arguments with `#` but no `?` are required but labeled:
 
 ```graphix
 val input_handler: fn(
-    #handle: fn(e: Event) -> Response,
-    w: &Widget
-) -> Widget
+    ?#enabled: &[bool, null],
+    #handle: &fn(e: Event) -> [`Stop, `Continue],
+    child: &Tui
+) -> Tui
 ```
 
-You must provide `#handle`, but it doesn't have to be in the first position. However, it must come before the unlabeled `&Widget` argument:
+You must provide `#handle`, but it doesn't have to be in the first position. However, it must come before the unlabeled `&Tui` argument:
 
 ```graphix
-input_handler(#handle: my_handler, &my_widget)
+input_handler(#handle: &my_handler, &my_widget)
 ```
 
 ## Variadic Arguments
@@ -282,7 +273,7 @@ sum(1, [2, 3], 4)
 Type variables in functions can have constraints:
 
 ```graphix
-let sum<'a: Number>(@args: 'a) -> 'a
+val sum: fn<'a: Number>(@args: 'a) -> 'a
 ```
 
 This is subtly different from the `sum` examples earlier. This says,
@@ -344,11 +335,12 @@ shell also telling you what type variables are currently bound to, or
 
 ```graphix
 〉f
--: fn<'_2069: unbound: Number, '_2067: unbound: Number, '_2071: unbound: Number>(x: '_2067: unbound, y: '_2069: unbound) -> '_2071: unbound
+-: fn<'_2067: unbound: Number + Singleton>(x: '_2067: unbound, y: '_2067: unbound) -> '_2067: unbound
 ```
 
-The constraint `'_2069: unbound: Number` is read as. _2069 is not
-currently bound to a type but is constrained to type `Number`. This is
+The constraint `'_2067: unbound: Number + Singleton` is read as: `_2067`
+is not currently bound to a type but is constrained to one type of
+`Number`. This is
 all useful information, even though it's intimidating at first it's
 worth putting in the work to learn to decipher it.
 
@@ -360,21 +352,23 @@ Let's decode some complex real-world signatures:
 
 ```graphix
 val table: fn(
-    ?#header: &Row,
-    ?#selected: &i64,
-    ?#row_highlight_style: &Style,
-    ?#highlight_symbol: &string,
+    ?#header: &[Row, null],
+    ?#selected: &[i64, null],
+    ?#row_highlight_style: &[Style, null],
+    ?#highlight_symbol: &[string, null],
     rows: &Array<&Row>
-) -> Widget
+) -> Tui
 ```
 
+(a few of `table`'s labeled arguments; the rest have the same shape)
+
 Breaking it down:
-- `?#header: &Row` - optional labeled argument, reference to a Row
-- `?#selected: &i64` - optional labeled argument, reference to selected index
-- `?#row_highlight_style: &Style` - optional labeled argument, reference to a Style
-- `?#highlight_symbol: &string` - optional labeled argument, reference to symbol string
+- `?#header: &[Row, null]` - optional labeled argument, reference to a Row or null
+- `?#selected: &[i64, null]` - optional labeled argument, reference to the selected index
+- `?#row_highlight_style: &[Style, null]` - optional labeled argument, reference to a Style
+- `?#highlight_symbol: &[string, null]` - optional labeled argument, reference to the symbol string
 - `rows: &Array<&Row>` - required positional argument, reference to array of row references
-- `-> Widget` - returns a Widget
+- `-> Tui` - returns a TUI widget
 
 All parameters are references because the table needs to react to changes without rebuilding.
 
@@ -396,11 +390,12 @@ Breaking it down:
 ### Example 3: Queue Function
 
 ```graphix
-val queue: fn(#clock: Any, v: 'a) -> 'a
+val queue: fn(#clock: Any, ?#flush: Any, v: 'a) -> 'a
 ```
 
 Breaking it down:
 - `#clock: Any` - required labeled argument of any type, just used as an event source
+- `?#flush: Any` - optional labeled argument, an event that empties the queue
 - `v: 'a` - a value of any type
 - `-> 'a` - returns values of the same type
 
@@ -428,7 +423,7 @@ Breaking it down:
 | `'a`, `'b`, `'e` | Type parameter (generic) | `fn(x: 'a) -> 'a` |
 | `'_23`, `'_24`, `'_25` | Inferred type parameter (generic) | `fn(x: '_23) -> '_23` |
 | `name: T` | Named positional argument | `fn(x: i64) -> i64` |
-| `?#param` | Optional labeled argument | `fn(?#x: i64 = 0)` |
+| `?#param` | Optional labeled argument (its default is the lambda's, `\|#x: i64 = 0\| ..`) | `fn(?#x: i64)` |
 | `#param` | Required labeled argument | `fn(#x: i64)` |
 | `@args` | Variadic (any number of args) | `fn(@args: i64)` |
 | `&T` | Reference to type T | `fn(s: &string)` |
