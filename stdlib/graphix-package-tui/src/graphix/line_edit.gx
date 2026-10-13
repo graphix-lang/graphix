@@ -96,23 +96,15 @@ let view = |
         false => line(#style: base, shown),
         true => {
             let n = str::char_len(shown);
-            // CR claude for claude: [bug/low] With #mask, `shown` repeats the mask once
-            // per value character, but `cur` treats the value's cursor as an index into
-            // `shown`. A mask of k characters therefore puts the reverse-video cell
-            // inside an earlier character's mask: "**" over "abc" with the cursor at 1
-            // renders ["*", "*", "****"] instead of ["**", "**", "**"]. Either scale
-            // the cursor and the cursor cell by the mask's char_len when masking, or
-            // make the mask a single character so the bad case cannot be written.
-            // probe: design/review-2026-10-12/repro/gx-ui-07-line-edit-mask-cursor.gx
-            // (gx-ui-07)
-            let cur = max(0, min(s.cursor, n));
+            let cell_len = select mask { null as _ => 1, m => str::char_len(m) };
+            let cur = max(0, min(s.cursor, str::char_len(s.value))) * cell_len;
             let before = str::sub(#start: 0, #len: cur, shown)$;
             let at = select cur {
-                c if c < n => str::sub(#start: c, #len: 1, shown)$,
+                c if c < n => str::sub(#start: c, #len: cell_len, shown)$,
                 _ => " "
             };
             let after = select cur {
-                c if c < n => str::sub(#start: c + 1, #len: n - c - 1, shown)$,
+                c if c < n => str::sub(#start: c + cell_len, #len: n - c - cell_len, shown)$,
                 _ => ""
             };
             line(#style: base, [

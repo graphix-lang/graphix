@@ -426,3 +426,26 @@ let result = input_handler(#handle: &handle, &text(&[line_edit::view(&ed)]))
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn line_edit_highlights_the_whole_mask_at_the_cursor() -> Result<()> {
+    use ratatui::style::Modifier;
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::{line_edit, text::text};
+let ed: line_edit::State = {value: "abc", cursor: 1};
+let result = text(&[line_edit::view(#mask: "**", &ed)])
+"#,
+    )
+    .await?;
+    h.assert_lines(&["******"])?;
+    let buffer = h.render()?;
+    for x in 0..6 {
+        assert_eq!(
+            buffer[(x, 0)].modifier.contains(Modifier::REVERSED),
+            (2..4).contains(&x),
+            "cell {x}"
+        );
+    }
+    Ok(())
+}
