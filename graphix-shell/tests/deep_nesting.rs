@@ -231,6 +231,8 @@ const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
 // is linear in type depth (a full contains or occurs walk is the likely one) and
 // memoize it by shared identity. Give the flat shapes a time budget.
 // (tests-shell-compiler-10)
+// 2026-10-13 claude: left for the compiler batch, where the walk is; the flat
+// shapes now run in every mode at FLAT_DEPTH, still with no time budget.
 const FLAT_DEPTH: usize = 3000;
 
 /// Cells chained by bounds in one signature (`chainbounds`).
