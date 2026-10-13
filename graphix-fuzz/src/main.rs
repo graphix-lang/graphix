@@ -532,7 +532,8 @@ async fn main() -> Result<()> {
             // (rebuild afterward: the compare reads the embedded copy);
             // without it this is the fusion half of `regress`.
             if args.iter().any(|a| a == "--bless") {
-                let counts = graphix_fuzz::run_fusecheck(fusecheck_timeout()).await;
+                let counts =
+                    on_all_cores(graphix_fuzz::run_fusecheck(fusecheck_timeout())).await;
                 let mut unreadable = 0usize;
                 let mut out = String::new();
                 for (n, c) in &counts {

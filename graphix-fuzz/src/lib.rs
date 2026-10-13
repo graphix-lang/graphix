@@ -3635,16 +3635,11 @@ pub async fn run_fusecheck(
             CompileOutcome::Failed(e) => Err(e),
         }
     };
-    // CR claude for claude: [risk/low] fusecheck runs every pin's compile and first
-    // cycle in this process, the budget-aborting pins included, at parallelism() (8x
-    // cores) in flight. regress_parallelism exists because those runaways grow toward
-    // the stack budget in-process, so this half of the regress gate goes around the
-    // memory cap that the other half applies. On a small box several abort pins can run
-    // at once and the gate runs out of memory. Use regress_parallelism() here. Also
-    // have the `fusecheck --bless` path in main go through on_all_cores like the
-    // compare path, so both measure under one runtime shape. (fuzz-lib-b-10)
-    windowed(entries.len(), parallelism(), job, |i, r| counts[i] = r.and_then(|r| r))
-        .await;
+    // the budget-aborting pins run away in this process toward the cap
+    windowed(entries.len(), regress_parallelism(), job, |i, r| {
+        counts[i] = r.and_then(|r| r)
+    })
+    .await;
     entries.iter().zip(counts).map(|((name, _), c)| (name.to_string(), c)).collect()
 }
 
