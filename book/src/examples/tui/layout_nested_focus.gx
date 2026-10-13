@@ -8,17 +8,8 @@ use tui::{
   text::text
 };
 
-// CR claude for claude: [readability/low] layout_nested_focus: a 6 KB literal of one
-// sentence pasted 50 times, magic 150. long_text is the same sentence written out 50
-// times, and some joins lose their space ('head!3 I've'). The scroll bound 150 appears
-// twice (`position < 150`, `#content_length:&150`) and has no relation to the wrapped
-// text's length. In a book page the literal buries the example. Failure: Readers scroll
-// past 6 KB of text to find the focus logic. Fix: `let long_text = str::join(#sep: " ",
-// array::init(50, |i| "[i + 1] I've got a lovely bunch of coconuts ... some the size of
-// your head!"));`, and one `let max_scroll = 150` used by both the guard and the
-// scrollbar. Unverified: the reviewer's report, not checked by a verifier.
-// (examples-tui-13)
-let long_text = "1 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head! 2 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!3 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!4 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!5 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!6 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!7 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!8 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!9 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!10 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!11 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!12 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!13 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!14 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!15 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!16 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!17 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!18 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!19 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!20 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!21 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!22 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!23 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!24 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!25 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!26 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!27 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!28 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!29 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!30 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!31 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!32 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!33 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!34 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!35 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!36 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!37 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!38 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!39 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!40 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!41 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!42 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!43 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!44 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!45 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!46 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!47 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!48 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!49 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!50 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!";
+let long_text = str::join(#sep: " ", array::init(50, |i| "[i + 1] I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!"));
+let max_scroll = 150;
 
 let focused = 0;
 
@@ -54,7 +45,7 @@ let block2rem = block(
              position <- (k ~ position) - 1;
              `Stop
          },
-         k@`Down if position < 150 => {
+         k@`Down if position < max_scroll => {
              position <- (k ~ position) + 1;
              `Stop
          },
@@ -64,7 +55,7 @@ let block2rem = block(
        #handle: &handle_event,
        &scrollbar(
          #position: &position,
-         #content_length:&150,
+         #content_length:&max_scroll,
          &paragraph(#scroll: &{x: 0, y: position}, &long_text)
        )
      )
