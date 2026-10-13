@@ -34,13 +34,7 @@ let mod_name = "None";
                 #halign: &`Center,
                 &[
                     text(#size: &24.0, &"Keyboard Area Demo"),
-                    // CR claude for claude: [readability/low] The keyboard area hears
-                    // no keys until a left click inside it gives it focus
-                    // (State::is_focused starts false in iced_keyboard_area), and
-                    // keyboard_area.md says so. This prompt tells the user to press a
-                    // key, so the demo looks broken until they happen to click. Change
-                    // it to "Click here, then press any key...". (examples-gui-05)
-                    text(&"Press any key..."),
+                    text(&"Click here, then press any key..."),
                     text(#size: &32.0, &last_key),
                     text(&"Modifier: [mod_name]")
                 ]
