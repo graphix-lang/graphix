@@ -147,14 +147,6 @@ run!(place_read_write, PLACE_READ_WRITE, |v: Result<&Value>| {
 // A moving reference points where its key says when it fires; two
 // writes to one root in one cycle both land; a write past an array's
 // end is dropped and the root is untouched.
-// CR claude for claude: [test-gap/low] This fixture never observes the write through
-// the moved reference. At t3, `*r0` and `*r2` overwrite both a[0] and a[2] before the
-// only sample at t4, so the result is (1, [100, 2, 300], 300) whether `*r <- t2 ~ 30`
-// lands at index 2, at index 0, or nowhere. Deleting that line leaves the output
-// unchanged. Sample `a` between t2 and t3 and pin [1, 2, 30].
-// PLACE_THROUGH_BOTTOM_DEREF has the same hole: the pending write that its comment says
-// lands at the retarget is overwritten by `*s <- t4 ~ 7` before t5 samples. Sample `a`
-// between the retarget and t4 and pin [99, 20]. (tests-lang-rest-b-07)
 const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 {
   let step = 0;
@@ -170,17 +162,20 @@ const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
   i <- t1 ~ 2;
   let t2 = select step { 5 => null, _ => never() };
   *r <- t2 ~ 30;
+  let tm = select step { 7 => null, _ => never() };
+  let mid = tm ~ a;
   let t3 = select step { 8 => null, _ => never() };
   *r0 <- t3 ~ 100;
   *r2 <- t3 ~ 300;
   *bad <- t3 ~ 9;
   let t4 = select step { 11 => null, _ => never() };
-  t4 ~ (first, a, *r)
+  t4 ~ (first, mid, a, *r)
 }
 "#;
 
 run!(place_move_siblings_bad, PLACE_MOVE_SIBLINGS_BAD, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:1, [i64:100, i64:2, i64:300], i64:300]"
+    format!("{}", v.unwrap())
+        == "[i64:1, [i64:1, i64:2, i64:30], [i64:100, i64:2, i64:300], i64:300]"
 }; FuseExpect::Jit);
 
 // A write to a key the map lacks inserts it; a write through a path
@@ -387,15 +382,16 @@ const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
   obs <- t2 ~ *s;
   let t3 = select step { 8 => null, _ => never() };
   r <- t3 ~ &mut a;
+  let tm = select step { 10 => null, _ => never() };
   let t4 = select step { 11 => null, _ => never() };
   *s <- t4 ~ 7;
   let t5 = select step { 16 => null, _ => never() };
-  (t3 ~ a, t5 ~ obs, t5 ~ a)
+  (t3 ~ a, tm ~ a, t5 ~ obs, t5 ~ a)
 }
 "#;
 
 run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:10, i64:20], null, [i64:7, i64:20]]"
+    format!("{}", v.unwrap()) == "[[i64:10, i64:20], [i64:99, i64:20], null, [i64:7, i64:20]]"
 }; FuseExpect::Jit);
 
 // A place indexed past i64::MAX addresses nothing, never from the end:
