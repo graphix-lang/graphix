@@ -31,23 +31,20 @@ let rec publish_all = |paths: Array<string>, i: i64| select paths {
 }
 ```
 
-<!-- CR claude for claude: [doc-drift/medium] 'those past the new end sleep' is wrong.
-An activation past the new end is deleted, and re-reaching that depth later starts it
-fresh: a per-element `count(x)` over [1,2,3] -> [4,5,6] -> [7] -> [8,9,10] shows [4, 1,
-1] on the last update, not the [4, 3, 3] that sleeping would give. Probe:
-design/review-2026-10-12/repro/book-core-recursion-shrink.gx. Fix: say those past the
-new end are deleted (their publishes withdrawn), and a later regrow builds fresh ones.
-(book-core-08) -->
 Every path gets its own publish site, retained across cycles. When the
 array changes, the activations are fed again by position, and those
-past the new end sleep.
+past the new end are deleted, their publishes withdrawn; a later regrow
+builds fresh ones.
 
 Recursion is bounded by memory, not by a limit: non-tail recursion nests on
 heap-allocated stack segments, in the interpreter and in compiled code
 alike. An embedder may cap it with a stack budget
 (`graphix_compiler::set_stack_budget`, or `GRAPHIX_STACK_BUDGET` in
-bytes or with a `K`, `M` or `G` suffix, as in `64M`); a program that
-exceeds the budget is stopped the way Ctrl-C stops it.
+bytes or with a `K`, `M` or `G` suffix, as in `64M`), and with an
+activation budget, the live activations (calls, collection slots)
+a runtime may hold (`Control::set_activation_budget`, or
+`GRAPHIX_ACTIVATION_BUDGET`); unlimited by default. A program that
+exceeds a budget is stopped the way Ctrl-C stops it.
 
 If you rely on a function running as a constant-space loop, assert it:
 
