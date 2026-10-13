@@ -1,5 +1,6 @@
 use super::{InteractionHarness, expect_call, expect_call_with_args};
 use anyhow::Result;
+use compact_str::format_compact;
 use graphix_rt::NoExt;
 use iced_core::{Event, Point, Size, mouse};
 use netidx::publisher::Value;
@@ -35,9 +36,19 @@ const WIDGET_HIT: Point = Point::new(10.0, 10.0);
 
 #[tokio::test(flavor = "current_thread")]
 async fn button_click_produces_call() -> Result<()> {
-    let mut h = harness("button(#on_press: |_| null, &text(&\"Click me\"))").await?;
-    let msgs = h.click(WIDGET_HIT);
-    expect_call(&msgs);
+    let code = r#"
+        use gui::{button::button, text::text};
+        let calls = 0;
+        let result = button(#on_press: |t| calls <- t ~ calls + 1, &text(&"Click"))
+    "#;
+    let mut h = InteractionHarness::new(code).await?;
+    assert_eq!(h.watch("test::calls").await?, Value::I64(0));
+    for n in 1..=2 {
+        let msgs = h.click(WIDGET_HIT);
+        expect_call(&msgs);
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(n)));
+    }
     Ok(())
 }
 
@@ -79,16 +90,32 @@ async fn checkbox_click_no_panic() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn checkbox_toggle_produces_call() -> Result<()> {
-    let code = format!(
-        "{IMPORTS};\n\
-         let result = checkbox(#label: &\"Toggle me\", #on_toggle: |v| null, &false)"
+async fn toggle_dispatches(widget: &str) -> Result<()> {
+    let code = format_compact!(
+        r#"
+        {IMPORTS};
+        let state = false;
+        let calls = 0;
+        let toggle = |v| {{ state <- v; calls <- v ~ calls + 1; null }};
+        let result = {widget}(#label: &"Toggle", #on_toggle: toggle, &state)
+    "#
     );
     let mut h = InteractionHarness::new(&code).await?;
-    let msgs = h.click(WIDGET_HIT);
-    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::Bool(true)));
+    assert_eq!(h.watch("test::state").await?, Value::Bool(false));
+    assert_eq!(h.watch("test::calls").await?, Value::I64(0));
+    for (i, value) in [true, false].into_iter().enumerate() {
+        let msgs = h.click(WIDGET_HIT);
+        expect_call_with_args(&msgs, |args| args.first() == Some(&Value::Bool(value)));
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(h.get_watched("test::state"), Some(&Value::Bool(value)));
+        assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(i as i64 + 1)));
+    }
     Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn checkbox_toggle_produces_call() -> Result<()> {
+    toggle_dispatches("checkbox").await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -106,14 +133,7 @@ async fn toggler_click_no_panic() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn toggler_toggle_produces_call() -> Result<()> {
-    let code = format!(
-        "{IMPORTS};\n\
-         let result = toggler(#label: &\"Dark mode\", #on_toggle: |v| null, &false)"
-    );
-    let mut h = InteractionHarness::new(&code).await?;
-    let msgs = h.click(WIDGET_HIT);
-    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::Bool(true)));
-    Ok(())
+    toggle_dispatches("toggler").await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -255,17 +275,24 @@ async fn text_input_submit_produces_call() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_input_on_input_produces_call() -> Result<()> {
-    let code = format!(
-        "{IMPORTS};\n\
-         let result = text_input(\
-             #placeholder: &\"Type here\", \
-             #on_input: |s| null, \
-             &\"\")"
-    );
-    let mut h = InteractionHarness::new(&code).await?;
+    let code = r#"
+        use gui::text_input::text_input;
+        let value = "";
+        let calls = 0;
+        let input = |s| { value <- s; calls <- s ~ calls + 1; null };
+        let result = text_input(#on_input: input, &value)
+    "#;
+    let mut h = InteractionHarness::new(code).await?;
+    assert_eq!(h.watch("test::value").await?, Value::from(""));
+    assert_eq!(h.watch("test::calls").await?, Value::I64(0));
     h.click(WIDGET_HIT);
-    let msgs = h.type_text("a");
-    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("a")));
+    for (i, (typed, value)) in [("a", "a"), ("b", "ab")].into_iter().enumerate() {
+        let msgs = h.type_text(typed);
+        expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from(value)));
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(h.get_watched("test::value"), Some(&Value::from(value)));
+        assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(i as i64 + 1)));
+    }
     Ok(())
 }
 
@@ -317,30 +344,6 @@ async fn radio_dispatches_every_click_without_initial_selection() -> Result<()> 
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/medium] This test only checks that a click produces a
-// Call with the right argument. It never dispatches the call, so it cannot see whether
-// radio's wrapped on_select runs once per click and never at init, and the radio
-// wrapper bug (gx-ui-01) passes it. Do what slider_on_change_produces_call does: watch
-// a variable the callback writes, assert its value before any click, then click A, B, A
-// with dispatch_calls and assert after each click. Do the same for the other widgets
-// whose tests stop at the message (button, checkbox, toggler, pick_list, text_input,
-// combo_box). (gx-ui-10)
-async fn radio_on_select_produces_call() -> Result<()> {
-    let code = format!(
-        "{IMPORTS};\n\
-         let result = radio(\
-             #label: &\"Option A\", \
-             #selected: &\"none\", \
-             #on_select: |v| null, \
-             &\"option_a\")"
-    );
-    let mut h = InteractionHarness::new(&code).await?;
-    let msgs = h.click(WIDGET_HIT);
-    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("option_a")));
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn pick_list_basic() -> Result<()> {
     let mut h = harness(
         "pick_list(\
@@ -356,17 +359,24 @@ async fn pick_list_basic() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pick_list_on_select_produces_call() -> Result<()> {
-    let code = format!(
-        "{IMPORTS};\n\
-         let result = pick_list(\
-             #selected: &\"Red\", \
-             #on_select: |s| null, \
-             #placeholder: &\"Choose...\", \
-             &[\"Red\", \"Green\", \"Blue\"])"
-    );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
-    let msgs = pick(&mut h, "Green");
-    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("Green")));
+    let code = r#"
+        use gui::pick_list::pick_list;
+        let selected = "Red";
+        let calls = 0;
+        let pick = |s| { selected <- s; calls <- s ~ calls + 1; null };
+        let result = pick_list(#selected: &selected, #on_select: pick,
+                               &["Red", "Green", "Blue"])
+    "#;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(300.0, 200.0)).await?;
+    assert_eq!(h.watch("test::selected").await?, Value::from("Red"));
+    assert_eq!(h.watch("test::calls").await?, Value::I64(0));
+    for (i, selected) in ["Green", "Red"].into_iter().enumerate() {
+        let msgs = pick(&mut h, selected);
+        expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from(selected)));
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(h.get_watched("test::selected"), Some(&Value::from(selected)));
+        assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(i as i64 + 1)));
+    }
     Ok(())
 }
 
@@ -436,20 +446,25 @@ async fn text_editor_on_edit_produces_callback() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn combo_box_on_select_produces_call() -> Result<()> {
-    let code = format!(
-        "{IMPORTS};\n\
-         let result = combo_box(\
-             #selected: &\"Alpha\", \
-             #on_select: |s| null, \
-             #placeholder: &\"Pick one\", \
-             &[\"Alpha\", \"Beta\", \"Gamma\"])"
-    );
-    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+    let code = r#"
+        use gui::combo_box::combo_box;
+        let selected = "Alpha";
+        let calls = 0;
+        let choose = |s| { selected <- s; calls <- s ~ calls + 1; null };
+        let result = combo_box(#selected: &selected, #on_select: choose,
+                               &["Alpha", "Beta", "Gamma"])
+    "#;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(300.0, 200.0)).await?;
+    assert_eq!(h.watch("test::selected").await?, Value::from("Alpha"));
+    assert_eq!(h.watch("test::calls").await?, Value::I64(0));
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     let _ = h.type_text("Gam");
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
     expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("Gamma")));
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::selected"), Some(&Value::from("Gamma")));
+    assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(1)));
     Ok(())
 }
 
