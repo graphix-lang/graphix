@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -219,7 +219,7 @@ type Block = {
   child: &amp;Tui,
   merge_borders: &amp;[MergeStrategy, null],
   padding: &amp;[Padding, null],
-  size: &amp;[Size, null],
+  size: [&amp;mut Size, null],
   style: &amp;[Style, null],
   title: &amp;[Line, null],
   title_alignment: &amp;[Alignment, null],
@@ -229,27 +229,6 @@ type Block = {
   title_top: &amp;[Line, null]
 };
 
-// CR claude for claude: [bug/high] tui #size outputs are written through a covariant
-// read-only &amp;[Size, null]: type hole. block, layout::child, tabs, scrollbar and
-// overlay declare `?#size: &amp;[Size, null]`, a read-only and therefore covariant
-// reference. The widget writes its drawn area through it (SizeReport::report -&gt;
-// `self.r.set_deref(size)`, stdlib/graphix-package-tui/src/lib.rs). The examples
-// teach this as the size-output idiom (browser_commands.gx `#size:&amp;size`). Because
-// `&amp;T` is covariant, `&amp;n` with `n: null` (or any narrower binding) type-checks, and
-// the widget then stores a Size struct in a binding the checker believes is `null`.
-// This breaks CLAUDE.md's rule that `&amp;T` is read-only and `*r &lt;- v` requires `&amp;mut`,
-// and it makes the check unsound. Failure: `let n = null; let shown = select n { null
-// as _ =&gt; "still null" }; block(#size: &amp;n, &amp;text(&amp;"&lt;[shown]&gt; [n]"))` passes --check.
-// Run, it prints `[["height", 20], ["width", 60]]` for n and logs `select n { null as
-// _ =&gt; .. }: no arm matches [["height", i64:20], ["width", i64:60]]: a coverage hole
-// in the check`. Under GRAPHIX_ABORT_ON_NO_MATCH=1 that is an abort. The same holds
-// inside a function: `|x: null| select x {..}`. Passing `&amp;tui::size` would overwrite
-// the terminal-size val. Fix: Declare the outputs writable: `?#size: [&amp;mut Size,
-// null]`, the optional-writable form CLAUDE.md prescribes, the way browser's
-// `#selected_row: &amp;mut string` already is. Update the examples to pass `&amp;mut size`.
-// Alternatively make SizeReport refuse to write through a reference the type does not
-// mark writable. Unverified: the reviewer's report, not checked by a verifier.
-// (examples-tui-01)
 val block: fn(
   ?#border: &amp;[Array&lt;Border&gt;, `All, `None, null],
   ?#border_type: &amp;[BorderType, null],
@@ -263,7 +242,7 @@ val block: fn(
   ?#title_style: &amp;[Style, null],
   ?#title_position: &amp;[Position, null],
   ?#title_alignment: &amp;[Alignment, null],
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   child: &amp;Tui
 ) -&gt; Tui;
 </code></pre>
@@ -275,7 +254,7 @@ val block: fn(
 <li><strong>title</strong> - Line displayed at the top of the block</li>
 <li><strong>title_bottom</strong> - Line displayed at the bottom of the block</li>
 <li><strong>style</strong> - Style for the block’s interior</li>
-<li><strong>size</strong> (output) - Rendered size of the block</li>
+<li><strong>size</strong> (output) - Rendered size of the block; pass <code>&amp;mut size</code> where <code>size: tui::Size</code></li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>

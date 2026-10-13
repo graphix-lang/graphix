@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -190,7 +190,7 @@ type Layer = {
   child: Tui,
   width: &amp;Constraint,
   height: &amp;Constraint,
-  size: &amp;[Size, null]
+  size: [&amp;mut Size, null]
 };
 
 /// Build a layer. Defaults to 60% of the overlay area in each axis.
@@ -199,7 +199,7 @@ type Layer = {
 val layer: fn(
   ?#width: &amp;Constraint,
   ?#height: &amp;Constraint,
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   child: Tui
 ) -&gt; Layer;
 
@@ -223,7 +223,7 @@ val overlay: fn(#layers: &amp;Array&lt;Layer&gt;, base: Tui) -&gt; Tui;
 (default <code>`Percentage(60)</code>)</li>
 <li><strong>height</strong> - Vertical size (default <code>`Percentage(60)</code>)</li>
 <li><strong>size</strong> - Observes the rectangle the layer was actually given, like
-<code>layout::child</code>’s</li>
+<code>layout::child</code>’s; pass <code>&amp;mut size</code> where <code>size: tui::Size</code></li>
 <li><strong>child</strong> - The widget drawn in the layer</li>
 </ul>
 <h3 id="overlay"><a class="header" href="#overlay">overlay</a></h3>

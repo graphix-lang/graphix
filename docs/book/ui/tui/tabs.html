@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -184,7 +184,7 @@ type Tabs = {
   padding_left: &amp;[Line, null],
   padding_right: &amp;[Line, null],
   selected: &amp;[i64, null],
-  size: &amp;[Size, null],
+  size: [&amp;mut Size, null],
   style: &amp;[Style, null],
   tabs: &amp;Array&lt;(Line, Tui)&gt;
 };
@@ -195,7 +195,7 @@ val tabs: fn(
   ?#padding_left: &amp;[Line, null],
   ?#padding_right: &amp;[Line, null],
   ?#selected: &amp;[i64, null],
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   ?#style: &amp;[Style, null],
   tabs: &amp;Array&lt;(Line, Tui)&gt;
 ) -&gt; Tui;

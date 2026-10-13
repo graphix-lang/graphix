@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -194,7 +194,7 @@ type Scrollbar = {
   end_symbol: &amp;[string, null],
   orientation: &amp;[ScrollbarOrientation, null],
   position: &amp;[i64, null],
-  size: &amp;[Size, null],
+  size: [&amp;mut Size, null],
   style: &amp;[Style, null],
   thumb_style: &amp;[Style, null],
   thumb_symbol: &amp;[string, null],
@@ -203,29 +203,6 @@ type Scrollbar = {
   viewport_length: &amp;[i64, null]
 };
 
-// CR claude for claude: [bug/high] TUI #size outputs are read-only &amp;[Size, null] refs
-// that Rust writes: type-unsound. block (block.gxi), layout's child (layout.gxi),
-// tabs (tabs.gxi), overlay (overlay.gxi) and scrollbar (scrollbar.gxi) declare
-// `?#size: &amp;[Size, null]`, a read-only reference, which is covariant. The Rust side
-// writes through it anyway: `SizeReport::report` calls `self.r.set_deref(size)`
-// (graphix-package-tui/src/lib.rs). book/src/ui/tui/scroll.md documents it as an
-// output. Covariance lets `&amp;n` with `n: null` stand where `&amp;[Size, null]` is
-// expected, so the widget stores a `{height, width}` struct in a variable whose
-// static type is `null`. design/place_references.md ('Why') names this exact class:
-// covariance combined with writes is the reason `&amp;T` and `&amp;mut T` were split, and it
-// panicked the JIT before. The GUI's analogous output, `window(#size: &amp;mut Size)`, is
-// declared correctly. Failure: `let n: null = null; let k = select n { null =&gt; "is
-// null" }; block(#size: &amp;n, &amp;text(&amp;"hi"))`. The check accepts it. At run time n holds
-// `[["height", 24], ["width", 80]]`. Logged, it reads `null` first and then the
-// struct. With GRAPHIX_ABORT_ON_NO_MATCH=1 the exhaustive select matches no arm and
-// the process aborts (core dumped). Even with matching types, a program that passes
-// `&amp;dims` for a value it meant as an input has that value silently overwritten, which
-// `&amp;` promises cannot happen. Fix: Declare every size output as an optional writable
-// argument, `?#size: [&amp;mut Size, null]` with default `null` (the CLAUDE.md /
-// place_references rule for optional writable args), in all five .gxi/.gx pairs.
-// Update the examples to pass `&amp;mut size`. Consider having `Ref::set_deref` refuse a
-// reference that was not minted by `&amp;mut`, so a Rust package cannot reopen the hole.
-// Unverified: the reviewer's report, not checked by a verifier. (book-ui-b-01)
 val scrollbar: fn(
   ?#begin_style: &amp;[Style, null],
   ?#begin_symbol: &amp;[string, null],
@@ -234,7 +211,7 @@ val scrollbar: fn(
   ?#end_symbol: &amp;[string, null],
   ?#orientation: &amp;[ScrollbarOrientation, null],
   ?#position: &amp;[i64, null],
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   ?#style: &amp;[Style, null],
   ?#thumb_style: &amp;[Style, null],
   ?#thumb_symbol: &amp;[string, null],
@@ -252,7 +229,7 @@ val scrollbar: fn(
 <li><strong>begin_symbol</strong>, <strong>end_symbol</strong> - The arrows at each end; null, the default, draws none</li>
 <li><strong>track_symbol</strong> - The track the thumb runs along; null, the default, draws none</li>
 <li><strong>thumb_symbol</strong> - The thumb; null, the default, keeps ratatui’s own</li>
-<li><strong>size</strong> (output) - Rendered size of the scrollbar area</li>
+<li><strong>size</strong> (output) - Rendered size of the scrollbar area; pass <code>&amp;mut size</code> where <code>size: tui::Size</code></li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>

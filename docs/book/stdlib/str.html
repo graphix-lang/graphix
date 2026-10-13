@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -248,11 +248,13 @@ val splitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&g
 val rsplitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
-/// of parts delimited by it's non escaped separator characters.
+/// of parts delimited by it's non escaped separator characters. #esc and #sep are one
+/// character each, and must differ.
 val split_escaped: fn(#esc:string, #sep:string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `SplitEscError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
-/// of at most #n parts delimited by it's non escaped separator characters.
+/// of at most #n parts delimited by it's non escaped separator characters. #esc and #sep
+/// are one character each, and must differ.
 val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `SplitNEscError(string)&gt;;
 
 /// split the string once from the beginning by #pat and return a

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -200,7 +200,8 @@ type Command = {
     subcommands: Array&lt;Command&gt;
 };
 
-/// Parse result
+/// Parse result: the matched command path, and every level's args by
+/// name (an option's string, a flag's "true" or "false", null when absent)
 type ParseResult = {
     command: Array&lt;string&gt;,
     values: Map&lt;string, [string, null]&gt;
@@ -225,7 +226,9 @@ val parse: fn(cmd: Command) -&gt; [ParseResult, Error&lt;[`ArgError(string), `Ar
 </code></pre>
 <p><code>parse</code> reads the program’s own arguments, the ones <code>sys::args</code> returns.
 In <code>values</code> an option’s value is its string, and a flag’s is <code>"true"</code> or
-<code>"false"</code>. <code>--help</code> and <code>--version</code> answer <code>`ArgHelp</code> with the text
+<code>"false"</code>; every command level on the path to the matched subcommand puts
+its args there, so a subcommand may not reuse an enclosing command’s arg
+name (<code>parse</code> refuses the spec with <code>`ArgError</code>). <code>--help</code> and <code>--version</code> answer <code>`ArgHelp</code> with the text
 to print, and a usage error answers <code>`ArgError</code> with clap’s message,
 so a script prints either and exits, 0 for help and non-zero for an
 error, as the example does.</p>

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -5996,11 +5996,13 @@ val splitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&g
 val rsplitn: fn(#pat:string, #n:i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `StringSplitError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
-/// of parts delimited by it's non escaped separator characters.
+/// of parts delimited by it's non escaped separator characters. #esc and #sep are one
+/// character each, and must differ.
 val split_escaped: fn(#esc:string, #sep:string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `SplitEscError(string)&gt;;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
-/// of at most #n parts delimited by it's non escaped separator characters.
+/// of at most #n parts delimited by it's non escaped separator characters. #esc and #sep
+/// are one character each, and must differ.
 val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `SplitNEscError(string)&gt;;
 
 /// split the string once from the beginning by #pat and return a
@@ -6063,16 +6065,10 @@ val splitn: fn(#pat: string, #limit: i64, s: string) -&gt; Result&lt;Array&lt;st
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="rand"><a class="header" href="#rand">Rand</a></h1>
-<pre><code class="language-graphix">// CR claude for claude: [doc-drift/low] The defaults are f64 (0.0 and 1.0). For an
-// integer 'a, a call that omits either bound is refused, and the error points at the
-// default inside module /rand: `rand(#start: 5, #clock: c)` gives "'a: i64 does not
-// contain f64". The draw also fires on any argument, not only #clock, because the args
-// are CachedVals, so a change to #start or #end draws a new number. Fix the doc: an
-// integer range must give both bounds, and a bound change also draws. An empty range
-// produces nothing, which is also worth stating. (gx-stdlib-10)
-/// generate a random number between #start and #end (exclusive)
-/// every time #clock updates. If start and end are not specified,
-/// they default to 0.0 and 1.0
+<pre><code class="language-graphix">/// generate a random number between #start and #end (exclusive)
+/// every time any argument updates, #clock or a bound. The bounds
+/// default to 0.0 and 1.0, so an integer range gives both. An empty
+/// range produces nothing.
 val rand: fn&lt;'a: [Int, Float] + Singleton&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
 
 /// pick a random element from the array and return it. Update
@@ -7037,38 +7033,15 @@ val get_bin: fn(client: Client, url: string) -&gt; Result&lt;BinResponse, `HTTPE
 /// Return the bound address of a running server.
 val server_addr: fn(server: Server) -&gt; string;
 
-// CR claude for claude: [doc-drift/low] The doc above says each request goes to
-// #handler 'in turn and is answered by its next value', and that one it 'has no value
-// for' is answered 500. Handler (graphix-package-core) gives each request its own
-// instance of the function, answered by that instance's first value, and runs the
-// instances concurrently, so no state is shared between requests. An instance that
-// never produces leaves its request open until the client goes away or the server
-// sleeps. Reword to: each request runs its own instance of #handler and is answered by
-// that instance's first value; one that raises is answered 500. Then say what happens
-// to a request whose instance never produces. (http-sqlite-db1-14)
-// CR claude for claude: [doc-drift/medium] The doc above describes the old serial model
-// ('in turn', 'its next value', 'has no value for, is answered 500'). The code (core
-// Handler) gives each request its own handler instance and answers with that instance's
-// first value. A raise, or the instance being dropped by sleep or delete, gets a 500. A
-// request the instance never answers is held, together with its connection permit,
-// until the client gives up. So a handler with a `_ =&gt; never()` arm uses up
-// #max_connections against clients that have no timeout. Rewrite the doc to match the
-// sys::net rpc wording: one instance per request, answered by its first value, 500 on a
-// raise, held while it never answers. probe:
-// design/review-2026-10-12/repro/gx-stdlib-04.gx (gx-stdlib-05)
-// CR claude for claude: [doc-drift/medium] The doc above describes the old
-// shared-handler design: 'each request goes to #handler in turn and is answered by its
-// next value'. In fact serve runs each request in an instance of #handler of its own
-// (graphix_package_core::Handler), answered by that instance's first value, and
-// requests run concurrently: a fast request is answered before a slow one sent earlier,
-// and no state carries from one request to the next. Reword it to match sys::net::rpc's
-// doc: 'Each request runs an instance of #handler of its own and is answered by its
-// first value; one it raises on, or that has no value, is answered 500.'
-// (book-stdlib-03)
-/// Start an HTTP server. Each request goes to `#handler` in turn and is
-/// answered by its next value; one it raises on, or has no value for, is
-/// answered 500. A body over `#max_body` bytes (16 MiB by default) is
-/// answered 413 without reaching the handler.
+/// Start an HTTP server. Each request runs an instance of `#handler` of
+/// its own, concurrently with the others, and is answered by that
+/// instance's first value; one that raises, or that the server drops (it
+/// sleeps or is deleted), is answered 500. A request its instance never
+/// answers is held, with its connection and its share of
+/// `#max_connections`, until the client gives up. A body over `#max_body`
+/// bytes (16 MiB by default) is answered 413 without reaching the handler.
+/// A connection has 30 s to send a request's headers, idle between
+/// requests included, and 60 s for its body.
 val serve: fn(
     #addr: string,
     ?#cert: [bytes, null],
@@ -7667,7 +7640,8 @@ type Command = {
     subcommands: Array&lt;Command&gt;
 };
 
-/// Parse result
+/// Parse result: the matched command path, and every level's args by
+/// name (an option's string, a flag's "true" or "false", null when absent)
 type ParseResult = {
     command: Array&lt;string&gt;,
     values: Map&lt;string, [string, null]&gt;
@@ -7692,7 +7666,9 @@ val parse: fn(cmd: Command) -&gt; [ParseResult, Error&lt;[`ArgError(string), `Ar
 </code></pre>
 <p><code>parse</code> reads the program’s own arguments, the ones <code>sys::args</code> returns.
 In <code>values</code> an option’s value is its string, and a flag’s is <code>"true"</code> or
-<code>"false"</code>. <code>--help</code> and <code>--version</code> answer <code>`ArgHelp</code> with the text
+<code>"false"</code>; every command level on the path to the matched subcommand puts
+its args there, so a subcommand may not reuse an enclosing command’s arg
+name (<code>parse</code> refuses the spec with <code>`ArgError</code>). <code>--help</code> and <code>--version</code> answer <code>`ArgHelp</code> with the text
 to print, and a usage error answers <code>`ArgError</code> with clap’s message,
 so a script prints either and exits, 0 for help and non-zero for an
 error, as the example does.</p>
@@ -8293,7 +8269,7 @@ type Block = {
   child: &amp;Tui,
   merge_borders: &amp;[MergeStrategy, null],
   padding: &amp;[Padding, null],
-  size: &amp;[Size, null],
+  size: [&amp;mut Size, null],
   style: &amp;[Style, null],
   title: &amp;[Line, null],
   title_alignment: &amp;[Alignment, null],
@@ -8303,27 +8279,6 @@ type Block = {
   title_top: &amp;[Line, null]
 };
 
-// CR claude for claude: [bug/high] tui #size outputs are written through a covariant
-// read-only &amp;[Size, null]: type hole. block, layout::child, tabs, scrollbar and
-// overlay declare `?#size: &amp;[Size, null]`, a read-only and therefore covariant
-// reference. The widget writes its drawn area through it (SizeReport::report -&gt;
-// `self.r.set_deref(size)`, stdlib/graphix-package-tui/src/lib.rs). The examples
-// teach this as the size-output idiom (browser_commands.gx `#size:&amp;size`). Because
-// `&amp;T` is covariant, `&amp;n` with `n: null` (or any narrower binding) type-checks, and
-// the widget then stores a Size struct in a binding the checker believes is `null`.
-// This breaks CLAUDE.md's rule that `&amp;T` is read-only and `*r &lt;- v` requires `&amp;mut`,
-// and it makes the check unsound. Failure: `let n = null; let shown = select n { null
-// as _ =&gt; "still null" }; block(#size: &amp;n, &amp;text(&amp;"&lt;[shown]&gt; [n]"))` passes --check.
-// Run, it prints `[["height", 20], ["width", 60]]` for n and logs `select n { null as
-// _ =&gt; .. }: no arm matches [["height", i64:20], ["width", i64:60]]: a coverage hole
-// in the check`. Under GRAPHIX_ABORT_ON_NO_MATCH=1 that is an abort. The same holds
-// inside a function: `|x: null| select x {..}`. Passing `&amp;tui::size` would overwrite
-// the terminal-size val. Fix: Declare the outputs writable: `?#size: [&amp;mut Size,
-// null]`, the optional-writable form CLAUDE.md prescribes, the way browser's
-// `#selected_row: &amp;mut string` already is. Update the examples to pass `&amp;mut size`.
-// Alternatively make SizeReport refuse to write through a reference the type does not
-// mark writable. Unverified: the reviewer's report, not checked by a verifier.
-// (examples-tui-01)
 val block: fn(
   ?#border: &amp;[Array&lt;Border&gt;, `All, `None, null],
   ?#border_type: &amp;[BorderType, null],
@@ -8337,7 +8292,7 @@ val block: fn(
   ?#title_style: &amp;[Style, null],
   ?#title_position: &amp;[Position, null],
   ?#title_alignment: &amp;[Alignment, null],
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   child: &amp;Tui
 ) -&gt; Tui;
 </code></pre>
@@ -8349,7 +8304,7 @@ val block: fn(
 <li><strong>title</strong> - Line displayed at the top of the block</li>
 <li><strong>title_bottom</strong> - Line displayed at the bottom of the block</li>
 <li><strong>style</strong> - Style for the block’s interior</li>
-<li><strong>size</strong> (output) - Rendered size of the block</li>
+<li><strong>size</strong> (output) - Rendered size of the block; pass <code>&amp;mut size</code> where <code>size: tui::Size</code></li>
 </ul>
 <h2 id="examples-1"><a class="header" href="#examples-1">Examples</a></h2>
 <h3 id="basic-usage-1"><a class="header" href="#basic-usage-1">Basic Usage</a></h3>
@@ -8439,15 +8394,10 @@ type MoveCursor = [
     `Down(i64)
 ];
 
-// CR claude for claude: [doc-drift/low] The doc says the listing is fetched once each
-// time `path` changes, and that rows published later appear only when the path changes.
-// browser calls net::list_table(path) with its default #update, which is a one-second
-// repeating timer, so the listing refreshes about once a second and new rows appear on
-// the next refresh. Rewrite the sentence to say that. (gx-ui-05)
 /// A netidx browser over `path`: a table of its children, with one
 /// column per published column when the children are rows of a table.
-/// The listing is fetched once each time `path` changes, so rows
-/// published later appear when the path next changes.
+/// The listing refreshes when `path` changes and about once a second,
+/// so rows published later appear on the next refresh.
 /// `#size` is the area the browser is drawn in, which sizes its
 /// viewport (pass the enclosing block's `#size` output); `#cursor`
 /// moves the selection. `#selected_row` is set to the selected row's
@@ -8625,7 +8575,7 @@ let block = block(
     #border:&amp;`None,
     #title_bottom:&amp;title_bottom,
     #style:&amp;style(#bg:`Indexed(234)),
-    #size:&amp;size,
+    #size:&amp;mut size,
     &amp;browser
 );
 
@@ -9584,7 +9534,7 @@ before they propagate further.</p>
 ];
 </code></pre>
 <ul>
-<li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes</li>
+<li><code>FocusGained</code> / <code>FocusLost</code>: Terminal window focus changes (enabled while the display runs, independently of mouse input)</li>
 <li><code>Key</code>: Keyboard input</li>
 <li><code>Mouse</code>: Mouse input (requires <code>tui::mouse &lt;- true</code>)</li>
 <li><code>Paste</code>: Bracketed paste content</li>
@@ -10068,11 +10018,11 @@ type Spacing = [
 type Child = {
   child: Tui,
   constraint: Constraint,
-  size: &amp;[Size, null]
+  size: [&amp;mut Size, null]
 };
 
 val child: fn(
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   #constraint: Constraint,
   child: Tui
 ) -&gt; Child;
@@ -10464,7 +10414,7 @@ type Layer = {
   child: Tui,
   width: &amp;Constraint,
   height: &amp;Constraint,
-  size: &amp;[Size, null]
+  size: [&amp;mut Size, null]
 };
 
 /// Build a layer. Defaults to 60% of the overlay area in each axis.
@@ -10473,7 +10423,7 @@ type Layer = {
 val layer: fn(
   ?#width: &amp;Constraint,
   ?#height: &amp;Constraint,
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   child: Tui
 ) -&gt; Layer;
 
@@ -10497,7 +10447,7 @@ val overlay: fn(#layers: &amp;Array&lt;Layer&gt;, base: Tui) -&gt; Tui;
 (default <code>`Percentage(60)</code>)</li>
 <li><strong>height</strong> - Vertical size (default <code>`Percentage(60)</code>)</li>
 <li><strong>size</strong> - Observes the rectangle the layer was actually given, like
-<code>layout::child</code>’s</li>
+<code>layout::child</code>’s; pass <code>&amp;mut size</code> where <code>size: tui::Size</code></li>
 <li><strong>child</strong> - The widget drawn in the layer</li>
 </ul>
 <h3 id="overlay"><a class="header" href="#overlay">overlay</a></h3>
@@ -10585,7 +10535,7 @@ type Scrollbar = {
   end_symbol: &amp;[string, null],
   orientation: &amp;[ScrollbarOrientation, null],
   position: &amp;[i64, null],
-  size: &amp;[Size, null],
+  size: [&amp;mut Size, null],
   style: &amp;[Style, null],
   thumb_style: &amp;[Style, null],
   thumb_symbol: &amp;[string, null],
@@ -10594,29 +10544,6 @@ type Scrollbar = {
   viewport_length: &amp;[i64, null]
 };
 
-// CR claude for claude: [bug/high] TUI #size outputs are read-only &amp;[Size, null] refs
-// that Rust writes: type-unsound. block (block.gxi), layout's child (layout.gxi),
-// tabs (tabs.gxi), overlay (overlay.gxi) and scrollbar (scrollbar.gxi) declare
-// `?#size: &amp;[Size, null]`, a read-only reference, which is covariant. The Rust side
-// writes through it anyway: `SizeReport::report` calls `self.r.set_deref(size)`
-// (graphix-package-tui/src/lib.rs). book/src/ui/tui/scroll.md documents it as an
-// output. Covariance lets `&amp;n` with `n: null` stand where `&amp;[Size, null]` is
-// expected, so the widget stores a `{height, width}` struct in a variable whose
-// static type is `null`. design/place_references.md ('Why') names this exact class:
-// covariance combined with writes is the reason `&amp;T` and `&amp;mut T` were split, and it
-// panicked the JIT before. The GUI's analogous output, `window(#size: &amp;mut Size)`, is
-// declared correctly. Failure: `let n: null = null; let k = select n { null =&gt; "is
-// null" }; block(#size: &amp;n, &amp;text(&amp;"hi"))`. The check accepts it. At run time n holds
-// `[["height", 24], ["width", 80]]`. Logged, it reads `null` first and then the
-// struct. With GRAPHIX_ABORT_ON_NO_MATCH=1 the exhaustive select matches no arm and
-// the process aborts (core dumped). Even with matching types, a program that passes
-// `&amp;dims` for a value it meant as an input has that value silently overwritten, which
-// `&amp;` promises cannot happen. Fix: Declare every size output as an optional writable
-// argument, `?#size: [&amp;mut Size, null]` with default `null` (the CLAUDE.md /
-// place_references rule for optional writable args), in all five .gxi/.gx pairs.
-// Update the examples to pass `&amp;mut size`. Consider having `Ref::set_deref` refuse a
-// reference that was not minted by `&amp;mut`, so a Rust package cannot reopen the hole.
-// Unverified: the reviewer's report, not checked by a verifier. (book-ui-b-01)
 val scrollbar: fn(
   ?#begin_style: &amp;[Style, null],
   ?#begin_symbol: &amp;[string, null],
@@ -10625,7 +10552,7 @@ val scrollbar: fn(
   ?#end_symbol: &amp;[string, null],
   ?#orientation: &amp;[ScrollbarOrientation, null],
   ?#position: &amp;[i64, null],
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   ?#style: &amp;[Style, null],
   ?#thumb_style: &amp;[Style, null],
   ?#thumb_symbol: &amp;[string, null],
@@ -10643,7 +10570,7 @@ val scrollbar: fn(
 <li><strong>begin_symbol</strong>, <strong>end_symbol</strong> - The arrows at each end; null, the default, draws none</li>
 <li><strong>track_symbol</strong> - The track the thumb runs along; null, the default, draws none</li>
 <li><strong>thumb_symbol</strong> - The thumb; null, the default, keeps ratatui’s own</li>
-<li><strong>size</strong> (output) - Rendered size of the scrollbar area</li>
+<li><strong>size</strong> (output) - Rendered size of the scrollbar area; pass <code>&amp;mut size</code> where <code>size: tui::Size</code></li>
 </ul>
 <h2 id="examples-12"><a class="header" href="#examples-12">Examples</a></h2>
 <h3 id="basic-usage-11"><a class="header" href="#basic-usage-11">Basic Usage</a></h3>
@@ -11179,7 +11106,7 @@ type Tabs = {
   padding_left: &amp;[Line, null],
   padding_right: &amp;[Line, null],
   selected: &amp;[i64, null],
-  size: &amp;[Size, null],
+  size: [&amp;mut Size, null],
   style: &amp;[Style, null],
   tabs: &amp;Array&lt;(Line, Tui)&gt;
 };
@@ -11190,7 +11117,7 @@ val tabs: fn(
   ?#padding_left: &amp;[Line, null],
   ?#padding_right: &amp;[Line, null],
   ?#selected: &amp;[i64, null],
-  ?#size: &amp;[Size, null],
+  ?#size: [&amp;mut Size, null],
   ?#style: &amp;[Style, null],
   tabs: &amp;Array&lt;(Line, Tui)&gt;
 ) -&gt; Tui;

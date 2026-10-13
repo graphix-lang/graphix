@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -175,16 +175,10 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="rand"><a class="header" href="#rand">Rand</a></h1>
-<pre><code class="language-graphix">// CR claude for claude: [doc-drift/low] The defaults are f64 (0.0 and 1.0). For an
-// integer 'a, a call that omits either bound is refused, and the error points at the
-// default inside module /rand: `rand(#start: 5, #clock: c)` gives "'a: i64 does not
-// contain f64". The draw also fires on any argument, not only #clock, because the args
-// are CachedVals, so a change to #start or #end draws a new number. Fix the doc: an
-// integer range must give both bounds, and a bound change also draws. An empty range
-// produces nothing, which is also worth stating. (gx-stdlib-10)
-/// generate a random number between #start and #end (exclusive)
-/// every time #clock updates. If start and end are not specified,
-/// they default to 0.0 and 1.0
+<pre><code class="language-graphix">/// generate a random number between #start and #end (exclusive)
+/// every time any argument updates, #clock or a bound. The bounds
+/// default to 0.0 and 1.0, so an integer range gives both. An empty
+/// range produces nothing.
 val rand: fn&lt;'a: [Int, Float] + Singleton&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
 
 /// pick a random element from the array and return it. Update

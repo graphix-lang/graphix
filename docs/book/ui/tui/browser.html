@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1b40a41c.js";
+            window.path_to_searchindex_js = "../../searchindex-5f7acb93.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -188,15 +188,10 @@ type MoveCursor = [
     `Down(i64)
 ];
 
-// CR claude for claude: [doc-drift/low] The doc says the listing is fetched once each
-// time `path` changes, and that rows published later appear only when the path changes.
-// browser calls net::list_table(path) with its default #update, which is a one-second
-// repeating timer, so the listing refreshes about once a second and new rows appear on
-// the next refresh. Rewrite the sentence to say that. (gx-ui-05)
 /// A netidx browser over `path`: a table of its children, with one
 /// column per published column when the children are rows of a table.
-/// The listing is fetched once each time `path` changes, so rows
-/// published later appear when the path next changes.
+/// The listing refreshes when `path` changes and about once a second,
+/// so rows published later appear on the next refresh.
 /// `#size` is the area the browser is drawn in, which sizes its
 /// viewport (pass the enclosing block's `#size` output); `#cursor`
 /// moves the selection. `#selected_row` is set to the selected row's
@@ -374,7 +369,7 @@ let block = block(
     #border:&amp;`None,
     #title_bottom:&amp;title_bottom,
     #style:&amp;style(#bg:`Indexed(234)),
-    #size:&amp;size,
+    #size:&amp;mut size,
     &amp;browser
 );
 
