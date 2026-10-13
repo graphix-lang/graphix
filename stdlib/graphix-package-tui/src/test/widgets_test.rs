@@ -13,12 +13,7 @@ async fn text_compiles_and_renders() -> Result<()> {
         "use tui::*;\nuse tui::text::{self, *};\nlet result = text(&\"hello\")",
     )
     .await?;
-    let lines = h.render_lines()?;
-    assert!(
-        lines[0].starts_with("hello"),
-        "expected first line to start with `hello`, got {:?}",
-        lines[0],
-    );
+    h.assert_lines(&["hello"])?;
     Ok(())
 }
 
@@ -28,12 +23,7 @@ async fn paragraph_compiles_and_renders() -> Result<()> {
         "use tui::*;\nuse tui::paragraph::{self, *};\nlet result = paragraph(&\"first line\")",
     )
     .await?;
-    let lines = h.render_lines()?;
-    assert!(
-        lines[0].starts_with("first line"),
-        "expected `first line` start, got {:?}",
-        lines[0],
-    );
+    h.assert_lines(&["first line"])?;
     Ok(())
 }
 
@@ -210,16 +200,6 @@ async fn line_gauge_compiles_and_renders() -> Result<()> {
 }
 
 #[tokio::test]
-async fn line_gauge_out_of_range_does_not_panic() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        "use tui::*;\nuse tui::line_gauge::{self, *};\nlet result = line_gauge(&-0.3)",
-    )
-    .await?;
-    h.assert_lines(&["  0% ───────────────────────────────────"])?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn gauge_in_range_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
         "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&0.5)",
@@ -236,37 +216,6 @@ async fn gauge_in_range_renders() -> Result<()> {
         "████████████████████",
         "████████████████████",
         "████████████████████",
-    ])?;
-    Ok(())
-}
-
-#[tokio::test]
-// CR claude for claude: [structure/low] This repeats panic_test's
-// gauge_ratio_above_one_does_not_panic: same program, same expected screen.
-// line_gauge_out_of_range_does_not_panic repeats panic_test's negative line_gauge
-// clamp. line_edit_masks_secrets is a weaker copy of input_test's
-// line_edit_masks_each_character_once: its `contains("***")` passes a mask that draws
-// two symbols per character. Delete those three. Move line_edit_types_moves_and_deletes
-// into input_test, where the module header says the line editor belongs, onto its
-// EDITOR fixture. Make the text, paragraph and overlay tests use assert_lines, as the
-// header claims every test here does. (tests-tui-07)
-async fn gauge_out_of_range_does_not_panic() -> Result<()> {
-    // Pins the ratio clamp: ratatui's `Gauge::ratio` asserts on [0, 1].
-    let mut h = TuiTestHarness::new(
-        "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&5.0)",
-    )
-    .await?;
-    h.assert_lines(&[
-        "████████████████████████████████████████",
-        "████████████████████████████████████████",
-        "████████████████████████████████████████",
-        "████████████████████████████████████████",
-        "████████████████████████████████████████",
-        "██████████████████100% █████████████████",
-        "████████████████████████████████████████",
-        "████████████████████████████████████████",
-        "████████████████████████████████████████",
-        "████████████████████████████████████████",
     ])?;
     Ok(())
 }
@@ -382,14 +331,7 @@ let result = overlay(#layers: &[modal], base)
 "#,
     )
     .await?;
-    let lines = h.render_lines()?;
-    assert!(lines[0].starts_with("BASE CONTENT"), "base missing: {:?}", lines[0]);
-    assert!(
-        lines.iter().any(|l| l.contains("MODAL CONTENT")),
-        "modal missing: {lines:?}"
-    );
-    // the modal is centered, so its content must not be on the base's row
-    assert!(!lines[0].contains("MODAL"), "modal not centered: {:?}", lines[0]);
+    h.assert_lines(&["BASE CONTENT", "", "        MODAL CONTENT"])?;
     Ok(())
 }
 
@@ -405,9 +347,7 @@ let result = overlay(#layers: &layers, paragraph(&"JUST BASE"))
 "#,
     )
     .await?;
-    let lines = h.render_lines()?;
-    assert!(lines[0].starts_with("JUST BASE"), "base missing: {:?}", lines[0]);
-    assert!(lines.iter().all(|l| !l.contains("MODAL")));
+    h.assert_lines(&["JUST BASE"])?;
     Ok(())
 }
 
@@ -578,71 +518,5 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
         Some(&Value::I64(0)),
         "the child saw an event"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn line_edit_types_moves_and_deletes() -> Result<()> {
-    use crossterm::event::{Event, KeyCode, KeyEvent};
-    use netidx::publisher::Value;
-    let mut h = TuiTestHarness::new(
-        r#"
-use tui::*;
-use tui::input_handler::{self, *};
-use tui::line_edit::{self, *};
-use tui::text::{self, *};
-let ed = line_edit::state("");
-let v = ed.value;
-let cur = ed.cursor;
-let handle = |e: Event| -> [`Stop, `Continue] line_edit::handle(&mut ed, e);
-let result = input_handler(#handle: &handle, &text(&[line_edit::view(&ed)]))
-"#,
-    )
-    .await?;
-    h.watch("test::v").await?;
-    h.watch("test::cur").await?;
-    h.render()?;
-    for c in ['h', 'i', '!'] {
-        h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char(c)))).await?;
-    }
-    h.drain().await?;
-    assert_eq!(h.get_watched("test::v"), Some(&Value::from("hi!")));
-    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(3)));
-    // Left over the '!' then backspace deletes the 'i'.
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Left))).await?;
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Backspace))).await?;
-    h.drain().await?;
-    assert_eq!(h.get_watched("test::v"), Some(&Value::from("h!")));
-    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(1)));
-    // Home then a character prepends.
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Home))).await?;
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char('X')))).await?;
-    h.drain().await?;
-    assert_eq!(h.get_watched("test::v"), Some(&Value::from("Xh!")));
-    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(1)));
-    // End then Delete is a no-op at the boundary.
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::End))).await?;
-    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Delete))).await?;
-    h.drain().await?;
-    assert_eq!(h.get_watched("test::v"), Some(&Value::from("Xh!")));
-    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(3)));
-    Ok(())
-}
-
-#[tokio::test]
-async fn line_edit_masks_secrets() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        r#"
-use tui::*;
-use tui::line_edit::{self, *};
-use tui::text::{self, *};
-let ed = line_edit::state("abc");
-let result = text(&[line_edit::view(#mask: "*", &ed)])
-"#,
-    )
-    .await?;
-    let lines = h.render_lines()?;
-    assert!(lines[0].contains("***"), "mask missing: {:?}", lines[0]);
-    assert!(!lines[0].contains("abc"), "secret leaked: {:?}", lines[0]);
     Ok(())
 }

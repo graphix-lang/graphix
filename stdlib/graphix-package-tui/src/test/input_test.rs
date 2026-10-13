@@ -445,3 +445,26 @@ let result = text(&[line_edit::view(#mask: "**", &ed)])
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn line_edit_types_moves_and_deletes() -> Result<()> {
+    let mut h = TuiTestHarness::new(EDITOR).await?;
+    h.watch("test::v").await?;
+    h.watch("test::cur").await?;
+    h.dispatch_events((0..3).map(|_| key(KeyCode::Backspace))).await?;
+    for c in ['h', 'i', '!'] {
+        h.dispatch_event(ch(c)).await?;
+    }
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("hi!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(3)));
+    h.dispatch_events([key(KeyCode::Left), key(KeyCode::Backspace)]).await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("h!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(1)));
+    h.dispatch_events([key(KeyCode::Home), ch('X')]).await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("Xh!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(1)));
+    h.dispatch_events([key(KeyCode::End), key(KeyCode::Delete)]).await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("Xh!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(3)));
+    h.assert_lines(&["Xh!"])
+}
