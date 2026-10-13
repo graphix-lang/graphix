@@ -21,6 +21,7 @@ use ratatui::{
     Terminal,
     backend::{Backend, TestBackend},
     buffer::Buffer,
+    layout::Rect,
 };
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -222,16 +223,12 @@ impl TuiTestHarness {
 
     /// The display's path: `tui::size` on a resize, `tui::event`, the
     /// widgets; a Ctrl-C stops it.
-    // CR claude for claude: [test-gap/low] deliver claims to be the display's path, but
-    // on Event::Resize it only sets tui::size through Screen::event. The TestBackend
-    // keeps the size it was built with, while the live display's terminal autoresizes
-    // on draw. After dispatch_event(Event::Resize(80, 20)) on a 40x10 harness, the
-    // program lays out for 80x20 and render() draws into 40x10. No test can check a
-    // layout that depends on resize. Fix: on Event::Resize, also resize the backend
-    // (TestBackend::resize, then Terminal::resize) so render draws at the new size.
-    // (tui-core-10)
     async fn deliver(&mut self, e: &Event) -> Result<()> {
         if !self.stopped {
+            if let Event::Resize(width, height) = *e {
+                self.terminal.backend_mut().resize(width, height);
+                self.terminal.resize(Rect::new(0, 0, width, height))?;
+            }
             self.stopped = !self.screen.event(e).await.context("widget handle_event")?;
         }
         Ok(())

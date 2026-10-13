@@ -344,3 +344,29 @@ let result = {body}
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn resizing_updates_the_backend_and_widget_layout() -> Result<()> {
+    use ratatui::layout::Rect;
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::{block::block, text::text};
+let result = block(#border: &`All, &text(&"[tui::size.width]x[tui::size.height]"))
+"#,
+    )
+    .await?;
+    for (width, height) in [(80, 20), (12, 4)] {
+        h.dispatch_event(Event::Resize(width, height)).await?;
+        let buffer = h.render()?;
+        assert_eq!(buffer.area, Rect::new(0, 0, width, height));
+        assert_eq!(buffer[(width - 1, height - 1)].symbol(), "┘");
+        let expected = compact_str::format_compact!("{width}x{height}");
+        for (x, c) in expected.char_indices() {
+            assert_eq!(
+                buffer[(x as u16 + 1, 1)].symbol(),
+                &expected[x..x + c.len_utf8()]
+            );
+        }
+    }
+    Ok(())
+}
