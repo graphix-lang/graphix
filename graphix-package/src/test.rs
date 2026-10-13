@@ -234,6 +234,22 @@ fn write_vendor_config(dir: &Path, ws: &Path) {
     .unwrap();
 }
 
+/// A package whose root module could never be named, or that would shadow
+/// a stdlib package, is refused.
+#[tokio::test]
+async fn create_refuses_unnameable_packages() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, why) in [
+        ("graphix-package-select", "reserved word"),
+        ("graphix-package-core", "stdlib package"),
+        ("graphix-package-Foo", "must match"),
+    ] {
+        let e = super::create_package(tmp.path(), name).await.unwrap_err();
+        assert!(e.to_string().contains(why), "{name}: {e}");
+    }
+    assert!(std::fs::read_dir(tmp.path()).unwrap().next().is_none());
+}
+
 #[tokio::test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn created_package_compiles() {

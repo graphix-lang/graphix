@@ -234,21 +234,18 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     // the short name becomes the Graphix module name and, `-` read as `_`,
     // the prefix of every builtin's name
     let short = name.strip_prefix("graphix-package-").unwrap_or("");
-    // CR claude for claude: [bug/low] Only the short name's characters are checked.
-    // `graphix package create select` (or let, if, ...) scaffolds a package whose root
-    // module can never be named, because `use select;` and `select::var` are parse
-    // errors. `graphix package create core` (or any stdlib package name) scaffolds a
-    // crate named graphix-package-core, which collides with the stdlib crate. Its
-    // generated register() also returns early on root_mods.contains("core"), so its
-    // builtins and modules are silently never registered. Also refuse a short name
-    // that, with `-` read as `_`, is_reserved_binding refuses or that names a stdlib
-    // package. probe: design/review-2026-10-12/repro/x-rerun-5-06.sh (x-rerun-5-08)
     let valid = short.starts_with(|c: char| c.is_ascii_lowercase())
         && short
             .chars()
             .all(|c| c == '-' || c.is_ascii_lowercase() || c.is_ascii_digit());
     if !valid {
         bail!("invalid package name, name must match graphix-package-[a-z][-a-z0-9]*")
+    }
+    if graphix_compiler::expr::parser::is_reserved_binding(&short.replace('-', "_")) {
+        bail!("invalid package name, {short} is a reserved word")
+    }
+    if is_stdlib_package(short) {
+        bail!("invalid package name, {short} is a stdlib package")
     }
     let full_path = base.join(name);
     if fs::metadata(&full_path).await.is_ok() {
