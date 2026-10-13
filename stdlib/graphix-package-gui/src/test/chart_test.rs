@@ -732,3 +732,32 @@ async fn a_cached_chart_discards_a_view_from_its_previous_slot() -> Result<()> {
     assert_eq!(draw_in(&h, &ChartState::default(), size).await.unwrap().y_range, base);
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_single_bar_label_is_centered_in_the_plot() -> Result<()> {
+    let mut h = chart_harness(
+        r#"#width: &`Fill, #height: &`Fixed(200.0),
+        #style: &chart_style(#mesh: mesh_style(
+            #label_color: color(#r: 1.0, #g: 0.0, #b: 1.0)$,
+            #label_size: 18.0, #x_label_area_size: 30.0, #y_label_area_size: 70.0)),
+        &[bar(&[("only", 5.0)])]"#,
+    )
+    .await?;
+    let info =
+        draw_in(&h, &ChartState::default(), Size::new(400.0, 200.0)).await.unwrap();
+    let pixels = screenshot(&mut h).await;
+    let mut xs = pixels.chunks_exact(4).enumerate().filter_map(|(i, px)| {
+        (i / 400 > info.rect.y as usize + info.rect.height as usize
+            && px[..3] == [255, 0, 255])
+        .then_some((i % 400) as f32)
+    });
+    let first = xs.next().expect("visible category text");
+    let (lo, hi) = xs.fold((first, first), |(lo, hi), x| (lo.min(x), hi.max(x)));
+    let center = (lo + hi) / 2.0;
+    assert!(
+        (center - info.rect.center_x()).abs() <= 3.0,
+        "label {center}, plot {:?}",
+        info.rect
+    );
+    Ok(())
+}

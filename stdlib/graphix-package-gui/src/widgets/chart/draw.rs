@@ -17,8 +17,11 @@ use plotters::{
     coord::{
         CoordTranslate,
         cartesian::Cartesian2d,
-        ranged1d::{AsRangedCoord, Ranged, ValueFormatter},
-        types::RangedCoordf64,
+        ranged1d::{
+            AsRangedCoord, DefaultFormatting, DiscreteRanged, KeyPointHint, Ranged,
+            SegmentValue, ValueFormatter,
+        },
+        types::{RangedCoordf64, RangedCoordusize},
     },
     drawing::DrawingAreaErrorKind,
     element::{
@@ -53,6 +56,44 @@ const DEFAULT_LOSS: RGBColor = RGBColor(214, 39, 40);
 
 /// The most ticks or grid lines an axis is asked for.
 const MAX_TICKS: i64 = 1000;
+
+#[derive(Clone, Copy)]
+struct CategoryRange(usize);
+
+impl Ranged for CategoryRange {
+    type FormatOption = DefaultFormatting;
+    type ValueType = usize;
+
+    fn map(&self, value: &usize, limit: (i32, i32)) -> i32 {
+        if self.0 <= 1 {
+            limit.0
+        } else {
+            RangedCoordusize::from(self.range()).map(value, limit)
+        }
+    }
+
+    fn key_points<H: KeyPointHint>(&self, hint: H) -> Vec<usize> {
+        RangedCoordusize::from(self.range()).key_points(hint)
+    }
+
+    fn range(&self) -> Range<usize> {
+        0..self.0.saturating_sub(1)
+    }
+}
+
+impl DiscreteRanged for CategoryRange {
+    fn size(&self) -> usize {
+        self.0
+    }
+
+    fn index_of(&self, value: &usize) -> Option<usize> {
+        (*value < self.0).then_some(*value)
+    }
+
+    fn from_index(&self, index: usize) -> Option<usize> {
+        self.index_of(&index)
+    }
+}
 
 fn palette_color(chart_style: Option<&ChartStyleV>, i: usize) -> RGBAColor {
     match chart_style.and_then(|s| s.palette.as_deref()).filter(|p| !p.is_empty()) {
@@ -213,12 +254,16 @@ fn configure_mesh<DB, C>(
     y_label: Option<&str>,
     mesh_style: Option<&MeshStyleV>,
     x_min_lines: usize,
+    x_formatter: Option<&dyn Fn(&C::ValueType) -> String>,
 ) -> bool
 where
     DB: DrawingBackend,
     C: Ranged + ValueFormatter<C::ValueType>,
 {
     let mut mesh_cfg = chart.configure_mesh();
+    if let Some(formatter) = x_formatter {
+        mesh_cfg.x_label_formatter(formatter);
+    }
     if let Some(xl) = x_label {
         mesh_cfg.x_desc(xl);
     }
@@ -478,7 +523,7 @@ where
     let x_label = w.drawn.x_label.t.as_ref().and_then(|o| o.as_deref());
     let y_label = w.drawn.y_label.t.as_ref().and_then(|o| o.as_deref());
     let mesh_style = cs.and_then(|s| s.mesh.as_ref());
-    if !configure_mesh(&mut chart, x_label, y_label, mesh_style, x_min_lines) {
+    if !configure_mesh(&mut chart, x_label, y_label, mesh_style, x_min_lines, None) {
         return false;
     }
     draw_xy(&mut chart, w, cs, view, to_x);
@@ -620,22 +665,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         .unwrap_or_else(|| pad_range(lo, hi));
                     label_areas(&mut builder, y, descs, mesh_style, label_sz, (15, 8));
                     let mut chart = match builder.build_cartesian_2d(
-                        // CR claude for claude: [bug/low] With exactly one category,
-                        // plotters' RangedSlice::map divides by len - 1 = 0, and NaN
-                        // rounds to pixel 0. The bar itself is fine, because plotters
-                        // clamps element coordinates to the plotting area. The category
-                        // tick label is not clamped: it lands at plot_width/2 from the
-                        // canvas edge, which puts it limit.0 pixels (chart margin plus
-                        // y-label area) left of the bar's centre, and inside the
-                        // y-label area on a narrow chart. Fix: build the axis from an
-                        // index range, `(0..n as i32).into_segmented()`, with an x
-                        // label formatter that maps the index to `categories[i]`. That
-                        // never divides by zero and matches the (0, n) x_range that
-                        // `plot_info` records for the hit test. Pin it with a
-                        // one-category test that checks the label's x against the plot
-                        // rect's centre. probe:
-                        // design/review-2026-10-12/repro/gui-chart-03.rs (gui-chart-03)
-                        categories.into_segmented(),
+                        CategoryRange(categories.len()).into_segmented(),
                         y.0..y.1,
                     ) {
                         Ok(c) => c,
@@ -646,7 +676,20 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         (0.0, categories.len() as f64),
                         y,
                     )));
-                    if !configure_mesh(&mut chart, x_label, y_label, mesh_style, 1) {
+                    let category_label = |index: &SegmentValue<usize>| match index {
+                        SegmentValue::Exact(i) | SegmentValue::CenterOf(i) => {
+                            categories.get(*i).map(|s| s.to_string()).unwrap_or_default()
+                        }
+                        SegmentValue::Last => String::new(),
+                    };
+                    if !configure_mesh(
+                        &mut chart,
+                        x_label,
+                        y_label,
+                        mesh_style,
+                        1,
+                        Some(&category_label),
+                    ) {
                         return;
                     }
                     let view = View { x: (0.0, categories.len() as f64), y };
@@ -659,15 +702,11 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                             .style(fill)
                             .margin(style.margin.unwrap_or(5.0) as u32)
                             .baseline(view.clamp_y(0.0))
-                            .data(categories.iter().enumerate().filter_map(
-                                |(slot, c)| {
-                                    let v = self
-                                        .bars
-                                        .value(i, slot)
-                                        .filter(|v| v.is_finite())?;
-                                    Some((c, view.clamp_y(v)))
-                                },
-                            ));
+                            .data((0..categories.len()).filter_map(|slot| {
+                                let v =
+                                    self.bars.value(i, slot).filter(|v| v.is_finite())?;
+                                Some((slot, view.clamp_y(v)))
+                            }));
                         annotate(
                             chart.draw_series(hist),
                             style.label.as_deref(),
