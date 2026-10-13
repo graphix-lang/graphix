@@ -22,6 +22,7 @@
   - [Polymorphism](./functions/polymorphism.md)
   - [Recursion](./functions/recursion.md)
   - [Detailed Semantics](./functions/semantics.md)
+  - [Parallel Evaluation](./functions/parallel.md)
 - [User Defined Types](./udt/overview.md)
   - [Structs](./udt/structs.md)
   - [Variants](./udt/variants.md)
