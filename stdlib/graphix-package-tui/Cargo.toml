@@ -55,6 +55,7 @@ tempfile = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 graphix-package-map = { version = "0.9.0", path = "../graphix-package-map" }
+graphix-package-rand = { version = "0.9.0", path = "../graphix-package-rand" }
 
 [build-dependencies]
 graphix-ast-pack = { path = "../../graphix-ast-pack" }

@@ -50,14 +50,6 @@ fn example_files(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-// CR claude for claude: [test-gap/low] The TUI examples are only typechecked here.
-// Nothing runs one for a few cycles or presses a key in one, so runtime defects pass
-// the gate, such as the blank view after one Down in scroll_paragraph.gx
-// (examples-tui-03). Add a graphix-package-tui test that loads each
-// book/src/examples/tui/*.gx with TuiTestHarness, renders through a few updates, and
-// asserts no error. For the interactive examples (list_interactive, tabs_navigation,
-// overlay_modal, layout_nested_focus, the scroll examples), also dispatch a scripted
-// key sequence and assert the rendered lines. (examples-tui-09)
 async fn examples_compile() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = example_files(&root.join("book/src/examples"))?;
