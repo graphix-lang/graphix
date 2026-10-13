@@ -62,19 +62,7 @@ const DYNAMIC_MODULE1: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap/low] These tests pass on any error: dynamic_module1,
-// dynamic_module4, dynamic_module5, dynamic_module7, dynamic_module_blacklist_root and
-// dynamic_module_missing_import all take `Ok(Value::Error(_))`. A loader that refused
-// every body for an unrelated reason, such as a sandbox parse error, would keep them
-// green, and the rule each test is named for would go unchecked. Use load_refused with
-// each refusal's phrase: "signature has i64, implementation has f64", "val baz: string
-// is missing an implementation", "no module `net` in `sys`" (m5 and blacklist_root),
-// "sys::net::publish not defined" and "no `no_such_thing` in `core`".
-// (tests-modules-image-03)
-run!(dynamic_module1, DYNAMIC_MODULE1, |v: Result<&Value>| match v {
-    Ok(Value::Error(_)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(dynamic_module1, DYNAMIC_MODULE1, load_refused("signature has i64, implementation has f64"); FuseExpect::Jit);
 
 const DYNAMIC_MODULE2: &str = r#"
 {
@@ -157,10 +145,7 @@ const DYNAMIC_MODULE4: &str = r#"
 }
 "#;
 
-run!(dynamic_module4, DYNAMIC_MODULE4, |v: Result<&Value>| match v {
-    Ok(Value::Error(_)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(dynamic_module4, DYNAMIC_MODULE4, load_refused("val baz: string is missing an implementation"); FuseExpect::Jit);
 
 const DYNAMIC_MODULE5: &str = r#"
 {
@@ -189,10 +174,7 @@ const DYNAMIC_MODULE5: &str = r#"
 }
 "#;
 
-run!(dynamic_module5, DYNAMIC_MODULE5, |v: Result<&Value>| match v {
-    Ok(Value::Error(_)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(dynamic_module5, DYNAMIC_MODULE5, load_refused("no module `net` in `sys`"); FuseExpect::Jit);
 
 const DYNAMIC_MODULE6: &str = r#"
 {
@@ -252,10 +234,7 @@ const DYNAMIC_MODULE7: &str = r#"
 }
 "#;
 
-run!(dynamic_module7, DYNAMIC_MODULE7, |v: Result<&Value>| match v {
-    Ok(Value::Error(_)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(dynamic_module7, DYNAMIC_MODULE7, load_refused("sys::net::publish not defined"); FuseExpect::Jit);
 
 const DYNAMIC_MODULE8: &str = r#"
 {
@@ -613,10 +592,7 @@ const DYNAMIC_MODULE_BLACKLIST_ROOT: &str = r#"
 }
 "#;
 
-run!(dynamic_module_blacklist_root, DYNAMIC_MODULE_BLACKLIST_ROOT, |v: Result<&Value>| match v {
-    Ok(Value::Error(_)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(dynamic_module_blacklist_root, DYNAMIC_MODULE_BLACKLIST_ROOT, load_refused("no module `net` in `sys`"); FuseExpect::Jit);
 
 // A loaded body's deferred import must name something, as a file's must.
 const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
@@ -635,10 +611,7 @@ const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
 }
 "#;
 
-run!(dynamic_module_missing_import, DYNAMIC_MODULE_MISSING_IMPORT, |v: Result<&Value>| match v {
-    Ok(Value::Error(_)) => true,
-    _ => false,
-}; FuseExpect::Jit);
+run!(dynamic_module_missing_import, DYNAMIC_MODULE_MISSING_IMPORT, load_refused("no `no_such_thing` in `core`"); FuseExpect::Jit);
 
 // Sleep is pause: a loaded body whose arm sleeps resumes at the wake
 // even though its source does not fire again.
