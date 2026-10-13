@@ -36,7 +36,7 @@ Running this program we get,
 
 ```
 $ graphix test.gx
-{x: 0, y: 1, z: 3.14}
+{x: 1, y: 1, z: 3.14}
 ```
 
 However, consider,

@@ -113,7 +113,7 @@ Looks good, now lets run the code. We need to add to the resolve path to tell
 the Graphix shell where it should look for modules.
 
 ```
-$ GRAPHIX_MODPATH=netidx:/local/graphix graphix test
+$ GRAPHIX_MODPATH=netidx:/local/graphix graphix netidx:/local/graphix/test.gx
 "hello world"
 ```
 

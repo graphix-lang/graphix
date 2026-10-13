@@ -13,7 +13,7 @@ defines a struct with two fields, `foo` and `bar`. `foo` has type `string` and
 pass it around just like any other data object. For example,
 
 ```graphix
-let s = { foo: "I am foo", bar: 42 }
+let s = { foo: "I am foo", bar: 42 };
 println("the struct s is [s]")
 ```
 
@@ -63,12 +63,12 @@ Struct fields can be referenced with the .field notation. That is,
 "I am foo"
 ```
 
-A more complex expression that results in a struct (such as a function call),
-must be placed in parenthesis before the .field. For example,
+A more complex expression that results in a struct, such as a function call,
+takes `.field` the same way,
 
 ```graphix
 〉let f = || s
-〉(f()).foo
+〉f().foo
 -: string
 "I am foo"
 ```

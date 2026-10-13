@@ -187,27 +187,16 @@ predicate:
 
 Its `update` delivers values to those variables and updates `pred`.
 
-<!-- CR claude for claude: [doc-drift/low] The group example below is refused: `range(0,
-100)` now yields a `RangeError` Result, so `n == 50` compares `[i64, Error<..>]` with
-i64 (probe: design/review-2026-10-12/repro/book-modules-udt-builtins-group.gx). Write
-`range(0, 100)$`, and the type shown needs `throws 'e`. Other book programs are also
-wrong. udt/polymorphic.md shows `{x: 0, ..}` for a call that adds 1 to x, but the output
-is `{x: 1, y: 1, z: 3.14}`. udt/structs.md's first file example has two statements and
-no `;`, which is a parse error. structs.md says a call's result must be parenthesized
-before `.field`, but `f().foo` works. modules/implementation.md runs
-`GRAPHIX_MODPATH=netidx:/local/graphix graphix test`, which fails with 'No such file';
-the file argument must name a script. Fix each one; the doc test proposed in
-book-modules-udt-09 would keep them honest. (book-modules-udt-14) -->
 This implements `array::group`, which given an argument, stores that
 argument's updates internally, and creates an array out of them when
 the predicate returns true. Its type is
 
-```fn(v: 'a, f: fn(len: i64, x: 'a) -> bool) -> Array<'a>```
+```fn(v: 'a, f: fn(len: i64, x: 'a) -> bool throws 'e) -> Array<'a> throws 'e```
 
 For example,
 
 ```graphix
-let n = range(0, 100);
+let n = range(0, 100)$;
 array::group(n, |_, n| (n == 50) || (n == 99))
 ```
 
