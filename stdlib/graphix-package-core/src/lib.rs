@@ -689,7 +689,11 @@ pub enum Invocation {
 // a `get(i) -> Option<&Value>` accessor. That accessor replaces the
 // `cached.0.get(i)?.as_ref()?` repeated across the db, gui, http, sqlite and sys
 // packages. (core-lib-09)
-pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
+pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>, Evaluated);
+
+/// Whether `eval` (or `quiet`) has run over the slots as they stand.
+#[derive(Debug, Default, Clone, Copy)]
+struct Evaluated(bool);
 
 /// A builtin payload's image: its state after `init` and the typecheck
 /// passes, restored in the context it was built in. `unit_image_state!`
@@ -1134,13 +1138,14 @@ impl CachedVals {
         let tags = (0..n)
             .map(|_| u8::decode(buf).map(Tag::from_raw))
             .collect::<Result<_, _>>()?;
-        Ok(CachedVals(vals, tags))
+        Ok(CachedVals(vals, tags, Evaluated(false)))
     }
 
     pub fn new<R: Rt, E: UserEvent>(from: &[Node<R, E>]) -> CachedVals {
         CachedVals(
             from.into_iter().map(|_| None).collect(),
             from.into_iter().map(|_| Tag::FIRED).collect(),
+            Evaluated(false),
         )
     }
 
@@ -1151,6 +1156,7 @@ impl CachedVals {
         for t in &mut self.1 {
             *t = Tag::FIRED
         }
+        self.2 = Evaluated(false);
     }
 
     /// True if any arg slot holds a taint no clean production has
@@ -1197,9 +1203,13 @@ impl CachedVals {
             let tv = src.update(ctx);
             let tag = tv.tag();
             if tag.is_bottom() {
+                if !self.1[i].is_bottom() {
+                    self.2 = Evaluated(false);
+                }
                 self.1[i] = Tag::STALE_BOTTOM;
             } else {
                 let slot = &mut self.0[i];
+                let evaluated = &mut self.2;
                 tv.with_value(|v| {
                     let same = |old: &Value| {
                         graphix_compiler::tval::value_words(old)
@@ -1207,6 +1217,7 @@ impl CachedVals {
                     };
                     if !slot.as_ref().is_some_and(same) {
                         *slot = Some(v.clone());
+                        *evaluated = Evaluated(false);
                     }
                 });
                 self.1[i] = tag;
@@ -1470,6 +1481,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.woke_pending = true;
+        self.cached.2 = Evaluated(false);
     }
 }
 
@@ -1546,16 +1558,20 @@ impl<T> CachedArgs<T> {
             None => last_result.ride(),
             // a bottom arg bottoms the invocation without calling eval
             Some(t) if cached.any_bottom() => last_result.set_bottom_as(t),
-            Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
-                Some(v) => last_result.set(TagValue::tagged(v, t)),
-                // no value this cycle, as a kernel's fast call reads it
-                None => last_result.set_bottom_as(t),
-            },
+            Some(t) if t.is_fired() => {
+                cached.2 = Evaluated(true);
+                match ev.eval(ctx, cached) {
+                    Some(v) => last_result.set(TagValue::tagged(v, t)),
+                    // no value this cycle, as a kernel's fast call reads it
+                    None => last_result.set_bottom_as(t),
+                }
+            }
             Some(_) if !last_result.tag().is_bottom() => {
                 // Wake catch-up: args may have drifted while asleep. A
                 // stateless value is recomputed from the present slots; a
                 // stateful one must not be (its last result is its state).
                 if matches!(T::EFFECT, Effect::Stateless(_) | Effect::Io(_)) && woke {
+                    cached.2 = Evaluated(true);
                     match ev.quiet(ctx, cached) {
                         Some(v) => last_result.set(TagValue::stale(v)),
                         None => last_result.set_bottom(false),
@@ -1564,23 +1580,12 @@ impl<T> CachedArgs<T> {
                     last_result.retag(Tag::STALE)
                 }
             }
-            // CR claude for claude: [bug/medium] This arm runs `quiet` (which is `eval`
-            // by default) on every stale join whose last result is bottom. A bottom
-            // that `eval` itself returned (None) is stored as the same STALE_BOTTOM
-            // Null as the never-produced phantom, so the arm keeps re-running `eval` on
-            // unchanged slots every cycle the statement updates. A standing `divide(10,
-            // 0)` logs "arithmetic error" once per cycle, while `10 / 0` logs once.
-            // This breaks the dense_delivery rules "retag STALE without eval on a stale
-            // join" and "standing bottoms never log", and Sync builtins run `eval` on
-            // non-fires. Fix: record whether the present slots have already been
-            // evaluated, for example a flag that is set whenever eval or quiet runs and
-            // cleared when `CachedVals::update_full` overwrites a slot value or marks a
-            // taint, and by sleep and image_decode. Recompute here only when that flag
-            // is clear, and otherwise ride. probe:
-            // design/review-2026-10-12/repro/core-lib-03.gx (core-lib-03)
+            // a bottom eval already gave over these slots stands
+            Some(_) if cached.2.0 => last_result.ride(),
             Some(_) => {
                 // Nothing to re-surface yet: compute the value once to
                 // establish the value channel, STALE.
+                cached.2 = Evaluated(true);
                 match ev.quiet(ctx, cached) {
                     Some(v) => last_result.set(TagValue::stale(v)),
                     None => last_result.ride(),
