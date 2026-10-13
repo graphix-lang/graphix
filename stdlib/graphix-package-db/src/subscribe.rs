@@ -427,19 +427,8 @@ macro_rules! db_event_accessor {
                 }
             }
 
-            // CR claude for claude: [bug/medium] The on_change/on_insert/on_remove
-            // accessors release their listener in sleep but keep `out`. At the wake the
-            // first update re-registers, finds no event, and `out.ride()` returns the
-            // previous batch. A select whose scrutinee fired then emits it again as a
-            // new event, so one insert is delivered twice: a screen that toasts or
-            // appends on_insert events repeats the last one each time it is reselected.
-            // design/async_sleep_outputs.md requires database event accessors to reset
-            // to phantom in sleep, as the fs watch accessors do. Fix: set `self.out =
-            // TagValue::phantom()` here, and add a pin to
-            // stdlib/graphix-tests/src/lang/async_restart.rs. probe:
-            // design/review-2026-10-12/repro/x-node-contract-02.gx Also reported as
-            // (x-fix-stdlib-07), (x-rerun-2-02). (x-node-contract-02)
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+                self.out = TagValue::phantom();
                 if let Some(bid) = self.bind_id.take() {
                     ctx.release_var(bid, self.top_id);
                 }

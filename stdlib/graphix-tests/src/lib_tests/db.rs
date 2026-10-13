@@ -1448,3 +1448,36 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+run_with_tempdir!(
+    name: db_subscription_accessors_do_not_replay_on_wake,
+    code: r#"{{
+        let d = db::open("{}")?;
+        let t: db::Tree<string, i64> = db::tree(d, null)?;
+        let sub = db::subscription::new(t);
+        let on = true;
+        let inserts = 0;
+        inserts <- count(select on {{ true => db::subscription::on_insert(sub)?, false => never() }});
+        let removes = 0;
+        removes <- count(select on {{ true => db::subscription::on_remove(sub)?, false => never() }});
+        let changes = 0;
+        changes <- count(select on {{ true => db::subscription::on_change(sub)?, false => never() }});
+        seq {{
+            sub;
+            db::insert(t, "k", 1)?;
+            until inserts == 1;
+            db::remove(t, "k")?;
+            until removes == 1 && changes == 2;
+            on <- false;
+            sys::time::timer(duration:20.ms, false);
+            on <- true;
+            sys::time::after_idle(duration:50.ms, on);
+            (inserts, removes, changes)
+        }}
+    }}"#,
+    setup: |td| { td.path().join("accessor_wake.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, arr([Value::I64(1), Value::I64(1), Value::I64(2)]));
+        Ok(())
+    }
+);
