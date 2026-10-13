@@ -30,9 +30,6 @@ module.exports = grammar({
     $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
 
-  inline: $ => [
-    $._expression_inner,
-  ],
 
   precedences: $ => [
     [
@@ -48,17 +45,6 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
-    // CR claude for claude: [dead/low] `tree-sitter generate` reports this conflict as
-    // unnecessary. Delete it. Also `_expression_inner` is `_expression` plus
-    // parenthesized_expression, which `_primary_expression` already contains, so the
-    // lambda body can take `_expression`. Some query rules are subsumed and report
-    // duplicate captures: in queries/locals.scm the let_binding and lambda_param
-    // definition rules are covered by the bare `(pattern_bind name: ..)` rule (each let
-    // name gets two @local.definition captures), the sig_use rule in
-    // queries/highlights.scm by the general `(use_path (identifier) @namespace . "::")`
-    // rule, and the let_binding variable rule in graphix-mode.el by its pattern_bind
-    // rule. Remove the subsumed copies. (ide-tooling-14)
-    [$._expression, $.map_ref],
     // `seq {x}`: a punned struct literal as trigger, or a body with no
     // trigger; the trigger reading dies when no body follows.
     [$._binding_name, $._field_name],
@@ -147,23 +133,6 @@ module.exports = grammar({
       $._arithmetic_expression,
       $.by_ref,
       $.deref,
-      $._primary_expression,
-    ),
-
-    _expression_inner: $ => choice(
-      $.module,
-      $.use,
-      $.type_def,
-      $.trait_def,
-      $.impl_def,
-      $.let_binding,
-      $.connect,
-      $.lambda,
-      $.catch_stmt,
-      $._arithmetic_expression,
-      $.by_ref,
-      $.deref,
-      $.parenthesized_expression,
       $._primary_expression,
     ),
 
@@ -720,7 +689,7 @@ module.exports = grammar({
       '|',
       optional(seq('->', $._type)),
       optional($.throws_clause),
-      $._expression_inner,
+      $._expression,
     )),
 
     lambda_constraints: $ => commaSep1($.constraint),

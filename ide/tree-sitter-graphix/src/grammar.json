@@ -143,67 +143,6 @@
         }
       ]
     },
-    "_expression_inner": {
-      "type": "CHOICE",
-      "members": [
-        {
-          "type": "SYMBOL",
-          "name": "module"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "use"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "type_def"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "trait_def"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "impl_def"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "let_binding"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "connect"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "lambda"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "catch_stmt"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_arithmetic_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "by_ref"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "deref"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "parenthesized_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_primary_expression"
-        }
-      ]
-    },
     "line_comment": {
       "type": "TOKEN",
       "content": {
@@ -3952,7 +3891,7 @@
           },
           {
             "type": "SYMBOL",
-            "name": "_expression_inner"
+            "name": "_expression"
           }
         ]
       }
@@ -7443,10 +7382,6 @@
   ],
   "conflicts": [
     [
-      "_expression",
-      "map_ref"
-    ],
-    [
       "_binding_name",
       "_field_name"
     ],
@@ -7653,8 +7588,6 @@
       "name": "_error_sentinel"
     }
   ],
-  "inline": [
-    "_expression_inner"
-  ],
+  "inline": [],
   "supertypes": []
 }

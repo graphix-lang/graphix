@@ -8,18 +8,8 @@
 (catch_stmt) @local.scope
 
 ; Definitions
-(let_binding
-  pattern: (structure_pattern
-    (pattern_bind
-      name: (identifier) @local.definition)))
-
 (pattern_bind
   name: (identifier) @local.definition)
-
-(lambda_param
-  (structure_pattern
-    (pattern_bind
-      name: (identifier) @local.definition)))
 
 (catch_stmt
   binding: (identifier) @local.definition)

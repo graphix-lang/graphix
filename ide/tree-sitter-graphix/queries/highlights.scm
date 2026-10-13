@@ -159,7 +159,6 @@
 (sig_bind name: (identifier) @variable)
 (sig_type_def name: (type_identifier) @type)
 (sig_module name: (identifier) @namespace)
-(sig_use path: (use_path (identifier) @namespace . "::"))
 
 ; -- Struct fields --------------------------------------------------
 (struct_field         name: (identifier) @variable.other.member)

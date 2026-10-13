@@ -220,10 +220,7 @@ Falls back to this mode when tree-sitter is not available.
      :language 'graphix
      :feature 'variable
      ;; a path's last segment; the segments before it are namespaces
-     "(let_binding
-        pattern: (structure_pattern
-                  (pattern_bind name: (identifier) @font-lock-variable-name-face)))
-      (pattern_bind name: (identifier) @font-lock-variable-name-face)
+     "(pattern_bind name: (identifier) @font-lock-variable-name-face)
       (connect target: (module_path (identifier) @font-lock-variable-name-face .))
       (reference (module_path (identifier) @font-lock-variable-name-face .))"
 
