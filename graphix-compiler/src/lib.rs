@@ -902,6 +902,15 @@ pub struct Native;
 impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
     const NAME: &str = "native";
 
+    // CR claude for claude: [readability/low] `#[native]` on a `<-` right side is
+    // refused with a reason that does not apply. `{ let x = 0; x <- #[native] (x + 1);
+    // x }` says "a declaration or a bare variable read has nothing to fuse", and
+    // without the parens (`x <- #[native] x + 1`, or `x <- #[native] array::len([x,
+    // k])`) the refusal is a bare "did not fully fuse" with no reason. The same
+    // computation bound by a let (`let n = #[native] (x + 1); x <- n`) fuses. Either
+    // fuse a connect's right side as a region like a let initializer, or name the rule
+    // that stops it (a connect node-walks, and a part that calls no function only
+    // descends). Found writing tests-lib-b2-01, 2026-10-13. (native-connect-01)
     fn check_target(_attr: &Attr, node: &Node<R, E>) -> Result<()> {
         if let Type::Fn(_) = node.typ() {
             crate::bailat!(
