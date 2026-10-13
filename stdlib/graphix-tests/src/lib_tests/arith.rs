@@ -185,36 +185,28 @@ run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "first=alpha")
 }; FuseExpect::Jit);
 
-// A bottom in a dead non-tail statement does not poison the tail.
+// A bottom in a non-tail statement does not poison the tail.
 
-// A dead bottom `let` is dropped; the tail is produced.
-// CR claude for claude: [doc-drift/low] These comments and those over the sink_* family
-// describe a pass that no longer exists ('a dead bottom let is dropped', 'a live
-// binding survives pruning', 'a bare statement that is itself dropped', 'same
-// mechanism', 'stays eager'). Nothing in the compiler prunes dead lets or sinks
-// bottoms. What these tests pin is the rule that a block's value is its last
-// expression, so a non-tail statement's bottom does not reach it, and that an untaken
-// arm's input does not bottom the select. Restate the comments as those rules, and
-// rename dead_let_fixpoint (e.g. bare_ref_of_bottom_let) so it no longer suggests a
-// fixpoint computation. (tests-lib-b1-04)
+// A block's value is its last expression: a bottom `let` before it does
+// not reach it.
 const DEAD_LET_BOTTOM: &str = "{ let v = i64:1 / i64:0; i64:42 }";
 run!(dead_let_bottom, DEAD_LET_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
 
-// A bare (value-discarded) bottom statement is dropped.
+// Nor does a bare bottom statement.
 const BARE_BOTTOM_STMT: &str = "{ i64:1 / i64:0; i64:42 }";
 run!(bare_bottom_stmt, BARE_BOTTOM_STMT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
 
-// `v` is referenced only by a bare statement that is itself dropped.
-const DEAD_LET_FIXPOINT: &str = "{ let v = i64:1 / i64:0; v; i64:42 }";
-run!(dead_let_fixpoint, DEAD_LET_FIXPOINT, |v: Result<&Value>| {
+// Nor a bare statement that reads a bottom `let`.
+const BARE_REF_OF_BOTTOM_LET: &str = "{ let v = i64:1 / i64:0; v; i64:42 }";
+run!(bare_ref_of_bottom_let, BARE_REF_OF_BOTTOM_LET, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
 
-// A live binding survives pruning; only the dead bottom `b` is dropped.
+// A binding the tail reads is read as usual beside a bottom one.
 const DEAD_LET_KEEPS_LIVE: &str = "{ let a = i64:7; let b = i64:1 / i64:0; a + i64:1 }";
 run!(dead_let_keeps_live, DEAD_LET_KEEPS_LIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(8)))
@@ -228,7 +220,7 @@ const SINK_ONE_ARM: &str =
     "{ let v = i64:1 / i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
 run!(sink_one_arm, SINK_ONE_ARM, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
 
-// mod-by-zero, same mechanism.
+// The same for a mod-by-zero.
 const SINK_MOD: &str = "{ let v = i64:1 % i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
 run!(sink_mod, SINK_MOD, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
 
@@ -294,10 +286,10 @@ run!(sink_nested_stmt, SINK_NESTED_STMT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(50)))
 });
 
-// An impure non-bottom let (a bare `rand`) read only by an untaken arm
-// leaves the select producing: 99 in every mode.
-const SINK_RAND_STAYS_EAGER: &str = "{ let v = rand::rand(#start: 0, #end: 9, #clock: 1); select i64:5 { 2 => v, _ => i64:99 } }";
-run!(sink_rand_stays_eager, SINK_RAND_STAYS_EAGER, |v: Result<&Value>| {
+// An impure let (a bare `rand`) read only by an untaken arm leaves the
+// select producing: 99 in every mode.
+const SINK_RAND_UNTAKEN: &str = "{ let v = rand::rand(#start: 0, #end: 9, #clock: 1); select i64:5 { 2 => v, _ => i64:99 } }";
+run!(sink_rand_untaken, SINK_RAND_UNTAKEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(99)))
 }; FuseExpect::Jit);
 
