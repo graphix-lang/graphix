@@ -4,8 +4,8 @@ Status: built 2026-07-03 (per-slot chains 2026-07-15, per-call-site
 blocks 2026-07-16, per-activation trees 2026-08); reduced to firing
 bookkeeping only by strict fusion 2026-09-01
 Pins: `lang/functions.rs` `hof_const_body_prev_len`,
-`lang/select.rs` `guarded_select_selection_memory`,
-`guarded_select_in_loop_selection_memory`,
+`lang/select.rs` `guard_fire_emits_unchanged_selection`,
+`guard_fire_emits_in_loop`,
 `lib_tests/lift.rs` `fused_recursion_sheds_unreached_blocks`,
 `findings/firing-jul2026/`, `findings/select-slot-memory-jul2026/`,
 `findings/recursive-activation-blocks-aug2026/`

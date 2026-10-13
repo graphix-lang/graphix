@@ -169,21 +169,25 @@ run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
-// A missing region input consumed only on a dead arm yields a real
+// A missing region input consumed only on an untaken arm yields a real
 // value, not bottom.
-const MISSING_ON_DEAD_ARM_SCALAR: &str = r#"
+const MISSING_ON_UNTAKEN_ARM_SCALAR: &str = r#"
 { let x: i64 = never(); select i64:0 { i64:0 => i64:5, _ => x } }
 "#;
 
-run!(missing_on_dead_arm_scalar, MISSING_ON_DEAD_ARM_SCALAR, |v: Result<&Value>| {
+run!(missing_on_untaken_arm_scalar, MISSING_ON_UNTAKEN_ARM_SCALAR, |v: Result<
+    &Value,
+>| {
     matches!(v, Ok(Value::I64(5)))
 });
 
-const MISSING_ON_DEAD_ARM_STRING: &str = r#"
+const MISSING_ON_UNTAKEN_ARM_STRING: &str = r#"
 { let x: string = never(); select i64:0 { i64:0 => "live", _ => x } }
 "#;
 
-run!(missing_on_dead_arm_string, MISSING_ON_DEAD_ARM_STRING, |v: Result<&Value>| {
+run!(missing_on_untaken_arm_string, MISSING_ON_UNTAKEN_ARM_STRING, |v: Result<
+    &Value,
+>| {
     matches!(v, Ok(Value::String(s)) if &**s == "live")
 });
 
@@ -987,7 +991,7 @@ run!(or_guard_judged_once, OR_GUARD_JUDGED_ONCE, |v: Result<&Value>| {
 
 // A guard-dep fire emits whether or not the selection changes. m fires
 // per x delivery: 4.
-const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
+const GUARD_FIRE_EMITS_UNCHANGED_SELECTION: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x % 2;
@@ -997,23 +1001,14 @@ const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 }
 "#;
 
-// CR claude for claude: [readability/low] Several names and comments say what the code
-// does not do. These *_selection_memory tests (and tail_select_guard_capture_memory)
-// pin a guard fire's emission; selection memory is deleted, so rename them
-// guard_fire_emits_*. The `_ => x` arm in missing_on_dead_arm_scalar/string is untaken,
-// not dead (dead arms are refused). byref_born_in_fused_arm's arm node-walks (dbg and a
-// reference), so name it for the guard. strict_sample_no_bank's comment says three
-// writes where it asserts four (three banked plus the live one).
-// wake_recomputes_a_targets_siblings claims the `<-` target keeps its last write but
-// never observes `a`: return `(a, b)` and pin both. (tests-select-11)
-run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Result<
+run!(guard_fire_emits_unchanged_selection, GUARD_FIRE_EMITS_UNCHANGED_SELECTION, |v: Result<
     &Value,
 >| {
     matches!(v, Ok(Value::I64(4)))
 }; FuseExpect::Jit);
 
 // The same inside a collection loop: 4.
-const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
+const GUARD_FIRE_EMITS_IN_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x / 3;
@@ -1024,8 +1019,8 @@ const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
 "#;
 
 run!(
-    guarded_select_in_loop_selection_memory,
-    GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY,
+    guard_fire_emits_in_loop,
+    GUARD_FIRE_EMITS_IN_LOOP,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     FuseExpect::Jit
 );
@@ -1068,7 +1063,7 @@ run!(
 );
 
 // Two loops deep: 4.
-const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
+const GUARD_FIRE_EMITS_IN_NESTED_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x / 3;
@@ -1079,8 +1074,8 @@ const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
 "#;
 
 run!(
-    guarded_select_nested_loop_selection_memory,
-    GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY,
+    guard_fire_emits_in_nested_loop,
+    GUARD_FIRE_EMITS_IN_NESTED_LOOP,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     FuseExpect::Jit
 );
@@ -1301,7 +1296,7 @@ run!(select_arm_local_persists_fold, SELECT_ARM_LOCAL_PERSISTS_FOLD, |v: Result<
 
 // A guard reading a capture inside a rec callee's tail select emits per
 // m fire; the init-phantom guard bottoms init: [1, 1, 2].
-const TAIL_SELECT_GUARD_CAPTURE_MEMORY: &str = r#"
+const GUARD_FIRE_EMITS_IN_TAIL_SELECT: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x / 3;
@@ -1314,8 +1309,8 @@ const TAIL_SELECT_GUARD_CAPTURE_MEMORY: &str = r#"
 "#;
 
 run!(
-    tail_select_guard_capture_memory,
-    TAIL_SELECT_GUARD_CAPTURE_MEMORY,
+    guard_fire_emits_in_tail_select,
+    GUARD_FIRE_EMITS_IN_TAIL_SELECT,
     |v: Result<&Value>| {
         match v {
             Ok(Value::Array(a)) => {
@@ -2166,8 +2161,8 @@ run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value
         == r#"[[i64:0, "None"], [i64:1, "None"], [i64:2, "None"], [i64:3, "Bad"]]"#
 }; FuseExpect::Jit);
 
-// `~` banks triggers that find `v` absent (three writes); `~!` drops
-// them (one write).
+// `~` banks triggers that find `v` absent (three banked writes and the
+// live one, four); `~!` drops them (one write).
 const STRICT_SAMPLE_NO_BANK: &str = r#"
 {
   let step = 0;
@@ -2412,11 +2407,11 @@ run!(byref_born_in_sleepable_arm, BYREF_BORN_IN_SLEEPABLE_ARM, |v: Result<&Value
     matches!(v, Ok(Value::I64(1)))
 }; FuseExpect::Jit);
 
-const BYREF_BORN_IN_FUSED_ARM: &str = r#"
+const BYREF_BORN_IN_GUARDED_SELECT: &str = r#"
 select 1 { 0 if true => 0, _ => dbg({ let r = &(1, 2); let t = *r; t.0 }) }
 "#;
 
-run!(byref_born_in_fused_arm, BYREF_BORN_IN_FUSED_ARM, |v: Result<&Value>| {
+run!(byref_born_in_guarded_select, BYREF_BORN_IN_GUARDED_SELECT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; FuseExpect::Jit);
 
@@ -3047,8 +3042,8 @@ const WAKE_RECOMPUTES_A_TARGETS_SIBLINGS: &str = r#"
     let n = array::iter([0, 1, 2, 3, 4]);
     let z = uniq(select n { 0 => 0, _ => 5 });
     let r = select n % 2 {
-        0 => { let (a, b) = (0, z + 100); a <- n ~ a + 1; b },
-        _ => z
+        0 => { let (a, b) = (0, z + 100); a <- n ~ a + 1; (a, b) },
+        _ => (-1, z)
     };
     array::group(r, |i, _| i == 5)
 }
@@ -3058,10 +3053,8 @@ run!(
     wake_recomputes_a_targets_siblings,
     WAKE_RECOMPUTES_A_TARGETS_SIBLINGS,
     |v: Result<&Value>| {
-        match v {
-            Ok(Value::Array(a)) => a[..] == [100, 5, 105, 5, 105].map(Value::I64),
-            _ => false,
-        }
+        format!("{}", v.unwrap())
+            == "[[i64:0, i64:100], [i64:-1, i64:5], [i64:1, i64:105], [i64:-1, i64:5], [i64:2, i64:105]]"
     }
 );
 
