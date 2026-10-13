@@ -7,8 +7,8 @@ use compact_str::format_compact;
 use graphix_compiler::{
     LibState,
     expr::{
-        MODULE_LAYOUTS, ModPath, ModuleResolver, Origin, Resolution, ResolverFactory,
-        ResolverRef, Source, submodule_base,
+        MODULE_LAYOUTS, ModPath, ModuleResolver, Origin, Probe, Probes, Resolution,
+        ResolverFactory, ResolverRef, Source, submodule_base,
     },
 };
 use graphix_package_core::NetConfig;
@@ -90,6 +90,7 @@ impl ModuleResolver for NetidxResolver {
         parent: &'a Arc<Origin>,
         name: &'a Path,
         errors: &'a mut Vec<anyhow::Error>,
+        probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
         Box::pin(async move {
             let ori = |text: ArcStr, p: &Path| Origin {
@@ -138,7 +139,13 @@ impl ModuleResolver for NetidxResolver {
                     self.fetch_one(intf_path.clone())
                 );
                 let implementation = match impl_sub {
-                    Ok(text) => ori(text, &impl_path),
+                    Ok(text) => {
+                        // no file vouches for a module read from netidx
+                        if let Some(probes) = probes {
+                            probes.push(Probe::Netidx(impl_path.clone()))
+                        }
+                        ori(text, &impl_path)
+                    }
                     Err(e) if absent(&e) => {
                         errors.push(e);
                         continue;

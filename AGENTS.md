@@ -372,7 +372,8 @@ image format + root; the build id covers the packages compiled in, and
 an executable without one has no cache) and, for a script, the program
 entry (the program compiled too; key adds the script's path or an
 embedded program's text, the flags and `GRAPHIX_MODPATH`; the entry
-records the sources its compile read and a load re-verifies them). The
+records every place its module resolution looked, each file read and each
+found absent (`expr::Probes`), and a load re-verifies them). The
 runtime restores the first of the program entry and the registration
 entry that reads, else compiles; an entry that fails to read leaves the
 session untouched, and whatever was compiled is written. `--no-cache`

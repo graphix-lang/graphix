@@ -10,11 +10,12 @@
 //! load touches its entry, and the entries unused longest are collected
 //! when one is written.
 
+use ahash::AHashSet;
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    expr::{Origin, Source},
+    expr::{Probe, Source},
     image,
 };
 use graphix_rt::ProgramImage;
@@ -22,7 +23,6 @@ use log::{info, warn};
 use netidx_core::utils::make_sha3_token;
 use poolshark::local::LPooled;
 use std::{
-    ffi::OsStr,
     fmt::Write,
     fs,
     path::{Path as FsPath, PathBuf},
@@ -188,120 +188,30 @@ fn elf_build_id(file: &[u8]) -> Option<String> {
     None
 }
 
-/// The program entry's record of the sources its compile read: a line
-/// `+<digest> <path>` per file read, and `-<path>` per file whose
-/// appearance would change what the compile read (an interface beside
-/// a module, a `m.gx` beside the `m/mod.gx` it would win over, a root
-/// module's files in each directory `search` lists ahead of its own).
-/// `None` when it read a source no file vouches for on the next start.
-// CR claude for claude: [structure/medium] `sources_record` and `root_module_site`
-// rebuild, from the finished program's origins, which files module resolution read and
-// which it checked for. That covers the interface beside a module, mod.gx versus m.gx,
-// and the root directory then the search path. `resolve_from_files` and the resolver
-// chain already make those decisions. The copy has drifted: x-image-03 (interfaces) and
-// x-image-04 (layout conflicts). Any new resolver rule will silently produce stale or
-// never-hitting entries, and the fuzzer's session axis bypasses this file. Fix: have
-// the resolver (and `RootFile::load`) push each path it read, with its text, and each
-// path it found absent into a sink returned with the program image. This function then
-// writes that list verbatim, and `root_module_site` and the `absent` heuristics go
-// away. Pin it at shell level by running a temp-dir program twice across the edit,
-// add-interface, layout-conflict and script-interface cases. (x-image-05)
-fn sources_record(
-    sources: &[triomphe::Arc<Origin>],
-    search: &[PathBuf],
-) -> Option<String> {
-    let mut read: Vec<(&FsPath, &Origin)> = vec![];
-    for o in sources {
-        match &o.source {
-            Source::File(p) => read.push((p, o)),
-            // the packages are the build's, an embedded program is the key
-            Source::Vfs(_) | Source::Program(_) | Source::Unspecified => (),
-            Source::Netidx(p) => {
+/// A program entry's record of its sources: `+<digest> <path>` for each
+/// file module resolution read, `-<path>` for each it looked for and did
+/// not find, once each. `None` when it read a module from netidx, which
+/// no file vouches for on the next start.
+fn sources_record(probes: &[Probe]) -> Option<String> {
+    let mut record = String::new();
+    let mut seen: LPooled<AHashSet<&FsPath>> = LPooled::take();
+    for probe in probes {
+        match probe {
+            Probe::Netidx(p) => {
                 info!("no program entry: the program reads {p} from netidx");
                 return None;
             }
-        }
-    }
-    let mut record = String::new();
-    let absent = |p: PathBuf, record: &mut String| {
-        if !read.iter().any(|(r, _)| *r == p) {
-            let _ = writeln!(record, "-{}", p.display());
-        }
-    };
-    for (p, o) in &read {
-        let _ = writeln!(record, "+{} {}", digest(&[o.text.as_bytes()]), p.display());
-    }
-    for (p, o) in &read {
-        if p.extension().is_some_and(|e| e == "gxi") {
-            continue;
-        }
-        // CR claude for claude: [bug/medium] The record misses files whose appearance
-        // makes the cold compile refuse the program. resolve_from_files reads both
-        // MODULE_LAYOUTS and breaks the module when both implementations exist or when
-        // the unused layout has an interface. Here, a read m.gx records only m.gxi as
-        // absent, not m/mod.gx or m/mod.gxi, and a read m/mod.gx does not record m.gxi.
-        // So after one of those files appears, `--no-cache` fails ("both define module
-        // m" / "is no interface"), but a cached start still verifies the entry and runs
-        // the old program. Fix the root cause: resolve_from_files should report every
-        // path it probed, read or found absent, and ProgramImage.sources should carry
-        // that set. sources_record then writes `+`/`-` lines from it and stops
-        // re-deriving the resolver's layout and search rules (root_module_site goes
-        // away). Probe: design/review-2026-10-12/repro/shell-01.sh. Also reported as
-        // (x-image-04). (shell-01)
-        absent(p.with_extension("gxi"), &mut record);
-        if o.parent.is_some()
-            && p.file_name().is_some_and(|n| n == "mod.gx")
-            && let Some(dir) = p.parent()
-        {
-            absent(dir.with_extension("gx"), &mut record);
-        }
-        // CR claude for claude: [bug/medium] x-image-01 variant: a warm start masks the
-        // m.gx / m/mod.gx conflict a cold compile refuses. sources_record records a
-        // module file's absent alternatives only through root_module_site. For a module
-        // beside the root that resolved to `m.gx`, it does not record `m/mod.gx` as
-        // absent (cache.rs; the root_module_site loop breaks at once). Creating
-        // `m/mod.gx` later leaves the program entry valid. A warm start then runs the
-        // old module, while --no-cache refuses the program because both files define
-        // module m. Shadowing through GRAPHIX_MODPATH, which I also probed, is handled
-        // correctly. Failure: The cold run prints "file". After `m/mod.gx` is created,
-        // the warm run still prints "file", but --no-cache fails with '.../m.gx and
-        // .../m/mod.gx both define module m'. Fix: For every module resolved from a
-        // directory, record each candidate path the resolver would also have probed
-        // (`m.gx`, `m/mod.gx`, `m.gxi`, `m/mod.gxi`) as present-or-absent in the
-        // entry's sources, not only those reached through root_module_site. Unverified:
-        // the reviewer's report, not checked by a verifier. (x-rerun-8-07)
-        if let Some((base, name)) = root_module_site(o, p) {
-            let root_dir = o.parent.as_ref().and_then(|r| match &r.source {
-                Source::File(r) => r.parent(),
-                _ => None,
-            });
-            for ahead in root_dir.into_iter().chain(search.iter().map(|d| d.as_path())) {
-                if ahead == base {
-                    break;
-                }
-                absent(ahead.join(name).with_extension("gx"), &mut record);
-                absent(ahead.join(name).join("mod.gx"), &mut record);
+            Probe::File(p, _) if !seen.insert(p) => (),
+            Probe::File(p, Some(text)) => {
+                let _ =
+                    writeln!(record, "+{} {}", digest(&[text.as_bytes()]), p.display());
+            }
+            Probe::File(p, None) => {
+                let _ = writeln!(record, "-{}", p.display());
             }
         }
     }
     Some(record)
-}
-
-/// The directory a root's module `p` was searched in and its name: a
-/// module the root's own `mod` reached, which the root's directory and
-/// then the search path are asked for in turn.
-fn root_module_site<'a>(o: &Origin, p: &'a FsPath) -> Option<(&'a FsPath, &'a OsStr)> {
-    let parent = o.parent.as_ref()?;
-    if parent.parent.is_some() {
-        return None;
-    }
-    match p.file_name()? == "mod.gx" {
-        true => {
-            let dir = p.parent()?;
-            Some((dir.parent()?, dir.file_name()?))
-        }
-        false => Some((p.parent()?, p.file_stem()?)),
-    }
 }
 
 /// Whether every source `record` lists is as the compile read it.
@@ -439,8 +349,7 @@ impl RegistrationCache {
     /// Write the program entry; a compile that read a source the next
     /// start cannot verify has none, which the caller reports.
     pub(crate) fn store_program(&self, program: &ProgramImage) -> Result<()> {
-        let Some(record) = sources_record(&program.sources, &graphix_rt::search_dirs())
-        else {
+        let Some(record) = sources_record(&program.sources) else {
             bail!(
                 "the program reads a source the next start cannot verify (a netidx module)"
             )
@@ -576,6 +485,29 @@ mod tests {
         assert_eq!(macho_build_id(&thin[..40]), None);
     }
 
+    /// The record of `main`'s program as module resolution makes it,
+    /// with `main`'s directory and then `search` on the module path, as
+    /// the shell puts them.
+    fn record_of(main: &FsPath, search: &[PathBuf]) -> String {
+        use graphix_compiler::expr::{FilesResolver, Probes, ResolverRef, RootFile};
+        let rt =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let probes = Probes::default();
+            let root =
+                RootFile::load(&main.to_path_buf(), None, Some(&probes)).await.unwrap();
+            let dirs = std::iter::once(main.parent().unwrap().to_path_buf())
+                .chain(search.iter().cloned());
+            let resolvers: Vec<ResolverRef> =
+                dirs.map(|d| FilesResolver::new(d, None)).collect();
+            let resolvers = std::sync::Arc::from(resolvers);
+            for e in root.exprs.iter() {
+                e.resolve_modules(&resolvers, Some(&probes)).await.unwrap();
+            }
+            sources_record(&probes.take()).unwrap()
+        })
+    }
+
     #[test]
     fn a_program_entry_misses_when_a_source_changes() {
         let dir = tempfile::tempdir().unwrap();
@@ -583,22 +515,23 @@ mod tests {
         let m = dir.path().join("m.gx");
         fs::write(&main, "mod m;\nm::x").unwrap();
         fs::write(&m, "let x = 1").unwrap();
-        let file = |p: &FsPath, parent: Option<triomphe::Arc<Origin>>| {
-            triomphe::Arc::new(Origin {
-                parent,
-                source: Source::File(p.to_path_buf()),
-                text: ArcStr::from(fs::read_to_string(p).unwrap()),
-            })
-        };
-        let root = file(&main, None);
-        let record = sources_record(&[root.clone(), file(&m, Some(root))], &[]).unwrap();
+        let record = record_of(&main, &[]);
         assert!(sources_unchanged(&record), "{record}");
         fs::write(&m, "let x = 2").unwrap();
         assert!(!sources_unchanged(&record), "an edited module");
         fs::write(&m, "let x = 1").unwrap();
-        fs::write(dir.path().join("m.gxi"), "val x: i64").unwrap();
-        assert!(!sources_unchanged(&record), "an interface added beside a module");
-        fs::remove_file(dir.path().join("m.gxi")).unwrap();
+        for added in [dir.path().join("m.gxi"), dir.path().join("main.gxi")] {
+            fs::write(&added, "val x: i64").unwrap();
+            assert!(!sources_unchanged(&record), "{} added", added.display());
+            fs::remove_file(&added).unwrap();
+        }
+        // the layout m.gx would conflict with
+        fs::create_dir(dir.path().join("m")).unwrap();
+        for added in [dir.path().join("m/mod.gx"), dir.path().join("m/mod.gxi")] {
+            fs::write(&added, "let x = 2").unwrap();
+            assert!(!sources_unchanged(&record), "{} added", added.display());
+            fs::remove_file(&added).unwrap();
+        }
         assert!(sources_unchanged(&record), "{record}");
         fs::remove_file(&m).unwrap();
         assert!(!sources_unchanged(&record), "a deleted module");
@@ -613,20 +546,9 @@ mod tests {
             fs::create_dir(d).unwrap();
         }
         let main = proj.join("main.gx");
-        let m = late.join("m.gx");
         fs::write(&main, "mod m;\nm::x").unwrap();
-        fs::write(&m, "let x = 1").unwrap();
-        let file = |p: &FsPath, parent: Option<triomphe::Arc<Origin>>| {
-            triomphe::Arc::new(Origin {
-                parent,
-                source: Source::File(p.to_path_buf()),
-                text: ArcStr::from(fs::read_to_string(p).unwrap()),
-            })
-        };
-        let root = file(&main, None);
-        let search = [early.clone(), late.clone()];
-        let record =
-            sources_record(&[root.clone(), file(&m, Some(root))], &search).unwrap();
+        fs::write(late.join("m.gx"), "let x = 1").unwrap();
+        let record = record_of(&main, &[early.clone(), late.clone()]);
         assert!(sources_unchanged(&record), "{record}");
         for shadow in [proj.join("m.gx"), early.join("m.gx")] {
             fs::write(&shadow, "let x = 2").unwrap();

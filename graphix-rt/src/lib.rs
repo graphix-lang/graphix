@@ -18,7 +18,7 @@ use graphix_compiler::{
     BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent, Scope,
     UserEvent,
     env::Env,
-    expr::{ExprId, ModPath, Origin, ResolverFactory, ResolverRef, Source},
+    expr::{ExprId, ModPath, Probe, ResolverFactory, ResolverRef, Source},
     ide::Ide,
     image::ProgramRoot,
     node::lambda::LambdaDef,
@@ -1068,11 +1068,12 @@ impl RegistrationImage {
     }
 }
 
-/// The session image taken after a program compiled, and every source
-/// its compile read (its file, each module's and interface's, once).
+/// The session image taken after a program compiled, and every place
+/// its module resolution looked: each file it read, each it found
+/// absent, each netidx path.
 pub struct ProgramImage {
     pub image: Bytes,
-    pub sources: Vec<triomphe::Arc<Origin>>,
+    pub sources: Vec<Probe>,
 }
 
 #[derive(Builder)]

@@ -8,8 +8,8 @@ use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
     View,
     expr::{
-        self, Expr, ExprId, ExprKind, ModPath, ModuleKind, Origin, ResolverRef,
-        Resolvers, RootFile, Sig, Source,
+        self, Expr, ExprId, ExprKind, ModPath, Origin, Probes, ResolverRef, Resolvers,
+        RootFile, Sig, Source,
     },
     ide::{Ide, IdeMode},
     image::ProgramRoot,
@@ -165,30 +165,6 @@ fn is_output_kind(kind: &ExprKind) -> bool {
         | ExprKind::Trait(_)
         | ExprKind::Impl(_) => false,
         _ => true,
-    }
-}
-
-/// Add each origin under `root` to `sources` once: a file's, each
-/// module's and each interface's.
-fn program_sources(root: &Expr, sources: &mut Vec<Arc<Origin>>) {
-    let mut add = |o: &Arc<Origin>| {
-        if !sources.iter().rev().any(|s| Arc::ptr_eq(s, o)) {
-            sources.push(o.clone())
-        }
-    };
-    let mut todo = vec![root];
-    while let Some(e) = todo.pop() {
-        add(&e.ori);
-        if let ExprKind::Module { value, .. } = &e.kind
-            && let ModuleKind::Resolved { sig: Some(sig), .. } = &**value
-        {
-            for item in sig.iter() {
-                if let Some(o) = &item.ori {
-                    add(o)
-                }
-            }
-        }
-        e.for_each_child(&mut |c| todo.push(c));
     }
 }
 
@@ -366,13 +342,14 @@ impl<X: GXExt> GX<X> {
             && let Some(source) = cfg.program
         {
             let st = Instant::now();
-            let mut sources = cfg.program_image.as_ref().map(|_| vec![]);
-            match t.load_program(&source, sources.as_mut()).await {
+            let probes = cfg.program_image.as_ref().map(|_| Probes::default());
+            match t.load_program(&source, probes.as_ref()).await {
                 Ok(root) => {
                     t.program = Some(Ok(root));
                     info!("program init time: {:?}", st.elapsed());
-                    if let (Some(tx), Some(sources)) = (cfg.program_image, sources) {
+                    if let (Some(tx), Some(probes)) = (cfg.program_image, probes) {
                         let image = t.registration_image();
+                        let sources = probes.take();
                         let _ =
                             tx.send(image.map(|image| ProgramImage { image, sources }));
                     }
@@ -954,7 +931,7 @@ impl<X: GXExt> GX<X> {
         let exprs = expr::parser::parse(ori.clone())
             .with_context(|| format!("parsing the root module {ori}"))?;
         let exprs =
-            try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
+            try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
                 .await?;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
@@ -985,7 +962,7 @@ impl<X: GXExt> GX<X> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = expr::parser::parse(ori.clone())?;
         let exprs =
-            try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
+            try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
                 .await?;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
@@ -1064,11 +1041,12 @@ impl<X: GXExt> GX<X> {
         &self,
         source: &Source,
         resolvers: &Resolvers,
+        probes: Option<&Probes>,
     ) -> Result<(Origin, Arc<[Expr]>, Option<Sig>)> {
         let (ori, exprs, sig) = match source {
             Source::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
-                let root = RootFile::load(file, overrides.as_ref()).await?;
+                let root = RootFile::load(file, overrides.as_ref(), probes).await?;
                 (root.ori, root.exprs, root.sig)
             }
             source @ Source::Netidx(_) => {
@@ -1141,7 +1119,7 @@ impl<X: GXExt> GX<X> {
                     // a package this binary was not built with is still
                     // the root `package::` names
                     self.ctx.env.package_roots.insert(name.clone());
-                    let root = RootFile::load(file, overrides.as_ref()).await?;
+                    let root = RootFile::load(file, overrides.as_ref(), None).await?;
                     let ori = root.ori.clone();
                     (
                         ori,
@@ -1154,15 +1132,14 @@ impl<X: GXExt> GX<X> {
                 (Some(_), _) => bail!("only a file can be checked as a package root"),
                 (None, _) => {
                     let (ori, exprs, sig) =
-                        self.load_exprs(source, &resolvers_for_call).await?;
+                        self.load_exprs(source, &resolvers_for_call, None).await?;
                     (ori, exprs, ModPath::root(), false, sig)
                 }
             };
-            let exprs =
-                try_join_all(exprs.iter().map(|e| {
-                    e.resolve_modules_in_scope(&modules_at, &resolvers_for_call)
-                }))
-                .await?;
+            let exprs = try_join_all(exprs.iter().map(|e| {
+                e.resolve_modules_in_scope(&modules_at, &resolvers_for_call, None)
+            }))
+            .await?;
             info!("parse and resolve time: {:?}", st.elapsed());
             self.prune_static_resolution();
             // the check alone: definitions and call sites, no elaboration;
@@ -1242,53 +1219,26 @@ impl<X: GXExt> GX<X> {
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
 
-    /// Compile the program in `source`, adding every source its compile
-    /// read to `sources`.
+    /// Compile the program in `source`, adding every place its module
+    /// resolution looked to `probes`.
     async fn load_program(
         &mut self,
         source: &Source,
-        sources: Option<&mut Vec<Arc<Origin>>>,
+        probes: Option<&Probes>,
     ) -> Result<ProgramRoot> {
         let scope = Scope::root();
         let st = Instant::now();
-        let (ori, exprs, sig) = self.load_exprs(source, &self.resolvers).await?;
+        let (ori, exprs, sig) = self.load_exprs(source, &self.resolvers, probes).await?;
         info!("parse time: {:?}", st.elapsed());
         let st = Instant::now();
-        let exprs =
-            try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
-                .await?;
+        let exprs = try_join_all(
+            exprs.iter().map(|e| e.resolve_modules(&self.resolvers, probes)),
+        )
+        .await?;
         info!("resolve time: {:?}", st.elapsed());
         let output = exprs.last().map(|e| is_output_kind(&e.kind)).unwrap_or(false);
         let stmts = Arc::from_iter(exprs.into_iter());
         let wrapped = wrap_file_in_block(stmts.clone(), Arc::new(ori.clone()));
-        if let Some(sources) = sources {
-            // CR claude for claude: [perf/medium] The root's own interface (the `sig`
-            // load_exprs returns from RootFile::load) is handed to compile_script
-            // beside the tree, so its origin never reaches `sources`. sources_record
-            // then writes `-<root>.gxi` (must be absent) for a file that is present.
-            // Every later load of a script with a .gxi finds its program entry stale,
-            // recompiles, and rewrites the image, so such a script never starts warm.
-            // Add the sig's items' origins (or the RootFile's interface origin) to
-            // `sources` here. program_sources dedupes by Arc identity, and
-            // wrap_file_in_block wraps the root origin in a fresh Arc, so the root file
-            // is also listed twice: dedupe by source path instead. probe:
-            // design/review-2026-10-12/repro/x-fix-tools-03.sh (x-fix-tools-02)
-            // CR claude for claude: [perf/medium] The script's own interface is never
-            // added to `sources`. `load_exprs` returns it only as `sig`, and
-            // `program_sources` reaches only origins in the tree and in module sigs. A
-            // module's empty .gxi has no items, so it is never added either.
-            // `sources_record` then writes `-<script>.gxi` while the file exists,
-            // `sources_unchanged` fails on every start, and every run compiles cold and
-            // rewrites the image with an fsync and a collect. The script itself is also
-            // listed twice, because `wrap_file_in_block` gets a fresh `Arc<Origin>` and
-            // the `Arc::ptr_eq` dedup misses it. Fix: add the interface's Origin
-            // (script and module, empty or not) to `sources`, and dedup by path. A
-            // record built from what the resolver probed (see shell-01) fixes all of
-            // these. probe:
-            // design/review-2026-10-12/repro/shell-02-script-interface-never-warm.sh
-            // Also reported as (x-image-03). (shell-02)
-            program_sources(&wrapped, sources);
-        }
         let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();

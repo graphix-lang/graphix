@@ -31,6 +31,31 @@ use triomphe::Arc;
 
 pub type BufferOverrides = Arc<Mutex<AHashMap<PathBuf, ArcStr>>>;
 
+/// One place module resolution looked: a file with the text it read, or
+/// `None` where nothing was there, or a netidx path, which no file
+/// vouches for.
+#[derive(Debug, Clone)]
+pub enum Probe {
+    File(PathBuf, Option<ArcStr>),
+    Netidx(Path),
+}
+
+/// Every place one resolution looked, from whichever task looked: what
+/// decided the program's modules, and so what a later start must find
+/// unchanged to reuse them.
+#[derive(Debug, Default)]
+pub struct Probes(Mutex<Vec<Probe>>);
+
+impl Probes {
+    pub fn push(&self, probe: Probe) {
+        self.0.lock().push(probe)
+    }
+
+    pub fn take(&self) -> Vec<Probe> {
+        std::mem::take(&mut *self.0.lock())
+    }
+}
+
 /// A VFS module entry: its source text plus, optionally, the pre-parsed AST
 /// as a packed blob (see [`super::serialize`]), which the resolver decodes
 /// instead of re-parsing `source`. `source` is always kept for `Origin`
@@ -53,13 +78,15 @@ impl From<ArcStr> for VfsEntry {
 pub trait ModuleResolver: std::fmt::Debug + Send + Sync {
     /// Try to resolve module `name` in `scope` under `parent`. Return
     /// [`Resolution::TryNextMethod`] (pushing any diagnostic into
-    /// `errors`) to let the next resolver in the list try.
+    /// `errors`) to let the next resolver in the list try. Each place it
+    /// looks goes to `probes`, when given.
     fn resolve<'a>(
         &'a self,
         scope: &'a ModPath,
         parent: &'a Arc<Origin>,
         name: &'a Path,
         errors: &'a mut Vec<anyhow::Error>,
+        probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>>;
 
     /// Derive a resolver for the submodules of a module whose
@@ -128,6 +155,7 @@ impl ModuleResolver for VfsResolver {
         parent: &'a Arc<Origin>,
         name: &'a Path,
         _errors: &'a mut Vec<anyhow::Error>,
+        _probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
         Box::pin(async move { resolve_from_vfs(scope, parent, name, self) })
     }
@@ -154,10 +182,11 @@ impl ModuleResolver for FilesResolver {
         parent: &'a Arc<Origin>,
         name: &'a Path,
         errors: &'a mut Vec<anyhow::Error>,
+        probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
         Box::pin(async move {
-            resolve_from_files(parent, name, &self.base, self.overrides.as_ref(), errors)
-                .await
+            let overrides = self.overrides.as_ref();
+            resolve_from_files(parent, name, &self.base, overrides, errors, probes).await
         })
     }
 
@@ -362,15 +391,21 @@ async fn resolve_from_files(
     base: &PathBuf,
     overrides: Option<&BufferOverrides>,
     errors: &mut Vec<anyhow::Error>,
+    probes: Option<&Probes>,
 ) -> Resolution {
     async fn read(
         overrides: Option<&BufferOverrides>,
+        probes: Option<&Probes>,
         path: &PathBuf,
     ) -> Result<Option<ArcStr>> {
-        match overrides.and_then(|o| o.lock().get(path).cloned()) {
-            Some(s) => Ok(Some(s)),
-            None => read_optional(path).await,
+        let text = match overrides.and_then(|o| o.lock().get(path).cloned()) {
+            Some(s) => Some(s),
+            None => read_optional(path).await?,
+        };
+        if let Some(probes) = probes {
+            probes.push(Probe::File(path.clone(), text.clone()))
         }
+        Ok(text)
     }
     let unit = |text: ArcStr, path: PathBuf| {
         Unit::parsed(Origin {
@@ -394,11 +429,11 @@ async fn resolve_from_files(
     for (imp, intf) in MODULE_LAYOUTS {
         let (imp, intf) =
             (base.join(format!("{rel}{imp}")), base.join(format!("{rel}{intf}")));
-        let imp_text = match read(overrides, &imp).await {
+        let imp_text = match read(overrides, probes, &imp).await {
             Ok(t) => t,
             Err(e) => return Resolution::Broken(e),
         };
-        let intf_text = match read(overrides, &intf).await {
+        let intf_text = match read(overrides, probes, &intf).await {
             Ok(t) => t,
             Err(e) => return Resolution::Broken(e),
         };
@@ -694,6 +729,7 @@ impl RootFile {
     pub async fn load(
         file: &PathBuf,
         overrides: Option<&BufferOverrides>,
+        probes: Option<&Probes>,
     ) -> Result<Self> {
         let buffer = |p: &PathBuf| overrides.and_then(|o| o.lock().get(p).cloned());
         let file = match overrides {
@@ -706,13 +742,23 @@ impl RootFile {
             Some(text) => text,
             None => read_to_arcstr(&file).await?,
         };
+        let probe = |path: &PathBuf, text: &Option<ArcStr>| {
+            if let Some(probes) = probes {
+                probes.push(Probe::File(path.clone(), text.clone()))
+            }
+        };
+        probe(&file, &Some(text.clone()));
         let text = parser::without_shebang(&text);
         let intf = file.with_extension("gxi");
         let interface = match file.extension().and_then(|s| s.to_str()) {
-            Some("gx") => match buffer(&intf) {
-                Some(text) => Some(text),
-                None => read_optional(&intf).await?,
-            },
+            Some("gx") => {
+                let interface = match buffer(&intf) {
+                    Some(text) => Some(text),
+                    None => read_optional(&intf).await?,
+                };
+                probe(&intf, &interface);
+                interface
+            }
             Some(_) | None => None,
         };
         let interface = interface.map(|text| Origin {
@@ -748,6 +794,7 @@ async fn resolve(
     stmt: &Expr,
     module: &Name,
     from_interface: bool,
+    probes: Option<&Probes>,
 ) -> Result<Expr> {
     let ts = Instant::now();
     let name = Path::from(module.name.clone());
@@ -760,7 +807,7 @@ async fn resolve(
     };
     for r in prepend.iter().chain(chain.iter()) {
         let (interface, implementation) =
-            match r.resolve(&scope, &stmt.ori, &name, &mut errors).await {
+            match r.resolve(&scope, &stmt.ori, &name, &mut errors, probes).await {
                 Resolution::TryNextMethod => continue,
                 Resolution::Broken(e) => return Err(e),
                 Resolution::Resolved { interface, implementation } => {
@@ -787,9 +834,14 @@ async fn resolve(
 
 impl Expr {
     /// Resolve external modules referenced in the expression, trying each
-    /// resolver in order until one succeeds.
-    pub async fn resolve_modules<'a>(&'a self, resolvers: &'a Resolvers) -> Result<Expr> {
-        self.resolve_modules_in_scope(&ModPath::root(), resolvers).await
+    /// resolver in order until one succeeds; every place they look goes
+    /// to `probes`, when given.
+    pub async fn resolve_modules<'a>(
+        &'a self,
+        resolvers: &'a Resolvers,
+        probes: Option<&'a Probes>,
+    ) -> Result<Expr> {
+        self.resolve_modules_in_scope(&ModPath::root(), resolvers, probes).await
     }
 
     /// Like `resolve_modules` but starts at a non-root scope.
@@ -797,11 +849,12 @@ impl Expr {
         &'a self,
         scope: &'a ModPath,
         resolvers: &'a Resolvers,
+        probes: Option<&'a Probes>,
     ) -> Result<Expr> {
         if !self.holds_unresolved() {
             return Ok(self.clone());
         }
-        let e = self.resolve_modules_int(scope, &None, &None, resolvers).await?;
+        let e = self.resolve_modules_int(scope, &None, &None, resolvers, probes).await?;
         Ok(e.unwrap_or_else(|| self.clone()))
     }
 
@@ -829,6 +882,7 @@ impl Expr {
         prepend: &'a Option<ResolverRef>,
         chain: &'a Option<Arc<LoadChain>>,
         resolvers: &'a Resolvers,
+        probes: Option<&'a Probes>,
     ) -> Result<Option<SmallVec<[Option<Expr>; 4]>>> {
         // CR claude for claude: [bug/low] try_join_all returns the first error to
         // complete, not the first in program order. When two sibling `mod` statements
@@ -840,7 +894,9 @@ impl Expr {
         // always the one reported. (x-engine-seq-errors-05)
         let resolved = try_join_all(exprs.into_iter().map(|e| async move {
             match e.holds_unresolved() {
-                true => e.resolve_modules_int(scope, prepend, chain, resolvers).await,
+                true => {
+                    e.resolve_modules_int(scope, prepend, chain, resolvers, probes).await
+                }
                 false => Ok(None),
             }
         }))
@@ -856,10 +912,13 @@ impl Expr {
         prepend: &'a Option<ResolverRef>,
         chain: &'a Option<Arc<LoadChain>>,
         resolvers: &'a Resolvers,
+        probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Expr>>> + Send + Sync + 'a>> {
         // each level of a module chain polls the next: the poll is guarded
         // like any program-driven recursion
-        Box::pin(Guarded(self.resolve_modules_level(scope, prepend, chain, resolvers)))
+        Box::pin(Guarded(
+            self.resolve_modules_level(scope, prepend, chain, resolvers, probes),
+        ))
     }
 
     fn resolve_modules_level<'a>(
@@ -868,6 +927,7 @@ impl Expr {
         prepend: &'a Option<ResolverRef>,
         chain: &'a Option<Arc<LoadChain>>,
         resolvers: &'a Resolvers,
+        probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Expr>>> + Send + Sync + 'a>> {
         match &self.kind {
             ExprKind::Module { value, name }
@@ -881,12 +941,14 @@ impl Expr {
                         self,
                         name,
                         *from_interface,
+                        probes,
                     )
                     .await
                     .at(self)?;
                     let scope = ModPath(scope.append(&**name));
-                    let r =
-                        e.resolve_modules_int(&scope, prepend, chain, resolvers).await?;
+                    let r = e
+                        .resolve_modules_int(&scope, prepend, chain, resolvers, probes)
+                        .await?;
                     Ok(Some(r.unwrap_or(e)))
                 })
             }
@@ -949,6 +1011,7 @@ impl Expr {
                         &prepend,
                         &chain,
                         resolvers,
+                        probes,
                     )
                     .await?
                     else {
@@ -972,9 +1035,10 @@ impl Expr {
             _ => Box::pin(async move {
                 let mut children: SmallVec<[&Expr; 4]> = SmallVec::new();
                 self.for_each_child(&mut |c| children.push(c));
-                let Some(resolved) =
-                    Self::resolve_children(children, scope, prepend, chain, resolvers)
-                        .await?
+                let Some(resolved) = Self::resolve_children(
+                    children, scope, prepend, chain, resolvers, probes,
+                )
+                .await?
                 else {
                     return Ok(None);
                 };
@@ -1128,7 +1192,7 @@ mod test {
 
     async fn resolve_first(ori: Origin, resolvers: &[ResolverRef]) -> Result<Expr> {
         let resolvers: Resolvers = SArc::from(resolvers);
-        parser::parse(ori)?[0].resolve_modules(&resolvers).await
+        parser::parse(ori)?[0].resolve_modules(&resolvers, None).await
     }
 
     fn body(e: &Expr) -> (&Arc<[Expr]>, &Option<Sig>) {
