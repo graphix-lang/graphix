@@ -271,10 +271,13 @@ between the delimiters.
 The `Any` type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
 is not used very often, as it provides very few guarantees, however it has it's
-place. For example, `Any` is the type returned by `sys::net::subscribe`, indicating
-that any valid netidx value can come from the network. Usually the first thing
-you do with an `Any` type is call `cast` to turn it into the type you expect (or
-an error), or use a `select` expression to match it's type (more on select later).
+place. For example, `queue`'s `#clock` argument is `Any`: any value at all can
+tick it. Usually the first thing you do with a value of type `Any` is call
+`cast` to turn it into the type you expect (or an error), or use a `select`
+expression to match its type (more on select later). Reading data whose type
+the program cannot see, a netidx subscription or a json document, is
+type-directed instead: `sys::net::subscribe` returns the type you annotate
+and casts what arrives to it.
 
 ## Null
 

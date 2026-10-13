@@ -122,15 +122,11 @@ the entire result in one cycle.
 ```graphix
 let len = |a: Array<'a>| array::fold(a, 0, |acc, x| x ~ acc + 1);
 let a = [1, 2, 3, 4, 5];
-a <- [1, 2, 3, 4, 5];
+a <- [1, 2, 3];
 a <- [1, 2];
 len(a)
 ```
 
-<!-- CR claude for claude: [doc-drift/low] The program above writes `a <- [1, 2, 3, 4,
-5]` over an `a` that is already [1, 2, 3, 4, 5], so it prints 5, 5, 2, not the 5, 3, 2
-shown. The earlier example in this chapter uses [1, 2, 3] for that write. Fix: change
-the first connect to `a <- [1, 2, 3];`, which prints 5, 3, 2. (book-core-14) -->
 This will output
 
 ```
@@ -156,20 +152,11 @@ Every time clock updates queue allows a 'a through. If no 'a is
 queued, it still remembers to allow that many through when they
 arrive. 
 
-<!-- CR claude for claude: [doc-drift/medium] Both programs in this section call
-`sys::net::subscribe(path)` without fixing its type. subscribe is now type-directed
-(`fn<'a: Concrete>(path: string) -> Result<'a, ...>`), so both are refused with 'the
-type ... must be fully known here, a type-directed operation reads it: annotate it'.
-Fix: annotate the reads (`|path| -> string sys::net::subscribe(path)$`, `let res: string
-= ...`) and repair the published-values table, whose `+---` row and unclosed quotes do
-not render. core/fundamental_types.md also still gives subscribe as the example of a
-function that returns `Any`. Pick a function that really returns Any, or describe the
-type-directed read. (book-core-04) -->
 Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.
 
 ```graphix
-let f = |path| sys::net::subscribe(path)$;
+let f = |path| -> string sys::net::subscribe(path)$;
 let path = "/local/baz0";
 path <- "/local/baz1";
 path <- "/local/baz2";
@@ -178,11 +165,11 @@ f(path)
 
 Now suppose we have published
 
-| path        | value |
-+-------------+-------+
-| /local/baz0 | "baz0 |
-| /local/baz1 | "baz1 |
-| /local/baz2 | "baz2 |
+| path        | value  |
+|-------------|--------|
+| /local/baz0 | "baz0" |
+| /local/baz1 | "baz1" |
+| /local/baz2 | "baz2" |
 
 This program will always return "baz2"
 
@@ -208,7 +195,7 @@ moving on to the next one. We can use queue to achieve this.
 let f = |path| {
   let clock = "";
   let path = queue(#clock, path);
-  let res = sys::net::subscribe(path)$;
+  let res: string = sys::net::subscribe(path)$;
   clock <- uniq(res ~ path);
   res
 };
