@@ -278,13 +278,8 @@ A seq inside a definition lowers once per definition: the lowering mints
 expression ids, and every compile of the body (the check and each
 instance) must have the check's ids to take its types from the
 definition's table. The lowerings live with the definition
-<!-- CR claude for claude: [doc-drift/low] `CompileCtx::seq_lowerings` does not exist,
-and design/parallel_compile.md names the same thing `CompileCtx::lowered_seqs`, which
-does not exist either. While a definition's body compiles, its lowerings sit in
-`CompileCtx::body` (a `node::lambda::BodyCompile` over `LambdaDef::seqs`). Name that in
-both docs. (x-doc-drift-12) -->
-(`LambdaDef::seqs`, set for the body's compile as
-`CompileCtx::seq_lowerings`), and a lambda literal in the body shares
+(`LambdaDef::seqs`, held for the body's compile in `CompileCtx::body`, a
+`node::lambda::BodyCompile`), and a lambda literal in the body shares
 one cache across every definition its compiles make; they go when the
 definition does. A seq outside every definition compiles once and is
 lowered where it stands.

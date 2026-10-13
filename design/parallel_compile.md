@@ -440,7 +440,7 @@ node's type, each call site's signature, each lambda literal's own
 table. An id two nodes share has no row. A cell of the table its gate
 created, that nothing bounded and its signature does not reach, settles
 to ⊥ with the check (`PendingSettle::Body`). A seq block lowers once per
-expression and scope (`CompileCtx::lowered_seqs`), so every compile of a
+expression and scope (`LambdaDef::seqs`, held in `CompileCtx::body` while the body compiles), so every compile of a
 body has the same ids.
 
 **An instance** compiles its body as before and runs
