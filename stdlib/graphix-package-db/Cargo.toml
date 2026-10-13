@@ -46,3 +46,6 @@ uuid = { workspace = true }
 
 [build-dependencies]
 graphix-ast-pack = { path = "../../graphix-ast-pack" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

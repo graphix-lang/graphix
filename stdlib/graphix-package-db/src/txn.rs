@@ -94,7 +94,7 @@ impl TxnState {
             return Ok(*idx);
         }
         let tree = match &name {
-            None => (***self.db).clone(),
+            None => (****self.db).clone(),
             // CR claude for claude: [bug/low] Opening a tree in a transaction creates
             // it on disk immediately, while its type metadata waits in pending_meta
             // until commit. A rollback, a Conflict or a dropped transaction therefore

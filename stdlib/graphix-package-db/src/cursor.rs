@@ -1,6 +1,6 @@
 use crate::{
     encoding::{decode_key, decode_value, encode_key, encode_prefix},
-    tree::{Reaped, blocking, get_tree_inner},
+    tree::{Reaped, Tree, blocking, get_tree_inner},
 };
 use anyhow::Result;
 use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect};
@@ -16,8 +16,8 @@ use std::{fmt, ops::Bound, sync::Arc};
 
 /// A cursor's iterator; `None` iterates nothing (a prefix no key can have).
 pub(crate) struct CursorInner {
-    iter: Reaped<Mutex<Option<sled::Iter>>>,
-    key_typ: Option<Typ>,
+    iter: Mutex<Option<sled::Iter>>,
+    tree: Tree,
 }
 
 impl CursorInner {
@@ -26,7 +26,7 @@ impl CursorInner {
             None => Ok(None),
             Some(r) => {
                 let (k, v) = r?;
-                let entry = [decode_key(self.key_typ, &k)?, decode_value(&v)?];
+                let entry = [decode_key(self.tree.key_typ, &k)?, decode_value(&v)?];
                 Ok(Some(Value::Array(ValArray::from(entry))))
             }
         }
@@ -39,9 +39,11 @@ impl fmt::Debug for CursorInner {
     }
 }
 
+type Cursor = Arc<Reaped<CursorInner>>;
+
 #[derive(Debug, Clone)]
 pub(crate) struct CursorValue {
-    inner: Arc<CursorInner>,
+    inner: Cursor,
 }
 
 graphix_package_core::impl_abstract_arc!(
@@ -49,12 +51,13 @@ graphix_package_core::impl_abstract_arc!(
     static CURSOR_WRAPPER = "db::cursor::Cursor"
 );
 
-fn wrap_cursor(iter: Option<sled::Iter>, key_typ: Option<Typ>) -> Value {
-    let iter = Reaped::new(Mutex::new(iter));
-    CURSOR_WRAPPER.wrap(CursorValue { inner: Arc::new(CursorInner { iter, key_typ }) })
+fn wrap_cursor(iter: Option<sled::Iter>, tree: Tree) -> Value {
+    CURSOR_WRAPPER.wrap(CursorValue {
+        inner: Arc::new(Reaped::new(CursorInner { iter: Mutex::new(iter), tree })),
+    })
 }
 
-fn get_cursor(cached: &CachedVals) -> Option<Arc<CursorInner>> {
+fn get_cursor(cached: &CachedVals) -> Option<Cursor> {
     cached.abstract_arg::<CursorValue>(0).map(|c| c.inner.clone())
 }
 
@@ -71,7 +74,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
             Value::Null => Some(tree.tree.iter()),
             v => encode_prefix(tree.key_typ, v).ok().map(|p| tree.tree.scan_prefix(&*p)),
         };
-        Some(wrap_cursor(iter, tree.key_typ))
+        Some(wrap_cursor(iter, tree))
     }
 }
 
@@ -104,7 +107,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorRangeEv {
         let lo = parse_bound(tree.key_typ, from.0.first()?.as_ref()?)?;
         let hi = parse_bound(tree.key_typ, from.0.get(1)?.as_ref()?)?;
         let iter = lo.zip(hi).map(|r| tree.tree.range(r));
-        Some(wrap_cursor(iter, tree.key_typ))
+        Some(wrap_cursor(iter, tree))
     }
 }
 
@@ -114,7 +117,7 @@ pub(crate) type DbCursorRange = CachedArgs<DbCursorRangeEv>;
 pub(crate) struct DbCursorReadEv;
 
 impl EvalCachedAsync for DbCursorReadEv {
-    type Args = Arc<CursorInner>;
+    type Args = Cursor;
 
     const NAME: &str = "db_cursor_read";
 
@@ -134,7 +137,7 @@ pub(crate) type DbCursorRead = CachedArgsAsync<DbCursorReadEv>;
 pub(crate) struct DbCursorReadManyEv;
 
 impl EvalCachedAsync for DbCursorReadManyEv {
-    type Args = (Arc<CursorInner>, i64);
+    type Args = (Cursor, i64);
 
     const NAME: &str = "db_cursor_read_many";
 
@@ -164,3 +167,29 @@ graphix_package_core::unit_image_state!(
     DbCursorReadManyEv,
     DbCursorRangeEv,
 );
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::tree::{TreeValue, open_db, wrap_tree};
+
+    #[tokio::test]
+    async fn cursors_keep_the_database_registered() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().to_str().unwrap();
+        let db = open_db(path.into()).await?;
+        let weak = Arc::downgrade(&db);
+        let value = wrap_tree(db.clone(), db.open_tree("t")?, Some(Typ::String));
+        let Value::Abstract(value) = value else { panic!("expected tree") };
+        let tree = value.downcast_ref::<TreeValue>().unwrap().inner.clone();
+        let tree_weak = Arc::downgrade(&tree);
+        let cursor = wrap_cursor(Some(tree.tree.iter()), tree);
+        drop(value);
+        assert!(tree_weak.upgrade().is_some(), "cursor must retain its tree");
+        drop(db);
+        let owner = weak.upgrade().expect("cursor must retain the registered database");
+        assert!(Arc::ptr_eq(&owner, &open_db(path.into()).await?));
+        drop(cursor);
+        Ok(())
+    }
+}

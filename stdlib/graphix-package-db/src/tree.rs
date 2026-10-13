@@ -21,7 +21,9 @@ use poolshark::{global::GPooled, local::LPooled};
 use std::{
     fmt,
     marker::PhantomData,
+    ops::Deref,
     path::PathBuf,
+    pin::pin,
     sync::{Arc, LazyLock, Weak},
 };
 
@@ -29,9 +31,34 @@ use crate::encoding::{
     ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
+use tokio::sync::Notify;
+
 pub(crate) use graphix_package_core::Reaped;
 
-pub(crate) type Db = Arc<Reaped<sled::Db>>;
+pub(crate) struct Database {
+    db: sled::Db,
+    // The database drops before waiting openers are notified.
+    _registration: Registration,
+}
+
+impl Deref for Database {
+    type Target = sled::Db;
+
+    fn deref(&self) -> &Self::Target {
+        &self.db
+    }
+}
+
+struct Registration(PathBuf);
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        OPEN.dbs.lock().remove(&self.0);
+        OPEN.closed.notify_waiters();
+    }
+}
+
+pub(crate) type Db = Arc<Reaped<Database>>;
 
 #[derive(Debug, Clone)]
 pub struct DbValue {
@@ -49,25 +76,43 @@ pub(crate) fn get_db(cached: &CachedVals, idx: usize) -> Option<Db> {
 
 /// One sled handle per database in the process: sled locks a database's
 /// files while any handle lives, so a second open would fail.
-static OPEN: LazyLock<Mutex<AHashMap<PathBuf, Weak<Reaped<sled::Db>>>>> =
-    LazyLock::new(|| Mutex::new(AHashMap::new()));
+struct OpenDbs {
+    dbs: Mutex<AHashMap<PathBuf, Weak<Reaped<Database>>>>,
+    closed: Notify,
+}
 
-fn open_db(path: &str) -> Result<Db> {
-    let mut open = OPEN.lock();
-    let canonical = || std::fs::canonicalize(path);
-    if let Ok(p) = canonical()
-        && let Some(db) = open.get(&p).and_then(Weak::upgrade)
+static OPEN: LazyLock<OpenDbs> =
+    LazyLock::new(|| OpenDbs { dbs: Mutex::new(AHashMap::new()), closed: Notify::new() });
+
+fn try_open_db(path: &str) -> Result<Option<Db>> {
+    let mut open = OPEN.dbs.lock();
+    if let Ok(path) = std::fs::canonicalize(path)
+        && let Some(db) = open.get(&path)
     {
-        return Ok(db);
+        return Ok(db.upgrade());
     }
-    let db = Arc::new(Reaped::new(sled::open(path)?));
-    open.retain(|_, w| w.strong_count() > 0);
-    open.insert(canonical()?, Arc::downgrade(&db));
-    Ok(db)
+    let db = sled::open(path)?;
+    let path = std::fs::canonicalize(path)?;
+    let db =
+        Arc::new(Reaped::new(Database { db, _registration: Registration(path.clone()) }));
+    open.insert(path, Arc::downgrade(&db));
+    Ok(Some(db))
+}
+
+pub(super) async fn open_db(path: ArcStr) -> Result<Db> {
+    loop {
+        let mut closed = pin!(OPEN.closed.notified());
+        closed.as_mut().enable();
+        let path = path.clone();
+        match tokio::task::spawn_blocking(move || try_open_db(&path)).await?? {
+            Some(db) => return Ok(db),
+            None => closed.await,
+        }
+    }
 }
 
 #[derive(Debug)]
-// CR claude for claude: [bug/medium] A tree, and a cursor's `sled::Iter` made from one,
+// XCR claude for claude: [bug/medium] A tree, and a cursor's `sled::Iter` made from one,
 // keeps sled's context alive, and that context holds the database's file lock. Neither
 // keeps the `Db` Arc alive. So once the last `DbValue` drops, the `OPEN` entry's Weak
 // is dead while the lock is still held, and `open_db` calls `sled::open` again, which
@@ -79,14 +124,22 @@ fn open_db(path: &str) -> Result<Db> {
 // smaller window of the same kind: the lock is released on a blocking thread after the
 // Weak is already dead. Consider having that drop clear the registry entry only once
 // sled's drop has finished. probe: design/review-2026-10-12/repro/db2-03.gx (db2-03)
+// 2026-10-13 codex: Trees and cursors now retain their owners through reaping; the registry
+// waits for database teardown before reopening a dead weak entry. Pins:
+// trees_keep_the_database_registered, cursors_keep_the_database_registered,
+// reopening_waits_for_deferred_close. Each fails with its ownership/wait
+// change undone and passes after restoration. Please review drop order.
 pub(crate) struct TreeInner {
-    pub(crate) tree: Reaped<sled::Tree>,
+    pub(crate) tree: sled::Tree,
     pub(crate) key_typ: Option<Typ>,
+    _db: Db,
 }
+
+pub(crate) type Tree = Arc<Reaped<TreeInner>>;
 
 #[derive(Debug, Clone)]
 pub struct TreeValue {
-    pub(crate) inner: Arc<TreeInner>,
+    pub(crate) inner: Tree,
 }
 
 graphix_package_core::impl_abstract_arc!(
@@ -94,13 +147,14 @@ graphix_package_core::impl_abstract_arc!(
     pub(crate) static TREE_WRAPPER = "db::Tree"
 );
 
-pub(crate) fn get_tree_inner(cached: &CachedVals, idx: usize) -> Option<Arc<TreeInner>> {
+pub(crate) fn get_tree_inner(cached: &CachedVals, idx: usize) -> Option<Tree> {
     cached.abstract_arg::<TreeValue>(idx).map(|t| t.inner.clone())
 }
 
-fn wrap_tree(tree: sled::Tree, key_typ: Option<Typ>) -> Value {
-    let tree = Reaped::new(tree);
-    TREE_WRAPPER.wrap(TreeValue { inner: Arc::new(TreeInner { tree, key_typ }) })
+pub(super) fn wrap_tree(db: Db, tree: sled::Tree, key_typ: Option<Typ>) -> Value {
+    TREE_WRAPPER.wrap(TreeValue {
+        inner: Arc::new(Reaped::new(TreeInner { tree, key_typ, _db: db })),
+    })
 }
 
 /// Run `f` on a blocking thread; its error, or its panic, is a `DbErr`.
@@ -394,7 +448,7 @@ macro_rules! tree_op {
         pub(crate) struct $ev;
 
         impl EvalCachedAsync for $ev {
-            type Args = Arc<TreeInner>;
+            type Args = Tree;
 
             const NAME: &str = $name;
 
@@ -421,7 +475,7 @@ macro_rules! tree_arg_op {
         pub(crate) struct $ev;
 
         impl EvalCachedAsync for $ev {
-            type Args = (Arc<TreeInner>, Result<$arg>);
+            type Args = (Tree, Result<$arg>);
 
             const NAME: &str = $name;
 
@@ -487,14 +541,14 @@ pub(crate) trait KeyTyp {
     fn key_typ(&self) -> Option<Typ>;
 }
 
-impl KeyTyp for &Arc<TreeInner> {
+impl KeyTyp for &Tree {
     fn key_typ(&self) -> Option<Typ> {
         self.key_typ
     }
 }
 
 fn many_keys_arg(
-    tree: &Arc<TreeInner>,
+    tree: &Tree,
     cached: &CachedVals,
 ) -> Option<Result<GPooled<Vec<GPooled<Vec<u8>>>>>> {
     let arr = match cached.0.get(1)?.as_ref()? {
@@ -513,7 +567,7 @@ fn many_keys_arg(
 
 type Swap = (GPooled<Vec<u8>>, Option<GPooled<Vec<u8>>>, Option<GPooled<Vec<u8>>>);
 
-fn swap_arg(tree: &Arc<TreeInner>, cached: &CachedVals) -> Option<Result<Swap>> {
+fn swap_arg(tree: &Tree, cached: &CachedVals) -> Option<Result<Swap>> {
     let opt = |i: usize| -> Option<Result<Option<GPooled<Vec<u8>>>>> {
         Some(match cached.0.get(i)?.as_ref()? {
             Value::Null => Ok(None),
@@ -737,8 +791,11 @@ impl EvalCachedAsync for DbOpenEv {
         cached.get::<ArcStr>(0)
     }
 
-    fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
-        blocking(move || Ok(DB_WRAPPER.wrap(DbValue { inner: open_db(&path)? })))
+    async fn eval(path: Self::Args) -> Value {
+        match open_db(path).await {
+            Ok(inner) => DB_WRAPPER.wrap(DbValue { inner }),
+            Err(e) => errf!("DbErr", "{e:#}"),
+        }
     }
 }
 
@@ -843,12 +900,81 @@ impl TreeOpener for FromDb {
             let key = meta_key(name.as_ref())?;
             db.open_tree(META_TREE)?.check_or_store(key, &types)?;
             let tree = match name {
-                None => (***db).clone(),
+                None => (*db.db).clone(),
                 Some(n) => db.open_tree(n.as_bytes())?,
             };
-            Ok(wrap_tree(tree, types.key))
+            Ok(wrap_tree(db, tree, types.key))
         })
     }
 }
 
 pub(crate) type DbTree = CachedArgsAsync<OpenTreeEv<FromDb>>;
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::{sync::mpsc, time::Duration};
+
+    #[tokio::test]
+    async fn trees_keep_the_database_registered() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().to_str().unwrap();
+        let db = open_db(path.into()).await?;
+        let weak = Arc::downgrade(&db);
+        let tree = wrap_tree(db.clone(), db.open_tree("t")?, Some(Typ::String));
+        drop(db);
+        let owner = weak.upgrade().expect("tree must retain the registered database");
+        assert!(Arc::ptr_eq(&owner, &open_db(path.into()).await?));
+        drop(tree);
+        Ok(())
+    }
+
+    #[test]
+    fn reopening_waits_for_deferred_close() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = ArcStr::from(dir.path().to_str().unwrap());
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .max_blocking_threads(1)
+                .enable_time()
+                .build()
+        };
+        let reaper = runtime()?;
+        let opener = runtime()?;
+        let db = opener.block_on(open_db(path.clone()))?;
+        let (started_tx, started) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        reaper.spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        started.recv_timeout(Duration::from_secs(5))?;
+        {
+            let _enter = reaper.enter();
+            drop(db);
+        }
+        let pending = try_open_db(&path);
+        opener.block_on(async move {
+            let mut reopened = pin!(open_db(path));
+            let waiting =
+                tokio::time::timeout(Duration::from_millis(30), &mut reopened).await;
+            let release_copy = release.clone();
+            let progress = tokio::time::timeout(
+                Duration::from_secs(1),
+                tokio::task::spawn_blocking(move || release_copy.send(())),
+            )
+            .await;
+            let _ = release.send(());
+            assert!(waiting.is_err(), "reopen must wait for the old database to close");
+            assert!(
+                progress.is_ok(),
+                "waiting for close must not occupy a blocking worker"
+            );
+            assert!(pending?.is_none());
+            let db = tokio::time::timeout(Duration::from_secs(5), reopened).await??;
+            drop(db);
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok(())
+    }
+}
