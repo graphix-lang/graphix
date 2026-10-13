@@ -582,8 +582,7 @@ impl<X: GXExt> DataTableW<X> {
         for row in self.row_paths[s.min(e)..e].iter().filter(|p| Path::is_absolute(p)) {
             for (col, hs) in shown.iter() {
                 if !inner.has_role(row, col, |r| r.is_grid_of(row, col)) {
-                    let path =
-                        if col == &VALUE_COL_KEY { row.clone() } else { row.append(col) };
+                    let path = Path::from(cell_path(row, col));
                     let role = SubRole::Grid {
                         row_path: row.clone(),
                         col_name: col.clone(),
@@ -600,7 +599,13 @@ impl<X: GXExt> DataTableW<X> {
                         row_path: row.clone(),
                         col_name: col.clone(),
                     };
-                    self.subscribe_cell(inner, row, col, row.append(col), role);
+                    self.subscribe_cell(
+                        inner,
+                        row,
+                        col,
+                        Path::from(cell_path(row, col)),
+                        role,
+                    );
                 }
             }
         }

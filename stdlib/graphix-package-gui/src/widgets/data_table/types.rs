@@ -205,12 +205,20 @@ fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
 
 /// Strip null bytes so a user column name cannot collide with the
 /// `ROW_NAME_SENTINEL_KEY` / `VALUE_COL_KEY` sentinels.
-fn sanitize_col_name(raw: ArcStr) -> ArcStr {
-    if raw.contains('\0') {
+fn sanitize_col_name(raw: ArcStr) -> Option<ArcStr> {
+    let name = if raw.contains('\0') {
         let cleaned: CompactString = raw.chars().filter(|ch| *ch != '\0').collect();
-        cleaned.as_str().into()
+        ArcStr::from(cleaned.as_str())
     } else {
         raw
+    };
+    let mut parts = Path::parts(&name);
+    if name.is_empty() || parts.next() != Some(name.as_str()) || parts.next().is_some() {
+        warn!("ignoring column {name:?}: expected one nonempty path component");
+        None
+    } else {
+        drop(parts);
+        Some(name)
     }
 }
 
@@ -219,7 +227,7 @@ fn sanitize_col_name(raw: ArcStr) -> ArcStr {
 fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
     if let Value::String(name) = v {
         return Some(ColumnSpec {
-            name: sanitize_col_name(name),
+            name: sanitize_col_name(name)?,
             typ: ColumnType::Text,
             display_name: None,
             source_bid: None,
@@ -241,7 +249,7 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
         v.cast_to().ok()?;
     let (typ, callback_value) = parse_column_type(typ);
     Some(ColumnSpec {
-        name: sanitize_col_name(name),
+        name: sanitize_col_name(name)?,
         typ,
         display_name,
         source_bid: Some(source.into()),
@@ -429,21 +437,12 @@ pub(super) fn parse_or_quote(s: &str) -> Value {
 /// The path a cell stands for: the row's own for the row-name cell and a
 /// Value-mode cell, else `<row>/<col>`. Selections and callbacks name
 /// cells by it.
-// CR claude for claude: [bug/low] A cell's path is built two ways. `cell_path` and
-// `is_cell_path` join `<row>/<col>` verbatim. The on_edit commit
-// (`handle_cell_edit_submit`), `render_cell`'s widget callbacks and the cell
-// subscriptions use `Path::append`, which canonizes: it drops empty parts, and
-// `append("")` returns the row itself. So for a column named "cpu/", "/cpu" or "",
-// on_select and on_update report one path, while on_edit/on_click and the subscription
-// use another. A program that feeds an on_edit path back into `#selection` never
-// highlights that cell. Fix at the root: refuse, when the columns are parsed, a column
-// name that is not one canonical path part. Then the two forms agree and every site can
-// use `cell_path`. (tests-gui-a-02)
 pub(super) fn cell_path(row: &Path, col: &ArcStr) -> ArcStr {
     if col == &ROW_NAME_KEY || col == &VALUE_COL_KEY {
         row.clone().into()
     } else {
-        format_compact!("{}/{}", &**row, col.as_str()).as_str().into()
+        let row = if row.as_ref() == "/" { "" } else { row.as_ref() };
+        format_compact!("{row}/{}", col.as_str()).as_str().into()
     }
 }
 
@@ -452,6 +451,7 @@ pub(super) fn is_cell_path(sel: &str, row: &str, col: &ArcStr) -> bool {
     if col == &ROW_NAME_KEY || col == &VALUE_COL_KEY {
         return sel == row;
     }
+    let row = if row == "/" { "" } else { row };
     let n = row.len();
     sel.len() == n + 1 + col.len()
         && sel.as_bytes().get(n) == Some(&b'/')
@@ -528,6 +528,21 @@ pub(super) fn value_to_f64(v: &Value) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_names_and_cell_paths_are_canonical() {
+        for name in ["", "/cpu", "cpu/", "cpu//load", "cpu/load", "/"] {
+            assert!(parse_column_entry(Value::from(name)).is_none(), "{name:?}");
+        }
+        for name in ["cpu", "é", r"cpu\/load"] {
+            let col = parse_column_entry(Value::from(name)).unwrap().name;
+            for row in [Path::from("/"), Path::from("/host/r0"), Path::from("r0")] {
+                let joined = cell_path(&row, &col);
+                assert_eq!(&*joined, &*row.append(&col));
+                assert!(is_cell_path(&joined, &row, &col));
+            }
+        }
+    }
 
     #[test]
     fn zero_column_refs_differ_from_absent_refs() {

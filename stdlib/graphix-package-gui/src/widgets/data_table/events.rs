@@ -182,7 +182,7 @@ impl<X: GXExt> DataTableW<X> {
             && let Some(cid) = self.columns.get(col).and_then(|c| c.callback.as_ref())
         {
             let v = parse_or_quote(&self.edit_buffer);
-            let path = Value::String(ArcStr::from(&*row_path.append(col)));
+            let path = Value::String(cell_path(row_path, col));
             let _ = self.gx.call(cid.id(), ValArray::from_iter([path, v]));
         }
         self.handle_cell_edit_cancel()

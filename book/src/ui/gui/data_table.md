@@ -87,6 +87,9 @@ their kind-specific args (`#on_edit` / `#on_click` / `#choices` /
 etc.) and the common appearance options (`#display_name`, `#source`,
 `#width`, `#on_resize`).
 
+A column name must be one nonempty netidx path component. Use netidx path
+escaping for a slash inside a name. Invalid names are ignored with a warning.
+
 - **`text_column`** -- Plain text. With `on_edit` the cell becomes
   editable: clicking a selected cell opens a text field; `Enter`
   commits the typed value via `on_edit`, `Escape` cancels. The

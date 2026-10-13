@@ -6,8 +6,8 @@ use super::{
     MIN_COL_WIDTH, Message, RESIZE_HANDLE_WIDTH, ROW_NAME_HEADER_LABEL, ROW_NAME_KEY,
     Renderer, TableMsg, VALUE_COL_KEY, VALUE_HEADER_LABEL,
     types::{
-        ColumnType, SortDirection, age_sparkline, col_header_width, col_min_width,
-        is_cell_path, row_basename, truncate_to_width,
+        ColumnType, SortDirection, age_sparkline, cell_path, col_header_width,
+        col_min_width, is_cell_path, row_basename, truncate_to_width,
     },
 };
 use crate::{
@@ -634,23 +634,13 @@ impl<X: GXExt> DataTableW<X> {
         row_h: f32,
         spark_bounds: Option<SparkBounds>,
     ) -> IcedElement<'a> {
-        // CR claude for claude: [bug/low] The callbacks (here, handle_cell_edit_submit)
-        // and the subscription (update_subscriptions) name a cell by Path::append,
-        // which canonizes: it drops a trailing '/', collapses '//', and returns the row
-        // itself for an empty name. Selection, on_select and on_update name it by
-        // types::cell_path, a raw format. For a column named "load/", on_update reports
-        // "/h/r0/load/" while on_edit reports "/h/r0/load". A column named ""
-        // subscribes the row's own value. This line also allocates the path for every
-        // drawn cell on every frame, even when the column has no callback. Fix: one
-        // spelling for both, and refuse a column name that is empty or not a single
-        // path segment in parse_column_entry. Build this path only when callback_id is
-        // Some. (gui-datatable-11)
-        let cell_path = self.row_paths.get(row_idx).map(|p| p.append(col_name));
         let callback_id = self
             .columns
             .get(col_name.as_str())
             .and_then(|c| c.callback.as_ref())
             .map(|c| c.id());
+        let cell_path = callback_id
+            .and_then(|_| self.row_paths.get(row_idx).map(|p| cell_path(p, col_name)));
         let is_selected = self.is_selected(row_idx, col_name);
         let inner: IcedElement<'a> = match col_type {
             ColumnType::Text => {
@@ -691,7 +681,7 @@ impl<X: GXExt> DataTableW<X> {
                 let checked = text.as_str() == "true" || text.as_str() == "1";
                 let mut tog = widget::Toggler::new(checked);
                 if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
-                    let path_val = Value::String(ArcStr::from(&**cp));
+                    let path_val = Value::String(cp.clone());
                     tog = tog.on_toggle(move |new_val| {
                         Message::Call(
                             cid,
@@ -731,7 +721,7 @@ impl<X: GXExt> DataTableW<X> {
                             Message::Call(
                                 cid,
                                 ValArray::from_iter([
-                                    Value::String(ArcStr::from(&**cp)),
+                                    Value::String(cp.clone()),
                                     Value::String(id),
                                 ]),
                             )
@@ -746,7 +736,7 @@ impl<X: GXExt> DataTableW<X> {
             ColumnType::Spin { min, max, increment } => {
                 let val: f64 = text.parse().unwrap_or(*min);
                 if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
-                    let path_val = Value::String(ArcStr::from(&**cp));
+                    let path_val = Value::String(cp.clone());
                     let dec_val = (val - increment).max(*min);
                     let inc_val = (val + increment).min(*max);
                     let path_dec = path_val.clone();
@@ -800,7 +790,7 @@ impl<X: GXExt> DataTableW<X> {
                     widget::text(text.to_string()).size(13),
                 );
                 if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
-                    let path_val = Value::String(ArcStr::from(&**cp));
+                    let path_val = Value::String(cp.clone());
                     let val = self
                         .row_paths
                         .get(row_idx)
