@@ -22,6 +22,9 @@ render as *virtual* rows. Columns whose `source` is a `string` or
 `Map<string, Any>` skip subscription entirely and read their values
 from the source ref.
 
+With rows and no declared columns, the table shows each row path’s own value
+in one synthesized column. Its “value” header does not invoke `on_header_click`.
+
 ## Interface
 
 ```graphix

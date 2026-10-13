@@ -312,7 +312,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         let mut header_row = Row::new().spacing(0);
         for (ci, (name, w)) in col_meta.iter().enumerate() {
-            // CR claude for claude: [bug/medium] In DisplayMode::Value the only data
+            // XCR claude for claude: [bug/medium] In DisplayMode::Value the only data
             // column is the synthesized VALUE_COL_KEY ("\0value"). A click on its
             // header calls on_header_click with that internal key, which program code
             // should never see. A stock sort handler (cycle_sort in
@@ -327,7 +327,10 @@ impl<X: GXExt> DataTableW<X> {
             // (row, col) must not share a single `cells` entry when their paths differ.
             // Not executed: the click harness is test-only inside the crate.
             // (gui-datatable-07)
-            let is_data_col = ci >= name_col_offset;
+            // 2026-10-13 codex: only_declared_column_headers_call_the_program covers the real
+            // header and synthesized value header. Resolver sockets block its assertions.
+            // Grid and sort subscriptions now both use cell_path (gui-datatable-11).
+            let is_data_col = self.mode == DisplayMode::Table && ci >= name_col_offset;
             let entry = self.columns.get(name);
             let base = match entry {
                 _ if name == &ROW_NAME_KEY => ROW_NAME_HEADER_LABEL,
@@ -342,8 +345,6 @@ impl<X: GXExt> DataTableW<X> {
             let is_fixed = entry
                 .map(|c| c.ref_width.is_some() && c.on_resize.is_none())
                 .unwrap_or(false);
-            // A `MouseArea`, not a `Button`: a button's padding would make
-            // the header row taller than the row-name header cell.
             let plain_text: IcedElement<'_> =
                 widget::text(header_text.as_str().to_owned())
                     .size(14)

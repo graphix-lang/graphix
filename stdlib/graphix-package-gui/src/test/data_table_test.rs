@@ -2459,3 +2459,28 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
     assert!(h.dt().dt_sparkline_values("r0", "load").unwrap().ends_with(&[1.0, 2.0]));
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_declared_column_headers_call_the_program() -> Result<()> {
+    for (columns, clickable) in [(r#"["value"]"#, true), ("[]", false)] {
+        let code = table_code(&format_compact!(
+            r#"
+            let tbl = {{rows: ["r0"], columns: {columns}}};
+            let result = data_table(#show_row_name: &false, #on_header_click: |#column: string| null, #table: &tbl)
+        "#
+        ));
+        let mut h =
+            InteractionHarness::with_viewport(&code, iced_core::Size::new(300.0, 100.0))
+                .await?;
+        h.inner.drain().await?;
+        let msgs = h.click(iced_core::Point::new(10.0, 14.0));
+        if clickable {
+            expect_call_with_args(&msgs, |args| {
+                args.first() == Some(&Value::from("value"))
+            });
+        } else {
+            assert!(!msgs.iter().any(|m| matches!(m, Message::Call(..))));
+        }
+    }
+    Ok(())
+}
