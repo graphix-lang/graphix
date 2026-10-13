@@ -6,7 +6,7 @@ let rec lfold_go = |l: List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i
         [<>] => acc,
         [<x, rest..>] => lfold_go(rest, f, f(acc, x))
     };
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let result = lfold_go(src, |a, x| a + x, seed);
 let t1 = sys::time::now(result);

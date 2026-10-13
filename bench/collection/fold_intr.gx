@@ -1,21 +1,7 @@
 // array fold — the intrinsic (baseline, fold_sum's shape).
 let n = 100000;
 let src = array::init(n, |i| i);
-// CR claude for claude: [risk/low] bench timing: `src` built before `t0` lands inside
-// the timed region once the first cycle forks. Every collection bench builds `src` on a
-// line before `let t0 = sys::time::now(0)` and relies on SERIAL program order to
-// exclude that build from the timing. bench/README.md says the seed 'forces the t0 ->
-// compute -> t1 ordering', but that only orders work that reads `seed`. `src` and `t0`
-// are independent siblings, so when the first cycle forks (GRAPHIX_PAR=force today, or
-// Auto once the cost model has data for it) `now(0)` runs beside the build and the
-// build is timed. Under force with --no-fusion, the 100k-slot node-walk build
-// dominates. Failure: GRAPHIX_PAR=force graphix --no-fusion on a src-then-t0 program
-// reports elapsed 2.79 s for a computation that is `array::len(src) + seed`; serial
-// reports 0.0001 s. Fix: Make t0 depend on the setup: `let t0 = sys::time::now(src);`
-// (the same for `prices`/`empty` maps), so every program orders setup -> t0 -> compute
-// -> t1 by dataflow. State that rule in bench/README.md's self-timing section.
-// Unverified: the reviewer's report, not checked by a verifier. (examples-rest-07)
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let result = array::fold(src, seed, |a, x| a + x);
 let t1 = sys::time::now(result);

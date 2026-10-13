@@ -1,7 +1,7 @@
 // array map intrinsic at n=10k — the fair twin for map_push.
 let n = 10000;
 let src = array::init(n, |i| i);
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let result = array::fold(array::map(src, |x| x * 3 + seed), 0, |a, x| a + x);
 let t1 = sys::time::now(result);

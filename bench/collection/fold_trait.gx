@@ -2,7 +2,7 @@
 // body; measures dispatch + trait-call fusion coverage.
 let n = 100000;
 let src = array::init(n, |i| i);
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let result = Collection::fold(src, seed, |a, x| a + x);
 let t1 = sys::time::now(result);

@@ -2,7 +2,7 @@
 // the empty [] the generic derivation lacks). O(n^2) by copying.
 let n = 10000;
 let src = array::init(n, |i| i);
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let empty: Array<i64> = [];
 let flat = array::fold(src, empty, |acc, x| array::concat(acc, [x + seed, x * 2]));

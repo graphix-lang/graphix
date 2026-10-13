@@ -32,6 +32,12 @@ the exit until the computation finishes.
 
 Notes / gotchas baked into the structure (each cost real debugging):
 
+- **Start the clock after the setup, by dataflow.** A program that
+  builds its input first writes `let t0 = sys::time::now(src)`, so the
+  build is ordered before `t0` by what `now` reads, not by statement
+  order: a forked first cycle runs independent siblings side by side,
+  and `now(0)` would start the clock beside the build.
+
 - **Seed the computation with `cast<i64>(t0)`.** This makes the result
   depend on a runtime value, which (a) forces the `t0 -> compute -> t1`
   dataflow ordering so the timer brackets the work, and (b) defeats any

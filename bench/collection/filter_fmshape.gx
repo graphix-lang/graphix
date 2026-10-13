@@ -2,7 +2,7 @@
 // select on the predicate.
 let n = 100000;
 let src = array::init(n, |i| i);
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let flt = array::filter_map(src, |x| select (x + seed) % 2 == 0 {
     true => x,

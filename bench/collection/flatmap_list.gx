@@ -3,7 +3,7 @@
 // O(n) total, against flatmap_fold's O(n^2) concat copies.
 let n = 10000;
 let src = array::init(n, |i| i);
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let empty: List<i64> = list::nil(0);
 let rev = array::fold(src, empty, |acc, x| array::fold([x + seed, x * 2], acc, |acc, y| list::cons(y, acc)));

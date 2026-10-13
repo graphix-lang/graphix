@@ -14,7 +14,7 @@ let rec find_go = |a: Array<i64>, f: fn(x: i64) -> bool, i: i64| -> [i64, null]
             false => find_go(a, f, i + 1)
         }
     };
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let target = n - 1 + seed % 2;
 let result = find_go(src, |x| x == target, 0);

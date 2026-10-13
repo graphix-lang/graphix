@@ -7,7 +7,7 @@ let rec fold_go = |a: Array<i64>, f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i
         true => fold_go(a, f, i + 1, f(acc, a[i]$)),
         false => acc
     };
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let result = fold_go(src, |a, x| a + x, 0, seed);
 let t1 = sys::time::now(result);

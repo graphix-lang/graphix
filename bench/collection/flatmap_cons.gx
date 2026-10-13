@@ -4,7 +4,7 @@
 // is consed directly; flatmap_list does the same through a nested fold.
 let n = 10000;
 let src = array::init(n, |i| i);
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let empty: List<i64> = list::nil(0);
 let rev = array::fold(src, empty, |acc, x| list::cons(x * 2, list::cons(x + seed, acc)));

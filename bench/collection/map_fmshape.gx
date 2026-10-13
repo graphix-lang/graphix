@@ -2,7 +2,7 @@
 // callback (map = |c, f| filter_map(c, |x| f(x))).
 let n = 100000;
 let src = array::init(n, |i| i);
-let t0 = sys::time::now(0);
+let t0 = sys::time::now(src);
 let seed = cast<i64>(t0)$;
 let result = array::fold(array::filter_map(src, |x| x * 3 + seed), 0, |a, x| a + x);
 let t1 = sys::time::now(result);
