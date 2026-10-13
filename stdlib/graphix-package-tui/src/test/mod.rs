@@ -3,4 +3,5 @@ mod examples_test;
 mod input_test;
 mod panic_test;
 mod render_test;
+mod terminal_test;
 mod widgets_test;

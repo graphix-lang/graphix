@@ -59,7 +59,13 @@ use scrollbar::ScrollbarW;
 use smallvec::SmallVec;
 use sparkline::SparklineW;
 use std::{
-    borrow::Cow, fmt, future::Future, marker::PhantomData, pin::Pin, time::Duration,
+    borrow::Cow,
+    fmt,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 use text::TextW;
 use tokio::{
@@ -646,7 +652,7 @@ struct TuiControlInner {
     suspend_rx: Mutex<Option<mpsc::UnboundedReceiver<Suspend>>>,
     /// No display will ever run (a test harness): a suspend is refused
     /// instead of waiting for one.
-    headless: std::sync::atomic::AtomicBool,
+    headless: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -659,7 +665,7 @@ impl Default for TuiControl {
             stop: Mutex::new(StopState::Idle),
             suspend_tx,
             suspend_rx: Mutex::new(Some(suspend_rx)),
-            headless: std::sync::atomic::AtomicBool::new(false),
+            headless: AtomicBool::new(false),
         }))
     }
 }
@@ -771,7 +777,7 @@ impl EvalCachedAsync for SuspendEv {
             // wait for a pending display and text-only programs are refused. Merely
             // setting a flag in Tui::start still races that first cycle. Those
             // changes are outside scope; the CR remains unresolved.
-            if control.0.headless.load(std::sync::atomic::Ordering::Relaxed) {
+            if control.0.headless.load(Ordering::Relaxed) {
                 return errf!("TerminalError", "no terminal display is running");
             }
             let (ack, done) = oneshot::channel();
@@ -930,40 +936,16 @@ fn get_id(env: &Env, name: &ModPath) -> Result<BindId> {
 }
 
 fn set_mouse(enable: bool) {
-    use std::io::stdout;
-    let mut stdout = stdout();
+    set_mouse_to(&mut std::io::stdout(), enable)
+}
+
+fn set_mouse_to(stdout: &mut impl std::io::Write, enable: bool) {
     if enable {
         if let Err(e) = stdout.execute(EnableMouseCapture) {
             error!("could not enable mouse capture {e:?}")
         }
-        // CR claude for claude: [doc-drift/low] FocusGained/FocusLost arrive only after
-        // `tui::mouse <- true`; the page says only mouse events need it. `set_mouse`
-        // enables `EnableFocusChange` together with mouse capture. So
-        // `FocusGained`/`FocusLost` are delivered only when mouse is on, but input.md
-        // lists the mouse requirement against Mouse events alone. Line 797 also logs
-        // 'could not disable mouse capture' for a focus-change failure (a copy-paste of
-        // the message above it). Failure: A program that pauses on `FocusLost` never
-        // receives the event unless it also turns on mouse capture, and turning that on
-        // changes text selection in the terminal. Fix: Enable focus change at display
-        // start, independent of mouse, or document the coupling. Fix the log message at
-        // 797. Unverified: the reviewer's report, not checked by a verifier.
-        // (book-ui-a-19)
-        if let Err(e) = stdout.execute(EnableFocusChange) {
-            error!("could not enable focus change {e:?}")
-        }
     } else {
         if let Err(e) = stdout.execute(DisableMouseCapture) {
-            error!("could not disable mouse capture {e:?}")
-        }
-        // CR claude for claude: [style/low] A failure to disable focus change logs
-        // "could not disable mouse capture", the message of the line above.
-        // give_back_terminal also repeats the DisableMouseCapture/DisableFocusChange
-        // pair, so two places must change when the set of modes the display takes
-        // changes. Fix: correct the message and have give_back_terminal call
-        // set_mouse(false) instead of its own copy. Separately, import
-        // std::sync::atomic::{AtomicBool, Ordering} at the top: TuiControlInner,
-        // TuiControl::default and SuspendEv::eval spell the full paths. (tui-core-12)
-        if let Err(e) = stdout.execute(DisableFocusChange) {
             error!("could not disable mouse capture {e:?}")
         }
     }
@@ -1095,11 +1077,18 @@ impl Drop for StderrHeld {
     }
 }
 
+fn take_terminal_modes(out: &mut impl std::io::Write) -> Result<()> {
+    out.execute(EnterAlternateScreen)?
+        .execute(EnableBracketedPaste)?
+        .execute(EnableFocusChange)?;
+    Ok(())
+}
+
 /// Give the terminal back: what `Live` took, whatever was enabled.
 fn give_back_terminal() {
     let mut out = std::io::stdout();
     let _ = out.execute(DisableBracketedPaste);
-    let _ = out.execute(DisableMouseCapture);
+    set_mouse(false);
     let _ = out.execute(DisableFocusChange);
     let _ = out.execute(crossterm::cursor::Show);
     ratatui::restore();
@@ -1173,7 +1162,7 @@ impl Live {
         terminal::enable_raw_mode().context("raw mode")?;
         let give_back = GiveBack;
         let mut out = std::io::stdout();
-        out.execute(EnterAlternateScreen)?.execute(EnableBracketedPaste)?;
+        take_terminal_modes(&mut out)?;
         if mouse {
             set_mouse(true)
         }

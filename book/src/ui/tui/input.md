@@ -19,7 +19,7 @@ type Event = [
 ];
 ```
 
-- `FocusGained` / `FocusLost`: Terminal window focus changes
+- `FocusGained` / `FocusLost`: Terminal window focus changes (enabled while the display runs, independently of mouse input)
 - `Key`: Keyboard input
 - `Mouse`: Mouse input (requires `tui::mouse <- true`)
 - `Paste`: Bracketed paste content
