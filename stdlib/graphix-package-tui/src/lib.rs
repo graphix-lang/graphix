@@ -419,6 +419,15 @@ trait TuiWidget {
     async fn handle_event(&mut self, _v: Value) -> Result<()> {
         Ok(())
     }
+    // CR claude for claude: [perf/low] handle_update is an async_trait method, so every
+    // call allocates a boxed future. LayoutW, OverlayW and BlockW/ChildW pass each
+    // update to every child and clone the Value at each level. One program update
+    // therefore costs one heap allocation per widget in the tree, although nearly every
+    // visit is a synchronous prop update that matches nothing. Fix: take the GUI
+    // package's shape, a synchronous handle_update(&mut self, id, &Value) that borrows
+    // the value and does the rare child recompile (ChildW, LayoutW's children,
+    // OverlayW's layers) by blocking on the runtime handle, as the GUI widgets do.
+    // (tui-core-08)
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()>;
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()>;
 }
@@ -482,6 +491,21 @@ impl<X: GXExt> ChildW<X> {
     }
 
     async fn update(&mut self, gx: &GXHandle<X>, id: ExprId, v: Value) -> Result<()> {
+        // CR claude for claude: [bug/high] The child is recompiled on every fire of its
+        // ref, even when the value equals the one it was built from, and
+        // Screen::update, LayoutW::set_children and OverlayW::set_layers do the same
+        // for the root, each slot and each layer. A select re-emits its arm's value on
+        // every scrutinee fire, so an unchanged widget arrives all the time. Each
+        // rebuild discards list/table scroll state, the input handler's queued events
+        // and every SizeReport's `last`. The fresh SizeReport then writes `#size`
+        // again, so a view that selects on its own size (`select sz { .. =>
+        // block(#size: &sz, ..) }`) rebuilds in a loop at full CPU and never settles.
+        // With a fixed 40x5 terminal it made 5000 size reports in 1.7 s (probe:
+        // design/review-2026-10-12/repro/tui-core-01.gx). Fix: keep the source Value
+        // next to each compiled widget (here, in Screen, and per Slot/LayerW) and skip
+        // the recompile when the new value is equal, the same rule as
+        // GXHandle::update_callable. For the arrays, reuse each slot whose element is
+        // unchanged and compile only the ones that differ. (tui-core-01)
         if id == self.r.id {
             self.w = compile(gx.clone(), v).await.context("child")?;
             Ok(())
@@ -510,6 +534,13 @@ struct SizeReport<X: GXExt> {
 impl<X: GXExt> SizeReport<X> {
     async fn compile(gx: &GXHandle<X>, v: &Value) -> Result<Self> {
         let r = gx.compile_field(v, "size").await?;
+        // CR claude for claude: [bug/low] last starts at 0x0, which means both "never
+        // reported" and "reported 0x0". A widget whose first draw gets an empty area (a
+        // Length(0) slot, a bordered block in a two-row area) compares equal and never
+        // writes, so the program's #size stays null instead of becoming {height: 0,
+        // width: 0}. It stays null until the area grows. Fix: make last an
+        // Option<SizeV>, None until the first report, and write whenever it differs
+        // from Some(size). (tui-core-09)
         Ok(Self { r, last: SizeV::default() })
     }
 
@@ -620,6 +651,19 @@ impl EvalCachedAsync for SuspendEv {
             if held.lock().is_some() {
                 return Value::Bool(true);
             }
+            // CR claude for claude: [bug/low] Only the test harness sets `headless`. In
+            // a script whose output is text, no display ever takes the parked
+            // `suspend_rx`, so the request is queued and `done.await` never returns.
+            // tui::suspend(true) then produces nothing, ever, instead of the
+            // TerminalError that mod.gxi `val suspend` promises "with no terminal
+            // display running". In the REPL, a request left from an earlier session is
+            // instead served by the next display when it starts. Refuse the request
+            // whenever no display owns the receiver and none is starting. A plain flag
+            // set inside `run` is not enough: Tui::start takes the receiver
+            // asynchronously, so a TUI program that suspends in its first cycle would
+            // race it. Mark the control as display-pending when the display is created
+            // and clear the mark when `run` returns the receiver. Add a non-harness
+            // test. probe: design/review-2026-10-12/repro/tui-core-03.gx (tui-core-03)
             if control.0.headless.load(std::sync::atomic::Ordering::Relaxed) {
                 return errf!("TerminalError", "no terminal display is running");
             }
@@ -701,6 +745,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // CR claude for claude: [bug/medium] An exit is dropped when TuiControl.stop is
+        // empty. Tui::start installs its Stop later, from a spawned task through
+        // `gx.with_ctx`, so a `tui::exit` that fires in the init cycle is lost:
+        // `tui::exit(null); text(&"hello")` never ends, while the same exit on a 1ms
+        // timer does. When the program's value is not a Tui, the slot is never filled
+        // and `tui::exit` does nothing, although the interface says it ends the program
+        // the way Ctrl-C does. Fix: record a pending stop in TuiControlInner when the
+        // slot is empty, and have Tui::start fire it as soon as it installs the Stop.
+        // Without a display, either end the runtime the way `sys::exit` does or say in
+        // the gxi that exit needs a display. probe:
+        // design/review-2026-10-12/repro/tui-core-02.sh (tui-core-02)
         if let Some(n) = from.get_mut(0)
             && seam_tick(n.update(ctx)).is_some()
             && let Some(stop) = ctx.libstate.get::<TuiControl>()
@@ -786,6 +841,18 @@ fn set_mouse(enable: bool) {
         if let Err(e) = stdout.execute(EnableMouseCapture) {
             error!("could not enable mouse capture {e:?}")
         }
+        // CR claude for claude: [doc-drift/low] FocusGained/FocusLost arrive only after
+        // `tui::mouse <- true`; the page says only mouse events need it. `set_mouse`
+        // enables `EnableFocusChange` together with mouse capture. So
+        // `FocusGained`/`FocusLost` are delivered only when mouse is on, but input.md
+        // lists the mouse requirement against Mouse events alone. Line 797 also logs
+        // 'could not disable mouse capture' for a focus-change failure (a copy-paste of
+        // the message above it). Failure: A program that pauses on `FocusLost` never
+        // receives the event unless it also turns on mouse capture, and turning that on
+        // changes text selection in the terminal. Fix: Enable focus change at display
+        // start, independent of mouse, or document the coupling. Fix the log message at
+        // 797. Unverified: the reviewer's report, not checked by a verifier.
+        // (book-ui-a-19)
         if let Err(e) = stdout.execute(EnableFocusChange) {
             error!("could not enable focus change {e:?}")
         }
@@ -793,6 +860,14 @@ fn set_mouse(enable: bool) {
         if let Err(e) = stdout.execute(DisableMouseCapture) {
             error!("could not disable mouse capture {e:?}")
         }
+        // CR claude for claude: [style/low] A failure to disable focus change logs
+        // "could not disable mouse capture", the message of the line above.
+        // give_back_terminal also repeats the DisableMouseCapture/DisableFocusChange
+        // pair, so two places must change when the set of modes the display takes
+        // changes. Fix: correct the message and have give_back_terminal call
+        // set_mouse(false) instead of its own copy. Separately, import
+        // std::sync::atomic::{AtomicBool, Ordering} at the top: TuiControlInner,
+        // TuiControl::default and SuspendEv::eval spell the full paths. (tui-core-12)
         if let Err(e) = stdout.execute(DisableFocusChange) {
             error!("could not disable mouse capture {e:?}")
         }
@@ -870,6 +945,26 @@ struct StderrHeld {
 impl StderrHeld {
     fn hold() -> Result<Self> {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        // CR claude for claude: [risk/low] Everything written to stderr while the
+        // display holds the terminal goes to this unlinked file with no bound, and drop
+        // replays all of it. A long-running TUI whose program logs a failure every
+        // cycle (a `$` over an erroring source logs under FAILURE_TARGET) fills the
+        // temp filesystem out of sight, then floods the terminal on exit. A kill loses
+        // all of it. Bound what is kept, for example the first and last N KB plus a
+        // count of the bytes dropped, and say what was dropped when it is replayed.
+        // (x-fix-tools-09)
+        // CR claude for claude: [bug/medium] The held stderr has no bound: every byte
+        // written to fd 2 while the display holds the terminal lands in this unlinked
+        // tempfile (RAM when /tmp is tmpfs), and Drop copies all of it to the terminal.
+        // The shell logs every unhandled `?` failure to stderr, so a long-running
+        // dashboard with a recurring failure grows the file at the failure rate (one
+        // per 100 ms is about 130 MB a day) and ends with that whole dump into the
+        // user's terminal. Bound it: keep the first and last N KB (e.g. a pipe drained
+        // by a reader thread into a head buffer plus a ring, or a length check that
+        // truncates past a cap) and write a "... K bytes dropped" line between them at
+        // give-back. probe: design/review-2026-10-12/repro/tui-core-05.sh (2000
+        // failures held, ~257 KB all written after leaving the alternate screen).
+        // (tui-core-05)
         let file = tempfile::tempfile().context("a file for stderr")?;
         // SAFETY: dup and dup2 over fds this process owns; `saved` takes the
         // new descriptor dup returns.
@@ -932,8 +1027,44 @@ struct Live {
 impl Live {
     fn take(mouse: bool) -> Result<Self> {
         static HOOK: std::sync::Once = std::sync::Once::new();
+        // CR claude for claude: [bug/medium] This hook is process-wide and stays
+        // installed for good, so every panic gives the terminal back. That includes
+        // panics the runtime catches and continues past: `sort_values` and
+        // `pairs_to_map` over an Ord that is no total order, a panicking async
+        // `EvalCachedAsync::eval`, and any tokio task. After such a panic the display
+        // keeps running, but the terminal is in cooked mode and off the alternate
+        // screen: keys echo, input is line-buffered, the mouse is off, and frames draw
+        // over the shell's scrollback until exit. The hook also stays after the display
+        // ends, while the REPL's line editor holds raw mode. probe:
+        // design/review-2026-10-12/repro/tui-core-04.sh (a rock-paper-scissors user Ord
+        // under array::sort cooks the pty mid-run, and the display then draws "sorted
+        // 32" on the main screen). Fix: gate the hook on a flag that `Live::take` sets
+        // and `Live`'s drop clears. A panic that unwinds through the display already
+        // restores the terminal through `GiveBack`, so the hook only needs to restore
+        // for a panic that will abort the process. Alternatively, re-take the terminal
+        // after a caught panic. (tui-core-04)
         HOOK.call_once(|| {
             let prev = std::panic::take_hook();
+            // CR claude for claude: [risk/low] This hook gives back the terminal but
+            // leaves fd 2 on StderrHeld's unlinked tempfile, so `prev(info)` writes the
+            // panic message there. A panic that then aborts, such as any assert in an
+            // extern "C" JIT helper (graphix_value_drop's sentinel check, the
+            // shape-mismatch panics), never runs StderrHeld's Drop. The message
+            // disappears with the file, while the same bug in a non-TUI script prints
+            // it. Fix: have the hook restore fd 2 from the saved descriptor (kept where
+            // the hook can reach it, for example a static set by StderrHeld::hold) and
+            // copy out what the file held so far, before calling `prev`. (x-unsafe-07)
+            // CR claude for claude: [risk/low] While a display is live, fd 2 is
+            // StderrHeld's unlinked temp file, so prev(info) writes the panic message
+            // into that file. The message reaches the terminal only when
+            // StderrHeld::drop runs, either at the display's end or while unwinding. If
+            // the process aborts instead of unwinding (a panic during unwinding, or a
+            // panic in a nounwind extern "C" frame), the file goes away with the
+            // process. The terminal comes back clean but the panic is never printed.
+            // Fix: keep the saved stderr fd somewhere the hook can reach it, set by
+            // StderrHeld::hold and cleared by its drop. The hook then dup2s it back
+            // onto fd 2 and copies the held file out before calling prev(info).
+            // (tui-core-06)
             std::panic::set_hook(Box::new(move |info| {
                 give_back_terminal();
                 prev(info)
@@ -987,6 +1118,13 @@ async fn run<X: GXExt>(
     to_rx: mpsc::Receiver<ToTui>,
     control: &TuiControl,
 ) -> Result<()> {
+    // CR claude for claude: [risk/low] The receiver goes back into TuiControl only when
+    // display returns. If the display panics, unwinding drops suspend_rx here while
+    // suspend_tx stays in the control. Every later display in the same runtime (a REPL
+    // session) then gets a dummy receiver from mpsc::unbounded(), and every
+    // tui::suspend(true) fails with "the terminal display has ended" for the rest of
+    // the session. Fix: hold the receiver in a guard whose Drop puts it back into
+    // control.0.suspend_rx, so it survives an unwinding display. (tui-core-13)
     let mut suspend_rx = match control.0.suspend_rx.lock().take() {
         Some(rx) => rx,
         None => mpsc::unbounded().1,

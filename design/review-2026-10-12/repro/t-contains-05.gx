@@ -1,0 +1,34 @@
+// --check takes ~2.4 s (debug binary) and doubles with every x_i added; the same
+// file annotated (Any, Any) or Any instead of R checks in 0.08 s: the Ref arm's
+// RefHist::ref_id -> shape_hash walks the shared type as a tree
+type R = Any;
+let x0 = 1;
+let x1 = (x0, x0);
+let x2 = (x1, x1);
+let x3 = (x2, x2);
+let x4 = (x3, x3);
+let x5 = (x4, x4);
+let x6 = (x5, x5);
+let x7 = (x6, x6);
+let x8 = (x7, x7);
+let x9 = (x8, x8);
+let x10 = (x9, x9);
+let x11 = (x10, x10);
+let x12 = (x11, x11);
+let x13 = (x12, x12);
+let x14 = (x13, x13);
+let x15 = (x14, x14);
+let x16 = (x15, x15);
+let x17 = (x16, x16);
+let x18 = (x17, x17);
+let x19 = (x18, x18);
+let x20 = (x19, x19);
+let x21 = (x20, x20);
+let x22 = (x21, x21);
+let x23 = (x22, x22);
+let x24 = (x23, x23);
+let x25 = (x24, x24);
+let x26 = (x25, x25);
+let x27 = (x26, x26);
+let y: R = x27;
+0

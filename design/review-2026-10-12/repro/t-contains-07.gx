@@ -1,0 +1,7 @@
+// t-contains-07: the distribution law refuses a scrutinee holding a def's rigid variable
+// run: graphix --check design/review-2026-10-12/repro/t-contains-07.gx
+// expected: accepted, as the same program with `bool` in place of 'a is
+// observed: type mismatch T<'a: unbound> does not contain `P([i64, string], 'a: unbound)
+type T<'a> = [`P(i64, 'a), `P(string, 'a)];
+let g = |x: 'a, b: bool| -> T<'a> select b { true => `P(1, x), false => `P("s", x) };
+g(1, true)

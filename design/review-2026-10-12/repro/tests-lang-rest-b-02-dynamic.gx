@@ -1,0 +1,11 @@
+// tests-lang-rest-b-02-dynamic: as tests-lang-rest-b-02-static, but `g` is
+// a function value chosen by a select (dynamic dispatch): prints 9 alone.
+let a = 0;
+let mode = 0;
+let g = select mode { 0 => |x| a ~ x, _ => |x| x };
+let n = 0;
+let dummy = 0;
+n <- select n { k if k < 12 => k + 1, _ => never() };
+a <- select n { 6 => 7, _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select n { 2 | 3 | 9 => { dummy <- n; g(n) }, _ => never() }

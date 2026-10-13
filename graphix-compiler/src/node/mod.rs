@@ -148,6 +148,21 @@ macro_rules! deref_typ {
                     Some(t) => $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,
+                    // CR claude for claude: [readability/low] The None arm of
+                    // `deref_typ!` says only 'type must be known, annotations needed',
+                    // although it has `$name`: `let f = |p| p.x + 1` reports that at
+                    // `p.x` and never says a struct's type is needed or what to
+                    // annotate. Say 'reading a {$name} needs its type known here:
+                    // annotate the binding'. Two siblings have the same problem.
+                    // `Deref::typecheck` bails a bare 'expected reference' both for
+                    // `*2` and for an untyped parameter `|r| *r + 1`, which needs an
+                    // annotation; it should name the type, or say an annotation is
+                    // needed when the type is unknown. In `arith_rule`, a failed
+                    // `constrain_operand` surfaces as raw 'type mismatch Number does
+                    // not contain string' (`"x" + "y"`, `true + false`), while every
+                    // other arithmetic refusal gets the 'cannot compute A + B: ...'
+                    // text. Wrap that failure the same way, and for strings point at
+                    // interpolation. (x-errors-08)
                     None => anyhow::bail!("type must be known, annotations needed")
                 }
             }
@@ -287,6 +302,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.image_encode(buf)
     }
 
+    // CR claude for claude: [perf/low] ExplicitParens::fuse sends its interior through
+    // fusion::fuse, which tries it as a region of its own. Every other wrapper ends in
+    // fusion::fuse_parts, which only descends into a part that calls no function. So `y
+    // <- t ~ (x * 2 + 1)` builds a kernel for the arithmetic (fused=3) and `y <- t ~ x
+    // * 2 + 1` does not (fused=2): parentheses that mean nothing decide a region and
+    // the fusecheck counts. Use `fusion::fuse_parts([&mut self.n], ctx)` so the parens
+    // are transparent. If `#[native] (e)` must stay a region root, keep the fuse call
+    // only when self.spec.dec carries an attribute. Then delete the boundary comment
+    // and bless the manifest. (c-node-mod-03)
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // parens are a fusion boundary: the interior gets its own region pass
         fuse(&mut self.n, ctx)?;
@@ -439,6 +463,13 @@ pub(crate) use dense_gate;
 /// and judges its own type only when `check`: an instance takes the type
 /// from its row and judges it only where its definition's check recorded
 /// none (an id two nodes share).
+// CR claude for claude: [structure/low] This macro covers one shape of the
+// typecheck0/typecheck0_instance pair. About thirteen nodes write the other two shapes
+// by hand. One is the source-typed form (array.rs, map.rs, error.rs and several here),
+// whose instance passes `false` with no row. The other is the children-only form with a
+// 2-argument typecheck0_with (several here and in error.rs). Changing the instance
+// contract means editing those hand copies one by one. Add `(source)` and `(children)`
+// arms to this macro and use them at those nodes. (x-dup-13)
 macro_rules! typed_by_row {
     () => {
         fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -932,6 +963,11 @@ pub(crate) type Child<'a, R, E> =
 /// body's errors also carry each statement's origin, the file it is in.
 /// A statement's check result: its errors carry the statement, and in a
 /// module's body the module's origin.
+// CR claude for claude: [doc-drift/low] The first two sentences of this doc ("Run a
+// typecheck `pass` over `nodes` in [`evaluation_order`]. A module body's errors also
+// carry each statement's origin...") describe typecheck_in_order, not statement_result.
+// typecheck_in_order has no doc. Move those sentences onto typecheck_in_order and keep
+// only the "A statement's check result..." sentence here. (c-node-mod-05)
 fn statement_result<R: Rt, E: UserEvent>(
     r: Result<()>,
     n: &Node<R, E>,
@@ -1505,6 +1541,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // only a fired RHS writes
         let tv = self.node.update(ctx);
+        // CR claude for eric: [risk/low] A connect writes on a WAKE-only fire. An arm's
+        // constants fire WAKE at its wake, and Tag::join carries WAKE through every
+        // operator, so `x <- a * 2` re-writes its target at every re-entry of the arm
+        // while `y <- a` does not. A `?` behaves the same way: `(a /? 0)?` re-raises
+        // per entry, `(a /? b)?` with b=0 standing does not. That breaks
+        // design/wake_catchup.md rule 4: edge consumers tick only for events no
+        // selected reader saw. It also makes `a` -> `a + 0` a change in behaviour. Only
+        // Bind::update reads Tag::is_event. Decide the rule. Option one: a connect and
+        // a raise treat a WAKE-only fire as no event, and the "on entering this state"
+        // write stays only for a right-hand side made only of constants. Option two:
+        // book/src/core/select.md and wake_catchup.md say that any constant reaching
+        // the right-hand side makes entry a write, with the `x <- a` vs `x <- a + 0`
+        // example. probe: design/review-2026-10-12/repro/x-engine-firing-03.gx
+        // (x-engine-firing-04)
         if tv.is_fired() {
             ctx.rt.set_var(self.id, tv.value_cloned())
         }
@@ -1548,6 +1598,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
 /// and the declaration that would hold both.
+// CR claude for claude: [readability/low] The advice "declare {name}: {both} where it
+// is bound" cannot be followed for a name a destructuring let binds. After `let (a, b)
+// = (1, 2); a <- "s"` it says to declare `a: [i64, string]` at the pattern, and `let
+// (a: [i64, string], b) = ..` is a parse error. What checks is an annotation on the
+// whole pattern (`let (a, b): ([i64, string], i64)`). A struct pattern has the same
+// problem. When the bind is one facet of a pattern (Env::facet_of /
+// Env::pattern_inputs), say to annotate the let's pattern type with this position
+// widened, or drop the "declare" clause and give only the position. (c-node-mod-04)
 fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow::Error {
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
@@ -1660,6 +1718,15 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     /// write lands: a place, when the cell stands for one, else the
     /// referent through the byref chain, else the cell itself (`&(a +
     /// b)` is a fresh variable holding `a + b`).
+    // CR claude for claude: [structure/low] This repeats `bind::ref_target` (registered
+    // place, else the byref chain, else the cell itself) instead of calling it. It also
+    // decodes the reference value on its own and accepts only `Value::U64`, while
+    // `Deref::update` and `ExecCtx::ref_targets` accept `U64 | V64`. Only `ByRef` mints
+    // a reference cell, always as U64, and a cast to a reference type is refused, so
+    // the three decoders agree today. A change to one rule would quietly split reads
+    // from writes. Add one `ref_cell(&TagValue) -> Option<BindId>` beside `ref_target`,
+    // use it at all three sites, and build `WriteTarget` here from `ref_target`'s
+    // result. (c-bind-08)
     fn resolve(ctx: &ExecCtx<'_, R, E>, tv: &TagValue) -> Option<WriteTarget> {
         let cell = tv.with_value(|v| match v {
             Value::U64(id) => Some(BindId::from(*id)),
@@ -1702,6 +1769,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             let t = tv.tag();
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
+        // CR claude for claude: [bug/medium] The write target is resolved only when
+        // `src_id` is delivered, when there is no target yet, or after a wake. A moving
+        // place reference keeps its cell and re-registers its path through
+        // `Rt::set_ref_path` without re-delivering the variable that holds it. So when
+        // a variable holds the reference without re-firing (`held <- once(r)`, `click ~
+        // r`), `*h <- v` patches the old path while `Deref` (which calls `ref_target`
+        // on every update) reads the new one. Both engines give the same wrong value,
+        // so the fuzzer cannot see it. design/place_references.md says a moving
+        // reference reads and writes where the key names now. Fix: store the cell
+        // rather than the resolved `WriteTarget`, and resolve it at write time
+        // (`ref_target`/`ref_path` on the cell when a pending value lands), as
+        // `Deref::address` does. probe: design/review-2026-10-12/repro/x-parallel-02.gx
+        // (x-parallel-02)
         if let Some(tv) = ctx.event.variables.get(&self.src_id) {
             // a reference delivered without a target (a place whose
             // address is undetermined) has nowhere to write
@@ -1716,6 +1796,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 self.target = Self::resolve(ctx, tv);
             }
         }
+        // CR claude for eric: [risk/medium] A write that fires while the reference has
+        // no address is held here. A moving reference whose key is bottom (`&mut
+        // rows[sel$]` with `sel` null) gets that write later, when the key returns, on
+        // whatever place it names then. Nothing fires at the landing. So a key pressed
+        // while no row is selected overwrites the next row selected. The write lands
+        // only if the RHS still has a value at that point: `key ~ text` lands, while an
+        // RHS that is bottom again by then (a select over an event) drops it. CLAUDE.md
+        // says a connect writes when its RHS fires. design/place_references.md says
+        // only that a write into a place that does not exist is dropped and logged. The
+        // rule exists only in the field's doc comment and in
+        // lang::byref::place_bottom_key, whose comment says both "lands nowhere" and
+        // "the pending write lands there". This needs a ruling. One option: keep the
+        // held write, then state it, including the RHS-must-still-stand condition, in
+        // CLAUDE.md (References) and design/place_references.md, and pin the phantom
+        // case. The other: hold only until the first target ever resolves (the init
+        // case), drop and log a write that fires on a bottom address the way a write
+        // past an array's end is dropped, and update place_bottom_key. probe:
+        // design/review-2026-10-12/repro/tests-lang-rest-b-03-phantom-write.gx
+        // (tests-lang-rest-b-03)
         self.pending |= rhs_fired;
         if self.pending
             && let Some(v) = rhs_val
@@ -2270,6 +2369,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx);
         let fired = t.tag().is_fired();
+        // CR claude for claude: [bug/medium] `fire` comes from the trigger's tag, but
+        // the immediate debt answer (`answered`) is given in a cycle where the trigger
+        // did not fire. A STALE trigger tag goes through `fresh_or_wake` to WAKE_FIRED,
+        // so paying a banked `~` when its argument first arrives is tagged as a wake's
+        // own fire. A sleeping arm's TrackedFires then records it as a wake, and at the
+        // wake a `<-` target's `let` keeps its last write (`Bind::update`'s
+        // `wake_phantom`). The same payment made through the debt variable `id` is
+        // delivered FIRED, so whether a woken target catches up depends on how many
+        // fires were banked. Fix: when the trigger did not fire, take the answer's tag
+        // from the argument (`self.arg.tag.fresh_or_wake()`), and pin the repro as a
+        // test. Probe: design/review-2026-10-12/repro/c-node-mod-02.sh. With `let t =
+        // once(k); let p = t ~ v` q stays 7; with `take(#n: 2, k)` or with `let p = v`
+        // q becomes 42. (c-node-mod-02)
         let fire = t.tag().fresh_or_wake();
         self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
@@ -2300,6 +2412,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         if let Some(v) = &self.arg.value
             && !self.arg.tag.is_bottom()
         {
+            // CR claude for eric: [risk/low] A banked `~` pays every trigger that found
+            // its argument absent. This loop queues one set_var per missed trigger, all
+            // in the cycle the argument arrives, and the runtime then delivers them one
+            // per cycle. `timer(10ms) ~ v`, with v arriving after 500 ms, replays about
+            // 50 stale ticks back to back. A 1 ms clock over an hour-long subscription
+            // queues about 3.6M writes at once. The burst and the growth are documented
+            // nowhere: the book's select.md says only "`~` still banks". If per-fire
+            // payment is the contract, document the burst beside `~!` in
+            // book/src/core/select.md and bound the debt, either by saturating it or by
+            // paying it as one write that carries a count. If it is not, bank a single
+            // pending trigger (a bool). probe:
+            // design/review-2026-10-12/repro/x-engine-firing-04.gx (x-engine-firing-05)
             for _ in 0..mem::take(triggered) {
                 ctx.rt.set_var(id, v.clone());
             }
@@ -2421,6 +2545,15 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             self,
             held.check_contains(&ctx.env, written).map_err(|e| {
                 match e.downcast_ref::<TypeMismatch>() {
+                    // CR claude for claude: [readability/low] The refusal for a write
+                    // to a binding an earlier compile generalized prints `bind.typ`
+                    // under DerefTVars, and one type variable comes out under two
+                    // names. `let f = |x| x` then `f <- |y| "k"` reports 'f is fn(x:
+                    // '_7563: unbound) -> '_7564: unbound', which reads as fn('a) ->
+                    // 'b, while the REPL shows f as fn(x: '_7563) -> '_7563. The user
+                    // cannot see why the write is not as general. Print the type the
+                    // check held the write to (`held`, the rigid copy), or print the
+                    // scheme so that one variable has one name. (x-fix-nodes-08)
                     Some(_) if generic => format_with_flags(
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                         || {
@@ -2432,6 +2565,16 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                             )
                         },
                     ),
+                    // CR claude for claude: [risk/low] This uses `spec.end`, a
+                    // `WrittenAt`, as a 'the user wrote this' marker to choose the
+                    // error. A `WrittenAt` must decide nothing, and `end` is NOWHERE
+                    // for every expression that came from a packed package AST or an
+                    // image (`Expr::syntax_decode`). So the same source reports
+                    // `write_mismatch`'s declaration hint when parsed and the bare
+                    // `TypeMismatch` when unpacked. Mark the compiler-synthesized
+                    // connects explicitly (a flag on the connect node, set by the
+                    // lowering that builds them) and test that instead.
+                    // (t-expr-core-08)
                     Some(_) if self.spec.end.get().is_some() => {
                         write_mismatch(bind, written, &self.spec.ori)
                     }

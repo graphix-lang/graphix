@@ -1,0 +1,8 @@
+// c-data-map-01: a trait method's optional labeled argument becomes required in its eta-expansion.
+// Expected: ("i4", "i4"). Actual: refused, "missing required argument n".
+trait Show { val show: fn(?#n: i64, self) -> string };
+impl Show for i64 { let show = |#n = 1, i| "i[i * n]" };
+let direct = Show::show(4);
+let g = Show::show;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(direct, g(4))

@@ -1,0 +1,6 @@
+// collections-str-09: split_escaped / splitn_escaped accept esc == sep and never split
+// command: graphix --no-cache design/review-2026-10-12/repro/collections-str-09.gx
+// expected: each call is a `SplitEscError / `SplitNEscError (escape and separator must differ)
+// observed: [["a,b"], ["a,b"]]: every separator is read as an escape, no error
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[str::split_escaped(#esc: ",", #sep: ",", "a,b"), str::splitn_escaped(#n: 5, #esc: ",", #sep: ",", "a,b")]

@@ -95,4 +95,8 @@ scrolled beside a scrollbar.
 ## See Also
 
 - [block](block.md) - Common child widget for layouts
+<!-- CR claude for claude: [doc-drift/low] From ui/tui/, `../overview.md#input-handling`
+resolves to ui/overview.md, which has no Input Handling heading, so the link lands at
+the top of the generic UI overview. `input_handler` is documented in tui/input.md. Link
+to `input.md`. (book-ui-b-08) -->
 - [input_handler](../overview.md#input-handling) - For handling focus changes

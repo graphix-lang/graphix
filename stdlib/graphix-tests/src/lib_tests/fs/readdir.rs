@@ -14,6 +14,12 @@ fn extract_direntry_array(v: &Value) -> Result<Vec<&Value>> {
 }
 
 /// A field of a DirEntry struct.
+// CR claude for claude: [structure/low] This struct-field lookup is written three
+// times: here, `get_field` in args.rs, and `metadata_to_map` in fs/metadata.rs (which
+// also allocates a HashMap to do it). Move one `struct_field(&Value, &str) ->
+// Option<&Value>` into lib_tests/mod.rs and use it in all three.
+// test_readdir_follow_symlinks below also builds a `names` set it never reads: either
+// assert that real_dir and link_dir are in it, or delete it. (tests-lib-b1-09)
 fn get_field<'a>(entry: &'a Value, field: &str) -> Result<&'a Value> {
     if let Value::Array(arr) = entry {
         for item in arr.iter() {

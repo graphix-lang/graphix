@@ -1,0 +1,25 @@
+// c-bind-06: an arm's tracked inputs are collected before it first runs, so a
+// Deref's target is missing and its read does not consume the fire: phantom
+// catch-up at the other arm's wake.
+// run: graphix --no-cache --no-fusion design/review-2026-10-12/repro/c-bind-06.gx
+// expected: 0 1 1 110 120 120 1 1 1 (the false arm read b's fire; cnt stays 1)
+// observed: 0 1 1 110 120 120 1 2 2 2 (cnt ticks at the true arm's wake)
+// control: false => b + 100 (no Deref) prints 0 1 1 110 120 120 1 1 1
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let a = [10, 20];
+let i = 0;
+i <- select n { 2 => 1, _ => never() };
+let b = 10; b <- select n { 2 => 20, _ => never() }; let r = &b;
+let c = (n < 2) || (n >= 4);
+sys::exit(select n { 7 => 0, _ => never() });
+let out = select c {
+  true => {
+    let cnt = 0;
+    cnt <- (*r) ~ cnt + 1;
+    cnt
+  },
+  false => *r + 100
+};
+out

@@ -43,6 +43,18 @@ where
 {
     spaces().with(choice((
         // `#name` alone passes the variable of that name
+        // CR claude for claude: [bug/medium] This labeled-argument branch consumes `#`
+        // before `fname()` sees the `[` of an attribute. So `f(#[native] e)` fails
+        // inside this branch with input already consumed, and the `expr()` alternative,
+        // whose `leading_decorations` would take the attribute, is never tried. The
+        // postfix loop's `attempt(apply_args())` then gives up quietly, and the error
+        // shows at the call's `(` with a misleading "a `;` separates this statement"
+        // note. The same attribute works on a labeled argument's value and on an array
+        // element, and a `//` comment above a positional argument works too. Fix: guard
+        // the branch with `attempt(token('#').skip(not_followed_by(token('['))))`, or
+        // equivalent, and add a parser test with an attribute on a positional argument,
+        // both alone and after another argument. probe:
+        // design/review-2026-10-12/repro/t-parser-a-04.gx (t-parser-a-04)
         token('#').with((position(), fname(), position())).skip(spaces()).then(
             |(pos, name, end)| {
                 optional(token(':').with(expr())).map(move |e| match e {
@@ -152,6 +164,18 @@ where
     )
 }
 
+// CR claude for claude: [bug/medium] `lambda` does not set its own span. It takes
+// `position()` before its leading `spaces()` and never calls `.ending`. Only `expr()`
+// adds the end afterwards, so a lambda reached through `operand` (`t ~ |x| ..`),
+// through `byref_lambda` (`&|x| ..`) or through a seq trigger has no end, and as an
+// operand its start sits on whitespace. `shunting_yard`'s `reduce` then copies that
+// missing end into the operator node. The LSP scope map records such a lambda as ending
+// at NOWHERE, and `Completer::scope_at` takes it as the statement that ended before the
+// cursor. As a result, completion on a line before a nested block offers that block's
+// locals. Fix: make `lambda` take `spaces().with(position())` and end itself with a
+// trailing `position()`. Then add `t ~ |x| x`, `&|x| x` and `seq t ~ |x| x { 1 }` to
+// expr_spans.rs's FIXTURE. probe: design/review-2026-10-12/repro/t-parser-a-01.sh
+// (t-parser-a-01)
 pub(super) fn lambda<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -169,6 +193,17 @@ where
         between(sptoken('|'), sptoken('|'), lambda_args()),
         optional(attempt(spaces().with(string("->")).with(typ()))),
         optional(attempt(spaces1().with(string("throws")).with(spaces1()).with(typ()))),
+        // CR claude for eric: [readability/low] A lambda body requires whitespace after
+        // the closing `|`, and `select` requires it after the keyword (as does
+        // `until`). `seq(t)`, `catch(e)` and `f(x)` do not. So `|x|x + 1` and
+        // `select(x) { .. }` are refused. The first gets a long expected-token list,
+        // and the second the misleading "can't use keyword as a function or variable
+        // name". The tree-sitter grammar accepts both forms, so the highlighter and the
+        // parser disagree. Either accept them (`spaces()` here, and after
+        // `select`/`until` once `not_prefix` has matched) or keep the rule, give it a
+        // `note_reason` like `separator` has, and make the tree-sitter grammar agree.
+        // Probes: design/review-2026-10-12/repro/t-parser-a-lambda-no-space.gx; `let x
+        // = select(1) { _ => 2 }`. (t-parser-a-12)
         spaces1().with(choice((
             attempt(token('\'').with(fname()).skip(not_followed_by(sptoken(':'))))
                 .map(LambdaBody::Builtin),

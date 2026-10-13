@@ -1,0 +1,5 @@
+// x-fix-types-01b: the inferred-conjunct form named in t-contains-08: --check accepts, the build refuses
+let a = [10, 20, 30];
+let f = |i| a[i]$;
+let g = |b, k| f(select b { true => 1, false => k });
+g(false, "s")

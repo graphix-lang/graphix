@@ -381,6 +381,17 @@ fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> 
     crate::stack::ensure_sufficient(|| freeze_for_abi_d_inner(t, seen))
 }
 
+// CR claude for claude: [perf/low] Every freeze builds a new Arc for every node of the
+// type, and each fused region freezes its param and return types. A chain of lets of
+// nesting depth d (`let x1 = [x0]; .. let xN = [x(N-1)]`) therefore keeps about N^2
+// frozen nodes alive for the session. The image writer then keys each of them
+// separately (image::shared_key inserts one type_keys entry per Arc), which roughly
+// doubles the cost. Peak memory at N = 1000 / 2000 / 3000 is 169 / 459 / 904 MB with
+// --no-cache and 292 / 950 / 1889 MB cold, against 72-106 MB with --no-fusion. Freezing
+// an already frozen subtree twice gives equal content, so the copies could share it:
+// intern frozen nodes by content (or by the frozen child's identity) during a fusion
+// pass, so N regions share one chain. That makes both the run and the image memo
+// linear. probe: design/review-2026-10-05/repro/t-misc-02.sh (x-rerun-6-07)
 fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
     use FreezeError::{NonCanonical, Unresolved, Unsupported};
     // The TVar lock is not reentrant: clone out of the guard before recursing.
@@ -438,6 +449,23 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 let mut frozen = frozen?;
                 Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..)), *at))
             }
+            // CR claude for claude: [bug/medium] A union with a typedef among its
+            // members never freezes. Examples are core's `Number = [Int, Real]`, `Int =
+            // [Sint, Uint]` and `Real = [Float, decimal]`. A member that derefs to a
+            // `Type::Ref` is not a Variant, so this arm returns NonCanonical. The
+            // normalized retry in `try_freeze_for_abi_normalized` does not help:
+            // `normalize` never expands a Ref. As a result `sum`, `product` and
+            // `divide` (FastCall builtins that return `Number`),
+            // `cast<Number>`/`cast<Int>`/`cast<[Sint, Uint]>`, and any kernel param
+            // annotated with one of these classes all de-fuse. `#[native]` then reports
+            // a bare "not discovered" with no reason (probe:
+            // design/review-2026-10-12/repro/tests-lib-a-01.gx). Fix: expand Ref
+            // members through their cells and flatten the result, primitives into one
+            // `Type::Primitive`, before classifying the union, with the same change in
+            // `abi_kind`. Have `try_register_builtin_call_from_callsite` and the cast
+            // discovery return a FusionBlocker that names the failing freeze. Then put
+            // `#[native]` on the calls in core.rs SUM/PRODUCT/DIVIDE and delete the
+            // comment saying `product` node-walks. (tests-lib-a-01)
             Type::Set(members) => {
                 if let Some(succ) = option_result_success(members) {
                     let succ_idx = if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
@@ -981,6 +1009,18 @@ mod tests {
     }
 }
 
+// CR claude for claude: [bug/medium] This codec writes the `ActivationLayout` behind
+// `layout` inline and recurses into its `nested`. In memory the layouts are a DAG:
+// `claim_block_run` copies a callee's whole `SiteLayout::self_blocks` (one entry per
+// self-call slot sharing one Arc, plus the callee's own `nested`) into every caller.
+// The image therefore holds that DAG as a tree. A chain of N non-tail recursive
+// functions, each calling the previous one, writes a program image that grows 2^N, or
+// 3^N with two self-calls: 32 MB at N=13. At that size the warm start is no faster than
+// cold, and decode builds a separate Arc for every occurrence. Make `ActivationLayout`
+// an image object like `SiteLeaf`: write it through `image::object_encode` keyed by
+// `Arc::as_ptr`, read it back with `foreign_decode`, and have `SelfBlock` write `rel`
+// plus the reference. Add a pin that bounds the image size of a 20-link chain. probe:
+// design/review-2026-10-12/repro/f-kernel-01.sh (f-kernel-01)
 impl PackTrait for SelfBlock {
     fn encoded_len(&self) -> usize {
         crate::stack::ensure_sufficient(|| {

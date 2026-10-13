@@ -62,6 +62,15 @@ const DYNAMIC_MODULE1: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] These tests pass on any error: dynamic_module1,
+// dynamic_module4, dynamic_module5, dynamic_module7, dynamic_module_blacklist_root and
+// dynamic_module_missing_import all take `Ok(Value::Error(_))`. A loader that refused
+// every body for an unrelated reason, such as a sandbox parse error, would keep them
+// green, and the rule each test is named for would go unchecked. Use load_refused with
+// each refusal's phrase: "signature has i64, implementation has f64", "val baz: string
+// is missing an implementation", "no module `net` in `sys`" (m5 and blacklist_root),
+// "sys::net::publish not defined" and "no `no_such_thing` in `core`".
+// (tests-modules-image-03)
 run!(dynamic_module1, DYNAMIC_MODULE1, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,

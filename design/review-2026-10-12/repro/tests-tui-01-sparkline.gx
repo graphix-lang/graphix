@@ -1,0 +1,3 @@
+use tui::sparkline::sparkline;
+tui::exit(sys::time::timer(duration:1.s, false));
+sparkline(#max: &100.0, &[10.0, 40.0, 70.0])

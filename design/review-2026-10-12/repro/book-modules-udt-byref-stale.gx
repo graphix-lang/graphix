@@ -1,0 +1,14 @@
+// A reference to an expression, read through a deref that sits before
+// the `&(..)` in program order, loses each update: it prints
+// (3, 102) (4, 103) (5, 104) and `late` shows (5, 104) forever, though
+// a + 100 is 105. The same program over `let tmp = a + 100; tmp <- a +
+// 100; &tmp` converges to (5, 105).
+let a = 2;
+let rr: &i64 = &a;
+let shown = (a, *rr);
+rr <- once(&(a + 100));
+let t = sys::time::timer(duration:50.ms, 3)$;
+a <- t ~ a + 1;
+let late = sys::time::timer(duration:400.ms, false)$;
+println("late: [late ~ shown]");
+shown

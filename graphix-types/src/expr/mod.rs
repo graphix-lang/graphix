@@ -305,6 +305,14 @@ impl UseItem {
     }
 
     /// The final segment is the glob marker.
+    // CR claude for claude: [structure/low] The name a use item binds (its rename, else
+    // its path's basename; a glob binds any) is computed separately in the compiler's
+    // module install, the formatter's merge guard (`binds`), seq lowering's shadow_step
+    // and the fuzzer's typemorph. If use-item semantics change, these four drift apart.
+    // Add `UseItem::bound_name() -> Option<&str>` (None for a glob) here and call it
+    // from all four. typemorph's pattern_binds also re-implements
+    // StructurePattern::with_names less precisely: struct, abstract and or-patterns
+    // fall through to "binds it". It should use with_names. (x-dup-15)
     pub fn is_glob(&self) -> bool {
         Path::basename(&self.path.0) == Some("*")
     }
@@ -723,6 +731,11 @@ pub enum ExprKind {
     Select(SelectExpr),
     /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
     /// a select over a step variable.
+    // CR claude for claude: [doc-drift/low] The doc above says a seq is 'lowered to a
+    // select over a step variable'. `expr/seq.rs` lowers it to `ExprKind::SeqMachine`,
+    // which compiles to the machine node in `node/seq_machine.rs`. Reword it: `seq
+    // [trigger] { stmts }`, lowered to a `SeqMachine` (`expr/seq.rs`,
+    // `node/seq_machine.rs`). (t-expr-core-09)
     Seq(Arc<SeqExpr>),
     /// `until expr` — wait until a bool level is true. Legal only as a
     /// seq step.
@@ -986,6 +999,13 @@ pub enum Source {
     /// A module the VFS resolver served, by its full module path.
     Vfs(ArcStr),
     /// A program given as text, the text its `Origin` holds.
+    // CR claude for claude: [structure/low] `Source::Program` holds the program text
+    // that its `Origin` already holds in `text`. An origin whose two texts differ is
+    // representable, and the image codec quietly repairs it: it writes no payload and
+    // rebuilds it from the origin's text. The payload is there only because `Source` is
+    // also the load request (`GXConfig::program`, the runtime's load,
+    // `RegistrationCache::new`'s key). Give the load request its own type with a text
+    // variant and make `Source::Program` carry nothing. (t-expr-core-10)
     Program(ArcStr),
     #[default]
     Unspecified,
@@ -1303,6 +1323,18 @@ impl fmt::Debug for Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // CR claude for claude: [bug/low] The canonical Display writes an expression's
+        // comments, and nested ones through the other `write_leading_flat` callers in
+        // print.rs. `node::error::null_error` formats the `?` operand with this
+        // Display, so a program sees `NullError("(\n// why\ns.b)")` where the same code
+        // without the comment gives `NullError("(s.b)")`. Adding or editing a comment
+        // changes a value the program can compare. The `PrintFlag::AsWritten` doc says
+        // text without that flag is a function of the syntax alone, and `Comments`
+        // decide nothing. Fix: have the flat printers write comments only under
+        // `PrintFlag::AsWritten`, the flag the formatter sets. Attributes are syntax
+        // and can stay. Then make sure the print round-trip tests that expect comments
+        // set that flag. probe: design/review-2026-10-12/repro/t-print-03.gx
+        // (t-print-03)
         print::write_leading_flat(f, &self.dec)?;
         // Printing descends the whole tree, including arbitrary user
         // subexpressions on error paths.
@@ -1316,6 +1348,20 @@ impl PrettyDisplay for Expr {
     }
 
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        // CR claude for claude: [bug/medium] This writes a decorated expression's
+        // comments wherever the buffer stands. Every pretty site that writes a head and
+        // then prints its expression on the same line therefore emits `head //
+        // comment`: the select scrutinee (pretty_scrutinee), an arm guard (`if `), a
+        // seq abort(/flush( argument and `until `. The reparse guard then refuses a
+        // program that --check accepts, so graphix fmt fails and the LSP's
+        // textDocument/formatting returns an error for the whole document. Fix it here
+        // once: when self.dec carries comments or attributes and the buffer is
+        // mid-line, start a fresh line first, as write_leading_flat does for Display.
+        // pretty_parens already does this for operands. Add a round-trip case in
+        // test.rs for each of the four positions. If these positions should not take
+        // comments, the parser should refuse them instead, and CLAUDE.md's comment rule
+        // should name them. probe: design/review-2026-10-12/repro/tests-parser-01.gx
+        // (tests-parser-01)
         print::write_leading(buf, &self.dec)?;
         print::Bare(self).fmt_pretty(buf)
     }

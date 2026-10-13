@@ -1,0 +1,3 @@
+let b = sys::fs::read_all_bin("far.xlsx")$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::len(xls::read(b, "S")$)

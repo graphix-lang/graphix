@@ -1,0 +1,15 @@
+// x-fix-stdlib-07: db subscription accessors keep their output across sleep
+// command: rm -rf /tmp/x-fix-stdlib-07.db && graphix --no-cache x-fix-stdlib-07.gx
+// expected (design/async_sleep_outputs.md): n=4 prints nothing; the accessor shows only inserts after the wake
+// observed: n=4, 5 and 6 print 'on_insert: [{key: 1, value: 100}]', the insert from before the sleep
+let db = db::open("/tmp/x-fix-stdlib-07.db")$;
+let t: db::Tree<i64, i64> = db::tree(db, null)$;
+let sub = db::subscription::new(#prefix: null, t);
+let clk = sys::time::timer(duration:200.ms, 6);
+let n = 0;
+n <- clk ~ n + 1;
+let ins = db::insert(t, select n { 1 => 1, _ => never() }, 100);
+let shown = select n == 2 || n == 3 { true => "asleep", false => "on_insert: [db::subscription::on_insert(sub)]" };
+println("n=[n] [shown]");
+sys::exit(sys::time::after_idle(duration:600.ms, clk ~ 0));
+ins

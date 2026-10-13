@@ -1,0 +1,3 @@
+// bisect: anything a campaign writes above a finding
+// minimized:
+i64:2 + i64:3

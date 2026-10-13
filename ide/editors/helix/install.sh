@@ -64,6 +64,15 @@ else
     if [ "$link_queries" = 1 ]; then
         grammar_source="source = { path = \"$GRAMMAR_DIR\" }"
     else
+        # CR claude for claude: [risk/low] With --copy the grammar is pinned to the
+        # local HEAD, which the remote may not have, and the queries are copied from the
+        # working tree, which may be ahead of HEAD. An unpushed HEAD makes `--grammar
+        # fetch` fail, and `|| true` hides it; a dirty tree copies queries newer than
+        # the pinned grammar. Either way the user can end up with no colouring, the
+        # failure languages.toml says this pinning prevents. Fix: with --copy, refuse a
+        # dirty ide/tree-sitter-graphix or a HEAD the remote does not contain, and copy
+        # the queries from `git show $rev:` rather than the working tree.
+        # (ide-tooling-12)
         rev="$(git -C "$GRAMMAR_DIR" rev-parse HEAD)"
         grammar_source="source = { git = \"https://github.com/graphix-lang/graphix\", rev = \"$rev\", subpath = \"ide/tree-sitter-graphix\" }"
     fi

@@ -73,6 +73,12 @@ pub enum KernelConst {
         f: TypedFastFn,
     },
     /// The cast pseudo-site's fn.
+    // CR claude for claude: [structure/low] This variant carries a function pointer,
+    // but the only constructor passes cast_typed, the image writes only the tag, and
+    // decode rebuilds it as Cast(cast_typed). Any other fn put here would run cold and
+    // be silently replaced by cast_typed in a warm image. Make it a unit variant `Cast`
+    // whose pointer() returns `cast_typed as usize`. same_as then needs only the
+    // variant match, and the encoder and decoder carry nothing else. (f-jit-09)
     Cast(crate::fusion::lowering::CastFn),
     SiteLeaf(Arc<SiteLeaf>),
     /// The owning kernel's `site_block_words` cell.
@@ -274,6 +280,15 @@ mod tag {
 }
 
 /// The relocation kinds a host emits; any other fails the record.
+// CR claude for claude: [structure/low] reloc_tag, reloc_of and reloc_fits are three
+// hand-kept tables that must agree. They already disagree: reloc_tag encodes
+// X86CallPLTRel4, X86GOTPCRel4 and the other architecture's kinds, and reloc_fits
+// refuses all of them on read. If emission ever produced one (a PIC setting change,
+// say), every image write would succeed and every read would fail with InvalidFormat.
+// Each start would then compile cold and rewrite the image, and nothing would log why.
+// Derive all three from one const table of (Reloc, tag, width, arch), and have
+// reloc_tag refuse any kind this host's reader would refuse, so the write fails with a
+// logged reason instead. (c-image-07)
 fn reloc_tag(r: Reloc) -> Result<u8, PackError> {
     Ok(match r {
         Reloc::Abs4 => 0,

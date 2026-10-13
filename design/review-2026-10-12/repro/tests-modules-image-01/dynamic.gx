@@ -1,0 +1,8 @@
+let status = mod m dynamic {
+    sandbox unrestricted;
+    sig { val eq: fn(x: Array<'a>, y: Array<'a>) -> bool };
+    source "let eq = |x, y| x == y"
+};
+let a: Array<[(i64, i64), Array<i64>]> = [(1, 2)];
+let b: Array<[(i64, i64), Array<i64>]> = [[1, 2]];
+select status { error as e => cast<string>(e)$, null as _ => cast<string>(m::eq(a, b))$ }

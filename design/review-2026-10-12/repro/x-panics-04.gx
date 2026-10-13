@@ -1,0 +1,14 @@
+// x-panics-04: args::parse: check_spec misses id clashes clap panics on; the panic kills the runtime
+// command: graphix --no-cache design/review-2026-10-12/repro/x-panics-04.gx a
+// expected: r is an ArgError (duplicate name x), then "alive", exit 0
+// observed (debug build): panicked at clap_builder debug_asserts.rs:99 "Argument names must be
+// unique, but 'x' is in use by more than one argument or group", then
+// "Error: runtime did not respond", exit 1. Same for two positionals x, a positional named help
+// (or version under #version), an option named "-x" (debug_asserts.rs:84) and two subcommands s
+// (debug_asserts.rs:353).
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let spec = args::command(#name: "t", [args::flag(#name: "x"), args::positional(#name: "x")]);
+let r = args::parse(spec);
+println("parsed: [r]");
+let t = sys::time::timer(duration:100.ms, false);
+t ~ "alive"

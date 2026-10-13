@@ -1,0 +1,5 @@
+type T = string;
+let x: T = "a";
+trait Show { val show: fn(self) -> string };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+x

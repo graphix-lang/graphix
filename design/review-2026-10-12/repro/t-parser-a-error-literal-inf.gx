@@ -1,0 +1,8 @@
+// `finite` checks only the top-level literal: an infinite float nested in
+// an `error:` literal is accepted and prints `error:f64:inf`, which no
+// literal parses back. `graphix fmt --stdout` refuses with "formatter bug:
+// the formatted text does not parse"; running the program prints
+// `error:f64:inf`.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let x = error:1e999;
+x

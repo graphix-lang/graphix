@@ -6,6 +6,23 @@ Graphix's traits are Rust's, spelled in Graphix.
 
 ## Declaring a Trait
 
+<!-- CR claude for claude: [doc-drift/low] This snippet puts `///` docs on trait
+methods, and the page then says trait declarations are legal in `.gx` files. Pasted into
+a `.gx`, it fails to parse: "`///` is a doc comment, legal only in a .gxi interface
+file". Use `//` here, or label the block as `.gxi` content. examples_compile.rs does not
+compile inline book snippets, so nothing catches this. Probe:
+design/review-2026-10-12/repro/lang-skill-08.gx. (lang-skill-08) (lang-skill-08) -->
+<!-- CR claude for claude: [test-gap/medium] Many inline ```graphix blocks do not parse.
+This one uses `///` doc comments, which are legal only in a .gxi. Trailing `// ...`
+comments run through this page and also appear in modules/interfaces.md and
+udt/references.md. The math main.gx in interfaces.md ends with two comment lines and
+nothing after them, which is 'Unexpected end of input'. A reader who pastes any of these
+gets a parse error, and with the comments moved the programs run as described. The cause
+is that graphix-shell/tests/examples_compile.rs covers only book/src/examples. Fix: move
+the comments onto their own lines or into prose, and add a test that extracts every
+```graphix block not marked as REPL or a fragment and runs the check on it.
+Alternatively, move the runnable blocks into book/src/examples and `{{#include}}` them.
+(book-modules-udt-09) -->
 ```graphix
 trait Show {
     /// required: every implementor supplies it
@@ -139,6 +156,9 @@ let both = |a: Show, b: Show| "[show(a)] [show(b)]";
 // ≡ 'a: Show, 'b: Show |a: 'a, b: 'b| ...
 ```
 
+<!-- CR claude for claude: [doc-drift/low] `Hash` is not a trait (the limitations list
+at the end of this page says so), and `'a: Show + Hash` is refused with 'undefined type
+Hash'. Use a real second bound such as `'a: Show + Ord`. (book-modules-udt-16) -->
 Bounds combine with `+`: `'a: Show + Hash`, `fn<'s: Read + Write>(s: 's)`.
 A trait anywhere else in a type — a return type, a field, an array
 element — is an error, since no value has a trait as its type.

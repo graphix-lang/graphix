@@ -1,0 +1,7 @@
+// ide-tooling-05: CJK and Hangul identifiers are ERROR in tree-sitter
+// command: graphix --check ide-tooling-05.gx; (cd ide/tree-sitter-graphix && npx tree-sitter parse <this file>)
+// expected: both accept
+// observed: --check rc=0; tree-sitter ERROR, parser.c's \p{Lo} table holds {0x4e00,0x4e00},{0x9fff,..} and {0xac00,0xac00},{0xd7a3,0xd7a3}
+let 名前 = 1;
+let 가나 = 2;
+名前 + 가나

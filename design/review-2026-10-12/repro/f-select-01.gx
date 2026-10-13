@@ -1,0 +1,22 @@
+{
+  // f-select-01: the JIT guard prologue evaluates arm 2's guard with `x`
+  // installed unmasked (the arm has only an inferred predicate, so pcond
+  // is None): over a null scrutinee x reads null's payload as i64 0, and
+  // `100 /? 0` raises to the catch. The node-walk delivers no bind to a
+  // guard whose arm shape rejects the value (Select::update,
+  // PatternNode::shape_matches), so the guard raises nothing.
+  // command: graphix-fuzz check f-select-01.gx
+  // expected: AGREE, count stays 0 (interp: Trace([0:[i64:0, i64:0]]))
+  // observed: DIVERGENCE, jit: Trace([0:[i64:0, i64:0] 1:[i64:0, i64:1]])
+  // (no-cache, cold and warm image alike; a [string, null] scrutinee with
+  // `s if (cast<i64>(s))? > 1` diverges the same way)
+  let count = 0;
+  catch(e) count <- e ~ count + 1;
+  let f = |v: [i64, null]| select v {
+      null as _ => 0,
+      x if (100 /? x)? > 1 => 1,
+      _ => 2
+  };
+  let n: [i64, null] = null;
+  (f(n), count)
+}

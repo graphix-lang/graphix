@@ -1,0 +1,16 @@
+// x-fix-tools-04: a labeled default whose expression calls its own function
+// omitting the same label makes the check diverge. Each omitting site's
+// CallSite::check_omitted_defaults compiles and typechecks the default
+// (checked_default_at), whose own call is another omitting site, without end.
+// Here the run never reaches the recursive call (n is 0, the arm is not
+// taken), yet --check and the run both eat memory until killed. The LSP runs
+// the same check on every edit. Writing the inner call as `f(#a: 0, 1)`
+// checks instantly and runs, printing 1.
+//
+// command: timeout -s KILL 60 graphix --no-cache --check design/review-2026-10-12/repro/x-fix-tools-04.gx
+// expected: exit 0 promptly (a run prints 1), or a refusal naming the default
+// observed: [probe] OOM-KILLED (6 GB cap) after ~30 s, under --check and under a plain run
+let n = 0;
+let rec f = |#a = select n > 0 { true => f(1), false => 0 }, b: i64| -> i64 a + b;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(1)

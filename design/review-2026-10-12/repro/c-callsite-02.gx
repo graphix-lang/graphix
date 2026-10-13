@@ -1,0 +1,20 @@
+// c-callsite-02: a hidden labeled default is judged only for a call
+// argument whose formal is exactly `fn(..)` (CallSite::check_value_defaults).
+// Here the formal is an optional callback `[fn(x: f64) -> f64, null]`.
+//   graphix --check c-callsite-02.gx            -> exit 0 (expected: refused)
+//   RUST_LOG=error graphix --no-cache --log-dir L c-callsite-02.gx
+//     -> prints nothing; log: "h$(1.5): binding the callee failed: ..
+//        type mismatch 'a: f64 does not contain i64"; the call is bottom forever
+// With the formal written `h: fn(x: f64) -> f64` the check refuses it.
+// Same class, with `let g = |#x = 4096, y| x == y`:
+//   let s: {h: fn(y: string) -> bool} = {h: g}; s.h("seven")
+//     -> check 0, run silent, log "binding the callee failed"
+//   let a: Array<fn(y: string) -> bool> = [g]; a[0]$("seven")
+//     -> check 0, run silent, log "binding the callee failed"
+//   let h: fn(y: string) -> bool = g; h("seven")
+//     -> check 0, but --expand / run refuse "string does not contain i64"
+//        (the build refuses what the check accepted)
+let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+let g = |h: [fn(x: f64) -> f64, null]| h$(1.5);
+sys::exit(sys::time::after_idle(duration: 500.ms, 0));
+g(f)

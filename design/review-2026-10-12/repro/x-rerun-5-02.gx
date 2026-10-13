@@ -1,0 +1,21 @@
+// x-rerun-5-02 (t-contains-08's "inferred-conjunct form", still open): f's
+// parameter carries the inferred conjunct Int (from `a[i]`); g passes it
+// `select b { true => 1, false => k }`, a union [i64, 'k] whose open 'k never
+// receives the conjunct, so g checks as fn(b: bool, k: 'k) -> i64 with 'k
+// free and the check accepts g(false, "s").
+// command: graphix --check design/review-2026-10-12/repro/x-rerun-5-02.gx
+//          graphix --no-cache design/review-2026-10-12/repro/x-rerun-5-02.gx
+//          GRAPHIX_ELAB_AUDIT=1 graphix --no-cache design/review-2026-10-12/repro/x-rerun-5-02.gx
+// expected: --check refuses g(false, "s") (Int does not contain string), as it
+//   refuses f("s") and `let g = |k| f(k); g("s")`.
+// observed (HEAD 7324207f, debug build): --check exits 0 (so the LSP shows
+//   nothing); the build refuses "an instance at fn(i: [i64, string]) -> i64
+//   of a definition typed fn(i: '_N) -> '_M", which ELAB_AUDIT reports as
+//   elaboration refusing what the check accepted. Through a dynamic call
+//   (fs[n]$(false, "s") with `let h: fn(b: bool, k: string) -> i64 = g`)
+//   --check passes, the run-time bind fails, and the shell prints nothing
+//   at all: the failure is logged on the callsite target, not FAILURE_TARGET.
+let a = [10, 20, 30];
+let f = |i| a[i]$;
+let g = |b, k| f(select b { true => 1, false => k });
+g(false, "s")

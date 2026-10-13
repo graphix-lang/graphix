@@ -1,0 +1,3 @@
+let t = never();
+let x = 0;
+x <- t ~ 1

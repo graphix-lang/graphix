@@ -665,6 +665,27 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         let mut ts: LPooled<Vec<&Type>> = LPooled::take();
         ts.push(&bottom);
         ts.extend(self.n.iter().map(|n| n.typ()));
+        // CR claude for claude: [perf/low] The check of an array or list literal walks
+        // its element type's whole depth: `Type::union` over [⊥, elems] and then
+        // `check_contains` against `Array<union>`. A chain `let x_i = [x_{i-1}]`
+        // therefore checks superlinearly: 2000 lets take 3.1 s in Typecheck0, while the
+        // same chain built from tuples takes 2.4 ms. Profile which of the two re-walks
+        // the subtree. Make a union with one member left after dropping ⊥ return that
+        // member untouched, and make `contains` short-circuit on identical subtrees.
+        // Then add a timed pin. probe:
+        // design/review-2026-10-12/repro/t-misc-03-array-chain.gx vs
+        // t-misc-03-tuple-chain.gx (t-misc-03) (t-misc-03)
+        // CR claude for claude: [bug/medium] An array or list literal unions its
+        // elements with Type::union, so its function members never meet. Only select
+        // uses Type::union_of_alternatives. `[|x| x, |x| x + 1]` is typed Array<[fn('a)
+        // -> 'b, fn(i64) -> i64]>, and calling an element is refused ("expected fn not
+        // [..]"). The same alternatives under a select give one callable fn(i64) ->
+        // i64, and annotating the let as Array<fn(x: i64) -> i64> runs and prints [1,
+        // 2]. The Map literal's value union and the `any` node's union
+        // (Any::typecheck0_with) have the same gap. Use Type::union_of_alternatives at
+        // all three sites. Keys need no change, since Ordered refuses functions there.
+        // Probe: design/review-2026-10-12/repro/x-typecheck-generics-06.gx (map and any
+        // twins: x-typecheck-generics-06b/06c-*.gx). (x-typecheck-generics-06)
         let rtype = match wrap!(self, Type::union(&ctx.env, &ts))? {
             Type::Bottom => K::typ(Type::empty_tvar()),
             t => K::typ(t),

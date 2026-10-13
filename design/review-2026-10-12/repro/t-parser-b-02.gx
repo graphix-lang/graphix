@@ -1,0 +1,6 @@
+mod m;
+let x: m::
+    T = 1;
+let f = |y: m::  T| y;
+let g = |z: m::T| z;
+g(f(x))

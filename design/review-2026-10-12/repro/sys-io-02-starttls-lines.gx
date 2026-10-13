@@ -1,0 +1,14 @@
+// expect: "server saw N handshake bytes" (the ClientHello), as with Read::read in place of Lines::lines
+// actual: nothing: tls::connect waits forever for the read half a line reader holds (outside the 120s handshake timeout)
+use sys::io::{Read, Write, Lines};
+let listener = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(listener)$;
+let client = sys::tcp::connect(listener ~ addr)$;
+let server = sys::tcp::accept(listener, client)$;
+let greeted = Write::write_exact(server, buffer::from_string("STARTTLS\n"))$;
+let line = Lines::lines(client)$;
+let tls = sys::tls::connect(#ca_cert: null, "localhost", line ~ client);
+let hello = Read::read(greeted ~ server, u64:4096)$;
+let r = select hello { b => "server saw [buffer::len(b)] handshake bytes" };
+sys::exit(sys::time::timer(duration:3.s, false) ~ 0);
+r

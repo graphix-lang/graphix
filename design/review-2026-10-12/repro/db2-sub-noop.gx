@@ -1,0 +1,14 @@
+// remove /tmp/db2-noop.db first; run 6 s: the counter stops at 1025 and every write to the tree hangs
+let db = db::open("/tmp/db2-noop.db")$;
+let t: db::Tree<i64, i64> = db::tree(db, "x")$;
+let sub = db::subscription::new(t);
+let ins = db::subscription::on_insert(sub)$;
+let got = 0;
+got <- ins ~ got + array::len(ins);
+let go = sub;
+let k = 0;
+let b = db::insert(t, go ~ 0, 1)$;
+k <- b ~ k + 1;
+go <- b ~ sub;
+let tick = sys::time::timer(duration:500.ms, true);
+println(tick ~ "inserts [k] events [got]")

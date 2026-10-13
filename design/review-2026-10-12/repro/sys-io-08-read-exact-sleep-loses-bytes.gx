@@ -1,0 +1,18 @@
+// expect: "hello01234" (as without the 300ms deselect)
+// actual: "0123456789": the sleep aborts read_exact and the 5 bytes it consumed are gone
+use sys::io::{Read, Write};
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(l)$;
+let client = sys::tcp::connect(addr)$;
+let server = sys::tcp::accept(l, client)$;
+let w1 = Write::write_exact(server, buffer::from_string("hello"))$;
+let on = true;
+on <- sys::time::timer(duration:300.ms, false) ~ false;
+on <- sys::time::timer(duration:600.ms, false) ~ true;
+let w2 = Write::write_exact(sys::time::timer(duration:900.ms, false) ~ server, buffer::from_string("0123456789"))$;
+let got = select on {
+  true => buffer::to_string(Read::read_exact(client, u64:10)$)$,
+  false => never()
+};
+sys::exit(sys::time::timer(duration:1500.ms, false) ~ 0);
+got

@@ -48,6 +48,14 @@ pub const DEF: u8 = 1;
 
 /// One value per relocated id domain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+// CR claude for claude: [structure/low] The relocated id domains are listed by hand
+// here, in `Relocations::install` and in `ImageDecoder::new`. An `image_id!` type
+// missing from these lists is written and read raw: the macro's decode falls through to
+// `Ok(Self(raw))` when no relocation is installed. A warm start would then hand out ids
+// that collide with ids the reader already minted, and nothing would fail. Generate
+// `PerDomain` and its install/reserve code from the one list of `image_id!`
+// invocations. Or make an id's `Pack` refuse when an image session is active and its
+// own relocation slot is `None`. (t-expr-core-06)
 pub struct PerDomain<T> {
     pub bind: T,
     pub lambda: T,
@@ -1062,6 +1070,21 @@ pub fn decode_at<T>(
         let built = d.built;
         let open = match d.active.get(&ord) {
             None => 0,
+            // CR claude for claude: [bug/high] The `*open < 2` cap rejects valid
+            // images, because a valid image can enter a definition more than twice.
+            // Take a type X that holds two tvars, where each tvar is constrained by X,
+            // and decode X first. The decode runs X, 'a, cell_a, X, 'b, cell_b, X, and
+            // the third entry of X is refused with InvalidFormat even though objects
+            // were entered between every pair of entries. On a warm start, a restored
+            // definition's tables then fail to decode and the call site never binds:
+            // the program prints nothing where the cold run prints (4, 11). Whether a
+            // write hits this depends on encode order. Fix: make progress the only
+            // guard (`Some((at, open)) if *at != built => *open`). Nesting stays finite
+            // because `built` is bounded by the slot count. Also correct the "at most
+            // twice" claim in the doc comment above, in CLAUDE.md and in
+            // design/program_image.md, and add a pin: the tuple type of two tvars that
+            // it constrains, decoded starting from the tuple. probe:
+            // design/review-2026-10-12/repro/t-image-01.gx (t-image-01)
             Some((at, open)) if *at != built && *open < 2 => *open,
             Some(_) => return None,
         };
@@ -1075,6 +1098,18 @@ pub fn decode_at<T>(
     // while the session is installed.
     let image = unsafe { std::slice::from_raw_parts(image.0, image.1) };
     let r = crate::stack::ensure_sufficient(|| full(&mut &image[at..]));
+    // CR claude for claude: [bug/medium] A failed `full` leaves in `objects` every
+    // object it entered before its contents: a tvar wrapper over tvar_decode's
+    // placeholder cell, cell_decode's empty TCell, refcell_decode's Open cell. The
+    // decoder outlives the read. DefTables::get decodes again at the next instance, and
+    // so does a call site's fallback after a failed materialize. That retry takes those
+    // slots as built and succeeds with no error. In the probe the second read of the
+    // same union returns tvars with no constraints, and a restored definition's table
+    // that failed twice decodes on the third call. Fix: on failure, clear every slot
+    // the top-level read entered (a watermark of `built` plus the list of ordinals it
+    // entered). Or poison the decoder after a failure, so every later lazy decode
+    // refuses and the call site compiles afresh. probe:
+    // design/review-2026-10-12/repro/t-image-03.rs (t-image-03)
     decoding(|d| {
         d.defining.pop();
         match prev {
@@ -1234,6 +1269,15 @@ pub(crate) fn object_decode<T: Object>(
         |sub| {
             let v = contents(sub)?;
             enter(v.clone().into_obj())?;
+            // CR claude for claude: [perf/low] When a type's contents reach a cell that
+            // refers back to the type (for example a tvar constraint mentioning the
+            // type that holds it), decode_at builds the same ordinal a second time. The
+            // inner build is entered in the store, the outer enter is a no-op, and this
+            // returns the outer copy. The caller then holds a second value for one
+            // ordinal, while every later reference gets the store's. That breaks 'equal
+            // types decode to one value' for every type on such a cycle, and its spine
+            // is decoded and kept twice. Fix: after enter, return the stored object
+            // (built::<T> of the ordinal being defined) instead of v. (t-image-05)
             Ok(v)
         },
         full,
@@ -1436,6 +1480,19 @@ fn cell_encode(
                 (
                     c.binding.clone(),
                     c.constraints.to_vec(),
+                    // CR claude for claude: [risk/low] cell_encode writes binding,
+                    // constraints, cycle_refused, bottom_fed and level, but never
+                    // bottom_required, and cell_decode leaves it false. On a warm
+                    // session, a ⊥ that a restored body required therefore reads as
+                    // vacuous to Type::unbind_vacuous_tvars at any later gate that
+                    // walks the cell, while the cold session keeps it. No gate walks a
+                    // restored cell today, so this is latent. Fix: encode and decode
+                    // bottom_required next to bottom_fed and bump REGISTRATION_FORMAT.
+                    // Destructure TCell in cell_encode so that a new field fails to
+                    // compile until it is imaged or explicitly skipped, as task and
+                    // rigid_gates are. TVar::freshen does not carry the flag into a
+                    // copy either. Decide whether a call's copy of a required ⊥ should
+                    // stay required, and make both places agree. (t-image-04)
                     (c.cycle_refused, c.bottom_fed, c.level),
                 )
             };

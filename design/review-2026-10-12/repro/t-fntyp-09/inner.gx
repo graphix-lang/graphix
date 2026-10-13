@@ -1,0 +1,2 @@
+// refused (missing constraint 'a: Number); rename 'c->'b and 'b->'c and the module is accepted
+let f = 'c: Number |x: 'b, y: 'c| -> 'c y

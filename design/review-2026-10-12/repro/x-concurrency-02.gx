@@ -1,0 +1,17 @@
+use sys::io::Read;
+let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "printf AB; sleep 0.4; printf CDEFGH; sleep 1"],
+    #stdio: sys::process::stdio(#stdout: `Pipe),
+    #kill_on_drop: true,
+    "/bin/sh"
+))$;
+let stream = child.stdout$;
+let tick = count(sys::time::timer(child ~ duration:100.ms, 3)$);
+let active = true;
+active <- select tick { 1 => false, 2 => true, _ => never() };
+let r = select active {
+    true => buffer::to_string(Read::read_exact(stream, u64:4)$)$,
+    false => never()
+};
+sys::exit(sys::time::after_idle(duration:800.ms, r ~ 0));
+r

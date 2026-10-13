@@ -1,0 +1,4 @@
+type T = {alpha: {beta_long_field_name: i64, gamma_long_field_name: string, delta_long_long_long: f64, eps: i64}, z: i64};
+type W = Map<{beta_long_field_name: i64, gamma_long_field_name: string, delta_long_long_long: f64}, i64>;
+type X = (fn(alpha_long_field_name: i64, gamma_long_field_name: string) -> i64, {beta_long_field_name: i64, gamma: f64});
+0

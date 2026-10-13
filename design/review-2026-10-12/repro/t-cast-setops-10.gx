@@ -1,0 +1,22 @@
+// t-cast-setops-10: an Error target wraps non-error data in an error, so casts and
+// typed reads produce errors from plain values (cast.rs, Type::Error arm of cast_inner;
+// the `error` primitive member does the same through the Primitive arm's convert).
+// command: graphix --no-cache design/review-2026-10-12/repro/t-cast-setops-10.gx
+// expected: 1, 2 and 3 are InvalidCast errors (data is never read into an error),
+//   4 is 0 (the `a` field was not an error)
+// observed:
+//   1: error:"hello"
+//   2: {a: error:"oops"}
+//   3: {a: error:"oops"}
+//   4: 1
+type E = Error<[`JsonErr(string), `InvalidCast(string)]>;
+let x: Any = "hello";
+println("1: [cast<[i64, Error<string>]>(x)]");
+let r: [{a: [i64, Error<string>]}, E] = json::read(r#"{"a": "oops"}"#);
+println("2: [r]");
+let p: [{a: [i64, error]}, E] = json::read(r#"{"a": "oops"}"#);
+println("3: [p]");
+let t = select r { error as _ => 0, {a} => select a { error as _ => 1, i64 as n => n } };
+println("4: [t]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

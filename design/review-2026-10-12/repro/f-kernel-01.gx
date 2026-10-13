@@ -1,0 +1,13 @@
+// f-kernel-01: a fused kernel with a standing-bottom input re-runs its
+// whole body every time its parent updates, though nothing it reads fired.
+// `GRAPHIX_DBG_INVOKE=1 graphix --no-cache f-kernel-01.gx 2>&1 | grep -c INVOKE`
+// counts ~200 invocations of g's region; with `z` initialized to null it is 1.
+// Wall time: ~1.7 s vs ~0.6 s (debug build), the difference is 200 folds of 1M.
+let clock = sys::time::timer(duration:1.ms, true);
+let n = count(clock);
+let z: [i64, null] = never();
+let a = array::init(1000000, |i| i);
+let f = |a: Array<i64>, z: [i64, null]| array::fold(a, 0, |acc, x| acc + x * x);
+let g = |a: Array<i64>, z: [i64, null]| (f(a, z), z);
+sys::exit(select n > 200 { true => 0, false => never() });
+n ~ g(a, z)

@@ -1,0 +1,10 @@
+// x-fix-stdlib-06: sys::net formats anyhow errors with {e:?}, so an RpcError carries a backtrace under RUST_BACKTRACE
+// command: graphix --no-cache x-fix-stdlib-06.gx ; then RUST_BACKTRACE=1 graphix --no-cache x-fix-stdlib-06.gx
+// expected: both runs print 'len=40 error:["RpcError", "no such argument b"]'
+// observed: under RUST_BACKTRACE=1 'len=3975 error:["RpcError", "no such argument b\n\nStack backtrace:\n   0: <anyhow::Error>::msg...'
+let p = sys::net::rpc(#path: "/local/review/proc", #doc: "test", #spec: {a: {default: 0, doc: "a"}}, #f: |args: {a: i64}| args.a + 1);
+let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/local/review/proc", {b: 1});
+let msg = select r { error as e => "[e]", v => "ok [v]" };
+println("len=[str::len(msg)] [str::sub(#start: 0, #len: 120, msg)$]");
+sys::exit(sys::time::after_idle(duration:2.s, msg ~ 0));
+p

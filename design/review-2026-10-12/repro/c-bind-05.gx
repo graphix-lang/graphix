@@ -1,0 +1,26 @@
+// c-bind-05: a Deref whose place path moved during sleep reads it as a real FIRED event at the wake
+// run: graphix --no-cache c-bind-05.gx   (same with --no-fusion; references de-fuse)
+// i moves 0 -> 1 at n=4 while arm `true` sleeps and arm `false` reads *r (it shows 120,
+// so a selected reader saw the move). Arm `true` wakes at n=6.
+// expected: 110 110 0 0 110 120 120 0 0 0 0   (the woken arm reads the move stale, as it
+//           does for a target move: `let r = &x; r <- &y` prints exactly this)
+// observed: 110 110 0 0 110 120 120 0 1 1 1   (cnt ticks at the wake: Deref::update retags
+//           a Moved::Path read with Tag::fresh, dropping the wake view's STALE/WAKE bits)
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let a = [10, 20];
+let i = 0;
+i <- select n { 4 => 1, _ => never() };
+let r = &a[i];
+let c = ((n >= 2) && (n < 4)) || (n >= 6);
+sys::exit(select n { 9 => 0, _ => never() });
+let out = select c {
+  true => {
+    let cnt = 0;
+    cnt <- (*r) ~ cnt + 1;
+    cnt
+  },
+  false => *r + 100
+};
+out

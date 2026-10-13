@@ -1,0 +1,18 @@
+// t-expr-core-01: cast of untyped data to List reads a 2-array ending in [] as a cons cell
+// run: graphix --no-cache design/review-2026-10-12/repro/t-expr-core-01.gx
+// expected: (2, 2, 3, "[[1,2],[]]", [<[1, 2], []>])
+// observed: (1, 2, 3, "[[1,2],[]]", [<[1, 2]>])
+// The first three are Any arrays of 2, 2 and 3 arrays cast to List<Array<i64>>;
+// the last two are a List<Array<i64>> written by json::write_str and read back.
+let a: Any = [[1], []];
+let b: Any = [[1], [2]];
+let c: Any = [[1], [2], []];
+let la: Result<List<Array<i64>>, `InvalidCast(string)> = cast<List<Array<i64>>>(a);
+let lb: Result<List<Array<i64>>, `InvalidCast(string)> = cast<List<Array<i64>>>(b);
+let lc: Result<List<Array<i64>>, `InvalidCast(string)> = cast<List<Array<i64>>>(c);
+let l: List<Array<i64>> = [<[1, 2], []>];
+let w = json::write_str(l);
+let back: Result<List<Array<i64>>, Any> = json::read(w$);
+let r = (list::len(la$), list::len(lb$), list::len(lc$), w$, back$);
+sys::exit(sys::time::after_idle(duration:200.ms, r ~ 0));
+r

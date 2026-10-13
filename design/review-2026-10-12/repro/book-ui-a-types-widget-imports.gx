@@ -1,0 +1,15 @@
+use gui;
+use gui::text;
+use gui::button;
+use gui::slider;
+
+let v = 50.0;
+
+column(
+  #spacing: &10.0,
+  &[
+    text(&"A text widget"),
+    button(&text(&"A button")),
+    slider(#min: &0.0, #max: &100.0, &v)
+  ]
+)

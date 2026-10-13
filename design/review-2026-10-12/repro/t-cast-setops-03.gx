@@ -1,0 +1,14 @@
+// t-cast-setops-03: a union cast takes the first member that converts, so an
+// array becomes null, a bool, a string or its first element.
+// run: graphix --no-cache design/review-2026-10-12/repro/t-cast-setops-03.gx
+// expected: a=[1, 2] b=[1, 2] c=[1, 2] d=[1, 2] e=InvalidCast error j.weights=[1, 2, 3]
+// observed: a=null b=1 c=true d=[i64:1, i64:2] e=5 j={weights: null}
+let a = cast<[Array<f64>, null]>([1, 2]);
+let b = cast<[i64, Array<i64>]>(["1", "2"]);
+let c = cast<[bool, Array<f64>]>([1, 2]);
+let d = cast<[string, Array<f64>]>([1, 2]);
+let e = cast<i64>([5, 6, 7]);
+let j: Result<{weights: [Array<f64>, null]}, [`JsonErr(string), `InvalidCast(string)]> = json::read(r#"{"weights": [1, 2, 3]}"#);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("a=[a] b=[b] c=[c] d=[d] e=[e] j=[j]");
+0

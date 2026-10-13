@@ -1,0 +1,23 @@
+// tui-core-01: equal widget values rebuild their whole subtree; a view that
+// reads its own #size rebuilds forever.
+// Run in a pty at a fixed size:
+//   script -q -c 'stty cols 40 rows 5; graphix --no-cache tui-core-01.gx' /dev/null
+// Expected: the block reports its size once, "wide 2" (the initial null and the
+// one report), and the program sits idle (it never reaches the exit).
+// Observed: "wide 1" .. "wide 5000" in about 1.5 s with the terminal unchanged,
+// then the exit below. Each fire of sz re-emits the same Block value from the
+// select, Screen::update recompiles the root, and the fresh SizeReport (last =
+// 0x0) writes sz again. Without the select (the block as the root) reports
+// stops at 2.
+use tui::{
+  block::block,
+  text::text
+};
+let sz: [tui::Size, null] = null;
+let reports = 0;
+reports <- sz ~ reports + 1;
+tui::exit(select reports { 5000 => null, _ => never() });
+select sz {
+  tui::Size as s if s.width < 20 => block(#size: &sz, &text(&"narrow [reports]")),
+  _ => block(#size: &sz, &text(&"wide [reports]"))
+}

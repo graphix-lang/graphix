@@ -1,0 +1,11 @@
+// c-collection-02: a collection whose callback is not statically resolved never
+// forks its slots, even under GRAPHIX_PAR=force: prebind skips a Ref fnode, so
+// slot 1 is unbound when decide_siblings runs. Compare GRAPHIX_PAR=force output
+// order with c-collection-02-control.gx (static callback: shuffled).
+let x = array::iter([0, 1, 2, 3, 4, 5]);
+let pr = |v: i64| -> i64 { println("[v]"); v };
+let fs = [pr];
+let f = fs[0]$;
+let r = array::map(array::init(24, |i| i + x * 100), f);
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+array::len(r)

@@ -241,6 +241,15 @@ async fn gauge_in_range_renders() -> Result<()> {
 }
 
 #[tokio::test]
+// CR claude for claude: [structure/low] This repeats panic_test's
+// gauge_ratio_above_one_does_not_panic: same program, same expected screen.
+// line_gauge_out_of_range_does_not_panic repeats panic_test's negative line_gauge
+// clamp. line_edit_masks_secrets is a weaker copy of input_test's
+// line_edit_masks_each_character_once: its `contains("***")` passes a mask that draws
+// two symbols per character. Delete those three. Move line_edit_types_moves_and_deletes
+// into input_test, where the module header says the line editor belongs, onto its
+// EDITOR fixture. Make the text, paragraph and overlay tests use assert_lines, as the
+// header claims every test here does. (tests-tui-07)
 async fn gauge_out_of_range_does_not_panic() -> Result<()> {
     // Pins the ratio clamp: ratatui's `Gauge::ratio` asserts on [0, 1].
     let mut h = TuiTestHarness::new(

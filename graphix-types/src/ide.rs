@@ -27,6 +27,14 @@ pub struct ReferenceSite {
     pub ori: Arc<Origin>,
     pub name: ModPath,
     pub bind_id: BindId,
+    // CR claude for claude: [dead/low] `def_pos` and `def_ori` here, and the same pair
+    // on `TypeRefSite`, are filled at every recorded reference and read nowhere. The
+    // language server finds a declaration through `Query::bind` (env.by_id, then
+    // `Ide::binds`) and a typedef through `env.typedefs`. Each reference still pays for
+    // an extra Arc<Origin> clone, and the doc comment above gives lambda parameters as
+    // the reason, which `Ide::binds` already covers. Delete both pairs, their writes in
+    // node/bind.rs, node/mod.rs and typ/mod.rs, and the doc comment's justification.
+    // (lsp-04)
     pub def_pos: SourcePosition,
     pub def_ori: Arc<Origin>,
 }

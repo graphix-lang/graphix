@@ -1,0 +1,11 @@
+// x-formatter-05: duration literals parse through f64
+// command: graphix --no-cache x-formatter-05.gx   and   graphix fmt --stdout x-formatter-05.gx
+// expected: (false, ..) and 1.5ns refused (not a whole number of nanoseconds) or kept exact
+// observed: (true, 1.ns, 1.ns); fmt rewrites `duration:1.5ns` to `duration:1.ns`
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+
+let a = duration:123456789.123456789s;
+
+let b = duration:123456789.123456788s;
+
+(a == b, duration:1.5ns, duration:0.0000000015s)

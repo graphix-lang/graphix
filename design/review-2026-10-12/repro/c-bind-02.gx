@@ -1,0 +1,21 @@
+// c-bind-02: a `<-` target is overwritten at a wake when its let never published before
+// run: graphix --no-cache design/review-2026-10-12/repro/c-bind-02.gx   (--no-fusion: same)
+// expected: 5, 101, 101, 5, 5, 5 (the woken arm keeps x's last write, as it
+//   does when `y` starts at 0 instead of never())
+// observed: 5, 101, 101, 1, 1, 1 (the wake's STALE delivery of y publishes over x)
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let y: i64 = never();
+y <- select n { 2 => 1, _ => never() };
+let c = (n < 2) || (n >= 4);
+sys::exit(select n { 7 => 0, _ => never() });
+let out = select c {
+  true => {
+    let x = y;
+    x <- select n { 1 => 5, _ => never() };
+    x
+  },
+  false => y + 100
+};
+dbg(out)

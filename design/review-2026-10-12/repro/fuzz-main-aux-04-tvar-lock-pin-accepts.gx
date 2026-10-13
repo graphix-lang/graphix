@@ -1,0 +1,1 @@
+{let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v))); (m([i64:1], |x| x * i64:2), m(["a"], |s| str::parse))}

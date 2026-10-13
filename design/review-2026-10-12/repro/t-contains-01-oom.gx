@@ -1,0 +1,15 @@
+// t-contains-01: a trait bound over a recursive typedef recurses without bound through
+// Env::find_impl (OOM). Command:
+//   graphix --no-cache --check design/review-2026-10-12/repro/t-contains-01-oom.gx
+// expected: accepted (i64, string and Array<'a: Show> all implement Show), as
+//   `let j: Array<Array<i64>> = []` is in 0.06 s
+// observed: memory grows without bound until the 6 GB cap kills the check (~10 s);
+//   GRAPHIX_DBG_BIND=1 shows the same FIND-IMPL sequence for Array<Json> repeating.
+//   `type L = Array<L>` with only the Array impl fails the same way.
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |x| "i" };
+impl Show for string { let show = |x| x };
+impl<'a: Show> Show for Array<'a> { let show = |a| "arr" };
+type Json = [i64, string, Array<Json>];
+let j: Json = 1;
+Show::show(j)

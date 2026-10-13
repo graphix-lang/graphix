@@ -1,0 +1,15 @@
+// `graphix --check` accepts the annotation on line 9, though b's type is
+// ['b, null] with 'b: Array<'a> and 'a = i64 (compare t-tvar-02-control.gx,
+// which is refused). The call f(y) settles its derived 'b eagerly to its
+// witness, and settle.rs `witness` returns `c.reset_tvars()`: the copy of
+// `Array<'a>` freshens 'a, which is g's live parameter cell, so 'b ends up
+// `Array<'fresh>` and g generalizes 'fresh.
+let f = 'b: Array<'a> |x: 'a| -> ('a, ['b, null]) (x, null);
+let g = |y| {
+  let r = f(y);
+  let z: i64 = y;
+  r
+};
+let (a, b) = g(1);
+let c: [Array<string>, null] = b;
+c

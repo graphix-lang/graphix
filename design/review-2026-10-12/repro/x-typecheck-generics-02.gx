@@ -1,0 +1,13 @@
+// x-typecheck-generics-02: a rank-2 formal accepts an argument whose quantifier
+// carries a stronger bound than the formal declares; the check passes, the build fails.
+// command: graphix --check x-typecheck-generics-02.gx ; graphix --no-cache x-typecheck-generics-02.gx
+// expected: --check refuses `app(add)` (add needs 'a: Int, the formal promises only 'b: Number),
+//   as it refuses `app(|x| x + 1)`.
+// observed: --check exits 0 with no diagnostic; a run refuses at elaboration with
+//   "an instance at fn(x: f64, y: f64) -> f64 of a definition typed
+//   fn<'a: Int + Singleton>(x: 'a, y: 'a) -> 'a" (also with 'a: Number vs a [i64, f64]
+//   argument, Singleton, and with 'b: Any vs |x, y| x < y called at &i64, Ordered:
+//   see x-typecheck-generics-02a/02b).
+let app = |f: fn<'b: Number>(x: 'b, y: 'b) -> 'b| f(1.5, 2.5);
+let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
+app(add)

@@ -1,0 +1,15 @@
+use sys::process::{options, spawn, stdio};
+use sys::io::Read;
+let child = spawn(options(
+  #args: ["-c", "printf abc; sleep 0.4; printf def; sleep 0.4; printf ghi"],
+  #stdio: stdio(#stdout: `Pipe),
+  "sh"
+))$;
+let out = child.stdout$;
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let on = n < 2 || n > 6;
+let got = select on { true => Read::read_exact(out, u64:6), false => never() };
+sys::exit(sys::time::after_idle(duration:1500.ms, n) ~ 0);
+println("read_exact: [got]")

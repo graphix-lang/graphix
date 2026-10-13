@@ -1,0 +1,12 @@
+// x-fix-types-09: the value restriction misses a writer inside a lambda body whose
+// parameter is unannotated: f stays generalized, set's g takes the rigid copy's variables
+// generic, and set(|x: i64| x + 1) narrows f. --check passes; at run time the call f("s")
+// fails to bind ('an instance at fn(x: string) -> string of a definition typed fn(x: i64)'),
+// logged under graphix_compiler::node::callsite, which the shell does not show.
+// expected: refused at the check (f is written, so f("s") fixes its one instance).
+let f = |x| x;
+let a = f("s");
+let set = |g| f <- g;
+set(|x: i64| x + 1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+str::len(a)

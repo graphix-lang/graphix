@@ -1,0 +1,9 @@
+use tui::{line, tabs::tabs, list::list};
+
+let sel = 60;
+sel <- sys::time::timer(duration:400.ms, false) ~ 55;
+let badge = 0;
+tui::exit(sys::time::timer(duration:1500.ms, false));
+let items = array::init(100, |i| line("item [i]"));
+let lst = list(#highlight_symbol: &">", #selected: &sel, &items);
+tabs(&[(line("List ([badge])"), lst)])

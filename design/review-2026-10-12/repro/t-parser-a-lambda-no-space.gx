@@ -1,0 +1,4 @@
+// A lambda body must be preceded by whitespace: `|x|x + 1` is a parse error
+// whose expected-token list (types, `->`, `throws` ...) never says so.
+let f = |x|x + 1;
+f(1)

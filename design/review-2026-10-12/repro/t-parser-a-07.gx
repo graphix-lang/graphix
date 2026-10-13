@@ -1,0 +1,9 @@
+// t-parser-a-07: a variant's span takes the whitespace after it.
+// Command: graphix fmt --stdout t-parser-a-07.gx (--check: a type error on (`B)[0])
+// Expected: a parse error at the `[` on the line after `B (no `;`), as
+// for `let w = b` followed by `[0]` on the next line.
+// Observed: `variant` consumed the newline and indent, so `[0]` is read
+// as an index of the variant: prints `let w = (`B)[0];`.
+let w = `B
+    [0];
+w

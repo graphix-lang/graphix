@@ -1,0 +1,6 @@
+// fuzz-mutate-06: checker: `let f = (g)` does not generalize, though `let f = g` does
+// command: graphix --check fuzz-mutate-06.gx
+// expected: accepted (as it is with `let f = g`, which runs to ([1], ["s"]))
+// observed: refused, "type mismatch fn(x: 'a: string) -> 'b: unbound throws 'e: unbound
+//   does not contain fn(x: i64) -> i64" at the second `f`
+{ let g = |x| x; let f = (g); let a = array::map([1], f); let b = array::map(["s"], f); (a, b) }

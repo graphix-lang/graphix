@@ -1,0 +1,5 @@
+// refused: two functions of one parameter type written in different member orders cannot share an array
+let f = |x: [(i64, string), (f64, string), (i64, bool)]| 0;
+let g = |x: [(i64, string), (i64, bool), (f64, string)]| 1;
+let fs = [f, g];
+array::map(fs, |h| h((i64:1, true)))

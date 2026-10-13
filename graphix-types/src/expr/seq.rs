@@ -95,6 +95,14 @@ struct Parts<'a> {
 
 /// The seq `spec` lowered to its machine, every expression of which
 /// comes from `spec`'s source.
+// CR claude for claude: [readability/low] A type error in a seq step is reported under
+// frames that quote the lowered machine, not the program. For `let go = 1; seq go { let
+// a = go + 1; let x = a + "s"; x }`, `--check` prints five frames naming `seqpc…`,
+// `machine seqpc…`, `let seqv…_1` and `let seqv…` before reaching `a + "s"`. None of
+// those bindings exist in the source. The synthetic expressions this lowering builds
+// should not appear as error context: give the generated wrappers the statement's own
+// spec, or mark them so the context printer skips them. Add a pin that a seq-step type
+// error's message contains no 'seqpc' or 'seqv'. (tests-seq-08)
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };
@@ -143,6 +151,18 @@ fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
     refuse_rec(seq.spec, b)?;
     let BindExpr { pattern, typ, value, .. } = b;
     let name = match pattern {
+        // CR claude for claude: [bug/medium] For a single-name pattern, the user's own
+        // name becomes the queue's request variable (`{ let x = e; seqq x { body } }`).
+        // A body write `x <- v` therefore enqueues a new request instead of updating
+        // the run's value. `seqq let x = t ~ 1 { x <- x + 1; n <- n + 1; x }` loops
+        // forever (thousands of runs from one fire), in both engines. The same body
+        // under `seq let`, or with a pattern `seqq let (x, y) = ..`, runs once and
+        // gives (1, 2). Fix: always bind the trigger to the generated `seqbind{id}`
+        // name and give the body (and the abort/flush events) its own `let x =
+        // seqbind{id}`, as the pattern branch already does. Then update this function's
+        // doc comment and design/seq_blocks.md §4 to describe that one lowering; today
+        // they describe two different shapes, and the code matches neither. probe:
+        // design/review-2026-10-12/repro/t-seq-02.gx (t-seq-03)
         StructurePattern::Bind(n) => n.name.clone(),
         _ => ArcStr::from(format_compact!("seqbind{}", seq.spec.id.inner()).as_str()),
     };
@@ -189,6 +209,17 @@ fn trigger_snapshot(
     match trigger {
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
+            // CR claude for claude: [bug/medium] The snapshot cell for a bare-variable
+            // trigger is made only when the body reads the name, but the abort clause
+            // is rewritten with this same `visible` map in run_events. So `seq go;
+            // abort(sys::time::after_idle(d, go)) { .. }`, where the body does not read
+            // `go`, reads the live trigger. Each busy-dropped `go` then restarts the
+            // after_idle, and the per-run budget never fires. Adding any read of `go`
+            // to the body fixes it, which contradicts design/seq_blocks.md §9. Make the
+            // cell when the body or the abort reads the name (`reads_name(body, &n) ||
+            // seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), &n))`), and
+            // add a seq_abort pin where only the abort reads the bare trigger. probe:
+            // design/review-2026-10-12/repro/t-seq-04-abort-snapshot.gx (t-seq-04)
             if let Some(n) = simple_ref_name(e)
                 && reads_name(body, &n)
             {
@@ -441,6 +472,22 @@ fn fn_names(body: &[Expr], env: &Env, scope: &ModPath) -> AHashSet<ArcStr> {
     let mut args: AHashSet<ArcStr> = AHashSet::new();
     for s in body {
         s.fold((), &mut |(), e| match &e.kind {
+            // CR claude for claude: [bug/medium] fn_names treats only `let` patterns as
+            // rebinding a name. A select arm's binds (plain, `name@` and or-pattern
+            // binds) never reach `values`, so an arm bind that shadows an outer
+            // function, as in `select v { g => after_idle(d, g) }` under `let g = |x|
+            // x`, is still taken for the function. issue_call then leaves that argument
+            // live at the call site instead of reading it from the entry snapshot. The
+            // call is re-issued every time the value moves, which breaks the rule that
+            // a seq call is issued once per entry over an argument snapshot. The
+            // program prints 5 with the bind named `g` and 0 with it named `h`. Lambda
+            // parameters, try/with binds and trigger binds are also missing from
+            // `values`. Fix: decide "is a function" in issue_call from the name's
+            // binding in the rewrite's own scope map, which already tracks shadowing,
+            // rather than from this body-wide fold plus an env lookup. A stopgap is to
+            // add every binder's names (arm patterns via `with_names`, lambda args,
+            // try/with and trigger binds) to `values`. probe:
+            // design/review-2026-10-12/repro/x-expr-walks-02.sh (x-expr-walks-02)
             ExprKind::Bind(b) => match &b.pattern {
                 StructurePattern::Bind(n) if inline_lambda(&b.value) => {
                     lambdas.insert(n.name.clone());
@@ -485,6 +532,10 @@ fn reads_name(stmts: &[Expr], n: &str) -> bool {
 /// own dynamic scope, so its body and defaults are exempt.
 fn refuse_in_seq(e: &Expr) -> Result<()> {
     if let Some(c) = find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Catch(_))) {
+        // CR claude for claude: [readability/low] The message opens a backtick before
+        // `try {{ .. }} with(e) {{ .. }}` and never closes it, so an LSP client that
+        // renders markdown shows the rest of the message as code. Close it after
+        // `with(e) {{ .. }}`. (lang-skill-11) (lang-skill-11)
         return Err(anyhow!(
             "catch is not allowed inside a seq: `?` aborts the run, \
              `try {{ .. }} with(e) {{ .. }} handles it, and a catch around the \
@@ -707,6 +758,13 @@ impl Machine<'_> {
             let value = guard(entry_fire(rewrite(&cond, visible), self.pc));
             return Ok(Tails::from_iter([self.step(true, value, |_| LPooled::take())]));
         }
+        // CR claude for claude: [bug/low] This try branch runs before the `b.rec`
+        // refusal below, and the `Write::Let` it builds keeps only the pattern and the
+        // type. So `let rec x = try { 1 } with(e) { 2 }` is accepted as a plain `let`,
+        // while `let rec x = 1` here is refused ('let rec is not a seq step') and
+        // outside a seq a non-lambda `let rec` is refused too. Fix: refuse `b.rec`
+        // before taking the try branch, with the same 'let rec is not a seq step'
+        // error. probe: design/review-2026-10-12/repro/t-seq-07.gx (t-seq-07)
         if let Some((spec, t)) = try_of(stmt) {
             if stmt.dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
                 return Err(anyhow!(
@@ -727,6 +785,16 @@ impl Machine<'_> {
             }
             return self.lower_try(spec, t, &sink, visible);
         }
+        // CR claude for claude: [bug/low] A dynamic module in a seq step is scoped away
+        // from the steps after it. is_declaration excludes `mod m dynamic`, so a bare
+        // one, or one under `let s = mod m dynamic {..}`, is lowered as a step value.
+        // entry_fire (and lower_block's per-statement `let`) then wraps that value in a
+        // block, and the block hides `m`. A later `m::x` is refused with "m::x not
+        // defined", although the same statements outside a seq work. Fix: refuse a
+        // dynamic module anywhere in a seq step's value with an explicit message, like
+        // the declaration refusal here and lower_block's `is_declaration` arm. Or lower
+        // it so the module binding stays at the step's scope. probe:
+        // design/review-2026-10-12/repro/x-expr-walks-02.gx (x-expr-walks-05)
         if is_declaration(stmt) {
             return Err(anyhow!(
                 "a declaration is not a seq step: write it in a `{{ .. }}` statement \
@@ -827,6 +895,17 @@ impl Machine<'_> {
         let mut tails = self.lower_scoped(&body, &branch, visible)?;
         let with_entry = label(self.steps.len());
         let caught = ArcStr::from(format_compact!("seqtry{}", spec.id.inner()).as_str());
+        // CR claude for claude: [perf/low] Each try puts a jump catch into every step
+        // built since `mark`, the steps of nested try bodies and with bodies included.
+        // A step under d nested trys therefore carries d `Catch` nodes, and the machine
+        // holds O(d^2) of them. With `let v_i = try { <previous> } with(e) { 0 }`
+        // nested d deep, --check takes about 0.2s at d=25, 0.7s at d=50 and 10s at
+        // d=100 (3725 `catch(seqtry` in --expand at d=50), while 400 sequential trys
+        // check in 0.3s. Graph building grows faster than the catch count, so some
+        // per-catch compile cost also scales with depth. Fix: give a step one Try catch
+        // that holds its enclosing try targets (constraint, capture, jump), innermost
+        // first, or find the depth-dependent per-catch cost and make it constant.
+        // (t-seq-08)
         for step in self.steps[mark..].iter_mut() {
             let jump = ExprKind::Catch(Arc::new(CatchExpr {
                 bind: caught.clone().into(),
@@ -946,6 +1025,22 @@ impl Machine<'_> {
                         s.pos,
                         rewrite_target(name, *deref, &vis),
                         *deref,
+                        // CR claude for claude: [bug/high] A block connect writes `pc ~
+                        // v`, and that loses an async answer on every run after the
+                        // first. On a later run `v` holds a standing bottom at the
+                        // block's entry rather than being absent, so `~` banks nothing,
+                        // and when the call answers `pc` does not fire again. The block
+                        // still completes, because its tuple join reads `v` directly,
+                        // but the variable keeps the first run's value. Example: `seq t
+                        // { { a <- after_idle(30.ms, n); 0 }; n }` leaves `a` at 1 for
+                        // every run; the same connect at seq level writes 1, 2, 3. This
+                        // breaks the canonical `{ a <- fetch(cfg); b <- probe(cfg) }`
+                        // form from design/seq_blocks.md. Fix: write on the value's own
+                        // first fire after entry, as a seq-level connect's `writes`
+                        // does (e.g. `name <- core::once(v)`; once resets when the step
+                        // sleeps). Add a pin to block_issues_together, or beside it,
+                        // that runs a block holding an async connect at least twice.
+                        // probe: design/review-2026-10-12/repro/t-seq-06.gx (t-seq-01)
                         sample(s.pos, r#ref(s.pos, self.pc), r#ref(s.pos, &v)),
                     ));
                 }
@@ -959,6 +1054,14 @@ impl Machine<'_> {
             vals.push(r#ref(s.pos, &v));
         }
         let value = match vals.len() {
+            // CR claude for claude: [bug/low] A `{ .. }` seq statement that holds only
+            // declarations (`{ type T = i64; use str }`) gets `never()` as its value
+            // here. Its step never completes, so the seq stalls with no diagnostic, and
+            // --check accepts the program. Outside a seq the same block is refused ('a
+            // use declaration is not an expression'). Fix: refuse the block when `vals`
+            // is empty, with the message the seq-level declaration refusal in
+            // `lower_stmt` uses ('a declaration is not a seq step ..'). probe:
+            // design/review-2026-10-12/repro/t-seq-04.gx (t-seq-06)
             0 => never(pos),
             1 => vals.pop().unwrap(),
             n => {
@@ -1020,6 +1123,16 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             stmt.fold(caps, &mut |mut caps, e| {
                 if let ExprKind::Ref { name }
                 | ExprKind::Connect { name, deref: true, .. } = &e.kind
+                    // CR claude for claude: [structure/low] This lookup plus the
+                    // `Type::Fn` test is the same 'is this name a function binding'
+                    // decision `fn_names` makes, written a second time. The copies
+                    // already differ: only this one excludes `env.trait_methods`, so a
+                    // trait method named in a seqq body can fall on different sides of
+                    // the two tests. Fix: one helper (for example `fn_binding(env,
+                    // scope, name) -> bool`) used by both, with the trait-method rule
+                    // decided once. Also, `Machine::pc` holds the same string as
+                    // `Machine::issue.pc`. Drop the field and read `self.issue.pc`.
+                    // (t-seq-09)
                     && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
                     && env.trait_methods.get(&bind.id).is_none()
                     && !bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -1103,6 +1216,17 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     ]);
     // a flush that reads the run's request reads what the queue produces,
     // so the queue cannot read the flush in the same cycle
+    // CR claude for claude: [bug/medium] A flush that reads the run's request reaches
+    // core::queue's #flush through a variable, so the clear lands a cycle after the
+    // flush fires. A request pushed in the flush's own cycle is then cleared with the
+    // ones that came before. That breaks design/seq_blocks.md §9 ("a request arriving
+    // with or after the flush is kept"), which the non-request-reading route honours.
+    // Probe: design/review-2026-10-12/repro/t-seq-05.gx. With `flush(select step { 5 =>
+    // req, .. })`, request 5, which arrives at the flush's step, is dropped and request
+    // 8 runs next. With `5 => true`, request 5 runs. Fix: the late #flush should clear
+    // only the entries pushed before the flush's cycle. For example, stamp queue
+    // entries with a push counter and carry the counter value at the flush through the
+    // variable. Pin both routes. (t-seq-05)
     let flush_reads_request = flush.is_some_and(|f| {
         trigger_name.as_ref().is_some_and(|n| reads_name(std::slice::from_ref(f), n))
     });
@@ -1516,6 +1640,18 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, map) },
         // a module's body names nothing of the seq's: it is a scope of its own
+        // CR claude for claude: [bug/medium] A dynamic module's `source` is an
+        // expression in the enclosing scope, not part of the module body, yet this arm
+        // returns it unrewritten. Inside a seq, a trigger name (`seq let c = ..`), a
+        // `try .. with(e)` name or a seqq capture used in `source` either reads the
+        // outer variable of that name or is refused as "not defined".
+        // fold_outside_lambdas also stops at every Module, so a `catch` or
+        // `#[parallel]` inside a dynamic source escapes the seq refusals. Fix: rebuild
+        // `ModuleKind::Dynamic` here with its `source` rewritten like any other
+        // non-step child, and return only a resolved module unchanged. Make
+        // fold_outside_lambdas descend into a dynamic source as well, and correct the
+        // comment above this arm. probe:
+        // design/review-2026-10-12/repro/x-expr-walks-01.gx (x-expr-walks-01)
         ExprKind::Module { .. } => return e.clone(),
         ExprKind::Connect { name, value, deref } => ExprKind::Connect {
             name: rewrite_target(name, *deref, map),
@@ -1564,6 +1700,21 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let arg = match mode {
                 // A `?` over a level reads it as it stands at entry, so a
                 // carried error raises at every entry.
+                // CR claude for claude: [bug/high] This lowers a call-free `x?` in a
+                // step to `(pc ~! x)?`, so the operand is read only at entry and never
+                // tracked. If x is absent at entry the step never completes once x
+                // arrives (a seqq then queues every later trigger behind the stalled
+                // run). Otherwise the step can complete with x frozen at its entry
+                // value while its siblings track, and an error x takes after entry
+                // never raises. `x$` in the same position waits and tracks.
+                // design/seq_blocks.md §5 says a level step fires at entry and is
+                // waited for if absent, and §6.3 says the entry sample is in addition
+                // to tracking. Fix: bind the operand once and keep the level shape
+                // inside the Qop, `{ let q = x; any(pc ~! q, q) }?`, so a carried error
+                // still re-raises at each entry. Pin `let v = x?` with x absent at
+                // entry, and an error arriving after entry. probe:
+                // design/review-2026-10-12/repro/x-engine-seq-errors-04.gx and 04b.gx
+                // (x-engine-seq-errors-02)
                 Rewrite::Issue(issue) if !has_call(&x) => Arc::new(
                     ExprKind::StrictSample {
                         lhs: Arc::new(r#ref(x.pos, issue.pc)),
@@ -1600,6 +1751,17 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             }
             ExprKind::Apply(call)
         }
+        // CR claude for claude: [bug/high] Under Rewrite::Issue, a step that holds a
+        // call only in a select arm is not entry-fired, because issue_expr sees
+        // has_call. This rewrite also leaves the scrutinee unsampled. When the taken
+        // arm is a standing level (`select hit { true => cached, false => fetch(k) }`
+        // with hit = true), nothing fires on re-entry, and the step completes on run 1
+        // and never again. The machine silently stalls, in both engines. Fix it as the
+        // Qop case does: under Rewrite::Issue with a call-free scrutinee, wrap the
+        // rewritten scrutinee in entry_fire(.., issue.pc), so a re-match re-emits a
+        // level arm while an arm holding an issued call stays guarded by its own
+        // completion. Pin it with a test that runs twice. probe:
+        // design/review-2026-10-12/repro/t-seq-02.gx (t-seq-02)
         ExprKind::Select(s) => ExprKind::Select(SelectExpr {
             arg: Arc::new(rewrite(&s.arg, map)),
             arms: Arc::from_iter(s.arms.iter().map(|(p, b)| {
@@ -1622,6 +1784,16 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 handler: Arc::new(rewrite_with(&c.handler, &inner, mode.deferred())),
                 role: match &c.role {
                     CatchRole::User => CatchRole::User,
+                    // CR claude for claude: [dead/low] These two arms never run.
+                    // Machine and Try catches are built only by `desugar_plain` and
+                    // `lower_try`, after the statements they wrap have been rewritten.
+                    // The parser never builds them, and a nested seq reaches this
+                    // function as an unlowered `ExprKind::Seq`. So `rewrite_with` only
+                    // ever sees `CatchRole::User`. The arms also rewrite `action` under
+                    // `inner` and `manual` under `map`, a choice nothing tests. Fix:
+                    // rewrite only the handler and carry the role over unchanged
+                    // (`role: c.role.clone()`), with a one-line comment that generated
+                    // roles are built after every rewrite. (t-seq-10)
                     CatchRole::Machine { action, manual, pc } => CatchRole::Machine {
                         action: Arc::new(rewrite_with(action, &inner, mode.deferred())),
                         manual: manual

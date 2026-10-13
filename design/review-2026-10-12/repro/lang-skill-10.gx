@@ -1,0 +1,5 @@
+// Array indexing is a Result, not an element: refused with
+// "cannot compute [i64, Error<`ArrayIndexError(string)>] + i64".
+// SKILL.md marks only `m{"k"}` as a Result.
+let a = [1, 2, 3];
+a[1] + 1

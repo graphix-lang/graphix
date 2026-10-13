@@ -1,0 +1,14 @@
+// sys-net-04: sys::net::list in an arm that sleeps does not list again at
+// the wake when its path did not fire.
+//   graphix --no-cache sys-net-04-list-wake.gx | grep '^b'
+// Expected: the listing at every wake. Seen: the listing once, then "off" only.
+sys::net::publish("/test/d/a", 1)$;
+sys::net::publish("/test/d/b", 2)$;
+let p = "/test/d";
+let t = sys::time::timer(duration:300.ms, true);
+let on = true;
+on <- t ~ !on;
+let b = select on { true => sys::net::list(#update: never(), p)$, false => ["off"] };
+println("b [b]");
+sys::exit(sys::time::timer(duration:1600.ms, false) ~ 0);
+b

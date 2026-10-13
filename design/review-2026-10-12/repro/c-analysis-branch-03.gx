@@ -1,0 +1,7 @@
+// `graphix --expand` accepts this #[parallel] (the tuple twin `(q(1), q(2))` is
+// refused), yet the slots reach an ordered queuefn wrapper and never fork.
+let clock = sys::time::timer(duration:1.ms, true);
+let q = queuefn(#trigger: clock, |x: i64| -> i64 x);
+let xs = [1, 2, 3, 4];
+#[parallel]
+array::map(xs, |x| q(x))

@@ -1,0 +1,10 @@
+// x-fix-stdlib-01: sys::net::write double-wraps its own WriteError (net.rs:140-147):
+// errf! already builds Value::Error, and the code wraps it in Value::Error again.
+// Expected: out = "WriteError: invalid path ...". Got: a coverage-hole warning and "none".
+let out = "none";
+{
+  catch(e) out <- select (e.0).error { `WriteError(m) => "WriteError: [m]" };
+  sys::net::write("relative/path", 1)?
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+out

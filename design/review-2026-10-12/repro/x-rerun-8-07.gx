@@ -1,0 +1,17 @@
+// x-rerun-8-07 (x-unsafe-03's second route, the nested-pattern collision of
+// c-pattern-02, still reproduces): a variant pattern inside a slice pattern
+// tests the element's tag position only, so a tuple ("S", 5) of the union
+// U = [(string, i64), `S(string)] matches [`S(b)] and binds b: string to 5.
+// 613864c3 hardened buffer::encode against the payload; the select still
+// takes the wrong arm. At top level (`select x { `S(b) => .., (s, n) => .. }`)
+// the same value correctly takes the tuple arm.
+// command: graphix-fuzz run x-rerun-8-07.gx
+// expected: 0 (the `_` arm: ("S", 5) is not an `S(string))
+// observed: the node-walk is bottom (str::len over an i64); the JIT aborts the
+//   process: "kernel param `b`: runtime I64(5) does not match the compiled
+//   String slot" (fusion/kernel.rs:218). With `[`S(b)] => "s [b]"` every mode
+//   traces "s 5".
+type U = [(string, i64), `S(string)];
+let f = |xs: Array<U>| -> i64 select xs { [`S(b)] => str::len(b), _ => 0 };
+let p: U = ("S", 5);
+f([p])

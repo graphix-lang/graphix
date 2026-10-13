@@ -1,0 +1,13 @@
+// gx-ui-02: line_edit::step over a State whose cursor is past the text (a caller cleared
+// value) produces nothing for a typed key or Backspace: only good= prints.
+use tui::{line_edit, input_handler::Event};
+let key = |c: string| -> Event `Key({ code: `Char(c), kind: `Press, modifiers: [], state: [] });
+let good = line_edit::step(line_edit::state("ab"), key("c"));
+let cleared = { value: "", cursor: 2 };
+let stale = line_edit::step(cleared, key("x"));
+let bs = line_edit::step(cleared, `Key({ code: `Backspace, kind: `Press, modifiers: [], state: [] }));
+println("good=[good]");
+println("stale=[stale]");
+println("bs=[bs]");
+sys::exit(sys::time::after_idle(duration:200.ms, good) ~ 0);
+good

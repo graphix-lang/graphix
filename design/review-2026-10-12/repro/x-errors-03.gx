@@ -1,0 +1,11 @@
+// x-errors-03: a failed write through a reference is logged with no source position
+// run: graphix --no-cache x-errors-03.gx   (same with --no-fusion)
+// expected: the dropped-write log names this file and the `*r <- 5` line, as the
+//   arith and unhandled-error logs do ("... in file <f> at line: 10, column: 1 ...")
+// observed: "a write through a reference was dropped: index 7 out of range for length 3"
+//   with no file or position, then [1, 2, 3]
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let a = [1, 2, 3];
+let r = &mut a[7];
+*r <- 5;
+a

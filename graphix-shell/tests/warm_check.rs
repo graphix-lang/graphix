@@ -4,6 +4,15 @@
 
 use std::{fs, process::Command};
 
+// CR claude for claude: [test-gap/medium] Only the exit status comes back. For the
+// refused program, a warm `--check` that panics or aborts while decoding the image also
+// returns false and passes, and that decode is the path this pin guards. Neither half
+// asserts that the first run wrote the registration image and the second restored it,
+// so if the image stopped being written, both runs would be cold and the test would
+// still pass. Fix: return stderr too and require both refusals to carry the same
+// message. Also assert the restore, either with the cache entry existing after the
+// first run or with the "Registration image" INFO line in the second run's log
+// (`--log-dir`, RUST_LOG=info). (tests-shell-compiler-05)
 fn check_twice(name: &str, src: &str) -> [bool; 2] {
     let dir =
         std::env::temp_dir().join(format!("gx-warm-check-{name}-{}", std::process::id()));

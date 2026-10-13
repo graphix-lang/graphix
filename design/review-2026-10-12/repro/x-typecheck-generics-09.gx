@@ -1,0 +1,7 @@
+// x-typecheck-generics-09: one-runtime-form refusal is placed at the arm body, not the pattern
+// command: graphix --no-cache --check x-typecheck-generics-09.gx
+// expected: the error at line 7, column 12 (the pattern `&i64 as r`)
+// observed: at line 7, column 25 (the body `1`): this pattern can't tell &i64 from &[i64, string]
+let s = "a";
+let v: [&i64, &string] = &s;
+select v { &i64 as r => 1, &string as q => 2 }

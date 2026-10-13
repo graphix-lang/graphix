@@ -1,0 +1,16 @@
+// t-seq-06: a connect inside a `{ .. }` seq statement lowers to
+// `a <- pc ~ v` (seq.rs lower_block), v the guarded issued call. On the first
+// run v is absent at entry, so `~` banks and pays when the call answers. On
+// every later run v is a guard-held BOTTOM at entry (not absent): `~` yields
+// bottom, banks nothing, and the answer that arrives later is never written.
+// The same statement at seq level (`a <- after_idle(..); n`) writes every run.
+// Expected: (1, 1) (2, 2) (3, 3). Observed: (1, 1) (2, 1) (3, 1), both engines.
+// Run: graphix --no-cache t-seq-06.gx
+let t = sys::time::timer(duration:150.ms, true) ~ 1;
+let n = 0;
+n <- t ~ n + 1;
+let a = 0;
+let r = seq t { { a <- sys::time::after_idle(duration:30.ms, n); 0 }; n };
+let later = sys::time::after_idle(duration:100.ms, r) ~ (r, a);
+sys::exit(sys::time::timer(duration:700.ms, false) ~ 0);
+later

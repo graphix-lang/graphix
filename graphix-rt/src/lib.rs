@@ -223,6 +223,14 @@ pub fn field_id(v: &Value, name: &str) -> Result<u64> {
 /// props! { pub(crate) struct GaugeProps { label: Option<SpanV>, ratio: f64 } }
 /// ```
 #[macro_export]
+// CR claude for claude: [structure/low] This exported macro names
+// netidx::publisher::Value, futures::future::try_join_all, anyhow::Context and
+// graphix_compiler::expr::ExprId as bare paths, so they resolve in the calling crate.
+// Every user must depend on netidx (a networking crate graphix-rt itself does not use),
+// futures, anyhow and graphix-compiler under exactly those names. A package with only
+// netidx-value cannot use the macro, and renaming a dependency breaks every expansion.
+// Use $crate:: paths throughout, re-exporting Value (from netidx_value), ExprId,
+// try_join_all and anyhow from a #[doc(hidden)] module in graphix-rt. (rt-10)
 macro_rules! props {
     ($vis:vis struct $name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
         $vis struct $name<X: $crate::GXExt> {
@@ -646,6 +654,15 @@ impl<X: GXExt> GXHandle<X> {
     /// last result and recomputes only when an input fires again, so a
     /// result an interrupted event would have produced is lost. Set a
     /// watchdog's budget well above the longest legitimate cycle.
+    // CR claude for claude: [doc-drift/medium] The watchdog example in this doc
+    // interrupts on every tick. `gx.get_env().now_or_never()` is always None: get_env
+    // sends GetEnv and then waits on a oneshot that the runtime task has not answered
+    // by the first poll. An embedder who copies the example interrupts whatever cycle
+    // is running every 5 s, and by this same doc that cycle's results are lost. Have
+    // the example time a real round trip instead: `tokio::time::timeout(budget,
+    // gx.get_env()).await.is_err()`. Also reword the first sentence. 'to bottom this
+    // cycle' contradicts the later 'each value keeps its last result'; say 'abort
+    // in-flight loops; each value keeps its last result'. (rt-07)
     pub fn interrupt(&self) {
         self.0.control.interrupt()
     }
@@ -1115,6 +1132,16 @@ impl<X: GXExt> GXConfig<X> {
     /// completely empty, with only the language, no core library, no standard
     /// library. To build a runtime with the full standard library and nothing
     /// else simply pass the output of `graphix_stdlib::register` to start.
+    // CR claude for claude: [doc-drift/low] The doc comment above describes an API that
+    // is gone. It says `root` is an argument and tells readers to 'pass the output of
+    // `graphix_stdlib::register` to start'. `start` takes no argument, the root and
+    // program are `GXConfig` builder fields, packages register through
+    // `register_packages`, and no `graphix_stdlib` crate exists. Rewrite it around
+    // `.root(..)`, `.program(..)` and package registration. The same drift is in
+    // book/src/packages/standalone.md, which says main.gx is appended to the root
+    // module. The shell actually runs it as the script
+    // (`Mode::Script(Source::Program(main))`) and only when no file argument was given.
+    // (book-modules-udt-19)
     pub async fn start(self) -> Result<GXHandle<X>> {
         // The handle and the running `ExecState` share the control.
         let control = self.ctx.control.clone();

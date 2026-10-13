@@ -1,0 +1,18 @@
+// c-select-seq-01: a guard below the taken arm is bound to the value an earlier arm claimed, and runs with it.
+// Run: graphix --no-cache c-select-seq-01.gx   (same under --no-fusion; graphix-fuzz check: AGREE)
+// The `-1` arm takes x = -1, yet the second arm's guard runs check(-1)? and the raise reaches the catch.
+// Expected: caught stays 0 (arm 1's guard is never consulted when x = -1).
+// Observed: (0,-1,"neg",0) (1,0,"zero",1) (2,1,"pos",1) (3,-1,"neg",1) (4,0,"zero",2)
+//           (5,1,"pos",2) (6,-1,"neg",2) (6,-1,"neg",3): caught counts every x = -1.
+// Companion: c-select-seq-01b.gx (--no-fusion logs "attempt to divide by zero" for `0 => .., n if 10 / n > 5`).
+let step = 0;
+step <- select step { n if n < 6 => n + 1, _ => never() };
+let x = step % 3 - 1;
+let caught = 0;
+let check = |n: i64| select n { k if k < 0 => error(`Neg(k)), k => k > 0 };
+let r = {
+  catch(e) caught <- e ~ caught + 1;
+  select x { -1 => "neg", n if check(n)? => "pos", _ => "zero" }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, select step { 6 => 0, _ => never() }));
+(step ~ step, x, r, caught)

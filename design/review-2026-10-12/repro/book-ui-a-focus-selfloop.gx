@@ -1,0 +1,21 @@
+// book/src/ui/tui/input.md:332-350 Focus Management, with a timer standing in for one Tab key.
+// Expected: focused becomes 1 once. Actual: it cycles 0,1,2,0,.. forever (exits after 21 changes).
+let focused = 0;
+let num_widgets = 3;
+let ev = sys::time::after_idle(duration:100.ms, `Tab);
+let handle = |event: [`Tab, `BackTab, `Other]| select event {
+    `Tab => {
+      focused <- (focused + 1) % num_widgets;
+      `Stop
+    },
+    `BackTab => {
+      focused <- (focused - 1 + num_widgets) % num_widgets;
+      `Stop
+    },
+    _ => `Continue
+  };
+handle(ev);
+let n = 0;
+n <- focused ~ n + 1;
+sys::exit(select n { x if x > 20 => x, _ => never() });
+focused

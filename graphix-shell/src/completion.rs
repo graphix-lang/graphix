@@ -11,6 +11,14 @@ enum CompletionContext<'a> {
 }
 
 /// Where the name ending at the end of `s` starts.
+// CR claude for claude: [structure/low] This, and CompletionContext::from_str below it,
+// re-derive cursor context that graphix-lsp's text module already computes more
+// carefully. Here any ':' counts as a name character, only parentheses are counted,
+// there is no `[`/`{`/`;` boundary and `?#` (a fn type's label) is not excluded. The
+// LSP's path_start, call_context and label_start handle all of these. So in the REPL
+// `f([a, #` proposes f's labels, where the LSP proposes none. graphix-shell already
+// depends on graphix-lsp. Make those three functions public over a &str and an offset,
+// and build this CompletionContext from them. (x-dup-16)
 fn name_start(s: &str) -> usize {
     s.char_indices()
         .rev()

@@ -1,0 +1,26 @@
+// x-fix-types-05: Abstract types escape Ordered/Discernible and reference comparison.
+// command: graphix --no-cache design/review-2026-10-12/repro/x-fix-types-05.gx
+// expected: refused at check (array::sort over F and R needs Ordered; U(x) == U(y) needs
+//   Discernible), as the bare forms `array::sort([|x: i64| x])`, `array::sort([&a[0]])`
+//   and `x == y` over [`A, string] are; or, for T(r1) == T(r2), true like r1 == r2.
+// observed: accepted; prints
+//   ((true, false, true), [11, 10, 20], [2, 1], true)
+//   T(r1) == T(r2) compares bind ids, the sort orders by lambda id / bind id, and
+//   U(`A) == U("A") is true.
+type T = Abstract<&i64>;
+type F = Abstract<fn(x: i64) -> i64>;
+type U = Abstract<[`A, string]>;
+let a = [1, 2];
+let r1 = &a[0];
+let r2 = &a[0];
+let fs = array::sort([F(|x: i64| x + 1), F(|x: i64| x), F(|x: i64| x * 2)]);
+let rs = array::sort([T(&a[1]), T(&a[0])]);
+let x: [`A, string] = `A;
+let y: [`A, string] = "A";
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(
+    (r1 == r2, T(r1) == T(r2), [r1] == [r2]),
+    array::map(fs, |f: F| (f.0)(10)),
+    array::map(rs, |r: T| *r.0),
+    U(x) == U(y)
+)

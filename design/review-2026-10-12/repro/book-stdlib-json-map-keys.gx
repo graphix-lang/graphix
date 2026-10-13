@@ -1,0 +1,15 @@
+// json::write_str writes a Map key with Value::to_string_naked
+// (stdlib/graphix-package-core/src/lib.rs map_key), so a datetime key or
+// a composite key is written in a form json::read cannot read back into
+// the map's own type. Expected: both reads give back the map.
+// Got: InvalidCast for both.
+type E = Error<[`InvalidCast(string), `JsonErr(string)]>;
+let m: Map<(i64, i64), string> = {(1, 2) => "a"};
+let ms = json::write_str(m)$;
+let mb: [Map<(i64, i64), string>, E] = json::read(ms);
+println("tuple key: [ms] -> [mb]");
+let d: Map<datetime, string> = {datetime:"2020-01-01T00:00:00Z" => "x"};
+let ds = json::write_str(d)$;
+let db: [Map<datetime, string>, E] = json::read(ds);
+println("datetime key: [ds] -> [db]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0))

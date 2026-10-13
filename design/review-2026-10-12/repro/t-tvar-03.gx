@@ -1,0 +1,13 @@
+// The body of f is accepted though it holds only where the declared,
+// rigid 'r is i64: `g` requires ['r, i64] to be a Singleton, and
+// tvar.rs UnionParts::narrowing hands the known member i64 to the rigid
+// cell as a conjunct (require_singleton / narrow_singleton). f's scheme
+// silently becomes 'r: Number & i64, and the call f(2.5, false), which
+// fits the declared 'r: Number, is refused AT THE CALLER:
+//   type mismatch 'r: unbound within Number & i64 does not contain f64
+// Compare `let f = 'r: Number |x: 'r| h(x, 1)` with
+// h = 'a: Number |x: 'a, y: 'a| x, refused in the body as rigidity says.
+let g = 'a: Singleton |x: 'a| -> 'a x;
+let f = 'r: Number |x: 'r, b: bool| g(select b { true => x, false => 1 });
+let a = f(2.5, false);
+a

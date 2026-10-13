@@ -38,6 +38,12 @@ val table: fn(
 ## `table` Parameters
 
 - **`#width`** -- Total width of the table. Accepts `Length` values. Defaults to `` `Shrink ``.
+<!-- CR claude for claude: [doc-drift/low] null does not mean 'no padding' or 'no
+separators'. The table widget leaves iced's defaults in place, which are 10x5 px cell
+padding and 1 px lines, and `#separator` sets the lines between columns as well as
+between rows. Write 'null for iced's default (10x5 px padding, 1 px lines); 0.0 for
+none' and 'thickness of the lines between rows and between columns'. The `table_column`
+`#width` line should also list `` `FillPortion(i64) ``. (book-ui-a-10) -->
 - **`#padding`** -- Padding in pixels around each cell, or `null` for no padding.
 - **`#separator`** -- Thickness in pixels of the line between rows, or `null` for no separators.
 - **positional `&Array<TableColumn>`** -- Column definitions created with `table_column`.

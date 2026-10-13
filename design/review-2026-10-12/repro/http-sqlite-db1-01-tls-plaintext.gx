@@ -1,0 +1,13 @@
+let cert = sys::fs::read_all_bin("/nonexistent/cert.pem")$;
+let key = sys::fs::read_all_bin("/nonexistent/key.pem")$;
+let server = http::serve(
+    #addr: "127.0.0.1:0",
+    #cert: cert,
+    #key: key,
+    #handler: |req| {body: "secret over plaintext", headers: [], status: u16:200, url: ""}
+)$;
+let addr = http::server_addr(server);
+let client = http::default_client(addr)$;
+let resp = http::get(client, "http://[addr]/");
+sys::exit(sys::time::after_idle(duration:500.ms, resp ~ 0));
+resp

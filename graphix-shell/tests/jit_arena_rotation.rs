@@ -35,6 +35,15 @@ fn run(dir: &Path, path: &Path) -> (bool, String, String) {
         .arg("--log-dir")
         .arg(&logs)
         .arg(path)
+        // CR claude for claude: [test-gap/low] At warn level the log never shows
+        // whether the second run restored the program image. If the image stopped being
+        // written (a node kind without a codec makes the shell run cold), the "warm"
+        // run would be a second cold run, both rotation asserts would still pass, and
+        // the restored-install path would go untested. Fix: log at info and require
+        // "Program image" in the warm log, or check the cache entry exists. Likewise,
+        // unbuildable_jit_runs_unfused should pass `--log-dir` with RUST_LOG=warn and
+        // require "fusion is unavailable". On a host where a 10^15-byte reservation
+        // succeeds, that test now proves nothing. (tests-shell-compiler-06)
         .env("RUST_LOG", "warn")
         .env("GRAPHIX_JIT_ARENA", "196608")
         .env("XDG_CACHE_HOME", dir.join("cache"))

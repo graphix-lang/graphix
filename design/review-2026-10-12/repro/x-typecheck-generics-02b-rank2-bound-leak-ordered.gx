@@ -1,0 +1,6 @@
+let app = |f: fn<'b: Any>(x: 'b, y: 'b) -> bool| {
+  let a = 1;
+  let b = 2;
+  f(&a, &b)
+};
+app(|x, y| x < y)

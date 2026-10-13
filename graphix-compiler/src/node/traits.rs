@@ -86,6 +86,19 @@ fn implements(env: &Env, declared: &FnType, implemented: &Type) -> Result<()> {
 
 /// The method signature instantiated at an implementation target:
 /// `self := target`, everything else fresh.
+// CR claude for claude: [bug/high] Only `self` is replaced here, so a method quantifier
+// with the same name as a variable of the impl target stays a separate cell under the
+// same name. Take `val conv: fn(self, x: 'a) -> 'a` against `impl<'a> Conv for
+// Box<'a>`. The result is `fn(self: Box<'a>, x: 'a) -> 'a` with two different 'a.
+// FnType::sig_matches compares variables by name, so Impl::typecheck0 refuses a valid
+// impl with "type variable usage mismatch: expected 'a: unbound, got 'a: unbound". The
+// same happens in a module when the .gxi trait's variable has the same name as the .gx
+// impl head's. 'a is the default name on both sides, so ordinary code hits this. Fix:
+// before replacing `self`, alpha-rename each method quantifier whose name appears among
+// the target's variables to a fresh name, and update the quantifier list and any
+// `throws` to match. Every caller (Impl::compile, Impl::typecheck0, the interface's
+// impl declaration in module.rs) then sees distinct names. Probe:
+// design/review-2026-10-12/repro/c-module-traits-01.gx (c-module-traits-01)
 pub(crate) fn method_sig_at(sig: &FnType, target: &Type) -> FnType {
     let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
     known.insert(literal!("self"), target.clone());

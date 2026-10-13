@@ -57,6 +57,30 @@ fn parse_sheet<RS: std::io::Read + std::io::Seek + Clone>(rs: RS, sheet: &str) -
         Err(e) => return errf!("XlsErr", "{e}"),
     };
     // the range covers only the used cells: pad it out to A1
+    // CR claude for claude: [bug/high] Padding to A1 allocates (end row + 1) x (end col
+    // + 1) Values. Both numbers come from cell coordinates in the file, not from its
+    // size, so a 2 KB xlsx whose only cell is XFD100000 asks for 100000 rows of 16384
+    // nulls (1.6e9 Values), and the runtime is OOM-killed. calamine's range for that
+    // file holds one cell. Bound the padded area before building it: compute it from
+    // range.end() and answer an XlsErr above a cell limit, or return the start offset
+    // beside the unpadded rows. calamine's worksheet_range is itself dense over the
+    // used area (a cell at A1 plus one far corner is the same bomb), so reading through
+    // the sparse cells reader with the same limit would close both. probe:
+    // design/review-2026-10-12/repro/x-fix-stdlib-01.sh Also reported as (x-panics-02).
+    // (x-fix-stdlib-01)
+    // CR claude for claude: [bug/high] Padding the used range out to A1 turns a tiny
+    // file into an unbounded allocation. A 1497-byte xlsx whose only cell is XFD100000
+    // makes this build 100000 rows of 16384 nulls, about 1.6e9 Values, each leading row
+    // as its own ValArray, and the run is OOM-killed at 6 GB. The input is untrusted,
+    // so the result size must be bounded by something tied to the input. Building the
+    // blank row once and cloning it does not fix this alone. calamine's Range is itself
+    // dense over the used range: a file with cells at A1 and XFD200000 OOMs inside
+    // `worksheet_range` with no padding at all. The fix needs a size check before the
+    // dense range is built. Either read the sheet's dimensions or cells through
+    // calamine's sparse cell reader and refuse with `XlsErr` past a cap, or return the
+    // cells sparsely or with the range origin rather than as a padded grid (a breaking
+    // change; pin it in the xls lib tests). probe:
+    // design/review-2026-10-12/repro/small-pkgs-02.sh (small-pkgs-02)
     let (r0, c0) = range.start().map_or((0, 0), |(r, c)| (r as usize, c as usize));
     let width = c0 + range.width();
     let mut rows: LPooled<Vec<Value>> = LPooled::take();
@@ -107,6 +131,12 @@ impl EvalCachedAsync for XlsReadEv {
     }
 
     fn eval((input, sheet): Self::Args) -> impl Future<Output = Value> + Send {
+        // CR claude for claude: [perf/low] parse_sheet runs inside the async block, on
+        // whichever tokio worker the JoinSet task lands on. Inflating and parsing a
+        // multi-MB workbook holds that worker for the whole parse, stalling the netidx
+        // IO and timers queued there. Fix: run it under `tokio::task::spawn_blocking`
+        // and turn a JoinError into an XlsErr, as graphix-package-sqlite does. Do the
+        // same for parse_sheets in XlsSheetsEv::eval. (small-pkgs-13)
         async move { parse_sheet(Cursor::new(input), &sheet) }
     }
 }

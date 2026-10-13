@@ -1,0 +1,4 @@
+// graphix-fuzz check: EXCLUDED. Neither `<-` nor a fire-count builtin is in
+// the program; `error(` matches the `or(` marker and `m0::tsum(` would match
+// `sum(` (lib.rs oracle_tier substring test). Remove the error arm -> compared.
+{ let f = |n: i64| select n { i64:0 => i64:1, _ => error(u8:1) }; let a = f(i64:0)$; let r: i64 = { let q: i64 = json::read(json::write_str(i64:3)$)$; q }; a + r }

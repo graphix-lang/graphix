@@ -1,0 +1,15 @@
+// c-module-traits-01: a trait method's own type variable named like the
+// impl head's variable refuses a valid impl.
+// run: graphix --no-cache c-module-traits-01.gx
+// expected: "s" (the trait's 'a and the impl's 'a are unrelated variables)
+// observed: refused, "method conv of impl Conv for Box<'a> does not
+//   implement the declared fn(self: Box<'a>, x: 'a) -> 'a ... type variable
+//   usage mismatch: expected 'a: unbound, got 'a: unbound" (exit 1).
+// With the trait's 'a renamed to 'b it prints "s". The same happens in a
+// module whose .gxi declares the trait with 'a and whose .gx writes
+// `impl<'a> Conv for Box<'a>` (the .gxi trait's variable name is what clashes).
+trait Conv { val conv: fn(self, x: 'a) -> 'a };
+type Box<'a> = Abstract<'a>;
+impl<'a> Conv for Box<'a> { let conv = |b, x| x };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+Conv::conv(Box(1), "s")

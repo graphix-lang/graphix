@@ -91,6 +91,16 @@ impl<R: Rt> ForkRt<R> {
 
     /// A branch forked from `parent`, which must not be used until the
     /// branch has merged back.
+    // CR claude for claude: [risk/low] ForkRt::new, ForkCx::new and Layered::fork are
+    // safe fns. Each keeps a raw pointer to its parent, with the lifetime erased to
+    // 'static in ForkRt and ForkCx, and safe methods later dereference it. Code in this
+    // crate that uses or mutates the parent before the child merges (a new fork point,
+    // or an audit over branches after merge_in_order) reaches undefined behaviour
+    // without writing `unsafe`. The doc's "must not be used until the branch has merged
+    // back" is the real precondition, and nothing enforces it. Fix: make the three
+    // constructors `unsafe fn` with that contract as a `# Safety` section, so the fork
+    // site has to state it. Carrying a `'p` lifetime would be the type-checked fix, but
+    // it spreads into Event and ExecState. (x-unsafe-06)
     pub(crate) fn new(parent: &RtView<'_, R>) -> Self {
         Self {
             parent: parent as *const RtView<'_, R> as *const RtView<'static, R>,
@@ -863,6 +873,16 @@ where
         }
     }
     ctx.apply_deferred();
+    // CR claude for claude: [perf/medium] Each server-handler update does two expensive
+    // things. It reruns `analysis::independent` over every running request instance,
+    // which rebuilds the static call graph and every instance summary. It also calls
+    // `apply_deferred` unconditionally, and in a forked branch that forks the whole
+    // `CompileCtx` through `CxView::deref_mut` even when nothing is pending. So a
+    // server holding many slow requests pays for all of them every cycle it updates,
+    // while every other fork site decides once. Fix: compute each instance's summary
+    // once, when it binds, and combine the cached summaries here (or decide each pair
+    // once). Call `apply_deferred` only when `deferred_pending()` is true. Also
+    // reported as (x-parallel-06). (c-analysis-branch-04)
     let fork = items.len() >= 2 && ctx.fork_mode() != ParMode::Off && {
         let calls: LPooled<Vec<&Node<R, E>>> =
             items.iter_mut().map(|i| &*call(i)).collect();
@@ -952,6 +972,15 @@ fn audit<R: Rt, E: UserEvent>(
     right: &Event<E>,
     right_rt: &ForkRt<R>,
 ) {
+    // CR claude for claude: [test-gap/medium] The audit sees only reads that go through
+    // node::read_var. It misses three things: RtView::ref_path (Deref and ConnectDeref
+    // addressing a moving place), ConnectDeref::update's direct ctx.event.variables
+    // lookup of src_id, and a left sibling's ForkRt::ref_paths entries, which own()
+    // never checks. The place-form divergence in x-parallel-01b runs clean under
+    // GRAPHIX_PAR=force GRAPHIX_PAR_AUDIT=1 while it prints values the serial run does
+    // not. Fix: note_read the cell in RtView::ref_path and in ConnectDeref's overlay
+    // read, and count left_rt.ref_paths as published in own(). probe:
+    // design/review-2026-10-12/repro/x-parallel-01b-byref-place.gx (x-parallel-05)
     let own = |ev: &Event<E>, rt: &ForkRt<R>, id: &BindId| {
         ev.variables.map.contains_key(id) || rt.store.contains_key(id)
     };
@@ -967,6 +996,16 @@ fn audit<R: Rt, E: UserEvent>(
 
 /// The process's evaluation pool: `GRAPHIX_EVAL_THREADS` threads (default
 /// one per core), shared by every runtime in the process.
+// CR claude for eric: [risk/low] Every runtime in the process forks onto this one pool.
+// A worker waiting in rayon::join runs stolen jobs while it waits, and those jobs can
+// belong to another runtime. If runtime B's part is long or wedged and a worker inside
+// runtime A's fork_join steals it, A's cycle cannot finish until B's part does.
+// GXHandle::interrupt on A does nothing there, because the stolen part polls B's
+// Control. In test processes, which run many runtimes in parallel, one wedged fixture
+// can stall unrelated ones. Decide between a pool per runtime (or no cross-runtime
+// stealing) and accepting the coupling; if it is accepted, state it in
+// design/parallel_eval.md's section on the pool for embedders that host several
+// runtimes. (x-concurrency-12)
 pub fn eval_pool() -> &'static rayon::ThreadPool {
     static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
         // resolved here: rayon resolves 0 through RAYON_NUM_THREADS, the

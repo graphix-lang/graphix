@@ -69,6 +69,15 @@ By default the module resolve path has several entries,
   we are running `/home/user/test.gx` then Graphix will look for modules in
   `/home/user`
 
+<!-- CR claude for eric: [doc-drift/low] The documented Windows path
+`%APPDATA%\Roaming\graphix` is wrong. `search_path` in graphix-rt uses
+`dirs::data_dir()`, which is `%APPDATA%` (already `...\AppData\Roaming`), so the path is
+`%APPDATA%\graphix`. The package manager (`graphix_data_dir` in graphix-package) uses
+`dirs::data_local_dir()`, which is `%LOCALAPPDATA%`, while packages/using.md documents
+`%APPDATA%\graphix\packages.toml`. On Windows, init modules and packages.toml therefore
+live in different trees, and the book gets both wrong. Also, GRAPHIX_MODPATH is searched
+before the data directory, not 'appended'. Decide whether one directory function should
+serve both, then document the real paths and search order. (book-modules-udt-18) -->
 - the Graphix init directory. This is a platform specific directory where you
   can put Graphix modules.
   - On Linux `~/.local/share/graphix`

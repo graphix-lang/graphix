@@ -1,0 +1,16 @@
+type E = Error<[`JsonErr(string), `InvalidCast(string)]>;
+let a: List<Array<i64>> = [<[1, 2], []>];
+let s = json::write_str(a)$;
+println("written: [s]");
+let b: [List<Array<i64>>, E] = json::read(s);
+println("read back: [b]");
+let c: [{a: i64, b: string}, E] = json::read("{\"a\": 1}");
+println("missing string: [c]");
+let d: [{a: i64, b: bool}, E] = json::read("{\"a\": 1}");
+println("missing bool: [d]");
+let e: [{a: i64, b: Array<i64>}, E] = json::read("{\"a\": 1}");
+println("missing array: [e]");
+let f: [{a: i64, b: f64}, E] = json::read("{\"a\": 1}");
+println("missing f64: [f]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

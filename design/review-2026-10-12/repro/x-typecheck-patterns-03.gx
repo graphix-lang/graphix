@@ -1,0 +1,35 @@
+// x-typecheck-patterns-03: an empty collection defeats the one-runtime-form
+// rule: Array<i64> and Array<string> are deemed discernible.
+// command: graphix --no-cache design/review-2026-10-12/repro/x-typecheck-patterns-03.gx
+//   (same with --no-fusion; graphix-fuzz run: all modes agree on "ints")
+// expected: ("strings", "strings 0", "strings", "strings"), or a refusal of the
+//   arms/impls as for [Array<i64>, List<i64>] ("can't tell Array<i64> from List<i64>")
+// observed: ("ints", "ints 0", "ints", "ints")
+//   the empty Array<string> takes the Array<i64> arm and the Array<i64> impl;
+//   an empty Map<string, string> and an empty List<string> do the same
+// contrast: [Array<i64>, List<string>], whose only shared value is the empty
+//   one, IS refused ("this pattern can't tell Array<i64> from List<string>"),
+//   and so is [Array<Array<i64>>, (Array<string>, Array<string>)] (rep_overlaps
+//   counts Array/Array and Map/Map as overlapping); only a top-level pair with
+//   one constructor is judged by its parts.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+trait Show { val show: fn(self) -> string };
+impl Show for Array<i64> { let show = |a| "ints [array::len(a)]" };
+impl Show for Array<string> { let show = |a| "strings [array::len(a)]" };
+let f = |a: [Array<i64>, Array<string>]| select a {
+  Array<i64> as _ => "ints",
+  Array<string> as _ => "strings"
+};
+let g = |a: [Array<i64>, Array<string>]| Show::show(a);
+let fm = |m: [Map<i64, i64>, Map<string, string>]| select m {
+  Map<i64, i64> as _ => "ints",
+  Map<string, string> as _ => "strings"
+};
+let fl = |l: [List<i64>, List<string>]| select l {
+  List<i64> as _ => "ints",
+  List<string> as _ => "strings"
+};
+let e: Array<string> = [];
+let m: Map<string, string> = {};
+let l: List<string> = [<>];
+(f(e), g(e), fm(m), fl(l))

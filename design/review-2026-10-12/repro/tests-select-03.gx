@@ -1,0 +1,5 @@
+let f = |v: (i64, i64)| -> i64 #[native] select v { (1 | 2, y) => y, _ => 0 };
+// CLAUDE.md: or-patterns in "select arms and bracketed element positions ...
+// fuse natively". An or-pattern in an element position does not:
+// `graphix --no-cache --expand` refuses "or-pattern leaf not lowerable".
+f((2, 5))

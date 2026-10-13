@@ -332,6 +332,15 @@ fn take_site<R: Rt, E: UserEvent>(
             Ok(s) => s,
             Err(e) => {
                 log::error!("core trait site for {}: {e:?}", hook.typ);
+                // CR claude for claude: [risk/low] The registry was unlocked while
+                // build_site ran. Forked branches share core_hook_sites, so in that
+                // window another dispatch can replace this key's entry after the impl
+                // list changes. Indexing `by_type[slot]` on the new entry can then
+                // panic out of bounds or clear another instantiation's candidate.
+                // return_site already guards this with same_version and
+                // SiteEntry::candidate. Apply the same filter here: only clear the slot
+                // when the entry's version is the loan's version and the slot still
+                // holds `typ`. (c-module-traits-07)
                 if let Some(e) = ctx.core_hook_sites.lock().sites.get_mut(&key) {
                     e.by_type[slot].1 = None;
                 }

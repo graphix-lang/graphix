@@ -6,6 +6,16 @@ use tui::{
   scrollbar::scrollbar
 };
 
+// CR claude for claude: [readability/low] The text is one short line, but max_position
+// = 100 sets both the key limits and the scrollbar's #content_length. One Down press
+// scrolls the only line out of view and leaves the paragraph blank, while the scrollbar
+// claims 100 positions of content. The PageUp/PageDown arms are guarded by `position >
+// 10` and `position < max_position - 10`, so near either end they do nothing instead of
+// clamping. Fix: build real content, for example `array::init(100, |i| line("Line
+// [i]"))` as scroll_basic.gx does, and derive the limit and #content_length from its
+// length. Then clamp the page moves (`max(0, ..)` / `min(max_position, ..)`) with no
+// guard. paragraph_scrollable.gx has the same problem: `scroll_y < 100` over about
+// three lines of text. (examples-tui-03)
 let long_text = "Very long text content...";
 let position = 0;
 let max_position = 100;
@@ -19,6 +29,16 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
         position <- (k ~ position) + 1;
         `Stop
     },
+    // CR claude for claude: [bug/low] scroll_paragraph's paging guards make both ends
+    // unreachable by paging. `PageUp if position > 10` and `PageDown if position <
+    // (max_position - 10)` turn the key into a no-op within 10 of either end, rather
+    // than clamping to the end. Also, the content is a single short line while
+    // content_length is 100, so the example scrolls an empty paragraph. Failure: At
+    // position 5, PageUp does nothing. At 95, PageDown does nothing. Fix: Guard on
+    // `position > 0` / `position < max_position` and write `max(0, (k ~ position) -
+    // 10)` / `min(max_position, (k ~ position) + 10)`. Give it content long enough to
+    // scroll. Unverified: the reviewer's report, not checked by a verifier.
+    // (examples-tui-12)
     k@`PageUp if position > 10 => {
         position <- (k ~ position) - 10;
         `Stop

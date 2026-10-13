@@ -1,0 +1,14 @@
+// x-parallel-05: tuple fields calling a function fork on a cold start and never on a warm
+// one (callee still Callee::Imaged when the ForkSite decides): run twice with the same
+// XDG_CACHE_HOME under GRAPHIX_PAR=force --no-fusion; cold prints shuffled a/b/c/d per
+// cycle, warm always abcd. Blocks (imaged plans) and slots are unaffected.
+let rec f = |d: i64, v: i64| -> i64 select d {
+    0 => v,
+    d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003
+};
+let g = |tag: string, v: i64| { let y = f(9, v); println(y ~ tag); y };
+let k = 0;
+let r = (g("a", k), g("b", k + 1), g("c", k + 2), g("d", k + 3));
+k <- r ~ select k { k if k < 8 => k + 1, _ => never() };
+sys::exit(select k { 8 => r ~ 0, _ => never() });
+k

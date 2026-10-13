@@ -1,0 +1,12 @@
+use sys::fs::{fstat, open, write_all};
+use sys::io::Read;
+let temp = sys::fs::tempdir::create(null)$;
+let path = sys::join_path(sys::fs::tempdir::path(temp), "data.txt");
+let wrote = write_all(#path: path, "hello world")$;
+let f = open(`Read, wrote ~ path)$;
+let st = fstat(f);
+let r = Read::read(f, u64:5);
+sys::exit(sys::time::after_idle(duration:200.ms, (st, r)) ~ 0);
+let show = select r { error as e => "read: [e]", b => "read ok: [buffer::to_string_lossy(b)]" };
+let shows = select st { error as e => "fstat: [e]", m => "fstat ok len [m.len]" };
+println("[show] | [shows]")

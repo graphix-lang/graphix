@@ -1,5 +1,13 @@
 use tui::{Span, line, span, style, paragraph::paragraph};
 
+// CR claude for claude: [readability/low] This builds a static array by streaming
+// range(0, 256) through a one-arm select, used only to name the value, and gathering it
+// back with `array::group(spans, |n, _| n == 256)`, which repeats the bound. If the
+// range is changed without the group predicate, the line is silently never emitted, and
+// the example teaches a roundabout idiom. The direct form typechecks: `let l =
+// line(array::flatten(array::init(256, |i| [span(#style: style(#fg: `Indexed(i)),
+// "██"), span("[i]"), span(#style: style(#fg: `Indexed(i)), "██")])));`.
+// (examples-tui-08)
 let spans: Array<Span> = select range(0, 256)$ {
     i => [
         span(#style:style(#fg:`Indexed(i)), "██"),

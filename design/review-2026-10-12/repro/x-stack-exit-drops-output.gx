@@ -1,0 +1,7 @@
+// The value of the last expression is produced in the first cycle, but
+// the shell usually prints nothing: the exit request and the first output
+// batch are ready together and `select!` in Shell::run picks at random.
+// 5 of 6 runs printed nothing (graphix --no-cache --no-fusion).
+let rec f = |n: i64| -> i64 select n { 0 => 0, n => 1 + f(n - 1) };
+sys::exit(sys::time::after_idle(duration:10.ms, 0));
+f(20000)

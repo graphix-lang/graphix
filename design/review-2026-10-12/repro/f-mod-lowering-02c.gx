@@ -1,0 +1,20 @@
+let n = 0;
+// f-mod-lowering-02c: lowering::arm_io_blocker lets an effect under a select
+// arm fuse when its trigger merely READS the scrutinee or an arm bind (or, for a
+// lambda call, when its arguments do). Neither makes the trigger fire at every
+// entry of the arm, so a fire the node-walk delivers at the arm's wake (a
+// constant re-fires when its arm wakes) never reaches the kernel: the effect is
+// skipped (engine divergence, interp is the intended semantics).
+//
+// command: graphix-fuzz check design/review-2026-10-12/repro/f-mod-lowering-02c.gx
+// should print: AGREE
+// observed (HEAD 7324207f, debug build): DIVERGENCE — interp prints at cycles
+//   0, 2, 4, 6 (every entry of arm 0); jit (nocache, cold, warm) prints at 0 only.
+// Here h(s) is the performing call: performing_args takes h's arguments as its triggers, but print's trigger inside h is the constant "hi".
+n <- select n { 6 => never(), x => x + 1 };
+let h = |v: i64| -> i64 { print("hi"); v + 1 };
+let f = |s: i64| -> i64 select s {
+  0 => h(s),
+  _ => 0
+};
+f(n % 2)

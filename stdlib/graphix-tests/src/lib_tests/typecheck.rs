@@ -14,6 +14,13 @@ run!(json_no_type, r#"json::read("42")"#, refused("the type 'b must be fully kno
 run!(toml_no_type, r#"toml::read("x = 42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
 
 // pack::read without a concrete return type is a compile error.
+// CR claude for claude: [test-gap/low] pack_no_type, and subscribe_no_type further
+// down, pass on any error: a parse error, an unbound name after a rename, or an
+// unrelated type error. A refusal should name its message. Both programs are refused
+// today with the same message family their siblings pin ("the type 'b must be fully
+// known here" for pack::read, "the type 'a must be fully known here" for subscribe).
+// Use refused("must be fully known here") for both, as json_no_type does.
+// (tests-lib-b2-09)
 run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, |v: Result<&Value>| v
     .is_err(); FuseExpect::None);
 

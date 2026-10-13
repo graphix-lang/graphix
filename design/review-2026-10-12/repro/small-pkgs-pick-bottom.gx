@@ -1,0 +1,9 @@
+// rand::pick and rand::shuffle ride their last value while their input is bottom
+// (array::len and rand::rand go bottom): prints (1, 7) after x went bottom.
+let t = 0;
+t <- sys::time::timer(duration:50.ms, false) ~ 1;
+let x: Array<i64> = select t { 0 => [7], _ => never() };
+let y = 0;
+y <- sys::time::timer(duration:150.ms, false) ~ 1;
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(y, rand::pick(x))

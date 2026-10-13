@@ -353,6 +353,15 @@ async fn cold_and_warm(
 /// The header's (heap, instance table, id counts) offsets and where they
 /// sit in `image`.
 /// Where a registration image's checksum is, after its magic and format.
+// CR claude for claude: [test-gap/low] SEAL_AT and with_table's `header + 16` copy
+// write_registration's private header layout. If a field moves, with_table reseals at
+// the wrong offset, and the read then refuses every rewritten image on the checksum.
+// a_bad_registration_image_runs_cold (the huge-count case) and
+// an_instance_outside_the_heap_is_refused expect a refusal, so both stay green without
+// reaching the table checks they are named for. Assert graphix_compiler::image::sealed
+// on each rewritten image before loading it, or export the seal and offsets positions
+// from image::registration. The doc comment above SEAL_AT about the header's offsets
+// belongs on image_offsets. (tests-modules-image-06)
 const SEAL_AT: usize = 5;
 
 fn image_offsets(image: &Bytes) -> (usize, u64, usize, usize) {
@@ -433,6 +442,17 @@ async fn a_restored_interface_keeps_its_positions() -> Result<()> {
 /// `#[parallel]` and `#[serial]` restore with the program, on an
 /// expression, a `let` and a definition alike.
 #[tokio::test]
+// CR claude for claude: [test-gap/medium] This test claims #[parallel] and #[serial]
+// restore with the program, but it asserts only values. A forked cycle computes what
+// the serial one does, so a ForkControl codec that loses or swaps the kind (for
+// example, image_decode reading None as ForkKind::Parallel) still passes. A warm start
+// would then fork a #[serial] block's effects out of order.
+// program_image_restores_nested_fork_control below runs under the env-default ParMode:
+// Force satisfies it without the attribute, and Off fails it outright. Give `session` a
+// ParMode parameter (Control::set_par_mode) instead of the env default. Then assert
+// cold forks == warm forks, add a #[serial] case under Force that asserts zero forks
+// both cold and warm, and run the nested test under Auto so only the attribute can
+// fork. (tests-modules-image-02)
 async fn program_image_restores_fork_control() -> Result<()> {
     let program = r#"
         let double = |xs: Array<i64>| #[parallel] array::map(xs, |x| x * 2);

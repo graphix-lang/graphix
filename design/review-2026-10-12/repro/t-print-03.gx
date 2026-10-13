@@ -1,0 +1,22 @@
+// t-print-03: source comments reach program-visible NullError text through
+// Expr's Display (print::write_leading_flat in `impl Display for Expr`).
+// Run: graphix --no-cache design/review-2026-10-12/repro/t-print-03.gx
+// Expected: the comment decides nothing; the handler sees "(s.b)" both times
+//   and prints `true` twice.
+// Observed: the commented operand's payload is "(\n// why\ns.b)", so the
+//   handler prints `false` then `true`: adding a comment changed a value the
+//   program compares.
+let x: [i64, null] = null;
+let s = { a: 1, b: x };
+let plain = `NullError("(s.b)");
+let r = {
+  catch(e) println("[(e.0).error == plain] [(e.0).error]");
+  let v = (
+    // why
+    s.b
+  )?;
+  let w = (s.b)?;
+  v + w
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

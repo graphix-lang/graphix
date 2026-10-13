@@ -1,0 +1,17 @@
+// x-typecheck-generics-04: an omitted labeled default is re-checked only for call
+// arguments, not when a function value fills an annotated fn type (let, connect, rank-2)
+// run: graphix --check x-typecheck-generics-04.gx; graphix --no-cache --log-dir L x-typecheck-generics-04.gx (RUST_LOG=warn)
+// expected: --check refuses `pick <- ..` (f's default 1 is no string, fn(y: string) omits #x)
+// observed: --check exits 0, the build passes, the run prints n=0..3, then at the switch the
+// call goes silent forever and the log says `binding the callee failed: .. string does not contain i64`
+// static forms (check passes, build refuses): x-typecheck-generics-04a-*.gx, 04c-*.gx
+let f = |#x = 1, y| x == y;
+let g = |y: string| y == "s";
+let t = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- t ~ n + 1;
+let pick: fn(y: string) -> bool = g;
+pick <- select n { 3 => f, _ => never() };
+sys::exit(select n { 8 => 0, _ => never() });
+println("n=[n] pick=[pick(n ~ "s")]");
+n

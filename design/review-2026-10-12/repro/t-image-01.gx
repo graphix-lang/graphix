@@ -1,0 +1,15 @@
+let g = |y: i64| -> i64 {
+  let f = 'a: [i64, ('a, 'b)], 'b: [i64, ('a, 'b)] |x: [i64, ('a, 'b)]| -> i64 1;
+  f(y) + y
+};
+// t-image-01: decode_at refuses a third open entry, so an image whose
+// type X is the constraint of two tvars that X holds fails to restore
+// when X decodes first (X -> 'a -> cell -> X -> 'b -> cell -> X, a third entry).
+// command: graphix-fuzz check design/review-2026-10-12/repro/t-image-01.gx
+// expected: AGREE, every mode Trace([0:[i64:4, i64:11]])
+// observed: DIVERGENCE — image bug (interp/warm: Trace([])), logging
+// "a restored definition's tables did not decode: InvalidFormat".
+// Also: with XDG_CACHE_HOME set, `graphix` run twice prints (4, 11) cold
+// and nothing at all warm. Controls: only 'a constrained -> AGREE; three
+// tvars constrained by X -> DIVERGENCE (warm: CompileErr).
+(g(3), g(10))

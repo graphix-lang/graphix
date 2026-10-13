@@ -62,6 +62,14 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    // CR claude for claude: [bug/low] `idx` parses the digits as an i64 and negates
+    // afterwards, so i64::MIN's magnitude overflows. `a[-9223372036854775808..]` is a
+    // parse error, though the same literal is accepted everywhere else. Parse the sign
+    // and the digits together (`recognize((optional(token('-')), many1(digit())))`,
+    // then `.parse::<i64>()`). Doing the `..` look-ahead before the conversion would
+    // also stop an overflowing literal elsewhere from picking up this parser's
+    // "expected int". Probe: design/review-2026-10-12/repro/t-parser-a-09.gx.
+    // (t-parser-a-09)
     (optional(token('-')), many1(digit())).then(
         |(minus, idx): (Option<char>, CompactString)| {
             let idx = match idx.parse::<i64>() {

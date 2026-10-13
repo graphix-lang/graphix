@@ -1,0 +1,13 @@
+let k = 0;
+k <- select k < 5 { true => k + 1, false => never() };
+// f-call-flow-03: f runs as a native tail loop; each cycle reaches one new depth,
+// whose activation is at its first dispatch in the node-walk, so g's init-fired
+// dbg(7) prints once per cycle there. The loop runs every pass under the
+// caller's init view: the JIT prints only at cycle 0. graphix-fuzz check:
+// DIVERGENCE. The same body with a non-tail self-call (`f(..) + 0`) agrees.
+let g = |m: i64| -> i64 { dbg(7); m };
+let rec f = |n: i64, acc: i64| -> i64 select (n, acc) {
+  (0, a) => g(a),
+  (n, a) => f(n - 1, a + n)
+};
+f(k, 0)

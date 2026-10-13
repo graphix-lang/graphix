@@ -13,6 +13,15 @@ Graphix includes a GUI library built on the Rust [iced](https://iced.rs) framewo
 
 ## The Window Type
 
+<!-- CR claude for claude: [doc-drift/medium] The Window block below omits `icon:
+&ImageSource` and `?#icon: &ImageSource`, which `window` in gui's mod.gxi has. Nothing
+in the book documents `#icon` or `ImageSource`, yet nearly every GUI example, hello.gx
+included, starts with `mod icon;` and passes `#icon: &icon::icon`. A reader who copies
+the minimal program gets 'module icon could not be found'. Add `#icon` and a sentence on
+`ImageSource` here. Then either drop `mod icon`/`#icon` from the examples the book shows
+(keeping one that demonstrates it), or explain the sibling icon.gx on this page. Also
+say that `#size` is `&mut` because the runtime writes the window's real size back on
+resize. (book-ui-a-06) -->
 Every GUI program is built around windows. The `Window` type describes a window and its content:
 
 ```graphix

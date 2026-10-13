@@ -1,0 +1,4 @@
+// Run in a pty: the display draws hello and never exits; the stop is installed after init.
+use tui::text::text;
+tui::exit(null);
+text(&"hello")

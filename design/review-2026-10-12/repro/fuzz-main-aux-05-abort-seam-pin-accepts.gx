@@ -1,0 +1,14 @@
+{
+	let rec f = |n: i64| -> i64
+		select
+			select n {
+				i64:0 => str::len("abc"),
+				_ => f(n - i64:1)
+			}
+		{
+			m if m <= i64:0 => i64:1 % m,
+			m => f(m - i64:1)
+	    };
+	let v = f(i64:1);
+	array::fold([i64:5, i64:7], v, |a, x| x)
+}

@@ -34,6 +34,17 @@ async fn run_fused(code: &str, par: ParMode) -> Result<Ran> {
 /// Run `code` built as `mode` builds it, forking under `par`, until it is
 /// quiet for 300ms. Under `Auto` the run waits for the fork threshold's
 /// calibration first: nothing forks until it.
+// CR claude for claude: [structure/low] run_with is dense_deltas::run_delta again
+// (fixture_runtime, compile_result, updates_until_quiet, shutdown) with a par mode, a
+// 300ms quiet window and the Control fork counters added, so the two copies drift
+// apart. Give run_delta the par mode and quiet window as parameters and have it return
+// the counters, then build run_par and run_fused on it. refusal below routes through
+// ParMode::Auto, so every refusal test first waits, with no deadline, for the fork
+// calibration. It never forks anything because the program is refused, so build it with
+// ParMode::Off, or with a mode-taking version of testing::refusal. In async_restart.rs,
+// seq_projected_iterator loops over Mode::ALL by hand: a failure names no mode and the
+// modes run serially. Its case belongs in seq_composed_iterators' list as
+// `(map::iter({go => go})).1`. (tests-lang-rest-a-12)
 async fn run_with(code: &str, par: ParMode, mode: Mode) -> Result<Ran> {
     if par == ParMode::Auto {
         while graphix_compiler::cost::calibration().is_none() {

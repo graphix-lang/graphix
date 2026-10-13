@@ -1,0 +1,13 @@
+let k = 0;
+k <- select k < 6 { true => k + 1, false => never() };
+// f-call-flow-01: a callee first called from another fused callee gets no
+// first-call init, so an init-fired Io in it is lost.
+// command: graphix-fuzz check design/review-2026-10-12/repro/f-call-flow-01.gx
+//   (or timeout 5 graphix --no-cache vs --no-cache --no-fusion on this file)
+// expected: "dbg(7): 7" printed once at cycle 3, when g's arm of f is first
+//   entered and g first dispatched (the node-walk prints it).
+// observed: DIVERGENCE, interp stdout=[0+3: dbg(7): 7], jit stdout empty;
+//   value traces equal. Written directly in f's arm the dbg agrees.
+let g = |n: i64| -> i64 { dbg(7); n };
+let f = |s: i64| -> i64 select s { 0 => 0, n => g(n) };
+f(select k < 3 { true => 0, false => k })

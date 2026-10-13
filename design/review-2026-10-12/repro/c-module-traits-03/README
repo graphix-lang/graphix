@@ -1,0 +1,7 @@
+Two writes to one exported variable land in the same cycle: one from inside the
+module (to the inner binding), one from outside (to the interface binding).
+Module::update copies the outer event over the inner one, so the inside write is
+lost; the same program without a module (flat.gx) shows both writes.
+
+  graphix --no-cache main.gx   -> 0, 100        (the write of 1 is lost)
+  graphix --no-cache flat.gx   -> 0, 1, 100

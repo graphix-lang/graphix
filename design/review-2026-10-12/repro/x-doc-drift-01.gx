@@ -1,0 +1,12 @@
+// CLAUDE.md:465-469 and strict_fusion.md:142-151 say a handler-ful ? whose error
+// derives from an input fuses under a select arm; the build refuses this #[native]
+// (lowering::arm_raise_blocker refuses every handler-ful ? under an arm).
+let f = |x: i64, n: i64| -> i64 {
+    catch(e) println("caught");
+    #[native] select x { 1 => (n /? x)?, _ => 0 }
+};
+let t = sys::time::timer(duration:10.ms, true);
+let k = 0;
+k <- t ~ k + 1;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+f(k % 3, 10)

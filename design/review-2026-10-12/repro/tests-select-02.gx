@@ -1,0 +1,23 @@
+let step = 0;
+// The same key fire, unseen by the selected inner arm, reaches a woken arm
+// three ways: through an enclosing select's pattern bind (bound), through a
+// plain let (plain), through a destructuring let (lt). Only the pattern bind
+// is never caught up: (0, 1, 1). select_sibling_binds_spent pins `fired = 0`
+// and credits the `ev` read for it, but it is 0 with no reader at all.
+step <- select step { s if s < 8 => s + 1, _ => never() };
+let e: [`Key(i64), `Mouse] = `Mouse;
+e <- select step { 1 => `Key(7), _ => never() };
+let screen = 0;
+screen <- select step { 4 => 1, _ => never() };
+let bound = 0;
+select e {
+  `Key(k) => select screen { 0 => null, _ => bound <- k ~ (bound + 1) },
+  `Mouse => null
+};
+let k2 = select e { `Key(k) => k, `Mouse => never() };
+let plain = 0;
+select screen { 0 => null, _ => plain <- k2 ~ (plain + 1) };
+let lt = 0;
+let (a, b) = select e { `Key(k) => (k, k), `Mouse => never() };
+select screen { 0 => null, _ => lt <- b ~ (lt + 1) };
+select step { 8 => (bound, plain, lt), _ => never() }

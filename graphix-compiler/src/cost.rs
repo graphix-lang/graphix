@@ -117,6 +117,17 @@ pub fn fix_calibration(t: u64) {
 /// stolen.
 fn calibrate() -> Calibration {
     let pool = eval_pool();
+    // CR claude for claude: [perf/medium] A sample that never finds an idle pool within
+    // IDLE_TRIES keeps its initial 0. After the sort, the lower quartile `wakes[2]` is
+    // then 0 once three samples starve, so T falls to its `1 << T_BUCKET` floor (a few
+    // microseconds of work) for the life of the process, and every Auto site forks work
+    // that cannot pay for the fork. A busy pool is what makes samples starve: a
+    // `#[parallel]` loop re-run every cycle, a Force-mode runtime in the same process,
+    // a loaded http::serve. A probe printed `wakes [0, 19099, ...]`. Fix: keep only
+    // measured samples. When too few are measured, use the contended ones, since
+    // contention only raises T and so errs conservative, or keep retrying. Never let a
+    // 0 stand. Then make design/parallel_eval.md say what happens when the pool never
+    // goes idle. (c-cost-misc-03)
     let mut wakes = [0u64; 9];
     for w in wakes.iter_mut() {
         // a wake measures an idle pool: a sample taken while a part ran
@@ -179,6 +190,16 @@ impl Hist {
     }
 
     /// The bucket holding the 75th percentile.
+    // CR claude for claude: [risk/low] An empty histogram returns 15, so Meter::done
+    // adds about 8T to `prefix` for any child the meter never timed.
+    // update_args_in_order skips Placeholder and Compiled defaults, so while a dynamic
+    // call's callee is still bottom, each omitted default looks like an 8T child.
+    // Splits::Weighted then forks around no-ops. With two placeholders, `pays` stays
+    // true whatever the given arguments cost, so the site never turns serial. Fix:
+    // estimate an untimed child (`n == 0`) at 0. Also, `Meter::done` settles on
+    // `hist[0]` alone, while design/parallel_eval.md says a site is unsettled until
+    // each child has four samples. Settle on every child that has samples (`h.n == 0 ||
+    // h.n >= SETTLE`). (c-cost-misc-05)
     fn p75(&self) -> u8 {
         let want = (self.n as u32 * 3).div_ceil(4).max(1);
         let mut seen = 0u32;
@@ -299,6 +320,21 @@ impl ForkSite {
         n: usize,
         independent: impl FnOnce() -> bool,
     ) {
+        // CR claude for claude: [perf/high] The sibling verdict is fixed at the first
+        // update that may fork, before the children update. A child call that is still
+        // unbound at that point (a warm start's Callee::Imaged, a slot the uncalibrated
+        // probe did not prebind, a function-value callback as in x-parallel-04) is
+        // opaque in analysis::local_summary. So the site goes Dependent and never forks
+        // again. Under GRAPHIX_PAR=force a tuple of four calls forks on a cold start
+        // and prints abcd 9/9 cycles on a warm one, and under auto a collection grown
+        // before calibration stays serial for good. Values are right, but whether
+        // parallelism happens depends on cache state and startup timing. Fix: do not
+        // cache a Dependent verdict that rests on an unresolved callee; stay Undecided
+        // until the children's first update, or summarize Callee::Imaged from the
+        // reference summary the image carries. SlotSite::decide_siblings needs the same
+        // fix: decide from the prototype's definition. probe:
+        // design/review-2026-10-12/repro/x-parallel-05-warm-fields-never-fork.gx,
+        // x-parallel-03-slots-before-calibration.gx (x-parallel-03)
         if self.1 == Siblings::Undecided && n >= 2 && ctx.fork_mode() != ParMode::Off {
             self.1 = match independent() {
                 true => Siblings::Independent,
@@ -322,6 +358,19 @@ impl ForkSite {
         }
     }
 
+    // CR claude for claude: [perf/medium] Under the default Auto mode, the node-walk of
+    // a chain of N distinct functions, each calling the previous once, slows
+    // superlinearly. Depth 500 takes about 18x as long to its first value as Off, and
+    // depth 1000 about 100x. Force is only about 2x Off, and fixing GRAPHIX_PAR_T or
+    // setting GRAPHIX_EVAL_THREADS=1 changes nothing, so neither calibration nor
+    // forking is the cause. Compile time is the same in every mode, so the cost is in
+    // the first cycle's Auto-only path (this plan, Meter, or what the first dispatch of
+    // each fresh instance does under it). A single recursive function at the same depth
+    // is unaffected, so look at work redone per nested first dispatch. Profile the
+    // probe, bring Auto within a small constant factor of Off when nothing forks, and
+    // add a bench for the chain. probe:
+    // design/review-2026-10-12/repro/f-jit-01-deep-chain-par-auto.gx (f-jit-01.sh times
+    // each mode) (f-jit-01)
     fn plan_auto(&mut self, n: usize) -> Plan<'_> {
         let Some(cal) = calibration() else { return Plan::Serial };
         match &mut self.0 {
@@ -374,6 +423,14 @@ impl<'a> Meter<'a> {
     pub fn time<T>(&mut self, i: usize, f: impl FnOnce() -> T) -> T {
         let t0 = ticks();
         let r = f();
+        // CR claude for claude: [risk/low] `wrapping_sub` turns a tick counter that
+        // reads backwards into a dt near 2^64, and that can happen on x86_64 hosts with
+        // unsynchronised TSCs, such as some VMs, when the thread migrates mid-child.
+        // `self.total += dt` then overflows: a panic in dev and test builds, a wrapped
+        // total in release. SlotSite::measured, ProbeSite::run and the kernel-loop
+        // probes in fusion/par_loop.rs take the same wrapping deltas, while `calibrate`
+        // uses `saturating_sub`. Fix: one `ticks_since(t0)` helper in cost.rs that
+        // saturates, used by every caller. (c-cost-misc-07)
         let dt = ticks().wrapping_sub(t0);
         self.total += dt;
         if let Site::Measured(m) = &mut self.site.0 {
@@ -503,6 +560,14 @@ pub struct SlotSite {
 #[derive(Debug)]
 enum Slots {
     Probe { left: u8 },
+    // CR claude for claude: [perf/medium] Serial stores no threshold, and `plan_auto`
+    // ignores `n` while it counts down. Both ways into Serial are decisions about the
+    // slot count at that moment: a cheap probe total, or `measured`'s `est * n < 2T`. A
+    // collection judged serial at a few slots that then grows to 100k expensive slots
+    // updates its standing slots in order for up to RECHECK updates. The `fresh`
+    // ProbeSite forks only the growth cycle's new slots. LoopSite handles the same case
+    // with `below`. Fix: carry `below = 2T / est` in Serial (for a probe, est = total /
+    // n) and re-probe at once when `n >= below`. (c-cost-misc-04)
     Serial { countdown: u16 },
     Measured { hist: Hist, sampler: Sampler, est: u64 },
 }
@@ -794,6 +859,14 @@ pub struct LoopSite {
 }
 
 /// A loop's probes: their count, then their ticks.
+// CR claude for claude: [doc-drift/low] The doc says 'their count, then their ticks',
+// but no count is stored: each element is one probed slot's ticks (fusion/par_loop.rs,
+// LoopSite::grain). On par_loop's uncalibrated path, the first item's dt is pushed
+// before `LoopSite::probes` is asked, and the histogram has not seen that sample, so up
+// to SETTLE more follow. That is SETTLE+1 elements: the SmallVec spills to the heap,
+// and the loop takes one probe more than ProbeSite::run, which records its first sample
+// before asking. Fix the doc, and count the first sample before asking for more, as
+// ProbeSite::run does (or size the SmallVec SETTLE+1). (c-cost-misc-08)
 pub(crate) type Probes = SmallVec<[u64; SETTLE as usize]>;
 
 impl LoopSite {

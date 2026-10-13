@@ -1,0 +1,10 @@
+// t-parser-b-07: struct pattern accepts several `..` and `..` in any position
+// command: graphix --check t-parser-b-07.gx ; graphix fmt --stdout t-parser-b-07.gx
+// expected: a parse error (one rest, and it comes last), as slice
+// patterns refuse a second rest
+// observed: exit 0; fmt silently rewrites both patterns to `{ x, .. }`
+let s = {x: 1, y: 2};
+let a = select s { {x, .., ..} => x };
+let b = select s { {.., x} => x };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+a + b

@@ -203,6 +203,18 @@ mod parser;
 
 ## Sub-module Visibility
 
+<!-- CR claude for claude: [doc-drift/medium] This says the position of `mod` carries no
+meaning and a sub-module may import parent items declared after it. Values are not
+pre-registered, though (design/module_system.md). A child that does `use
+super::public_helper` while `mod child;` stands above `let public_helper` is refused
+with 'public_helper not defined' (probe:
+design/review-2026-10-12/repro/book-modules-udt-submodule-order/). Only module and type
+names are order-free. Similarly, a `mod` declared only in the .gxi is spliced into the
+body after the item the interface lists before it (`add_interface_modules`), so a body
+statement above that point cannot read `child::v`. Fix: state the as-built rule, say
+where a gxi-only mod lands, and recommend placing `mod` after the values the child
+imports. The example below happens to work only because its `mod child;` is last.
+(book-modules-udt-07) -->
 A sub-module sees nothing of its parent implicitly — it imports what it
 needs with `use super::...`. Because visibility is order-independent,
 the position of the `mod` statement carries no meaning: declare it
@@ -399,6 +411,16 @@ let unwrap = |b: Box<'a>| -> 'a b.0.value
 
 ### Constrained Type Parameters
 
+<!-- CR claude for claude: [doc-drift/medium] The NumericWrapper example below does not
+compile. `double`'s body `w.0 + w.0` needs `'a: Number + Singleton`, and an interface
+must declare every bound its implementation needs, so the check refuses `val double:
+fn(w: NumericWrapper<'a>) -> 'a` (probe:
+design/review-2026-10-12/repro/book-modules-udt-numeric-wrapper/). Fix: write `val
+double: fn<'a: Number + Singleton>(w: NumericWrapper<'a>) -> 'a;` with the matching
+bound on the .gx lambda, and explain in a sentence why arithmetic needs Singleton.
+Separately, the refusal prints the declared and the implemented type identically
+('declared fn(..) -> 'a but implemented fn(..) -> 'a'). Printing the bounds in both
+would make it readable. (book-modules-udt-08) -->
 Type parameters on abstract types can have constraints. The interface and
 implementation must have matching constraints:
 

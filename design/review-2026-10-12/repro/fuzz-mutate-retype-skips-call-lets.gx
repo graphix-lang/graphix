@@ -1,0 +1,8 @@
+// mustreject retype / widen-through-let: `types.cell(stmt)` is true for every
+// let whose initializer's node type is a TVar (a call's return cell, bind.rs
+// keeps node.typ()), not only a let over bottom, so no retype probe is made
+// here although the writer `v <- "tm"` is refused
+// ("v is i64 and cannot hold string"). typemorph-one prints only
+// widen-consumer probes for this body; `{ let v = 1; let w = v + 1; w }`
+// gets retype probes.
+{ let f = |x: i64| -> i64 x; let v = f(1); let w = v + 1; w }

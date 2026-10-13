@@ -1,0 +1,9 @@
+// array::sort(#numeric: true) casts both operands to f64 inside every
+// comparison (sort_values' cn): 30k strings take ~6 s on the debug
+// build, the same sort without #numeric ~40 ms; 300k took 113 s.
+let a = array::init(30000, |i| "[(i * 7919) % 30011]");
+let t0 = sys::time::now(a);
+let s = array::sort(#numeric: true, t0 ~ a);
+let t1 = sys::time::now(s);
+sys::exit(sys::time::after_idle(duration:50.ms, t1 ~ 0));
+println("[array::len(s)] [sys::time::diff(t1, t0)]")

@@ -1,0 +1,9 @@
+let g = |#x = 4096, y| x == y;
+let h: fn(y: string) -> bool = g;
+// tests-functions-01: a default hidden by a fn type through a let annotation
+// command: graphix-fuzz check tests-functions-01.gx
+// expected: refused by the check AND the build, as DEFAULT_HIDDEN_BY_A_FN_TYPE
+//   (functions.rs:2620) refuses the same value passed as an argument
+// observed: `graphix --check` accepts (exit 0); the build refuses at h("seven"):
+//   DIVERGENCE — the check accepted what the build refused
+h("seven")

@@ -1,0 +1,5 @@
+// expect: accepted ('a := i64); refused: [i64, string] does not contain 'a: Number (the
+// constraint fallback splits only a Set lhs, not a multi-bit Primitive)
+let f = 'a: Number |x: 'a| -> 'a x;
+let g = |r: [i64, string]| r;
+g(f(never()))

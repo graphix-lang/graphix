@@ -367,6 +367,30 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// of its own.
 fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     let word = match cx.env.loop_depth {
+        // CR claude for claude: [risk/low] In a callee body (`Channel::Site`),
+        // `claim_state_word` returns None, so a root-level call site there has no
+        // first-call word. Its callee then sees only this body's init flag: a callee
+        // first reached late (under a select arm, or a deeper self-call activation)
+        // runs without the init view the node-walk's first dispatch gives it. Today a
+        // scrutinee fire and the arm-entry blockers mask the difference.
+        // `SlotFlags::new` and `claim_block_run` already claim from the body's own
+        // channel at depth 0. Do the same here: `claim_site_word` wrapped as
+        // `StateWord::Guarded` in a callee, as the design doc's first-call rule
+        // requires. (f-scaffold-body-03)
+        // CR claude for claude: [bug/high] In a callee body, claim_state_word always
+        // returns None, because callee bodies claim on Channel::Site. So a call site at
+        // depth 0 inside a fused callee passes the caller's init view, and the doc
+        // comment's "forced on this site's first call ever" does not hold. Take a
+        // callee g first reached in a later cycle, for example from an arm of fused
+        // callee f entered after f's first call. g runs with init=0, so its constants
+        // do not fire, and an Io with a constant trigger in it (`dbg(7)`,
+        // `println("..")`) never performs, while the node-walk primes g's first
+        // dispatch and performs it. arm_io_blocker does not catch this: it judges only
+        // the call's arguments as the trigger. Fix: in a callee body, take the
+        // first-call word from the site channel (claim_site_word, used as
+        // StateWord::Guarded over site_ptr), so first_use forces init once per caller
+        // instance. f-call-flow-03 is the tail-loop sibling. probe:
+        // design/review-2026-10-12/repro/f-call-flow-01.gx (f-call-flow-01)
         0 => cx.claim_state_word().map(|off| {
             let sp = cx.state_ptr();
             StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
@@ -478,6 +502,14 @@ fn emit_site_block(
 }
 
 /// A static callee's block, carved out of this body's memory.
+// CR claude for claude: [perf/low] An in-loop call site whose callee has a site layout
+// walks its whole chain in every innermost iteration: `emit_dir_walk` plus a
+// `graphix_slot_state_table`/`_blocks` ensure, n_dirs + 1 helper calls per slot per
+// call, all idempotent after the first. A collection site's per-slot words are ensured
+// once in the preheader by `open_slot_tables`, and each slot only indexes the table.
+// Size these blocks the same way: make the call site's preheader leaf `layout.words`
+// wide (or a `SiteLeaf` blocks leaf) in `claim_slot_tables`, so an iteration computes
+// `table + i * stride * 8` and calls nothing. (f-scaffold-body-08)
 fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue> {
     if layout.words == 0 {
         return Ok(cx.b.ins().iconst(types::I64, 0));
@@ -707,6 +739,18 @@ fn marshal_args<R: Rt, E: UserEvent>(
         );
         let cv = match s {
             LambdaCallSlot::Arg(n, _) => {
+                // CR claude for claude: [bug/low] An owned arg is pushed only to
+                // `drops`, which are freed after the call returns. It is not held on
+                // `owned_input_stack` while the args after it emit. If a later arg
+                // aborts the kernel (a scaffold loop's interrupt poll, an aborted
+                // cross-kernel callee, a self-call's stack check),
+                // `emit_pending_cleanup` never sees this value and it leaks: `g([x, y],
+                // array::map(a, h))` interrupted mid-map loses `[x, y]`.
+                // `emit_self_tail_call` has the same gap: its `rebinds` are not held
+                // until `emit_tail_rebind_jump`. Hold each owned arg as it is produced
+                // and release all of them just before the call or rebind, as the
+                // builtin arg path does with `BodyCx::hold`/`release`, with one shared
+                // helper for all three sites. (f-scaffold-body-02)
                 let cv = n.emit_clif(cx)?;
                 match kernel_abi::abi_kind(n.typ()) {
                     Some(AbiKind::Scalar(p)) if value_slot => CompiledExpr::new(
@@ -719,6 +763,20 @@ fn marshal_args<R: Rt, E: UserEvent>(
                         if let Some(k) =
                             slot_kind.and_then(|k| owned_drop_kind(k, source))
                         {
+                            // CR claude for claude: [bug/low] An owned arg is collected
+                            // for the after-call drop but is not held (cx.hold) while
+                            // the later args emit. If a later arg takes a pending exit,
+                            // emit_pending_cleanup does not see this value and it
+                            // leaks. That happens on an interrupt at a collection loop
+                            // head inside it, an aborted nested lambda call or a forked
+                            // loop's abort. Example: `f(fresh_array, array::map(xs, |x|
+                            // x + 1))` interrupted inside the map.
+                            // emit_builtin_call_node does this right: hold each owned
+                            // arg as it is pushed, and release them all after the last
+                            // arg emits and before the call, so the pending path at
+                            // rmerge, which drops `drops` itself, does not drop them
+                            // twice. One helper that pushes the drop and holds it would
+                            // serve both call paths. (f-call-flow-06)
                             drops.push((k, cv));
                         }
                         cv
@@ -774,8 +832,46 @@ fn emit_self_dispatch(
     cx.b.ins().brif(direct, call_bl, &[], grow_bl, &[]);
     cx.b.switch_to_block(abort_bl);
     cx.b.seal_block(abort_bl);
+    // CR claude for claude: [risk/low] The interrupt skip here never sets KERNEL_ABORT,
+    // so the comment below is false. The run goes on with a fresh tainted placeholder,
+    // and FusedKernel::update sets the kernel's resident to a fresh bottom that fires
+    // downstream. An interrupt at a loop head (emit_kernel_abort), a forked loop's
+    // abort and an aborted callee each set the flag instead, and the kernel then rides
+    // its last result, as GXHandle::interrupt documents. Fix: in abort_bl, call
+    // graphix_abort_set and jump to rmerge with the zero pair, dropping nothing here.
+    // The `r0 == 0` pending path after rmerge already drops `drops` and runs
+    // emit_pending_cleanup, so keeping emit_owned_drops here would drop the args twice.
+    // emit_self_dispatch then no longer needs its `placeholder` and `dmerge` arguments.
+    // (f-call-flow-05)
+    // CR claude for claude: [bug/medium] When graphix_stack_check returns 0 (an
+    // interrupt, or the stack budget), this path continues the run with a fresh bottom
+    // placeholder, and nothing sets KERNEL_ABORT. The run is therefore not discarded,
+    // whatever the comment below says. FusedKernel::update sees no pending abort and
+    // sets the resident to bottom instead of riding it. It also reclaims every
+    // activation below the interrupted call, because the reach count of a run that
+    // stopped part-way is taken as a shrink. An interrupt that lands at a loop head
+    // (emit_interrupt_check -> emit_kernel_abort) rides correctly, so the JIT handles
+    // the same interrupt two ways depending on where it lands, and it diverges from the
+    // node-walk's CallSite::update, which rides. Fix: take the same path as
+    // emit_kernel_abort here (graphix_abort_set, emit_pending_cleanup, jump to
+    // pending_exit_block), or set KERNEL_ABORT inside graphix_stack_check before it
+    // returns 0. Then add a pin that interrupts a fused non-tail recursion through
+    // GXHandle::interrupt and asserts that its value rides. Probe:
+    // design/review-2026-10-12/repro/f-helpers-01.py (REPL on a pty; the JIT reports
+    // tag=Tag(64) pending=false and loses r, the node-walk keeps r=15000).
+    // (f-helpers-01)
     emit_owned_drops(cx.b, cx.ctx, drops)?;
     // The abort discards the whole run, so no trigger fold.
+    // CR claude for claude: [doc-drift/low] The comment above ("The abort discards the
+    // whole run") is false. This path neither sets KERNEL_ABORT nor jumps to
+    // pending_exit. The run completes, and the interrupted self-call's bottom becomes
+    // the kernel's result, which matches the node-walk: an interrupted fib binding
+    // reads bottom in both engines. An interrupt seen first at a loop head goes through
+    // emit_kernel_abort instead, and the kernel rides its old resident. Which of the
+    // two happens depends on which check sees the flag first. Fix: rewrite the comment
+    // to say the interrupted call bottoms and the run goes on. Pin the
+    // interrupted-recursion result with a test, and make the loop-head path agree with
+    // it, or document why it differs. (x-unsafe-03)
     let ph = emit_bottom_placeholder(cx, placeholder, &[])?;
     cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
     cx.b.switch_to_block(call_bl);
@@ -1042,5 +1138,16 @@ pub(super) fn emit_pending_cleanup(
     for (kind, vv) in ctx.owned_input_stack.borrow().iter() {
         emit_drop_local(b, ctx, *kind, *vv)?;
     }
+    // CR claude for claude: [perf/medium] Every abort point (`emit_kernel_abort`: one
+    // per outlined loop, plus each inline loop's) emits the drops of every owned local
+    // in scope. A chain of n array lets therefore emits about n^2/2
+    // `graphix_valarray_drop` calls, and the CLIF and Cranelift link time grow
+    // quadratically with them. At n=400 the kernel is 605k CLIF lines and the link
+    // takes 0.8 s. With GRAPHIX_NO_OUTLINE it is still quadratic. Emit a cleanup ladder
+    // per scope instead: one block per owned local that drops it and jumps to the block
+    // of the local bound before it. An abort then jumps to the innermost live local's
+    // block, and code stays linear in locals plus exits. probe:
+    // design/review-2026-10-12/repro/x-perf-compile-06-clif-quadratic.sh
+    // (x-perf-compile-06)
     emit_scope_drops(&mut BodyCx { b, env, ctx }, ctx.owned_floor)
 }

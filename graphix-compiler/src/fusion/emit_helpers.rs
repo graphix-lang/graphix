@@ -17,6 +17,25 @@
 //! as the return shape's placeholder (0 / "" / empty array / `Null`),
 //! because tainted placeholders are `Value::Null` in composite slots.
 
+// CR claude for claude: [style/low] This file writes several repeated items as full
+// inline paths: crate::Tag::*, crate::typ::Type, crate::FastFn,
+// crate::node::error::QopSite, crate::node::list (also re-imported locally in four
+// functions) and std::sync::atomic::*. Fold them into this grouped use and a
+// `std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed}` import, and delete
+// the function-local copies. graphix_list_to_valarray also builds `ValArray::from([])`
+// where every other placeholder uses EMPTY_ARR.clone(); use EMPTY_ARR there too.
+// (f-helpers-07)
+// CR claude for claude: [doc-drift/low] The module doc above says a TagValue crosses
+// the helper seam by value in two integer registers, and that fusion is off under
+// Win64. Neither is true. impl_pair_arg passes a pointer to the caller's two words, a
+// pair return goes through jit_helper_fn's trailing out-pointer, and
+// design/helper_abi_portability.md states that nothing two words wide crosses by value
+// and that fusion runs on every host. The plain comment above variant_payload_read
+// repeats the same two-register claim, and the AbiTy doc says `emit.rs` applies the u/s
+// flags, but that happens in emit/lower.rs (helper_abi_param). Replace the header
+// paragraph with one sentence that points to the design doc, cut the
+// variant_payload_read comment down to the borrow/consume convention, and fix the file
+// name in the AbiTy doc. (f-helpers-03)
 use crate::{
     fusion::kernel_abi::{ActivationLayout, SiteLeaf},
     node::{
@@ -210,6 +229,20 @@ macro_rules! jit_helper_fn {
             unsafe { out.write(r) }
         }
     };
+    // CR claude for claude: [risk/medium] jit_helpers! gives a helper the out-pointer
+    // return only when it is written with the literal token `-> TagValue` or `->
+    // ChildBlock`. A helper written `-> crate::TagValue`, `-> tval::TagValue`, `->
+    // ManuallyDrop<TagValue>`, or through an alias lands in this arm instead and
+    // returns the pair by value. Its registry entry still records ret = [Pair] through
+    // HelperRet, so helper_signature has the JIT pass a trailing out-pointer that the
+    // helper never writes, and the kernel then reads an unwritten slot as a Value. It
+    // compiles without a warning because improper_ctypes_definitions is allowed
+    // module-wide. Probe: design/review-2026-10-12/repro/f-helpers-02.sh. Fix: choose
+    // the arm from the type rather than the token, for example with a HelperRet
+    // associated const or type, or add `const _: () = assert!(!matches!(<$ret as
+    // HelperRet>::ABI, [AbiTy::Pair]));` to this arm. While here, merge the four
+    // safe/unsafe x TagValue/ChildBlock pair arms, and correct the module doc, which
+    // still says a TagValue crosses the seam by value in two registers. (f-helpers-02)
     ([$($attr:meta)*] [$($unsafety:ident)?] $name:ident ($($p:ident: $t:ty),*) [$($ret:ty)?] $body:block) => {
         $(#[$attr])*
         pub(crate) $($unsafety)? extern "C" fn $name($($p: <$t as HelperArg>::Wire),*) $(-> $ret)? {
@@ -736,11 +769,34 @@ unsafe fn graphix_castcall(
 /// Run `f`, which may run Graphix code (a fast fn, a value's `Eq`/`Ord`
 /// impl): a panic there aborts the kernel, `placeholder` stands for the
 /// result, and the panic resumes after the run.
+// CR claude for claude: [risk/low] A panic caught here sets KERNEL_ABORT, but the
+// kernel keeps running on the placeholder. graphix_iocall queues its call even when the
+// fast fn it guarded panicked. FusedKernel::update then delivers every queued raise and
+// performs every queued Io call before it resumes the panic. The node-walk unwinds at
+// the builtin and performs none of them, so a fused body with a print after a panicking
+// fast fn prints where the node-walk does not. set_kernel_panic also replaces an
+// earlier payload, so a second panic hides the first. To fix: in FusedKernel::update,
+// when take_kernel_panic returns Some, discard the deferred queue before resuming. Keep
+// the first payload in set_kernel_panic. Do not queue the Io call when its dispatch
+// caught a panic. (f-helpers-05)
 fn guard_panic<T>(placeholder: T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,
         Err(payload) => {
             set_kernel_panic(payload);
+            // CR claude for claude: [bug/low] Setting KERNEL_ABORT here breaks what
+            // every abort consumer assumes: that the run left through emit_kernel_abort
+            // and returned the zero sentinel. Generated code never reads the flag after
+            // a guarded helper, so the kernel runs on. FusedKernel::update then
+            // performs every Io call queued after the panic (the node-walk would have
+            // unwound at the panicking call). It also never drops the real Value in
+            // `out`. par_loop's in_order and Run::discard skip the value buf, or a
+            // find's result, of a chunk that finished normally, so those leak. Fix:
+            // keep "panicked" separate from "aborted". guard_panic only records the
+            // panic. The run releases its outputs through the normal paths.
+            // FusedKernel::update and par_loop::finish check take_kernel_panic(), and
+            // when one is pending they drop the result, skip the deferred raises and
+            // Io, and resume the panic. (x-unsafe-01)
             KERNEL_ABORT.with(|c| c.set(true));
             placeholder
         }
@@ -796,6 +852,14 @@ unsafe fn fast_dispatch(
 
 /// Borrowed read of payload `payload_idx` (slot 0 is the tag). A
 /// placeholder or short array reads as the default.
+// CR claude for claude: [doc-drift/low] The `//` block just above this function's doc
+// says value-shaped helpers take and return `Value` by value in two registers. They do
+// not. impl_pair_arg passes every TagValue/ChildBlock argument as a pointer to the call
+// site's two words, and a pair result returns through an out-pointer
+// (HelperRefs::call). That is the rule that keeps two-word values off the helper seam
+// on every host. A helper author who believes the comment and writes a raw two-register
+// extern fn breaks Windows. The types already say borrow (ManuallyDrop<TagValue>)
+// versus consume (TagValue), so delete the comment. (x-fix-fusion-07)
 fn variant_payload_read<T: Default>(
     v: &TagValue,
     payload_idx: usize,
@@ -823,6 +887,24 @@ fn list_walk(v: &Value, j: usize) -> Option<&Value> {
 /// `l op r` over operands with no register form, borrowed: unchecked, a
 /// failure is bottom as the node-walk's; checked, the catchable
 /// `ArithError` value.
+// CR claude for claude: [readability/low] value_arith and the ten
+// graphix_value_{add..checked_rem} helpers declare `TagValue` parameters, which in the
+// helper ABI means the helper takes ownership. In fact they only borrow: the first line
+// wraps both operands in ManuallyDrop, and emit_value_arith_node drops the operands
+// itself with drop_operands. Anyone who "simplifies" away that wrap gets a double drop
+// of every owned operand. Fix: declare the parameters `ManuallyDrop<TagValue>`, as
+// graphix_value_cmp and graphix_value_eq do, and delete the wrap line.
+// (f-nodes-scalar-06)
+// CR claude for claude: [readability/low] The ten Value arithmetic helpers
+// (graphix_value_add .. graphix_value_checked_rem) take `TagValue`, which by this
+// file's convention means they consume their operands. In fact they borrow: value_arith
+// wraps both operands in ManuallyDrop, and emit_value_arith_node drops them through
+// drop_operands. The doc on emit_checked_arith_node also calls the operands owned.
+// Anyone who removes the wrap, trusting either signature, causes a double free of every
+// decimal or varint operand. Declare the helpers as `ManuallyDrop<TagValue>`, as
+// graphix_value_cmp and graphix_value_eq do. Have value_arith take `&TagValue` and drop
+// its internal wrap, and fix the emit_checked_arith_node doc to say it borrows. Also
+// reported as (x-unsafe-05). (f-helpers-04)
 fn value_arith(op: BinOp, checked: bool, l: TagValue, r: TagValue) -> TagValue {
     let (l, r) = (ManuallyDrop::new(l), ManuallyDrop::new(r));
     match l.with_value(|a| r.with_value(|b| arith(op, checked, a.clone(), b.clone()))) {

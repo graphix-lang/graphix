@@ -143,6 +143,15 @@ let mut r = handle.compile_ref_by_name(
 // the rest of the code is exactly the same
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] `GXHandle::compile_callable_by_name` does
+not exist, and `Callable` has no `update` method, so neither listing in this section
+compiles. The book also gives no working way to get a call's return value. The real path
+is `compile_callable(lambda_value)` followed by `Callable::call_answered(args)`, and the
+answer arrives as `GXEvent::Updated(callable.answer, v)`. To call by name, take the
+lambda value from `compile_ref_by_name` and pass it to `compile_callable`. 'id is the
+LambdaId' should say the lambda as a Value. Separately, the earlier `let mut r =
+handle.compile_ref(id);` is missing `.await?`. Fix all of these listings.
+(book-modules-udt-05) -->
 ## Calling Graphix Functions
 
 Now lets register a call site, call a Graphix function, and get its result. We

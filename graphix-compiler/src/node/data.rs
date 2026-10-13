@@ -161,6 +161,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let (vals, tag) = gathered!(self, ctx, Value::Array(ValArray::from([])));
+        // CR claude for claude: [perf/low] Whenever any field fires, this allocates a
+        // new `[name, value]` array for every field plus the outer array. A field that
+        // did not fire has the same value its pair in the resident already holds. A
+        // 10-field UI state record with one changing field allocates 11 arrays per
+        // event where 2 would do. Fix: when the node did not wake and the resident
+        // holds a value, reuse the resident's pair (an Arc bump) for each field whose
+        // production did not trigger, and allocate pairs only for the fields that
+        // fired. gather already returns each field's TagValue. (x-alloc-08)
         let iter = self.names.iter().zip(vals).map(|(name, v)| {
             let name = Value::String(name.clone());
             Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
@@ -748,6 +756,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         let tv = self.arg.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
+        // CR claude for eric: [bug/medium] When the check never decides a type
+        // parameter of the constructed type (top-level `Bx((1, []))` with `type Bx<'a>
+        // = Abstract<(i64, Array<'a>)>`), the params resolve to an unbound cell, and
+        // every value minted here carries that live checker cell. The core-trait lookup
+        // (coretraits `impl_for`) refuses any type with an unbound cell. So `impl<'a>
+        // Eq`/`Display`/`Ord for Bx<'a>` are silently skipped: `==` compares
+        // structurally and printing shows the raw form. Inside a function, or after an
+        // unrelated statement such as a `map::insert` of the value settles 'a, the same
+        // impls apply. emit_construct_node mints the same params, so both engines agree
+        // on the wrong answer. Needs a rule: either freeze the params at construction
+        // (an undecided cell becomes ⊥ or its bound, through one helper shared with
+        // emit_construct_node), or let `impl_for` treat an open param in a value's type
+        // as matching any generic impl head. The rule also decides whether a concrete
+        // `impl Eq for Bx<i64>` covers such a value. Pin Eq, Ord (map key) and Display
+        // either way. probe: design/review-2026-10-12/repro/c-data-map-01.sh
+        // (c-data-map-01)
         let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
             Type::Abstract { params, .. } => params.clone(),
             _ => Arc::from_iter([]),
@@ -831,6 +855,22 @@ pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
     source: &Type,
     name: &ArcStr,
 ) -> Result<(usize, Type)> {
+    // CR claude for claude: [bug/medium] A field read over a union whose members are
+    // all structs with the same field names is refused with "expected struct not [..]".
+    // `deref_typ!` only tries the env-less `Type::normalize` on a Set, and that
+    // collapses neither common shape. The first is a typedef ref and its own expansion
+    // (`{d: Dom}` vs `{d: {name: string}}`): merge gives up on a Ref paired with a
+    // non-Ref. The second is records that differ in one variant field (`[{act: `A, n:
+    // 1}, {act: `B, n: 2}]`): `A and `B do not merge. As a result `array::map(xs, |r|
+    // r.n)`, `xs[0]$.n` and reads after a select that joins a named type with a literal
+    // are all refused, though structural typing accepts them. `tuple_field_type` has
+    // the same gap for tuples of equal arity. Fix: accept a Set whose members all deref
+    // (through lookup_ref) to Struct with identical field names, or to Tuple with the
+    // same arity. Return the shared sorted index and the union of the members' field
+    // types; the runtime read is by that index, so it agrees for every member. Then
+    // drop the two matching annotation gotchas from the graphix-lang skill. probe:
+    // design/review-2026-10-12/repro/lang-skill-01.gx (and lang-skill-02.gx)
+    // (lang-skill-01)
     deref_typ!("struct", ctx, source,
         Some(Type::Struct(flds)) => {
             match flds.iter().enumerate().find(|(_, (n, _, _))| n == name) {
@@ -882,6 +922,15 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
+        // CR claude for claude: [structure/low] This match repeats tuple_field_type's
+        // rule (tuple field, error payload, visible abstract payload) by hand, without
+        // its deref. StructRef::compile repeats struct_field_type the same way. The
+        // compile-time guess and the check's answer therefore differ for a named or
+        // variable source type, and a new payload-bearing kind must be added in two
+        // places per node. Fix: call tuple_field_type(ctx, &scope.lexical,
+        // source.typ(), field) and fall back to Type::empty_tvar() on Err (likewise
+        // struct_field_type for StructRef, keeping its index), or start from a fresh
+        // tvar and let typecheck0 bind it. (c-data-map-10)
         let typ = match &source.typ() {
             Type::Tuple(ts) => {
                 ts.get(field).map(|t| t.clone()).unwrap_or_else(Type::empty_tvar)
@@ -963,6 +1012,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         NodeView::TupleRef(self)
     }
 
+    // CR claude for claude: [perf/low] TupleRef reads three source kinds (tuple, Error
+    // payload, abstract payload). update and tuple_field_type handle all three, but
+    // emit_clif sends an Error source to emit_field_ref_node with FieldOf::Tuple, which
+    // refuses it ('accessor source of type .. isn't Tuple'). So every region that reads
+    // an error's payload with `e.0` node-walks. Fix: add an Error branch that reads the
+    // payload through a borrowed, taint-guarded helper as emit_abstract_ref_node does,
+    // or extend emit_abstract_ref_node to cover Value::Error. Pin it with a
+    // FuseExpect::Jit fixture. probe (graphix-fuzz run):
+    // design/review-2026-10-12/repro/c-data-map-04.gx (c-data-map-05)
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         let abstract_source =
             crate::fusion::emit::resolve_node_typ(cx.ctx, self.source.typ())
@@ -1018,6 +1076,13 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
+        // CR claude for claude: [readability/low] The comment above names a
+        // `with_deref` closure and TVar read guards that this function no longer has:
+        // struct_field_type takes and releases its own guard. A Type clone of a TVar
+        // shares the cell, so the clone is not a snapshot either. The '// a clone: no
+        // guard is held across the child's check' line below only restates that
+        // struct_field_type returns an owned Type. Delete both comments.
+        // (c-data-map-11)
         let styp = self.source.typ().clone();
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {

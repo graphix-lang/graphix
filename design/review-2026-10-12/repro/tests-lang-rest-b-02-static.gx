@@ -1,0 +1,14 @@
+// tests-lang-rest-b-02-static: an arm's first entry raises the fire of `a`
+// (cycle 0, while the arm was unselected) through a statically resolved
+// callee: prints 2, 2, 9. Twin: tests-lang-rest-b-02-dynamic.gx, which
+// differs only in how `g` is resolved, prints 9 alone. The pin
+// lang::collection::collection_refs_reach_its_slots expects the dynamic
+// answer ([9] only) for the collection form of the same program.
+let a = 0;
+let g = |x| a ~ x;
+let n = 0;
+let dummy = 0;
+n <- select n { k if k < 12 => k + 1, _ => never() };
+a <- select n { 6 => 7, _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select n { 2 | 3 | 9 => { dummy <- n; g(n) }, _ => never() }

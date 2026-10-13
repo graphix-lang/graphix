@@ -1,0 +1,10 @@
+// x-rerun-7-01: graphix-fuzz wraps a body that begins with a `//` line on
+// the same line as `let result = {`, a parse error since comments must
+// stand on their own line, so every mode is CompileErr and `check` says
+// AGREE (reject). The file above (x-rerun-7-01-expect-reject.gx) is a
+// valid program `{ i64:1 }` pinned as `// expect: reject`: it "agrees" too.
+// command: graphix-fuzz check design/review-2026-10-12/repro/x-rerun-7-01-comment-header.gx
+// expected: AGREE (trace) with the value 4
+// observed: AGREE (reject) — every comparison the program owes holds
+// schedule-v1: cap=64 events=512; in0=i64:3
+in0 + i64:1

@@ -41,6 +41,14 @@ run!(float_zero_div_zero_nan, FLOAT_ZERO_DIV_ZERO_NAN, |v: Result<&Value>| {
 // non-NaN), not IEEE.
 
 // NaN equals itself (the deliberate non-IEEE choice).
+// CR claude for claude: [test-gap/low] The NaN pins compare a NaN only with itself or
+// with 1.0. An engine that stood NaN in for -inf (or ordered it some other way that
+// agrees at 1.0) would pass them all while breaking 'NaN below every number'. Add a
+// fused fixture whose arguments are runtime values: `let f = |a: f64, b: f64| { let n =
+// a / b; let ninf = f64:-1.0 / b; [n < ninf, n == ninf, ninf > n] }; f(0.0, 0.0)`,
+// expecting [true, false, true]. bitwise.rs likewise has no pin for the documented
+// 'wrapping' shift at or beyond the width: add `shl(u8:1, u8:9) == u8:2`, `shr(u8:200,
+// u8:9) == u8:100` and `shl(i64:1, i64:-1)` (expected i64::MIN). (tests-lib-b1-08)
 const NAN_EQ_SELF: &str = "{ let x = f64:0.0 / f64:0.0; x == x }";
 run!(nan_eq_self, NAN_EQ_SELF, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
@@ -174,6 +182,15 @@ run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {
 // A bottom in a dead non-tail statement does not poison the tail.
 
 // A dead bottom `let` is dropped; the tail is produced.
+// CR claude for claude: [doc-drift/low] These comments and those over the sink_* family
+// describe a pass that no longer exists ('a dead bottom let is dropped', 'a live
+// binding survives pruning', 'a bare statement that is itself dropped', 'same
+// mechanism', 'stays eager'). Nothing in the compiler prunes dead lets or sinks
+// bottoms. What these tests pin is the rule that a block's value is its last
+// expression, so a non-tail statement's bottom does not reach it, and that an untaken
+// arm's input does not bottom the select. Restate the comments as those rules, and
+// rename dead_let_fixpoint (e.g. bare_ref_of_bottom_let) so it no longer suggests a
+// fixpoint computation. (tests-lib-b1-04)
 const DEAD_LET_BOTTOM: &str = "{ let v = i64:1 / i64:0; i64:42 }";
 run!(dead_let_bottom, DEAD_LET_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))

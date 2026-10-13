@@ -1,0 +1,3 @@
+type NumericWrapper<'a: Number> = Abstract<'a>;
+let wrap = |x: 'a| -> NumericWrapper<'a> NumericWrapper(x);
+let double = |w: NumericWrapper<'a>| -> 'a w.0 + w.0

@@ -1,0 +1,22 @@
+// x-rerun-8-10 (x-unsafe-03's no-reference route, extends x-rerun-8-07): a
+// constructor pattern NESTED anywhere (tuple, struct field, slice element,
+// List element, variant payload) takes a value of another member with the
+// same runtime form. Select's one-runtime-form check (node/select.rs:1489)
+// compares only the arm's whole predicate against the rest, and the nested
+// check in pattern.rs:645 runs only for a written (non-inferred) predicate.
+// command: graphix --no-cache --no-fusion x-rerun-8-10.gx
+// expected: refused ("this pattern can't tell (string, string) from `S(i64)"),
+//   as the same test at top level is; or ("other", ..) at run time
+// observed: ("S x", "S x", "S x", "S x", "S x"): n: i64 holds "x". Passing
+//   that n to `|n: i64| n * 2` panics the runtime under the JIT:
+//   "kernel param `n`: runtime String("x") does not match the compiled
+//   Scalar(I64) slot".
+type U = [(string, string), `S(i64)];
+let a = |x: (U, i64)| select x { (`S(n), _) => "S [n]", _ => "other" };
+let b = |x: {u: U}| select x { {u: `S(n)} => "S [n]", _ => "other" };
+let c = |x: Array<U>| select x { [`S(n), ..] => "S [n]", _ => "other" };
+let d = |x: List<U>| select x { [<`S(n), ..>] => "S [n]", _ => "other" };
+let e = |x: `W(U)| select x { `W(`S(n)) => "S [n]", _ => "other" };
+let p: U = ("S", "x");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(a((p, 1)), b({u: p}), c([p]), d([<p>]), e(`W(p)))

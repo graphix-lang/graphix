@@ -104,6 +104,16 @@ impl Write {
 
     /// Drop the target; what fires next queues.
     fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // CR claude for eric: [bug/medium] release() replaces self.dv with an empty
+        // Right(vec![]) even when it already holds the queue. update calls it on every
+        // path arrival before the drain, so the drain loop never writes a queued value.
+        // Every value that fires while the path is bottom or invalid is pushed without
+        // bound and then thrown away, and only the standing value reaches the new path.
+        // Write's doc promises those values are written in order. Decide which is
+        // meant. Either keep the queue across release (and bound it), or drop the queue
+        // and make dv an Option<(Path, Dval)> that writes only the standing value,
+        // which also ends the unbounded growth. Either way the doc and image_encode
+        // follow. probe: design/review-2026-10-12/repro/sys-net-10.gx (sys-net-10)
         if let Either::Left((_, dv)) =
             std::mem::replace(&mut self.dv, Either::Right(vec![]))
         {
@@ -137,6 +147,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         {
             self.release(ctx);
             let Some(p) = as_path(path.clone()) else {
+                // CR claude for claude: [bug/medium] errf! already returns a
+                // Value::Error, and both error paths in Write::update (this one and the
+                // write_target failure below) wrap it in a second Value::Error. So
+                // sys::net::write yields error:error:["WriteError", msg], which does
+                // not match its declared type Result<_, `WriteError(string)>. A handler
+                // that selects `WriteError(m) on (e.0).error matches nothing at run
+                // time, and the check calls the select exhaustive anyway. Fix: return
+                // errf!(..) directly at both sites, use Display rather than Debug for
+                // path and e in the messages, and add a pin that catches a WriteError
+                // by its variant. probe:
+                // design/review-2026-10-12/repro/x-fix-stdlib-03.gx (x-fix-stdlib-03)
                 let e = errf!(literal!("WriteError"), "invalid path {path:?}");
                 return self.out.set(TagValue::fired(Value::Error(e.into())));
             };
@@ -434,6 +455,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         }
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (args, args_fired) = seam_arg(ctx, &mut from[1]);
+        // CR claude for claude: [bug/medium] `RpcCall::sleep` clears the output and
+        // remints the reply id but keeps no slept bit, and this update calls only when
+        // path or args fired. After a wake whose arguments are bound outside the arm
+        // (so they read stale and do not fire), the call is never issued again and its
+        // value stays bottom for good. The `list!` builtins (`sys_net_list`,
+        // `sys_net_list_table`) have the same gap: their `sleep` clears `current` and
+        // the output, and their update lists only on a fired path or trigger.
+        // design/async_sleep_outputs.md requires a restart over the arguments as they
+        // stand, and `CachedArgsAsync` does that (`Invocation::Quiet => woke`), as do
+        // Subscribe, Publish and PublishRpc. Fix: add a `slept` bit to RpcCall and the
+        // list! struct, set it in `sleep`, and treat it as a fire in update. Pin each
+        // with arguments bound outside a toggled arm. `Write` has a `woke` bit but
+        // writes the standing value only when `val` (or a new path) fired. A value that
+        // fired during the sleep is still delivered by catch-up, but an unchanged one
+        // is not written again, unlike fs::write_all under `CachedArgsAsync`. Decide
+        // which rule a write follows and pin it. probe:
+        // design/review-2026-10-12/repro/sys-net-04.gx (sys-net-04)
         if (path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {
@@ -563,6 +601,13 @@ macro_rules! list {
             ) -> &TagValue {
                 let (_, trigger_fired) = seam_arg(ctx, &mut from[0]);
                 let (path, path_fired) = seam_arg(ctx, &mut from[1]);
+                // CR claude for claude: [bug/low] Both arms build the path with
+                // Path::from and send it on to the resolver, so a relative path (a
+                // typo, a missing leading slash) lists [] and reads as an empty
+                // directory. Write, Subscribe and the rpc builtins refuse it. Validate
+                // with as_path in both arms and fire `ListError("invalid path ..")` on
+                // None, as Write fires its WriteError. probe:
+                // design/review-2026-10-12/repro/sys-net-06.gx (sys-net-06)
                 match (path, path_fired, trigger_fired) {
                     (Some(Value::String(path)), true, _)
                         if self
@@ -813,6 +858,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }
         }
+        // CR claude for claude: [dead/low] net.gx types on_write as `fn(v: 'a) -> _`,
+        // and the check refuses a callback that returns a value (`fn(v: i64) -> i64` is
+        // not contained). So this branch never yields a value and `reply.send` never
+        // runs. The `reply` taken from `req.send_result` is only dropped, which netidx
+        // answers as a Null write result. Delete the `reply` variable and this send.
+        // Keep `self.on_write.update(ctx)` for its effects and let send_result drop
+        // with the NetWrite. (sys-net-07)
         if let Some(v) = graphix_package_core::seam_tick(self.on_write.update(ctx))
             .map(|tv| tv.clone())
         {
@@ -1075,6 +1127,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 );
             }
             // dropping the proc unpublishes it
+            // CR claude for claude: [bug/medium] Dropping the Proc does not unpublish
+            // it in time. netidx_protocols::rpc::server::Proc holds only a stop sender;
+            // the published Vals live in its ProcInner task and drop only after that
+            // task sees the stop. Re-publishing at the same path in the same cycle
+            // therefore often fails with PublishRpcError "already published". `current`
+            // then stays None, so the rpc is offline (calls go unanswered or are
+            // cancelled) until #path, #doc or #spec fires again. A reactive #doc fails
+            // on 2-4 of 10 changes. Fix the root cause in netidx-protocols: make
+            // server::Proc own its Vals, or give it a synchronous unpublish, so a drop
+            // frees the path at once the way publisher::Val's drop does. Then add a pin
+            // that changes #doc and calls the rpc after each change. probe:
+            // design/review-2026-10-12/repro/sys-net-03.gx (sys-net-03)
             self.current = None;
             if let (Some(path), Some(doc), Some(spec)) = (&pathv, &docv, &specv)
                 && let Err(e) = self.publish(ctx, path, doc, spec)

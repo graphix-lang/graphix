@@ -1,0 +1,2 @@
+mod inner;
+inner::f(1, 2)

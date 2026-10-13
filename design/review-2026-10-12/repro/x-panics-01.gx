@@ -1,0 +1,14 @@
+// x-panics-01: hbs::render with two mutually recursive partials overflows the
+// worker's stack and ABORTS the process (exit 134), instead of returning
+// `HbsErr`. A self-include alone is refused by handlebars ("Can not include
+// current template in partial"); a cycle through two partials is not.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-12/repro/x-panics-01.gx
+// expected: error:["HbsErr", ...] then "alive", exit 0
+// observed: thread 'tokio-rt-worker' has overflowed its stack
+//           fatal runtime error: stack overflow, aborting   (exit 134)
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let t = sys::time::timer(duration:50.ms, false);
+let r = hbs::render(#partials: {p: "x{{> q}}", q: "y{{> p}}"}, t ~ "{{> p}}", {a: 1});
+println("[r]");
+t ~ "alive"

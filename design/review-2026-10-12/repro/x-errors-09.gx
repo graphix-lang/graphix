@@ -1,0 +1,8 @@
+// x-errors-09: compile-time warnings appear only on the cold run; a warm image start drops them
+// command: XDG_CACHE_HOME=<scratch> graphix x-errors-09.gx, three times (no --no-cache)
+// expected: every run prints "WARNING: .. error raised by ? will not be caught" before the unhandled error
+// observed: run 1 prints the WARNING; runs 2 and 3 (restored from the program image) print only the unhandled error
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let r = str::parse("x1");
+let v: i64 = r?;
+v

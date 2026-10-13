@@ -283,6 +283,18 @@ async fn main() -> Result<()> {
     // A panic on a subject's runtime thread is caught by tokio and both
     // engines then fail alike, which a verdict reads as AGREE. A worker
     // aborts instead, so the pool records the program as a crash.
+    // CR claude for claude: [structure/medium] Two hand-written subcommand lists decide
+    // two things: whether a panic aborts (here) and whether the process chdirs into a
+    // sandbox (`sandbox_cwd` below). They have drifted. `soak`, `fuzz` and `generate`
+    // are in neither list, but each runs the regression gate in-process through
+    // `print_regression` -> `check_verdict`. A pin that panics on its runtime thread
+    // therefore reads as AGREE at a soak's startup gate, even though `regress` aborts
+    // on the same pin, and those pins write files into the launch cwd. `minimize` runs
+    // `check` in-process with no abort hook either. `leakcheck` is in both lists
+    // although it runs no subject in-process. Fix: classify each subcommand once, for
+    // example `fn runs_subjects_in_process(&str) -> bool` or an enum parsed from argv,
+    // and derive both the hook and the sandbox from that one classification.
+    // (fuzz-main-aux-07)
     if matches!(
         args.get(1).map(String::as_str),
         Some(
@@ -967,6 +979,22 @@ async fn main() -> Result<()> {
                 Some(p) => p,
                 None => bail!("usage: graphix-fuzz {cmd} <file>"),
             };
+            // CR claude for claude: [bug/high] `check`, `run`, `minimize` and
+            // `check-isolated` hand the file to Subject::parse unchanged.
+            // Subject::parse puts the body on the line of `let result = `, so a leading
+            // `//` comment block is a parse error in every engine. 532 of the 547 pins
+            // under findings/, and every divergence file Corpus::record writes (`//
+            // bisect:`, `// key:`, `// minimized:`), start with such a block. The
+            // result: `check` prints `AGREE (reject)` and `minimize` prints "no
+            // divergence to minimize". The README's loop of `graphix-fuzz check` over
+            // findings/ and the triage of a pulled divergence therefore always report
+            // agreement. Fix: move build.rs::strip_header into the library (build.rs
+            // can `#[path]`-include it, keeping the `-v1` and `// expect: reject` lines
+            // as it does now) and run every file-reading CLI path through it (typemorph
+            // included, see fuzz-main-aux-01). Also print the CompileErr head with an
+            // `AGREE (reject)` verdict so a rejection the wrapper caused is visible.
+            // probe: design/review-2026-10-12/repro/fuzz-main-aux-02.gx Also reported
+            // as (x-fix-fuzz-tests-02). (fuzz-main-aux-02)
             let code = std::fs::read_to_string(path)?;
             let code = code.trim();
             match cmd {

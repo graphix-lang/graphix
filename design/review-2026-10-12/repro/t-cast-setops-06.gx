@@ -1,0 +1,19 @@
+// t-cast-setops-06: src_head over a union ignores the value and drops non-array members
+// run: graphix --no-cache design/review-2026-10-12/repro/t-cast-setops-06.gx
+// expected: l=InvalidCast error ("abc" is no List<i64>), a=InvalidCast (as from Any),
+//   t=(["a", "b", "c"], 3), n never a coverage hole
+// observed: l=abc, a=[], t=(["a", "[\"b\", [\"c\", []]]"], 3); with --no-fusion and
+//   GRAPHIX_ABORT_ON_NO_MATCH=1 the select aborts:
+//   no arm matches "abc": a coverage hole in the check
+let x: [List<i64>, string] = "abc";
+let l = cast<List<i64>>(x);
+println("l=[l]");
+let x2: [List<i64>, null] = null;
+println("a=[cast<Array<i64>>(x2)]");
+let y: (List<string>, i64) = ([<"a", "b", "c">], 3);
+let w: [(List<string>, i64), null] = y;
+println("t=[cast<(Array<string>, i64)>(w)]");
+let n = select l { error as _ => -1, v => list::len(v) };
+println("n=[n]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

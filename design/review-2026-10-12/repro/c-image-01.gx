@@ -1,0 +1,25 @@
+// c-image-01: a catch handler's `sealed` bit is not imaged, so a warm start
+// accepts a later raise the cold run refuses.
+// Command (run twice over one fresh cache dir: first cold, then warm):
+//   XDG_CACHE_HOME=<scratch> GRAPHIX_ABORT_ON_NO_MATCH=1 graphix c-image-01.gx
+// Expected (both runs, as with --no-cache): status is a DynamicLoadError "this
+// error reaches a catch whose handler was checked to take Error<ErrChain<`A>>,
+// which does not contain Error<ErrChain<`B>>", caught is "a".
+// Observed: cold run as expected. Warm run loads the module and the handler
+// checked exhaustively for `A receives `B: "select e.0.error { `A => "a" }: no
+// arm matches "B": a coverage hole in the check", then abort.
+let path = "/local/foo";
+let source = "let x = error(`B)?; let y = 1";
+sys::net::publish(path, source)$;
+let caught = "none";
+catch(e) caught <- select e.0.error { `A => "a" };
+let a = select caught { "none" => error(`A)?, _ => 0 };
+let status = mod foo dynamic {
+    sandbox unrestricted;
+    sig {
+        val y: i64
+    };
+    source sys::net::subscribe(path)$
+};
+sys::exit(sys::time::after_idle(duration:500.ms, status ~ 0));
+(status, caught)

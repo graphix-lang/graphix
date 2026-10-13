@@ -1,0 +1,9 @@
+// sys-io-12: readdir fails as a whole on any one unreadable entry
+// setup: mkdir -p /tmp/rd/ok /tmp/rd/locked; touch /tmp/rd/a /tmp/rd/ok/b; chmod 000 /tmp/rd/locked
+// run: graphix --no-cache sys-io-12.gx
+// expected: the readable entries (tree, a, ok, ok/b, locked), the locked subdirectory skipped or reported apart
+// observed: IOError "walkdir failed IO error for operation on /tmp/rd/locked: Permission denied"
+let r = sys::fs::readdir(#max_depth: 3, "/tmp/rd");
+let n = select r { error as e => "[e]", a => "[array::len(a)] entries" };
+sys::exit(sys::time::after_idle(duration:200.ms, n) ~ 0);
+n

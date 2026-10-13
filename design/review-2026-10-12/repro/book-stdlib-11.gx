@@ -1,0 +1,12 @@
+// book-stdlib-11: print/println write a bare variant without its backtick
+// command: graphix --no-cache book-stdlib-11.gx
+// expected: `A for println(s), as log(s) and println([`A]) show it
+// observed: log -> `A, println(a) -> [`A], println(s) -> A; after the
+// write, println(s) -> `B(1): one type printed in two notations
+let s: [`A, `B(i64)] = `A;
+let a: Array<[`A, `B(i64)]> = [`A];
+log(s);
+println(a);
+println(s);
+s <- sys::time::after_idle(duration:50.ms, `B(1));
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

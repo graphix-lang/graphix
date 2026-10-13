@@ -1,0 +1,6 @@
+// toml::write_str drops a Map entry whose value is null; the read-back map
+// has a different length (expect 2 2, prints 2 1)
+let w: Map<string, [i64, null]> = {"k0" => null, "k1" => i64:1};
+let r: {a: Map<string, [i64, null]>} = toml::read(toml::write_str({a: w})$)$;
+println("[map::len(w)] [map::len(r.a)]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

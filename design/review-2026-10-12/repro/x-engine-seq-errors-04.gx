@@ -1,0 +1,31 @@
+// x-engine-seq-errors-04: in a seq step, a call-free `x?` is lowered to
+// `(pc ~! x)?` (graphix-types/src/expr/seq.rs, rewrite_with_inner's Qop arm):
+// the operand is read ONLY at entry and never tracked. design/seq_blocks.md
+// §5/§6.3 says a level is "fired at entry as it stands ... and waited for if
+// absent" (any(pc ~! e, e)), which `x$` does.
+// command: graphix --no-cache x-engine-seq-errors-04.gx   (and graphix-fuzz check: AGREE)
+// observed: ([(1, 42)], [])  -- `a` (x$) waits and completes, `b` (x?) stalls
+//           forever; a seqq would queue every later trigger behind it.
+// expected: ([(1, 42)], [(1, 42)])
+// A second symptom (step `select big { true => n, .. } + bad?`): the `?`
+// operand is frozen at its entry value while its siblings track, so the step
+// completes with a stale mix, and an error `bad` takes after entry never
+// raises.
+let n = 0;
+n <- select n { s if s < 20 => s + 1, _ => never() };
+let trig = select n { 1 => n, _ => never() };
+let x: [i64, Error<`E>] = never();
+x <- select n { 5 => 42, _ => never() };
+let a = seq let t = trig {
+  let v = x$;
+  (t, v)
+};
+let b = seq let t = trig {
+  let v = x?;
+  (t, v)
+};
+let ra: Array<(i64, i64)> = [];
+ra <- a ~ array::push(ra, a);
+let rb: Array<(i64, i64)> = [];
+rb <- b ~ array::push(rb, b);
+select n { 20 => (ra, rb), _ => never() }

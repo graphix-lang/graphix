@@ -1,0 +1,15 @@
+// schedule-v1: cap=64 events=512; in0=i64:1; in1=i64:1; in0=i64:2; in1=i64:0
+{
+// c-callsite-01: a callee back from bottom resets the instance's `<-`
+// state and loses the argument fires of its absent window.
+// command: graphix-fuzz run design/review-2026-10-12/repro/c-callsite-01.gx
+// observed (every mode): Trace([0:i64:0 1:i64:1000];
+//   [0:i64:1001 1:i64:2001]; []; []; [0:i64:2])
+// expected (what the select-arm twin `select in1 { 0 => f(in0), _ =>
+//   never() }` gives): last cycle [0:i64:2002 1:i64:3002]
+// With no fire in the window (schedule in0=1; in1=1; in1=0; in0=5) the
+// return yields 1 (c reset to 0) where the twin yields 2001.
+let f = |x: i64| -> i64 { let c = 0; c <- x ~ c + 1; x + c * 1000 };
+let cb: [fn(x: i64) -> i64, null] = select in1 { 0 => f, _ => null };
+cb$(in0)
+}

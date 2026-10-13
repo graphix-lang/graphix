@@ -102,6 +102,17 @@ where
             true => between(token('{'), sptoken('}'), expr()).map(Post::Key).left(),
             false => unexpected_any("a seq trigger takes no map access").right(),
         })),
+        // CR claude for claude: [readability/low] `attempt` around the whole of
+        // `apply_args()` (and around `array_index_suffix()` above) erases a failure
+        // that occurs after the opening bracket. The postfix loop then stops at the
+        // callee and the error lands at FURTHEST, which non-knot tokens such as
+        // `#label` never advance. `f(#a: 1, #b 2)` reports the column after `1` with no
+        // note, and `a[#x]` reports column 11 with an unrelated "a `;` separates this
+        // statement" note. A `(` or `[` directly after a term can only start a call or
+        // an index. Attempt only the opening token, `attempt(token('('))` followed by
+        // the rest, and keep the whole-arm `attempt` only on the `{k}` map access.
+        // Probe: design/review-2026-10-12/repro/t-parser-a-call-arg-error-pos.gx.
+        // (t-parser-a-05)
         attempt(apply_args()).map(Post::Call),
         // `?`/`$` chain innermost first: `x?$` takes the errors off `x`,
         // then the null
@@ -294,6 +305,16 @@ where
     I::Range: Range,
 {
     choice((
+        // CR claude for claude: [bug/low] `operand` admits a bare lambda as an
+        // operator's last operand but not a by-reference one. `byref_lambda` is
+        // reachable only from `expr()`, and `primary`'s `&` arm reads an `arith_term`,
+        // which cannot be a lambda. So `t ~ &|x| x + 1` is a parse error at the `|`,
+        // while `[&|x| x]` and `f(&|x| x)` parse. Route `&` followed by an optional
+        // `mut` and then `|` or `'` to `byref_lambda` here as well. Better, use one
+        // helper for "a lambda, by reference or not" from both `expr()` and `operand`,
+        // so the two cannot drift. Probe:
+        // design/review-2026-10-12/repro/t-parser-a-byref-lambda-operand.gx.
+        // (t-parser-a-08)
         attempt(look_ahead(spaces().with(one_of(['|', '\''])))).with(lambda()),
         arith_term(key),
     ))

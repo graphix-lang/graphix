@@ -1,0 +1,6 @@
+// A lambda may be an operator's last operand, but a by-reference lambda
+// may not: `&|x| ..` is parsed only in expr(), never as an operand.
+// Expected: parses. Actual: Parse error at line 5, column 14.
+let t = 1;
+let f = t ~ &|x| x + 1;
+f

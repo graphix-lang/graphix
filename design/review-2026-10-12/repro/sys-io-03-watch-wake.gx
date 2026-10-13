@@ -1,0 +1,18 @@
+// expect: "event CreateFile" after the arm is reselected (as without the 300ms deselect)
+// actual: only "event Established": watch() never rebuilds after a wake, so events stays bottom
+use sys::fs::watch;
+let dir = sys::fs::tempdir::create(null)$;
+let p = sys::fs::tempdir::path(dir);
+let w = watch::create(null)$;
+let on = true;
+on <- sys::time::timer(duration:300.ms, false) ~ false;
+let back = sys::time::timer(duration:600.ms, false);
+on <- back ~ true;
+let ev = select on {
+  true => watch::events(watch::watch(w, p)$),
+  false => never()
+};
+let wr = sys::fs::write_all(#path: sys::join_path(p, "f.txt"), sys::time::timer(duration:1200.ms, false) ~ "hello");
+let r = select ev { error as e => "error [e]", e => "event [e.event]" };
+sys::exit(sys::time::timer(duration:2500.ms, false) ~ 0);
+r

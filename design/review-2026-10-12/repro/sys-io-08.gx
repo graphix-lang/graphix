@@ -1,0 +1,21 @@
+// sys-io-08: tcp::accept under Calls::Latest drops (closes) a connection whose accept already completed
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-12/repro/sys-io-08.gx
+// expected: (200, 0): every client connection is accepted, none is closed by the server
+// observed: (196, 4), (197, 3), (197, 3), (196, 4) over four runs: a trigger fire while an
+// accept's completed reply waits to be joined renews the reply id, the reply is dropped and the
+// TcpStream with it. Answering accept only after the previous reply (trigger array::len(all))
+// gives (200, 0); a busy trigger (tick <- tick + 1) loses 84-136 of 200.
+use sys::io::Read;
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(l)$;
+let clients = array::init(200, |i| sys::tcp::connect(addr)$);
+let ev = never();
+let held = array::map(clients, |c| { ev <- Read::read(c, u64:1) ~ 1; c });
+let lost = 0;
+lost <- ev ~ lost + 1;
+let conn = sys::tcp::accept(l, sys::time::timer(duration:1.ms, true))$;
+let all = [];
+all <- conn ~ array::push(all, conn);
+let r = (array::len(all), lost);
+sys::exit(sys::time::timer(duration:3.s, false) ~ 0);
+sys::time::timer(duration:2900.ms, false) ~ r

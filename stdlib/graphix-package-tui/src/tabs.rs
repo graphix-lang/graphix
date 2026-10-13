@@ -44,6 +44,17 @@ impl<X: GXExt> TabsW<X> {
 
     async fn set_tabs(&mut self, v: Value) -> Result<()> {
         let arr = v.cast_to::<SmallVec<[(LineV, Value); 8]>>()?;
+        // CR claude for claude: [bug/medium] set_tabs compiles every child widget again
+        // each time the tabs array fires. A tab title is a plain Line inside that
+        // array, so a badge count in a title rebuilds every tab's widget tree. The
+        // rebuild loses view state: a ListW gets a fresh ListState and its scroll
+        // offset jumps, and a TableW loses its TableState. Every prop is also compiled
+        // again through compile_ref round trips. Probe:
+        // design/review-2026-10-12/repro/tui-widgets-01.gx. Fix: keep each child's spec
+        // Value next to its TuiW and reuse the old widget when the new spec at that
+        // position is equal, so that only the titles change. ChildW::update and the
+        // compile_each users (layout children, overlay layers) have the same
+        // rebuild-on-refire shape and need the same reuse. (tui-widgets-01)
         self.tabs = future::try_join_all(arr.into_iter().map(|(l, v)| {
             let gx = self.gx.clone();
             async move { Ok::<_, anyhow::Error>((l, compile(gx, v).await?)) }

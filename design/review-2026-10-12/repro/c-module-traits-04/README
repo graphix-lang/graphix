@@ -1,0 +1,12 @@
+A script's interface (main.gxi) is checked by check_script_sig, which compares
+only `val`s and the existence of an overlapping impl. The same interface on a
+module (m.gxi, checked by check_sig) refuses both programs.
+
+typedef/: main.gxi declares `type T = i64` and `trait Show { .. -> i64 }`; the
+  script defines `type T = string` and Show returning string.
+    graphix --no-cache main.gx  -> "a"          (accepted)
+    graphix --no-cache mm.gx    -> signature mismatch in T, expected type T = i64, found type T = string
+impl/: main.gxi declares `impl<'a: Show> Show for Array<'a>;`, the script
+  implements `impl<'a> Show for Array<'a>`.
+    graphix --no-cache main.gx  -> "arr"        (accepted)
+    graphix --no-cache mm.gx    -> does not implement the declared impl ..: missing constraint 'a: Show

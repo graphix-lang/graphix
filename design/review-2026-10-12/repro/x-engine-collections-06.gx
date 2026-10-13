@@ -1,0 +1,12 @@
+// x-engine-collections-06: decimal checked-arith errors don't name their cause.
+// command: graphix-fuzz run x-engine-collections-06.gx
+// expected: "attempt to add with overflow", "attempt to divide by zero",
+//   "attempt to calculate the remainder with a divisor of zero",
+//   "attempt to multiply with overflow" (as for the integer types)
+// observed: every element is error:["ArithError", "decimal arithmetic error"],
+//   in both engines.
+let f = |n: i64| {
+  let d = cast<decimal>(n)$;
+  (decimal:79228162514264337593543950335.0 +? d, d /? decimal:0.0, d %? decimal:0.0, decimal:79228162514264337593543950335.0 *? d)
+};
+f(3)

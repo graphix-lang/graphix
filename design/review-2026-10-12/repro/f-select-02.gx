@@ -1,0 +1,18 @@
+{
+  // f-select-02: variant payload literal tested by a typed read using the
+  // predicate's type, so `Count(null) matches `Count(0) in the JIT.
+  // command: graphix-fuzz check design/review-2026-10-12/repro/f-select-02.gx
+  // expected (node-walk, intended): ["some", "zero", "some"]
+  // observed: DIVERGENCE interp ["some", "zero", "some"],
+  // jit ["zero", "zero", "some"]. Same with `A([bool, string]) =
+  // `A("hello") against an `A(false) arm: interp 2, jit 1.
+  let g = |v: [`Count([i64, null]), `Off]| select v {
+      `Count(0) => "zero",
+      `Count(_) => "some",
+      `Off => "off"
+  };
+  let a: [`Count([i64, null]), `Off] = `Count(null);
+  let b: [`Count([i64, null]), `Off] = `Count(0);
+  let c: [`Count([i64, null]), `Off] = `Count(5);
+  (g(a), g(b), g(c))
+}

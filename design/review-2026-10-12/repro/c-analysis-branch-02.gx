@@ -1,0 +1,19 @@
+let a = [10, 20, 30, 40];
+// c-analysis-branch-02: independent() ignores ByRef cells, so a moving reference
+// read in a later sibling sees the old path when the siblings fork.
+// run: GRAPHIX_PAR=off   graphix --no-cache c-analysis-branch-02.gx
+//      GRAPHIX_PAR=force graphix --no-cache c-analysis-branch-02.gx
+//      graphix-fuzz check c-analysis-branch-02.gx
+// serial (off, the serial node-walk): (0, 10) (1, 20) (2, 30) (3, 40) (4, 10) (5, 20) (6, 30) (6, 30)
+// forked (force): (0, 10) (1, 10) (2, 20) (3, 30) (4, 40) (5, 10) (6, 20) (6, 30)
+// graphix-fuzz check: DIVERGENCE — parallel evaluation bug (forked node-walk != serial node-walk)
+// The same two fields written as block statements (let x = ..; let y = *r) agree:
+// plan_runs counts the ByRef cell as published, independent does not.
+let i = 0;
+i <- select i {
+  6 => never(),
+  _ => i + 1
+};
+let r = &a[0];
+let t = ({ r <- &a[i % 4]; i }, *r);
+t

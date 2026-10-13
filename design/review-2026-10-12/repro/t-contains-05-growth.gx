@@ -1,0 +1,12 @@
+// t-contains-05: the growth guard bails as a hard error inside probes, aborting
+// checks a sibling member would pass.
+// command: graphix --check t-contains-05-growth.gx
+// expected: accepted (an N<i64> value is null or a tuple; (Any, Any) and null
+// cover both)
+// observed: refused, "cannot compare two instances of N: its parameters grow at
+// every level of its recursion, so no comparison ends": probing the member
+// N<string> bails instead of answering false, and set_commit never tries the
+// others. Dropping N<string> from the return type ([(Any, Any), null]) checks.
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let f = |x: N<i64>| -> [N<string>, (Any, Any), null] x;
+f(null)

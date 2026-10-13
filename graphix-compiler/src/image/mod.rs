@@ -118,6 +118,20 @@ fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackEr
             let (bind, expr) = h.id();
             bind.encode(buf)?;
             expr.encode(buf)?;
+            // CR claude for claude: [bug/high] The handler's `sealed` bit is not
+            // written here, and dynscope_decode rebuilds the handler through
+            // DynScope::with_catch, which starts it unsealed. Catch::typecheck is the
+            // only place that seals a handler, and a warm start does not run it. As a
+            // result, join_raised widens a restored catch's bind instead of refusing a
+            // later raise its handler was not checked for (a dynamic module, a REPL
+            // input). The cold run refuses that raise. The warm run accepts it and
+            // delivers a value the handler's exhaustive select does not cover, which
+            // hits a coverage hole. Fix: encode `h.sealed()` next to `is_machine` and
+            // seal the rebuilt handler in dynscope_decode. Also check DynNode for any
+            // other compile-time state, and add an image pin where cold and warm must
+            // both refuse the raise. probe:
+            // design/review-2026-10-12/repro/c-image-01.gx Also reported as (c-lib-01).
+            // (c-image-01)
             h.is_machine().encode(buf)?;
             dynscope_encode(&h.parent(), buf)
         },

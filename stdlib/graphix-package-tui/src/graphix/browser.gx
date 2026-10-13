@@ -77,12 +77,44 @@ let browser = |
                     cols: array::push(cols, col),
                     widths: array::push(widths, `Min(len))
                 },
+                // CR claude for claude: [bug/medium] gx-ui-03 still reproduces: tui browser
+                // publishes a row of the old listing on navigation. Part B of gx-ui-03 is
+                // unfixed (part A, selected_path without #selected_row, is fixed). On a
+                // path change, `selected <- p ~ {x: 1, y: 0}` lands while
+                // `structure`/`visible_rows` still hold the previous path's listing. So
+                // `row_path = visible_rows[selected.y]$` takes row 0 of the old listing,
+                // and `*selected_row <- row_path` / `*selected_path <- ...` publish a path
+                // the user never selected. When the new listing is empty,
+                // `visible_rows[0]$` is bottom, so nothing overwrites that stale value. The
+                // outputs keep naming a row of the previous listing, and a caller that
+                // navigates on Enter goes there. Whether it happens depends on whether the
+                // reset or the new listing arrives first (7-8 of every 10 B lines in 3 of 4
+                // runs; 0 in one --no-fusion run). Failure: Publish /p/d/w and /p/d/x,
+                // browse /p/d, move the cursor down to /p/d/x and enter it (its listing is
+                // empty). The outputs switch to selected_row=/p/d/w selected_path=/p/d/w
+                // and stay there; the next Enter navigates to /p/d/w. Fix: Key the listing
+                // to the path it lists (carry `path` with the list_table result and drop it
+                // unless it equals the current path). Reset `selected` when the new listing
+                // arrives, not when the path changes. Keep the stale-read guard so no row
+                // path is published while the listing is empty. Unverified: the reviewer's
+                // report, not checked by a verifier. (x-rerun-4-02)
                 x => { total: x - len - 4, cols, widths }
             }
         })
     };
     let visible_columns: Array<string> = uniq(visible_columns);
     let row_path = visible_rows[selected.y]$;
+    // CR claude for claude: [bug/medium] selected_row and selected_path report rows
+    // that are not on screen. The selection reset `selected <- p ~ {..}` fires on the
+    // path, but `structure` still holds the old listing until net::list_table answers.
+    // So for one cycle row_path is row 0 of the previous directory, and that row is
+    // written to both outputs. When the new listing is empty (a leaf, an unpublished
+    // path, or a list error), `visible_rows[selected.y]$` is bottom and nothing is
+    // written. The caller then keeps a row of the previous directory, and netidx-tools'
+    // browser `:w` and Enter act on it. Fix: reset the selection when the new listing
+    // arrives (trigger it on `structure`, not on `path`). Also make both outputs `&mut
+    // [string, null]` (the .gxi and the callers too), and write null when visible_rows
+    // is empty. probe: design/review-2026-10-12/repro/gx-ui-03.gx (gx-ui-03)
     *selected_row <- row_path;
     *selected_path <- select mode {
         `List => row_path,
@@ -121,6 +153,13 @@ let browser = |
             }
         });
     let cells = in_order(first_row, array::len(visible_rows), row_cells);
+    // CR claude for claude: [perf/low] The throttle sits on the fold's output, so the
+    // fold over every visible cell (an array::map and an array::zip per row, all
+    // allocating) runs in every cycle in which any cell delivers, and the throttle
+    // discards nearly all of the results. With a large live table that is O(rows x
+    // cols) work per cell update for a value used at most once a second. Throttle the
+    // input instead, so the fold runs at most once a second: fold over `throttle(#rate:
+    // duration:1.0s, cells)`. (gx-ui-09)
     content_widths <- throttle(#rate:duration:1.0s,
         array::fold(cells, [], |acc, row| {
             let row = array::map(row, |s| select s {

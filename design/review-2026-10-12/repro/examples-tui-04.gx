@@ -1,0 +1,14 @@
+// examples-tui-04: table_realtime's CPU % random walk drifts negative without bound
+// command: graphix --no-cache design/review-2026-10-12/repro/examples-tui-04.gx
+// expected: a CPU percentage stays within 0..100
+// observed: after 500 ticks the value printed is around -250 (two runs: -317, -193),
+// because rand's #end is exclusive, so each step is drawn from -5..4 (mean -0.5)
+let clock = sys::time::timer(duration:1.ms, 500);
+let cpu_val = 5;
+cpu_val <- {
+    let v = clock ~ cpu_val;
+    v + rand::rand(#clock, #start: -5, #end: 5)
+};
+let n = count(clock);
+sys::exit(select n { 500 => 0, _ => never() });
+(n, cpu_val)

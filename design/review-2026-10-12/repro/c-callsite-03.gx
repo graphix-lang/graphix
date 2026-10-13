@@ -1,0 +1,13 @@
+// c-callsite-03: CallSite::check_omitted_defaults never sees a default whose
+// label the site's fn type hides; the check accepts what the build refuses.
+// commands: graphix --check c-callsite-03.gx ; graphix --no-cache c-callsite-03.gx
+// expected: both refuse (f's default `5` does not fit 'a = f64), or both accept.
+// observed: --check exits 0; the run fails at h(1.5) with
+//   "at: ... in: 5 / type mismatch 'a: f64 does not contain i64" (exit 1).
+// Contrast: with the label kept optional, `let h: fn(?#d: f64, x: f64) -> f64 = f`,
+// --check refuses with the same message, so only the hidden label escapes.
+// Same with `let g = |#x = 4096, y| x == y; let h: fn(y: string) -> bool = g;
+// h("seven")`: --check 0, run "type mismatch string does not contain i64".
+let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+let h: fn(x: f64) -> f64 = f;
+h(1.5)

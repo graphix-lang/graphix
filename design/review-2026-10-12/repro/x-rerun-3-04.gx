@@ -1,0 +1,16 @@
+let lim = i64:3;
+// x-rerun-3-04: an arm whose guard reads its binds clones its owned
+// payload bind in the prologue and again in the chain.
+// command: GRAPHIX_DUMP_CLIF=1 graphix --no-cache x-rerun-3-04.gx, count
+// the payload-clone helper's calls in ";; clif f"
+// expected: 2 call sites (one per arm that binds xs, as with `if true`)
+// observed: 3 (prologue, arm 1's matched block, arm 2)
+let f = |t: [`A(Array<i64>), `B]| -> i64 select t {
+  `A(xs) if array::len(xs) > lim => i64:1,
+  `A(xs) => array::len(xs),
+  `B => i64:0
+};
+let t: [`A(Array<i64>), `B] = `A([i64:1, i64:2]);
+let r = f(t);
+sys::exit(sys::time::after_idle(duration:100.ms, i64:0));
+r

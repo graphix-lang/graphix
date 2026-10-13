@@ -1,0 +1,7 @@
+// book/src/shell.md's example init.gx: `\x1b` is no escape the string
+// parser knows (only \n \r \t \0 \" \\ \[ \]), and `[2J..` would open an
+// interpolation anyway. The parse error names neither: "the parser could
+// not continue past this point".
+let debug = |x| { print("DEBUG: [x]"); x };
+let clear = || print("\x1b[2J\x1b[H");
+debug(1)

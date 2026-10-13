@@ -1,0 +1,11 @@
+// t-parser-a-04: `#[attr]` above a positional call argument is a parse error
+// command: graphix --check design/review-2026-10-12/repro/t-parser-a-04.gx
+// expected: parses and checks, as `f(#x: #[native] 1 + 2)` (labeled),
+//   `[#[native] 1 + 2]` (array element) and a `//` comment above a
+//   positional argument all do.
+// observed: "Parse error at line: 11, column: 2 / Unexpected `(` /
+//   Expected whitespace or end of input"; with a preceding argument,
+//   `f(1, #[native] 1 + 2)`, "the parser could not continue past this point"
+//   at the `(`.
+let f = |x| x + 1;
+f(#[native] 1 + 2)

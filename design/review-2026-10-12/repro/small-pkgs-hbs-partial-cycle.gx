@@ -1,0 +1,4 @@
+// hbs::render with mutually recursive partials (a -> b -> a) overflows the
+// stack and aborts the process; handlebars refuses only direct self-inclusion.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+hbs::render(#partials: {a: "x{{> b}}", b: "y{{> a}}"}, "{{> a}}", {x: 1})

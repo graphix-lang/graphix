@@ -1,0 +1,13 @@
+// tests-lang-rest-b-03-user-trait: the trait-default shape alone. With
+// `let init: ['b, null] = null` this fuses (prints 8); with `Option<'b>`
+// it is refused "let value of shape None".
+trait First {
+  val items: fn(self) -> Array<i64>;
+  val pick: fn(self, f: fn(x: i64) -> ['b, null]) -> ['b, null] = |s, f| {
+    let init: Option<'b> = null;
+    array::fold(items(s), init, |acc, x| select acc { null as _ => f(x), found => found })
+  }
+};
+type B = Abstract<Array<i64>>;
+impl First for B { let items = |b| b.0 };
+#[native] First::pick(B([4, 5]), |x| x * 2)

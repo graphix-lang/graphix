@@ -1,0 +1,6 @@
+// --check time doubles per level of fn-type nesting (FnType::for_each_part
+// calls sig_tvars, which walks every part again): 20 -> 0.6s, 22 -> 2s,
+// 24 -> 9s, 30 -> minutes.
+let x: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: fn(a: i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64 = never();
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+x

@@ -74,6 +74,14 @@ async fn values_until_death(flags: BitFlags<CFlag>) -> Result<(Vec<Value>, u64)>
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] This is the only pin of fast-fn panic
+// propagation, and it runs serially only. par_loop carries a kernel's panic across
+// forked chunks with plumbing of its own (each chunk's take_kernel_panic, then
+// set_kernel_panic at the merge). A change that dropped a chunk's panic would deliver a
+// placeholder value under GRAPHIX_PAR=force, and nothing would notice. Fix:
+// parameterise values_until_death by Mode and set the par mode in the setup closure.
+// Run all four modes, and add a second program, `array::map([1, 2, 3, 4], |x| probe(x)
+// + 1)`, so the panic happens inside a kernel loop slot. (tests-lib-b2-14)
 async fn fast_fn_panic_fails_the_runtime_in_both_engines() -> Result<()> {
     let (interp, _) = values_until_death(CFlag::FusionDisabled.into()).await?;
     let (jit, _fused) = values_until_death(BitFlags::empty()).await?;

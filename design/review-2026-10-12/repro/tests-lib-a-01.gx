@@ -1,0 +1,12 @@
+// tests-lib-a-01: a union naming a typedef (Number, Int, Real) never freezes for
+// the kernel ABI, so sum/product/divide and cast<Number> never fuse.
+// Run: graphix --no-cache tests-lib-a-01.gx
+// Expected: 7 (sum is Effect::Stateless(Some(FastCall)), so it fuses).
+// Observed: "#[native] expression did not fully fuse to native code:
+//   emit_clif: builtin call site `sum(a, b)` not discovered — doesn't fuse".
+// Same for divide(a, b), product(a, b), cast<Number>(a), cast<Int>(a),
+// cast<[Sint, Uint]>(a), and `|x: Number| #[native] cast<i64>(x)`;
+// cast<Float>(a), cast<Sint>(a) and cast<[i64, f64]>(a) fuse.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let f = |a: i64, b: i64| #[native] sum(a, b);
+f(3, 4)

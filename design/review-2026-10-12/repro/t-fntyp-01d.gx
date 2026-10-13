@@ -1,0 +1,3 @@
+// refused ("the argument is not polymorphic in 'b"); with y written before g the check accepts
+let apply = 'b: Float |g: fn<'b: Int>(x: 'b) -> 'b, y: 'b| -> 'b { let z = g(i64:1); y };
+apply(|x| x, 1.0)

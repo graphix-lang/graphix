@@ -1,0 +1,10 @@
+let k = 0;
+k <- select k < 6 { true => k + 1, false => never() };
+// f-call-flow-02: g, first called from a later-entered arm of the fused callee f,
+// runs with f's init view instead of its own first-call init (call.rs
+// emit_callee_context_word claims no first-call word in a callee body): the
+// node-walk prints "dbg(7): 7" at cycle 3, the JIT never does.
+// graphix-fuzz check: DIVERGENCE (interp != jit).
+let g = |n: i64| -> i64 { dbg(7); n };
+let f = |s: i64| -> i64 select s { 0 => 0, n => g(n) };
+f(select k < 3 { true => 0, false => k })

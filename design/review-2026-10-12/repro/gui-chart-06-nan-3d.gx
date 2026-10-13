@@ -1,0 +1,5 @@
+use gui::{window, chart};
+
+let nan = 0.0 / 0.0;
+let pts = [(1.0, 1.0, 1.0), (2.0, nan, 2.0), (3.0, 3.0, 3.0), (100.0, 100.0, 100.0)];
+[&window(#title: &"3d", &chart::chart(#z_range: &{min: 0.0, max: 5.0}, #x_range: &{min: 0.0, max: 5.0}, #y_range: &{min: 0.0, max: 5.0}, &[chart::scatter3d(&pts), chart::line3d(&pts)]))]

@@ -1,0 +1,12 @@
+// t-format-resolver-06: the formatter rewrites non-default literals
+// command: graphix fmt --stdout t-format-resolver-06.gx
+// expected: each literal kept as written (f32:1e-45, f32:3.4028235e38, the +05:00 datetime, 0.1s)
+// observed: f32:0.000000000000000000000000000000000000000000001, f32:340282350000000000000000000000000000000.,
+//   datetime:"2019-12-31 19:00:00.100 UTC", duration:100.ms
+let a = [
+    f32:1e-45,
+    f32:3.4028235e38,
+    datetime:"2020-01-01T00:00:00.1+05:00",
+    duration:0.1s
+];
+a

@@ -1,0 +1,16 @@
+// gx-ui-03: browser selected_row reports /gxuiA/a0 (a row of the OLD path) after the path
+// moves to /gxuiB, and keeps /gxuiB/b0 forever after it moves to an empty path.
+use tui::browser::{MoveCursor, browser};
+let pa = array::map([0, 1, 2, 3], |i| sys::net::publish("/gxuiA/a[i]", i));
+let pb = array::map([0, 1, 2, 3], |i| sys::net::publish("/gxuiB/b[i]", i));
+let clock = sys::time::timer(duration:400.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let cursor: MoveCursor = never();
+cursor <- select n { k if k > 2 && k < 5 => n ~ `Down(1), _ => never() };
+let path = "/gxuiA";
+path <- select n { 7 => n ~ "/gxuiB", 10 => n ~ "/gxuiEmpty", _ => never() };
+let sel: string = "";
+let w = browser(#cursor: cursor, #selected_row: &mut sel, #size: {width: 80, height: 8}, path);
+sys::exit(select n { k if k > 13 => n ~ 0, _ => never() });
+"n=[n] path=[path] sel=[sel]"

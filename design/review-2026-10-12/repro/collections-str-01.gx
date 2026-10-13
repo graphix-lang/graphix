@@ -1,0 +1,21 @@
+// collections-str-01: map::iter / map::iterq stop after the first pair when
+// the keys carry a user Ord.
+// run: graphix --no-cache design/review-2026-10-12/repro/collections-str-01.gx
+// (same with --no-fusion)
+// expected: four lines, T(3) 3, T(2) 2, T(1) 1, T(0) 0, then "done"
+// observed: `T(3) 3` only, then "done". map::len is 4 and map::fold visits
+// all four in user order; the same program with i64 keys prints all four;
+// map::iterq on a 10ms clock also yields only `T(3) 3`.
+type T = Abstract<i64>;
+impl Ord for T {
+    let cmp = |x, y| select (x.0, y.0) {
+        (a, b) if a < b => `Greater,
+        (a, b) if a > b => `Less,
+        _ => `Equal
+    }
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let m = {T(0) => 0, T(1) => 1, T(2) => 2, T(3) => 3};
+let (k, v) = map::iter(m);
+println("[k] [v]");
+"done"

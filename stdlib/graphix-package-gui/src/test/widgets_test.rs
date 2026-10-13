@@ -3,6 +3,16 @@ use anyhow::Result;
 use graphix_package_core::testing;
 use netidx::publisher::Value;
 
+// CR claude for claude: [structure/low] interaction_test has its own IMPORTS and
+// harness() that overlap these, so adding a widget module means editing two lists. Put
+// one IMPORTS (the union) and one harness() for each harness type in test/mod.rs. The
+// view! macro below only wraps `h.render().await?`, yet it shares a name with
+// GuiTestHarness::view, which builds an element without drawing. Replace its uses with
+// `h.render().await?`. In interaction_test, button_press_rotates_seq and
+// button_press_rotates_sampled are the same test apart from the on_press handler: drive
+// both from one helper that takes the handler. table_cell_count_mismatch_lays_out
+// builds its programs with `replacen("], [", "], &[", 1)`. Write the `&` into the cases
+// instead. (tests-gui-b-11)
 const IMPORTS: &str = "\
 use gui::*;\n\
 use gui::text::{self, *};\n\
@@ -476,6 +486,16 @@ async fn bad_sizes_and_coordinates_are_refused() -> Result<()> {
         h.drain().await?;
         let bid = testing::find_bind_id(&h.compiled.env, var)?;
         h.gx.compile_ref(bid).await?.set(bad.clone())?;
+        // CR claude for claude: [test-gap/low] The doc promises the bad update is
+        // refused and the last good value kept, but the test checks only that drain
+        // errors and that the next render does not panic. A widget that stored size 0
+        // or the NaN coordinate and then returned Err would pass. After the refusal,
+        // assert the widget still holds the good value, either through a test accessor
+        // or by writing the same good value and expecting drain to report no change.
+        // The harness drain (testing::drain_idle) also stops at the first handle_update
+        // error and drops the rest of the batch, whereas the event loop logs each error
+        // and continues. A harness drain that logs and continues, with the errors
+        // collected for the test, would match production. (tests-gui-b-06)
         assert!(h.drain().await.is_err(), "{widget} takes {bad:?}");
         h.render().await?;
     }

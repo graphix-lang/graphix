@@ -1,0 +1,25 @@
+// sys-io-01: Halves::take()/put() leaves the stream empty mid-op: concurrent ops fail,
+// a racing close() is undone.
+// command: graphix --no-cache design/review-2026-10-12/repro/sys-io-01.gx
+// expected: ("ok 5", "ok 5", "ok 5", null, "read after close: ...") -- three fstats on an
+//   open file all succeed; a read issued after close returned null fails
+// observed: ("ok 5", "error:[\"IOError\", \"stream unavailable\"]",
+//   "error:[\"IOError\", \"stream unavailable\"]", null, "read after close returned 5 bytes")
+//   (b and c fail every run; the read after close succeeds in 2 of 3 runs, a race)
+use sys::fs;
+use sys::io::{Read, Close};
+let dir = sys::fs::tempdir::create(null)$;
+let p = sys::join_path(sys::fs::tempdir::path(dir), "f.bin");
+let wrote = fs::write_all(#path: p, "hello")$;
+let f = fs::open(`Read, wrote ~ p)$;
+let a = fs::fstat(f);
+let b = fs::fstat(f);
+let c = fs::fstat(f);
+let show = |m: Result<fs::Metadata, `IOError(string)>| select m { error as e => "[e]", m => "ok [m.len]" };
+let g = fs::open(`Read, wrote ~ p)$;
+let s = fs::fstat(g);
+let closed = Close::close(g);
+let after = Read::read(s ~ closed ~ g, u64:10);
+let r = (show(a), show(b), show(c), closed, select after { error as e => "read after close: [e]", b => "read after close returned [buffer::len(b)] bytes" });
+sys::exit(sys::time::after_idle(duration:300.ms, r) ~ 0);
+r

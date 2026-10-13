@@ -1,0 +1,57 @@
+// c-image-02: a lazily materialized instance is charged to the activation
+// budget; the cold run built it at compile time, uncharged.
+// Command (bash, C=<scratch cache dir>, run twice: first cold, then warm):
+//   XDG_CACHE_HOME=$C GRAPHIX_ACTIVATION_BUDGET=60 graphix --no-fusion c-image-02.gx
+// Expected: both runs print (0, 780) (55, 1180) (210, 1580) (465, 1980).
+// Observed: the cold run prints all four; the warm run prints two, logs
+// "activation budget (60) exceeded by a recursion — aborting the runtime"
+// (see it with --log-dir and RUST_LOG=error), then the shell panics
+// (c-image-03). The smallest budget that runs all four is 30 cold or
+// --no-cache, 72 warm: the 40 g instances and f's are charged warm only.
+// Verified: at GRAPHIX_ACTIVATION_BUDGET=40 --no-cache prints all four
+// lines, the warm run prints none (3/3 runs each).
+let rec f = |n: i64| -> i64 select n { 0 => 0, k => k + f(k - 1) };
+let g0 = |x: i64| -> i64 x + 0;
+let g1 = |x: i64| -> i64 x + 1;
+let g2 = |x: i64| -> i64 x + 2;
+let g3 = |x: i64| -> i64 x + 3;
+let g4 = |x: i64| -> i64 x + 4;
+let g5 = |x: i64| -> i64 x + 5;
+let g6 = |x: i64| -> i64 x + 6;
+let g7 = |x: i64| -> i64 x + 7;
+let g8 = |x: i64| -> i64 x + 8;
+let g9 = |x: i64| -> i64 x + 9;
+let g10 = |x: i64| -> i64 x + 10;
+let g11 = |x: i64| -> i64 x + 11;
+let g12 = |x: i64| -> i64 x + 12;
+let g13 = |x: i64| -> i64 x + 13;
+let g14 = |x: i64| -> i64 x + 14;
+let g15 = |x: i64| -> i64 x + 15;
+let g16 = |x: i64| -> i64 x + 16;
+let g17 = |x: i64| -> i64 x + 17;
+let g18 = |x: i64| -> i64 x + 18;
+let g19 = |x: i64| -> i64 x + 19;
+let g20 = |x: i64| -> i64 x + 20;
+let g21 = |x: i64| -> i64 x + 21;
+let g22 = |x: i64| -> i64 x + 22;
+let g23 = |x: i64| -> i64 x + 23;
+let g24 = |x: i64| -> i64 x + 24;
+let g25 = |x: i64| -> i64 x + 25;
+let g26 = |x: i64| -> i64 x + 26;
+let g27 = |x: i64| -> i64 x + 27;
+let g28 = |x: i64| -> i64 x + 28;
+let g29 = |x: i64| -> i64 x + 29;
+let g30 = |x: i64| -> i64 x + 30;
+let g31 = |x: i64| -> i64 x + 31;
+let g32 = |x: i64| -> i64 x + 32;
+let g33 = |x: i64| -> i64 x + 33;
+let g34 = |x: i64| -> i64 x + 34;
+let g35 = |x: i64| -> i64 x + 35;
+let g36 = |x: i64| -> i64 x + 36;
+let g37 = |x: i64| -> i64 x + 37;
+let g38 = |x: i64| -> i64 x + 38;
+let g39 = |x: i64| -> i64 x + 39;
+let depth = 0;
+depth <- select depth { d if d < 30 => d + 10, _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, depth ~ 0));
+(f(depth), g0(depth) + g1(depth) + g2(depth) + g3(depth) + g4(depth) + g5(depth) + g6(depth) + g7(depth) + g8(depth) + g9(depth) + g10(depth) + g11(depth) + g12(depth) + g13(depth) + g14(depth) + g15(depth) + g16(depth) + g17(depth) + g18(depth) + g19(depth) + g20(depth) + g21(depth) + g22(depth) + g23(depth) + g24(depth) + g25(depth) + g26(depth) + g27(depth) + g28(depth) + g29(depth) + g30(depth) + g31(depth) + g32(depth) + g33(depth) + g34(depth) + g35(depth) + g36(depth) + g37(depth) + g38(depth) + g39(depth))

@@ -1,0 +1,11 @@
+// mkdir /tmp/db2-import (empty) first. dst holds no data, only the meta of tree "a"; the import panics ("import is overwriting existing data") and answers a DbErr
+let src = db::open("/tmp/db2-import/src")$;
+let s: db::Tree<string, i64> = db::tree(src, "a")$;
+let i1 = db::insert(s, "x", 1)$;
+let e = db::export(src, i1 ~ "/tmp/db2-import/exp.bin")$;
+let dst = db::open("/tmp/db2-import/dst")$;
+let d: db::Tree<string, i64> = db::tree(dst, "a")$;
+let r = db::import(dst, (e ~ d) ~ "/tmp/db2-import/exp.bin");
+let n = db::len(r ~ d)$;
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+println("[r] [n]")

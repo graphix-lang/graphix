@@ -76,6 +76,19 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     redirects: Redirects,
 }
 
+// CR claude for claude: [bug/medium] The activation blocks freed here are uncharged
+// through `stack::record_self_blocks(-1)`. That reaches the runtime's Control only
+// through the `with_control` thread-local, which is set only while `do_cycle` updates
+// nodes. A kernel dropped by `ToGX::Delete`, by `delete_callable` or at shutdown
+// therefore leaves its blocks counted in `self_blocks` and `activations` forever. A
+// REPL or embedder that re-evaluates a recursion under an activation budget then aborts
+// the runtime spuriously: 50 activations leak per deleted f(50), and the 7th run aborts
+// at budget 300, while `--no-fusion` runs all 8 (probe:
+// design/review-2026-10-12/repro/f-kernel-02.py; same leak as t-misc-01). Fix: give
+// FusedKernel a `delete` that frees the trees and chains under `ctx.control`, as
+// `GXLambda::delete` does, and keep Drop as the fallback. Or record the Control a block
+// was charged to when it is made, and uncharge that one, not the thread-local. Also
+// reported as (x-unsafe-02). (f-kernel-02)
 impl<R: Rt, E: UserEvent> Drop for FusedKernel<R, E> {
     fn drop(&mut self) {
         // Only instance death frees the slot chains and activation trees;
@@ -226,6 +239,13 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ParamKind::Array { .. }
                 | ParamKind::Tuple { .. }
                 | ParamKind::Struct { .. } => value_words(&EMPTY_ARRAY),
+                // CR claude for claude: [risk/low] These words come from a temporary
+                // Value that is dropped at the end of the statement, and the kernel
+                // reads them later. This is sound only because ArcStr::new() is
+                // arcstr's static empty literal. A reader has to know that to see it is
+                // not a use-after-free, and changing the placeholder to anything else
+                // would make it one. Take the words from a static, as the composite arm
+                // does with EMPTY_ARRAY: an EMPTY_STRING Value beside it. (f-kernel-08)
                 ParamKind::String => value_words(&Value::String(arcstr::ArcStr::new())),
                 ParamKind::Variant { .. }
                 | ParamKind::Nullable { .. }
@@ -306,6 +326,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>(),
             );
         }
+        // CR claude for eric: [perf/medium] A kernel whose last result was bottom, or
+        // that has a bottom feeder, runs again on every cycle that reaches it, even
+        // when no feeder fired. The dense node-walk reaches every awake node each
+        // cycle, so this means every cycle of the program. Example: a 300k-slot map
+        // with one `$`-bottomed slot re-runs every slot on each of 100 unrelated ticks.
+        // That takes 2.4 s, against 0.18 s for the same loop without the bottom slot
+        // (probe: design/review-2026-10-12/repro/tests-lang-rest-b-05.gx;
+        // GRAPHIX_DBG_INVOKE shows fired=[false] 100 times). Always riding a bottom
+        // resident would be wrong if a feeder can go from bottom to a stale value
+        // without firing. The cheaper fix is to keep one bit per feeder recording
+        // whether it was bottom at the last run, and to invoke only on a fire, a change
+        // in that mask, init or wake. That mask holds no values, but it is wrapper
+        // state that decides whether the kernel runs, and strict fusion limits such
+        // state, so the decision is yours. (tests-lang-rest-b-04)
+        // CR claude for claude: [perf/medium] This gate runs the whole region, every
+        // loop included, on every update while any feeder stands bottom or the resident
+        // is bottom, even when nothing fired. A region that reads a never()-initialized
+        // let and sits in a busy statement redoes all its work each cycle (probe:
+        // design/review-2026-10-12/repro/f-kernel-03.gx, 202 runs of a 1M fold vs 1
+        // when z is null). A rerun is only needed when a feeder's bottomness changed
+        // quietly since the last run. Keep the feeders' bottom mask (and the resident's
+        // bottomness) from the last non-pending run, gate on `any_updated || init ||
+        // woke || mask changed`, drop `any_bottom` and `resident.is_bottom()` from the
+        // gate, and update the 'Strict consumers and kernels' paragraph of
+        // design/async_sleep_outputs.md to match. Also reported as (x-perf-runtime-02).
+        // (f-kernel-03)
         if !(any_updated
             || any_bottom
             || ctx.event.init()

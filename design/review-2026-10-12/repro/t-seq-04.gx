@@ -1,0 +1,8 @@
+// t-seq-04: a `{ .. }` seq statement holding only declarations lowers to a
+// block whose value is `never()` (seq.rs lower_block, vals.len() == 0), so the
+// step never completes and the seq never produces: no refusal, a silent stall.
+// Expected: 1 printed (or a refusal like the seq-level "a declaration is not
+// a seq step"). Observed: nothing. Run: graphix --no-cache t-seq-04.gx
+let x = seq { { type T = i64; use str }; 1 };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+x

@@ -1,0 +1,8 @@
+{
+  type Cell = Abstract<&i64>;
+  let x: i64 = 41;
+  let c = Cell(&x);
+  let k = cast<u64>(c);
+  let s = cast<string>(c);
+  (k, s)
+}

@@ -160,6 +160,16 @@ impl Pack for GxAbstract {
         })
     }
 
+    // CR claude for claude: [bug/medium] decode refuses abstract values nested deeper
+    // than MAX_DECODE_DEPTH (1024) with TooBig, but encode and encoded_len write them
+    // at any depth. A recursive abstract value deeper than 1024 levels (a linked list
+    // of more than 1024 elements built as `type T = Abstract<[T, null]>`) is written by
+    // pack::write_bytes, published or saved, and can never be read back, by this
+    // process or any subscriber. Either apply the same depth count when encoding, so
+    // the writer fails with TooBig, or remove the cap by decoding without one nested
+    // length-limited reader per level. Whatever the limit ends up being, document it in
+    // design/nominal_abstract_types.md. probe:
+    // design/review-2026-10-12/repro/t-expr-core-02.gx (t-expr-core-02)
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let depth = DECODE_DEPTH.with(|d| d.get());
         if depth >= MAX_DECODE_DEPTH {
@@ -232,6 +242,16 @@ impl Hash for GxAbstract {
     }
 }
 
+// CR claude for claude: [bug/medium] The wrapper is registered with netidx's Abstract
+// registry only on the first `wrap`. A Value decoded before any Graphix abstract value
+// exists in the process does not downcast to GxAbstract: `pack::read`, `str::parse`, a
+// netidx subscription or a file load all hit this. `Type::is_a` then refuses it with
+// "not this abstract type". The same bytes are accepted once any abstract value has
+// been minted, so whether a program can load its own saved data depends on evaluation
+// order. Register the wrapper eagerly, before any Value decode: force `WRAPPER`
+// wherever an Env or a CompileCtx is created, or from a public `init` that the runtime
+// calls. Add a pin that `pack::read`s a literal abstract value in a program that mints
+// none. probe: design/review-2026-10-12/repro/tests-types-03.sh (tests-types-03)
 static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
     let id = uuid::Uuid::from_bytes([
         0x5a, 0x0c, 0x31, 0x7e, 0x92, 0x4b, 0x4e, 0x61, 0xb8, 0x2d, 0x6f, 0x13, 0xc9,

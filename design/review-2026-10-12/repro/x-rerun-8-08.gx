@@ -1,0 +1,40 @@
+// x-rerun-8-08 (variant of x-engine-seq-errors-10, still reproduces): a
+// reload that changes a hidden abstract type's representation THROUGH a
+// private typedef is accepted. Env::deftype (graphix-types/src/env.rs:1634)
+// compares the old and new reps with sig_matches, whose Ref/Ref arm
+// (graphix-types/src/typ/matches.rs:265) matches `R` with `R` by name without
+// expanding either, so `Abstract<R>` with R = {x: string} "matches"
+// `Abstract<R>` with R = {x: i64}.
+// command: graphix --no-cache -n x-rerun-8-08.gx   (and --no-fusion)
+// expected: the reload refused ("C is already defined as Abstract<..>: ..
+//   its representation cannot change"), as with the rep written inline
+// observed: prints 7, then the JIT panics the runtime: "kernel param `r`:
+//   runtime String("v41") does not match the compiled Scalar(I64) slot"
+//   (fusion/kernel.rs:218) followed by a tokio oneshot "called after
+//   complete" panic, "Error: tokio thread panicked"; --no-fusion logs an
+//   arith error parsing "v41" as an i64.
+let one = """
+    type R = {x: string};
+    type C = Abstract<R>;
+    let make = |x| C({x: "v[x]"});
+    let get = |c: C| -> i64 str::len(c.0.x)
+""";
+let two = """
+    type R = {x: i64};
+    type C = Abstract<R>;
+    let make = |x| C({x});
+    let get = |c: C| -> i64 c.0.x
+""";
+let source = one;
+sys::net::publish("/local/dynrepr2", source)?;
+let status = mod foo dynamic {
+    sandbox whitelist [core, str];
+    sig { type C; val make: fn(x: i64) -> C; val get: fn(c: C) -> i64 };
+    source sys::net::subscribe("/local/dynrepr2")?
+};
+let held = once(select status { error as e => never(dbg(e)), null as _ => foo::make(41) });
+let r = foo::get(held);
+let n = r * 2 + 1;
+println("[n]");
+source <- sys::time::timer(duration:200.ms, false) ~ two;
+sys::exit(sys::time::after_idle(duration:800.ms, 0))

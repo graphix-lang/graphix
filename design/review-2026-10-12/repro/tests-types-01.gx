@@ -1,0 +1,20 @@
+// tests-types-01: the value restriction covers only a binding whose type IS a
+// function; a written struct/tuple/array holding a lambda stays generalized.
+// Command: graphix --check tests-types-01.gx
+// Expected: refused (`s` is written, so `s.f` is one instance: the use at
+// string cannot share it with the use at i64, as `let f = |x| x` with
+// `f <- ..` is refused).
+// Observed: rc=0, no error. Running it (graphix --no-cache, or graphix-fuzz
+// run on a comment-free copy without the exit line) prints nothing in every
+// mode and logs `s.f("a"): binding the callee failed: a run-time bind at
+// s.f("a") did not type: an instance at fn(x: string) -> string of a
+// definition typed fn(x: '_N) -> '_M` (the compiler-bug path). The same
+// with the uses `s.f(41)` alone and a write of `{f: |x| "oops"}` fails the
+// same way; moving the write above the use makes the check refuse it.
+let s = {f: |x| x};
+let n = s.f(41);
+let k = s.f("a");
+let clock = sys::time::timer(duration:50.ms, false);
+s <- clock ~ {f: |x| x + 1};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(n, k)

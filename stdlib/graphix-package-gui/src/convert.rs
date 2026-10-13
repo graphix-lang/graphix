@@ -121,6 +121,14 @@ pub fn window_event(
                 Ime::Disabled => input_method::Event::Closed,
             }));
         }
+        // CR claude for claude: [bug/low] WindowEvent::Touch falls into this catch-all,
+        // so on a touchscreen a tap or drag never reaches iced. winit delivers XInput2
+        // and Wayland touches as Touch, not as mouse events, and iced's button, slider
+        // and scrollable handle touch::Event. Convert it as iced_winit does:
+        // FingerPressed/Moved/Lifted/Lost with the finger id and the logical position.
+        // The Resized and CloseRequested arms above are unreachable, because
+        // GuiHandler::window_event handles both before calling here (render pushes its
+        // own Resized). Delete them. (gui-core-10)
         _ => {}
     }
     events

@@ -43,6 +43,14 @@ const FLAT_AT_REJECTED: &[&str] = &["uniontyp", "seqarm"];
 
 /// Deepest nesting the limit admits for every shape; derived from the
 /// limit so the deep path stays exercised if the limit moves.
+// CR claude for claude: [test-gap/low] `max_nesting() / 8` is 125 for every shape, but
+// the parser admits about 247 levels of parens, call and interp, about 330 of array,
+// block, select and structlit, and about 994 of lambda and typ. An unguarded walk
+// costing under about 4KB per level survives 125 levels on the 512KB child stack. It
+// then overflows on a program the parser accepts. Fix: give each shape its own accepted
+// depth, the deepest below the limit that the parser admits (knots per level in a
+// table, or found by bisection). Also add fn, struct and tuple type shapes; `typ`
+// covers only `Array<..>`. (tests-shell-compiler-03)
 fn accepted() -> usize {
     graphix_compiler::expr::parser::max_nesting() / 8
 }
@@ -176,6 +184,15 @@ fn paren_chain(d: usize) -> String {
 /// Shapes with no source nesting at all: the parser cannot refuse
 /// them, so each must compile at `FLAT_DEPTH`.
 const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
+// CR claude for claude: [perf/low] A chain of `let x_i = [x_{i-1}]`, whose type depth
+// equals the program's length, checks in 2.8 s at 1500 lets, 6.4 s at 3000 and 21.7 s
+// at 6000 (debug binary). A flat chain of the same length (`let x_i = [x_{i-1}[0]$]`)
+// takes about 1 s at every size. So something in Typecheck0 walks each let's whole
+// type, and the cost grows faster than quadratically. This pin runs only at 3000 and
+// has no time bound, so a further slowdown goes unseen. Fix: find the per-let walk that
+// is linear in type depth (a full contains or occurs walk is the likely one) and
+// memoize it by shared identity. Give the flat shapes a time budget.
+// (tests-shell-compiler-10)
 const FLAT_DEPTH: usize = 3000;
 
 /// Cells chained by bounds in one signature (`chainbounds`).
@@ -296,6 +313,17 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
     let _ = fs::remove_dir_all(&dir);
     // Any other error means the AST was built, walked and torn down.
     // Only a parse error means the deep path never ran.
+    // CR claude for claude: [test-gap/medium] Any error other than a parse error passes
+    // here, and six SHAPES are ill-typed at every depth above 1: slicepat, tuplepat
+    // (the pattern never matches), field (`expected struct not i64`), index (Array vs
+    // Result), deref (`expected reference`) and qop (`$` on i64). Their check, run and
+    // nofusion cases stop at the type error, so the update, delete, sleep and fusion
+    // walks of field access, indexing, deref and `$` never run deep. Removing a stack
+    // guard from any of them would go unnoticed. An Err from a dead runtime task would
+    // pass the same way. Fix: make each of these shapes well-typed (nested values of
+    // the matching shape, `$` after each index, `*..*&..&v`), and at the accepted depth
+    // require Ok, exiting non-zero on any error. Keep `refused` only for the REJECTED
+    // cases. (tests-shell-compiler-02)
     if let Err(e) = r {
         refused(&format!("{e:#}"))
     }
@@ -333,6 +361,18 @@ fn deep_nesting_does_not_overflow() {
         .iter()
         .flat_map(|s| MODES.map(|m| (*s, accepted(), m)))
         .chain(SHAPES.iter().map(|s| (*s, REJECTED, "check")))
+        // CR claude for claude: [test-gap/low] Type depth is what the parser limit
+        // cannot bound, yet the flat shapes are only checked, at 3000. They never run
+        // with or without fusion, never go through an image, and nothing operates on
+        // the deep value. A 6000-deep type compared with `==` aborts under fusion in a
+        // run, and this pin would not see it
+        // (design/review-2026-10-12/repro/x-stack-type-debug-overflow.py). accepted()
+        // is a flat max_nesting()/8, so every source shape also stops far below the
+        // depth the parser admits (arrays and blocks about 331, field and neg chains
+        // about 996). Run FLAT_SHAPES in every mode at about 10000, ending the program
+        // with an operation on the deep value (`x == x`, a print). Add a cold-and-warm
+        // image mode. Derive each shape's depth from the parser's per-knot cost instead
+        // of /8. (x-stack-06)
         .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH, "check")))
         .chain([("modchain", MODCHAIN_DEPTH, "check")])
         .chain([("chainbounds", CHAIN_DEPTH, "check")])

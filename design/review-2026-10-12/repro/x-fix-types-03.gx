@@ -1,0 +1,23 @@
+// x-fix-types-03: a type test naming a reference passes over an Any
+// scrutinee, so any u64 becomes a writable reference of any referent type.
+// command: graphix --no-cache x-fix-types-03.gx   (and again with --no-fusion)
+// expected: the check refuses the `&mut string as q` arm (an Any scrutinee may
+//   hold a number or a reference to anything; the runtime test checks neither).
+// observed: --check exits 0. JIT: panic at fusion/kernel.rs:218 "kernel param
+//   `x`: runtime String(\"boom\") does not match the compiled Scalar(I64) slot",
+//   "Error: runtime did not respond". --no-fusion: an arith error parsing "boom"
+//   as x, then (4611686018427392007, 1, 43): `x: i64` held a string.
+// The same arm over `[u64, &mut string]` is refused ("same runtime form").
+let x: i64 = 42;
+let a: Any = &x;
+let n = select a {
+  u64 as n => n,
+  _ => u64:0
+};
+let b: Any = n;
+let r = select b {
+  &mut string as q => { *q <- "boom"; 1 },
+  _ => 7
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(n, r, x + 1)

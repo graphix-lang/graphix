@@ -1,0 +1,20 @@
+// db2-05: a subscription that re-fires drops its buffered events and starts a fresh watch.
+// The #prefix argument re-fires with the same value (null) the cycle after the insert of
+// "k1" completes; the old watch task is aborted and its batch arrives under a released bind id.
+// command (from a scratch dir; racy, so repeat):
+//   for i in $(seq 10); do rm -rf db2-05.db; timeout -s KILL 30 graphix --no-cache db2-05.gx | tail -1; done
+// expected: every run ends ["k1", "k2"] (both inserts reach on_change, as the control without
+//   the `p <- ins1 ~ null` line does in every run)
+// observed: about half the runs end ["k2"]: the insert of "k1" never reaches on_change
+let db = db::open("db2-05.db")$;
+let t: db::Tree<string, i64> = db::tree(db, null)$;
+let p: [string, null] = null;
+let sub = db::subscription::new(#prefix: p, t);
+let ins1 = db::insert(t, once(sub) ~ "k1", 1)$;
+p <- ins1 ~ null;
+let ins2 = db::insert(t, sys::time::timer(duration:300.ms, false) ~ "k2", 2)$;
+let seen: Array<string> = [];
+let ch = db::subscription::on_change(sub)$;
+seen <- ch ~ array::concat(seen, array::map(ch, |e| select e { `Insert(k, _) => k, `Remove(k) => k }));
+sys::exit(sys::time::after_idle(duration:700.ms, seen) ~ 0);
+seen

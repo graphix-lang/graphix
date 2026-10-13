@@ -1,0 +1,10 @@
+// divide's failure is logged under the default target, which the shell
+// filters out; `a / b` logs under graphix::failure and is shown.
+// run: graphix --no-cache --no-fusion prog.gx
+// expect two failure lines on stderr; got one (the operator's).
+let a = 10;
+let b = 0;
+let x = a / b;
+let y = divide(a, b);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+a

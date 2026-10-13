@@ -1,0 +1,5 @@
+use gui::{window, chart};
+
+let first = [("a", 1.0), ("b", 3.0)];
+let second = [("x", 3.0), ("y", 1.0)];
+[&window(#title: &"pies", &chart::chart(&[chart::pie(&first), chart::pie(&second)]))]

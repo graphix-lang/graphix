@@ -631,6 +631,12 @@ run!(list_iterq, LIST_ITERQ, |v: Result<&Value>| {
 
 // `list::fold`'s init changes 0 -> 100 on the second cycle and the fold
 // recomputes (106); `eval_converged` reads the settled value.
+// CR claude for claude: [test-gap/low] This test and list_fold_resize_converges go
+// through testing::eval_converged, which hard-codes Mode::Jit. As a result, the
+// node-walk (the canonical engine) and the forked modes never run these pins of fold
+// re-firing on an init change or a resize. A node-walk regression there passes both.
+// Fix: give eval_converged a Mode parameter and run these under every mode, or express
+// them with run! and a predicate that waits for the settled value. (tests-lib-a-05)
 #[tokio::test]
 async fn list_fold_dynamic_init_converges() {
     let prog = "{ \

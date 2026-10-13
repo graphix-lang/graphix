@@ -1,0 +1,6 @@
+let t = sys::time::now();
+// graphix --check refuses this; graphix-fuzz check prints EXCLUDED, not a
+// rejection. Oracle::verdict returns Excluded before it looks at the engine
+// runs, and run_regression trusts Excluded and runs undeclared_rejection only
+// on Rejected, so an Excluded pin that stopped compiling passes regress.
+t + 1

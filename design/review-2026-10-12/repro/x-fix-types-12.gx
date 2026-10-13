@@ -1,0 +1,8 @@
+// x-fix-types-12: convert hands a one-element array to netidx's Value::cast, which unwraps it
+// and converts with Rust `as`: cast<u16>([u64:70000]) is 4464, where an integer target must
+// hold the value exactly or be an InvalidCast. expected b = InvalidCast; observed 4464.
+let a: [u8, Error<`ParseError(string)>] = str::parse("[300]");
+let b: Result<u16, `InvalidCast(string)> = cast<u16>([u64:70000]);
+let c: Result<u8, `InvalidCast(string)> = cast<u8>("[-1]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(a, b, c)

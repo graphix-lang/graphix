@@ -1,0 +1,3 @@
+// 22 nested fn types: --check takes ~8 s, x4 per 2 more levels
+let f = |g: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64| 0;
+0

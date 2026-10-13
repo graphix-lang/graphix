@@ -1,0 +1,5 @@
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let a = [1, 2, 3];
+let r = &mut a[7];
+*r <- 5;
+a

@@ -1,0 +1,5 @@
+let x: [[`A, string], null] = "A";
+let y: [`A, string] = `A;
+let tuple_vs_array: [(i64, i64), Array<i64>, null] = [1, 2];
+let t: [(i64, i64), Array<i64>] = (1, 2);
+(opt::contains(x, y), opt::contains(tuple_vs_array, t))

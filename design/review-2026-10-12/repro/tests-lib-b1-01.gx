@@ -1,0 +1,15 @@
+// `t ~ 5` keeps delivering 5 after its trigger `t` went bottom, while
+// `select t { _ => 5 }` bottoms: prints s 12, s2 12 and no q line at 400ms
+let x = 1;
+x <- sys::time::timer(duration:200.ms, false) ~ 0;
+let t = 10 / x;
+let s = t ~! 5;
+let s2 = t ~ 5;
+let q = select t { _ => 5 };
+let y = 0;
+y <- sys::time::timer(duration:400.ms, false) ~ 7;
+println("s [s + y]");
+println("s2 [s2 + y]");
+println("q [q + y]");
+sys::exit(sys::time::after_idle(duration:700.ms, y));
+y

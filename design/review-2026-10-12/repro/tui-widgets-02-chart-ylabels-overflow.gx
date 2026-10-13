@@ -1,0 +1,11 @@
+use tui::{line, chart::{axis, chart, dataset}};
+
+tui::exit(sys::time::timer(duration:1.s, false));
+let data: Array<(f64, f64)> = [(0.0, 0.0), (1.0, 1.0)];
+let ds = dataset(&data);
+let lbls = array::init(2000, |i| line("[i]"));
+chart(
+    #x_axis: &axis({min: 0.0, max: 1.0}),
+    #y_axis: &axis(#labels: lbls, {min: 0.0, max: 1.0}),
+    &[ds]
+)

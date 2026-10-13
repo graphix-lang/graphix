@@ -1,0 +1,2 @@
+use super::{private_setup, public_helper};
+let v = public_helper(private_setup)

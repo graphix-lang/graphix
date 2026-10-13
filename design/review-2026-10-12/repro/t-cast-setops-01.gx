@@ -1,0 +1,22 @@
+// t-cast-setops-01: abstract type test compares params covariantly, so a
+// Cell<i64> matches the arm `Cell<[i64, null]> as b` and null is written
+// into x: i64.
+// Command: graphix --no-cache [--no-fusion] t-cast-setops-01.gx
+// Expected: arm2 is taken (params are invariant, design/nominal_abstract_types.md
+//   item 4), prints r=arm2 x=41 y=42.
+// Observed (--no-fusion): r=arm1 x=41 y=42, then arith error "can't add null".
+// Observed (fusion on): r=arm1, then a panic at fusion/kernel.rs
+//   "kernel param `x`: runtime Null does not match the compiled Scalar(I64) slot",
+//   "Error: runtime is dead", exit 1.
+type Cell<'a> = Abstract<&mut 'a>;
+let x: i64 = 41;
+let ci: Cell<i64> = Cell(&mut x);
+let u: [Cell<[i64, null]>, Cell<i64>] = ci;
+let r = select u {
+  Cell<[i64, null]> as b => { let p = b.0; *p <- null; "arm1" },
+  Cell<i64> as c => "arm2"
+};
+let y = x + 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("r=[r] x=[x] y=[y]");
+0

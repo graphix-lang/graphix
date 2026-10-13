@@ -1,0 +1,14 @@
+use tui::{block::block, text::text};
+
+// block's #size is declared &[Size, null] (read-only) but the widget writes a Size
+// through it: n, typed null, holds {height, width}. Run under a pty with
+// GRAPHIX_ABORT_ON_NO_MATCH=1: the exhaustive select below matches nothing and aborts.
+let n: null = null;
+let k = select n {
+    null => "is null"
+};
+let log = "";
+log <- k ~ "[log] [k] [n];";
+sys::fs::write_all(#path: "size_null.out", log)$;
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0);
+block(#size: &n, &text(&"hi"))

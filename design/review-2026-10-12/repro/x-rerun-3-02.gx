@@ -1,0 +1,21 @@
+// x-rerun-3-02: gui-chart-09 fix is narrow: a union nested in a struct field, tuple
+// element or variant payload of a formal still commits the literal early.
+//
+// command: graphix --check design/review-2026-10-12/repro/x-rerun-3-02.gx
+//
+// expected: exit 0. `{a: ["a"]}` is `{a: Array<string>}`, which the formal admits; the
+// let-bound call and the annotated let above the last line pass.
+//
+// observed: exit 1, at the last line:
+//   type mismatch Array<f64> does not contain Array<string>
+// Type::pre_unify_arg leaves the choice open only when the formal itself is a Set;
+// here the Set sits under a Struct, so `declared.contains(env, actual)` commits the
+// literal's open element cell to the first member (f64) before the literal checks.
+// Same refusal for `|x: ([Array<f64>, Array<string>], i64)|` with `g((["a"], 1))`,
+// for `|x: `A([Array<f64>, Array<string>])|` with ``g(`A(["a"]))``, and for
+// `g({a: [1.0]})` over `{a: [Array<i64>, Array<f64>]}`.
+let g = |x: {a: [Array<f64>, Array<string>]}| 0;
+let v: {a: [Array<f64>, Array<string>]} = {a: ["a"]};
+let d = {a: ["a"]};
+let r = g(d);
+g({a: ["a"]})

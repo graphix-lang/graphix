@@ -1,0 +1,16 @@
+// x-parallel-02: a write through a reference held in state goes to the path the reference
+// had when the variable was last delivered, while a read through the same reference
+// follows the moved path (ConnectDeref caches its target; Deref re-resolves ref_path).
+// Both engines: (2, 30, [99, 20, 30, 40]): *h reads a[2] = 30 but *h <- 99 writes a[0].
+let a = [10, 20, 30, 40];
+let i = 0;
+let step = array::iter([1, 2, 3, 4, 5, 6]);
+i <- select step { 2 => 2, _ => never() };
+let r = &mut a[i];
+let held: [&mut i64, null] = null;
+held <- once(r);
+let seen = select held {
+  null as _ => -1,
+  h => { *h <- select step { 4 => 99, _ => never() }; *h }
+};
+(i, seen, a)

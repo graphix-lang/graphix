@@ -53,6 +53,15 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     // The stdlib layer, shared by every per-project check.
     let base_resolvers = resolvers.clone();
     let search = graphix_rt::search_path(&Default::default(), &mut ctx.libstate)?;
+    // CR claude for claude: [dead/low] These resolvers go into the runtime's default
+    // chain, but no check uses that chain. `typecheck_project` always passes its own
+    // chain from `resolvers_for` (stdlib, the file's directory, `search`), and the
+    // default chain only resolves the stdlib root, where the VFS answers first. So
+    // workspace roots are not on any module search path, although this loop suggests
+    // they are. Drop the loop and the `resolvers` copy (pass `base_resolvers` to
+    // `GXConfig`), and drop the `roots` argument from `build_backend` unless roots are
+    // meant to be searched, in which case `resolvers_for` should add them. Also
+    // reported as (x-lsp-probe-11). (shell-12)
     for root in roots {
         resolvers.push(FilesResolver::new(root, None));
     }

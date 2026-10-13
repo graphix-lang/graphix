@@ -1,0 +1,20 @@
+// x-typecheck-patterns-01: explicit union type test + constructor pattern
+// binds by the FIRST member only, while the runtime test admits every member.
+// Command: graphix --no-cache design/review-2026-10-12/repro/x-typecheck-patterns-01.gx
+// Expected: refused at check (the pattern matches both members), or x typed
+// as [i64, string] (then `x + 1` refused). `--check` accepts it.
+// Observed (JIT): panic at graphix-compiler/src/fusion/kernel.rs:218 "kernel
+// param `x`: runtime String("s") does not match the compiled Scalar(I64) slot",
+// then "Error: runtime did not respond".
+// Observed (--no-fusion): `x + 1` runs on the string "s" and logs an arith
+// parse error. The same with `A(x, y) or {x, y} in place of (x, y).
+// Verified 2026-10-12: "first" is the union's canonical order: writing P as
+// [(string, i64), (i64, string)] still types x as i64.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+type P = [(i64, string), (string, i64)];
+let f = |a: [P, null]| select a {
+  P as (x, y) => x + 1,
+  null => 0
+};
+let v: P = ("s", 1);
+f(v)

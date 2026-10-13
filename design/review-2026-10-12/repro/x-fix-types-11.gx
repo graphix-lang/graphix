@@ -1,0 +1,15 @@
+// x-fix-types-11: a struct with exactly ErrChain's field names is a chain by name alone, in
+// the check (graphix-types chain_type, compiler is_echain_shape) and at run time (chain_error),
+// but its field types are the program's: ? keeps Error<P> while wrap_error nests the value
+// as `cause`. --check passes; the JIT panics (an array in an i64 slot).
+// (same root as c-error-op-02 / x-engine-seq-errors-03)
+type P = {cause: i64, error: string, ori: bool, pos: null};
+let r: Result<i64, P> = error({cause: 5, error: "e", ori: true, pos: null});
+let out = never();
+let f = |x: i64| -> i64 (x + 1);
+{
+  catch(e) out <- f((e.0).cause);
+  r?
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+out

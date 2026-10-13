@@ -1,0 +1,6 @@
+// fused_select_scrutinee_evaluated_once: `rand::rand` has no fast call,
+// so the scrutinee is never inside a kernel; the one fused region is
+// the arm body `n == n` alone (GRAPHIX_DBG_REGION=1 shows input `n`).
+// The test's `fused > 0` passes on that region; the duplicated-scrutinee
+// emission it was written for cannot be reached.
+select rand::rand(#start: 0, #end: 1000000, #clock: 1) { n => n == n }

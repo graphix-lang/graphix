@@ -1,0 +1,11 @@
+// t-typ-mod-01: an alias cycle closed by a renaming use makes Type::reaches_unguarded loop
+// command: timeout -s KILL 60 graphix --check --no-cache design/review-2026-10-12/repro/t-typ-mod-01.gx
+// expected: refused, "recursive type A refers back to itself through unions and
+// aliases alone ..." (what the same program without `type D = A` prints at once)
+// observed: memory grows without bound (OOM-killed at a 6 GB cap after ~15 s);
+// `let x: A = 1` in place of `type D = A` hangs instead (t-typ-mod-import-closed-cycle-hang.gx)
+type A = X;
+use self::A as X;
+type D = A;
+let result = 0;
+result

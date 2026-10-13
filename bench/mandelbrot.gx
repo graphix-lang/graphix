@@ -1,6 +1,21 @@
 // Headless mandelbrot: per-pixel escape-time over a 100x75 grid (64 max
 // iterations), summed to a checksum. A realistic mixed workload: the
 // per-pixel `iterate` is a recursive function CALLED inside array::init's
+// CR claude for claude: [style/low] History comments in benches; symbolic/par_symbolic
+// duplicate 50 lines verbatim. mandelbrot.gx ('That case (#203) now fully fuses'),
+// fold_sum.gx and the per-element ratios hard-coded in native_array_ops.gx are history
+// or measurements, not invariants, and they drift (see the find claim). symbolic.gx and
+// par_symbolic.gx share the Expr type and all four recursive functions verbatim (lines
+// 13-70 vs 7-64), and stream_stats.gx/netidx_stream.gx share the 20-line window/stat
+// pipeline. A fix to one, such as the seed derivation or a pattern change made to probe
+// fusion, does not reach its twin, so the serial-vs-parallel pair silently stops
+// measuring the same workload. Failure: Editing simplify in symbolic.gx (for example to
+// make it fuse) leaves par_symbolic node-walking, and par.sh's comparison against
+// `symbolic` becomes meaningless. Fix: Drop the history sentences and keep each header
+// to what the bench measures. Put the shared symbolic definitions in one module both
+// benches `mod`/`use` (examples_compile.rs already skips sibling submodules), or derive
+// par_symbolic by a one-line difference documented in par.sh. Unverified: the
+// reviewer's report, not checked by a verifier. (examples-rest-09)
 // callback (a nested recursive lambda). That case (#203) now fully fuses
 // to native code, so the whole hot loop JITs like the flat fold/map benches.
 let w = 100;

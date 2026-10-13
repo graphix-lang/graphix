@@ -1,0 +1,24 @@
+// t-cast-setops-04: struct cast fills a missing string field with "null":
+// the fill test asks whether null converts, not whether the field admits it
+// command: graphix --no-cache design/review-2026-10-12/repro/t-cast-setops-04.gx
+// expected: the three required-field reads are InvalidCast errors; only the
+//   optional field reads as {a: 1, b: null}
+// observed:
+//   cast missing string: {a: 1, b: "null"}
+//   json missing string: {a: 1, b: "null"}
+//   json missing optional: {a: 1, b: null}
+//   toml missing string: {a: 1, b: "null"}
+//   json missing Array of nullable: {a: 1, b: [null]}
+type E = Error<[`JsonErr(string), `InvalidCast(string)]>;
+let c: [{a: i64, b: string}, E] = json::read("{\"a\": 1}");
+println("json missing string: [c]");
+let n: [{a: i64, b: Array<[i64, null]>}, E] = json::read("{\"a\": 1}");
+println("json missing Array of nullable: [n]");
+let o: [{a: i64, b: [string, null]}, E] = json::read("{\"a\": 1}");
+println("json missing optional: [o]");
+let t: [{a: i64, b: string}, E] = cast<{a: i64, b: string}>([["a", 1]]);
+println("cast missing string: [t]");
+let tm: [{a: i64, b: string}, Error<[`TomlErr(string), `InvalidCast(string)]>] = toml::read("a = 1");
+println("toml missing string: [tm]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

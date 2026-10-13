@@ -1,0 +1,9 @@
+// x-engine-collections-03: a collection whose callback returns null never fuses,
+// and #[native] blames an internal "not discovered".
+// command: graphix --no-cache x-engine-collections-03.gx
+// expected: fuses (or a refusal naming the null-element loop as the cause)
+// observed: "#[native] expression did not fully fuse to native code:
+//   - emit_clif: lambda call site `array::map(xs, |x| println(x))` not discovered"
+// `|x| { println(x); x }` in place of the callback fuses.
+let f = |xs: Array<i64>| #[native] array::map(xs, |x| println(x));
+array::len(f([1, 2, 3]))

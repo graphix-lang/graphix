@@ -1,0 +1,18 @@
+// c-pattern-03: a capture under a `_` product pattern is typed from one
+// union member, while the run-time test admits every member.
+// Command: graphix --no-cache --no-fusion c-pattern-03.gx  (then without
+// --no-fusion; graphix-fuzz check on the `q.0 + 1` form)
+// Expected: `g` is refused, or `q.0` is typed [i64, string] and `let r:
+// i64` is refused.
+// Observed: --check passes; the node-walk prints "s" for `r: i64`, the
+// fused build prints 0; graphix-fuzz check on `q.0 + 1`: DIVERGENCE,
+// interp Trace([]) (arith error log), jit Trace([0:i64:1]).
+// Sibling, same cause: `(a, _) => a` over the same union passes the
+// exhaustiveness check, but its predicate's cell committed to (i64, _),
+// so ("s", 1) hits "no arm matches ...: a coverage hole in the check".
+let g = |p: [(i64, string), (string, i64)]| select p {
+  q@ (_, _) => q.0
+};
+let r: i64 = g(("s", 1));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

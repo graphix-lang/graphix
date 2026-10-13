@@ -1,0 +1,14 @@
+{
+ // x-fix-fusion-01 (variant): the trigger reads the scrutinee only as an argument the callee
+ // ignores. y fires while the arm sleeps; the node-walk re-delivers it at entry (step 3) and
+ // prints 7, the kernel never prints it. DIVERGENCE.
+ let step = i64:0; step <- select step {s if s < i64:6 => s + i64:1, _ => never()};
+ let g = |a: i64, b: i64| b;
+ let f = |x: i64, y: i64| #[native] select x {
+   i64:0 => dbg(#dest: `Stdout, g(x, y)),
+   _ => i64:-1
+ };
+ let x = select step { i64:1 => i64:1, i64:2 => i64:1, _ => i64:0 };
+ let y = i64:5;
+ y <- select step { i64:1 => i64:7, _ => never() };
+ f(x, y)}

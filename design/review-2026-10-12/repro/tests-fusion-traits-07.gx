@@ -1,0 +1,11 @@
+// The orphan rule's refusals have no pin. Each of these statements is
+// refused today (graphix --check, one at a time); nothing in the test
+// suite fails if they start to compile:
+//   impl Display for i64 { let fmt = |x| "boo" }
+//     -> only the trait's own package (/core) may implement it for a non-abstract type
+//   type P = {x: i64}; impl Eq for P { let eq = |a, b| true }
+//     -> same
+//   trait T { val t: fn(self) -> i64 }; impl<'a> T for 'a { let t = |x| 1 }
+//     -> a bare type variable is not an implementation target
+impl Display for i64 { let fmt = |x| "boo" };
+"[1]"

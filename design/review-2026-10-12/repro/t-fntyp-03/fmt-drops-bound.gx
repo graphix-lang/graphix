@@ -1,0 +1,2 @@
+let apply = |g: fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a| 0;
+0

@@ -176,6 +176,15 @@ impl ChartMode {
 
 /// The bar chart's category slots: every bar series' categories in
 /// first-seen order, each once.
+// CR claude for claude: [perf/low] bar_categories dedups with a linear cats.contains
+// and clones every label String. bar_value scans the whole series for each category.
+// Both run on every draw (twice per category per dataset) and on every CursorMoved in
+// find_nearest_point. A bar pan clears the cache on every move, so with C categories
+// each hover or pan step costs O(C^2) compares plus C String allocations. Build the
+// categories and per-series sums once per data change in handle_update: an index of
+// category to slot, a Vec<Option<f64>> per series, and labels as ArcStr taken from the
+// Value rather than copied. draw and find_nearest_point then read slots directly.
+// (gui-chart-07)
 pub fn bar_categories<X: GXExt>(datasets: &[DatasetEntry<X>]) -> LPooled<Vec<String>> {
     let mut cats: LPooled<Vec<String>> = LPooled::take();
     for ds in datasets {

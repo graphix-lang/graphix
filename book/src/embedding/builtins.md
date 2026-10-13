@@ -69,6 +69,20 @@ activation's result. This applies outside `seq` as well as inside it.
 Retain outputs for paused computations whose semantic value remains valid;
 do not reset every builtin merely because it is classified asynchronous.
 
+<!-- CR claude for claude: [doc-drift/medium] None of the Rust builtin listings compile
+against the current traits. Once and Group here, MyOnce and DebugDisplay in
+packages/creating.md, and MinEv in embedding/overview.md all have the same problems.
+`Apply::update` returns `&TagValue`, not `Option<Value>`. `Apply::image_encode` and
+`BuiltIn::image_decode` are required. `typecheck` is now `typecheck0`/`typecheck1` over
+`CompileCtx`. `ctx.cached` and `ctx.event.variables.insert` no longer exist, so the
+'ExecCtx::cached' section describes a mechanism that is gone. `EvalCached` is
+`EvalCached<R, E>`, its `eval` takes `ctx`, and it requires `ImageState`.
+`CustomDisplay` requires `batch_done`. The 'Understanding The Once Function' walkthrough
+teaches the old Some/None model instead of dense TagValue delivery. Fix: rebuild the
+listings from graphix-package/src/skel/lib.rs (TagView handling, EFFECT, the image
+codec, `unit_image_state!`), point Group at the real `array::group` in
+graphix-package-array instead of copying it, delete the cached section, and add
+`batch_done` to the CustomDisplay listing. (book-modules-udt-02) -->
 ## Implementing Once
 
 ```rust
@@ -138,6 +152,14 @@ type, the lexical scope, the argument nodes, and the top-level
 expression id. In this case we don't care about any of that
 information, but it will be useful later.
 
+<!-- CR claude for claude: [doc-drift/medium] This says `sleep` should reset all
+internal state. That contradicts the `Apply::sleep` contract and this page's own
+'Sleeping asynchronous builtins' section. Values and semantic state are retained across
+sleep. Only a builtin that discards pending work or detaches an event source clears its
+output to phantom, and the restart builtins (once, take, skip, ...) clear their latches.
+A builtin written to this sentence loses its state at every wake, so wake catch-up
+breaks. Fix: state the `Apply::sleep` contract, and note that Once's `sleep` clears its
+flag only because once is a restart builtin. (book-modules-udt-04) -->
 The most important method of `Apply` is `update`. `sleep` is expected to
 reset all the internal state and unregister anything registered with
 the context.
@@ -295,6 +317,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
 }
 ```
 
+<!-- CR claude for claude: [doc-drift/low] The group example below is refused: `range(0,
+100)` now yields a `RangeError` Result, so `n == 50` compares `[i64, Error<..>]` with
+i64 (probe: design/review-2026-10-12/repro/book-modules-udt-builtins-group.gx). Write
+`range(0, 100)$`, and the type shown needs `throws 'e`. Other book programs are also
+wrong. udt/polymorphic.md shows `{x: 0, ..}` for a call that adds 1 to x, but the output
+is `{x: 1, y: 1, z: 3.14}`. udt/structs.md's first file example has two statements and
+no `;`, which is a parse error. structs.md says a call's result must be parenthesized
+before `.field`, but `f().foo` works. modules/implementation.md runs
+`GRAPHIX_MODPATH=netidx:/local/graphix graphix test`, which fails with 'No such file';
+the file argument must name a script. Fix each one; the doc test proposed in
+book-modules-udt-09 would keep them honest. (book-modules-udt-14) -->
 This implements `array::group`, which given an argument, stores that
 argument's updates internally, and creates an array out of them when
 the predicate returns true. Its type is

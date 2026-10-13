@@ -1,0 +1,24 @@
+// http-sqlite-db1-03: HTTP 500 body sends the handler's raised ErrChain
+// (payload, source file path, line/column) to the remote client.
+// Command:
+//   timeout -s KILL 60 graphix --no-cache http-sqlite-db1-03.gx
+// Expected: `500 Internal Server Error` (details logged server-side only).
+// Observed: `500 [["cause", null], ["error", ["Internal", "db password is
+//   hunter2"]], ["ori", [["parent", null], ["source", ["File",
+//   "/path/to/http-sqlite-db1-03.gx"]], ...]], ["pos", [... ["line", i32:...]]]]`
+let server = {
+    catch(e) println("handler raised [e]");
+    http::serve(
+        #addr: "127.0.0.1:0",
+        #handler: |req| select req.path {
+            "/raise" => error(`Internal("db password is hunter2"))?,
+            _ => {body: "ok", headers: [], status: u16:200, url: ""}
+        }
+    )$
+};
+let addr = http::server_addr(server);
+let client = http::default_client(addr)$;
+let a = http::get(client, "http://[addr]/raise")$;
+println("[a.status] [a.body]");
+sys::exit(sys::time::after_idle(duration:300.ms, a ~ 0));
+a.status

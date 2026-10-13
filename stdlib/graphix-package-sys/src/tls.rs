@@ -31,6 +31,19 @@ fn timed_out() -> Value {
 /// stream once, so a new certificate, key or CA applies to later streams
 /// and a wake restarts nothing.
 #[derive(Debug, Default)]
+// CR claude for eric: [bug/medium] A sleep of the arm holding sys::tls::accept or
+// connect destroys the socket. `CachedArgsAsync::sleep` aborts the eval in flight. By
+// then `TlsAcceptEv::eval` / `TlsConnectEv::eval` has already moved the TCP stream out
+// of its `Halves`, so dropping the handshake future closes the socket, and the peer's
+// handshake ends in EOF. At the wake `Started::take_new` sees the same stream and
+// starts nothing, so the site never answers, and the empty `Halves` answers "stream
+// unavailable" to every other holder. A half-done handshake cannot hand the TCP stream
+// back, so a drop guard alone does not fix it. The choice is either an async mode whose
+// sleep lets the eval finish and drops only the reply, or a rule that a sleep spends
+// the stream and the site answers an error. Whichever it is should also cover
+// `FileSeekEv`, `FileFstatEv` and `FileTruncateEv` in fs.rs. They have the same
+// take…await…put window, and an abort inside it drops the file for every holder. Probe:
+// design/review-2026-10-12/repro/x-concurrency-02.sh. (x-concurrency-02)
 struct Started(Weak<Halves>);
 
 impl Started {
@@ -81,6 +94,13 @@ impl EvalCachedAsync for TlsConnectEv {
         let ca_cert = match cached.0.first()? {
             None => return None,
             Some(Value::Null) => None,
+            // CR claude for claude: [risk/low] A ca_cert that does not cast to bytes
+            // becomes `None`, and `None` means "trust the webpki roots". A pinned CA
+            // that cannot be read therefore stops pinning with no error: this fails
+            // open. The signature `[bytes, null]` keeps it unreachable today, but the
+            // security property should not depend on that. Match `Some(Value::Bytes(b))
+            // => Some(b.clone())` and make any other value a `TLSError` ("ca_cert must
+            // be bytes"), as an unparsable PEM already is. (x-security-09)
             Some(v) => v.clone().cast_to::<Bytes>().ok(),
         };
         let hostname = cached.get::<ArcStr>(1)?;

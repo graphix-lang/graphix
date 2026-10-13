@@ -1,0 +1,12 @@
+// mustreject same-form: the last arm is a bind catch-all (`y`), which the
+// family does not count as a wildcard, so it appends `_ => never()`, a dead
+// arm refused on its own inside the select's span. The mutant has two
+// independent reasons to be refused, so a regression of the one-runtime-form
+// rule would still read `REJECT same-form#4 ok`. The mutant without the
+// `TmSame widening, refused "unreachable arm" at the select:
+//   { let s: [string, i64] = "a"; let r = select s { string as x => 1, y => 2, _ => never() }; r }
+{
+  let s: [string, i64] = "a";
+  let r = select s { string as x => 1, y => 2 };
+  r
+}

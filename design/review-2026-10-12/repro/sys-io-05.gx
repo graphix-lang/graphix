@@ -1,0 +1,28 @@
+// sys-io-05: close() with an active reader keeps the fd open until the peer sends
+// run: timeout -s KILL 60 graphix --no-cache design/review-2026-10-12/repro/sys-io-05.gx
+// value: (accepted, fds before close, fds after close, fds after the peers send a line)
+// expected: (10, N, N - 10, N - 10): Close::close releases the socket
+// observed: (10, 31, 31, 21): the 10 server sockets stay open after close
+// returned null, and are released only when each peer writes
+// control: delete the `readers` line and it prints (10, 31, 21, 21)
+// also: a Lines reader keeps delivering after close returned null; with one
+// accepted stream s, `(Close::close(t200 ~ s), Lines::lines(s))` and the peer
+// writing "after close\n" at 600ms prints (null, "after close")
+// re-verified at 7324207f: (10, 31, 31, 21), control (10, 31, 21, 21), --no-fusion same
+use sys::io::{Lines, Write, Close};
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(l)$;
+let clients = array::init(10, |i| sys::tcp::connect(addr)$);
+let conn = sys::tcp::accept(l, sys::time::timer(duration:5.ms, 20))$;
+let all = [];
+all <- conn ~ array::push(all, conn);
+let readers = array::map(all, |s| Lines::lines(s));
+let closed = array::map(sys::time::timer(duration:500.ms, false) ~ all, |s| Close::close(s));
+let sent = array::map(sys::time::timer(duration:1200.ms, false) ~ clients, |c| Write::write(c, buffer::from_string("x\n")));
+let fds = |t| array::len(sys::fs::readdir(t ~ "/proc/self/fd")$);
+let before = fds(sys::time::timer(duration:400.ms, false));
+let after_close = fds(sys::time::timer(duration:1000.ms, false));
+let after_send = fds(sys::time::timer(duration:1700.ms, false));
+let r = (array::len(all), before, after_close, after_send);
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0);
+sys::time::timer(duration:1900.ms, false) ~ r

@@ -1,0 +1,24 @@
+// core-aux-01: opt HOFs answer a new input STALE when the callback ignores
+// its argument, so the binding keeps the old answer.
+// command: graphix --no-cache core-aux-01.gx   (same with --no-fusion)
+// Expected: each opt line equals its select-twin line (the select spelling
+// `select v { null as _ => .., x => f(x) }` fires on every scrutinee fire).
+// Observed: c=1 filter=0 (twin 1); c=3 and c=4 map=null is_some_and=false
+// filter=null (twins 100 true 3 / 100 true 4): the answers to the null at
+// c=2 stand while v holds 3 and 4.
+let c = 0;
+c <- select c { n if n < 4 => n + 1, _ => never() };
+let v: [i64, null] = select c { 2 => null, n => n };
+let k = 100;
+let enabled = true;
+let f = |_| k;
+let m = opt::map(v, f);
+let sa = opt::is_some_and(v, |_| k > 0);
+let fl = opt::filter(v, |_| enabled);
+let m_twin = select v { null as _ => null, x => f(x) };
+let sa_twin = select v { null as _ => false, _ => k > 0 };
+let fl_twin = select v { null as _ => null, x if enabled => x, _ => null };
+println("c=[c] v=[v] opt:  map=[m] is_some_and=[sa] filter=[fl]");
+println("c=[c] v=[v] twin: map=[m_twin] is_some_and=[sa_twin] filter=[fl_twin]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

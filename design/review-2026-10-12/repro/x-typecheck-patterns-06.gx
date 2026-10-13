@@ -1,0 +1,12 @@
+// x-typecheck-patterns-06: bool literals in a partial struct pattern do not pool
+// command: graphix --check x-typecheck-patterns-06.gx
+// expected: accepted (true and false cover field a; `..` covers b)
+// observed: "missing match cases: no arm covers { a: bool, b: i64 }"; the same
+// select with every field named ({a: true, b: _}) or with variant heads in the
+// partial pattern ({a: `X, ..} / {a: `Y, ..}) is accepted
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let f = |s: {a: bool, b: i64}| select s {
+  {a: true, ..} => 1,
+  {a: false, ..} => 2
+};
+f({a: false, b: 3})

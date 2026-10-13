@@ -9,6 +9,11 @@ Once installed, a package is available as a Graphix module with the same name
 as the package. For example, the `sys` package provides netidx networking
 functions under `sys::net`:
 
+<!-- CR claude for claude: [doc-drift/medium] `use sys::net;` imports the name `net`,
+not the module's contents, so the bare `subscribe(..)` below is refused with 'subscribe
+not defined'. This is the first example on the page. Fix: write
+`net::subscribe("/some/netidx/path")`, or `use sys::net::subscribe;`.
+(book-modules-udt-10) -->
 ```graphix
 use sys::net;
 subscribe("/some/netidx/path")

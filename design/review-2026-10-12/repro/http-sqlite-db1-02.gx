@@ -1,0 +1,31 @@
+// http-sqlite-db1-02: an async builtin that acts on the world runs its effect
+// again at every wake of its select arm (sqlite INSERT duplicated).
+// Command: graphix --no-cache http-sqlite-db1-02.gx   (same with --no-fusion)
+// The trigger `s` fires once; arm `A is entered once, then woken twice (n = 2, 4).
+// The sync Io println under the same trigger prints once (EvalCached::quiet).
+// Expected: "sync io: printed" once and [{cnt: 1}].
+// Observed: "sync io: printed" once and [{cnt: 3}]: CachedArgsAsync restarts
+// sqlite::exec on `woke` and inserts the row again at each wake.
+let c = sqlite::open(":memory:")$;
+let s = sqlite::exec_batch(c, "CREATE TABLE t(id INTEGER)")$;
+let mode: [`A, `B] = `A;
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+mode <- select n {
+    1 => `B,
+    2 => `A,
+    3 => `B,
+    4 => `A,
+    _ => never()
+};
+let r = select mode {
+    `A => {
+        println(s ~ "sync io: printed");
+        sqlite::exec(s ~ c, "INSERT INTO t VALUES (1)", [])$
+    },
+    `B => u64:0
+};
+let rows: Array<{cnt: i64}> = sqlite::query(n ~ c, "SELECT count(*) AS cnt FROM t", [])$;
+sys::exit(select n { 8 => 0, _ => never() });
+select n { 7 => rows, _ => never() }

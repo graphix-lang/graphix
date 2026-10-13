@@ -96,6 +96,17 @@ pub fn shows_as<X: GXExt>(
         ModPath::from_iter(path.iter().copied()),
         triomphe::Arc::from_iter([]),
     ))));
+    // CR claude for claude: [bug/medium] This containment is one-way, and ⊥ fits any
+    // position. So a value whose type merely holds ⊥ where the display type has a real
+    // type is claimed as a display. Examples: `let f = |n| []; f(1)` is Array<⊥>, and
+    // so are `array::map([], |x| x)` and `let f = |n| never(); [f(1)]`. The gui package
+    // claims all three as Array<&gui::Window>. Without a display the program fails with
+    // "initializing custom display ... neither WAYLAND_DISPLAY nor ... DISPLAY is set"
+    // instead of printing []. With a display, a GUI starts with zero windows and the
+    // shell never ends. Claim the display only when the type equals it: also require
+    // `typ` to contain `display`, or refuse a type holding ⊥ or Any at any position.
+    // This covers both the gui and the tui callers. probe:
+    // design/review-2026-10-12/repro/x-rerun-3-03.gx (x-rerun-3-03)
     display.contains_with_flags(enumflags2::BitFlags::empty(), env, &typ).unwrap_or(false)
 }
 
@@ -232,6 +243,15 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     // the short name becomes the Graphix module name and, `-` read as `_`,
     // the prefix of every builtin's name
     let short = name.strip_prefix("graphix-package-").unwrap_or("");
+    // CR claude for claude: [bug/low] Only the short name's characters are checked.
+    // `graphix package create select` (or let, if, ...) scaffolds a package whose root
+    // module can never be named, because `use select;` and `select::var` are parse
+    // errors. `graphix package create core` (or any stdlib package name) scaffolds a
+    // crate named graphix-package-core, which collides with the stdlib crate. Its
+    // generated register() also returns early on root_mods.contains("core"), so its
+    // builtins and modules are silently never registered. Also refuse a short name
+    // that, with `-` read as `_`, is_reserved_binding refuses or that names a stdlib
+    // package. probe: design/review-2026-10-12/repro/x-rerun-5-06.sh (x-rerun-5-08)
     let valid = short.starts_with(|c: char| c.is_ascii_lowercase())
         && short
             .chars()
@@ -450,6 +470,17 @@ fn migrate_old(doc: &toml::Value) -> Result<Packages> {
         }
     }
     // Stdlib names absent from the old file were removed by the user.
+    // CR claude for claude: [bug/low] The old flat format was written once, from that
+    // era's defaults, and never grew. So a name it lacks was usually not shipped when
+    // the file was written, and the user did not remove it. A file from the first
+    // package manager (core array str map fs time net re rand tui) migrates with args
+    // db gui hbs http json list pack sqlite toml xls in stdlib_removed. `graphix
+    // package list` then shows them as removed. reconcile's note and
+    // compute_update_plan's new_stdlib both skip removed names, so the user is never
+    // told these packages exist. Fix: leave a name the old file does not mention
+    // untracked, in neither set. It is still not built, but reconcile announces it and
+    // update offers it. Also drop the comment above, which states the wrong premise.
+    // Probe: design/review-2026-10-12/repro/package-02.sh (package-02)
     let stdlib_removed = DEFAULT_PACKAGES
         .iter()
         .filter(|n| !stdlib_installed.contains(**n))
@@ -496,6 +527,16 @@ fn to_toml_string(p: &Packages) -> Result<String> {
 /// The record, migrated from an old format or the defaults when there is
 /// none. Nothing is written here: the commands that change the record
 /// write it, under the package lock.
+// CR claude for claude: [doc-drift/low] The doc comment above this function contradicts
+// itself. Its first paragraph says an old-format file is upgraded to v2 in place on
+// first read, so migration runs once. The second says nothing is written here, which is
+// what the code does. As a result, a read-only command such as `graphix package list`
+// migrates the old file on every run and prints the fs/net/time LEGACY_REMAP warnings
+// each time (shown by
+// design/review-2026-10-12/repro/package-migrate-marks-unseen-removed.sh).
+// parse_packages' 'migrated' bool is used only by tests. Fix: delete the stale
+// paragraph. Then either write the migrated record under the package lock when the bool
+// is true, which gives the bool a use, or drop the bool. (package-08)
 async fn read_packages() -> Result<Packages> {
     let path = packages_toml_path()?;
     match fs::read_to_string(&path).await {
@@ -565,6 +606,21 @@ async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<Compact
 /// Parse the shell `[features]` table into forward edges: each feature
 /// mapped to the package features it directly enables. Only bare feature
 /// references are edges; `dep:`, `crate/feat` and `crate?/feat` are ignored.
+// CR claude for claude: [bug/medium] The removal cascade takes its dependency graph
+// from graphix-shell's [features] table. What a build actually registers is decided by
+// each stdlib crate's [dependencies], because defpackage!'s register registers every
+// graphix-package-* runtime dep. The two graphs disagree for 7 of 18 packages.
+// [features] is missing http->array, gui->sys and tui->str, and it has
+// json/toml/pack/xls->sys, which none of those crates uses. Effects: `graphix package
+// remove sys` also removes json, toml, pack, xls and hbs, none of which needs sys. It
+// leaves gui installed, and gui keeps registering sys while the record lists sys as
+// removed. In the same way, `remove array` leaves http registering array, and `remove
+// str` leaves tui registering str. Fix: correct the [features] table
+// (http=[dep,"array"], gui=[dep,"str","sys"], tui=[dep,"array","str","sys"], and drop
+// "sys" from json/toml/pack/xls). Add a test that each feature's bare edges equal its
+// crate's graphix-package-* deps minus core. Better, derive the edges from the stdlib
+// manifests so the two graphs cannot drift. probe:
+// design/review-2026-10-12/repro/package-01.py (package-01)
 fn feature_edges(
     content: &str,
 ) -> Result<BTreeMap<CompactString, BTreeSet<CompactString>>> {
@@ -635,6 +691,20 @@ fn with_external(
     let deps = doc["dependencies"]
         .as_table_mut()
         .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
+    // CR claude for claude: [bug/medium] If an external package has the same name as a
+    // stdlib package the source ships, this loop replaces the shell's optional
+    // `graphix-package-<name>` dependency with a plain one. The shell's `<name> =
+    // ["dep:graphix-package-<name>"]` feature then names a non-optional dependency, and
+    // cargo rejects the manifest. Every rebuild, add, remove and update fails from then
+    // on. This happens when a later shell adopts a crate the user already has as an
+    // external package. Nothing prevents it: `reconcile` and
+    // `Packages::enforce_invariants` never compare `external` with the stdlib set. Once
+    // the shell knows the name, `remove_packages` sends it to the stdlib branch, so the
+    // external entry can only be removed by editing packages.toml. Fix: in `reconcile`,
+    // drop (with a warning) or refuse any external entry whose name is in `shipped`.
+    // Here, refuse to overwrite a key the manifest already has, so a collision gives a
+    // clear error instead of a cargo manifest error. probe:
+    // design/review-2026-10-12/repro/package-03.sh (package-03)
     for (name, entry) in external {
         let crate_name = format!("graphix-package-{name}");
         match entry {
@@ -745,6 +815,16 @@ fn version_gt(a: &str, b: &str) -> bool {
 }
 
 /// The version of the `graphix` on the PATH
+// CR claude for claude: [risk/low] graphix_version, the backup in install_from_source
+// and cleanup_old_binaries all act on the `graphix` that PATH resolves, but `cargo
+// install` writes to $CARGO_HOME/bin (or install.root). Suppose another graphix comes
+// first on PATH, such as a distro copy in /usr/local/bin or a workspace target/release
+// binary. Then the source version is that binary's, the backup is of a file that is
+// never replaced, and the new build lands in ~/.cargo/bin, shadowed by the old one. The
+// command still says 'Restart graphix to use the updated packages'. Fix: have the shell
+// pass its own version (CARGO_PKG_VERSION) and std::env::current_exe() into GraphixPM.
+// Then either install with --root at that executable's prefix, or refuse with a clear
+// message when the running executable is not where cargo will install. (package-06)
 async fn graphix_version() -> Result<CompactString> {
     let graphix = which::which("graphix").context("can't find the graphix command")?;
     let c = Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
@@ -766,6 +846,18 @@ async fn extract_local_source(cargo: &Path, version: &str) -> Result<PathBuf> {
         Ok(md) if !md.is_dir() => bail!("{graphix_build_dir:?} isn't a directory"),
         Ok(_) => (),
     }
+    // CR claude for claude: [structure/low] extract_local_source and download_source
+    // repeat the same build-dir and graphix_dir setup. The 'graphix_dir exists ->
+    // return it' branch in each can never run, because their only route is
+    // prepare_source, which deletes the whole build dir first. That branch suggests the
+    // unpacked source is cached when it is not. Fix: make one helper that prepares the
+    // build dir and returns graphix_dir, and drop the early returns. Also,
+    // PackageId::new and PackageId::with_path repeat the graphix-package- prefix strip,
+    // and with_external and update spell out the crate name again: use one short-name
+    // fn and one crate-name fn. confirm_yn's non-terminal check is dead, since its only
+    // caller bails first. In test.rs, the 'bench is internal' comment and
+    // is_stdlib_package's 'user-facing or internal' doc are stale and should be
+    // deleted. (package-10)
     match fs::metadata(&graphix_dir).await {
         Ok(md) if !md.is_dir() => bail!("{graphix_dir:?} isn't a directory"),
         Ok(_) => return Ok(graphix_dir),
@@ -835,6 +927,13 @@ async fn download_source(
         .into_iter()
         .find(|v| v.num == version)
         .ok_or_else(|| anyhow!("can't find version {version} on crates.io"))?;
+    // CR claude for claude: [risk/low] The downloaded graphix-shell tarball is unpacked
+    // and then compiled into the user's binary without comparing it to
+    // `cr_version.checksum`, the sha256 the index publishes and cargo always checks.
+    // Integrity rests on TLS alone, including whatever CDN `dl_path` redirects to. The
+    // response status is not checked either (`.bytes()` returns an error page's body as
+    // data). Call `error_for_status()`, hash the bytes with sha256, and bail unless the
+    // hash equals `cr_version.checksum` before unpacking. (x-security-12)
     let crate_data_tar_gz =
         reqwest::get(Url::parse("https://crates.io")?.join(&cr_version.dl_path)?)
             .await?
@@ -1339,6 +1438,20 @@ impl GraphixPM {
 
     /// Delete the scratch build dir and unpack a fresh graphix-shell source
     /// tree for `version`.
+    // CR claude for eric: [perf/medium] Every add, remove, update and build-standalone
+    // recompiles the whole shell dependency tree in release mode from scratch.
+    // prepare_source deletes the entire build dir. install_from_source runs `cargo
+    // install --path` with no --target-dir, so cargo uses a new temporary target dir.
+    // build_embedding's target dir is inside the build dir this function wipes. As a
+    // result, adding or removing one small external package costs a full build of
+    // hundreds of crates (cranelift, netidx, iced when gui is installed). Fix: keep one
+    // target dir outside the wiped build dir, such as graphix_data_dir()/target, and
+    // pass it as --target-dir to both cargo install and the standalone cargo build.
+    // This trades disk space for build time, which is your call. Separately,
+    // remove_packages calls prepare_source whenever a stdlib name is requested, even
+    // one that is already removed. It should decide the removal set from the record
+    // first and unpack only when there is a real stdlib removal whose cascade needs the
+    // feature graph. (package-05)
     async fn prepare_source(&self, version: &str) -> Result<PathBuf> {
         println!("Unpacking graphix-shell source...");
         let build_dir = graphix_data_dir()?.join("build");
@@ -1414,6 +1527,19 @@ impl GraphixPM {
                 continue;
             }
             if let Ok(md) = entry.metadata().await {
+                // CR claude for claude: [bug/medium] Pruning by mtime deletes the
+                // backup this same run just made, on macOS and Windows.
+                // install_from_source creates the backup with fs::copy. On Apple
+                // targets, std's copy uses fclonefileat, or fcopyfile with COPYFILE_ALL
+                // (which includes COPYFILE_STAT). On Windows it uses CopyFileExW. All
+                // of these keep the source's modification time. So when the installed
+                // graphix is more than a week old, its fresh graphix-previous-<now>
+                // copy is already "older than a week" when cleanup_old_binaries runs
+                // after cargo install, and it gets removed, leaving nothing to roll
+                // back to. Linux is unaffected because its copy gets a new mtime. Fix:
+                // prune by the %Y%m%d-%H%M%S stamp in the file name (parse it with
+                // chrono), or set the backup's mtime to now right after the copy.
+                // (package-04)
                 if let Ok(modified) = md.modified() {
                     if modified < week_ago {
                         let _ = fs::remove_file(entry.path()).await;
@@ -1471,6 +1597,18 @@ impl GraphixPM {
                 let path = path
                     .canonicalize()
                     .with_context(|| format!("resolving path {}", path.display()))?;
+                // CR claude for claude: [bug/low] `add --path` records the path under
+                // whatever name the user typed. read_package_version reads the crate's
+                // version but ignores its [package].name. `graphix package add foo
+                // --path ./graphix-package-bar` therefore unpacks the shell source and
+                // only then fails with cargo's 'no matching package named
+                // graphix-package-foo'. The shell CLI (handle_package) also applies one
+                // --path to every name listed, so `add a b --path ./x` records both,
+                // and it drops any @version without a word. Fix: read [package].name in
+                // the same parse as the version and require it to equal
+                // PackageId::crate_name, or take the name from the manifest. Refuse
+                // more than one name, or an @version, together with --path.
+                // (package-09)
                 let version = Self::read_package_version(&path).await?;
                 println!("Adding {name} @ path {} (version {version})", path.display());
                 PackageEntry::Path(path)
@@ -1712,6 +1850,18 @@ impl GraphixPM {
         let features = standalone_features(&contents, &shell_manifest)?;
         // an override is the caller's own tree: its manifest and lockfile are
         // put back however the build ends
+        // CR claude for claude: [risk/low] With --source-override, build_embedding
+        // rewrites the caller's own graphix-shell Cargo.toml, and cargo updates the
+        // workspace Cargo.lock. Saved puts them back only after the build returns. A
+        // Ctrl-C during the long release build kills the process first, so the
+        // workspace keeps the path dependency on the app package, and the next `cargo
+        // test` builds it into the shell. Saved::put_back also stops at the first
+        // failed write, leaving the lockfile un-restored. Saved::take turns any read
+        // error into 'absent', which put_back then deletes. Fix: build from a copy
+        // instead of editing the caller's tree, for example a scratch dir holding the
+        // override's workspace or a generated manifest. Failing that, restore on
+        // SIGINT, have put_back attempt every file before it reports an error, and
+        // propagate read errors other than NotFound from take. (package-07)
         let saved = match source_override {
             Some(_) => Some(Saved::take(&source_dir).await?),
             None => None,

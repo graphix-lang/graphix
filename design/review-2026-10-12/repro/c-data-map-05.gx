@@ -1,0 +1,10 @@
+// c-data-map-05: a value built by T(v) with a type parameter no one decides carries an unbound cell in its params;
+// core-trait dispatch (impl_for: has_unbound) then ignores the impl. Expected ("Bx of 0", "Bx of 1", false, false).
+// Actual: ("Bx([])", "Bx of 1", true, false). Inside a function the same construction does dispatch.
+type Bx<'a> = Abstract<Array<'a>>;
+impl<'a> Display for Bx<'a> { let fmt = |b| "Bx of [array::len(b.0)]" };
+impl<'a> Eq for Bx<'a> { let eq = |a, b| false };
+let e = Bx([]);
+let f = Bx([1]);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+("[e]", "[f]", e == e, f == f)

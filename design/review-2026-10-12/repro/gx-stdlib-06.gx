@@ -1,0 +1,8 @@
+// Collection's List impl has no len, so Collection::len over a List is
+// the derived fold (a callback slot per element) where list::len is one
+// builtin walk. Node-walk (--no-fusion): ~4.0s here vs ~1.9s for the same
+// program with list::len(l) (list::init alone is ~1.9s).
+use Collection::*;
+let l = list::init(100000, |i| i);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+len(l)

@@ -239,6 +239,22 @@ async fn join_or_wait<T: 'static>(
 /// A finished task's reply, or nothing when the task died, which is
 /// logged: its reply never comes.
 fn joined<T>(r: result::Result<(BindId, T), JoinError>) -> Option<(BindId, T)> {
+    // CR claude for claude: [risk/low] Every JoinError is logged at ERROR, including
+    // the cancellations the runtime makes itself: after_idle's restart, a superseded
+    // `Latest` call, the abort at delete or sleep. An ordinary debounce program logs
+    // one 'ended without replying: task N was cancelled' line per re-arm (10 for the
+    // probe's program). That buries the case this log exists for, a task that panicked.
+    // Fix: return None without an ERROR when `e.is_cancelled()` (at most trace), and
+    // keep error! for `e.is_panic()`. probe:
+    // design/review-2026-10-12/repro/x-rerun-8-13.sh (x-rerun-8-12)
+    // CR claude for claude: [bug/low] Rt::cancel_timer aborts the timer's task in the
+    // `tasks` JoinSet, and join_next still yields it as JoinError::Cancelled. This line
+    // then logs it as a dead task. Every timer re-arm and every after_idle input logs
+    // an ERROR "task N was cancelled": the probe logs 21 for one short debounce, and
+    // real task panics end up buried in that noise. Drop errors where
+    // `e.is_cancelled()` silently and log only panics. Same defect as rt-03. Probe:
+    // design/review-2026-10-12/repro/rt-06.sh. Also reported as (x-concurrency-05),
+    // (x-fix-tools-05). (rt-06)
     r.map_err(|e| error!("a runtime task ended without replying: {e}")).ok()
 }
 
@@ -400,6 +416,13 @@ impl<X: GXExt> GX<X> {
 
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
+    // CR claude for claude: [perf/low] Every cycle this walks all of self.nodes and
+    // does an rt.updated lookup per root, even when only a few roots are scheduled or
+    // none are. Each embedder Ref (one per widget property, through compile_field) and
+    // each Callable is a root, so a large GUI pays O(widgets) on every cycle, including
+    // a timer's cycles that wake one root. Iterate the scheduled set instead: map
+    // updated's keys to self.nodes.get_index_of into a pooled Vec, sort it to keep root
+    // order, and update those indices. Return at once when updated is empty. (rt-09)
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
         for (id, n) in self.nodes.iter_mut() {
             if let Some(init) = self.ctx.rt.updated.get(id) {
@@ -514,6 +537,19 @@ impl<X: GXExt> GX<X> {
         }
         self.ctx.rt.cycle += 1;
         loop {
+            // CR claude for claude: [perf/low] While the subscriber's batch channel is
+            // full, the runtime serves ToGX commands only when this 100ms timeout
+            // expires. Displays rebuild by awaiting compile_ref/compile_callable round
+            // trips (the TUI's widget compile, the GUI's block_on compiles), and the
+            // shell that drains batches is itself blocked forwarding to the display. So
+            // whenever the program produces batches faster than the display consumes
+            // them, each round trip of a rebuild can cost up to 100ms. The Timeout arm
+            // also never checks control.aborted(): after GXHandle::abort with a
+            // subscriber that is open but not draining, the runtime keeps polling every
+            // 100ms and serving compiles forever. Fix: select! on self.sub.reserve()
+            // against to_rt.recv_many, so input is served as soon as it arrives while
+            // the batch waits for room, and leave the loop when the control is aborted.
+            // (x-concurrency-09)
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
                 Ok(()) => break,
                 // a subscriber gone after an abort is the abort
@@ -536,6 +572,14 @@ impl<X: GXExt> GX<X> {
 
     /// A write through the reference `cell`: a place patches its root, a
     /// chained reference sets its binding, a chainless one sets the cell.
+    // CR claude for claude: [structure/low] set_deref is the third copy of the rule for
+    // where a write through a reference lands: a registered place, else the end of the
+    // byref chain, else the cell itself. graphix_compiler's bind::ref_target and
+    // ConnectDeref::resolve are the other two. If that rule changes (a new place kind,
+    // a chain through a place), a change made in only one copy silently skips the
+    // embedder path or the in-language path. Make bind::ref_target public (or have it
+    // return the WriteTarget) and call it from here and from ConnectDeref::resolve.
+    // (rt-08)
     fn set_deref(
         &mut self,
         cell: BindId,
@@ -543,6 +587,17 @@ impl<X: GXExt> GX<X> {
         sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
     ) {
         match self.ctx.rt.ref_path(&cell).cloned() {
+            // CR claude for claude: [bug/medium] A write through a place goes straight
+            // into var_updates. do_cycle delivers var_updates before the cycle's
+            // `sets`, so an embedder's set of the same root that arrived earlier in the
+            // same input batch lands after the patch and overwrites it. Example: `let s
+            // = {a: 1, b: 2}; let r = &mut s.a`, then gx.set(s, {a: 10, b: 20})
+            // followed by gx.set_deref(r, 5). s ends at {a: 10, b: 20} instead of {a:
+            // 5, b: 20}, and the reversed send order gives the same result. The
+            // chainless branch below goes through `sets` and keeps its order. Fix: make
+            // `sets` carry VarUpdate (Set or Patch) and push the patch as a one-element
+            // set, so do_cycle writes every embedder write in arrival order through
+            // write(). probe: design/review-2026-10-12/repro/rt-04.rs (rt-04)
             Some((root, path)) => self.ctx.rt.patch_var(root, path, v),
             None => {
                 let id = self.ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell);
@@ -566,12 +621,67 @@ impl<X: GXExt> GX<X> {
     /// here (a patch resolves against it now, so patches to one root land
     /// in order on each other's result), and the event as FIRED. A reply
     /// nothing references any more goes nowhere.
+    // CR claude for claude: [doc-drift/low] Three runtime docs are stale; in each, the
+    // code is right. (1) This doc says the store 'advances only here', but a let's
+    // publication and a seq machine's pc also call store_insert during the cycle. Say
+    // the store advances here for a written variable, as it does for a let's
+    // publication. (2) GXHandle::call says 'no type or arity checking is performed',
+    // but call_callable checks arity and the ToGX::Call handler logs the refusal. Say
+    // arity is checked (and logged) and types are not. (3) GXConfig::start documents a
+    // `root` parameter it does not take and points at graphix_stdlib::register, which
+    // does not exist. Rewrite that doc around GXConfig's root and program and the
+    // package registration the shell actually uses. (rt-11)
     fn deliver(&mut self, id: BindId, u: VarUpdate, via: Via) {
+        // CR claude for claude: [bug/medium] Waiting writes outlive their variable and
+        // leave store entries behind. deliver() drops only a Via::Reply write whose
+        // variable nothing references. A Write or Set queued in var_updates or `sets`
+        // lands in the store after the binding that owned the variable was deleted. Two
+        // cases. delete_callable removes the argument store entries (gx.rs) but not the
+        // call already in `sets`, so call() followed by drop re-creates them in the
+        // next do_cycle (the rt-11 fix covers only one site). And a REPL or embedder
+        // Delete of an expression whose `<-` queued a write: Bind::delete's
+        // store_remove runs first, then the queued write lands. Failure: Five
+        // compile_callable + call + drop iterations: store_len goes from 1 to 6. Five
+        // compile/drop iterations of `{ let x = 0; x <- x + 1; x }`: store_len goes
+        // from 0 to 5. The control `{ let x = 0; x + 1 }` stays at 0. Each entry holds
+        // its value until the runtime ends, and env_stats-based leak checks drift. Fix:
+        // When a binding is released, purge its waiting writes: a Waiting::forget(id)
+        // called from the paths that store_remove a dead binding (Bind::delete,
+        // delete_callable, release_var), with delete_callable also dropping its calls'
+        // pending sets. Alternatively, have deliver() skip any write to an id that a
+        // release has marked dead, not only replies. Unverified: the reviewer's report,
+        // not checked by a verifier. (rt-05)
+        // CR claude for claude: [bug/high] A `Via::Write` still waiting in
+        // `var_updates` when its id is released (`ExecCtx::release_var`) or deleted
+        // (the `store_remove` in pattern, slot, sample, wrapper and catch delete) lands
+        // here afterwards. It puts a store entry back that nothing ever removes. Any id
+        // written more than once in a cycle can leak this way: `array::iter`/`iterq`,
+        // `queue`, `range`, queuefn pops, a `<-` target with several writers, and
+        // sys::net var_watches. The leak is one value per release, unbounded, and the
+        // runtime also runs cycles that do no work. Dropping writes to unreferenced ids
+        // here would be wrong, because the store keeps writes for readers that bind
+        // later. Instead, add an `Rt` method that removes the id from `var_updates`
+        // (`Waiting::by_id` and `ids`) together with the `store_remove`, and call it
+        // from every release and delete path. Then pin it with a test that releases an
+        // id while writes to it are queued. probe:
+        // design/review-2026-10-12/repro/x-node-contract-01.gx (x-node-contract-01)
         if matches!(via, Via::Reply) && !self.ctx.rt.by_ref.contains_key(&id) {
             return;
         }
         let v = match u {
             VarUpdate::Set(v) => v,
+            // CR claude for claude: [bug/low] When a patch fails here (the path is out
+            // of range, or the root has no value), the log names neither the file nor
+            // the line of the `*r <- v` that wrote it. Every other runtime failure
+            // carries `diagnostic_site(spec)` (`report_failure`, `unhandled_msg`, the
+            // arith errors). In a program with many reference writes, the dropped one
+            // cannot be found. The site is only known at the writer:
+            // `ConnectDeref::update` holds its spec when it calls `Rt::patch_var`, but
+            // `VarUpdate::Patch` carries only a path and a value. Fix: carry an
+            // optional site (`ArcStr` from `diagnostic_site`) in `VarUpdate::Patch`
+            // through `Rt::patch_var` and the branch log's `RtOp::PatchVar`, and prefix
+            // both log lines with it. The embedder path `GX::set_deref` passes none.
+            // probe: design/review-2026-10-12/repro/x-errors-03.gx (x-errors-03)
             VarUpdate::Patch(path, v) => {
                 let Some(cur) = self.ctx.rt.store_value(&id) else {
                     error!(
@@ -662,6 +772,47 @@ impl<X: GXExt> GX<X> {
                 ToGX::GetEnv { res } => {
                     let _ = res.send(self.ctx.env.clone());
                 }
+                // CR claude for claude: [risk/low] A panic anywhere in the check
+                // (parse, resolve, typecheck) unwinds out of the runtime task, because
+                // nothing catches it here. Every later GXHandle::exec then fails with
+                // 'runtime is dead', and the language server publishes that at 0:0 of
+                // every root until the editor restarts it. The server's own handlers
+                // are guarded so one bad input never ends it. A buffer of half-typed
+                // code is the input most likely to reach a checker bug, so the check is
+                // where that guard matters most. Fix: run the check under
+                // FutureExt::catch_unwind and restore its Saved on unwind, returning
+                // the panic as an error. Or have ShellLspBackend rebuild its runtime
+                // when exec reports it dead, which also survives a panic that leaves
+                // the context inconsistent. (x-lsp-probe-08)
+                // CR claude for claude: [risk/low] The check runs inside the runtime's
+                // spawned task with no unwind guard. Any panic during parse, resolve or
+                // typecheck therefore ends the task for good: this check answers
+                // "runtime did not respond", and every later exec on the handle answers
+                // "runtime is dead". ShellLspBackend keeps one GXHandle and never
+                // rebuilds it. After one buffer triggers a check-time panic, every root
+                // is published with that error, and env() quietly falls back to an
+                // empty Env until the editor restarts the server. The server's
+                // `guarded` cannot help, because it only covers the server thread. No
+                // check-time panic is known at HEAD, but the fuzz corpus shows
+                // compile-time panics have happened before. Fix: wrap this arm's future
+                // in `AssertUnwindSafe(..).catch_unwind()`. On a panic, restore the
+                // `Saved` taken in check_inner and send an Err, so the session
+                // survives. (lsp-02)
+                // CR claude for claude: [risk/medium] A panic anywhere in a check
+                // (parser, resolution, checker, a builtin's typecheck) unwinds out of
+                // this arm and ends the GX task, because GXConfig::start spawns it with
+                // no guard. The server's `guarded` only covers its own thread. The
+                // request then answers "runtime did not respond", and every later check
+                // of any root publishes "runtime is dead" at 0:0 with hovers returning
+                // nothing, until the editor restarts the server. One buffer that hits a
+                // checker bug, such as lsp-02's genn assert, disables the language
+                // server. The fix is to run check_inner under catch_unwind
+                // (AssertUnwindSafe over the future, e.g. FutureExt::catch_unwind),
+                // restore `Saved` and the env on unwind, and answer `res` with a "the
+                // check panicked" error; otherwise the LSP backend must rebuild its
+                // runtime when it finds it dead. probe:
+                // design/review-2026-10-12/repro/x-fix-tools-06.sh (same root as
+                // lsp-02) (x-fix-tools-06)
                 ToGX::Check { path, resolvers, initial_scope, expr_types, res } => {
                     let r = self.check(&path, resolvers, initial_scope, expr_types).await;
                     let _ = res.send(r);
@@ -847,6 +998,27 @@ impl<X: GXExt> GX<X> {
                 &self.scope,
                 e.clone(),
             );
+            // CR claude for claude: [bug/medium] c-lib-04 regressed: failed REPL input
+            // runs earlier statements, drops their names, leaves a dead catch.
+            // GX::compile's doc (gx.rs) says the statements before a failing one are
+            // installed, as if entered one at a time. What actually happens differs.
+            // The earlier statements' nodes are installed and run (`println("hi"); let
+            // c = nosuch` prints hi), but their names are gone from the env afterwards
+            // (`let b = 5; let d = nosuch` then `b` gives `b not defined`). A `catch`
+            // in the failed input stays in `self.scope` as the handler for every later
+            // input while its bind is gone, so every later `?` is refused with an
+            // internal error: `BUG: catch BindId(..) has no inferred bind`. Failure:
+            // REPL: `catch(e) println("caught [e]"); let w = nosuch` (error, as
+            // expected), then `error(`Boom)?` gives `error: ... BUG: catch
+            // BindId(4611686018427392006) has no inferred bind`. Every later input
+            // using `?` fails the same way for the rest of the session. `let b = 5; let
+            // d = nosuch` installs a node for b whose name no later input can reach.
+            // Fix: Make the input atomic: on failure, delete the nodes already compiled
+            // for this input and restore `self.scope` and the env to their pre-input
+            // values. Or make it truly partial: keep the env and scope those statements
+            // produced. The code currently does half of each. Then fix the doc comment
+            // to match. Unverified: the reviewer's report, not checked by a verifier.
+            // (x-rerun-1-02)
             match stmt.with_context(|| ori.clone()) {
                 Ok((n, advanced)) => {
                     self.scope = advanced;
@@ -870,6 +1042,19 @@ impl<X: GXExt> GX<X> {
             })
             .collect::<SmallVec<[_; 1]>>();
         match failed {
+            // CR claude for claude: [bug/medium] Returning Err here drops comp_exprs.
+            // Each CompExp's Drop sends ToGX::Delete, so the statements this function
+            // just installed are deleted again. self.scope still points past them,
+            // which contradicts the doc comment above. As a result, after `catch(e)
+            // println("caught [e]"); let w = nosuch`, every later `?` in the session is
+            // refused with "BUG: catch .. has no inferred bind". After `let x = 41; let
+            // y = nosuch`, `x` is not defined. Choose one behaviour: - Keep the
+            // installed statements: return their CompExps together with the failure,
+            // for example a CompRes that carries the error, so the shell holds them. -
+            // Roll the whole input back: save self.scope (and the env) before the loop,
+            // and on failure delete the nodes, restore both, and drop the deferred
+            // refs. Then make the doc comment match. Probe:
+            // design/review-2026-10-12/repro/rt-02.py (rt-02)
             Some(e) => Err(e),
             None => Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() }),
         }
@@ -1077,6 +1262,31 @@ impl<X: GXExt> GX<X> {
         let stmts = Arc::from_iter(exprs.into_iter());
         let wrapped = wrap_file_in_block(stmts.clone(), Arc::new(ori.clone()));
         if let Some(sources) = sources {
+            // CR claude for claude: [perf/medium] The root's own interface (the `sig`
+            // load_exprs returns from RootFile::load) is handed to compile_script
+            // beside the tree, so its origin never reaches `sources`. sources_record
+            // then writes `-<root>.gxi` (must be absent) for a file that is present.
+            // Every later load of a script with a .gxi finds its program entry stale,
+            // recompiles, and rewrites the image, so such a script never starts warm.
+            // Add the sig's items' origins (or the RootFile's interface origin) to
+            // `sources` here. program_sources dedupes by Arc identity, and
+            // wrap_file_in_block wraps the root origin in a fresh Arc, so the root file
+            // is also listed twice: dedupe by source path instead. probe:
+            // design/review-2026-10-12/repro/x-fix-tools-03.sh (x-fix-tools-02)
+            // CR claude for claude: [perf/medium] The script's own interface is never
+            // added to `sources`. `load_exprs` returns it only as `sig`, and
+            // `program_sources` reaches only origins in the tree and in module sigs. A
+            // module's empty .gxi has no items, so it is never added either.
+            // `sources_record` then writes `-<script>.gxi` while the file exists,
+            // `sources_unchanged` fails on every start, and every run compiles cold and
+            // rewrites the image with an fsync and a collect. The script itself is also
+            // listed twice, because `wrap_file_in_block` gets a fresh `Arc<Origin>` and
+            // the `Arc::ptr_eq` dedup misses it. Fix: add the interface's Origin
+            // (script and module, empty or not) to `sources`, and dedup by path. A
+            // record built from what the resolver probed (see shell-01) fixes all of
+            // these. probe:
+            // design/review-2026-10-12/repro/shell-02-script-interface-never-warm.sh
+            // Also reported as (x-image-03). (shell-02)
             program_sources(&wrapped, sources);
         }
         let id = wrapped.id;
@@ -1118,6 +1328,17 @@ impl<X: GXExt> GX<X> {
             })
             .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
+        // CR claude for claude: [perf/low] This call site's callee is a Constant, so it
+        // is unbound when check_and_fuse runs. emit_clif then falls through to the
+        // builtin path and fails as 'builtin call site ("nop")("nop") not discovered',
+        // and CallSite::fuse has no apply to fuse. The run-time bind at the first
+        // update fuses the instance only for a shared collection slot. So the body of
+        // every Callable (a GUI/TUI handler, even a pure `|x: i64| -> i64 x * 2 + 1`)
+        // always runs on the node-walk, while the same call written in Graphix would be
+        // offered to fusion, and FusionStats.failed shows it as an emitter gap. The
+        // callee is a known LambdaDef here: bind its instance when compiling, as a
+        // statically resolved call is pre-bound, so fusion sees a Lambda callee and
+        // fuses its body. Add a FuseExpect pin for a pure callable. (rt-12)
         let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid);
         self.ctx.view().open_compile_frame(eid);
         if let Err(e) =
@@ -1129,6 +1350,19 @@ impl<X: GXExt> GX<X> {
             return Err(e);
         }
         // its init runs in the next cycle, as a compiled root's does
+        // CR claude for claude: [bug/medium] A callable with no argument to deliver
+        // runs here and never again. This covers `|| e` and also a lambda whose every
+        // label has a default, because those labels are filtered out above. Nothing
+        // stays bottom, so this birth update applies the lambda once at compile time.
+        // Later, call_callable writes an empty set, which schedules nothing, while
+        // calls_made counts the `arg: None` call as made. So Callable::call never runs
+        // it again and call_answered answers null. The fix is to give every call a
+        // delivery: the call site gets a hidden trigger (a BindId argument or
+        // reference) that call_callable always writes. Then a zero-argument call is a
+        // write like any other, and the birth update finds the trigger absent and does
+        // not apply the lambda. With that in place calls_made no longer needs its
+        // `None` case for live callables. probe:
+        // design/review-2026-10-12/repro/rt-03-zero-arg-callable.rs (rt-03)
         self.ctx.rt.updated.insert(eid, true);
         let cid = CallableId::new();
         let answer = ExprId::new();
@@ -1162,9 +1396,35 @@ impl<X: GXExt> GX<X> {
     ) -> Result<()> {
         let c =
             self.callables.get(&id).ok_or_else(|| anyhow!("unknown callable {id:?}"))?;
+        // CR claude for claude: [risk/medium] GXHandle::call skips argument type
+        // checks; the runtime checks only arity (b-16's root cause). gui-widgets-b-16
+        // (a radio sent null into a callback typed from its value, and a fused reader
+        // panicked) was fixed in RadioW alone. The root cause is still there.
+        // Callable::call/call_answered check the argument types (graphix-rt/src/lib.rs
+        // check_args), but GXHandle::call(id, args) (lib.rs), which the GUI event loop
+        // uses for every Message::Call, sends unchecked. The runtime's call_callable
+        // (gx.rs) checks only `args.len()`. A widget that ever sends a value outside
+        // the callback's declared type stores a mistyped value in a binding the checker
+        // typed, and fused code reads it through the compiled ABI. Failure: I found no
+        // mistyped send in the current widgets (data_table toggle/spin/button send the
+        // declared types). Any future widget, or an embedder calling GXHandle::call
+        // with a wrong value, reproduces b-16: a kernel reading the parameter panics or
+        // misreads, the runtime dies. Fix: Check `is_a` against the callable's argument
+        // types in call_callable, on the runtime side, so every entry is checked; or
+        // make GXHandle::call take a Callable and route it through check_args. Refuse a
+        // mismatched call with a logged error. Unverified: the reviewer's report, not
+        // checked by a verifier. (x-rerun-4-04)
         if args.len() != c.args.len() {
             bail!("expected {} arguments", c.args.len());
         }
+        // CR claude for claude: [bug/low] A callable with no arguments to deliver (a
+        // `||` lambda, or one whose arguments are all labeled defaults, which
+        // compile_callable drops) records `arg: None` and an empty set. calls_made
+        // counts the call as made at once, but nothing schedules c.expr, so its body
+        // never runs again after the init cycle and call_answered answers null. Either
+        // refuse such a lambda in compile_callable, or schedule the callable's
+        // expression here (`updated.insert(c.expr, ..)`) so the call's cycle runs it
+        // and the answer is what that update produced. (x-fix-tools-08)
         self.calls.push_back(CallInFlight {
             arg: c.args.first().copied(),
             expr: c.expr,
@@ -1268,6 +1528,19 @@ impl<X: GXExt> GX<X> {
             // undelivered update in a watch channel is pending work that
             // `cycle_ready` cannot see until it is drained.
             peek!(watches, tasks, var_watches, custom_tasks, input);
+            // CR claude for claude: [bug/medium] The idle test misses work parked in
+            // `sets` (and `calls`). When the subscriber is full, do_cycle's send loop
+            // runs process_input_batch, which turns ToGX::Set, SetMany, Call and a
+            // chainless SetDeref into entries of `sets`. That cycle has already drained
+            // `sets`, and nothing here or in cycle_ready looks at it. So `ready` is
+            // false, `or_never` never fires, and the write or call waits for an
+            // unrelated wake: a timer, another message, a source. In a GUI, a button
+            // press made while a frame stalls the channel does nothing until the mouse
+            // moves. Fix: count `!sets.is_empty()` in `ready`, or better, move `sets`
+            // and `calls` into GX so cycle_ready sees them. Then extend
+            // tests/send_loop.rs to cover a set and a call received in the send loop.
+            // Probe: design/review-2026-10-12/repro/rt-01.rs
+            // (set_in_send_loop_is_delivered, call_in_send_loop_is_delivered). (rt-01)
             let ready = self.cycle_ready()
                 || !tasks.is_empty()
                 || !custom_tasks.is_empty()

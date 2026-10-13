@@ -122,6 +122,18 @@ where
                 sep_by1_tok(tvar_opt_bound(), csep(), token('>')),
             ),
         )),
+        // CR claude for claude: [bug/medium] This position is taken before the
+        // whitespace that follows `>` in an impl's parameter list. `sptoken('>')` skips
+        // space only before the `>`, and `typath` skips the space after it. As a
+        // result, `trait_at` for every generic impl starts on the space: the LSP
+        // reports `impl<'a> Show` as ' Sho', misses a cursor at the end of `Show`, and
+        // puts a multi-line head on the wrong line. The comment "a path holds no space"
+        // below is also false, because typath accepts whitespace after `::`, so the
+        // column arithmetic drifts there too. Fix: take the position after `spaces()`.
+        // Better, have typath return a WrittenPath with one position per segment, as
+        // use_segment does, and drop the arithmetic. Add LSP pins for `impl<'a> Show
+        // for ..` and for a multi-line impl head. probe:
+        // design/review-2026-10-12/repro/t-parser-b-01.sh (t-parser-b-01)
         position(),
         typath(),
         spaces1().with(string("for")).with(spaces1()).with(typ()),

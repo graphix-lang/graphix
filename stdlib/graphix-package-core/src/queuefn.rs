@@ -76,6 +76,16 @@ fn write_count<R: Rt, E: UserEvent>(
     if let Some((r, depth)) = w {
         let v = Value::I64(depth);
         match crate::write_target(ctx, r) {
+            // CR claude for claude: [bug/medium] A place target for #count is written
+            // with Rt::patch_var, which queues an ordinary write. A binding target uses
+            // Rt::set_level instead. Several depth changes in one cycle therefore queue
+            // one patch each. They land one per cycle, so `&mut s.depth` steps through
+            // stale depths (0, 1, 2, 3) while `&mut d` reads 3 at once. This breaks
+            // queuefn's documented promise in mod.gxi that a place is written "as to a
+            // binding: as a level". Fix: add a level patch to Rt and to the branch view
+            // (push_level with VarUpdate::Patch, replacing a waiting level patch), call
+            // it here, and add a place variant of the queuefn_count_ref pin. probe:
+            // design/review-2026-10-12/repro/core-aux-04.sh (core-aux-04)
             crate::WriteTarget::Place(root, path) => ctx.rt.patch_var(root, path, v),
             crate::WriteTarget::Var(target) => ctx.rt.set_level(target, v),
         }
@@ -115,6 +125,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     ) -> &TagValue {
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
+            // CR claude for claude: [bug/medium] A bottom argument is skipped here, so
+            // its bind keeps the last value and the wrapper does not bottom. With one
+            // argument the wrapper rides its old answer. With two it fires f over the
+            // new argument and the stale one: q(c, s$) prints f(2, 1) = 201 at the
+            // cycle where s$ is bottom and the direct f(c, s$) is bottom.
+            // design/dense_delivery.md R3 says a bottomed argument bottoms the
+            // invocation (compare Invocation::Bottom). Fix: if any argument is bottom
+            // this cycle, queue nothing, dispatch nothing and set the output bottom
+            // (fresh when an argument fired or went bottom this cycle). The same
+            // applies to the queued path, so a release never runs a partial entry.
+            // probe: design/review-2026-10-12/repro/core-aux-06-bottom-arg.gx
+            // (core-aux-06)
             if let Some(v) = seam_tick(n.update(ctx)) {
                 if let Some(bid) = self.arg_bids.get(i) {
                     delta.push((*bid, v.value_cloned()));
@@ -129,6 +151,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     drop(s);
                     // a released call delivering to these binds this cycle runs
                     // first, and this one the next
+                    // CR claude for claude: [bug/medium] This only tests the args that
+                    // fired at this site this cycle. Suppose a released entry delivers
+                    // some of the site's args (arg 0) in the same cycle that a new call
+                    // fires only the others (arg 1), using a pop slot the trigger
+                    // banked on an empty queue. Then `released` is false, and the new
+                    // arg goes into this cycle's event beside the released one. `pred`
+                    // sees one call where there were two, so an invocation is lost.
+                    // With `q = queuefn(#trigger: trig, |x, y| (x, y)); q(a, b)` this
+                    // prints [(0,0), (1,1), (2,4)] where the unqueued call gives
+                    // [(0,0), (1,1), (2,1), (2,4)]. Fix: test every one of the site's
+                    // binds, `self.arg_bids.iter().any(|b|
+                    // ctx.event.variables.contains_key(b))`, and add a two-argument pin
+                    // to lib_tests::core. probe:
+                    // design/review-2026-10-12/repro/core-aux-01.gx (core-aux-02)
                     let released =
                         delta.iter().any(|(b, _)| ctx.event.variables.contains_key(b));
                     for (bid, v) in delta.drain(..) {
@@ -187,6 +223,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         }
     }
 
+    // CR claude for claude: [bug/medium] A wrapper site asleep in an unselected arm
+    // keeps its entries in the shared queue. Each trigger that pops one of them sets
+    // binds whose readers are asleep, so nothing runs and the release is spent. Live
+    // sites' calls wait behind the dead entries. At the wake, catch-up re-raises only
+    // the binds' last value, so the earlier queued calls are lost and the last one runs
+    // outside the queue order. Fix: drop the site's entries here and write #count, as
+    // delete does (`queue.retain(|e| e.site != self.site)` plus `count_write`). That
+    // matches QueueFn::sleep and the rule that sleep aborts an async call site's calls
+    // in flight. Add a pin, and update design/queue_fn.md, which says wrapper sleep and
+    // delete only forward to pred. probe:
+    // design/review-2026-10-12/repro/core-aux-03-sleep.gx (core-aux-03)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pred.sleep(ctx);
     }

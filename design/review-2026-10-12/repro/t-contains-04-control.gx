@@ -1,0 +1,4 @@
+// control for t-contains-04: the same call over an annotated v is accepted
+let f = 'a: Number |x: [(Any, 'q, Array<'a>), (string, string, Array<[string, null]>)], y: 'q| -> i64 0;
+let v: Array<string> = ["x"];
+f(("s", "t", v), 3)

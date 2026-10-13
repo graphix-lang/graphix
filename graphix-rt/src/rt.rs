@@ -62,6 +62,15 @@ impl<T> Default for Waiting<T> {
 
 impl<T> Waiting<T> {
     pub(super) fn push(&mut self, id: BindId, t: T, via: Via) {
+        // CR claude for claude: [perf/low] Every program write (`<-`, set_var,
+        // patch_var) lands here. The first push_back allocates the VecDeque's buffer,
+        // and pop removes the map entry once the queue empties, which frees it. So
+        // nearly every write costs a malloc/free pair plus an IntMap insert/remove,
+        // though almost every queue only ever holds one write. Fix: hold `SmallVec<[(T,
+        // Via); 1]>` per variable so the single-write case stays inline. Alternatively,
+        // keep emptied queues in place and have `has`/`is_empty` read whether the queue
+        // holds anything. While here, do_cycle's custom-update `due` vector can be
+        // LPooled like the variable one beside it. (x-alloc-05)
         let q = self.by_id.entry(id).or_default();
         if q.is_empty() {
             self.ids.push_back(id);

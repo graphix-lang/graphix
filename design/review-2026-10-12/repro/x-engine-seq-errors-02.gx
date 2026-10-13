@@ -1,0 +1,13 @@
+// x-engine-seq-errors-02: when two sibling `mod` statements both fail to
+// resolve, which error is reported is nondeterministic: resolve_children
+// (graphix-types/src/expr/resolver.rs) uses try_join_all, which returns the
+// first error to COMPLETE, not the first in program order.
+// command (no files key.gx / user.gx beside this one):
+//   for i in $(seq 30); do graphix --no-cache --check x-engine-seq-errors-02.gx 2>&1 | head -1; done | sort | uniq -c
+// observed: 29x "line: 10 ... mod nosuch_key", 1x "line: 11 ... mod nosuch_user"
+// (a sibling dir with only mod key; mod user: 28 vs 2; the rate varies with load)
+// expected: always the first (line 10). The LSP republishes a different
+// diagnostic on each check of an unchanged buffer.
+mod nosuch_key;
+mod nosuch_user;
+0

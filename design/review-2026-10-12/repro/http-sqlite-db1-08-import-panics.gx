@@ -1,0 +1,12 @@
+let a = db::open("/tmp/graphix-review-impA.db")$;
+let ta: db::Tree<string, i64> = db::tree(a, "x")$;
+let i1 = db::insert(ta, "k1", 1)$;
+let ex = db::export(a, i1 ~ "/tmp/graphix-review-imp.exp")$;
+let b = db::open(ex ~ "/tmp/graphix-review-impB.db")$;
+let tb: db::Tree<string, i64> = db::tree(b, "x")$;
+let im = db::import(b, tb ~ "/tmp/graphix-review-imp.exp");
+println("import: [im]");
+let after = db::get(tb, im ~ "k1");
+println("after: [after]");
+sys::exit(sys::time::after_idle(duration:300.ms, after ~ 0));
+after

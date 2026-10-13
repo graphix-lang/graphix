@@ -1,0 +1,27 @@
+{
+  // f-select-04: common select shapes de-fuse (null literal, Int as, variant leaf in a tuple)
+  // command: graphix-fuzz run design/review-2026-10-12/repro/f-select-04.gx
+  // expected: f, h and k fuse as g (the `null as _` spelling of f) does
+  // observed: the values agree, but fusion fails for
+  //   f: "non-scalar literal pattern Null"
+  //   h: "select type predicate Set([Ref(/core/Sint) ..]) doesn't freeze concrete"
+  //   k: "nested variant pattern leaf not lowerable"
+  let f = |v: [i64, null]| select v {
+      null => 0,
+      n => n + 1
+  };
+  let g = |v: [i64, null]| select v {
+      null as _ => 0,
+      n => n + 1
+  };
+  let h = |v: [i64, f64]| select v {
+      Int as n => 0,
+      _ => 1
+  };
+  let k = |m: [`Idle, `Busy], n: i64| select (m, n) {
+      (`Idle, 0) => 1,
+      (`Busy, x) => x,
+      (_, _) => 0
+  };
+  (f(null), g(3), h(1), k(`Busy, 4))
+}

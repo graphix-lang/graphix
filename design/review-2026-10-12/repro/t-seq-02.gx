@@ -1,0 +1,18 @@
+// t-seq-02: a seq step holding a call only in an untaken select arm stalls
+// forever from the second run (seq.rs issue_expr: has_call -> no entry fire,
+// and the rewrite's Select arm leaves the scrutinee unsampled).
+// Run: graphix --no-cache t-seq-02.gx   (same with --no-fusion)
+// Expected: 9 (one run per 50ms tick for ~500ms). Observed: 1.
+// With hit = false, or `true => cached + 0`, or `true => k`: 9.
+let fetch = |k: i64| k * 100;
+let cached = 7;
+let hit = true;
+let t = sys::time::timer(duration:50.ms, true) ~ 3;
+let runs = 0;
+let r = seq let k = t {
+  let v = select hit { true => cached, false => fetch(k) };
+  v
+};
+runs <- r ~ runs + 1;
+sys::exit(sys::time::timer(duration:500.ms, false) ~ 0);
+runs

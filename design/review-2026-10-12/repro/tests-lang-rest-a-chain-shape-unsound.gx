@@ -1,0 +1,8 @@
+let f = |x: i64| x * 2 + 1;
+let r: i64 = never();
+let shape = {
+    catch(e) r <- f((e.0).pos) + f((e.0).cause);
+    error({cause: 1, error: 20, ori: 3, pos: 4})?
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+r

@@ -1,0 +1,5 @@
+// every line of this file ends in CRLF; graphix fmt rewrites the string below so its length goes from 4 to 3
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let s = "a
+b";
+str::len(s)

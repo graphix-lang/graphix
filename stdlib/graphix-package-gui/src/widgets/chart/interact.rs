@@ -148,7 +148,29 @@ impl ChartState {
             self.last_click = None;
         }
         match event {
+            // CR claude for claude: [perf/low] This arm requests a redraw on every
+            // mouse move anywhere in the window, even when the cursor is outside the
+            // chart and the snap did not change. Each chart therefore redraws the
+            // window at mouse-event rate. While the button is held it also clears the
+            // plot cache on every move in Pie and Empty mode, where handle_drag changes
+            // nothing, so a pie is replotted per move. Request a redraw only when the
+            // snap point changes or the drag actually moved the view. Do not start a
+            // drag in Pie or Empty mode. (gui-chart-09)
             Event::Mouse(ME::CursorMoved { position }) => {
+                // CR claude for claude: [bug/medium] The local point comes from the
+                // event's window position, but `bounds` is in content coordinates.
+                // iced's Scrollable translates the cursor it hands its content by the
+                // scroll offset and leaves the event untouched. So inside a scrolled
+                // `scrollable`, hover snapping (find_nearest_point) looks one scroll
+                // offset away from the pointer. A drag, whose origin the press takes
+                // from `cursor.position_in`, also jumps by the whole offset on its
+                // first move. Take the point from the cursor instead:
+                // `cursor.land().position().map(|p| p - bounds.position())`. That stays
+                // defined outside the bounds, which a drag needs. Then make the
+                // chart_test.rs pins hand events whose cursor and position disagree by
+                // a translation. probe: design/review-2026-10-12/repro/gui-chart-01.rs
+                // (after a 500px scroll: position - bounds = (200,150),
+                // cursor.position_in = (200,650)). (gui-chart-01)
                 let local = Point::new(position.x - bounds.x, position.y - bounds.y);
                 if let Some(d) = &self.drag {
                     let (dx, dy) = (local.x - d.origin.x, local.y - d.origin.y);
@@ -397,6 +419,15 @@ fn find_nearest_point<X: GXExt>(
                 let Some(v) = categories.get(at).and_then(|c| bar_value(bd, c)) else {
                     continue;
                 };
+                // CR claude for claude: [bug/low] The hit test reads raw data where the
+                // draw shows clipped data. The bar anchor uses the unclamped value, so
+                // a bar taller than a zoomed view anchors far above the canvas, and
+                // draw_tooltip's fallback leaves the tooltip off-screen. A bar whose
+                // sum is NaN, which the draw skips, still gets a hit at NaN
+                // coordinates. near() above offers XY, candle and error-bar points just
+                // outside the view that clip_polyline did not draw. Skip non-finite bar
+                // values, clamp the anchor's y with the same View::clamp_y the draw
+                // uses, and offer only points inside the view. (gui-chart-08)
                 let pixel = data_to_pixel(at as f64 + 0.5, v, info);
                 let dist = (cursor.x - pixel.x).abs();
                 if bar.is_none_or(|b| dist < b.dist) {

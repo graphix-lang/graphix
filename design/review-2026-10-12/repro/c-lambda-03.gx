@@ -1,0 +1,17 @@
+// c-lambda-03: a rank-2 formal's quantifier named like the enclosing
+// definition's declared variable splits the check from the build.
+// Command: graphix --no-cache --check c-lambda-03.gx   (exit 0, accepted)
+//          graphix --no-cache c-lambda-03.gx           (refused)
+// Expected: prints 2.5 and exits, as GRAPHIX_NO_SUBST=1 does, and as the
+// same program with the formal's quantifier spelled 'b does.
+// Observed: "an instance at fn(y: f64, g: fn(x: 'a) -> 'a) -> f64 of a
+// definition typed fn<'a: Number>(y: 'a, g: fn<'a: Number>(x: 'a) -> 'a)
+// -> 'a" (GXLambda::instance_types: InstanceTypes::new found the
+// instance's signature does not hold the definition's). With the
+// parameters in the other order, `|g: fn<'a: Number>(x: 'a) -> 'a, y: 'a|`
+// called `f(|x| x, 2.5)`, the check itself refuses the program: "the
+// argument is not polymorphic in 'a: its type holds '_N, a variable of its
+// environment"; the 'b spelling runs.
+let f = 'a: Number |y: 'a, g: fn<'a: Number>(x: 'a) -> 'a| -> 'a g(y);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(2.5, |x| x)

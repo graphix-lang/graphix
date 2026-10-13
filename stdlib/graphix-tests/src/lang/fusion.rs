@@ -634,6 +634,19 @@ async fn region_select_let_bound() -> Result<()> {
 // ran.
 
 #[cfg(debug_assertions)]
+// CR claude for claude: [test-gap/medium] The `f > 0` asserts that use this helper
+// (fused_select_catch_all, _typed_capture, _guard_capture, _arith_wrapped,
+// _stabilize_multiref) cannot fail when the select under test stops fusing. The same is
+// true of the `inv > 0` asserts in closure_primitive_capture, closure_tuple_capture,
+// closure_nested_capture, impure_hof_callback_splits and
+// impure_hof_callback_split_captures. The reason is that each program starts with a
+// literal `let` (`let k = 3`, `let y = 7`, `let counter = 0`), and `Bind::fuse` makes
+// that literal a kernel, which runs at init and moves both counters. Probe:
+// design/review-2026-10-12/repro/tests-fusion-traits-01.gx reports fused=1 although its
+// callback is refused. Fix: state the claim at the expression with `#[native]` (`|x:
+// i64| #[native] select x {..}`, `#[native] f(3)`, `let v = #[native] (x * 2 + 1)`), or
+// use a `NodeShape::contains_fused` matcher. Then drop the counter asserts,
+// `load_value_and_jit` and this helper. (tests-fusion-traits-01)
 async fn pure_select_value_and_fusion(body: &str) -> Result<(Value, u64)> {
     let (v, (f, _)) = load_and_count(&pure_map_program(body)).await?;
     Ok((v, f))
@@ -684,6 +697,15 @@ async fn fused_select_arith_wrapped() -> Result<()> {
 /// `n == n` is true on the fused path.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] `rand::rand` is `Effect::Sync`, so the scrutinee
+// never enters a kernel. The `fused > 0` here comes from the arm body `n == n`, which
+// the node-walk feeds with `n`. Probe:
+// design/review-2026-10-12/repro/tests-fusion-traits-02.gx with GRAPHIX_DBG_REGION=1.
+// The duplicated-scrutinee emission this test names cannot happen, and the same is true
+// of fused_select_scrutinee_once_subtract. Under strict fusion only a pure scrutinee
+// fuses, and evaluating one twice changes no value. Delete both tests, or replace them
+// with a shape check that the scrutinee is emitted once, e.g. over `select (x + 1)
+// {..}`. (tests-fusion-traits-06)
 async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
     let (v, (fused, _)) = load_and_count(
         "select rand::rand(#start: 0, #end: 1000000, #clock: 1) \
@@ -873,6 +895,15 @@ async fn failed_statement_releases_refs() -> Result<()> {
 // variable's store entry with it when its slot is deleted: two triggers
 // bank before `v` arrives, one is answered, the other is paid.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [structure/low] This test repeats env_accounting_grow_shrink's
+// driver: the local `use`, the `let arr` compile, the `lookup_bind` of `arr`, and the
+// set-iota / set-empty / `await_map_len` loop. The copies have drifted. This one never
+// checks that the store grew at the peak, so it passes vacuously if the `~`'s private
+// variable is never created. Extract one churn helper that returns the bottoms and the
+// peak, use it in both tests, and add the peak-over-base guard here. Also hoist
+// `Scope`/`ModPath` into the top-level `use graphix_compiler::{..}`, and delete
+// node_shape_matches_by_kind_name's local re-import of `CFlag` and
+// `init_with_flags_and_setup`, which the file already imports. (tests-fusion-traits-10)
 async fn deleted_sample_releases_store() -> Result<()> {
     use graphix_compiler::{Scope, expr::ModPath};
 
@@ -919,6 +950,13 @@ async fn deleted_sample_releases_store() -> Result<()> {
 /// A catch handler that fires and captures both the element `x` and
 /// the outer `k`, driving `res <- x + k`: `[4,5,6,7]`.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] This test cannot see whether the catch fires.
+// The handler `res <- (x + k)` does not read `e`, so it writes `x + k` at init and the
+// pinned [4,5,6,7] comes out even with no raise, or with a raise that never reaches the
+// slot's handler. Probe: design/review-2026-10-12/repro/tests-fusion-traits-03.gx has
+// no `?` and gives the same array in both engines. Fix: make the write wait for the
+// error, `catch(e) res <- e ~ (x + k)`. Better still, raise for only some elements and
+// pin a different result for those slots. (tests-fusion-traits-02)
 async fn impure_trycatch_catch_capture() -> Result<()> {
     assert_i64s(
         &impure_map(
@@ -994,6 +1032,13 @@ proptest::proptest! {
         ..proptest::prelude::ProptestConfig::default()
     })]
     #[test]
+    // CR claude for claude: [test-gap/low] Both sides run with fusion on, and the
+    // impure slots run the sub-region kernel emitted from the same body by the same
+    // `emit_clif` as the pure loop. A miscompile of a generated body, such as the
+    // arm-binding select or a struct accessor, gives the same wrong array on both sides
+    // and the property holds. Add the canonical evaluator as a third leg: run
+    // `load_node_walked(&pure_map_program(&body))` and assert it equals `reference` as
+    // well. (tests-fusion-traits-09)
     fn impure_matches_pure(body in body_strategy()) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1299,6 +1344,18 @@ run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, |v: Result<&Value>| match v {
 // A tail call whose new value for one composite formal is another
 // formal's old value: the rebind owns every new value before an old one
 // drops.
+// CR claude for claude: [test-gap/low] `FuseExpect::Jit` holds when any region ran, so
+// it does not show that the emission path a fixture pins was taken. If this tail call
+// stopped fusing, the fixture would check only the node-walk's answer. The same applies
+// to TAIL_REBIND_SHADOWED_FORMAL, STRING_READ_INTO_VALUE_FORMAL,
+// DISTINCT_ZERO_CONSTANTS (whose `let k = 6` gets a kernel of its own, see
+// tests-fusion-traits-01), SHED_ACTIVATIONS_FREE_CHAINS, DROPPED_SLOTS_FREE_TREES,
+// CALL_FED_BY_NODE_WALKED_ARGS, FED_CALLBACK_REGIONS_FUSE_IN_SLOTS,
+// SCALAR_LET_CAPTURED_AT_A_NULLABLE, TAIL_SCALAR_TO_NULLABLE, KERNEL_BUILT_ABSTRACT_EQ,
+// OPTION_TYPE_TEST_TESTS_THE_TYPE and NULLABLE_DURATION_IS_A_VALUE. Put `#[native]` on
+// the expression each one is about, as `check_fuse_expectation`'s doc asks (e.g.
+// `#[native] f(3, [0], [1])`). Where a node-walked feeder makes that impossible, use a
+// `; shape:` matcher. (tests-fusion-traits-05)
 const TAIL_REBIND_SWAPPED_COMPOSITES: &str = r#"
 {
   let rec f = |n: i64, a: Array<i64>, b: Array<i64>| -> Array<i64> select n {
@@ -1969,6 +2026,13 @@ modes!(always_raising_operand);
 // A callee body cached for one instance and emitted from another binds
 // its own formals: both arms' `#[native]` fuse, `g -> h` reached directly
 // and through `k`.
+// CR claude for claude: [test-gap/low] `x` fires once, so `count(x)` is 1 and only
+// `g(x) + 1` ever runs. The `k(x) + 2` arm, where `g`'s cached body is emitted for
+// another instance, compiles but never runs. A regression that binds the wrong formals
+// there and returns a wrong value, rather than refusing, would pass. Fire `x` twice
+// (`array::iter([3, 4])`) and pin the second arm's value (44 in both engines), e.g.
+// `let r = select count(x) {..}; select count(r) { 2 => r, _ => never() }`. Probe:
+// design/review-2026-10-12/repro/tests-fusion-traits-06.gx. (tests-fusion-traits-08)
 const CALLEE_BODY_OTHER_INSTANCE: &str = r#"
 {
   let h = |a: i64| a * 3 + 1;

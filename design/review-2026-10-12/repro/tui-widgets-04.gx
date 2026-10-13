@@ -1,0 +1,9 @@
+// tui-widgets-04: Canvas finite() guard misses coordinates whose differences overflow to inf/NaN
+// command: GRAPHIX=<debug graphix> sh tui-widgets-run.sh tui-widgets-04.gx 20 10
+// expected: the diagonal from bottom-left to top-right (as with endpoints at -100 and 100)
+// observed: row 0 is all braille top dots, every other row blank
+use tui::canvas::canvas;
+
+tui::exit(sys::time::timer(duration:1.s, false));
+let a = `Line({color: `Red, x1: -1.0e308, y1: -1.0e308, x2: 1.0e308, y2: 1.0e308});
+canvas(#x_bounds: &{min: 0.0, max: 10.0}, #y_bounds: &{min: 0.0, max: 10.0}, &[&a])

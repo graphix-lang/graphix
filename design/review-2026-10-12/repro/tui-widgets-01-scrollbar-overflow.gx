@@ -1,0 +1,9 @@
+use tui::{line, paragraph::paragraph, scrollbar::scrollbar};
+
+tui::exit(sys::time::timer(duration:1.s, false));
+let content = paragraph(&[line("hello")]);
+scrollbar(
+    #position: &9223372036854775807,
+    #content_length: &9223372036854775807,
+    &content
+)

@@ -1,0 +1,1 @@
+{ let t = sys::time::now; i64:1 + "a" }

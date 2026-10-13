@@ -1,0 +1,10 @@
+// c-lib-01: a pending #[sync] assertion is not carried by the session
+// image. Run twice with the cache on (XDG_CACHE_HOME pointing at a
+// scratch dir): the cold run logs "#[sync]: this function is async" when
+// `h` rebinds to `ap` with an async callback; the warm run logs nothing.
+#[sync]
+let ap = |f: fn(x: i64) -> i64, x: i64| f(x);
+let h = |f: fn(x: i64) -> i64, x: i64| f(x) + 100;
+h <- sys::time::after_idle(duration:50.ms, ap);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+h(|x| sys::time::after_idle(duration:1.ms, x), 3)

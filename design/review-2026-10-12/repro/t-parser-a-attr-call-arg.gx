@@ -1,0 +1,7 @@
+// `#[attr]` above a positional call argument is a parse error, though the
+// same attribute is accepted on a labeled argument's value and on an
+// array element. Expected: parses (and `--check` passes). Actual: "Parse
+// error at line 7 column 2 ... Unexpected `(` ... note: a `;` separates
+// this statement from the one before".
+let f = |x| x + 1;
+f(#[native] 1 + 2)

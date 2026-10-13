@@ -16,6 +16,17 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 /// The first `n` values of the result of `code` run in `mode`.
+// CR claude for claude: [structure/low] collect_n, collect_settled and collect_n_blocks
+// repeat a sequence that is also written out in net.rs (net_rpc_missing_path,
+// net_no_stale_value), tls.rs (tls_accept_times_out), module_stmt.rs and several lang/
+// tests: fixture_runtime over result_source, compile_result, a deadline, next_update or
+// updates_until_quiet, then shutdown. testing.rs's private first_value and
+// eval_converged do the same, fixed to Jit. Each copy picks its own modes, which is how
+// the net.rs tests skip Par and JitPar. Fix: export one helper from testing.rs that
+// takes a Mode, the code, and either n values or a quiet window, generalising
+// first_value and eval_converged. Loop over Mode::ALL at the callers and delete the
+// copies. Also fix tcp.rs's 'the three modes' comment: there are four.
+// (tests-lib-b2-16)
 async fn collect_n(code: &str, mode: Mode, n: usize) -> Result<Vec<Value>> {
     let (ctx, mut rx) = fixture_runtime(
         [("/test.gx", result_source(code))],
@@ -138,6 +149,13 @@ async fn fused_loop_recursion_sheds_unreached_blocks() -> Result<()> {
 }
 
 /// Every mode produces the same first `n` values.
+// CR claude for claude: [test-gap/low] assert_agree only checks that every mode matches
+// Interp, so a regression in shared code (write landing, the connect node, the array
+// helpers) that all four modes reproduce goes unnoticed. The testing rule is that a
+// predicate pins the value exactly; comparing engines is the fuzzer's job.
+// mutually_referencing_counters is deterministic: replace its call with
+// assert_stream(code, &[0, 0, 1, 3, 6, 10, 15, 21]). Fix the window test as
+// tests-lib-b2-02 describes, then delete this helper. (tests-lib-b2-03)
 async fn assert_agree(code: &str, n: usize) -> Result<()> {
     let interp = as_i64(&collect_n(code, Mode::Interp, n).await?)?;
     for mode in &Mode::ALL[1..] {
@@ -259,6 +277,17 @@ fn many_counters(n: usize) -> String {
     s
 }
 
+// CR claude for claude: [test-gap/medium] region_over_64_inputs_fuses does not pin what
+// its name says. FuseExpect::Jit only checks that some kernel ran, and
+// many_counters(70) has 70 other fusable regions, one per `a{i} <- a{i} + 1` right-hand
+// side (graphix-fuzz run: fused=71). If the 70-input sum stopped fusing, for example
+// because a 64-input ABI cap came back, this test would stay green.
+// counter_lifts_and_fuses and connect_const_lifts have the same problem: the connect
+// node-walks, so only the trivial `x + 1` fuses. Fix: have many_counters wrap the sum
+// in `#[native] (...)` so a de-fused sum is a compile error. Also rewrite the module
+// doc and the test names, because no 'connect lift' mechanism exists any more. What
+// these tests check is that a `<-` target is read as an ordinary kernel input.
+// (tests-lib-b2-01)
 run!(
     region_over_64_inputs_fuses,
     many_counters(70),
@@ -396,6 +425,15 @@ async fn struct_accumulator_grows() -> Result<()> {
 async fn array_window_accumulator_agrees() -> Result<()> {
     // A bounded sliding window: grow to 3, then push+shift (`[1..]` is
     // only taken once the array is full, so the slice is in bounds).
+    // CR claude for claude: [test-gap/low] array_window_accumulator_agrees cannot
+    // detect a broken window. It observes array::len(data), which is 3 forever once the
+    // window fills. Any full arm that keeps three elements gives the same 0,1,2,3,3,3
+    // stream: one that keeps the head instead of dropping it, or one that returns data
+    // unchanged. assert_agree also pins no value (see tests-lib-b2-03). Fix: push a
+    // counter that moves and observe the array itself, pinned exactly in every mode: `{
+    // let i = 0; i <- i + 1; let data: Array<i64> = []; data <- select array::len(data)
+    // { 3 => (array::push(data, i))[1..]$, _ => array::push(data, i) }; data }` gives
+    // [], [0], [0,1], [0,1,2], [1,2,3], [2,3,4], ... (tests-lib-b2-02)
     assert_agree(
         "{ let data: Array<i64> = []; \
            data <- select array::len(data) { \

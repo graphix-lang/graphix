@@ -1,0 +1,9 @@
+// run with something listening on 38941 that accepts and never answers
+// (python3 -c "import socket,time;s=socket.socket();s.bind(('127.0.0.1',38941));s.listen();c=s.accept();time.sleep(60)")
+// The first request hangs forever (default client: no timeout) and the second,
+// which fails at once on its own, is queued behind it (Fifo): nothing is printed.
+let c = http::default_client(null)$;
+let url = "http://127.0.0.1:38941/hang";
+url <- sys::time::timer(duration:1.s, false) ~ "http://127.0.0.1:1/refused";
+let r = http::get(c, url);
+select r { error as e => "error: [e]", v => "ok: [v.status]" }

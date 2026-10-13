@@ -1,0 +1,9 @@
+// x-unsafe-04: node-walk activation memory. Naive fib(20) makes 21891
+// activations; under --no-fusion the process peaks near 273 MB (about
+// 9.8 KB per activation over a ~60 MB baseline), under fusion 58 MB.
+// fib(26)/fib(27) alternating per tick exceeds a 6 GB cap in the
+// node-walk. Run: graphix --no-cache --no-fusion x-unsafe-04.gx
+let rec fib = |k: i64| -> i64 select k { 0 => 0, 1 => 1, k => fib(k - 1) + fib(k - 2) };
+let r = fib(20);
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+r

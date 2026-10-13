@@ -1,0 +1,11 @@
+// x-stack-03: sys::exit can drop the script's already-produced output:
+// Shell::run's select! is unbiased.
+// Command (run several times):
+//   timeout -s KILL 60 graphix --no-cache --no-fusion x-stack-03.gx
+// Expected: prints 20000 every run (the value is produced, and its batch
+// sent, in the first cycle; sys::exit fires in a later cycle).
+// Observed (debug build at 7324207f): 4 of 6 runs printed nothing, exit 0;
+// with duration:5.s every run prints 20000.
+let rec f = |n: i64| -> i64 select n { 0 => 0, n => 1 + f(n - 1) };
+sys::exit(sys::time::after_idle(duration:10.ms, 0));
+f(20000)

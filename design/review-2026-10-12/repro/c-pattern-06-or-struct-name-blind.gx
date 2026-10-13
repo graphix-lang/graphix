@@ -1,0 +1,18 @@
+// An or-alternative is taken by its structure alone, and a struct
+// pattern's structure test (StructPatternNode::is_match / bind) reads
+// fields by index without checking their names or the field count, so
+// an alternative accepts a value of another alternative's struct type
+// and binds the wrong fields. Both engines.
+// g({x: 0, z: "q"}): x binds "q" from field z; `r: i64` holds "q".
+// h({x: 1, y: "s"}): y binds 1 from field x (expected "s").
+let g = |p: [{a: i64, x: i64}, {x: i64, z: string}]| select p {
+  {a: 0, x} | {x, z: "q"} => x,
+  _ => -1
+};
+let h = |p: [{y: i64}, {x: i64, y: string}]| select p {
+  {y} | {x: 1, y} => y,
+  _ => "none"
+};
+let r: i64 = g({x: 0, z: "q"});
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(r, h({x: 1, y: "s"}))

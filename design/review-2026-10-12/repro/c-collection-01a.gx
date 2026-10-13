@@ -1,0 +1,13 @@
+// c-collection-01: a collection whose first cycle has >= 2 slots while the fork
+// calibration is still running decides its siblings Dependent for good
+// (slot 1 is unbound, so analysis::independent reads it as opaque).
+// Run: graphix --no-cache c-collection-01a.gx | awk "{print \$1}" — prints in order, ~27 s;
+// c-collection-01b.gx (first cycle empty) prints shuffled (forked), ~8 s.
+let tick = sys::time::timer(duration:150.ms, true);
+let x = 0;
+x <- tick ~ x + 1;
+let big = select x { 0 => [], _ => array::init(200000, |i| (i * 7919) % 200003) };
+let src = select x { 0 => [1, 2], n => array::init(16, |i| i + n * 100) };
+let r = array::map(src, |v| { let c = count(v); let s = array::len(array::sort(array::push(big, v))); println("[v] [s] [c]"); s });
+sys::exit(select x { 12 => 0, _ => never() });
+array::len(r)

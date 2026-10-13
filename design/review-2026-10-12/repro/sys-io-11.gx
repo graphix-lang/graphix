@@ -1,0 +1,10 @@
+// sys-io-11: after_idle swallows an invalid timeout: the pending value never fires, with no error
+// run: graphix --no-cache sys-io-11.gx (stderr shows the failure log target)
+// expected: 7 after 0.3s, or a logged refusal of the timeout -1
+// observed: nothing printed, nothing logged; v was pending when t became -1 and is lost
+let t: [duration, Number] = 0.3;
+let v = 7;
+t <- sys::time::after_idle(duration:50.ms, -1);
+let r = sys::time::after_idle(t, v);
+sys::exit(sys::time::after_idle(duration:800.ms, 0));
+r

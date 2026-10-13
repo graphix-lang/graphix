@@ -1,0 +1,18 @@
+let ep = 0;
+ep <- select ep { n if n < 8 => n + 1, _ => never() };
+let mode = select ep { 3 => 1, 4 => 1, _ => 0 };
+// The raw builtins emit TagValue::fired(v), dropping the WAKE bit of the
+// wake-constant fire that reached them, so a `<-` target initialised
+// through once/take/uniq/hold/count is reset at every wake.
+// With `let v = 100` (or `bit_not(-101)`, a CachedArgs builtin) the
+// target keeps its last write: 100 101 102 -1 -1 103 104 ..
+// With `let v = once(100)`: 100 101 102 -1 -1 100 101 .. (reset).
+// run: graphix-fuzz run prog.gx
+select mode {
+  0 => {
+    let v = once(100);
+    v <- ep ~ v + 1;
+    v
+  },
+  _ => -1
+}

@@ -1,0 +1,15 @@
+// examples-rest-04: a fused fold with a tuple accumulator costs ~13x a scalar one
+// command: graphix --no-cache design/review-2026-10-12/repro/examples-rest-04.gx
+// expected: about the scalar fold's time (debug build 0.0065 s at 500k: the same
+// fold with `acc + x` over an i64 accumulator)
+// observed: 0.087 s; #[native] accepts the fold, so the cost is inside the kernel loop
+let n = 500000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$ % 3;
+let r = #[native] array::fold(src, (seed, seed), |p, x| (p.0 + x, p.1 + 1));
+let result = r.1 + r.0;
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("tupacc2 n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

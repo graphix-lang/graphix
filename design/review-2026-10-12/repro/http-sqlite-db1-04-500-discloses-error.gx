@@ -1,0 +1,22 @@
+let server = {
+    catch(e) println("handler raised [e]");
+    http::serve(
+        #addr: "127.0.0.1:0",
+        #handler: |req| select req.path {
+            "/raise" => error(`Internal("db password is hunter2"))?,
+            "/badhdr" => {body: "x", headers: [("bad header", "v")], status: u16:200, url: ""},
+            "/badstatus" => {body: "x", headers: [], status: u16:1000, url: ""},
+            _ => {body: "ok", headers: [], status: u16:200, url: ""}
+        }
+    )$
+};
+let addr = http::server_addr(server);
+let client = http::default_client(addr)$;
+let a = http::get(client, "http://[addr]/raise")$;
+let b = http::get(client, a ~ "http://[addr]/badhdr")$;
+let c = http::get(client, b ~ "http://[addr]/badstatus")$;
+println("[a.status] [a.body]");
+println("[b.status] [b.body]");
+println("[c.status] [c.body]");
+sys::exit(sys::time::after_idle(duration:500.ms, c ~ 0));
+c

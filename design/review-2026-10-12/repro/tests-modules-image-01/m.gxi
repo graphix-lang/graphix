@@ -1,0 +1,1 @@
+val eq: fn(x: Array<'a>, y: Array<'a>) -> bool

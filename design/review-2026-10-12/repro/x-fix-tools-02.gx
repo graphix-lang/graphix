@@ -1,0 +1,17 @@
+// x-fix-tools-02: every timer the runtime cancels (Rt::cancel_timer aborts
+// its tokio task) comes back from JoinSet::join_next as JoinError::Cancelled,
+// which graphix-rt/src/gx.rs:242 `joined` logs at ERROR as "a runtime task
+// ended without replying". after_idle cancels on every re-arm, so a debounce
+// logs an error per keystroke; each cancel also wakes the loop for an empty
+// cycle.
+//
+// command: RUST_LOG=error timeout -s KILL 30 graphix --no-cache --log-dir /tmp/l design/review-2026-10-12/repro/x-fix-tools-02.gx
+// expected: 10, no error lines
+// observed: 10 lines "ERROR [graphix_rt::gx] a runtime task ended without
+//           replying: task N was cancelled" on stderr, then 10
+let clk = sys::time::timer(duration:5.ms, 10);
+let n = 0;
+n <- clk ~ n + 1;
+let d = sys::time::after_idle(duration:50.ms, n);
+sys::exit(sys::time::after_idle(duration:200.ms, d ~ 0));
+d

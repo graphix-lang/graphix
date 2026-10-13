@@ -31,6 +31,13 @@ let rec publish_all = |paths: Array<string>, i: i64| select paths {
 }
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] 'those past the new end sleep' is wrong.
+An activation past the new end is deleted, and re-reaching that depth later starts it
+fresh: a per-element `count(x)` over [1,2,3] -> [4,5,6] -> [7] -> [8,9,10] shows [4, 1,
+1] on the last update, not the [4, 3, 3] that sleeping would give. Probe:
+design/review-2026-10-12/repro/book-core-recursion-shrink.gx. Fix: say those past the
+new end are deleted (their publishes withdrawn), and a later regrow builds fresh ones.
+(book-core-08) -->
 Every path gets its own publish site, retained across cycles. When the
 array changes, the activations are fed again by position, and those
 past the new end sleep.

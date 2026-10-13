@@ -1,0 +1,6 @@
+let rec deep = |n: i64| -> i64 select n {
+  0 => 0,
+  n => 1 + deep(n - 1)
+};
+let clk = sys::time::timer(duration:100.ms, false)$;
+deep(clk ~ 100000)

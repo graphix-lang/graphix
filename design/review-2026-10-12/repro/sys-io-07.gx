@@ -1,0 +1,22 @@
+// sys-io-07: a stream read_exact cut off by an arm's sleep loses the bytes it already consumed
+// run: timeout -s KILL 30 graphix --no-cache sys-io-07.gx   (same with --no-fusion)
+// The client's read_exact(10) consumes "hello" and waits; the arm sleeps at 300ms
+// (the call is aborted), wakes at 600ms (restarted), the server writes "0123456789" at 900ms.
+// expected: "hello01234" (what the program prints with the 300ms deselect removed)
+// observed: "0123456789" -- the 5 bytes the aborted read consumed are gone
+use sys::io::{Read, Write};
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(l)$;
+let client = sys::tcp::connect(addr)$;
+let server = sys::tcp::accept(l, client)$;
+let w1 = Write::write_exact(server, buffer::from_string("hello"))$;
+let on = true;
+on <- sys::time::timer(duration:300.ms, false) ~ false;
+on <- sys::time::timer(duration:600.ms, false) ~ true;
+let w2 = Write::write_exact(sys::time::timer(duration:900.ms, false) ~ server, buffer::from_string("0123456789"))$;
+let got = select on {
+  true => buffer::to_string(Read::read_exact(client, u64:10)$)$,
+  false => never()
+};
+sys::exit(sys::time::timer(duration:1500.ms, false) ~ 0);
+got

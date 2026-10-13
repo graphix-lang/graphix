@@ -1,0 +1,17 @@
+// A seq step whose statement is `let f = <lambda>` lowers to items
+// [`let f = ..`, `let seqv_0 = any(pc ~! f, f)`] (seq.rs inserts the
+// lambda's bind at index 0), but the node-level Step takes its value
+// index as `catches.len()` (0 here), so the step completes on `f`'s
+// fire, not on `seqv_0`'s, and SeqStep.value (the value's name) is never
+// read. Today both fire at entry, so the output is right (r = 101..104);
+// `graphix --no-cache --expand` shows S0's first item is `let f`.
+// command: graphix --no-cache --expand x-invalid-states-02-seq-step-value.gx
+let go = sys::time::timer(duration:50.ms, 4);
+let n = count(go);
+let r = seq let t = n {
+  let f = |x: i64| x + t;
+  f(100)
+};
+println("r = [r]");
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+r

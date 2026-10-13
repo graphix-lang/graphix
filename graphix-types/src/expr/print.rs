@@ -63,6 +63,18 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
             (None, None) => (e, called),
         }
     }
+    // CR claude for claude: [bug/medium] reads_bare has no Lambda case, but seq_trigger
+    // reads the trigger with arithexp::arith(false), which accepts a lambda as an
+    // operator's last operand. So `seq x ~ |y: i64| y { 1 }` and `seq let a = x ~ |y:
+    // i64| y { a }` pass --check, then the printer writes `(x ~ |y: i64| y)`, the
+    // reparse holds an ExplicitParens the source did not, and `graphix fmt` (and LSP
+    // formatting) refuses with "formatter bug: the formatted text says something else".
+    // Fix: in the BinOp arm, accept a Lambda rhs whose body reads bare (or make the
+    // trigger head refuse a lambda operand, as it refuses a bare lambda), so printer
+    // and parser agree. Also widen bare_trigger in expr/test.rs to generate operator
+    // expressions (including `name ~ |x| name`), calls and postfix forms; today it
+    // never reaches the operator, call and postfix logic in trigger_needs_parens.
+    // probe: design/review-2026-10-12/repro/tests-expr-01.gx (tests-expr-01)
     fn reads_bare(e: &Expr) -> bool {
         match &e.kind {
             MapRef { .. } => false,
@@ -233,6 +245,12 @@ fn flat_width(x: &impl fmt::Display) -> usize {
 /// Whether the first line of `e`'s head fits on the current line: laid
 /// out alone where its width depends on a subexpression (a scrutinee, a
 /// source, a callee), else by its fixed width.
+// CR claude for claude: [doc-drift/low] The first doc paragraph above this function
+// (`The least the first line of e's multi-line layout can take`) describes head_min,
+// which has no doc of its own. The same thing happens further down: the `` `(e)`; a
+// decorated `e` stands on lines of its own inside `` line belongs to pretty_parens but
+// sits above ends_bodyless and merges into its doc. Move each paragraph above the
+// function it describes. (t-print-08)
 fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
     use ExprKind::*;
     let col = buf.col();
@@ -257,6 +275,18 @@ fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
             l.write_constraints(buf)?;
             write!(buf, "|")?;
         }
+        // CR claude for claude: [perf/medium] A seq reaches this fallback, and head_min
+        // counts only `seq {`, not the trigger. When the trigger does not fit,
+        // pretty_tail_bare lays out the whole seq body, finds that the first line
+        // overflows, rolls back and lays the body out again nested. That happens at
+        // every nesting level, so formatting time doubles per level: with --indent 2,
+        // depth 16 takes 1.1 s and depth 20 takes 7-13 s. A small indent in
+        // graphixfmt.json makes this reachable from the LSP's format-on-save. Give
+        // head_fits a Seq arm that writes the seq head (keyword, `let` binding,
+        // trigger, abort/flush clauses, ` {`) and measures its first line, as the
+        // Select arm does. Any other kind whose head_min understates its first line
+        // should get the same treatment. probe:
+        // design/review-2026-10-12/repro/t-print-02.gx (t-print-02)
         k => return Ok(col + head_min(k) <= buf.limit),
     }
     let fits = col + buf.first_line_width(start) <= buf.limit;
@@ -425,6 +455,17 @@ impl fmt::Display for Literal<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {
             Value::I64(v) => write!(f, "{v}"),
+            // CR claude for claude: [doc-drift/low] Only i64 and f64 keep a short
+            // spelling here. Every other literal goes through Value::fmt_ext, so
+            // `graphix fmt` turns f32:1e-45 into a 45-digit decimal, f32:3.4028235e38
+            // into a 39-digit one, a `+05:00` datetime into its UTC form and 0.1s into
+            // 100.ms. The values are equal, but the author's spelling is lost and the
+            // f32s overflow the width. CLAUDE.md ('What the formatter does normalize')
+            // lists only the i64/f64 bare printing. Print a finite f32 as `f32:{v:?}`
+            // as f64 is printed, and add the datetime and duration reprinting to that
+            // CLAUDE.md list (or keep their written text, as str_form does for
+            // strings). probe: design/review-2026-10-12/repro/t-format-resolver-06.gx
+            // (t-format-resolver-06)
             Value::F64(v) if v.is_finite() => write!(f, "{v:?}"),
             v @ Value::String(_) => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
             v => v.fmt_ext(f, &parser::VALUE_ESC, true),
@@ -1310,6 +1351,15 @@ impl PrettyDisplay for ApplyExpr {
             buf.kill_newline();
             return writeln!(buf, ")");
         }
+        // CR claude for claude: [bug/low] With no arguments this writes `(`, a newline
+        // and then `)` on its own line. So whenever a zero-argument call is laid out in
+        // pretty mode, `graphix fmt` emits `f(` followed by a line holding only `)`.
+        // Examples: an 84-character function name inside an array at width 90, or `let
+        // x = f();` at a narrow width. The test `whitespace_in_empty_delimiters` claims
+        // the printer never emits that loose form. Fix: when `args` is empty, write
+        // `()` on the function's line and return, as `pretty_print_exprs` does for an
+        // empty list. Also add a `to_string_pretty(0)` check of `f()` to that test.
+        // Probe: design/review-2026-10-12/repro/tests-parser-03.gx (tests-parser-03)
         writeln!(buf, "(")?;
         buf.nested(|buf| {
             for (i, (name, e)) in args.iter().enumerate() {
@@ -1334,6 +1384,16 @@ impl PrettyDisplay for ApplyExpr {
 
 impl Arg {
     /// `[#]pattern[: T]`, what stands before a default.
+    // CR claude for claude: [bug/low] An argument's `: T` is always written flat, as
+    // are `@args: T`, ` throws T`, `cast<T>(`, `never<T>`, `with(e: T)`, `catch(e: T)`
+    // and a select arm's `T as`. A long struct or union annotation therefore prints
+    // 109-117 columns at width 90, even though Type has a multi-line layout that
+    // pretty_returns already uses through Ret. A lambda whose only overflow is its
+    // `throws` clause also lists its arguments one per line, which shortens nothing.
+    // Route every annotation through one helper that writes the type flat when it fits,
+    // and otherwise uses fmt_pretty_inner + kill_newline with the Ret hug rule. The
+    // pretty path then needs a PrettyBuf variant of this head. probe:
+    // design/review-2026-10-12/repro/t-print-05.gx (t-print-05)
     fn write_head(&self, f: &mut impl Write) -> fmt::Result {
         if self.kind.is_labeled() {
             write!(f, "#")?;
@@ -1529,10 +1589,31 @@ impl PrettyDisplay for SelectExpr {
                 if let Some(tp) = &pat.type_predicate {
                     write!(buf, "{tp} as ")?;
                 }
+                // CR claude for claude: [bug/low] The pattern is kept flat when pattern
+                // + ` =>` fits, but when the arm has a guard, ` if <guard>` is written
+                // between them, so the guard's width never enters the decision. An arm
+                // such as `` `Aaaa(bbb, ccc, ddd) if bbb => 1 `` prints as one
+                // 111-column line at width 90. Measure pattern + ` if <guard>` + ` =>`
+                // together. When that does not fit, lay the pattern out over lines, or
+                // move `if <guard>` to its own nested line. probe:
+                // design/review-2026-10-12/repro/t-print-04.gx (t-print-04)
                 pretty_pattern_then(buf, &pat.structure_predicate, " =>")?;
                 write!(buf, " ")?;
                 if let Some(guard) = &pat.guard {
                     write!(buf, "if ")?;
+                    // CR claude for claude: [bug/medium] A decorated guard prints its
+                    // comment straight after `if ` (`a if // c`), which does not parse.
+                    // `graphix fmt` and LSP formatting then refuse the whole file as a
+                    // formatter bug. Five sites share the mistake: they write inline
+                    // text and then call a child's `fmt_pretty`, which writes
+                    // `write_leading` mid-line. The five are this guard, the `until `
+                    // arm, the seq `abort(`/`flush(` clauses, `pretty_scrutinee` after
+                    // `select `, and a dynamic module's `source `. Fix: add one helper
+                    // that continues on the current line when `e.dec` is `None`, and
+                    // otherwise ends the line and lays `e` out nested, as
+                    // `pretty_tail`'s decorated branch does. Use it at all five sites.
+                    // For `abort(`/`flush(` use `pretty_parens`'s decorated layout.
+                    // probe: design/review-2026-10-12/repro/t-print-01.sh (t-print-01)
                     buf.nested(|buf| guard.fmt_pretty(buf))?;
                     buf.kill_newline();
                     write!(buf, " ")?;
@@ -1587,6 +1668,13 @@ fn ends_bodyless(e: &Expr) -> bool {
 /// A select's scrutinee; one ending in a bodyless impl gets the impl's
 /// empty body, which the arms' `{` would otherwise be read as.
 fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
+    // CR claude for claude: [readability/low] The scrutinee is laid out with no
+    // nesting, so when it breaks (an operator chain) its continuation line starts at
+    // the column of the `let` that holds the select and reads like a new statement:
+    // `let r = select aaa +` / `bbb {`. The seq trigger in fmt_pretty_inner's Seq arm
+    // does the same. Lay both out inside buf.nested(..), as the arm guard already is,
+    // so continuation lines indent one step past the head. probe:
+    // design/review-2026-10-12/repro/t-print-07.gx (t-print-07)
     arg.fmt_pretty(buf)?;
     buf.kill_newline();
     if ends_bodyless(arg) {
@@ -1671,6 +1759,16 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, ")")
             }
             Block { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";", false),
+            // CR claude for claude: [structure/low] The seq head (keyword, `let`
+            // binding, parenthesised trigger, the abort/flush clause loop with its
+            // `first` flag, the trailing space) is written here and again in Expr's
+            // Display Seq arm. The two copies differ only in how the trigger and clause
+            // expressions are emitted. A new clause must be added in both, and a missed
+            // one shows up only as a formatter reparse refusal. Write the head once,
+            // generic over the writer, with the sub-expression emitter passed in: `{e}`
+            // for flat, fmt_pretty + kill_newline for pretty. head_fits can then
+            // measure a seq's first line through the same writer (t-print-02).
+            // (t-print-09)
             Seq(s) => {
                 let SeqExpr { kind, trigger, abort, body } = &**s;
                 write!(buf, "{} ", if kind.queued() { "seqq" } else { "seq" })?;

@@ -1,0 +1,9 @@
+// x-fix-fusion-03: a region whose type is null never fuses (freeze_region_return
+// refuses AbiKind::Null/Unit) and records no failure, so #[native] reports
+// "did not fully fuse to native code" with no reason at all, and FusionStats.failed
+// is empty. `graphix --no-cache` on this file:
+//   #[native] expression did not fully fuse to native code
+let f = |x: i64| #[native] println(x + 1);
+let g = |x: i64| #[native] select x { 0 => null, _ => null };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(f(3), g(4))

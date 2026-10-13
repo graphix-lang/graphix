@@ -366,6 +366,14 @@ run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
 
 // A decode writes its targets at each fire of its arguments, never again
 // when its arm is re-entered with them standing, asleep or not.
+// CR claude for claude: [test-gap/low] The comment says this covers re-entry 'asleep or
+// not', but buffer::decode is `Effect::Io`, and an arm holding an Io call always
+// sleeps. Both r1 and r2 sleep, so r2 (the `once(c)` arm) repeats r1 and the not-asleep
+// case does not exist. Drop r2 and say what is pinned: the arm sleeps, and a wake does
+// not write again. In DECODE_UNFINISHED_WRITES_NOTHING below, the decode's arguments
+// never fire again and `len` is never written, so 'and nothing again' cannot fail.
+// Write `len` at a later step and assert what the decode's targets then hold, or drop
+// that half of the claim. (tests-lib-b1-05)
 const DECODE_WRITES_ONCE_PER_FIRE: &str = r#"{
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };

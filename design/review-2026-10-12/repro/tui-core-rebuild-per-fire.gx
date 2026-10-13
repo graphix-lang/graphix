@@ -1,0 +1,15 @@
+// Run in a pty. reports climbs with ticks: an equal child value refiring rebuilds the subtree.
+use tui::{
+  block::block,
+  input_handler::{Event, input_handler},
+  text::text
+};
+let tick = sys::time::timer(duration:100.ms, true);
+let ticks = 0;
+ticks <- tick ~ ticks + 1;
+let sz: [tui::Size, null] = null;
+let reports = 0;
+reports <- sz ~ reports + 1;
+tui::exit(select ticks { 10 => null, _ => never() });
+let view = select tick { _ => block(#size: &sz, &text(&"reports [reports] ticks [ticks]")) };
+input_handler(#handle: &|e: Event| e ~ `Continue, &view)

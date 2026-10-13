@@ -37,6 +37,18 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // any other key type stores each value tagged by its type and
 // self-delimiting.
 
+// CR claude for claude: [bug/medium] db_cursor_new and the subscription's watch encode
+// #prefix with encode_key. For a tree whose key type is not a single primitive (e.g.
+// Tree<[string, i64], _>), a string prefix is written tagged with write_delimited's `0
+// 0` end marker. The prefix then matches only the exact key: #prefix "aa" finds "aa1"
+// in Tree<string, _> but nothing in Tree<[string, i64], _>, and the interfaces just say
+// "filtering by key prefix". Fix: add an encode_prefix that leaves off the outermost
+// string/bytes terminator, so a tagged string prefix is a byte prefix of every key it
+// should match. Then document what a prefix means for the other key types: an exact key
+// for fixed-width ones, and, unless an array's trailing 0 is also dropped, an exact key
+// for arrays and tuples. A null #prefix on a nullable key type means "no filter", which
+// is worth saying in cursor.gxi and subscription.gxi too. probe:
+// design/review-2026-10-12/repro/db2-04.gx (db2-04)
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {
@@ -304,6 +316,20 @@ fn read_payload(t: Typ, data: &mut &[u8], depth: usize) -> Result<Value> {
         }
         Typ::Duration => {
             let secs = unsigned!(u64, 8);
+            // CR claude for claude: [bug/low] The key decoder trusts stored bytes that
+            // only a corrupted or foreign db file could get wrong. Here, nanos >=
+            // 1_000_000_000 is not refused: Duration::new folds the extra into secs, so
+            // it decodes a different key than the bytes say, and it panics when secs is
+            // near u64::MAX. read_decimal accepts any exponent byte, but a valid
+            // Decimal never has e above 29. With e = 127, the `while scale < 0 {
+            // mantissa *= 10 }` loop multiplies 126 times. That panics with overflow
+            // checks on (dev and soak), and in release it wraps into a mantissa
+            // try_from_i128_with_scale may accept as a wrong key. Cursors and
+            // subscriptions decode stored keys, and a panic in a subscription's watch
+            // task ends that subscription silently. Fix: bail with "undecodable key"
+            // when nanos >= 1_000_000_000, and in read_decimal when the exponent is
+            // outside what write_decimal can produce (scale < -(29 - n) or scale > 28),
+            // or use checked_mul. (x-panics-06)
             Value::Duration(Arc::new(Duration::new(secs, unsigned!(u32, 4))))
         }
         Typ::Error => Value::Error(ValError::new(read_tagged(data, depth + 1)?)),

@@ -123,6 +123,16 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     // observable. Runaways are forced into the tail: an unobserved one
     // spins in cycles that never emit, so the active-cycle budget never
     // trips.
+    // CR claude for claude: [doc-drift/low] The comment above says runaways are forced
+    // into the tail, and the comment on the tail says 'force every runaway in'. Neither
+    // is true: runaways return early through gen_runaway_burst, and this function makes
+    // none. Delete both runaway sentences. In design/graphix_fuzz.md, the
+    // reactive-generation paragraph's list of ceremony body steps omits Write (a call
+    // to a callee that writes acc, then a read) and Deref, which STEP_KINDS draws; add
+    // them. That paragraph also says a body that can stall stays out of the
+    // always-firing tail set, but a step reading a take/skip/filter/once binding can
+    // stall and is still marked reliable. Either mark such a ceremony unreliable or
+    // qualify the sentence. (fuzz-gen-b-10)
     let mut fires_per_injection: Vec<String> = Vec::new();
     let mut ndyn = 0usize;
     let n_templates = 1 + rng.below(3);
@@ -195,6 +205,16 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     }
     // tail: start from an input-driven result, mix in other visible
     // scalars, force every runaway in
+    // CR claude for claude: [test-gap/medium] The reactive lane never calls observe(),
+    // which the plain lane uses so that a wrong value in a statement the tail never
+    // reads diverges on stdout. The tail reads one fires_per_injection result plus at
+    // most two random i64s. Most slept_arm selects, cross_cycle builtins
+    // (uniq/once/take/skip/filter), dyn_reload results and sync lets are therefore read
+    // by nothing. A JIT or node-walk bug in a slept arm's wake or a restart builtin's
+    // reset agrees with itself unless it crashes. Fix: push super::observe(&ctx, 0)'s
+    // printlns into stmts before the tail, skipping the in* inputs; printing per fire
+    // also gives the trace oracle a per-cycle view of each template. probe:
+    // design/review-2026-10-12/repro/fuzz-gen-b-03.sh (fuzz-gen-b-02)
     let tail = {
         let i64s: Vec<String> =
             ctx.vars_of(&I64).into_iter().map(|s| s.to_string()).collect();
@@ -510,6 +530,15 @@ fn slept_arm(
 /// the implementation. `srcs[in % n]$` is total for any injected i64.
 /// Not pushed into `fires_per_injection`: two injections can select the same source,
 /// and an unchanged source need not re-fire downstream.
+// CR claude for claude: [structure/low] This builds the same `let s = mod X dynamic {
+// sandbox whitelist ..; sig {..}; source .. }` statement and `select s { error as _ =>
+// .., null as _ => X::f(..) }` consumer as modules::gen_dynamic_module. Only the
+// modules copy picks the raw-string hash count from the source; this one always writes
+// `r#".."#` and would emit an unparsable program if a body ever contained `"#`. The
+// burst clock `let k = input ~ i64:0; k <- select k { s if s < N => s + i64:1, _ =>
+// never() }` is also written twice in this file (the ceremony and the flush clock).
+// Fix: one raw_string(src) helper and one dynamic-module statement builder in
+// generate/mod.rs used by both lanes, and one burst-clock helper. (fuzz-gen-b-09)
 fn dyn_reload(
     ctx: &mut GenCtx,
     rng: &mut Rng,

@@ -1,0 +1,7 @@
+// ide-tooling-09: a raw string ending in a backslash leaves Emacs inside a string
+// command: emacs --batch, load ide/editors/emacs/graphix-mode.el, graphix-mode (or graphix-ts-mode) on this file, goto point-max, (nth 3 (syntax-ppss))
+// expected: nil (graphix --check accepts the file)
+// observed: 34 in both modes, so the rest of the buffer reads as a string
+let r = r"C:\";
+let x = 1;
+x

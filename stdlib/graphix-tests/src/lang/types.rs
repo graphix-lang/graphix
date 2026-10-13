@@ -537,6 +537,12 @@ const CAST_LET_WIRE_SHAPE: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] The fixture throws `v` away and asserts only the
+// constant 42, and the f32 twin below does the same. A wrong value or a wrong
+// marshalling of the let-bound fallible cast (a bare f64, an error, a wrong number)
+// would still pass. Only a panic or a refusal fails these tests. Fix: return `(v, 42)`
+// and pin v as f64:-9223372036854775808. (every mode gives that today), and in the twin
+// return `(v, cast<f32>(f64:1.5)$)` with v pinned as f32:3. (tests-types-06)
 run!(cast_let_wire_shape, CAST_LET_WIRE_SHAPE, |v: Result<&Value>| match v {
     Ok(&Value::I64(42)) => true,
     _ => false,
@@ -581,6 +587,14 @@ run!(cast_reads_the_tag, CAST_READS_THE_TAG, |v: Result<&Value>| {
 // whatever the source: a narrower integer, a float (its fraction
 // dropped) or a string; a union target takes the first member that
 // holds it.
+// CR claude for claude: [doc-drift/low] "A union target takes the first member that
+// holds it" means the first member in canonical order: Type::cast_int tries a primitive
+// set in bit order. cast<[i64, u8]>("3")$ is u8:3 whichever order the union is written
+// in. This comment and the cast rule in CLAUDE.md both read as written order, and this
+// fixture writes [u8, i64], which is already canonical, so it cannot tell the two
+// readings apart. Fix: say "first in canonical order (narrowest integer first)" in both
+// places, and add a row written out of canonical order, cast<[i64, u8]>("3")$ giving
+// u8:3. (tests-types-07)
 const CAST_TO_AN_INTEGER_IS_EXACT: &str = r#"
 {
   let big = 300;
@@ -1505,6 +1519,21 @@ const TRAIT_BESIDE_WITNESS: &str = r#"{
 }"#;
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/medium] This table and the other eval-based tables in
+// this file and in lang/inference.rs (a_signature_types_its_calls,
+// concrete_targets_are_known_where_they_settle, function_bounds_admit_only_functions,
+// discernible_refuses_one_runtime_form, singleton_open_members_merge,
+// comparison_operands_are_one_type, arithmetic_operands_are_one_type,
+// recursive_fn_tail_rejected_at_every_depth, annotations_the_checker_asks_for,
+// rigid_type_variables_survive_a_cell_merge) go through testing::eval. It builds in
+// Mode::Jit only and never runs check_fixture. None of these programs is held to the
+// rule that the check refuses exactly when the build does, and the accepted ones never
+// run under interp, par or jit_par. If CheckOnly dropped a rule such as
+// Type::rep_collision, every refusal here would still pass, and so would --check and
+// the LSP. Fix: give eval a table-driven twin that runs check_fixture (verdicts_agree)
+// and loops over Mode::ALL against the expected value, or move the rows to run!
+// fixtures with refused(..) predicates. The `!msg.contains("in the instance of")` test
+// in a_signature_types_its_calls then becomes redundant. (tests-types-04)
 async fn unsound_acceptances_are_refused() -> Result<()> {
     for (src, refusal) in [
         (NON_CONTRACTIVE, "refers back to itself"),

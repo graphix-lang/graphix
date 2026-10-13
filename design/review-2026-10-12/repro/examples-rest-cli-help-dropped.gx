@@ -1,0 +1,4 @@
+let r = args::parse(args::command(#name: "example", [args::flag(#name: "verbose", #short: "v")]));
+println("[r]");
+let x = r$;
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

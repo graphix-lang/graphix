@@ -1,0 +1,11 @@
+// Run under a memory cap: `printf 'x\n%.0s' $(seq 10000000) > /tmp/l.txt` (20 MB, 10M lines).
+// expect: memory bounded by the reader's channel (a few 64 KiB chunks), as with lines_batched
+// actual: the whole file is read ahead into the runtime's per-variable write queue,
+// ~100 bytes per line (> 1 GiB for 20 MB), delivered one line per cycle
+use sys::io::Lines;
+let f = sys::fs::open(`Read, "/tmp/l.txt")$;
+let l = Lines::lines(f)$;
+let n = 0;
+n <- l ~ n + 1;
+sys::exit(sys::time::timer(duration:8.s, false) ~ 0);
+sys::time::timer(duration:1.s, true) ~ n

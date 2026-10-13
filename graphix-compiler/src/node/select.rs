@@ -81,6 +81,23 @@ impl LazyArmFacts {
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
         LazyArmFacts {
+            // CR claude for claude: [bug/medium] The tracker is built from each arm's
+            // refs at the first update, and a dynamic call site's refs are only its
+            // function node and arguments. So a variable captured by the closure the
+            // site will dispatch (in1 in `|x| count(in1) + x`) is untracked until the
+            // arm has been selected and deselected once (`deselect` refreshes it). A
+            // fire of that variable while a never-selected arm sleeps is lost at the
+            // arm's first selection. The static twin `g(0)` catches it up, and so does
+            // the same dynamic arm at its second selection. The outcome depends on
+            // dispatch kind and history, which breaks the wake catch-up invariant (each
+            // event influences the arm exactly once). Fix: make the tracked set cover
+            // what a dynamic site can reach before dispatch, e.g. by tracking the free
+            // refs of the lambda value currently delivered to the site's function node
+            // (re-read when that value changes). Pin the static/dynamic first-selection
+            // pair. x-engine-firing-05 (function value bottom while the capture fires)
+            // has the same root. probe:
+            // design/review-2026-10-12/repro/x-engine-firing-03.sh (fuzz-schedule form:
+            // x-engine-firing-01.gx) (x-engine-firing-03)
             tracked: TrackedFires::new(&ctx.env, arms.len(), |i, r| {
                 arm_refs(&arms[i], r)
             }),
@@ -307,6 +324,13 @@ fn type_test<R: Rt, E: UserEvent>(p: &PatternNode<R, E>) -> Option<&Type> {
     p.explicit_type_predicate.then_some(&p.type_predicate)
 }
 
+// CR claude for claude: [readability/low] The doc comment that states this function's
+// rule (a refutable atom that tests what an earlier unguarded one does, under the same
+// type test, matches nothing new) sits on `type_test` above, a one-line accessor for
+// the arm's written type test. `check_repeats` has no doc. A reader of `type_test` gets
+// a dead-arm rule, and the refusal is not explained where it is made. Move the comment
+// onto `check_repeats`. Either give `type_test` no comment (its body says what it does)
+// or inline it into its one caller here. (c-select-seq-03)
 fn check_repeats<R: Rt, E: UserEvent>(
     env: &Env,
     arms: &[(PatternNode<R, E>, Node<R, E>)],
@@ -365,6 +389,19 @@ impl Reach {
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Result<Self> {
         let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
+        // CR claude for claude: [bug/high] `wildcard` is decided here from
+        // `matches_every` on each arm's predicate before the arm loop in
+        // `Select::typecheck0_with` narrows it. An all-bind `(a, b)` over `[(i64,
+        // string), (string, i64)]` probes as matching everything. Its cells then narrow
+        // to (i64, string), but `Reach::exhausted` still accepts the select on the
+        // stale flag. At run time ("s", 1) matches no arm ("a coverage hole in the
+        // check") and the select is bottom, in both engines. `{x, y}` over two struct
+        // types does the same. Add a `null` member to the union and the same select is
+        // refused, so the verdict depends on the unnarrowed probe. Fix: set `wildcard`
+        // in `Reach::arm` from its post-narrowing `wild && unguarded`, and keep the
+        // Reach::new probe only for the settle decision. See also c-pattern-04, the
+        // narrowing to the first member. probe:
+        // design/review-2026-10-12/repro/c-pattern-05.gx (c-pattern-05)
         let mut wildcard = false;
         for (pat, _) in arms.iter() {
             match pat.matches_every(env, scrut)? {
@@ -479,6 +516,20 @@ impl Reach {
                     )?
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
+                // CR claude for eric: [bug/low] A slice arm claims its length on the
+                // ladder only when array_len_coverage holds, which means every element
+                // pattern is irrefutable. Element literals and variant heads are never
+                // pooled per length. `[] => .., [true] => .., [false] => .., [_, _, ..]
+                // => ..` over Array<bool> is refused with "the slice arms leave array
+                // length 1 uncovered", and so are `[(true, x)]` and `[(false, x)]`.
+                // CLAUDE.md says bool literals and variant heads pool per position
+                // inside composite patterns, and says nothing about this exception.
+                // Choose one: (a) pool each exact-length slice arm as a fixed-arity
+                // group keyed by (kind, len), the way Shape::Tuple is, and claim that
+                // length on the ladder when its group completes; or (b) state the limit
+                // in CLAUDE.md's Sets and coverage section. probe:
+                // design/review-2026-10-12/repro/x-typecheck-patterns-07.gx
+                // (x-typecheck-patterns-07)
                 if unguarded && sp.array_len_coverage(env, explicit).is_some() {
                     let mut done: SmallVec<[Type; 2]> = SmallVec::new();
                     for l in self.ladders.iter_mut() {
@@ -555,6 +606,27 @@ impl Reach {
         if Type::union_exact(env, &covered)?.contains(env, scrut)? {
             return Ok(());
         }
+        // CR claude for claude: [readability/low] The hint comes from the first
+        // incomplete ladder, even one no slice arm ever claimed. With only type-test
+        // arms (`Array<i64> as x`, `Array<string> as y` over Array<[i64, string]>), the
+        // refusal still says "the slice arms cover finitely many lengths — ... also
+        // needs a rest pattern". Over [Array<i64>, Array<string>], where the `[x, ..]`
+        // arm was narrowed to Array<i64>, it asks for a rest pattern the select already
+        // has. Fix: give the hint only for a ladder that some arm claimed (non-empty
+        // exacts or a rest), and name that ladder's member in it, e.g. "the slice arms
+        // cover finitely many lengths of Array<string>". probe:
+        // design/review-2026-10-12/repro/x-typecheck-patterns-08.gx
+        // (x-typecheck-patterns-08)
+        // CR claude for claude: [bug/low] `open` takes the first incomplete ladder, but
+        // a ladder exists for every array or list member of the scrutinee, including
+        // one a type-test arm (`Array<i64> as a`) covers whole. So a select with no
+        // slice arm at all, missing only `null`, is refused with '(the slice arms cover
+        // finitely many lengths — ... needs a rest pattern or a wildcard)', which sends
+        // the user after patterns they never wrote. Fix: consider only a ladder some
+        // arm claimed (exacts or a rest) whose member the uncovered remainder
+        // `self.atype` can still match, and otherwise add no gap text. Probe:
+        // design/review-2026-10-12/repro/book-core-11.gx. Also reported as
+        // (x-rerun-5-07). (book-core-11)
         let open = self.ladders.iter().find(|l| !l.complete()).map(|l| (l.rest, l.gap()));
         format_with_flags(PrintFlag::DerefTVars, || {
             let gap = match open {
@@ -860,6 +932,20 @@ impl Shape {
             StructPatternNode::Variant { tag, all: _, binds } => {
                 Some(Shape::Variant(tag.clone(), binds.len()))
             }
+            // CR claude for claude: [bug/low] Shape::Struct holds only the pattern's
+            // named fields, and Shape::fits needs them to equal the member's full field
+            // list. So a partial struct pattern (`{a: true, ..}`) finds no member and
+            // LiteralPool::claim returns Unpooled. `{a: true, ..}` and `{a: false, ..}`
+            // over {a: bool, b: i64} are refused with "missing match cases", although
+            // CLAUDE.md says bool literals pool per position inside composite patterns.
+            // The same arms with every field named are accepted, and so are variant
+            // heads in the partial pattern. Fix: key a struct group by the scrutinee
+            // member it fits, where fits means the pattern's names are a subset of the
+            // member's fields. Then arms naming different subsets share one group.
+            // pooled_leaves::children already places each named field by its index in
+            // the member. probe:
+            // design/review-2026-10-12/repro/x-typecheck-patterns-06.gx
+            // (x-typecheck-patterns-06)
             StructPatternNode::Struct { all: _, binds } => {
                 let mut names: SmallVec<[ArcStr; 8]> =
                     binds.iter().map(|(n, _, _)| n.clone()).collect();
@@ -883,6 +969,31 @@ impl Shape {
             }
             (Shape::Abstract(id), Type::Abstract { id: t, .. }) => id == t,
             _ => false,
+            // CR claude for claude: [bug/medium] c-select-seq-06 still reproduces for
+            // partial struct patterns: they count for exhaustiveness only. fe898ea9 says
+            // one walk (Reach) decides narrowing, dead arms and exhaustiveness. For partial
+            // struct patterns the three still disagree. `Shape::of` keys a struct pattern
+            // by its bound field names (select.rs), and `Shape::fits` (886-890) requires
+            // those names to equal the member's full field list. So `{d: `A, ..}` over `{c:
+            // string, d: [`A, `B]}` never pools (Claim::Unpooled), and `Reach.atype` keeps
+            // the struct member. `Reach::exhausted` still passes through its second test,
+            // `union_exact(covered).contains(scrut)`, which the arms' `sp.covers` atoms
+            // satisfy. Net effect: the select is exhaustive, but a later bind is not
+            // narrowed, and an arm after full coverage is not reported dead. This is the
+            // struct case the old c-select-seq-06 repro lists. Writing every field (`{d:
+            // `A, c}`) works. Failure: `type S = {c: string, d: [`A, `B]}; let s: [i64, S]
+            // = 3; select s { {d: `A, ..} => 10, {d: `B, ..} => 20, n => n + 1 }` is
+            // refused with "cannot compute [i64, S] + i64": n is not narrowed. `select s {
+            // {d: `A, ..} => 10, {d: `B, ..} => 20 }` over `s: S` is accepted as
+            // exhaustive, yet appending `_ => 0` is accepted too, not refused as
+            // unreachable (the tuple analogue is refused). Over `[S, null]`, `v => select v
+            // { null => 0 }` after the two arms is refused: "no arm covers S". Fix: Make
+            // Shape::Struct for a partial pattern fit any member that has its named fields:
+            // pool against the member and add Ignore leaves for the unnamed fields.
+            // Alternatively, have `Reach::cover` subtract what `covered` proves, so
+            // exhaustiveness, narrowing and dead arms read one set. Add a
+            // lang::select::coverage_* pin with a partial struct pool followed by a bind.
+            // Unverified: the reviewer's report, not checked by a verifier. (x-rerun-2-04)
         }
     }
 
@@ -1099,6 +1210,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let woke = slept.take();
         // Per-arm guard production tags; `None` = unguarded. Only guards
         // the chain consults contribute fires or bottomness.
+        // CR claude for claude: [perf/low] guard_tags spills to the heap on every
+        // update of a select with more than 32 arms. Then every arm's pat.update runs,
+        // which returns None for an unguarded arm, and EmissionPlanes::new walks the
+        // result again. All of this happens on quiet cycles too, so a large keymap or
+        // state-machine select pays O(arms) plus an allocation per event. An idle
+        // 1600-arm unguarded select costs about 107 us per unrelated cycle against 22
+        // us at 100 arms (probe: design/review-2026-10-12/repro/x-perf-runtime-05.py
+        // with `s`). Precompute the guarded arms' indices in LazyArmFacts and tick only
+        // those. Record their tags sparsely or as bitsets beside consulted_guard_mask,
+        // so an all-unguarded select does no guard work and allocates nothing.
+        // (x-perf-runtime-05)
         let mut guard_tags: SmallVec<[Option<Tag>; 32]> =
             SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx);
@@ -1108,6 +1230,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // shape admits the value: the checker narrowed the binds by that
         // shape, and a guard fused to the narrowing must never see the
         // value an earlier arm claimed.
+        // CR claude for eric: [bug/high] This loop binds the scrutinee into every
+        // guarded arm whose own shape admits the value, including arms below one that
+        // already claimed it with a literal or a true guard. So a guard the chain never
+        // consults still runs over that value, and its effects happen. Examples:
+        // `select x { -1 => .., n if check(n)? => .., _ => .. }` raises to the
+        // enclosing catch each time x is -1, and `select x { 0 => .., n if 10 / n > 5
+        // => .., _ => .. }` logs "attempt to divide by zero". The design's own Ruling
+        // 1a example (`[x, y] => .., [x, y, tail..] if x / y == 0 => ..` over a pair
+        // with y = 0) logs every cycle too. The kernel's guard prologue in
+        // `emit_select_chain` does the same deliberately, so both engines agree
+        // (graphix-fuzz check AGREE), and the comment above this loop states an
+        // invariant that does not hold. Ruling needed: a guard below the claim point
+        // either keeps ticking with no bind delivered, which needs a claimed flag that
+        // follows the consult chain here and a not-yet-claimed mask on the prologue's
+        // binds in the kernel, or its effects are declared part of the semantics and
+        // design/activation_state.md says so. probe:
+        // design/review-2026-10-12/repro/c-select-seq-01.gx (and c-select-seq-01b.gx
+        // with --no-fusion). (c-select-seq-01)
         for ((pat, _), shallow) in arms.iter_mut().zip(shallow.iter()) {
             let saved = match arg.value.as_ref() {
                 Some(v)
@@ -1238,6 +1378,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // non-recursive arm, with nothing to pause, enters under
                 // `init` alone.
                 let view = if sleep_on_deselect[i] { View::Wake } else { View::Birth };
+                // CR claude for claude: [bug/medium] An arm's tracked inputs come from
+                // `TrackedFires::new` at the select's first update and are refreshed
+                // only in `deselect`. `Deref::refs` names its target only after the
+                // Deref's first update. So an arm selected for the first time reads
+                // `*r`'s target live without consuming that target's fire bit. The bit
+                // stays pending, and the other arm gets a phantom FIRED catch-up when
+                // it wakes. In the probe, cnt ticks at the wake although the false arm
+                // already read b. Fix: refresh the arm's tracked refs
+                // (`tracked.refresh(&ctx.env, i, ..)`) right after its first evaluation
+                // here, and do the same in seq_machine, which builds its tracker the
+                // same way. A moving reference that changes target later needs a
+                // refresh when a Deref's address moves, or its reads keyed under the
+                // reference's own cell. probe:
+                // design/review-2026-10-12/repro/c-bind-06.gx (c-bind-06)
                 let (t, v) =
                     ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i].1, i, ctx));
                 planes.emit(t, v)
@@ -1459,6 +1613,20 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         // A partial struct pattern infers only its named fields;
         // complete each inferred predicate against the typed scrutinee
         // before coverage or dispatch reads it.
+        // CR claude for claude: [bug/low] Every arm's partial struct pattern is
+        // completed against the whole scrutinee type, before Reach narrows anything.
+        // StructurePattern::unique_completion therefore counts members that an earlier
+        // unguarded arm has already consumed. Example: `select v { {x, y} => x, s@ {x,
+        // ..} => x + 10 }` over `[{x: i64, y: string}, {x: i64, z: f64}]` is refused
+        // with "matches more than one member", although only the second member reaches
+        // arm 2. The same happens in nested positions (`` `A({x, ..}) ``, `Q(s@ {x,
+        // ..})`), where the suggested `T as` annotation cannot be written. Fix:
+        // complete each arm against `reach.atype` as the walk reaches it. Reach::new
+        // reads every arm's type_predicate, so one way is to keep this pass, defer an
+        // arm whose completion is ambiguous here, and complete it again inside the arm
+        // loop against what reaches it. After that, reword the ambiguity rule in
+        // book/src/core/select.md to say "members that reach the arm". probe:
+        // design/review-2026-10-12/repro/t-parser-b-03.gx (t-parser-b-03)
         if let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ().clone();
             for ((pat, body), (spec_pat, _)) in self.arms.iter_mut().zip(se.arms.iter()) {
@@ -1483,9 +1651,113 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // walk.
             let reaching = reach.atype.clone();
             let narrowed = pat.type_predicate.any_as_tvar();
+            // CR claude for claude: [bug/high] When what reaches an arm is a union of
+            // several members with the same shape, this containment binds an inferred
+            // predicate's open cells to ONE member. Example: `(x, y)` over `[(i64,
+            // string), (string, i64)]` becomes `(i64, string)`. `Reach::new` has
+            // already counted the arm as a wildcard (`matches_every` over the unbound
+            // predicate), so the check accepts the select, but the runtime type test
+            // admits only that member. The other member's values match no arm in both
+            // engines ("no arm matches ... a coverage hole in the check"), and an
+            // enclosing `array::map` produces nothing. The struct form `{x, y}` fails
+            // the same way. The variant form `` `A(x, y) `` and abstract and slice
+            // patterns are refused instead, with a wrong "missing match cases" message.
+            // Fix: narrow an inferred predicate whose structure matches anything to the
+            // union of the reaching members its shape covers, not to one unified
+            // member. Then compute the wildcard from the narrowed predicate in
+            // `Reach::arm`, so coverage and the runtime test read the same type. probe:
+            // design/review-2026-10-12/repro/x-typecheck-patterns-02.gx
+            // (x-typecheck-patterns-02)
+            // CR claude for claude: [bug/high] Over a scrutinee that is a union of
+            // collections or tuples, this contains binds a slice's element cells, or a
+            // tuple's position cells, to the first reaching member. Those cells are
+            // shared with the arm's run-time type predicate, so the arm then rejects
+            // every other member. `[x]` over [Array<i64>, Array<string>] sends ["s"] to
+            // the next arm in both engines (`[_]` matches it). `[h, rest..]`/`[]`, the
+            // List analogue, and `(a, b)` with a null arm are refused as
+            // non-exhaustive, because Reach::arm's ladder claim and coverage see only
+            // the first member. Fix: bind each element/position cell to the union of
+            // its parts over every reaching member the pattern's shape matches, keep
+            // the run-time predicate admitting all of them, and make Reach::arm claim
+            // every matching member's ladder. Same cause as the capture finding
+            // c-pattern-03. probe: design/review-2026-10-12/repro/c-pattern-04.gx
+            // (c-pattern-04)
+            // CR claude for claude: [bug/high] When `reaching` is a union, `Set ⊇
+            // narrowed` commits the predicate's cells to the first member that admits
+            // them (`set_commit`). So the arm's binds are typed from one member while
+            // its run-time test admits every member. Over `p: [(i64, string), (string,
+            // i64)]`, `q@ (_, _) => q.0` gives q the type (i64, string). `let r: i64 =
+            // g(("s", 1))` then checks, the node-walk yields "s" and the JIT yields 0
+            // (probe: design/review-2026-10-12/repro/c-pattern-03.gx; with `q.0 + 1`,
+            // graphix-fuzz check reports a DIVERGENCE). The same commit hits a cell
+            // inside the arm's own predicate: `(a, _) => a` over that union passes the
+            // exhaustiveness check, but its run-time predicate becomes (i64, _), and
+            // ("s", 1) reaches "no arm matches: a coverage hole in the check". Fix:
+            // narrow per reaching member. For each member the predicate could match,
+            // compute that member's part on a copy, then bind each capture and each
+            // predicate cell to the union of those parts, instead of letting one
+            // `contains` over the Set commit to a single member. (c-pattern-03)
             reaching.contains(&ctx.env, &narrowed)?;
             pat.bind_narrowed(&ctx.env, &narrowed, checking).at(n.spec())?;
             // a runtime test can't tell apart two types with one runtime form
+            // CR claude for claude: [bug/high] x-unsafe-03/c-pattern-02 still open:
+            // nested constructor patterns ignore the one-runtime-form rule. Select
+            // checks one-runtime-form collisions only for an arm's whole predicate
+            // against the rest of the scrutinee (select.rs). The nested check in
+            // StructPatternNode::compile (pattern.rs) runs only when `!cx.inferred`. A
+            // constructor pattern nested in a tuple, struct field, slice element, List
+            // element or variant payload therefore tests only the shape: over `U =
+            // [(string, string), `S(i64)]`, `[`S(n)]` matches the tuple ("S", "x") and
+            // binds `n: i64` to the string "x". Commit 613864c3 closed x-unsafe-03 by
+            // hardening buffer::encode against the bad payload; the root cause was left
+            // in place. At top level the same test correctly takes the other arm.
+            // Failure: For p = ("S", "x"), every nested position takes the `S arm: the
+            // output is ("S x", "S x", "S x", "S x", "S x") instead of "other" five
+            // times. Passing n to `|n: i64| n * 2` makes the JIT panic the runtime:
+            // "kernel param `n`: runtime String(\"x\") does not match the compiled
+            // Scalar(I64) slot". The node-walk logs an arith error and bottoms. Fix:
+            // Run the rep_collision test for every nested constructor position, not
+            // only the top-level predicate. Either drop the `!cx.inferred` restriction
+            // in pattern.rs, so an inferred nested predicate is completed against its
+            // position's type and checked, or have Reach walk sub-positions. Pin each
+            // position kind. Unverified: the reviewer's report, not checked by a
+            // verifier. (x-rerun-8-01)
+            // CR claude for eric: [bug/medium] The one-runtime-form check runs only in
+            // the definition's check, and Type::rep_collision reads an open cell as
+            // Open::Benign. An instance never re-checks (typecheck0_instance), so a
+            // generic select escapes the rule. `|x: 'a| select x { string as s => .., v
+            // => .. }` applied to `A takes the string arm. `|x: [(string, i64), 'a]|
+            // select x { (s, n) => .., v => .. }` applied to `A(41) destructures the
+            // variant as a tuple. Both engines give these wrong answers, and the check
+            // accepts them. The comparisons refuse the same types at the definition
+            // (Open::Unknown through PendingSettle::Discernible), so the two halves of
+            // the rule disagree. A fix needs a rule: either refuse an open member here
+            // as the comparisons do ("annotate it"), or give the select's open cells a
+            // deferred constraint, like the Discernible bound, so each call checks its
+            // substitution against the arm's predicate. The second also has to cross
+            // interface vals. probe:
+            // design/review-2026-10-12/repro/x-typecheck-patterns-04.gx
+            // (x-typecheck-patterns-04)
+            // CR claude for claude: [bug/high] The checker accepts a type test that
+            // names a reference over an `Any` scrutinee. In `let b: Any = n; select b {
+            // &mut string as q => *q <- "boom", _ => .. }`, any u64 passes the test and
+            // becomes a writable reference to whatever variable has that id. The probe
+            // writes a string into `x: i64`. The JIT then panics in kernel.rs ("runtime
+            // String does not match the compiled Scalar(I64) slot") and the runtime
+            // dies. The node-walk keeps running with an i64 binding that holds a
+            // string. The cause is that is_a's ByRef arm only checks for a U64/V64, and
+            // this rep_collision check never fires when the rest is `Any`, because
+            // rep_head(Any) is None and the walk runs under Open::Benign. The same arm
+            // over `[u64, &mut string]` is correctly refused. Fix: refuse an explicit
+            // predicate that holds a reference (Type::holds_ref) wherever the reaching
+            // type can hold `Any` at that position, with the "same runtime form"
+            // wording. Keep allowing a reference test over a scrutinee whose type
+            // already pins the reference (the byref_pattern pin and the `[&mut T,
+            // null]` optional-argument idiom), so do not refuse every reference
+            // predicate the way pattern.rs refuses functions. Pin it beside
+            // unsound_acceptances_are_refused, with both the top-level form and the
+            // form nested in a tuple. Same root as x-invalid-states-01. probe:
+            // design/review-2026-10-12/repro/x-fix-types-03.gx (x-fix-types-03)
             if checking
                 && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate)
                 && let Some((a, b)) = pat.type_predicate.rep_collision(&ctx.env, &rest)
@@ -1497,6 +1769,15 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                          runtime form; wrap them in distinct variants"
                     )
                 }))
+                // CR claude for claude: [readability/low] This refusal is about the
+                // arm's pattern but is placed at the arm's body, so the CLI caret and
+                // the LSP diagnostic point at the body (`1`) and not at `&i64 as r`.
+                // The `pat.bind_narrowed(..).at(n.spec())` above has the same problem.
+                // Fix: zip the arms with `se.arms`, as the predicate-completion loop
+                // above does, and place both errors with `.at(&pattern_site(spec_pat,
+                // n.spec()))`. probe:
+                // design/review-2026-10-12/repro/x-typecheck-generics-09.gx
+                // (x-typecheck-generics-09)
                 .at(n.spec());
             }
             // The guard typechecks after the narrowing so it sees the
@@ -1510,6 +1791,15 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
             wrap!(n, child(n, ctx))?;
             rtypes.push(n.typ());
+            // CR claude for claude: [readability/low] The site passed here is the arm's
+            // body, so every 'unreachable arm' and 'pattern ... will never match'
+            // refusal points at the body. In `select a { [x, tl..] => 1, [init.., y] =>
+            // 2, [] => 0 }` the error is at the `2`, and the LSP underlines that
+            // instead of the dead `[init.., y]`. The parsed expr::Pattern already
+            // records its `pos`/`end`. Fix: carry that span into PatternNode and use it
+            // as the error site for the dead-arm and never-match refusals, falling back
+            // to the body when the span is NOWHERE (an AST from a pack or an image).
+            // (book-core-17)
             reach.arm(&ctx.env, &scrut, pat, n.spec(), checking)?;
         }
         self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;

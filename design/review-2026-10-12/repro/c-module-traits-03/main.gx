@@ -1,0 +1,6 @@
+mod m;
+let clock = sys::time::timer(duration:100.ms, false);
+m::t <- clock ~ 5;
+m::x <- m::t ~ 100;
+sys::exit(sys::time::timer(duration:400.ms, false) ~ 0);
+m::x

@@ -1,0 +1,18 @@
+// t-cast-setops-12: map_refs picks a union member with a full is_a walk at each
+// level, so == on a recursive list holding references is quadratic in its length
+// command: graphix --no-cache t-cast-setops-12.gx
+// expected: time linear in n, as for the same list without the reference (2000
+// elements of i64: 0.2 ms)
+// observed (debug build): n=1000 0.72 s, n=2000 3.1 s
+type L = [`Nil, `Cons(&i64, L)];
+let x = 1;
+let rec build = |n: i64, acc: L| -> L select n { 0 => acc, n => build(n - 1, `Cons(&x, acc)) };
+let a = build(2000, `Nil);
+let b = build(2000, `Nil);
+let go = sys::time::timer(duration:200.ms, false);
+let t0 = sys::time::now(go);
+let eq = (t0 ~ a) == b;
+let t1 = sys::time::now(eq);
+println("[eq] [sys::time::diff(t1, t0)]");
+sys::exit(sys::time::after_idle(duration:100.ms, t1 ~ 0));
+0

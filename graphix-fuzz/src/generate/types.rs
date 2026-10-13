@@ -8,6 +8,13 @@ use crate::mutate::Rng;
 /// register-scalar set; the variable-width four (`v`/`z`) are valid
 /// language that de-fuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// CR claude for claude: [test-gap/low] The doc above says this is every graphix numeric
+// type, but decimal is missing. Decimal is a `Number` and one of the opaque two-word
+// kernel values, so `'a: Number` poly lambdas, checked arithmetic, casts and the
+// result-select lowering never meet it in generated code. datetime and duration are
+// never generated either. Fix: add a Decimal variant whose literal pool always carries
+// a '.' (a bare `decimal:12` does not parse), give fits_in a rule for it, and correct
+// the doc. Consider small duration/datetime literal leaves too. (fuzz-gen-a-05)
 pub enum NumTy {
     I8,
     I16,
@@ -211,6 +218,14 @@ impl Label {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// CR claude for claude: [test-gap/low] GenType has no decimal, bytes, duration or
+// datetime, and Map is always `Map<string, V>`. Generated programs therefore never pass
+// a decimal through the kernel ABI's opaque two-word path, never hit datetime/duration
+// arithmetic rules, and never key a map by an i64, tuple or variant, where ordering and
+// hashing go through the core Eq/Ord hooks. Fix: add GenType variants for decimal,
+// bytes and duration, each with a literal pool and a few builtins. Give Map a key type
+// drawn from the Ordered scalars and small tuples, rendered `Map<K, V>`. Draw them at a
+// low rate so the generator still compiles 100%. (fuzz-gen-b-05)
 pub enum GenType {
     Num(NumTy),
     Bool,

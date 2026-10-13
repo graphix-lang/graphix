@@ -416,6 +416,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // CR claude for claude: [bug/high] WatchApply never rebuilds its watch after a
+        // wake. sleep clears interest, path and watcher_val, and update reads every
+        // argument through seam_tick, which sees only Fired deliveries. A reselected
+        // arm delivers a watcher and a path bound outside it as Stale, so nothing is
+        // re-read, no watch is added, and the output (and every events/path reader
+        // downstream) stays bottom for good. design/async_sleep_outputs.md says this
+        // builtin rebuilds the watch. Fix: keep a `slept` bit as WatchStream, timer and
+        // after_idle do. Read the arguments with seam_value, and rebuild when an
+        // argument fired or on the first update after a wake. Add a pin in
+        // lang/async_restart.rs. probe: design/review-2026-10-12/repro/sys-io-04.gx
+        // (sys-io-04)
         let mut up = false;
         if let Some(Ok(mut int)) = seam_tick(from[0].update(ctx))
             .map(|v| v.value_cloned().cast_to::<LPooled<Vec<WInterest>>>())

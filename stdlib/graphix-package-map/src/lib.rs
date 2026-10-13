@@ -63,6 +63,17 @@ impl graphix_package_core::Elements for MapElems {
         }
     }
 
+    // CR claude for claude: [bug/high] The next pair is found by a key search (`range`
+    // from the last key), and that compares keys with Value::cmp. Iter::update and
+    // IterQ::update call this without a coretraits::with_hooks loan, so an abstract key
+    // with a user Ord is compared by its structural payload order, while the tree was
+    // built under the user order. With a reversed Ord, map::iter and map::iterq yield
+    // only the first pair and drop the rest. Other orders can skip or repeat pairs.
+    // Make the cursor positional: snapshot the pairs when cursor() is called, or keep
+    // an index into an in-order traversal, and walk it like ArrayElems. That removes
+    // the dependence on the hooks and the O(log n) search per step. Add a pin in
+    // lang/traits.rs next to core_map_hof_keyed_by_ord. probe:
+    // design/review-2026-10-12/repro/collections-str-01.gx (collections-str-01)
     fn next((m, last): &mut Self::Cursor) -> Option<Value> {
         use std::ops::Bound::{Excluded, Unbounded};
         let (k, v) = match last {

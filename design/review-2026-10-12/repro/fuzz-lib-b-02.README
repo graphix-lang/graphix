@@ -1,0 +1,11 @@
+fuzz-lib-b-02: an Excluded-tier program's verdict is `excluded` whatever
+its compile verdict (Oracle::verdict, graphix-fuzz/src/lib.rs:1874).
+
+  graphix-fuzz check fuzz-lib-b-02.gx -> EXCLUDED  (both engines CompileErr)
+
+In run_regression (lib.rs:3166) undeclared_rejection runs only for a
+`Rejected` verdict, so an unmarked Excluded pin that both engines refuse
+is never flagged, and a marked one (select-guard-prenarrow-bind-aug2026/
+02_guard_leaks_fn_value.gx, recorded `excluded`) is never held to its
+refusal: if the typing hole reopens, both engines run, agree in kind, and
+the gate stays green.

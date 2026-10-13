@@ -1,0 +1,15 @@
+// x-parallel-01: analysis::independent omits ByRef cells from `published`, so a call's
+// `&expr` argument forks beside a sibling argument whose `*r` reads that cell.
+// Run:  GRAPHIX_PAR=off   graphix --no-cache x-parallel-01.gx   -> -1 10 20 30 40 50 60 (expected)
+//       GRAPHIX_PAR=force graphix --no-cache x-parallel-01.gx   -> -1   (then nothing; also with --no-fusion)
+//       GRAPHIX_PAR=force GRAPHIX_PAR_AUDIT=1 ...                -> panic "a forked branch read BindId(..),
+//                                                                   which its left sibling published"
+// graphix-fuzz check (strip the // header lines first: the harness wraps the text in a block)
+//   -> DIVERGENCE — parallel evaluation bug: interp [-1 10 20 30 40 50 60] vs interp/par [-1]
+// Place form under the default auto mode: x-parallel-01b-byref-place.gx (off -1 20 30 40 10.., auto -1 10 20 30 40..).
+let i = array::iter([1, 2, 3, 4, 5, 6]);
+let held: [&i64, null] = null;
+let pair = |r: &i64, v: i64| (r, v);
+let t = pair(&(i * 10), select held { null as _ => -1, r => *r });
+held <- once(t.0);
+t.1

@@ -118,6 +118,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let (vals, tag) = gathered!(self, ctx, Value::Map(CMap::new()));
         let vals: SmallVec<[Value; 32]> = vals.collect();
+        // CR claude for claude: [perf/low] gathered! already yields owned clones of the
+        // children's values. They are collected here, split by reference, and each key
+        // and value is cloned a second time for insert_cow. A map literal of n entries
+        // pays 4n Value clones per fire instead of 2n. Fix: move the values out of the
+        // SmallVec, for example by draining the values half and zipping it by value
+        // with the keys half inside the with_hooks closure. (c-data-map-09)
         let (keys, values) = vals.split_at(vals.len() / 2);
         let m = with_hooks(ctx, || {
             let mut m = CMap::new();
@@ -161,6 +167,20 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         kts.extend(keys.iter().map(|k| k.typ()));
         vts.extend(values.iter().map(|v| v.typ()));
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
+        // CR claude for claude: [bug/medium] x-typecheck-patterns-04 variant: a written
+        // Map key type is never checked for a one-form pair. The map-key rule requires
+        // a key type that holds no two indiscernible types. It is applied at a map
+        // literal (map.rs, require_compared Ordered) and through the map:: functions'
+        // `'k: Ordered` bounds. It is not applied to a written `Map<K, V>` type, nor at
+        // an `m{k}` index (MapRef). So `Map<[string, `A], i64>` is accepted, and the
+        // key `A finds the entry stored under "A". Failure: The program below passes
+        // --check and prints (1, 1) in every mode. The `A key reads the "A" entry at
+        // top level and inside a fused function. The literal form `{k => 2, "A" => 3}`
+        // is refused. Fix: Apply require_compared(Ordered) to the key parameter
+        // wherever a Map type is formed: when a written type is resolved (Type::Map in
+        // annotations and typedefs) and in MapRef's typecheck. Better, make the bound
+        // part of the Map constructor itself so that no site can skip it. Unverified:
+        // the reviewer's report, not checked by a verifier. (x-rerun-8-09)
         ktype.require_compared(&Type::Ordered);
         let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
@@ -194,6 +214,16 @@ pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
     match src {
         Value::Map(map) => match map.get(key) {
             Some(value) => value.clone(),
+            // CR claude for claude: [bug/low] The key is formatted with Value's
+            // Display, which prints an abstract key as `abstract:<base64 of the packed
+            // GxAbstract>`. The message is unreadable and leaks the type's id bytes,
+            // and the key's Display impl is ignored, though the same value interpolated
+            // into a string prints through it. Fix: render the key with the printer the
+            // rest of the runtime uses for values, the typed form whose GxAbstract case
+            // consults the Display hook. map_get already runs under with_hooks in the
+            // node-walk and under the loaned hooks in a kernel. Check the other
+            // `{v}`-formatted runtime errors for the same pattern. probe:
+            // design/review-2026-10-12/repro/c-data-map-06.gx (c-data-map-06)
             None => errf!(ERR_TAG, "map key {key} not found"),
         },
         _ => err!(ERR_TAG, "COMPILER BUG! expected a map"),

@@ -105,6 +105,15 @@ impl DefTable {
         exempt: &AHashSet<usize>,
     ) -> Result<()> {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        // CR claude for claude: [structure/low] This rows-then-ftype-parts walk is
+        // written out three times: here, in DefTable::record and in
+        // DefTable::own_typedefs. Only this copy skips constraint parts, and a new row
+        // kind has to be threaded through all three. Add one DefTable::for_each_type(f:
+        // FnMut(&Type, bool)) taking the constraint flag, and use it in all three
+        // places. rename_fn and InstanceTypes::ftype also wrap a FnType in
+        // Type::Fn(Arc::new(ft.clone())) to rename or instantiate it, which allocates
+        // and needs an unreachable arm. Rename through FnType::cow_walk over
+        // Type::rename_int, then call FnType::instantiate_with directly. (c-lambda-07)
         for t in self.rows() {
             crate::typ::settle::position_cells(t, &mut cells);
         }
@@ -420,6 +429,22 @@ impl InstanceTypes {
         let open = ctx.rec_defs.clone();
         let mut known = AHashMap::default();
         let def = def.instantiate_with(&mut known, &open);
+        // CR claude for claude: [bug/high] This commits into every signature cell
+        // `instantiate_with` kept, including cells the definition does not own. Take a
+        // lambda literal checked against a rank-2 formal (`app(|x| x)` with `f: fn<'b:
+        // Any>(x: 'b) -> 'b`). Its signature cells are the call site's generic copy of
+        // 'b, which nothing settles. The first run-time bind through the returned value
+        // (`g(1)`) binds them to i64 for good. Every later bind at another type
+        // (`g("s")`) then fails "an instance at .. of a definition typed ..", and that
+        // call stays bottom while the check accepted the program. Which call wins
+        // depends on bind order. GRAPHIX_NO_SUBST=1 and the named-lambda form `app(id)`
+        // both work. Fix: never commit into cells the definition does not own. Either
+        // copy the open cells reachable from `def` that no closed gate owns into
+        // `known` as well, or check them as a probe. Also, the bail in
+        // `GXLambda::instance_types` prints `def` without PrintFlag::DerefTVars, which
+        // hides the binding that causes the refusal. probe:
+        // design/review-2026-10-12/repro/x-typecheck-generics-01.gx
+        // (x-typecheck-generics-01)
         instance.check_contains(&ctx.env, &def).ok()?;
         Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
     }
@@ -624,6 +649,17 @@ impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 
+// CR claude for eric: [risk/low] A function value still orders by its LambdaId once it
+// is widened to Any. Parallel compile, slot builds and forked branches mint those ids
+// in any order, so a `Map<Any, _>` keyed by closures, or a sort over an `Array<Any>`
+// holding them, iterates in a different order on each forced run (GRAPHIX_PAR=off is
+// stable). graphix-fuzz's Par pair reports this as a parallel-evaluation DIVERGENCE, so
+// a generated program that widens closures to Any is soak noise. Decide between two
+// fixes: give functions a run-time order independent of mint order (definition source
+// id plus an instance ordinal relocated to program order at join), or rule Any-ordered
+// functions nondeterministic like references and mark such traces Excluded in the
+// oracle. probe: design/review-2026-10-12/repro/x-rerun-7-05-any-fn-key-order.gx
+// (x-rerun-7-05)
 impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))
@@ -672,6 +708,16 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// `true` iff this lambda is pure, self-tail-recursive and has
     /// loop-able formals; set by `analysis::analyze`. The JIT emits a
     /// native loop; the node-walk dispatches every call.
+    // CR claude for claude: [structure/low] `tail_loop`, `self_recursive` and
+    // `self_bind` are one fact stored three times. `analysis::mark_recursion` derives
+    // all three from one `self_info` entry: tail_loop implies a self_bind, and a
+    // self_bind implies self_recursive. Nothing in the types holds those rules, and the
+    // image codec writes and reads the three fields separately. The only read of
+    // `self_recursive` is `self_bind.filter(|_| g.self_recursive())` in
+    // `lowering::lambda_kernel`, which the rules already make redundant. Replace the
+    // three with one `Mutex<Option<SelfCall>>`, where `struct SelfCall { bind: BindId,
+    // tail_loop: bool }`, set in one store by `mark_recursion` and imaged as one value.
+    // Delete `self_recursive` and the filter. (x-invalid-states-05)
     tail_loop: AtomicBool,
     self_recursive: AtomicBool,
     self_bind: Mutex<Option<BindId>>,
@@ -775,6 +821,18 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             }
             Typing::Substituted(table, def) => (table, def),
         };
+        // CR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST the instance checks
+        // its body again, and that check refuses `let len = |l| select l { [] => 0, [_,
+        // ..] => 1 }; len([1, 2])` with 'no arm covers Array<Any> (the slice arms leave
+        // array length 0 uncovered)'. The same program is accepted without the knob,
+        // and the arms cover every length. The A/B is meant to show where typing by
+        // substitution goes wrong, but it currently fails on ordinary generic code, so
+        // a divergence it reports means nothing. Find why the re-checked `[]` pattern
+        // no longer covers the instance's scrutinee; a pattern predicate left over from
+        // the definition's check is a likely suspect. Then add a test that runs a few
+        // generic fixtures under the knob, or drop the knob and its CLAUDE.md row.
+        // probe: design/review-2026-10-12/repro/x-typecheck-generics-10.gx
+        // (x-typecheck-generics-10)
         if dbgenv::graphix_no_subst() {
             return Ok(None);
         }
@@ -840,6 +898,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         ctx: &mut CompileCtx<R, E>,
         args: &mut [Node<R, E>],
     ) -> Result<()> {
+        // CR claude for claude: [perf/medium] An instance of a tui package function
+        // (tui::barchart::bar, tui::table::cell) spends about 25x the InstanceCheck
+        // time of an identical function in a user module over the same tui types: 1024
+        // `bar` instances take 847 ms self here against 35 ms for the copy (debug,
+        // GRAPHIX_PAR=off). Under GRAPHIX_PAR=auto the program takes about 3x its
+        // serial wall time, which points to contention between parallel instance
+        // checks. A chart of a few thousand bars no longer draws in seconds. Find what
+        // differs for a package-root definition in `instance_types`, the
+        // `with_restored` env swap, or the `DefTable` substitution
+        // (GRAPHIX_PROFILE_INSTANCES on one instance of each), and remove it. probe:
+        // design/review-2026-10-12/repro/x-rerun-7-04-tui-instance-cost.gx vs
+        // x-rerun-7-04-local/main.gx (x-rerun-7-04)
         let mut p = profile::phase(Phase::InstanceCheck);
         profile::instance(&mut p, self.instance_id, self.id, self.body.spec());
         elab_audit::enter();
@@ -1015,6 +1085,19 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         )
     }
 
+    // CR claude for eric: [perf/medium] Every node-walked call is a retained activation
+    // built here, and each one still holds about 10-12 KB after runtime-heap-01. A
+    // node-walked binary recursion therefore grows by GBs at modest depth. fib(20)
+    // under --no-fusion peaks at 273 MB against 58 MB fused. fib(25), about 243k calls,
+    // needs about 2.4 GB. With the default unlimited activation budget, nothing
+    // contains it. This hits any recursion that fusion refuses (an effect, state) and
+    // everything under --no-fusion. There are two levers. One: build an instance's
+    // nodes from its definition's types with no placeholder cells, and share the Ref
+    // and call-site structures (about 3 KB of type cells and Type values were left).
+    // Two: do not retain the nodes of a completed activation that has no state and no
+    // async, since re-reaching it is a fresh birth anyway. That would change the rule
+    // that instances are retained unconditionally. Decide whether the current cost is
+    // acceptable or which lever to take. (x-fix-nodes-03)
     fn new_with_body(
         ctx: &mut CompileCtx<R, E>,
         id: LambdaId,
@@ -1112,6 +1195,21 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             first_dispatch: true,
             env,
             typing: Typing::Restored,
+            // CR claude for claude: [bug/medium] An instance decoded here stands for
+            // one the cold compile built before any cycle, and that one was never
+            // charged. CallSite::materialize decodes it lazily, on its first dispatch
+            // inside a cycle, so activation_born charges it to the runtime's activation
+            // budget. The charge is never released, because the instance lives as long
+            // as the program. The result is that a warm start uses up
+            // GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget faster than a
+            // cold run of the same program, so the cache decides whether the runtime
+            // aborts. In the probe, the cold run needs a budget of 30 and the warm run
+            // needs 72; at 60 the warm run aborts after two values. Fix: decode with
+            // `charged: None`, since an image only holds compile-time instances. Check
+            // that nothing else materialize reaches charges the cycle, such as stack
+            // segments grown during the decode, and add a pin that runs one program
+            // cold and then warm under a tight budget. probe:
+            // design/review-2026-10-12/repro/c-image-02.gx (c-image-02)
             charged: crate::stack::activation_born(),
         })
     }
@@ -1433,6 +1531,21 @@ impl Lambda {
         s.sort();
         s.dedup();
         if len != s.len() {
+            // CR claude for claude: [bug/medium] This refusal and the other bare
+            // `bail!`s in `Lambda::compile` (the variadic, unknown-builtin, NoBuiltins
+            // and builtin-annotation refusals) leave without an `ErrorSite`, and
+            // neither `compile_kind` nor `compile_inner` adds one. So `graphix --check`
+            // prints the message with no line or column. Inside a block, the error is
+            // placed at the enclosing lambda. In a module, the LSP (`error_location`
+            // finds no site) publishes it at 0:0 of the root file, not in the module
+            // file that holds the lambda. Root fix: in `compile_inner`, give an error
+            // that leaves `compile_kind` without an `ErrorSite` a site at `spec`. That
+            // needs a site-only variant of `At::at`, so no extra frame is printed per
+            // level. With that, every bare `bail!` in a node's compile is placed at its
+            // own expression. At minimum, make these `bailat!(spec, ..)`. Add a pin
+            // beside the LSP placement tests covering `|x, x|`, `|@args: i64|` and an
+            // unknown builtin. probe: design/review-2026-10-12/repro/x-errors-01.sh
+            // (x-errors-01)
             bail!("arguments must have unique names");
         }
         let id = LambdaId::new();
@@ -1466,6 +1579,16 @@ impl Lambda {
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),
+            // CR claude for claude: [bug/low] A variadic's type goes through `written`
+            // alone, so the trait-as-parameter-type rewrite (`|s: Read|` ≡ `'s: Read
+            // |s: 's|`), which the positional args below get, never applies to it.
+            // `|@args: Eq| -> Any 'core_all` is refused with "trait Eq used as a type
+            // ... write it as a parameter's type (`fn(x: Eq)`)", and that is what the
+            // author wrote. `'a: Eq |@args: 'a|` is accepted. Fix: give the variadic
+            // the same rewrite (one fresh quantifier joined to trait_quantifiers), or
+            // refuse it with a message that names variadics and points at the
+            // quantifier form. probe: design/review-2026-10-12/repro/x-rerun-1-12.gx
+            // (x-rerun-1-12)
             Some(Some(t)) => Some(Some(written(&ctx.env, t)?)),
         };
         let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
@@ -1694,6 +1817,20 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         );
         let scope = def.scope.with_catch((faux_id, ExprId::new()), false);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        // CR claude for claude: [bug/medium] The rigid set is collected by name, first
+        // cell wins, and `Type::collect_tvars` descends into a rank-2 formal's own
+        // quantifiers without scoping them. When a formal's quantifier shadows a
+        // declared variable (`|g: fn<'a: Number>(x: 'a) -> 'a, y: 'a|`), only the cell
+        // met first in signature order is opened rigid. The body may then bind the
+        // other one. `f` with g listed first is accepted at fn(g, y: i64) -> i64, and
+        // `k` with y listed first accepts a monomorphic callback for its fn<'b: Number>
+        // formal. The same bodies in the other parameter order are refused. Fix:
+        // collect the declared cells by identity and scope each nested fn type's
+        // quantifiers as `Type::alias_tvars` does, so both cells are opened rigid. Then
+        // audit the other name-keyed `collect_tvars` callers (the `Widening` helpers in
+        // callsite.rs, `FnType`'s own uses) for the same shadowing, and add pins in
+        // both parameter orders. probe: design/review-2026-10-12/repro/c-lambda-02.gx
+        // (c-lambda-02)
         def.typ.collect_tvars(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
@@ -1858,6 +1995,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         let spec: &Expr = &self.spec;
+        // CR claude for claude: [bug/low] An unresolved name in a type variable's bound
+        // (`'a: Nosuch`) is deferred here, and only `check_pending_names` at the end of
+        // the check reports it. A call to the definition in a later statement
+        // instantiates the signature first. The type walk then fails with
+        // `UnresolvableRef` under the call's spec, so the error is sited at the call.
+        // Across modules the LSP publishes it on the caller's file and nothing on the
+        // defining file. An unresolved argument type (`|x: Nosuch|`) is still sited at
+        // the definition. Fix: when a check fails with an `UnresolvableRef` whose ref
+        // is in `pending_names`, re-site it at that entry's spec. Alternatively, check
+        // the bounds a definition deferred before any later statement can call it.
+        // probe: design/review-2026-10-12/repro/x-errors-02.gx (x-errors-02)
         crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec);
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after
@@ -1941,6 +2089,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             let _at = AtLevel::enter(level);
             types.typ(self.spec.id)
         };
+        // CR claude for eric: [doc-drift/low] A missing row makes this lambda run its
+        // full definition check inside the instance. CallSite::typecheck0_instance does
+        // the same when there is no ftype row. DefTable::record drops every row whose
+        // ExprId two nodes share, for example a default argument compiled at two
+        // omitting sites. CLAUDE.md says an instance the table cannot type is refused
+        // and never checked instead, but only a whole missing table is refused. Because
+        // these fallbacks succeed silently, a regression that dropped rows would show
+        // up only as slower compiles. Either state the per-node rule in CLAUDE.md ('a
+        // node whose id two nodes share has no row and is checked'), or report every
+        // such fallback under GRAPHIX_ELAB_AUDIT. (c-lambda-04)
         let Some(row) = row else { return self.typecheck0(ctx) };
         {
             let _at = AtLevel::enter(level);

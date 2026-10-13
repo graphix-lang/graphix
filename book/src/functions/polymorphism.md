@@ -165,6 +165,24 @@ fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e
 So map takes an array of `'a`, and a function mapping `'a` to `'b` and possibly
 throwing `'e` and returns an array of `'b` possibly throwing `'e`.
 
+<!-- CR claude for claude: [doc-drift/high] Polymorphism chapter teaches mixed-number
+arithmetic that the checker refuses. The 'Implicit Polymorphism' section (168-235) has
+three wrong claims. It says `|x, y| x + y` has three independent `Number` variables. It
+says 'None of the three numbers need to be the same type of number'. It shows `f(1.0,
+1)` returning `-: Number 2` and `f(1.1212, 1)` returning `2.1212`. Arithmetic is now
+`fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`, and `f(1.0, 1)` is refused. This
+contradicts reading_types.md in the same book. Separately, lines 56-69 define `f` as the
+one-argument `'a: [Number, null] + OneNumber |x: 'a|`. The very next example then calls
+'this `f`' with two arguments (`f(1.212, 2.0)`). The sentence 'Because unchecked `+`
+wraps ... there is no throws clause' sits in the OneNumber paragraph, where no `+`
+appears. The code is right; the doc is stale. Failure: A reader types the chapter's `let
+f = |x, y| x + y; f(1.0, 1)` and gets `type mismatch f64 does not contain i64` instead
+of the advertised `-: Number 2`. Fix: Rewrite 168-235 around the current rule: one
+inferred variable bounded `Number + Singleton`, `f(2, 2)` and `f(1.5, 2.5)` accepted,
+`f(1.0, 1)` refused with a cast as the fix. Rename the OneNumber example (`g`) so the
+following `f(1.212, 2.0)` refers to the two-argument function. Move the throws sentence
+next to the arithmetic. Unverified: the reviewer's report, not checked by a verifier.
+(book-core-02) -->
 ## Implicit Polymorphism
 
 All functions are polymorphic, even without annotations, argument and return

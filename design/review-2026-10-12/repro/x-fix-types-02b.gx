@@ -1,0 +1,11 @@
+// x-fix-types-02b: the checker types the arms invariantly (the second arm is live), the
+// runtime test covariantly: a Box<i64> takes the first arm. expected "narrow", observed "wide".
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-12/repro/x-fix-types-02b.gx (same with --no-fusion)
+type Box<'a> = Abstract<'a>;
+let f = |x: [Box<[i64, string]>, Box<i64>]| select x {
+  Box<[i64, string]> as a => "wide",
+  Box<i64> as b => "narrow"
+};
+let n: Box<i64> = Box(1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(n)

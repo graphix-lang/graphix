@@ -87,6 +87,16 @@ widget(#height: 50, "text")
 
 ## Required Labeled Arguments
 
+<!-- CR claude for claude: [doc-drift/low] Several signatures on this page do not match
+the code, and some are not syntax. input_handler is really `fn(?#enabled: .., #handle:
+&fn(e: Event) -> [`Stop, `Continue], child: &Tui) -> Tui`, so the call below needs
+`#handle: &my_handler` and fails as written. The table example's `&Row`/`&i64`/`->
+Widget` are `&[Row, null]`/`&[i64, null]`/`-> Tui` in table.gxi. The 'Function
+Constraints' form `let sum<'a: Number>(@args: 'a) -> 'a` and the summary row `fn(?#x:
+i64 = 0)` are parse errors: write a constraint as `val sum: fn<'a: Number>(@args: 'a) ->
+'a`, and show a default only on a lambda. The shell transcript after the Singleton text
+still shows three independent Number variables. Fix: paste the current signatures from
+the .gxi files and the current REPL output. (book-core-13) -->
 Arguments with `#` but no `?` are required but labeled:
 
 ```graphix

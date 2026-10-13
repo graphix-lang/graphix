@@ -1,0 +1,8 @@
+let f = |#x = 1, y| x == y;
+let g = |y: string| y == "s";
+let t = sys::time::timer(duration:10.ms, false);
+let b = select t { _ => true };
+let pick: fn(y: string) -> bool = g;
+pick <- select b { true => f, false => g };
+println("pick: [pick(t ~ "s")]");
+pick(t ~ "s")

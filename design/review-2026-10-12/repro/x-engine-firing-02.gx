@@ -1,0 +1,27 @@
+// schedule-v1: cap=64 events=512; in3=i64:1 in2=i64:0; in3=i64:0; in1=i64:7; in0=i64:1; in0=i64:0 in3=i64:1
+{
+// x-engine-firing-02: an outer arm's wake republishes `v` WAKE-tagged
+// (its constant fires, `a` is stale); in the same cycle the inner select
+// re-selects the arm that slept through v's REAL fire (in1=7 at e3).
+// TrackedFires::deliver (wake.rs:146) sees v delivered "live" and spends
+// the real bit without upgrading the tag, so the `<-` target t treats the
+// value as the wake's own and keeps its last write 99.
+// `graphix-fuzz run`: last epoch is [0:i64:99] (both engines).
+// The same schedule without the outer sleep (e4 `in0=i64:0`, e5 `in3=i64:1`)
+// ends [0:i64:7]: the event is caught up only when no outer wake coincides.
+let f = |c, a, d, e| select c {
+  i64:0 => {
+    let v = a * i64:1;
+    select d {
+      i64:0 => i64:-5,
+      _ => {
+        let t = v + i64:0;
+        t <- e ~ i64:99;
+        t
+      }
+    }
+  },
+  _ => i64:-1
+};
+f(in0, in1, in3, in2)
+}

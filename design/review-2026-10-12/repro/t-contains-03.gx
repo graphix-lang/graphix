@@ -1,0 +1,4 @@
+// expect: accepted (y: string gives (string, string)); refused: the probe of
+// the first member ignores rigid 'a, its commit binds y := i64, then fails
+let f = |x: 'a, y| -> [(i64, 'a), (string, string)] (y, "s");
+f(1, "str")

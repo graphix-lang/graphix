@@ -1,0 +1,6 @@
+// tests-lang-rest-b-04: a collection callback with a labeled-default
+// parameter never fuses ("lambda call site ... not discovered — subtree
+// node-walks"); without the label it does. The fixtures
+// lang::collection::labeled_callback_* assert FuseExpect::Jit, which the
+// outer fold satisfies, so the de-fuse is invisible to them.
+#[native] array::map([10, 20, 30], |#foo: i64 = 42, x| foo + x)

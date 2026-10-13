@@ -1,0 +1,26 @@
+// t-env-01: Whitelist sandbox drops ancestor modules: nested whitelisted
+// modules/values and granted traits are unreachable.
+// run: graphix --no-cache design/review-2026-10-12/repro/t-env-01.gx
+// expected: "1"
+// observed: "error:[\"DynamicLoadError\", ... no module `fs` in `sys`\"]"
+// Whitelisting sys::fs prints "1"; whitelisting the value
+// sys::fs::tempdir::create fails the same way.
+// Trait variant: graphix --no-cache design/review-2026-10-12/repro/t-env-01-trait/main.gx
+// expected "Counter(7)" (what `sandbox unrestricted` prints); observed
+// "no module `a` in `/`" at `use super::a::b::Show`. With `sandbox whitelist
+// [core]` the granted trait is unreachable even one level deep (trait in
+// a.gx: "use: no module `super::a` in scope").
+// whitelisting a nested module (sys::fs::tempdir) leaves it unreachable:
+// apply_sandbox drops /sys/fs, the descent's middle step. Expected "1";
+// prints a DynamicLoadError "no module `fs` in `sys`".
+// Whitelisting sys::fs instead works.
+let status = mod foo dynamic {
+    sandbox whitelist [core, sys::fs::tempdir];
+    sig { val y: i64 };
+    source "let f = sys::fs::tempdir::create; let y = 1"
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select status {
+    error as e => "[e]",
+    null as _ => "[foo::y]"
+}

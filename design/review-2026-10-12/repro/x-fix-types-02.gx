@@ -1,0 +1,15 @@
+// x-fix-types-02: a runtime type test compares an abstract value's parameters covariantly;
+// a C<i64> passes `C<[i64, string]> as q` and a string is written into the i64 y.
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-12/repro/x-fix-types-02.gx
+// (and --no-fusion). expected: the arm does not match (parameters are invariant). observed: JIT panic
+// kernel.rs:218 'runtime String("hello") does not match the compiled Scalar(I64) slot'
+// and the runtime dies; --no-fusion prints an arith error parsing "hello" and (0, 2).
+type C<'a> = Abstract<&mut 'a>;
+let y: i64 = 1;
+let p: Any = C(&mut y);
+let r = select p {
+  C<[i64, string]> as q => { let rr = q.0; *rr <- "hello"; 0 },
+  _ => 1
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(r, y + 1)

@@ -1,0 +1,20 @@
+// t-seq-05: a request-reading seqq flush clears a request that arrives in the
+// flush's own cycle. A flush that reads the run's request reaches core::queue
+// through the seqqflush variable a cycle late, so request 5 (arriving with the
+// flush at step 5) is pushed, then cleared when the late #flush lands.
+// design/seq_blocks.md §9: "a request arriving with or after the flush is kept".
+// Run: graphix --no-cache t-seq-05.gx   (same with --no-fusion)
+// Expected: (9, 5) (10, 5) ...   (request 5 survives the flush and runs)
+// Observed: (11, 8) (12, 8) ...  (the flush fired, request 1's run ended and
+//   request 2 was cleared, but request 5 was cleared too; 8 runs next)
+// Control: replace the flush by `select step { 5 => true, _ => never() }`
+//   (does not read req): prints (9, 5) (10, 5) ...
+let step = 0;
+step <- select step { s if s < 30 => s + 1, _ => never() };
+let req = select step { 1 => 1, 2 => 2, 5 => 5, 8 => 8, _ => never() };
+let r = seqq req; abort(never<bool>()); flush(select step { 5 => req, _ => never() }) {
+  until req != 1;
+  req
+};
+sys::exit(sys::time::after_idle(duration:100.ms, select step { 30 => 0, _ => never() }));
+(step ~ step, r)

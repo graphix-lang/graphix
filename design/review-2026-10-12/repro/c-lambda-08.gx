@@ -1,0 +1,6 @@
+// c-lambda-08: GRAPHIX_TASK_AUDIT reports 15 foreign writes on an empty program
+// command: GRAPHIX_TASK_AUDIT=1 graphix --no-cache c-lambda-08.gx 2>&1 | grep -c FOREIGN-WRITE
+// expected: 0 (no statement elaboration writes a cell or var of an earlier task)
+// observed: 15, each from module::bind_sig -> Env::deftype -> alias_tvars -> TVar::freeze
+// on a parsed interface typedef's own type variables (task 0) during stdlib registration
+sys::exit(0)

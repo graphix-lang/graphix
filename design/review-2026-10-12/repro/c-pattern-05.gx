@@ -1,0 +1,20 @@
+// c-pattern-05: Reach::new decides `wildcard` before narrowing: an
+// all-bind tuple arm leaves a coverage hole.
+// Command: graphix --no-cache --no-fusion c-pattern-05.gx  (and --check)
+// `g` passes --check. `(a, b)` probes as matching every member before
+// the narrowing binds its cells to the first member, (i64, string), so
+// `exhausted` trusts a stale `wildcard`.
+// Expected: refused at --check ("no arm covers (string, i64)"), as the
+// same select is once the union gains a `null` member (matched by a
+// `null as _` arm), or (0, 0) if `(a, b)` were to match both members.
+// Observed: --check exits 0; the run logs
+//   select p { (a, b) => 0 }: no arm matches ["s", i64:1]: a coverage hole in the check
+// and prints nothing (the tuple is bottom); both engines agree.
+// The same select with a second `(c, d) => 1` arm is accepted
+// and prints (0, 1): the per-arm reach after narrowing is right, only
+// the wildcard verdict is stale.
+let g = |p: [(i64, string), (string, i64)]| select p {
+  (a, b) => 0
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(g((1, "s")), g(("s", 1)))

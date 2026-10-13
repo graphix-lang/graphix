@@ -1,0 +1,17 @@
+// c-lambda-02: DefGate::open picks rigid tvars by name: rigidity depends on parameter order
+// Command: graphix --no-cache c-lambda-02.gx   (or --check)
+// A definition's declared variables are rigid in its body check, but
+// DefGate::open collects them by NAME, first cell wins, descending into
+// a rank-2 formal's own quantifier: when two cells share a name, only
+// the first in signature order is held rigid.
+// `f` lists the rank-2 formal first: its declared 'a is NOT rigid, the
+// body binds it to i64, and f is accepted at fn(g, y: i64) -> i64.
+// `k` lists `y` first: the formal's quantifier is not rigid, the body
+// binds it to i64, and k accepts a monomorphic callback.
+// Listing the parameters the other way round refuses each body
+// ("i64 does not contain 'a: unbound" / "fn(x: i64) -> i64 does not
+// contain fn<'b: Number>..").
+// Expect: both definitions refused. Got: prints (2, 2).
+let f = |g: fn<'a: Number>(x: 'a) -> 'a, y: 'a| -> 'a { let z: i64 = y; y + z };
+let k = |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| { let h: fn(x: i64) -> i64 = g; h(1) };
+(f(|x| x, 1), k("s", |x: i64| x + 1))

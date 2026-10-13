@@ -105,6 +105,17 @@ impl BinOp {
         }
     }
 
+    // CR claude for claude: [structure/low] BinOp is meant to be the one operator
+    // table, but every operator is still its own ExprKind variant. This function and
+    // `of` only translate between the two forms, and the same 20 variants are listed
+    // again in `ExprKind::for_each_child`, `map_children`, the two printer
+    // `unreachable!("BinOp::of matched it")` lists and the compiler's `compile` match.
+    // Adding an operator means editing about seven parallel lists, and the printer arms
+    // exist only because the type allows a state the code never handles. Replace the
+    // variants with one `ExprKind::BinOp { op, lhs, rhs }`. Then `build` and `of` go
+    // away, and the walks and printer match a single arm. The Pack tag changes, so
+    // packed ASTs and images rebuild. Also rename the compiler's `node::op::BinOp`
+    // (arithmetic only), which shares this type's name. (t-parser-b-05)
     pub fn build(self, lhs: Arc<Expr>, rhs: Arc<Expr>) -> ExprKind {
         match self {
             BinOp::Eq => ExprKind::Eq { lhs, rhs },

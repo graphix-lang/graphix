@@ -233,6 +233,12 @@ Used with the chart `#projection` parameter for 3D charts:
 - **axis_color** — Color of axis lines. 2D charts only.
 - **label_color** — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.
 - **label_size** — Font size for axis labels.
+<!-- CR claude for claude: [doc-drift/low] x_label_area_size is the height of the bottom
+label area, not a width. The page also has no Interaction section: wheel zoom (captured,
+so it does not scroll an enclosing scrollable), drag pan, double-click reset, 3D
+drag-rotate and the hover tooltip are undocumented. It does not say that an x_range of
+the other kind (datetime on a numeric chart, or the reverse) is ignored. Fix the
+wording, add the section and the x_range rule, and rebuild the book. (gui-chart-13) -->
 - **x_label_area_size** — Width of the x-axis label area in pixels. Increase to prevent label clipping.
 - **x_labels** — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.
 - **x_light_lines** — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.

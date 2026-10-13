@@ -1,4 +1,12 @@
 
+// CR claude for claude: [doc-drift/medium] args::parse returns clap's help text,
+// version text and usage errors as `ArgError(string)`, and this example drops all of
+// them with `$`. As a result `cli.gx -- --help` and `cli.gx -- --bogus` both print
+// nothing and exit 0. Select on the result instead: print the ArgError text and exit,
+// with code 0 for help and version and non-zero for a usage error. In args.md, say that
+// help, version and usage errors come back as ArgError, that parse reads the program's
+// own arguments (sys::args), and that a flag's value in `values` is the string "true"
+// or "false". (book-stdlib-08)
 let cli = args::parse(
     args::command(
         #name: "example",

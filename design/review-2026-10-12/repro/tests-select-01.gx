@@ -1,0 +1,17 @@
+let step = 0;
+// arm_ungated_const_writes_once cannot tell a constant write that fires once
+// from one that fires at every `Go: both leave their target at 1. Only the
+// write counts differ (2 vs 4). Run: graphix-fuzz run tests-select-01.gx
+step <- select step { s if s < 6 => s + 1, _ => never() };
+let k = select step { 1 | 2 | 3 => `Go, _ => never() };
+let once = 0;
+let every = 0;
+select k {
+  `Go => {
+    once <- 1;
+    every <- k ~ 1
+  }
+};
+let once_writes = count(once);
+let every_writes = count(every);
+select step { 6 => (once, once_writes, every, every_writes), _ => never() }

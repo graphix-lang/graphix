@@ -1,0 +1,9 @@
+let clk = sys::time::timer(duration:5.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let t = select n % 2 == 0 {
+  true => sys::time::timer(duration:1.s, true),
+  false => never()
+};
+sys::exit(n ~ select n > 20 { true => 0, false => never() });
+t

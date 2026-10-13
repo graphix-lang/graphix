@@ -51,6 +51,22 @@ impl TVar {
                     continue 'cand;
                 }
             }
+            // CR claude for claude: [bug/medium] `reset_tvars` is `Fresh::Copy`, which
+            // freshens every cell under the conjunct. That includes cells it shares
+            // with live inference, such as a call's instance of 'a that is linked to
+            // the caller's parameter. So `'b: Array<'a>` settles to `Array<'fresh>` and
+            // loses its relation to 'a. Both users of the witness are affected: the
+            // eager rtype-only settle in `CallSite::typecheck0` and the "t0 wider than
+            // the cell's witness" bind in contains. Example: `let g = |y| { let k =
+            // f(y); let z: i64 = y; k }` over `f = 'b: Array<'a> |x: 'a| -> fn(v: 'b)
+            // -> 'a ..` gives g a free `Array<'fresh>`. `h(["a"])` then passes
+            // `--check` and the LSP, but the build refuses it with the internal "an
+            // instance at .. of a definition typed .." error, and graphix-fuzz reports
+            // a check/build DIVERGENCE. Fix: freshen only what a call would copy, that
+            // is, cells under `Level::copied_by` (generic, or owned by a closed gate),
+            // and share every live cell. For example, have the caller pass the
+            // `Fresh::Instantiate` open set. Probe:
+            // design/review-2026-10-12/repro/t-tvar-03.sh. (t-tvar-03)
             return Ok(Ok(c.reset_tvars()));
         }
         Ok(Err(candidates))

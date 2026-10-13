@@ -99,6 +99,14 @@ fn decode_sled_event(key_typ: Option<Typ>, event: sled::Event) -> Result<DbEvent
     })
 }
 
+// CR claude for claude: [doc-drift/low] An event that fails to decode is logged and
+// dropped. on_change, on_insert and on_remove are typed Result<.., `DbErr(string)> in
+// subscription.gxi, but nothing ever delivers a DbErr. A program that catches it waits
+// for nothing, and a copy kept from on_change silently stops holding what the tree
+// holds, which the gxi promises it does. Carry the decode error through DbEvents and
+// deliver it from the accessors as a DbErr. Otherwise drop the Result from the three
+// signatures and document that undecodable events are skipped. Delivering the error is
+// the option that keeps the mirror promise. (db2-09)
 fn push_event(key_typ: Option<Typ>, event: sled::Event, events: &mut Vec<DbEvent>) {
     match decode_sled_event(key_typ, event) {
         Ok(ev) => events.push(ev),
@@ -128,6 +136,23 @@ async fn watch(
     let mut open = true;
     while open {
         if events.is_empty() {
+            // CR claude for claude: [bug/critical] sled 0.34 reserves a subscriber slot
+            // for every write, including a no-op write (the same value written again).
+            // For a no-op it drops the reservation without waking the waker that
+            // `Subscriber::poll` left in sled's senders map. This task therefore stays
+            // parked here, and the dropped OneShots pile up in sled's 1024-slot
+            // channel. After 1024 no-op writes, every writer to the tree blocks in
+            // `Subscribers::reserve` while holding sled's `watched` read lock (and the
+            // global concurrency-control lock for batches and commits). A later
+            // `watch_prefix` in `DbSubscribe::watch` then blocks the runtime thread,
+            // and dropping the Subscriber on abort deadlocks on `home.write()`. Fix:
+            // drain the Subscriber from a blocking thread with `next_timeout` or its
+            // blocking Iterator, which consume a dropped filler, and forward the events
+            // into the mpsc. Also take `watch_prefix` off the runtime thread. Pin: more
+            // than 1024 no-op inserts under a standing subscription must all answer.
+            // Probe: design/review-2026-10-12/repro/db2-01.gx (stops at 1025 answered
+            // inserts and hangs; without the subscription it runs to about 15000 and
+            // exits). (db2-01)
             match (&mut subscriber).await {
                 Some(ev) => push_event(key_typ, ev, &mut events),
                 None => break,
@@ -258,6 +283,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
             }
             Invocation::Fired => {
                 self.slept = false;
+                // CR claude for claude: [bug/medium] Every fire of an argument mints a
+                // new bind id and restarts the watch, even when the tree and prefix are
+                // the values already cached. stop() aborts the old task, which drops
+                // the events it was buffering. Batches already sent under the old id
+                // are dropped too, because the accessors switch to the new id in the
+                // same cycle. A write that completes just before a re-fire therefore
+                // never reaches on_change. That breaks the subscription.gxi promise
+                // that a copy applying the deliveries holds what the tree holds. probe:
+                // design/review-2026-10-12/repro/db2-05.gx loses "k1" in about half its
+                // runs when `#prefix` re-fires with the same null; without the re-fire
+                // it loses nothing. Fix: on Invocation::Fired, compare the new (tree,
+                // prefix) with the previous pair and keep the running watch and bind id
+                // when they are equal; restart only on a real change, and say in the
+                // doc that a change of tree or prefix discards the events still
+                // pending. (db2-05)
                 self.bind_id = BindId::new();
                 self.watch(ctx);
                 let sub = SubscriptionValue { bind_id: self.bind_id };
@@ -388,6 +428,18 @@ macro_rules! db_event_accessor {
                 }
             }
 
+            // CR claude for claude: [bug/medium] The on_change/on_insert/on_remove
+            // accessors release their listener in sleep but keep `out`. At the wake the
+            // first update re-registers, finds no event, and `out.ride()` returns the
+            // previous batch. A select whose scrutinee fired then emits it again as a
+            // new event, so one insert is delivered twice: a screen that toasts or
+            // appends on_insert events repeats the last one each time it is reselected.
+            // design/async_sleep_outputs.md requires database event accessors to reset
+            // to phantom in sleep, as the fs watch accessors do. Fix: set `self.out =
+            // TagValue::phantom()` here, and add a pin to
+            // stdlib/graphix-tests/src/lang/async_restart.rs. probe:
+            // design/review-2026-10-12/repro/x-node-contract-02.gx Also reported as
+            // (x-fix-stdlib-07), (x-rerun-2-02). (x-node-contract-02)
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 if let Some(bid) = self.bind_id.take() {
                     ctx.release_var(bid, self.top_id);

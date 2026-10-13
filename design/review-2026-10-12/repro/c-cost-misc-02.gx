@@ -1,0 +1,27 @@
+// c-cost-misc-02: call-site argument independence is decided over Nop
+// placeholders of omitted defaults.
+// The dynamic call `f(q(n), 2, 3)` decides its arguments' independence at its
+// first update (update_args -> ForkSite::decide_siblings), when the omitted
+// #d is still fill_omitted's Nop; rebind then compiles #d = q(1000 + n), which
+// reaches the same ordered queuefn wrapper q as the given argument, and the
+// stale `Independent` is never revisited, so the two fork.
+// Run: GRAPHIX_PAR=off|force graphix --no-cache --no-fusion c-cost-misc-02.gx
+// Expected (GRAPHIX_PAR=off, every run):
+//   [0, 1000, 1, 1001, 2, 1002, 3, 1003, ..., 9, 1009, 10]
+// Observed (GRAPHIX_PAR=force, 2 of 3 runs): pairs swap, e.g.
+//   [0, 1000, 1001, 1, 2, 1002, ...] or [..., 2, 1002, 1003, 3, ...]
+// Controls stable under force (4 of 4 each): the static call f2(q(n), 2, 3),
+// and the dynamic call with the default written out, f(#d: q(1000 + n), q(n), 2, 3).
+{
+    let clk = sys::time::timer(duration:1.ms, true);
+    let n = 0;
+    n <- clk ~ n + 1;
+    let args: Array<i64> = [];
+    let q = queuefn(#trigger: clk, |x: i64| -> i64 { args <- x ~ array::push(args, x); x });
+    let f1 = |#d: i64 = 0, a: i64, b: i64, c: i64| -> i64 a + b + c + d;
+    let f2 = |#d: i64 = q(1000 + n), a: i64, b: i64, c: i64| -> i64 a + b + c + d;
+    let f = select n { x if x < 0 => f1, _ => f2 };
+    let s = f(q(n), 2, 3);
+    sys::exit(select n { x if x > 30 => 0, _ => never() });
+    select n { x if x > 20 => args, _ => never() }
+}

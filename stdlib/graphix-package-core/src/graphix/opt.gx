@@ -1,5 +1,16 @@
 let is_some = |v: ['a, null]| -> bool 'core_opt_is_some;
 let is_none = |v: ['a, null]| -> bool 'core_opt_is_none;
+// CR claude for claude: [bug/medium] contains compares values, but neither this
+// signature nor the `val contains` in opt.gxi has a `'a: Discernible` bound. As a
+// result it accepts types that `==` refuses: over `[(i64, i64), Array<i64>, null]`, the
+// tuple (1, 2) "contains" the array [1, 2]. Also, fc_contains compares the raw Values.
+// That means references are compared by cell, not by what they name (bind::ref_target).
+// So with r1: [&i64, null] = &a, `opt::contains(r1, &a)` is false while `r1$ == &a` is
+// true. To fix, declare `'a: Discernible` here and in the gxi. Then either write the
+// body in Graphix as a select over null that uses `==`, so it gets the operator's
+// reference handling, or refuse a type that holds a reference (Type::holds_ref). Pin
+// both cases. probe: design/review-2026-10-12/repro/core-aux-05.sh Also reported as
+// (gx-stdlib-01), (x-builtin-effects-04). (core-aux-05)
 let contains = |v: ['a, null], x: 'a| -> bool 'core_opt_contains;
 let or_default = |v: ['a, null], d: 'a| -> 'a 'core_opt_or_default;
 let or = |a: ['a, null], b: ['a, null]| -> ['a, null] 'core_opt_or;

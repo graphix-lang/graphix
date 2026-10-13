@@ -22,6 +22,20 @@ impl EvalCachedAsync for IsFileEv {
     fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match tokio::fs::metadata(&*path).await {
+                // CR claude for claude: [readability/low] The
+                // `is_file`/`is_dir`/`metadata` errors carry no path and print the
+                // io::Error in Debug form. `is_file("/nonexistent")` yields "can't stat
+                // Os { code: 2, kind: NotFound, message: \"No such file or directory\"
+                // }". The fs.rs and dir.rs builtins (`read_all`, `write_all`,
+                // `remove_file`, `create_dir`, ...) and the netidx paths in
+                // netstate.rs/net.rs/watch.rs also use `{e:?}`, which for anyhow is the
+                // multi-line 'Caused by:' form. These strings are program-visible. Use
+                // Display (`{e}`, `{e:#}` for anyhow) and put the path in every fs
+                // message ("can't stat {path}: {e}"). Separately, `str::parse`'s
+                // `fc_parse` returns netidx's whole value grammar ('Expected u8, u16,
+                // ... error or duration') for an ordinary bad number. When the cast
+                // target is known, it should say 'cannot parse "x1" as i64'.
+                // (x-errors-07)
                 Err(e) => errf!("IOError", "can't stat {e:?}"),
                 Ok(m) if m.is_file() => Value::String(path),
                 Ok(_) => errf!("IOError", "not a file"),

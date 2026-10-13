@@ -1,0 +1,2 @@
+let a = { type T = Abstract<i64>; T(1) }
+let b = { type T = Abstract<string>; T("x") }

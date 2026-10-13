@@ -1,0 +1,20 @@
+let count = 0;
+
+tui::input_handler::input_handler(
+  #handle: &|event| select event {
+    `Key({ code: `Char("q"), .. }) => {
+      // Exit on 'q'
+      `Stop
+    },
+    e@ `Key({ code: `Up, .. }) => {
+      count <- e ~ count + 1;
+      `Stop
+    },
+    e@ `Key({ code: `Down, .. }) => {
+      count <- e ~ count - 1;
+      `Stop
+    },
+    _ => `Continue
+  },
+  &tui::paragraph::paragraph("[count]")
+)

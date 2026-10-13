@@ -1,0 +1,24 @@
+// core-lib-01: raw builtins emit TagValue::fired, laundering a wake's own
+// fire into a real event, so a `<-` target initialised through once, take,
+// skip, uniq, hold, count or filter restarts at every wake of its arm.
+// command: graphix --no-cache core-lib-01.gx   (same with --no-fusion)
+// expected (as with `let v = 100` or `let v = bit_not(-101)`, a CachedArgs
+// builtin; design/wake_catchup.md: a target is held back from the wake's
+// own fire):
+//   100 101 102 -1 -1 103 104 105 106 107
+// observed, both engines:
+//   100 101 102 -1 -1 100 101 102 103 104
+// Swap `once(100)` for take(#n:1, 100), skip(#n:0, 100), uniq(100),
+// hold(#clock:1, 100), count(100) + 99 or filter(100, |x| x > 0): same reset.
+let ep = 0;
+ep <- select ep { n if n < 8 => n + 1, _ => never() };
+let mode = select ep { 3 => 1, 4 => 1, _ => 0 };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select mode {
+  0 => {
+    let v = once(100);
+    v <- ep ~ v + 1;
+    v
+  },
+  _ => -1
+}

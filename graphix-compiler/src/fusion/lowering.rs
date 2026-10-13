@@ -221,6 +221,23 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
 /// (a guard re-enters an arm under a standing scrutinee) and the
 /// argument reads the scrutinee or one of the arm's binds, at every
 /// select it sits under. `selects` are the region's selects.
+// CR claude for claude: [bug/high] Reading the scrutinee or an arm bind does not make a
+// trigger fire at every entry to the arm, so a fused performing call under an arm loses
+// prints that the node-walk makes. Three cases get through. The read can sit in an
+// untaken arm of a nested select whose taken arm is a constant. The read can be an
+// argument the callee ignores (`g = |a, b| b`), while a fire the arm missed asleep is
+// what the node-walk re-delivers. And performing_args takes every argument of a
+// performing callee as a trigger, even though the callee may print its own constant
+// (`println("hi")`). In each case the node-walk prints at every entry and the kernel
+// prints once, and `graphix-fuzz check` reports DIVERGENCE. Fix: refuse any performing
+// call (an Io builtin's site, or a call whose call_facts say io) reachable under a
+// select arm, as arm_raise_blocker does for a handler-ful `?`, or share one blocker for
+// both. A finer rule would have to prove the fire. It would walk only fire-preserving
+// nodes down to the scrutinee or a bind, stop at nested selects, guards and calls, and
+// take a callee's triggers from its own analysis. Update the strict-fusion rule in
+// CLAUDE.md/AGENTS.md and design/strict_fusion.md to match. Probe:
+// design/review-2026-10-12/repro/x-fix-fusion-01.gx (variants 01b, 01c).
+// (x-fix-fusion-01)
 fn arm_io_blocker<R: Rt, E: UserEvent>(
     selects: &[&Node<R, E>],
     ctx: &CompileCtx<R, E>,
@@ -238,6 +255,26 @@ fn arm_io_blocker<R: Rt, E: UserEvent>(
             pat.structure_predicate.ids(&mut |id| {
                 binds.insert(id);
             });
+            // CR claude for claude: [bug/high] `entered` does not test whether a
+            // trigger fires at every entry. It only tests whether some Ref under the
+            // trigger names the scrutinee or an arm bind. Also, performing_args returns
+            // every argument of a lambda call as a trigger, ignoring what really
+            // triggers the Io call inside the callee. Three shapes fuse that should
+            // not: a read in an untaken nested arm (`dbg(select y { 0 => s, _ => 7
+            // })`), a read passed to a function that ignores it (`dbg(g(s))` with `g =
+            // |v| 7`), and a callee whose print has a constant trigger (`h(s)` with `h
+            // = |v| { print("c"); v + 1 }`). In each one the node-walk performs at
+            // every entry of the arm, because a constant fires at the arm's wake, while
+            // the kernel performs only once. Fix: replace the scan with a firing test.
+            // A Ref to the scrutinee or a bind passes and a constant fails. A select
+            // passes only through its own scrutinee, never through its arms. Operators,
+            // constructors, fast calls and casts pass if a child passes. A lambda call
+            // passes only if its result is shown to derive from that argument. For a
+            // performing lambda, require that every Io trigger in the callee derives
+            // from its formals, or refuse it under an arm. Correct
+            // design/strict_fusion.md and CLAUDE.md to match, and pin all three shapes
+            // with run! fixtures. probe:
+            // design/review-2026-10-12/repro/f-mod-lowering-01.gx (f-mod-lowering-01)
             let entered = |n: &Node<R, E>| {
                 let mut reads = false;
                 fusion::for_each_emitted_node(n, &mut |x| {
@@ -657,6 +694,17 @@ pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
 /// Whether `t` unfolds, as a tree, past `cap` nodes. A shared part
 /// counts at every place it unfolds but is walked once, so the check is
 /// linear in the type's allocations however much it shares.
+// CR claude for claude: [perf/medium] unfolds_past is not linear over shared types,
+// despite its doc comment. Its memo is keyed by typ::norm_key, which gives no key for
+// Type::Variant, TVar or Ref, so a payload shared through a variant is walked again at
+// every place it occurs. The walk also keeps going after it passes `cap`.
+// TypeMemo::cached calls it before its memo lookup, and freeze_region_return calls it
+// for every region root. A chain like `let x{i} = `A(x{i-1}, x{i-1})` therefore doubles
+// fusion compile time with each line: 28 levels take about 10 s, against 0.3 s with
+// --no-fusion. Fix: memoize by a key that covers Variant (the payload Arc address) and
+// Ref, thread a budget so the walk returns as soon as it passes `cap`, and move the
+// by_id lookup in TypeMemo::cached ahead of this check. probe:
+// design/review-2026-10-12/repro/f-mod-lowering-02.gx (f-mod-lowering-02)
 pub(crate) fn unfolds_past(t: &Type, cap: u32) -> bool {
     fn size(t: &Type, memo: &mut ahash::AHashMap<crate::typ::NormKey, u64>) -> u64 {
         crate::stack::ensure_sufficient(|| {
@@ -1064,6 +1112,15 @@ fn each_arg_node<R: Rt, E: UserEvent>(
 }
 
 /// Is this an fn type once tvars deref and aliases expand?
+// CR claude for claude: [risk/low] Type::with_deref holds the TVar's read guards while
+// its closure runs, and this closure calls expand_refs, which reaches lookup_ref and
+// its locks. expand_ref_node avoids exactly this by cloning the binding out first,
+// because a guard held across lookup_ref can deadlock concurrent compiles. is_fn_shaped
+// runs in parallel fusion tasks (through body_fingerprint, instance_agrees,
+// formal_slots and capture_slots), and it is safe only while no fusion task writes a
+// cell, an invariant written down nowhere. Do what expand_ref_node does: match on
+// `t.deref_cloned()`, and call expand_refs only on the cloned Ref after the guard is
+// released. (f-mod-lowering-05)
 fn is_fn_shaped(t: &Type, env: &Env) -> bool {
     t.with_deref(|t| match t {
         Some(Type::Fn(_)) => true,
@@ -1348,6 +1405,18 @@ fn capture_slots<R: Rt, E: UserEvent>(
             arg_ids.insert(id);
         });
     }
+    // CR claude for claude: [perf/medium] This walk enters every callee instance below
+    // `g`, so a lambda at depth i of a call chain reports every function binding below
+    // it as external. Each one pays `expand_refs` and `is_fn_shaped` before it is
+    // skipped. `TypeMemo::cached` runs `unfolds_past`, a full type-size walk, before
+    // its cache lookup, so even a hit pays the walk. `structural_tail_loop` repeats the
+    // same transitive walk. Over a chain of 1600 lambdas, fusion's Callees phase takes
+    // about 3 s. Build a kernel's captures from its own body (`Refs::without_callees`)
+    // joined with its statically resolved callees' cached kernel captures. Skip
+    // fn-shaped binds before expanding them. Move the `unfolds_past` check after the
+    // `by_id` lookup and memoize its verdict with the entry. probe:
+    // design/review-2026-10-12/repro/x-perf-compile-07-callees-quadratic.gx
+    // (x-perf-compile-07)
     let mut refs = Refs::default();
     g.body().refs(&mut refs);
     let mut external: LPooled<Vec<BindId>> = LPooled::take();
@@ -1446,6 +1515,30 @@ fn claims_no_site_memory<R: Rt, E: UserEvent>(
     );
     let mut none = true;
     fusion::for_each_emitted_node(body, &mut |n| {
+        // CR claude for claude: [bug/high] f-call-flow-05 variant: native tail loop
+        // skips constant raises at newly reached depths (JIT != node-walk). The
+        // f-call-flow-05 fix (946b102a, "a fresh activation block is born") covers
+        // non-tail recursion only. The tail-recursive form that the old repro lists as
+        // "the same divergence" still diverges. `claims_no_site_memory` (lowering.rs)
+        // lets a self-tail-recursive body become one native loop when it has no
+        // collection loop, no non-tail self-call and no callee holding such memory. It
+        // ignores memory the init view carries: whether a constant-derived, handler-ful
+        // raise fires at an activation's birth. The node-walk gives every new depth a
+        // fresh activation, which raises `cast<i64>("x")?` once at birth. The fused
+        // loop runs its passes under one kernel's init word, so depths first reached
+        // after init never raise. f's kernel reports self_blocks=0
+        // (GRAPHIX_DBG_KERNELS=1). Failure: depth goes 2 -> 4. Node-walk: errors =
+        // 0,1,2,3,4,5 (3 raises at init, 2 for the new depths 3 and 4). JIT: 0,1,2,3.
+        // `graphix --no-cache` prints 0..3; `--no-fusion` prints 0..5. graphix-fuzz
+        // check: DIVERGENCE (interp != jit). The non-tail form (`f(n - 1) + 1`, the old
+        // repro) and the form with the raise under a select arm both AGREE now. Fix:
+        // Make the tail-loop gate refuse a body (or a callee body) whose productions
+        // depend on the activation's init view in a way a program can see. The minimum
+        // is the case entry_raise_blocker already identifies, a handler-ful `?` whose
+        // error derives from a constant, applied to a raise anywhere in the body and
+        // not only under a select arm. Such a body then recurses natively with
+        // per-activation blocks. Pin it beside the f-call-flow-05 pin in lang::fusion.
+        // Unverified: the reviewer's report, not checked by a verifier. (x-rerun-2-01)
         none = none
             && match n.view() {
                 NodeView::MapQ(_) | NodeView::FoldQ(_) => false,

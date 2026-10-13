@@ -1,0 +1,3 @@
+let db = db::open("/tmp/x.db")$;
+let t: db::Tree<[string, i64], i64> = db::tree(db, "pfx")$;
+db::cursor::new(#prefix: "aa", t)

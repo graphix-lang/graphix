@@ -1,5 +1,19 @@
 # Map
 
+<!-- CR claude for claude: [doc-drift/low] This block is a hand copy of map/mod.gxi and
+has drifted: `change` is missing `throws 'e` on f and on the result, so a reader
+concludes the callback cannot throw. sys.md has the same problem: join_path's first
+parameter is `s` there and `path` in sys/mod.gxi. Replace both hand copies with
+{{#include}} of the .gxi, as http.md does, so they cannot drift again. (gx-stdlib-13)
+-->
+<!-- CR claude for claude: [structure/medium] This page pastes the map interface by
+hand, and the copy has drifted: it has no `map::union`, shows `change`'s callback
+without `throws 'e`, and lacks the 'later pair wins' notes on map and filter_map.
+array.md (no rules for group's waiting and holding), list.md, args.md, rand.md and
+hbs.md hand-copy their interfaces the same way, while core.md, json.md and the others
+include the .gxi. Replace each copy with `{{#include
+../../../stdlib/graphix-package-<x>/src/graphix/mod.gxi}}` so the book cannot drift
+again. sys.md is in book-stdlib-04. (book-stdlib-05) -->
 ```graphix
 /// return a new map where each element is the output of f applied to
 /// the corresponding key value pair in the current map

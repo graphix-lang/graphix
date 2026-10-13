@@ -1,0 +1,21 @@
+// sys-net-03: rpc republish at the same path races the old Proc's async
+// teardown: 'already published'.
+// Command:
+//   graphix --no-cache design/review-2026-10-12/repro/sys-net-03.gx
+// Every 100ms the doc changes, so PublishRpc drops its Proc and publishes
+// again at /test/rpc3; 40ms after each change the rpc is called.
+// Expected: no "pub" line, and ten answers res 101 .. res 110.
+// Observed (3 of 3 runs): 2-4 of the 10 republishes print
+//   pub error:["PublishRpcError", "already published"]
+// and the call after each failed republish is missing or answered
+// `RpcError "call cancelled before a reply was received"`, until the next
+// doc change republishes.
+let t = sys::time::timer(duration:100.ms, true);
+let k = 0;
+k <- t ~ k + 1;
+let r = sys::net::rpc(#path: "/test/rpc3", #doc: "doc [k]", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x + k);
+println("pub [r]");
+let res: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/test/rpc3", sys::time::after_idle(duration:40.ms, t) ~ {x: 100});
+println("res [res]");
+sys::exit(sys::time::timer(duration:1050.ms, false) ~ 0);
+0

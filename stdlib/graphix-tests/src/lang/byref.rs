@@ -114,6 +114,16 @@ run!(deref_from_tuple_field, DEREF_FROM_TUPLE_FIELD, |v: Result<&Value>| matches
 
 // Reads and writes through every accessor kind; the root value is
 // rebuilt along the path.
+// CR claude for claude: [risk/low] place_read_write, place_move_siblings_bad,
+// place_missing_key and place_through_param still order their phases with one-shot
+// `sys::time::timer`s. The run loop puts every finished task into one cycle. So if the
+// runtime thread does not run between two timers, the final sample reads the root
+// before the earlier phase's `<-` lands, and the test fails without pointing at any
+// bug. This is the same hazard tests-lang-d-08 described; its fix converted only the
+// six fixtures it named, and place_missing_key was added afterwards with timers. Fix:
+// drive these four by cycles with the `step <- select step { s if s < 20 => s + 1, _ =>
+// never() }` counter that place_bottom_key uses, and write any new place fixture that
+// way. (x-fix-fuzz-tests-04)
 const PLACE_READ_WRITE: &str = r#"
 {
   let a = [10, 20, 30];
@@ -145,6 +155,14 @@ run!(place_read_write, PLACE_READ_WRITE, |v: Result<&Value>| {
 // A moving reference points where its key says when it fires; two
 // writes to one root in one cycle both land; a write past an array's
 // end is dropped and the root is untouched.
+// CR claude for claude: [test-gap/low] This fixture never observes the write through
+// the moved reference. At t3, `*r0` and `*r2` overwrite both a[0] and a[2] before the
+// only sample at t4, so the result is (1, [100, 2, 300], 300) whether `*r <- t2 ~ 30`
+// lands at index 2, at index 0, or nowhere. Deleting that line leaves the output
+// unchanged. Sample `a` between t2 and t3 and pin [1, 2, 30].
+// PLACE_THROUGH_BOTTOM_DEREF has the same hole: the pending write that its comment says
+// lands at the retarget is overwritten by `*s <- t4 ~ 7` before t5 samples. Sample `a`
+// between the retarget and t4 and pin [99, 20]. (tests-lang-rest-b-07)
 const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 {
   let a = [1, 2, 3];
@@ -384,6 +402,13 @@ run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, |v: Result<&Value>|
 
 // A place indexed past i64::MAX addresses nothing, never from the end:
 // its read is bottom and the sample banks.
+// CR claude for claude: [test-gap/low] The write `obs <- t1 ~ *r` and the read `t2 ~
+// obs` are ordered by 20 ms and 50 ms timers. When a stall puts both timer fires in one
+// cycle, the read sees obs before the write lands and the fixture yields null whatever
+// `*r` reads. A regression that indexed `&a[u64::MAX]` from the end and read 30 would
+// pass under load. Use the `step` counter idiom the neighbouring fixtures use: t1 at
+// step 2, t2 at step 5. probe: design/review-2026-10-12/repro/x-rerun-6-09.gx
+// (x-rerun-6-09)
 const PLACE_INDEX_U64_ABOVE_I64_MAX: &str = r#"
 {
   let a = [10, 20, 30];

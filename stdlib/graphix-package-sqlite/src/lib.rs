@@ -14,6 +14,13 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 struct ConnectionValue {
+    // CR claude for claude: [risk/low] A connection not closed with sqlite::close drops
+    // wherever its last Arc goes, usually the runtime thread when the abstract value is
+    // replaced or its node deleted. Closing the last connection to a WAL database
+    // checkpoints and syncs, which is blocking disk I/O inside a cycle.
+    // graphix-package-db's Reaped already handles this for sled (its drop runs on
+    // spawn_blocking). Move Reaped to graphix-package-core and hold the connection as
+    // Arc<Reaped<Mutex<Option<Connection>>>>. (http-sqlite-db1-11)
     inner: Arc<Mutex<Option<rusqlite::Connection>>>,
 }
 
@@ -54,6 +61,14 @@ fn sqlite_to_value(
     })
 }
 
+// CR claude for claude: [perf/low] Every exec/query copies each string param
+// (to_string) and blob param (to_vec) into an owned rusqlite Value. collect_params then
+// builds a second vector of &dyn ToSql over the copies. The `_ => Null` arm stores SQL
+// NULL for any value SqlVal does not allow, a silent default that would hide a future
+// signature change. Bind borrowed instead: a newtype over &Value whose ToSql returns
+// ToSqlOutput::Borrowed(ValueRef::..) for the five SqlVal members and Err for anything
+// else, passed through rusqlite::params_from_iter. Then collect_params and both
+// param_refs vectors go away. (http-sqlite-db1-13)
 fn value_to_sqlite(v: &Value) -> rusqlite::types::Value {
     match v {
         Value::I64(i) => rusqlite::types::Value::Integer(*i),
@@ -222,6 +237,15 @@ impl ReadFormat for Query {
                         sorted_cols.extend((0..stmt.column_count()).map(|i| {
                             (i, ArcStr::from(stmt.column_name(i).unwrap_or("")))
                         }));
+                        // CR claude for claude: [bug/low] Two result columns with the
+                        // same name (SELECT a.id, b.id ... self-join) become duplicate
+                        // [name, value] pairs. Read as Array<Map<string, SqlVal>>, one
+                        // column is silently dropped. Read as a struct, the cast fails
+                        // with 'struct size mismatch' and never names the duplicated
+                        // column. After the sort, check adjacent names and return
+                        // SqliteError naming the column and saying to alias it with AS.
+                        // probe: design/review-2026-10-12/repro/http-sqlite-db1-12.gx
+                        // (http-sqlite-db1-12)
                         sorted_cols.sort_by(|a, b| a.1.cmp(&b.1));
                     }
                     let mut vals: LPooled<Vec<Value>> = LPooled::take();

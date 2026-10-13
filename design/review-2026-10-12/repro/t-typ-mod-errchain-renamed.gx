@@ -1,0 +1,4 @@
+use core::ErrChain as EC;
+let f = |e: Error<ErrChain<`A>>| 0;
+let g: Error<EC<EC<`A>>> = never();
+f(g)

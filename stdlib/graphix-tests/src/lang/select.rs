@@ -151,6 +151,10 @@ const NESTEDMATCH2: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] This predicate accepts any error, a parse error
+// or an unrelated type error included, so it does not pin why the program is refused.
+// Replace it with refused("refutable patterns are not allowed in let") and drop the
+// dbg!. (tests-select-07)
 run!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
     Err(e) => {
         dbg!(e);
@@ -948,6 +952,14 @@ run!(variant_ignored_payload_arm_narrows, VARIANT_IGNORED_PAYLOAD_ARM_NARROWS, |
 
 // A guarded select fires only when an input feeding it fired: count 1
 // on both engines despite an unrelated reactive input in the region.
+// CR claude for claude: [test-gap/low] These fixtures pin only consulted guards. Add
+// the converse: a guard on an arm below the taken one does not emit when its input
+// fires. `select 0 { 0 => 1, k if m == 0 => 2, _ => 3 }` with `m = x % 2` over four `x`
+// fires gives count 1. Also pin that an or-arm's one guard is judged once, on the first
+// structural match: `|p: (i64, i64)| -> i64 #[native] select p { (0, y) | (y, 9) if y <
+// 5 => y, _ => -1 }` gives -1 on (0, 9). OR_GUARD's (5, 0) fails its first alternative
+// on structure, so it does not cover this. Both engines agree on both values today.
+// (tests-select-08)
 const GUARDED_SELECT_FIRING_COUNT: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -973,6 +985,15 @@ const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 }
 "#;
 
+// CR claude for claude: [readability/low] Several names and comments say what the code
+// does not do. These *_selection_memory tests (and tail_select_guard_capture_memory)
+// pin a guard fire's emission; selection memory is deleted, so rename them
+// guard_fire_emits_*. The `_ => x` arm in missing_on_dead_arm_scalar/string is untaken,
+// not dead (dead arms are refused). byref_born_in_fused_arm's arm node-walks (dbg and a
+// reference), so name it for the guard. strict_sample_no_bank's comment says three
+// writes where it asserts four (three banked plus the live one).
+// wake_recomputes_a_targets_siblings claims the `<-` target keeps its last write but
+// never observes `a`: return `(a, b)` and pin both. (tests-select-11)
 run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Result<
     &Value,
 >| {
@@ -1400,6 +1421,10 @@ const SELECT_RECURSIVE_ADT_CHAIN: &str = r#"
 run!(
     select_recursive_adt_chain,
     SELECT_RECURSIVE_ADT_CHAIN,
+    // CR claude for claude: [test-gap/low] Every payload variant is an array at run
+    // time, so this predicate accepts any result, a wrong rewrite included. Pin the
+    // printed value: `A(`M(`A(`M(`N(1.), `V), `M(`A(`V, `N(1.)), `N(1.))), `V),
+    // `M(`M(`A(`V, `N(1.)), `V), `N(1.))). (tests-select-10)
     |v: Result<&Value>| matches!(v, Ok(Value::Array(_)));
     FuseExpect::Jit
 );
@@ -1809,6 +1834,15 @@ run!(
 );
 
 // The same through a tuple head.
+// CR claude for claude: [test-gap/medium] The comment above inherits 'fuses' from
+// select_variant_union_payload, but this select does not fuse: under #[native] it is
+// refused with 'expression did not fully fuse'. The test passes only because
+// FuseExpect::Jit accepts any fused region. The same holds for every fixture in this
+// file whose comment says its select fuses (the structural, nested and owned-scrutinee
+// blocks, select_variant_union_payload/rect): a de-fusion would go unnoticed. Put
+// #[native] on the select in each of them. Here, either close the gap (the `null as _`
+// arm over the tuple union node-walks) or correct the comment and pin the select's
+// de-fusion. (tests-select-04)
 const SELECT_TUPLE_UNION_MEMBER: &str = r#"
 {
   let v: [([`A, `B], i64), null] = (`B, 7);
@@ -1854,6 +1888,15 @@ run!(or_capture_union, OR_CAPTURE_UNION, |v: Result<&Value>| {
 // An enclosing select's pattern binds are facets of one delivery: arm 0
 // handles the key through `ev`, so `k` is spent and the flip to arm 1
 // does not re-raise it.
+// CR claude for claude: [doc-drift/low] The comment above says `k` is spent because arm
+// 0 reads `ev`. But `TrackedFires` never delivers a pattern bind of an enclosing
+// select, read or not, so `fired` is 0 even with `0 => null`. The test pins the
+// pattern-bind exclusion, not the facet consumption through `ev`
+// (alias_read_consumes_the_formals_fire covers that). Reword the comment to say what it
+// pins. In CLAUDE.md's wake catch-up rule, also say that an enclosing select's pattern
+// binds are only consumed, never delivered, unlike a destructuring let's siblings.
+// Probe: design/review-2026-10-12/repro/tests-select-02.gx gives (bound, plain, lt) =
+// (0, 1, 1). (tests-select-03)
 const SELECT_SIBLING_BINDS_SPENT: &str = r#"
 {
   type Ev = [`Key([`Enter, `Other]), `Mouse];
@@ -2084,6 +2127,13 @@ const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/medium] This predicate cannot fail on the rule it
+// pins. `once <- 1` writes the constant 1, so `once` is 1 after one write or after
+// three. A regression that re-fires a constant arm RHS on every same-arm re-match, like
+// `once <- k ~ 1`, still passes. Take `count(once)` outside the arm and assert it is 2
+// (init plus one entry). Add a re-entry case (`Go at steps 1,2,3,6,7, otherwise `Stop)
+// that expects 3. Probe: design/review-2026-10-12/repro/tests-select-01.gx gives (once,
+// count, every, count) = (1, 2, 1, 4) on both engines. (tests-select-02)
 run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(1)]),
     _ => false,
@@ -2733,6 +2783,13 @@ run!(array_list_ladders_refused, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
 // Two members with one runtime form can't be told apart by any test:
 // a tuple and an array, a bare variant and a string, two references,
 // and a union trait dispatch over such members.
+// CR claude for claude: [test-gap/medium] The one-runtime-form pins skip three
+// collisions CLAUDE.md lists: a payload variant and an array (`[`A(i64), Array<[`A,
+// i64]>]`), a struct and an array (`[{a: i64, b: i64}, Array<(string, i64)>]`), and a
+// reference and a number (`[&i64, u64]`). If `Type::rep_collision` lost one of these,
+// nothing would fail. Losing the reference case lets `&i64 as r` take a u64 and
+// dereference it. Add a refused("same runtime form") fixture for each. All three are
+// refused today. (tests-select-05)
 const SAME_FORM_TUPLE_ARRAY: &str = r#"
 {
   let f = |x: [(i64, string), Array<[i64, string]>]| select x {
@@ -3030,6 +3087,14 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(4)))
 );
 
+// CR claude for claude: [structure/low] This loop, pattern_typing_refusals and
+// written_type_constructor_refusals call testing::refusal, which runs the JIT build
+// only. None of their 17 programs gets run!'s interp mode, which fails when `--check`
+// and the build disagree. Make each entry a run!(name, src, refused(why);
+// FuseExpect::None). Across this file, also replace the hand-rolled `matches!(&v,
+// Err(e) if format!("{e:#}").contains(..))` predicates with refused(..). Replace the
+// repeated `cast_to::<i64>().unwrap()).collect` comparisons with one shared helper,
+// moving dense_deltas::as_i64s into graphix_package_core::testing. (tests-select-09)
 #[tokio::test(flavor = "current_thread")]
 async fn coverage_refusals() {
     use graphix_package_core::testing::refusal;

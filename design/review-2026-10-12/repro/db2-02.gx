@@ -1,0 +1,19 @@
+// db2-02: an effectful async db op in a select arm runs again at the arm's wake
+// with no new trigger.
+// command: rm -rf /tmp/db2-02.db; graphix --no-cache design/review-2026-10-12/repro/db2-02.gx
+//   (same with --no-fusion)
+// expected: "pop (1, 1) b fires 1" then "popped (1, 1) left 2"
+// observed: "pop (1, 1) b fires 1", "pop (2, 2) b fires 1", "popped (2, 2) left 1":
+//   b fires once, the arm sleeps at 200ms and wakes at 400ms, and the wake pops a second entry.
+let db = db::open("/tmp/db2-02.db")$;
+let t: db::Tree<i64, i64> = db::tree(db, "x")$;
+let b = db::batch(t, [`Insert(1, 1), `Insert(2, 2), `Insert(3, 3)])$;
+let on = true;
+on <- sys::time::timer(duration:200.ms, false) ~ false;
+on <- sys::time::timer(duration:400.ms, false) ~ true;
+let popped = select on { true => db::pop_min(b ~ t)$, false => never() };
+let nb = count(b);
+println("pop [popped] b fires [nb]");
+let left = db::len(sys::time::timer(duration:700.ms, false) ~ t)$;
+sys::exit(sys::time::after_idle(duration:900.ms, 0));
+println("popped [popped] left [left]")

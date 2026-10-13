@@ -248,6 +248,19 @@ pub(crate) fn emit_map_kind<R: Rt, E: UserEvent>(
     let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
+    // CR claude for claude: [perf/medium] A loop whose element is unit or null returns
+    // Ok(None) here, and the same happens in emit_init_kind and emit_filter_map_kind.
+    // The for-each form `array::map(xs, |x| println(x))` therefore never fuses. Its
+    // whole enclosing function node-walks, and #[native] and FusionStats only show
+    // CallSite::emit_clif's generic 'lambda call site ... not discovered'. A callback
+    // that returns its element instead (`|x| { println(x); x }`) fuses. Fix: give the
+    // scaffolds a null element (run the loop for its effects and build the array of
+    // nulls from the length). Until then, return a fusion::blocker naming 'a collection
+    // of null elements has no loop scaffold' instead of Ok(None). Related: a `~` in a
+    // callback (`|x| x ~ 1`) is reported as capture_slots' 'a capture has no binding'
+    // instead of the sample blocker. probe:
+    // design/review-2026-10-12/repro/x-engine-collections-03.gx
+    // (x-engine-collections-03)
     if is_unit_or_null(&output_type) {
         return Ok(None);
     }

@@ -1,0 +1,16 @@
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let (a, b) = (0, 0);
+a <- select n { 2 => 7, _ => never() };
+let c = ((n < 2) || (n >= 4)) && (a >= 0);
+sys::exit(select n { 7 => 0, _ => never() });
+let out = select c {
+  true => {
+    let cnt = 0;
+    cnt <- b ~ cnt + 1;
+    cnt
+  },
+  false => n
+};
+out

@@ -96,6 +96,33 @@ impl Type {
                 hist.remove(&key);
                 r
             }
+            // CR claude for claude: [bug/medium] This arm judges every unfilled
+            // constructor application by `==`, and it sits ahead of the Any, Bottom and
+            // TVar arms. So a select over a constructor-trait value (`|c: Collection|`,
+            // `'c: Collection |c: 'c|`) refuses `_` as "pattern Any will never match
+            // 'c<..>". A capture `x` and a tuple pattern `(x, true)` are refused as
+            // well, even when the pattern and the scrutinee print identically. An open
+            // constructor can become any constructor, so it should overlap the way an
+            // open TVar does. Fix: move the Any/Bottom arms ahead of this one. Treat an
+            // App whose constructor is an unbound variable like an unbound TVar: true,
+            // or decompose it through the constructor's shape when the other side has
+            // one. Keep `==` only for two applications that cannot be decomposed.
+            // Probe: design/review-2026-10-12/repro/t-contains-02-app-wildcard.gx.
+            // (t-contains-02)
+            // CR claude for claude: [bug/high] This arm answers `self == t` for any
+            // pair with an unfilled constructor application on either side. It comes
+            // before the Any, TVar and Set arms, so Any against 'c<i64> answers false,
+            // and so does a distinct but equal copy of 'c<T>. select's Reach::arm then
+            // calls the arm dead. As a result every select whose scrutinee holds 'c<..>
+            // under 'c: Collection, or a `c: Collection` parameter, is refused at the
+            // definition, `_` included. Dropping the arm gives "missing match cases",
+            // so no spelling of the select works. Fix: handle Any, Bottom, TVar and Set
+            // before this arm. An unfilled App could match whatever its constructor's
+            // bound admits, so (App, x) should be true unless x is a concrete shape the
+            // bound excludes. Compare (App, App) by constructor and by could_match on
+            // the arguments, not by `==`. Add pins for `_` over 'c<i64>, a binding arm
+            // over `c: Collection` and a null arm over ['c<i64>, null]. probe:
+            // design/review-2026-10-12/repro/x-rerun-6-01.gx (x-rerun-6-01)
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)
@@ -291,6 +318,29 @@ impl Type {
             }
             // one member set has several normal forms (a merge takes the
             // members in arrival order), so ground unions match as sets
+            // CR claude for claude: [bug/low] This ground-union arm runs only when both
+            // sides are Type::Set. A union of primitives normalizes to one multi-bit
+            // Type::Primitive, so a signature `[T, null]` (with `type T = [i64,
+            // string]`) against an implementation that wrote `[null, i64, string]`
+            // falls through to the final 'type mismatch' arm. The same happens the
+            // other way round, and a correct implementation is refused. Take the
+            // mutual-containment branch whenever either side is a Set or a multi-bit
+            // Primitive (or simply any pair of ground types) and neither has unbound
+            // cells. probe: design/review-2026-10-12/repro/x-fix-types-13.sh
+            // (x-fix-types-09)
+            // CR claude for claude: [bug/medium] Ground unions match as sets only when
+            // both sides are a Set. An implementation's binding can be a Set that is
+            // not normalized, such as [i64, i64] from `select b { true => y, false => 1
+            // }` with y written i64 later. That binding is never normalized, because
+            // TVar::normalize_int leaves a cell an earlier task owns unchanged. So `val
+            // z: i64` against `let z = super::x` falls through to the last arm and is
+            // refused with "signature has i64, implementation has [i64, i64]". The same
+            // program checks without the interface. Normalizing at the call site in
+            // Module::check_sig would not help, since normalizing a TVar returns the
+            // TVar. Fix: apply the mutual-containment comparison whenever either side
+            // is a Set and neither side has unbound cells, or compare the normalized
+            // form of a dereferenced copy of the binding. Pin it with t-tvar-09 case 7.
+            // Probe: design/review-2026-10-12/repro/x-rerun-7-03.sh. (x-rerun-7-03)
             (Self::Set(_), Self::Set(_))
                 if !self.has_unbound() && !impl_type.has_unbound() =>
             {
@@ -307,6 +357,17 @@ impl Type {
                     })
                 }
             }
+            // CR claude for claude: [bug/low] A set holding an open variable is matched
+            // member by member in stored order, so an implementation that writes the
+            // same union in another order pairs the wrong variables and is refused:
+            // `val f: fn(x: ['a, 'b], y: 'a) -> 'a` over `let f = |x: ['b, 'a], y: 'a|
+            // -> 'a y` fails with 'type variable usage mismatch: expected 'b, got 'a'.
+            // The ground-set branch above already treats one union's several normal
+            // forms; the open case needs the same, e.g. pair each signature member with
+            // an implementation member it sig-matches, trying each candidate against a
+            // scratch copy of `tvar_map` and committing only a full assignment. probe:
+            // design/review-2026-10-12/repro/t-fntyp-07/ (main.gx, m.gx, m.gxi).
+            // (t-fntyp-09)
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
                 for (t0, t1) in s0.iter().zip(s1.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
@@ -406,6 +467,21 @@ impl Type {
                     }
                 }
             }
+            // CR claude for claude: [bug/low] A signature variable that meets a union
+            // of unbound implementation cells is refused here, even when mapping each
+            // cell to that variable would make the union collapse to it. As a result,
+            // `let pick = |b, x, y| select b { true => x, false => y }` fails against
+            // `val pick: fn<'a: Any>(b: bool, x: 'a, y: 'a) -> 'a`, although the
+            // implementation is strictly more general. The same happens for any
+            // arm-union or array-literal return over two parameters. Fix: when every
+            // member of the impl union is an unbound impl tvar, map each one to the
+            // signature variable through tvar_map, refusing as the TVar arm does when a
+            // member is already mapped to something else. Also print the 'val .. is
+            // declared .. but implemented ..' messages in node::module under
+            // PrintFlag::DerefTVars, so the implemented type shows its structure
+            // instead of bare '_N cells. probe:
+            // design/review-2026-10-12/repro/x-typecheck-generics-08/main.gx
+            // (x-typecheck-generics-08)
             (Self::TVar(sig_tv), impl_type) => {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(

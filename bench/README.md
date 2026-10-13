@@ -66,6 +66,17 @@ time to cut scheduler noise, and prints the node-walk / JIT ratio. A
 node-walk cell of `fail` means the program produced no timing line and
 `timeout` means it exceeded the per-run limit.
 
+<!-- CR claude for claude: [doc-drift/low] Fix these doc errors against the tree. - This
+paragraph says `symbolic` has no fixed kernel ABI and its hot path node-walks. The
+symbolic section below and symbolic.gx's header say build, deriv and eval_at fuse and
+only simplify node-walks. - The fused list here and the Benches table omit
+`list_fold_sum`, `list_map_fold` and `composite_seams`, which all fuse under #[native].
+- In bench/collection/README.md: `run.sh` is a wrapper over ../run.sh, not a copy. The
+List `_rec` rows use `[<>]`/`[<x, rest..>]` patterns, not Cons/Nil. The `1x` legend
+should read 'jit about equal to node-walk', since flatmap_fold's loop fuses and is
+copy-bound. - Delete the '#203 now fully fuses' history here and in mandelbrot.gx's
+header. - par_wide.gx's header should say 4095 activations per slot, since f(11, x)
+makes 2^12-1 calls. (examples-rest-06) -->
 The corpus is no longer all-fused: the seven pure-compute benches
 (`fold_*`, `map_fold`, `filter_fold`, `tail_sum`, `leibniz_pi`,
 `mandelbrot`) fuse fully, so their ratios reflect native code vs the
@@ -73,6 +84,24 @@ interpreter. The three newer benches deliberately probe workload
 classes at the edge of fusion coverage — `stream_stats` and
 `netidx_stream` have an async event spine that can never fuse (only the
 per-event sync compute does), and `symbolic` works over a recursive ADT
+<!-- CR claude for claude: [doc-drift/low] bench READMEs contradict themselves and the
+code; results tables are stale. bench/README.md says symbolic's recursive ADT 'has no
+fixed kernel ABI, so its hot path node-walks', while :172-177 (and symbolic.gx) say
+build/deriv/eval_at fuse over the opaque two-word ABI. The latter is true (verified with
+#[native]). Its results table (07-02, with a NOTE to re-run) reports symbolic JIT 0.66x
+of the node-walk; at HEAD (debug, PAR=off) the JIT takes 5.96 s and the node-walk 9.39
+s, so fusion now wins. The 'seven pure-compute benches' list omits list_* and
+composite_seams. bench/collection/README.md says '`run.sh` here is a copy' (it is a
+3-line exec of ../run.sh). :21 describes the `*_rec` List rows as '`Cons`/`Nil`
+recursion' (lfold_rec uses native `[<>]`/`[<x, rest..>]`). :108 says 'lfold_rec still
+native-recurses per level', which the same file later refutes. Both READMEs narrate
+history (dated fixes, commit hashes) where rules belong, against design/'s 'as built'
+convention. Failure: A reader trusting the README concludes fusion makes recursive-ADT
+code slower and skips it, or edits collection/run.sh thinking it is an independent copy.
+Fix: Re-run both corpora and replace the tables. Delete the contradicting paragraph
+(README.md) and the stale bullets. Keep only what each bench measures and how to run it;
+history lives in git log. Unverified: the reviewer's report, not checked by a verifier.
+(examples-rest-08) -->
 that has no fixed kernel ABI, so its hot path node-walks even with
 fusion on. Their ratios measure fusion *coverage* as much as codegen
 quality, which is the point.

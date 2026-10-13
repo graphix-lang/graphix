@@ -1,0 +1,12 @@
+// t-print-05: type annotations print flat in arguments, cast<T>, never<T>, with(e: T),
+// throws and catch(e: T), though Type has a multi-line layout.
+// command: graphix fmt --stdout t-print-05.gx | awk '{print length}'
+// expected: every line within the default width 90; observed: lines of 109 to 117
+// columns, one per annotation position.
+let f = |x: {aaaaaaaaaaaaaaa: i64, bbbbbbbbbbbbbbbbbbbbbbb: string, ccccccccccccccccccc: f64, ddddddddddddd: i64}| x;
+let r = cast<{aaaaaaaaaaaaaaa: i64, bbbbbbbbbbbbbbbbbbbbbbb: string, ccccccccccccccccccc: f64, ddddddddddddd: i64}>(y);
+let t = try { a; b } with(e: [`Aaaaaaaaaaaaaaaaaaaaaaa, `Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, `Cccccccccccccccccccccccc]) { c; d };
+let g = |x| -> i64 throws [`Aaaaaaaaaaaaaaaaaaaaaaa, `Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, `Cccccccccccccccccccccccc] x;
+{ catch(e: [`Aaaaaaaaaaaaaaaaaaaaaaa, `Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, `Cccccccccccccccccccccccc]) e; x? };
+let n = never<{aaaaaaaaaaaaaaa: i64, bbbbbbbbbbbbbbbbbbbbbbb: string, ccccccccccccccccccc: f64, ddddddddddddd: i64}>();
+1

@@ -1,0 +1,8 @@
+type Counter<'a> = Abstract<'a>;
+trait Show {
+    val show: fn(self) -> string
+};
+impl<'a>   Show for Counter<'a> { let show = |c| "x" };
+impl<'a>
+Show for Array<'a> { let show = |c| "y" };
+Show::show(Counter(1))

@@ -1,0 +1,7 @@
+type Color = Abstract<{r: i64, g: i64, b: i64}>;
+impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
+let c1 = Color({r: 1, g: 2, b: 3});
+// println prints [#123]; the shell's own print of the value below prints [Color({b: 3, g: 2, r: 1})]
+println([c1]);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[c1]

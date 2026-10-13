@@ -1,0 +1,5 @@
+type Cfg = {name: string, weights: [Array<f64>, null], tag: string};
+let r: Result<Cfg, [`JsonErr(string), `InvalidCast(string)]> = json::read(r#"{"name": "x", "weights": [1, 2, 3]}"#);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("r=[r]");
+0

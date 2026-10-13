@@ -1,0 +1,18 @@
+// x-parallel-04: #[parallel] over a map whose callback is a function value compiles (the
+// assertion takes every MapQ as forking) but the slots never fork, even under
+// GRAPHIX_PAR=force: the slot calls are unbound (Slot(None) is never prebound) when
+// decide_siblings runs. Every cycle prints s0..s7 in order; a lambda-literal callback
+// prints shuffled under force.
+let rec f = |d: i64, v: i64| -> i64 select d {
+    0 => v,
+    d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003
+};
+let k = 0;
+let cbs = [|x: i64| { let y = f(9, x + k); println(y ~ "s[x]"); y }, |x: i64| x];
+let pick = array::iter([0]);
+let cb = cbs[pick]$;
+let xs = array::init(8, |i| i);
+let r = #[parallel] array::map(xs, cb);
+k <- r ~ select k { k if k < 6 => k + 1, _ => never() };
+sys::exit(select k { 6 => r ~ 0, _ => never() });
+k

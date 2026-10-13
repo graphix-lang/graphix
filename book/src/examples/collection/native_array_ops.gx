@@ -10,6 +10,21 @@ let rec fold_go = |a: Array<'a>, f: fn(acc: 'b, x: 'a) -> 'b, i: i64, acc: 'b| -
         false => acc
     };
 
+// CR claude for claude: [doc-drift/medium] Book and example claim the hand-written find
+// beats the intrinsic on an average hit; it doesn't. native_array_ops.gx says the index
+// loop `find_go` stops at the match, "so on an average hit this BEATS" the intrinsic.
+// book/src/udt/collection.md repeats the claim. bench/collection/README.md's own table
+// contradicts it: find_rec takes 8.0 ms for a full scan and find_intr 1.90 ms, so a
+// uniformly placed hit averages about 4 ms against 1.9 ms. The README's support is a
+// single 24%-position measurement. Measured at HEAD with the same 500k corpus: a
+// find_rec hit at the midpoint takes about 5.4 ms; find_intr takes about 3.4 ms with
+// GRAPHIX_PAR=off and about 0.8 ms under the default auto, where its kernel loop forks.
+// Failure: A reader writes `find` as a hand loop for speed, as the book advises, and
+// gets a 2-7x slower search on typical inputs. Fix: Say what the numbers show: the
+// loop's early exit wins only when the hit is in roughly the first fifth (serial) and
+// never against the forked intrinsic. The advantage is per-type early exit for a user
+// `Collection` impl, not speed over Array's intrinsic. Fix collection.md the same way.
+// Unverified: the reviewer's report, not checked by a verifier. (examples-rest-02)
 // find: stops at the match — the early exit a fold cannot express
 // (the intrinsic scans all slots by rule, so on an average hit this
 // BEATS it).

@@ -5,6 +5,11 @@ use netidx::subscriber::Value;
 // The rand builtins carry per-instance RNG state, so every fixture
 // here node-walks.
 
+// CR claude for claude: [doc-drift/low] The comment above says the rand builtins carry
+// per-instance RNG state. They do not: Rand, Pick and Shuffle all draw from the
+// thread-local `rand::rng()`. They node-walk because they are nondeterministic and so
+// not Stateless. Reword the comment to say that, or delete it, since each fixture's
+// FuseExpect::None already says the same. (small-pkgs-10)
 const RAND_FLOAT_DEFAULT: &str = r#"
   rand::rand(#clock:1)
 "#;

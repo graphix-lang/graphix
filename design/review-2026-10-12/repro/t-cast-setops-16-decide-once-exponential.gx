@@ -1,0 +1,26 @@
+type T0 = [null, (T1, T1)];
+type T1 = [null, (T2, T2)];
+type T2 = [null, (T3, T3)];
+type T3 = [null, (T4, T4)];
+type T4 = [null, (T5, T5)];
+type T5 = [null, (T6, T6)];
+type T6 = [null, (T7, T7)];
+type T7 = [null, (T8, T8)];
+type T8 = [null, (T9, T9)];
+type T9 = [null, (T10, T10)];
+type T10 = [null, (T11, T11)];
+type T11 = [null, (T12, T12)];
+type T12 = [null, (T13, T13)];
+type T13 = [null, (T14, T14)];
+type T14 = [null, (T15, T15)];
+type T15 = [null, (T16, T16)];
+type T16 = [null, (T17, T17)];
+type T17 = [null, (T18, T18)];
+type T18 = [null, (T19, T19)];
+type T19 = [null, (T20, T20)];
+type T20 = [null, (T21, T21)];
+type T21 = [null, (T0, T0)];
+let v: T0 = null;
+sys::exit(sys::time::after_idle(duration:10.ms, 0));
+println("v=[v]");
+0

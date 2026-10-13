@@ -1,0 +1,18 @@
+// x-typecheck-patterns-02: an irrefutable tuple pattern over a union of
+// same-shaped members is counted exhaustive, but its runtime predicate is
+// narrowed to one member, so the other member's values match no arm.
+// Command: graphix --no-cache x-typecheck-patterns-02.gx (also --no-fusion)
+// Expected: ["1 s", "s 1"] (--check accepts; (x, y) covers both members)
+// Observed: no value; the log says: select e { (x, y) => "[x] [y]" }: no arm
+// matches ["s", i64:1]: a coverage hole in the check
+// Same with {x, y} over [{x: i64, y: string}, {x: string, y: i64}];
+// `A(x, y) over [`A(i64, string), `A(string, i64)] is refused instead
+// ("missing match cases: no arm covers `A(string, i64)"), and
+// `let (x, y) = v` over the union is refused with "(i64, string) matches only
+// part of [(i64, string), (string, i64)]": the predicate is one member.
+// Writing the union in the other order loses the same member.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let f = |a: Array<[(i64, string), (string, i64)]>| array::map(a, |e| select e {
+  (x, y) => "[x] [y]"
+});
+f([(1, "s"), ("s", 1)])

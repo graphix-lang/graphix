@@ -1,0 +1,12 @@
+// book-core-11: missing-match hint blames slice arms when no slice arm exists
+// command: graphix --check design/review-2026-10-12/repro/book-core-11.gx
+// expected: "missing match cases: no arm covers null" and nothing more
+// observed: "... no arm covers null (the slice arms cover finitely many
+//   lengths — an array or list scrutinee also needs a rest pattern or a
+//   wildcard)": the Array member, covered whole by its type test, keeps an
+//   untouched ladder that Reach::exhausted reports as the gap.
+let x: [Array<i64>, i64, null] = null;
+select x {
+  Array<i64> as a => array::fold(a, 0, |s, x| s + x),
+  i64 as n => n
+}

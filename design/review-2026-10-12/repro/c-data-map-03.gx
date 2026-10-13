@@ -1,0 +1,6 @@
+// c-data-map-03: a map literal with any non-constant entry de-fuses its enclosing function (graphix-fuzz run).
+let f = |x: i64| -> i64 {
+  let m = {"a" => x, "b" => x + 1};
+  select m{"b"} { error as _ => 0, v => v * 2 }
+};
+f(3)

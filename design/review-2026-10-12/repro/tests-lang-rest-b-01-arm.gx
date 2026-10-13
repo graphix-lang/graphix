@@ -1,0 +1,8 @@
+// tests-lang-rest-b-01-arm: the select-arm twin of tests-lang-rest-b-01:
+// the arm sleeps while `a` fires at n = 6 and the wake raises it: 2, then 9.
+let a = 0;
+let n = 0;
+n <- select n { k if k < 12 => k + 1, _ => never() };
+a <- select n { 6 => 7, _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select n { 2 | 9 => a ~ n, _ => never() }

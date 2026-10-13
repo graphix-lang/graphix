@@ -1,0 +1,10 @@
+// x-typecheck-generics-05: a rank-2 quantifier never contains another quantifier,
+// so a rank-2 value forwarded to a rank-2 formal is refused.
+// command: graphix --no-cache --check design/review-2026-10-12/repro/x-typecheck-generics-05.gx
+// expected: accepted (running it prints 1), as it is when both formals name one
+// typedef `type F = fn<'b: Any>(x: 'b) -> 'b`, or when app2 passes `|x| g(x)`.
+// observed: type mismatch fn<'b: Any>(x: 'b: unbound within Any) -> 'b: unbound
+// within Any does not contain fn<'c: Any>(x: 'c: unbound within Any) -> 'c: unbound within Any
+let app = |f: fn<'b: Any>(x: 'b) -> 'b| f(1);
+let app2 = |g: fn<'c: Any>(x: 'c) -> 'c| app(g);
+app2(|x| x)

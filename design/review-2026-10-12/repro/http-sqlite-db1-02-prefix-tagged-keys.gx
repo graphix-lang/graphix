@@ -1,0 +1,10 @@
+let db = db::open("/tmp/graphix-review-pfx3.db")$;
+let t: db::Tree<[string, i64], i64> = db::tree(db, "pfx")$;
+let a = db::insert(t, "aaa", 1)$;
+let b = db::insert(t, a ~ "aab", 2)$;
+let c = db::insert(t, b ~ "bbb", 3)$;
+let p: [string, i64] = "aa";
+let cursor = db::cursor::new(#prefix: p, c ~ t);
+let r = db::cursor::read_many(cursor, 10)$;
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+r

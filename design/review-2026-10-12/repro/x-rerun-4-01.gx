@@ -1,0 +1,21 @@
+// x-rerun-4-01: a raising http handler's 500 body sends the whole ErrChain
+// (absolute source path, line and column, origin chain) to the HTTP client.
+// Command: graphix --no-cache x-rerun-4-01.gx   (same with --no-fusion)
+// Expected: the client sees 500 with a fixed body (e.g. "Internal Server Error");
+// the chain reaches only the server-side catch.
+// Observed: both lines print the same chain; the client's line is
+// 500 [["cause", null], ["error", ["JsonErr", "EOF while parsing ..."]],
+// ["ori", [["parent", null], ["source", ["File", "/abs/path/x-rerun-4-01.gx"]],
+// ["text", ""]]], ["pos", [["column", i32:33], ["line", i32:4]]]]
+let srv = {
+    catch(e) println("server-side: [e]");
+    http::serve(#addr: "127.0.0.1:0", #handler: |req: http::Request| -> http::Response {
+        let m: {name: string} = json::read(req.body$)?;
+        { body: "hi [m.name]", headers: [], status: u16:200, url: "" }
+    })
+};
+let s = srv$;
+let c1 = http::client(#timeout: duration:2.s, s)$;
+let r1 = http::request(#method: `POST, #body: "{\"name\": ", c1, "http://[http::server_addr(s)]/msg");
+println(select r1 { error as e => "ERR [e]", v => "[v.status] [v.body]" });
+sys::exit(sys::time::after_idle(duration:1.s, r1 ~ 0))

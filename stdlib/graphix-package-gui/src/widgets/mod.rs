@@ -314,6 +314,33 @@ impl<X: GXExt> Children<X> {
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
             self.r.last = Some(v.clone());
             let vals = v.clone().cast_to::<Vec<Value>>()?;
+            // CR claude for claude: [structure/low] `Children::update` is `reconcile`
+            // written out again: keep_equal, compile the fresh values, interleave. It
+            // differs only in keeping the widgets and values in two parallel vectors.
+            // `Children::compile` and `compile_children` each repeat the initial
+            // try_join_all. Store `Vec<(Value, GuiW<X>)>` in Children and route compile
+            // (as `reconcile([], ..)`) and update (as `rt.block_on(reconcile(..))`)
+            // through `reconcile`. Then a reconciliation fix (gui-widgets-a-07, and the
+            // one for the drain-before-compile bug) lands once. Likewise
+            // `update_callable_blocking` repeats `set_callable`'s match only to skip a
+            // `block_on`, and `GXHandle::update_callable` is a third copy of the same
+            // keep-if-`is_for` rule. Keep one, which handles null and returns the
+            // callable it replaced (Handler::update needs it). (gui-widgets-a-09)
+            // CR claude for claude: [bug/high] This drains every existing child into
+            // the local `kept` before the fresh children compile. When one fresh child
+            // fails (for example a text whose size `TextSizeV` refuses, such as 0.0),
+            // the `?` on `try_join_all` returns, `kept` is dropped and `ws`/`vals` stay
+            // empty. `r.last` was already set to the new list, so the same list never
+            // retries, and a later valid prop has no widget to reach. Result: one bad
+            // child blanks the whole column for good. The same bad prop at update time
+            // is only logged and the old value kept. Fix: compile before touching
+            // state, and set `r.last` only after success. Better, give each child its
+            // own failure: a child that fails becomes a placeholder that logs the
+            // error, so its siblings survive and a later fire can retry. The same shape
+            // is in the `reconcile` callers (`TableW` columns and rows, the menu_bar
+            // items and menus) and in `Child::update`, which sets `r.last` before it
+            // compiles. probe: design/review-2026-10-12/repro/gui-widgets-a-02.rs
+            // (gui-widgets-a-02)
             let mut kept = keep_equal(self.vals.drain(..).zip(self.ws.drain(..)), &vals);
             let fresh = vals
                 .iter()
@@ -350,6 +377,16 @@ pub(crate) fn keep_equal<T>(
             let same = |o: &Option<(Value, T)>| o.as_ref().is_some_and(|(v, _)| v == val);
             let at = match old.get(i) {
                 Some(o) if same(o) => Some(i),
+                // CR claude for claude: [perf/low] On a miss at index i, `keep_equal`
+                // scans `old` from 0, so a list whose widget values were reordered (a
+                // reversed or re-sorted array of widgets) makes about n^2/2 Value
+                // comparisons on the GUI thread: about 12.5M for a 5000-item column,
+                // with nothing to compile. A prepend costs n^2/2 checks of taken slots
+                // on top. The common array::map case keeps values at the same index and
+                // never gets here. Fix: keep the old[i] check first, and on the first
+                // miss build an index once (a pooled map from &Value to a queue of old
+                // positions), then take positions from it, so a reorder is linear and
+                // an in-place update allocates nothing. (gui-widgets-a-07)
                 _ => old.iter().position(same),
             };
             at.and_then(|j| old[j].take()).map(|(_, t)| t)
@@ -395,6 +432,17 @@ pub(crate) fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 
     let w = shape_width(text, size, font);
     WIDTHS.with(|m| {
         let mut m = m.borrow_mut();
+        // CR claude for claude: [perf/low] When the width cache fills it clears
+        // everything. A data_table frame measures every visible cell, plus about
+        // log2(len) prefixes for each truncated one through truncate_to_width. Once a
+        // frame needs more than MEASURED widths, each frame clears the cache partway
+        // through and re-shapes nearly every string with cosmic-text: a cliff, not
+        // gradual decay. Separately, every lookup builds a CompactString key, which
+        // heap-allocates on a hit for any text over 24 bytes. Fix: keep two generations
+        // (on overflow the current map becomes the old one, and a hit in the old one is
+        // promoted) so the last frame's working set survives. Look up without building
+        // an owned key, e.g. by a precomputed hash of (text, size, font) or a hashbrown
+        // map with an Equivalent borrowed key. (gui-widgets-a-08)
         if m.len() >= MEASURED {
             m.clear();
         }
@@ -426,6 +474,18 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 /// echo builds on what the user did, not on the stale value.
 pub(crate) struct Echoes<T>(std::collections::VecDeque<T>);
 
+// CR claude for claude: [bug/medium] Only `delivered` retires a send, and it runs only
+// when the value ref updates. A send the handler never writes back is shown forever and
+// is never freed. This happens when the handler rejects the change, as input validation
+// does, or writes another variable. A checkbox over `false` whose handler writes
+// nothing stays drawn checked, and its second click sends `false`. A text_input over ""
+// sends "ab" for the key b. Both contradict the book, which says the widget displays
+// the reference. `TextEditorW::pending` has the same logic and keeps a full copy of the
+// document per keystroke: 150 keys into a 64 KiB doc retain about 10 MB until `content`
+// changes. Fix: retire a send that is still unechoed once its call's cycle has ended
+// (`Callable::call_answered` reports that point), so the control falls back to the
+// program's value. Have text_editor use `Echoes<ArcStr>` instead of its own queue.
+// Probe: design/review-2026-10-12/repro/gui-widgets-b-02.rs. (gui-widgets-b-02)
 impl<T: PartialEq> Echoes<T> {
     pub(crate) fn new() -> Self {
         Self(std::collections::VecDeque::new())
@@ -496,6 +556,31 @@ impl<X: GXExt> Handler<X> {
 
     /// Take `v` when it is this handler's ref's. Returns the callable it
     /// replaced, for a caller that must outlive its id's last use.
+    // CR claude for claude: [bug/low] Handler::update does not report whether the
+    // handler changed, and no widget counts a handler update in the `changed` it
+    // returns, so TrackedWindow never sets needs_redraw for one. iced draws a
+    // text_input without on_input, and a button, checkbox or toggler without its
+    // handler, as disabled. When only the handler goes between null and a function
+    // (`#on_input: select locked { true => null, false => |v| x <- v }`), the control
+    // keeps its old enabled or disabled look until some unrelated input event forces a
+    // frame. Fix: have handler updates feed `changed`, either by returning whether this
+    // ref took the value (keeping the retired callable for data_table's on_update) or
+    // by callers OR-ing in `id == handler.r.id`. Do it in every widget that holds a
+    // Handler. (gui-widgets-b-07)
+    // CR claude for claude: [bug/medium] A handler update never asks for a redraw. This
+    // returns the callable it replaced, and no caller turns the result into `changed`;
+    // data_table only uses it to refresh its cells' on_update id. Yet a widget's view
+    // depends on whether a handler is present: an iced Button or TextInput with no
+    // on_press/on_input draws disabled, and checkboxes and menu actions behave the same
+    // way. So when a handler goes from null to a function or back,
+    // `GuiWindow::handle_update` leaves `needs_redraw` false, and the window keeps the
+    // old look until some unrelated event renders a frame. Fix: return whether the
+    // handler's presence or id changed, keep any callable that must outlive a pending
+    // message inside Handler (data_table's on_update), and make each caller write
+    // `changed |= self.on_x.update(..)?`. probe:
+    // design/review-2026-10-12/repro/gui-widgets-a-06.rs (on_press null -> fn: the
+    // click goes from 0 calls to 1, but handle_update returns false).
+    // (gui-widgets-a-06)
     pub(crate) fn update(
         &mut self,
         rt: &tokio::runtime::Handle,

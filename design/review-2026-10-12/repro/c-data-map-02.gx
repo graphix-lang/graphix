@@ -1,0 +1,6 @@
+// c-data-map-02: #[parallel] on a parenthesized lambda is refused, on a bare one it governs the body.
+// Expected: (6, 8) as with '#[parallel] |x: i64| ..'. Actual: "#[parallel] has nothing to run in parallel".
+let g = |x: i64| x * 2;
+let h = #[parallel] (|x: i64| (g(x), g(x + 1)));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+h(3)

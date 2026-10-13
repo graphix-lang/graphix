@@ -1,0 +1,17 @@
+// x-engine-seq-errors-05: `&mut *r` (r: &mut T) is not a place: Place::of
+// (graphix-compiler/src/node/bind.rs) returns None for an empty path, so the
+// expression mints a FRESH cell seeded with *r. A write through it is
+// accepted by the check and silently lands in that cell, never in `s`;
+// `&mut (*q).f` (one step) writes through to the root.
+// command: graphix --no-cache x-engine-seq-errors-05.gx
+// observed: (1, 5, {f: 6})   -- s untouched, the write went to a detached cell
+// expected: (5, 5, {f: 6})   (or the check refuses `&mut *r`)
+let s = 1;
+let r = &mut s;
+let p = &mut *r;
+*p <- 5;
+let t = {f: 1};
+let q = &mut t;
+let pf = &mut (*q).f;
+*pf <- 6;
+(s, *p, t)

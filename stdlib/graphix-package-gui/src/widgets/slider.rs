@@ -90,6 +90,16 @@ macro_rules! slider_widget {
                 let max = self.p.max.t.unwrap_or(100.0);
                 let disabled = self.p.disabled.t.unwrap_or(false);
                 let on_change_id = if disabled { None } else { self.on_change.id() };
+                // CR claude for claude: [bug/low] A reversed range (#min above #max)
+                // reaches iced unguarded. iced clamps the value to the smaller bound,
+                // draws the handle at the left edge whatever the value, and turns every
+                // interior click into that same bound, so dragging does nothing. A
+                // click at the far left sends #min. progress_bar's view treats a
+                // reversed or NaN range as empty, so the two numeric widgets read the
+                // same input differently. Fix: give the slider the same rule. A
+                // reversed or NaN range draws inert and disabled (on_change is Nop), as
+                // progress_bar draws it empty. Then document that rule in
+                // book/src/ui/gui/slider.md. (gui-widgets-b-04)
                 let mut sl =
                     widget::$Widget::new(min..=max, val, move |v| match on_change_id {
                         Some(id) => {
@@ -98,6 +108,19 @@ macro_rules! slider_widget {
                         None => Message::Nop,
                     });
                 // no usable step is continuous: a millionth of the range
+                // CR claude for claude: [bug/low] A null #step gives iced a step of
+                // |max - min| / 1e6, and iced uses that same step for ArrowUp/ArrowDown
+                // and Ctrl+wheel (its increment/decrement). With the default 0..100
+                // range, one key press moves the value by 0.0001, so keyboard and wheel
+                // adjustment do nothing visible, yet each press still sends an
+                // on_change. Separately, max - min overflows to inf for bounds near
+                // f64::MAX: the step becomes inf, iced's locate computes NaN, and every
+                // click sends the max. Fix: keep the fine step for dragging but give
+                // the keyboard a usable increment, e.g. `shift_step` and a coarser
+                // keyboard step (range / 100), or tie the step to track resolution.
+                // Compute the range as max / 1e6 - min / 1e6 so it cannot overflow.
+                // Then say in book/src/ui/gui/slider.md what the keys do under a null
+                // step. (gui-widgets-b-03)
                 let step = match self.p.step.t {
                     Some(Some(s)) if s.is_finite() && s > 0.0 => s,
                     _ => ((max - min) / 1e6).abs().max(f64::MIN_POSITIVE),

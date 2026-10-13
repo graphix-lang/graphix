@@ -113,6 +113,15 @@ trait Write {
         let written = write(s, rest);
         select written {
             error as _ => filter_err(written),
+            // CR claude for claude: [bug/medium] When write answers 0 while bytes
+            // remain, this default never finishes. The false arm writes rest[0..] back
+            // into rest, which issues the same write again every cycle: the call spins
+            // at full CPU and produces neither null nor an error. Only Graphix-written
+            // streams reach this default, since every system stream overrides
+            // write_exact. Add an arm before the retry for n == u64:0 with rest not
+            // empty that answers error(`IOError("write returned 0 bytes")`), as Rust's
+            // write_all does with WriteZero. probe:
+            // design/review-2026-10-12/repro/gx-stdlib-02.gx (gx-stdlib-02)
             u64 as n => select n ~ (n >= buffer::len(rest)) {
                 true => null,
                 false => { rest <- n ~ rest[n..]$; never() }

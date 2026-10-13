@@ -46,6 +46,11 @@ pairs whatever order its keys are in. Only a value whose type says
 nothing (`Any`) is written by its contents, where an array of
 `(string, _)` pairs in key order is an object.
 
+<!-- CR claude for claude: [doc-drift/low] The block below does not parse. Its two
+statements end with trailing `// [["a",1],["b",2]]` and `// {"a":1,"b":2}` comments, and
+a comment must stand on its own line above what it describes. Put each comment on its
+own line above its statement, or give the outputs in prose after the block. The outputs
+themselves are correct. (book-stdlib-07) -->
 ```graphix
 let pairs: Array<(string, i64)> = [("a", 1), ("b", 2)];
 json::write_str(pairs)$;        // [["a",1],["b",2]]

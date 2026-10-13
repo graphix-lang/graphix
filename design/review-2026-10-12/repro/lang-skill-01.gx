@@ -1,0 +1,14 @@
+// lang-skill-01: field/tuple read on a union of same-shaped structs is refused
+// command: graphix --check design/review-2026-10-12/repro/lang-skill-01.gx
+// expected: checks; run prints "y" (`{d: Dom}` and `{d: {name: string}}` are
+// one structural type)
+// observed: "expected struct not [{ d: Dom }, { d: { name: string } }]" at r.d
+// control: `select r { {d} => d.name }` over the same r prints "y".
+// lang-skill-02.gx is the other shape: array::map([{act: `A, n: 1},
+// {act: `B, n: 2}], |r| r.n) is refused the same way.
+type Dom = {name: string};
+let o: [i64, null] = null;
+let a: {d: Dom} = {d: {name: "x"}};
+let b = {d: {name: "y"}};
+let r = select o { null as _ => b, _ => a };
+r.d.name

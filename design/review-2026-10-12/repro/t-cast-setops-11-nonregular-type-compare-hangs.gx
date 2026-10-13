@@ -1,0 +1,4 @@
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let x: N<i64> = null;
+let y: N<i64> = (1, null);
+x == y

@@ -1,0 +1,14 @@
+// schedule-v1: cap=64 events=512; in2=i64:1; in1=i64:1; in2=i64:0; in1=i64:2; in2=i64:1; in1=i64:3
+{
+// x-engine-firing-05: a captured input that fires while a dynamic call's
+// function is bottom is not caught up when the same function returns.
+// `graphix-fuzz run` (both engines): Trace([]; [0:1]; [0:2]; []; []; []; [0:1])
+// e5 (function back) is bottom: count restarted and in1's e4 fire is lost.
+// The select twin, `select i64:1 / d {_ => g(i64:0)}` over the same
+// schedule, prints 1 at e5. Same root as c-callsite-01 / c-node-mod-01/02:
+// only Select and the seq machine track fires (TrackedFires) and only
+// they resume under View::Wake.
+let g = |x| count(in1) + x;
+let f = |k: fn(x: i64) -> i64| k(i64:0);
+f(select in2 {i64:1 => g, _ => never()})
+}

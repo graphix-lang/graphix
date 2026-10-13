@@ -1,0 +1,12 @@
+// fuzz-gen-a-03: toml writer silently drops Map entries whose value is null
+// command: graphix --no-cache fuzz-gen-a-03.gx   (same with --no-fusion)
+// expected: the null entry refused with TomlErr "cannot represent null in TOML"
+//   (as an Array<[i64, null]> element is), or read back: `2 2`
+// observed: write_str emits only `k1 = 1`, read gives {"k1" => 1}, prints `2 1`;
+//   a top-level {"k0" => null} writes as the empty string, no error
+let w: Map<string, [i64, null]> = {"k0" => null, "k1" => i64:1};
+let r: {a: Map<string, [i64, null]>} = toml::read(toml::write_str({a: w})$)$;
+println("[map::len(w)] [map::len(r.a)] [r.a]");
+let arr: {a: Array<[i64, null]>} = {a: [null, i64:1]};
+println(toml::write_str(arr));
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

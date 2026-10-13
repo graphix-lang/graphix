@@ -1,0 +1,10 @@
+// gx-ui-01: radio.gx wraps on_select as |v: Any| f(*value). The wrapper ignores v,
+// so the callback runs at the call site's init with no call made: prints hits=1, expected hits=0.
+let hits = 0;
+let value = &5;
+let cb = |v: i64| hits <- v ~ hits + 1;
+let wrap = |v: Any| cb(*value);
+let arg: i64 = never();
+wrap(arg);
+sys::exit(sys::time::after_idle(duration:300.ms, hits) ~ 0);
+"hits=[hits]"

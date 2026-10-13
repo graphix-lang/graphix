@@ -1,0 +1,1 @@
+val pick: fn<'a: Any>(b: bool, x: 'a, y: 'a) -> 'a;

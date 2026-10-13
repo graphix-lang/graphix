@@ -1,0 +1,2 @@
+mod helper;
+helper::f(1, 2)

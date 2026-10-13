@@ -1,0 +1,6 @@
+let big: [Array<i64>, null] = array::init(20000, |i| i);
+let n = 0;
+n <- select n < 3000 { true => n + 1, false => never() };
+let r = select (n ~ big) { Array<i64> as a => array::len(a) + n, null as _ => 0 };
+sys::exit(select r { x if x == 23000 => 0, _ => never() });
+r

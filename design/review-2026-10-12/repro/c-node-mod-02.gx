@@ -1,0 +1,14 @@
+// collection slots paused by a bottom source wake with no catch-up: the
+// fire of `v` they slept through is never re-raised, where a select arm's is
+// expected at k=5: r = [1005, 2005] as a = 1005; got [1000, 2000]
+let clock = sys::time::timer(duration:100.ms, true);
+let k = 0;
+k <- clock ~ k + 1;
+let v = 0;
+v <- select k { 3 => 5, _ => never() };
+let src = [1, 2];
+let s2 = select k { 3 => never(), 4 => never(), _ => src };
+sys::exit(select k { 7 => 0, _ => never() });
+let r = array::map(s2, |x| v ~ x * 1000 + v);
+let a = select k { 3 => -1, 4 => -1, _ => v ~ 1000 + v };
+(k ~ k, r, a)

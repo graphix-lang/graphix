@@ -1,0 +1,9 @@
+// fuzz-main-aux-02: check/run/minimize on a file with a leading comment block report AGREE (reject)
+// command: graphix-fuzz check design/review-2026-10-12/repro/fuzz-main-aux-02.gx
+// expected: AGREE (trace), as for the same program without this header
+// observed: AGREE (reject) — every comparison the program owes holds
+//   (`graphix-fuzz run` shows every mode's CompileErr: the body is spliced
+//   after `let result = ` on one line, so the first `//` is a parse error;
+//   `graphix-fuzz minimize` prints "no divergence to minimize (program agrees)")
+// minimized:
+i64:2 + i64:3

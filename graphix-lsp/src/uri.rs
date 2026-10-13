@@ -47,6 +47,21 @@ const PATH_ENCODE: &AsciiSet = &CONTROLS
 /// Convert a `file://` URI to a filesystem path. Returns `None` for
 /// non-`file` schemes and remote hosts (anything other than empty or
 /// `localhost`).
+// CR claude for claude: [bug/medium] On Windows, drive-letter paths break both ways.
+// uri_to_path keeps the leading '/', so VS Code's `file:///c%3A/proj/main.gx` becomes
+// "/c:/proj/main.gx". Windows reads that as a root-relative path whose first component
+// is `c:`, so the workspace scan, roots_of's exists check and sibling `mod` reads all
+// miss on disk. path_to_uri percent-encodes `\` and writes no '/' before the drive,
+// giving `file://C:%5Cproj%5Cmain.gx`. fluent-uri parses `C:` as host:port and refuses
+// it, so path_to_uri returns None for every drive-letter path. publish_files then drops
+// diagnostics on files that are not open, and definition, references and workspace
+// symbols drop their locations. Only an open buffer still checks, because its override
+// and its uri come from the client. Fix: on non-Unix hosts, strip the '/' before
+// `<letter>:` and handle a UNC host in uri_to_path. In path_to_uri, write `\` as '/'
+// and prefix '/' to a drive path (`file:///C:/proj/main.gx`). Or use
+// url::Url::from_file_path / to_file_path, which are already in the lock file. Add
+// Windows-gated round-trip tests for `C:\x\a b.gx` and `\\server\share\a.gx`. Also
+// reported as (x-lsp-probe-05). (x-fix-tools-07)
 pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let s = uri.as_str();
     let rest = s.strip_prefix("file://")?;

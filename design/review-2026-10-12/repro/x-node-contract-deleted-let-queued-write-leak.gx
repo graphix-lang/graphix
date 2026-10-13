@@ -1,0 +1,17 @@
+let clock = sys::time::timer(duration:2.ms, true);
+let n = count(clock);
+let base = str::join(#sep: "", array::init(10000, |i| "xxxxxxxxxx"));
+let big = str::concat(base, "[n]");
+let ys = array::init(100, |i| i);
+let xs = select n % 2 { 0 => [big], _ => [] };
+let out = array::map(xs, |x| {
+  let c = "";
+  let w = array::map(ys, |y| c <- x);
+  str::len(c)
+});
+let probe = sys::time::timer(duration:1.s, true);
+let st = sys::fs::read_all(probe ~ "/proc/self/status")$;
+let rss = array::filter(str::split(#pat: "\n", st), |l| str::starts_with(#pfx: "VmRSS", l));
+println(rss ~ "[n] [rss]");
+sys::exit(sys::time::after_idle(duration:8.s, 0));
+out

@@ -1,0 +1,21 @@
+// opt HOFs: when the callback does not read its argument's fire, a new
+// input is answered STALE, so the binding never takes the new answer.
+// Expected: each line equals its select twin's line. Prints filter=0 at
+// c=1, and map=null is_some_and=false filter=null at c=3 and c=4: the
+// answers to the null at c=2 stand while v holds 3 and 4.
+// command: graphix --no-cache core-aux-02.gx (same with --no-fusion)
+let c = 0;
+c <- select c { n if n < 4 => n + 1, _ => never() };
+let v: [i64, null] = select c { 2 => null, n => n };
+let k = 100;
+let enabled = true;
+let m = opt::map(v, |_| k);
+let sa = opt::is_some_and(v, |_| k > 0);
+let fl = opt::filter(v, |_| enabled);
+let m_twin = select v { null as _ => null, _ => k };
+let sa_twin = select v { null as _ => false, _ => k > 0 };
+let fl_twin = select v { null as _ => null, x if enabled => x, _ => null };
+println("c=[c] v=[v] map=[m] is_some_and=[sa] filter=[fl]");
+println("c=[c] v=[v] twins: map=[m_twin] is_some_and=[sa_twin] filter=[fl_twin]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

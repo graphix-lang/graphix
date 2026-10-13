@@ -1,0 +1,1 @@
+val f: fn<'a: Array<'b>>(x: 'a) -> 'a;

@@ -41,12 +41,35 @@ use super::{
 /// True only when no node in the subtree could carry an effect.
 /// Every CallSite counts as effectful. Handler-less `?` and `$` are
 /// not effects: what they do with an error is a diagnostic.
+// CR claude for eric: [bug/medium] A handler-less `?` counts as effect-free here, so
+// block_live drops a non-tail statement that holds one (`e?;` or an unused `let k =
+// e?;`). The kernel then never logs the unhandled error, but the node-walk evaluates
+// the statement and logs it under FAILURE_TARGET. A failure that `--no-fusion` reports
+// disappears in the default fused run. This breaks the rule that `$` and handler-less
+// `?` log a swallowed error from both backends, and design/distributed_jit.md
+// contradicts itself here: it calls these diagnostics "not effects" but also says both
+// engines log them. One fix is to keep any statement that holds a handler-less `?` live
+// (emit its error check and the graphix_swallowed_error log, then discard the value).
+// The other is to rule that a dead `?` is silent and make the node-walk match. Either
+// way, add a pin that captures FAILURE_TARGET in both modes. probe:
+// design/review-2026-10-12/repro/x-rerun-6-05.gx (x-rerun-6-05)
 pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| {
         // a covered `?` delivers to its handler; a call site may be an effect
         let delivers = match n.view() {
             NodeView::CallSite(_) => true,
+            // CR claude for claude: [bug/low] A handler-less `?` or `$` counts as
+            // effect-free here, so block_live drops a dead statement that holds one
+            // (`let u = r?; 5`, `r$; 7`), and the kernel never calls
+            // graphix_swallowed_error for it. The node-walk still evaluates the
+            // statement and logs "unhandled error"/"ignored error". Under fusion a
+            // program's unhandled-error report silently disappears, which contradicts
+            // the CLAUDE.md rule that `$` and handler-less `?` log from both backends.
+            // Fix: count every Qop as live (`NodeView::Qop(_) => true`; a dead `?`
+            // costs one test), then update this function's doc comment and the
+            // dead-statement sentence in design/distributed_jit.md to match. probe:
+            // design/review-2026-10-12/repro/f-call-flow-03.gx (f-call-flow-03)
             NodeView::Qop(q) => q.handler.is_some(),
             _ => false,
         };
@@ -290,6 +313,15 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     };
     // Labeled args would need default materialization in source order;
     // de-fuse.
+    // CR claude for claude: [dead/low] This bail cannot fire. A loop head exists only
+    // for a lambda that lowering::structural_tail_loop admitted, and that gate refuses
+    // any non-positional formal, so a self tail-call carries no labels. The loop below
+    // pairs arg_positional(i) with formal i, and that is correct only because of that
+    // gate. Testing spec labels would not catch the case where the pairing breaks,
+    // which is an omitted defaulted labeled formal. Replace the check and its comment
+    // with a debug_assert that every formal of the self-call's function type is
+    // FnArgKind::Positional, naming structural_tail_loop as the gate that guarantees
+    // it. (f-call-flow-08)
     if spec_apply.args.iter().any(|(label, _)| label.is_some()) {
         bail!("emit_clif: labeled args on a self tail-call");
     }
@@ -343,6 +375,19 @@ fn emit_let_node<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
+    // CR claude for claude: [perf/medium] Collection's `find` and `find_map` defaults
+    // never fuse for a user Collection. Their `let init: Option<'a> = null`
+    // (`Option<'b>` in find_map), written in a trait default body, freezes to no ABI
+    // kind here, so the region is refused with "let value of shape None". The same body
+    // fuses in a plain generic function, and also in the trait default when the
+    // annotation is written `['b, null]`. So the let's type under a trait default's
+    // instance keeps a typedef reference over the method's type variable that this
+    // freeze cannot see through. Expand the let's type under the instance's
+    // substitution before `freeze_for_abi_normalized`. The fixture
+    // collection_newtype_defaults claims the default bodies fuse, but other regions
+    // meet its FuseExpect::Jit: put a #[native] on its `find` call. Probes:
+    // design/review-2026-10-12/repro/tests-lang-rest-b-03.gx and
+    // tests-lang-rest-b-03-user-trait.gx. (tests-lang-rest-b-05)
     let frozen = kernel_abi::freeze_for_abi_normalized(typ);
     let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
     match ak {
@@ -573,6 +618,14 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
         .and_then(|t| kernel_abi::abi_kind(&t))
         .filter(|k| !matches!(k, AbiKind::Unit | AbiKind::Null))
         .unwrap_or(AbiKind::Value);
+    // CR claude for claude: [structure/low] This builds the qop bottom with
+    // emit_bottom_of_kind and then hand-rolls the STALE fold (`bor(disc,
+    // band_imm(cv.disc, STALE))`). emit_qop_node's two bad-path placeholders repeat the
+    // same fold and even build the placeholder by hand. emit_bottom_placeholder is the
+    // one place that fold is supposed to live, so a change to the rule (how WAKE
+    // combines, say) would have to find every copy. Fix: have emit_bottom_placeholder
+    // take an AbiKind (its Type callers call abi_kind first), and route all three qop
+    // sites through it with `&[cv.disc]`. (f-nodes-scalar-08)
     let bottom = emit_bottom_of_kind(cx, kind)?;
     let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
     let disc = cx.b.ins().bor(bottom.disc, stale_bit);

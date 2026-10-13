@@ -1,0 +1,25 @@
+// x-rerun-7-02 (variant of x-engine-firing-03): a dynamic call whose
+// function value is briefly bottom resets the bound instance's state when
+// the same function returns, and drops the fire the instance missed. The
+// select-arm twin (r2) pauses and catches up.
+// command: graphix --no-cache design/review-2026-10-12/repro/x-rerun-7-02-dyn-callee-wake.gx
+//          (same with --no-fusion, GRAPHIX_PAR=off)
+// expected: dyn and arm agree at every line, ending 30 (acc counts 1, then
+//   the missed x = 2 at the wake, then x = 3)
+// observed: "ep 5 dyn 0" (acc reset to 0) then dyn 10 for good; arm 10, 20, 30
+let clk = sys::time::timer(duration:30.ms, true);
+let ep = 0;
+ep <- clk ~ ep + 1;
+let x = 1;
+x <- select ep { 2 => 2, 5 => 3, _ => never() };
+let off = select ep { 2 | 3 | 4 => true, _ => false };
+let g = |x: i64| { let acc = 0; acc <- x ~ acc + 1; acc * 10 };
+let cb: [fn(x: i64) -> i64, null] = select off { true => null, false => g };
+let f = |cb: [fn(x: i64) -> i64, null], x| cb$(x);
+let r = f(cb, x);
+let h = |c: bool, x| select c { false => g(x), true => never() };
+let r2 = h(off, x);
+println("ep [ep] dyn [r]");
+println("ep [ep] arm [r2]");
+sys::exit(select ep { 9 => 0, _ => never() });
+null

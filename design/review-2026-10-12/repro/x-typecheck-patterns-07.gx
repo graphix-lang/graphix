@@ -1,0 +1,14 @@
+// x-typecheck-patterns-07: slice arms with refutable elements never claim a length
+// command: graphix --check x-typecheck-patterns-07.gx
+// expected: accepted ([true] and [false] cover length 1)
+// observed: "missing match cases: no arm covers Array<bool> (the slice arms leave
+// array length 1 uncovered) (a slice arm with refutable element patterns ...
+// cannot establish length coverage)"
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let f = |a: Array<bool>| select a {
+  [] => 0,
+  [true] => 1,
+  [false] => 2,
+  [_, _, ..] => 3
+};
+f([true])

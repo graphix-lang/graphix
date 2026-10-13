@@ -1,0 +1,15 @@
+// x-rerun-8-05 (variant of x-typecheck-patterns-04, one runtime form): the
+// map-key rule ("a map key type may hold no indiscernible pair") is judged at
+// a map literal (node/map.rs:164-172) and through map::'s `'k: Ordered`
+// bounds, never on a written Map type nor at the `m{k}` index (MapRef), so a
+// `Map<[string, `A], i64>` annotation is accepted and `A finds "A"'s entry.
+// command: graphix-fuzz run x-rerun-8-05.gx   (or graphix --check)
+// expected: refused, "string and `A can't share a map key type", as
+//   `{k => 2, "A" => 3}` and map::get(m, k) are
+// observed: --check exits 0; every mode traces [1, 1] (the `A key reads the
+//   "A" entry, at top level and inside a fused function)
+let m: Map<[string, `A], i64> = {"A" => 1};
+let k: [string, `A] = `A;
+let f = |mm: Map<[string, `A], i64>, kk: [string, `A]| mm{kk};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(m{k}, f(m, k))

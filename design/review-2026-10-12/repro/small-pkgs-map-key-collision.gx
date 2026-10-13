@@ -1,0 +1,5 @@
+// json::write_str / toml::write_str write Map<[i64, string], _> keys 1 and "1"
+// as one object key: two entries in, one out, no error.
+let m: Map<[i64, string], i64> = {1 => 10, "1" => 20};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(json::write_str(m), toml::write_str(m), map::len(m))

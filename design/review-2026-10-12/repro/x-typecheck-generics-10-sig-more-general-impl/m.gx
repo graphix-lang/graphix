@@ -1,0 +1,1 @@
+let pair = |x, y| [x, y]

@@ -1,0 +1,17 @@
+// c-callsite-09: a dynamic call site decides argument independence before
+// its defaults exist, so a default reaching an ORDERED builtin (queuefn)
+// forks beside a written argument reaching the same one.
+// command: for i in 1 2 3 4 5 6; do GRAPHIX_PAR=force timeout -s KILL 5 graphix --no-cache c-callsite-09.gx | tail -1 | md5sum; done
+// expected: every run prints the GRAPHIX_PAR=off list: [0, 2000, 1, 2001, 2, 3, 4, 1004, 5, 1005, ...] (written arg, then default, per cycle)
+// observed: under force some runs swap a pair (..., 18, 1018, 1019, 19, ...); writing #d at the call or calling g directly stays serial
+let clk = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let log: Array<i64> = [];
+let q = queuefn(#trigger: clk, |x: i64| -> i64 { log <- x ~ array::push(log, x); x });
+let g = |#d: i64 = q(1000 + n), x: i64| -> i64 x + d;
+let k = |#d: i64 = q(2000 + n), x: i64| -> i64 x + d;
+let h = select n { x if x > 3 => g, _ => k };
+let r = h(q(n));
+
+select n { x if x > 30 => uniq(log[0..40]), _ => never() }

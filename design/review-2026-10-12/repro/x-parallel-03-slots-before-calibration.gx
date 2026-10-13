@@ -1,0 +1,16 @@
+// x-parallel-03: a collection grown before the fork calibration lands is never forked:
+// slot 1 is unbound when SlotSite::decide_siblings runs, so the site is Dependent for good.
+// Print order per cycle (8 slots, 41 cycles, T calibrated at ~240k ticks, slot >> T):
+//   default:                 41 x 01234567 (never forks)
+//   GRAPHIX_PAR_T=400000:    forks after settling (shuffled orders)
+// run: graphix --no-cache --no-fusion x-parallel-03-slots-before-calibration.gx | grep ^s
+let rec f = |d: i64, v: i64| -> i64 select d {
+    0 => v,
+    d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003
+};
+let k = 0;
+let xs = array::init(8, |i| i);
+let r = array::map(xs, |x| { let y = f(10, x + k); println(y ~ "s[x]"); y });
+k <- r ~ select k { k if k < 40 => k + 1, _ => never() };
+sys::exit(select k { 40 => r ~ 0, _ => never() });
+k

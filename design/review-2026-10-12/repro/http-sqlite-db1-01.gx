@@ -1,0 +1,20 @@
+// http-sqlite-db1-01: http::serve starts a plaintext server when #cert/#key
+// have not arrived (absent treated as null)
+// command: timeout -s KILL 30 graphix --no-cache http-sqlite-db1-01.gx
+// expected: the cert and key are bottom, so serve does not start; resp never
+// arrives and the run is killed by the timeout (exit 137)
+// observed: {body: "secret over plaintext", ..., status: 200,
+// url: "http://127.0.0.1:<port>/"} then exit 0: plain HTTP was served
+let cert = sys::fs::read_all_bin("/nonexistent/cert.pem")$;
+let key = sys::fs::read_all_bin("/nonexistent/key.pem")$;
+let server = http::serve(
+    #addr: "127.0.0.1:0",
+    #cert: cert,
+    #key: key,
+    #handler: |req| {body: "secret over plaintext", headers: [], status: u16:200, url: ""}
+)$;
+let addr = http::server_addr(server);
+let client = http::default_client(addr)$;
+let resp = http::get(client, "http://[addr]/");
+sys::exit(sys::time::after_idle(duration:500.ms, resp ~ 0));
+resp

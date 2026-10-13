@@ -1,0 +1,13 @@
+// db2-03: reopening a database fails with a lock error while a tree from the dropped handle lives
+// command: rm -rf /tmp/db2-03-a.db /tmp/db2-03-b.db; graphix --no-cache db2-03.gx
+// expected: the last "/tmp/db2-03-a.db -> abstract:" (a.db opens again; `keep` holds a tree of the same db)
+// observed: /tmp/db2-03-a.db -> error:["DbErr", "IO error: could not acquire lock on \"/tmp/db2-03-a.db/db\": Os { code: 11, kind: WouldBlock, .. }"]
+let p = "/tmp/db2-03-a.db";
+p <- sys::time::timer(duration:200.ms, false) ~ "/tmp/db2-03-b.db";
+p <- sys::time::timer(duration:400.ms, false) ~ "/tmp/db2-03-a.db";
+let d = db::open(p);
+let t: db::Tree<string, i64> = db::tree(d$, "x")$;
+let keep = once(t);
+let n = db::len(keep)$;
+sys::exit(sys::time::after_idle(duration:800.ms, 0));
+println("[p] -> [d]")

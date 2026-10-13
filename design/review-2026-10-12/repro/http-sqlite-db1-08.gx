@@ -1,0 +1,14 @@
+// http-sqlite-db1-08: cursor::new(#prefix: "aa", t) refused for a union-keyed tree that get(t, "aa") accepts
+// command: graphix --check http-sqlite-db1-08.gx
+// expected: exit 0 ('k is [string, i64], fixed by t; "aa" fits it, as db::get(t, "aa") checks)
+// observed: type mismatch Tree<'k: string, 'v: unbound> does not contain
+//   <abstract#11463945668770139902><[i64, string], i64>   (exit 1)
+// The labeled #prefix is checked first and binds 'k := string; Tree<'k, 'v> holds 'k
+// invariantly, so callsite.rs::Widening never widens it and t is refused. Labeled
+// arguments must precede positional ones, so the caller cannot reorder. The same shape
+// without db: type Bx<'a> = Abstract<Array<'a>>; |k: 'a, b: Bx<'a>| .. refuses
+// f("aa", b) for b: Bx<[string, i64]> while |b: Bx<'a>, k: 'a| .. accepts f(b, "aa").
+// Workaround: let p: [string, i64] = "aa"; db::cursor::new(#prefix: p, t)
+let db = db::open("/tmp/x.db")$;
+let t: db::Tree<[string, i64], i64> = db::tree(db, "pfx")$;
+db::cursor::new(#prefix: "aa", t)

@@ -89,6 +89,20 @@ impl InputReader {
                 Ok(Err(e)) => Err(e.context("the display failed")),
                 Err(_) => bail!("the display died"),
             },
+            // CR claude for eric: [bug/medium] With a stdin that is not a terminal, a
+            // REPL line that produces a value leaves the output as `Output::Text`. From
+            // then on, this arm waits only for Ctrl-C and never polls the line reader
+            // again. Later piped lines are never compiled, and EOF (the reader's
+            // `Signal::CtrlD`) is never seen. The shell hangs until it is signalled:
+            // `printf '1 + 1\nsys::exit(0)\n' | graphix -n` prints 2 and never exits
+            // (probe: design/review-2026-10-12/repro/x-fix-tools-03.sh). Piped input
+            // needs a rule, and the choice decides what a piped session prints. Option
+            // one: for a non-terminal stdin, keep reading lines while a text output is
+            // showing, so a new line replaces the output the way Enter does after
+            // Ctrl-C, and treat EOF as Ctrl-D. The cost is that a value still arriving
+            // when the next line or EOF lands is lost. Option two: on EOF, keep
+            // streaming the last output until `sys::exit` or a signal, but still read
+            // the lines before it. Also reported as (x-rerun-1-03). (x-fix-tools-03)
             Output::EmptyScript | Output::Text(_) => {
                 tokio::signal::ctrl_c().await?;
                 Ok(Signal::CtrlC)

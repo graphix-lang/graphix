@@ -6,6 +6,15 @@ use anyhow::Result;
 use std::time::Duration;
 
 /// Harness drained until the snapshot is steady.
+// CR claude for claude: [style/low] Almost every fixture opens with `use gui::*; use
+// gui::data_table::{self, *}; use sys::*;`, and most never use `sys`; the few that do
+// write `sys::net::publish` in full anyway. The column record `{ name: .., typ: ..,
+// display_name: null, source: .., on_resize: &null, width: &null }` is written by hand
+// about 37 times, beside `stored_column_table`, which builds the same thing. A new
+// required column field means editing about 40 literals. Have `dt` prepend the one
+// shared import line (without `sys`), and build columns through a single
+// `text_col(name, source)` helper that `stored_column_table` also uses.
+// (tests-gui-a-12)
 async fn dt(code: &str) -> Result<GuiTestHarness> {
     let mut h = GuiTestHarness::new(code).await?;
     let mut prev = h.dt_snapshot();
@@ -1322,6 +1331,12 @@ let result = data_table(
 
 /// A Sparkline column accumulates values published over netidx.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] After each set, this test waits only until the
+// history contains that value. A sparkline that cleared its history on every update,
+// keeping just the newest point, would pass, so the accumulation the name promises is
+// never checked. After the loop, assert that `dt_sparkline_values("r0", "load")` ends
+// with [1.0, 2.0, 3.0] in order. In `sparkline_default_value_seeds_history`, assert the
+// history is exactly [7.5] rather than `len >= 1`. (tests-gui-a-06)
 async fn sparkline_accumulates() -> Result<()> {
     let code = r#"
 use gui::*; use gui::data_table::{self, *}; use sys::*;
@@ -1340,6 +1355,12 @@ let result = data_table(
     let mut h = dt(code).await?;
     let bid = testing::find_bind_id(&h.compiled.env, "test::c")?;
     let mut c = h.gx.compile_ref(bid).await?;
+    // CR claude for claude: [test-gap/low] Each wait checks only that the value just
+    // set is in the history. A sparkline whose netidx update path replaced its history
+    // on every update, keeping only the latest point, passes all three. This test is
+    // the only pin on the subscription path's accumulation: the other sparkline tests
+    // push through dt_push_sparkline. After the loop, assert that the history ends with
+    // 1.0, 2.0, 3.0 in order. The 60 s window keeps all three. (x-rerun-6-08)
     for v in [1, 2, 3] {
         c.set(Value::I64(v))?;
         h.wait_until(
@@ -1382,6 +1403,15 @@ let result = data_table(
 
 /// Decimation caps stored sparkline points at `MAX_SPARKLINE_POINTS`.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] This test checks only `len <= 512`, read through
+// `unwrap_or(0)`. `dt_push_sparkline` returns silently when the row or column does not
+// resolve. So a push that stores nothing, or aging that drops everything, still passes.
+// Make `dt_push_sparkline` panic on an unknown cell, and assert `len >=
+// MAX_SPARKLINE_POINTS / 2` after each burst. `sparkline_decimation_preserves_extremes`
+// is vacuous too: its input is monotone, the seeded 0.0 already meets the min check,
+// and stride-2 decimation keeps 1023. Delete it in favour of
+// `sparkline_decimation_keeps_spikes`, and drop the range loop in
+// `sparkline_decimation`, which `sin * 100` satisfies for any input. (tests-gui-a-07)
 async fn sparkline_decimation_caps_length() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
@@ -1633,6 +1663,14 @@ let result = data_table(
 /// A non-finite or non-positive sparkline `history_seconds` does not
 /// panic on a live update.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [readability/low] Nothing here rejects anything. A negative
+// `history_seconds` makes `sparkline_cutoff` return None, so the window keeps every
+// point. The test only checks that a value lands without a panic, and the doc names
+// non-finite and zero windows that are never tried. Either refuse such windows when the
+// column is parsed (then this name is true and the test checks the refusal), or rename
+// the test after what happens (a negative window keeps every point), assert the kept
+// history, and add NaN and 0.0 cases. Likewise, `dt_age_out_after` only restamps
+// points, so call it `dt_restamp_sparklines`. (tests-gui-a-09)
 async fn sparkline_history_seconds_rejects_negative() -> Result<()> {
     let code = r#"
 use gui::*; use gui::data_table::{self, *}; use sys::*; use sys::time::{self, *};

@@ -1,0 +1,5 @@
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |x| "int [x]" };
+impl<'a> Show for Array<'a> { let show = |xs| "arr" };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+Show::show([1])

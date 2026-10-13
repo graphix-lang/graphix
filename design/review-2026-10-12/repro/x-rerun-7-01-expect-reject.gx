@@ -1,0 +1,2 @@
+// expect: reject
+{ i64:1 }

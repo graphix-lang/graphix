@@ -1,0 +1,14 @@
+{
+ // x-fix-fusion-01: arm_io_blocker passes a dbg whose trigger reads the scrutinee only
+ // in an untaken arm of a nested select. The node-walk prints at every entry to the
+ // arm (the constant zero fires at the wake); the kernel prints once. DIVERGENCE.
+ // run: graphix-fuzz check design/review-2026-10-12/repro/x-fix-fusion-01.gx
+ // expected: AGREE, dbg prints "zero" at cycles 0, 2, 4, 6, 8 in both engines
+ // observed: DIVERGENCE, interp prints at 0, 2, 4, 6, 8; jit prints only at 0
+ // variants: x-fix-fusion-01b.gx (ignored callee argument), x-fix-fusion-01c.gx (callee prints a constant)
+ let step = i64:0; step <- select step {s if s < i64:8 => s + i64:1, _ => never()};
+ let f = |x: i64, y: i64| #[native] select x {
+   i64:0 => dbg(#dest: `Stdout, select y { i64:0 => "zero", _ => "[x]" }),
+   _ => "other"
+ };
+ f(step % i64:2, i64:0)}

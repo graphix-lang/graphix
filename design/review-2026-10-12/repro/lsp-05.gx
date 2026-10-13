@@ -1,0 +1,12 @@
+// lsp-05: the server publishes a closed file's clear, and a definition's
+// location, under its own URI spelling instead of the client's.
+// Command: put this file as b.gx (and a.gx holding `let x = 1; let y = x + 1`)
+// in a directory named `proj a:b`; drive `graphix lsp` over stdio as a client
+// that spells URIs as VS Code does (`proj%20a%3Ab/b.gx`): didOpen b.gx, any
+// request, didClose b.gx; then didOpen a.gx and ask textDocument/definition
+// on the `x` in `x + 1`.
+// Expected: the error, the clear and the definition all use `proj%20a%3Ab`.
+// Observed: the error comes under `proj%20a%3Ab/b.gx`, the clear under
+// `proj%20a:b/b.gx`, and the definition answers `proj%20a:b/a.gx` for the
+// open a.gx.
+let b: string = 1

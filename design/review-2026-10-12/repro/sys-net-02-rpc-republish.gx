@@ -1,0 +1,15 @@
+// sys-net-02: a doc change republishes an rpc at the same path, and the
+// republish races the old proc's asynchronous teardown.
+//   graphix --no-cache sys-net-02-rpc-republish.gx | grep already
+// Expected: nothing. Seen: two of the five republishes fail with
+// PublishRpcError("already published"), and the rpc stays unpublished.
+let t = sys::time::timer(duration:200.ms, true);
+let k = 0;
+k <- t ~ k + 1;
+let doc = "doc [k]";
+let r = sys::net::rpc(#path: "/test/rpc2", #doc: doc, #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x + k);
+println("pub [r]");
+let res: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/test/rpc2", sys::time::after_idle(duration:50.ms, t) ~ {x: 1});
+println("res [res]");
+sys::exit(sys::time::timer(duration:1300.ms, false) ~ 0);
+0

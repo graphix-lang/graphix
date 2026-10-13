@@ -1,0 +1,7 @@
+// x-security-10: the session-image cache is written world-readable and holds the program's string constants
+// command: chmod 600 x-security-10.gx; XDG_CACHE_HOME=$PWD/cache graphix x-security-10.gx; find cache -exec stat -c '%a %n' {} \; ; grep -ac hunter2 cache/graphix/registration/*/*.img
+// expected: cache directories 700 and entries 600 (the source is 600 and its constants are copied in)
+// observed: directories 755, both .img files 644; the program entry contains "hunter2" (the constant, and this header, which rides the image as a comment)
+let secret = "hunter2-api-key";
+sys::exit(sys::time::after_idle(duration: 100.ms, 0));
+str::len(secret)

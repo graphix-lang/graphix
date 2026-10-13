@@ -1,0 +1,11 @@
+let x: [List<i64>, null] = null;
+let a = cast<Array<i64>>(x);
+println("1: [a]");
+let l = cast<List<i64>>(x);
+println("2: [l]");
+let y: [Array<i64>, string] = "abc";
+println("3: [cast<List<string>>(y)]");
+let n = select l { error as e => -1, v => list::len(v) };
+println("4: [n]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

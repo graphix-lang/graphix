@@ -1,0 +1,16 @@
+// sys-net-10: Write's pre-path queue is never written: release() empties it
+// command: graphix --no-cache design/review-2026-10-12/repro/sys-net-10.gx
+// expected (Write's doc: values that fire before the path is known queue
+//   and are written, in order, when it arrives): written 1, written 2, ...
+// observed: the first write is the value standing when the path arrives
+//   (written 17 or so); 1..16 were pushed to the queue and discarded.
+let got = 0;
+sys::net::publish(#on_write: |v: i64| { println("written [v]"); got <- v }, "/local/w", 0);
+let clock = sys::time::timer(duration:10.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let p: string = never();
+p <- sys::time::timer(duration:200.ms, false) ~ "/local/w";
+sys::net::write(p, n);
+sys::exit(sys::time::timer(duration:260.ms, false) ~ 0);
+got

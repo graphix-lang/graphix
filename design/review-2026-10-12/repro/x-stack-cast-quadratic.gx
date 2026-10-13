@@ -1,0 +1,11 @@
+// cast/pack::read of a recursive value is O(depth^2): Type::cast_inner's
+// Type::Ref arm scans the whole `hist` path at every level.
+// n = 20000: ~2s of cast; 40000: ~4.5s; 80000: ~22s (debug build).
+type L = [`Cons(i64, L), `Nil];
+let n = 80000;
+let init: L = `Nil;
+let l = array::fold(array::init(n, |i| i), init, |acc, i| `Cons(i, acc));
+let a: Any = l;
+let r = cast<L>(a)$;
+sys::exit(sys::time::after_idle(duration:60.s, 0));
+r ~ 2

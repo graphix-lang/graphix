@@ -1,0 +1,13 @@
+type T = {f: fn(y: string) -> bool};
+let t: T = {f: |#x = 4096, y| x == y};
+// tests-functions-01b: a default hidden by a fn type through a struct field
+// command: graphix --check tests-functions-01b.gx; graphix-fuzz run tests-functions-01b.gx
+// expected: refused at compile time (string does not contain i64)
+// observed: check and build accept; at run time every engine logs
+//   "t.f("seven"): binding the callee failed: ... string does not contain i64"
+//   and the program produces no value (Trace([]))
+// the same holds for an array element (`let fs: Array<fn(y: string) -> bool> =
+// [|#x = 4096, y| x == y]; (fs[0]$)("seven")`) and a connect
+// (`let h: fn(y: string) -> bool = |y| false; h <- |#x = 4096, y| x == y; h("seven")`,
+// which shows `false` and then silently stops following h)
+(t.f)("seven")

@@ -1,0 +1,7 @@
+// c-collection-03: a node-walk collection slot holds ~4.4 KB for an identity
+// callback. Run with --no-fusion --no-cache and read VmRSS: ~57 MB at n = 0,
+// ~497 MB at n = 100000 (steady state); GRAPHIX_DBG_PERF=1 shows ~39 us of
+// setup_dynamic_bind per slot (debug build).
+let r = array::len(array::init(100000, |i| i));
+sys::exit(sys::time::after_idle(duration:1500.ms, r ~ 0));
+r

@@ -1,0 +1,16 @@
+// x-fix-types-01: inexact bound conjuncts never reach open cells: check accepts, build refuses
+// A conjunct holding a union (`Array<[i64, null]>`) is only probed at a bind
+// (cell_constraints_ok); commit_cell_constraints skips it (not `exact`), so `'y` in
+// `f([y])` stays free and g generalizes to fn(y: 'y) -> i64.
+// command: graphix --check x-fix-types-01.gx ; graphix --no-cache x-fix-types-01.gx
+// expected: --check refuses g("hello") (Array<[i64, null]> does not contain Array<string>),
+//   as it does for the exact bound `'a: Array<i64>`
+// observed: --check exits 0; the build refuses "an instance at fn(x: Array<string>) -> i64
+//   of a definition typed fn<'a: Array<[i64, null]>>(x: 'a) -> i64".
+// With `'a: Array<[i64, string]>` and g(true), graphix-fuzz check reports DIVERGENCE
+//   "the check accepted what the build refused". Through a dynamic call
+//   (`let hs: Array<fn(y: string) -> i64> = [g]; hs[0]$("hello")`) the run produces nothing.
+// Inferred-conjunct form: x-fix-types-01b.gx.
+let f = 'a: Array<[i64, null]> |x: 'a| -> i64 x[0]$$;
+let g = |y| f([y]);
+g("hello")

@@ -1,0 +1,14 @@
+// sys-net-03: sys::net::call in an arm that sleeps does not call again at
+// the wake when its arguments did not fire (CachedArgsAsync does).
+//   graphix --no-cache sys-net-03-rpc-call-wake.gx | grep '^b'
+// Expected: b 42, b -1, b 42, b -1, ... Seen: b 42, then b -1 only.
+sys::net::rpc(#path: "/test/rpc", #doc: "doc", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x + 1)$;
+let args = {x: 41};
+let p = "/test/rpc";
+let t = sys::time::timer(duration:300.ms, true);
+let on = true;
+on <- t ~ !on;
+let b = select on { true => { let r: i64 = sys::net::call(p, args)$; r }, false => -1 };
+println("b [b]");
+sys::exit(sys::time::timer(duration:1600.ms, false) ~ 0);
+b

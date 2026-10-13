@@ -64,6 +64,23 @@ fn src_head(src: Option<&Type>, env: &Env) -> Option<Type> {
             Type::TVar(_) => cur.deref_cloned()?,
             Type::App(c, a) => Type::app_filled(c, a)?,
             Type::Ref(_) => cur.lookup_ref(env).ok()?,
+            // CR claude for claude: [bug/high] A union source picks its collection kind
+            // statically and ignores the value. Every member that is not an Array or
+            // List is also dropped here. Effect 1: a value from another member is read
+            // as the union's list or array. cast<List<i64>> of "abc" from [List<i64>,
+            // string] returns "abc" typed List<i64>, because the List arm iterates a
+            // non-spine as empty and returns Ok(None). A later exhaustive select then
+            // hits "no arm matches: a coverage hole". The same arm turns a null from
+            // [List<i64>, null] into [] under cast<Array<i64>>, where the null from Any
+            // is an InvalidCast. Effect 2: dropping tuple, struct, variant, map and
+            // error members loses a nested List's source. A [(List<string>, i64), null]
+            // then casts a list's cons cell as an array and stringifies its tail. Fix:
+            // resolve a union source per value. Take the head of the member the value
+            // inhabits (is_a, or a shallow shape test, with ambiguity between list and
+            // array still giving None), and never a member it does not inhabit. In the
+            // List arm, refuse a value that is not a spine instead of returning
+            // Ok(None). probe: design/review-2026-10-12/repro/t-cast-setops-06.gx
+            // (t-cast-setops-06)
             Type::Set(ms) => {
                 let heads: SmallVec<[Type; 4]> = ms
                     .iter()
@@ -183,6 +200,17 @@ fn decide_once<T: Clone + PartialEq>(
             let outer = mem::replace(&mut seen.read, usize::MAX);
             let t = decide(seen);
             seen.depth -= 1;
+            // CR claude for claude: [perf/medium] A `cycle` verdict that read an outer
+            // application's assumption is removed here, so every later occurrence of
+            // the same application decides again. For a cycle of typedefs where each
+            // one names the next twice, the work doubles per typedef. With 22 typedefs,
+            // a program that only prints `null` takes about 12 s, because check_cast,
+            // holds_ref, reaches_out and holds_abstract all go through decide_once.
+            // Keep these provisional verdicts in a pending list tagged with the
+            // shallowest depth they read. When that application finishes with `cycle`,
+            // commit them as Decided. When it finishes otherwise, drop them. probe:
+            // design/review-2026-10-12/repro/t-cast-setops-16-decide-once-exponential.gx
+            // (t-cast-setops-09)
             if seen.read < depth && t == cycle {
                 seen.known.remove(&k);
             } else {
@@ -386,6 +414,20 @@ impl Type {
                 Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => Ok(None),
                 _ => Err(self.cast_fail("not a function", v)),
             },
+            // CR claude for eric: [bug/high] A cast to a Graphix abstract type accepts
+            // any decoded GxAbstract whose id and params match (`is_a`), and never
+            // checks the payload against the definition's representation. AbstractIds
+            // are path-derived and stable across processes, so data from pack::read, a
+            // file or netidx can carry a payload of any type. Example: a Box(string)
+            // read as `Box = Abstract<i64>` makes the JIT compute `b.0 + 1` as 1 while
+            // the node-walk logs a parse error and produces nothing. Worse, `holds_ref`
+            // stops at `Type::Abstract`, so `Abstract<&mut i64>` passes the `Concrete`
+            // read bound, and bytes naming any bind id become a writable reference to a
+            // variable the program never shared. Decide the rule: either cast the
+            // payload against the representation (substituted by the params) and refuse
+            // a representation holding a reference or function as data, or refuse
+            // abstract read targets entirely. Pin both cases. probe:
+            // design/review-2026-10-12/repro/tests-types-02.sh (tests-types-02)
             Type::Abstract { .. } => {
                 if self.is_a(env, v) {
                     Ok(None)
@@ -403,6 +445,41 @@ impl Type {
                 if let Value::Error(_) = v {
                     return Err(self.cast_fail("an error is not data", v));
                 }
+                // CR claude for claude: [bug/medium] A cast of an abstract value takes
+                // it apart here, which holds_ref assumes never happens (it stops at
+                // Type::Abstract). With a string target, convert turns a
+                // Value::Abstract into netidx's "abstract:<base64>" packing, which
+                // carries a reference's raw session id. With any other target, the
+                // CastFail message prints the value through NakedPrefix, and
+                // GxAbstract's Debug prints the payload untyped (so `Cell(4103)`
+                // appears where the typed printer gives `Cell(&ref)`). So `type Cell =
+                // Abstract<&i64>; cast<u64>(Cell(&x))` and `cast<string>(..)` give
+                // different strings under --no-cache, --no-fusion and a warm image,
+                // against the rule that a reference prints as &ref. Fix: refuse a
+                // Value::Abstract source in this Primitive arm, since an abstract has
+                // no primitive conversion. Then render CastFail's value through the
+                // typed printer, or elide abstract payloads, so no raw id reaches the
+                // message. probe: design/review-2026-10-12/repro/t-cast-setops-11.gx
+                // (t-cast-setops-11)
+                // CR claude for eric: [bug/high] When the integer member of a
+                // primitive-set target refuses a number, this falls through to netidx's
+                // lossy `Value::cast` for a sibling member. A number (or a datetime,
+                // duration or bool) casts to `null` unconditionally, to `bool` by
+                // truthiness, and to `string` in the typed form "i64:300". So
+                // `cast<[i8, null]>(300)` is null, `cast<[i8, bool]>(300)` is true and
+                // `cast<[i8, string]>(300)` is "i64:300". In practice an optional
+                // small-int field holding 300 in `json::read` or `str::parse` reads as
+                // absent with no `InvalidCast`. Both engines agree, so the fuzzer
+                // cannot see it. This breaks the integer-cast rule ("holds the value
+                // exactly or is an InvalidCast") and json round-tripping. A string
+                // source is already refused here, so the rule is uneven too. Proposed
+                // rule: in `convert`, `Null` accepts only `Value::Null` (the
+                // omitted-field path still works), `Bool` only a bool or
+                // "true"/"false", and a number reaches `String` only by its plain
+                // display or not at all inside a union with a numeric member. Then pin
+                // `json::read` and `str::parse` into `[i8, null]`. Probe:
+                // design/review-2026-10-12/repro/x-engine-collections-01.gx
+                // (x-engine-collections-01)
                 match s.iter().find_map(|t| convert(v.clone(), t)) {
                     Some(v) => Ok(Some(v)),
                     None => Err(self.cast_fail("no primitive conversion", v)),
@@ -422,6 +499,24 @@ impl Type {
                     Value::Error(inner) => Ok(e
                         .cast_int(env, hist, src, inner)?
                         .map(|c| Value::Error(c.into()))),
+                    // CR claude for claude: [bug/medium] This arm turns any value that
+                    // is not an error into Value::Error of its payload cast. So an
+                    // error member below the top of a cast target reads plain data as
+                    // an error. Examples: cast<[i64, Error<string>]>("hello") is
+                    // error:"hello", and json::read of {"a": "oops"} into {a: [i64,
+                    // Error<string>]} gives {a: error:"oops"}. Outside data can then
+                    // forge an error that a select's error arm or a `?` acts on. That
+                    // breaks the rule that data is never read into an error.
+                    // cast_target's without_errors enforces that rule only for the top
+                    // of a typed read's success type. The fix is to refuse a value that
+                    // is not an error here ("not an error"), mirroring the Primitive
+                    // arm's "an error is not data". The Primitive arm also needs to
+                    // stop converting a non-error into Typ::Error, because `{a: [i64,
+                    // error]}` wraps the same way through convert and netidx
+                    // Value::cast. Once both are fixed, without_errors may be
+                    // redundant. probe:
+                    // design/review-2026-10-12/repro/t-cast-setops-10.gx
+                    // (t-cast-setops-10)
                     v => {
                         let c = e.cast_int(env, hist, src, v)?;
                         Ok(Some(Value::Error(c.unwrap_or_else(|| v.clone()).into())))
@@ -464,6 +559,83 @@ impl Type {
                 let spine = match &src {
                     Some(Type::List(_)) => true,
                     Some(Type::Array(_)) => false,
+                    // CR claude for claude: [bug/high] json/toml round-trip of a List
+                    // loses elements: writer flattens by type, reader guesses chain by
+                    // shape. Since 2d2cad08 (the x-stack-06 fix), writers serialize by
+                    // static type: `shape` (stdlib/graphix-package-core/src/lib.rs)
+                    // writes a `List<T>` as a flat JSON/TOML array. The typed read
+                    // (`TypedRead`, core lib.rs/167) calls `t.cast_value(env, v)` with
+                    // no source type. The List arm of the cast then decides 'spine'
+                    // from the value's shape (`_ => list::len(v).is_some()`, cast.rs).
+                    // A flat array that happens to be a well-formed cons chain is
+                    // therefore read as a chain. A two-element list whose second
+                    // element is `[]` (or `[x, []]`, ...) comes back with one element.
+                    // CLAUDE.md promises that 'what the json and toml writers emit
+                    // reads back into its type'. pack round-trips (it writes the
+                    // chain). The fix covered the write side only.
+                    // book/src/core/fundamental_types.md still says a list is written
+                    // out as its chain of cells and that an array read into a List is
+                    // taken for a chain. Both statements are now false for json/toml.
+                    // Failure: `type T = {xs: List<Array<i64>>}; let orig: T = {xs:
+                    // [<[1], []>]}`. `json::read(json::write_str(orig)$)` typed T gives
+                    // `{xs: [<[1]>]}`, and toml gives the same, with no error. The
+                    // empty array element is silently dropped. Fix: Make the read agree
+                    // with the writer. Data decoded from a flat format is an array, so
+                    // TypedRead for json/toml should pass `Some(Array<Any>)`-shaped
+                    // source information into the cast (or use a cast entry that never
+                    // takes the spine path), leaving shape-guessing only for netidx/Any
+                    // sources. Then rewrite fundamental_types.md 'Lists as Data' to say
+                    // json/toml write and read a List as a flat array, while
+                    // pack/netidx carry the chain. Add a round-trip pin over `[<[1],
+                    // []>]` for json and toml. Unverified: the reviewer's report, not
+                    // checked by a verifier. (book-core-01)
+                    // CR claude for eric: [bug/medium] With no source type, this
+                    // guesses that any array that parses as a cons spine is already a
+                    // list. An ordinary array whose last element is [] (or a 2-array
+                    // chain ending in one) is then walked as a spine and loses
+                    // elements. `cast<List<Array<i64>>>` of an Any `[[1], []]` gives a
+                    // 1-element list. The json writer flattens a List to a plain array
+                    // (core's Shape::Seq), so `json::write_str([<[1, 2], []>])` gives
+                    // "[[1,2],[]]", and `json::read` of that into List<Array<i64>>
+                    // gives `[<[1, 2]>]`. That breaks the rule that what the json and
+                    // toml writers emit reads back into its type. The guess exists so
+                    // that a List widened to Any can be cast back, so fixing it needs a
+                    // decision. Options: a cons rep a flat array cannot be mistaken
+                    // for; readers (json, toml, netidx data) that cast with an Array
+                    // source so they never sniff; or drop the sniff and convert untyped
+                    // arrays element by element. Pin `[[1], []]` and the json round
+                    // trip either way. probe:
+                    // design/review-2026-10-12/repro/t-expr-core-01.gx (t-expr-core-01)
+                    // CR claude for claude: [bug/high] json::write_str and toml's
+                    // writers now write a List flat, but their typed reads (core's
+                    // TypedRead, then cast_value with no source) still reach this
+                    // guess. A flat array that is also a valid cons spine is taken for
+                    // one. Any 2-element list whose last element is an empty array or
+                    // list loses that element, silently: [<[1, 2], []>] reads back as
+                    // [<[1, 2]>], and [<[], []>] as [<[]>]. pack is unaffected because
+                    // it writes the spine. Fix: a format that writes a List flat should
+                    // read it flat. Pass that to the cast (an Array source, or a flag
+                    // on TypedRead for json/toml) so the shape guess never decides on
+                    // data from those formats. Add json and toml round-trip pins for
+                    // these two lists, and rewrite the "Lists as Data" section of
+                    // book/src/core/fundamental_types.md, which still says json writes
+                    // the chain of cells. probe:
+                    // design/review-2026-10-12/repro/x-rerun-5-01.gx (x-rerun-5-01)
+                    // CR claude for claude: [bug/high] With no source type, a List
+                    // target guesses array-vs-list from the value's shape, and every
+                    // data reader takes this path (json::read, toml, str::parse,
+                    // sys::net reads through Type::cast_value). Data never holds a cons
+                    // spine: the writers emit a list as a flat array. So a two-element
+                    // array whose second element is [] or another pair is misread as a
+                    // cons cell. json::read of json::write_str([<[1, 2], []>]) gives
+                    // [<[1, 2]>] and silently drops an element. This breaks the rule
+                    // that what the json and toml writers emit reads back into its
+                    // type. The fix: data readers cast in a mode (or with a source)
+                    // that says every Value::Array is an array, at every nesting level.
+                    // Keep the shape guess only for an in-language cast whose source is
+                    // genuinely unknown. probe:
+                    // design/review-2026-10-12/repro/t-cast-setops-05.gx
+                    // (t-cast-setops-05)
                     _ => list::len(v).is_some(),
                 };
                 let src = match &src {
@@ -597,6 +769,22 @@ impl Type {
                     for (fname, ftyp, _) in ts.iter() {
                         match have.peek() {
                             Some((n, _)) if *n == fname => filled.extend(have.next()),
+                            // CR claude for claude: [bug/high] This guard fills an
+                            // omitted field whenever null CONVERTS to the field's type,
+                            // not only when null already inhabits it. Null converts to
+                            // string (as "null") and to Array<[T, null]> (as [null]).
+                            // So a required string field that a JSON or TOML document,
+                            // or a plain cast<T>, leaves out reads as the literal
+                            // string "null" instead of an InvalidCast. For example,
+                            // json::read("{\"a\": 1}") into {a: i64, b: string} gives
+                            // {a: 1, b: "null"}. Fill only when the field admits null
+                            // as-is: `matches!(ftyp.cast_int(env, hist, None, &NULL),
+                            // Ok(None))`, which is cast_inner's "already inhabits"
+                            // answer. Reword the CLAUDE.md sentence to "where the
+                            // field's type admits null". Pin a refusal for the string
+                            // and array cases next to toml_optional_field_round_trips.
+                            // probe: design/review-2026-10-12/repro/t-cast-setops-04.gx
+                            // (t-cast-setops-04)
                             _ if ftyp.cast_int(env, hist, None, &NULL).is_ok() => {
                                 filled.push((fname, &NULL))
                             }
@@ -694,6 +882,17 @@ impl Type {
                 // the same definition over the same value with larger params
                 // grows at every level, the value never consumed
                 let size = params_size(&key.0.1);
+                // CR claude for claude: [perf/medium] This scans every (definition,
+                // value) pair on the current path at each Ref expansion. A recursive
+                // value n levels deep puts about n entries on the path, so a cast or
+                // type-directed read (cast, pack/json/toml reads, sys::net subscribe
+                // and call) costs O(n^2): a 40000-deep `type L = [`Cons(i64, L), `Nil]`
+                // adds about 2s of cast (probe:
+                // design/review-2026-10-12/repro/x-stack-cast-quadratic.gx). lookup_ref
+                // also re-expands the typedef at every level. Keep the path in a map
+                // keyed by (definition, value address) that holds that pair's params
+                // size, so the grows check is one lookup. Cache the expansion per
+                // (definition, params) as is_a's IsAHist does. (x-stack-04)
                 let grows = hist.iter().any(|((d, ps), at)| {
                     *d == key.0.0 && *at == key.1 && params_size(ps) < size
                 });
@@ -722,6 +921,22 @@ impl Type {
                     }
                     return Err(refused.expect("a tagged member was tried"));
                 }
+                // CR claude for eric: [bug/high] When no member holds the value, this
+                // takes the first member that converts, and primitive members sort
+                // first while `convert` falls back to netidx `Value::cast`, which turns
+                // an array into its first element, null, a bool or its Display string.
+                // So cast<[Array<f64>, null]>([1, 2]) is null, cast<[bool,
+                // Array<f64>]>([1, 2]) is true, cast<[string, Array<f64>]>([1, 2]) is
+                // "[i64:1, i64:2]", and json::read of {"weights": [1, 2, 3]} into
+                // {weights: [Array<f64>, null]} silently yields weights: null. A plain
+                // cast<i64>([5, 6, 7]) is 5, against the rule that an integer cast
+                // holds the value exactly or is an InvalidCast. Proposed fix: `convert`
+                // refuses an array or map source for every scalar target, and this pass
+                // tries the members of the value's own runtime class first, falling
+                // back to cross-class conversions only when none of them converts;
+                // which cross-class conversions remain (number to null, anything to
+                // string) is a cast rule to decide. probe:
+                // design/review-2026-10-12/repro/t-cast-setops-03.gx (t-cast-setops-03)
                 let mut converted = None;
                 for t in ts.iter() {
                     match t.cast_int(env, hist, src, v) {
@@ -819,6 +1034,47 @@ impl Type {
                         Some(g) => {
                             g.id == *id
                                 && g.params.len() == params.len()
+                                // CR claude for claude: [bug/high] This runtime type
+                                // test compares an abstract value's carried parameters
+                                // by one-way containment, which is covariant. The
+                                // static check (the Abstract arm of contains_int, via
+                                // equal_int) and design/nominal_abstract_types.md both
+                                // make the parameters invariant. So a value built as
+                                // `C<i64>` passes `C<[i64, string]> as q`, and the arm
+                                // is typed with the wider parameter. With `type C<'a> =
+                                // Abstract<&mut 'a>`, that arm writes a string into an
+                                // i64 variable. The fused run then panics in the kernel
+                                // ("runtime String does not match the compiled
+                                // Scalar(I64) slot") and the runtime dies. The
+                                // node-walk computes on a string where it expects an
+                                // i64. Over `[Box<[i64, string]>, Box<i64>]`, a
+                                // Box<i64> takes the first arm, although the checker
+                                // treats the second arm as live. Fix: compare each
+                                // parameter for type equality (containment both ways,
+                                // as equal_int does) instead of
+                                // `p.contains_with_flags(.., gp)`, and pin both
+                                // programs. Probes:
+                                // design/review-2026-10-12/repro/x-fix-types-02.gx and
+                                // x-fix-types-02b.gx. (x-fix-types-02)
+                                // CR claude for claude: [bug/critical] This test of a
+                                // Graphix-minted abstract checks params one way only:
+                                // the tested param must contain the value's param.
+                                // Params are invariant
+                                // (design/nominal_abstract_types.md), and rep_collision
+                                // accepts a select over two params of one abstract
+                                // because it assumes this test tells them apart. So
+                                // `select u { Cell<[i64, null]> as b => .., Cell<i64>
+                                // as c => .. }` sends a Cell<i64> to the first arm, and
+                                // `*b.0 <- null` writes null into an i64. The node-walk
+                                // then logs "can't add null". The JIT panics in
+                                // kernel.rs ("runtime Null does not match the compiled
+                                // Scalar(I64) slot") and the runtime dies. Fix: compare
+                                // each param pair invariantly, for example by
+                                // containment both ways or by union_identical after
+                                // resolve_tvars, so the test is the one rep_collision
+                                // assumes. probe:
+                                // design/review-2026-10-12/repro/t-cast-setops-01.gx
+                                // (t-cast-setops-01)
                                 && params.iter().zip(g.params.iter()).all(|(p, gp)| {
                                     p.contains_with_flags(BitFlags::empty(), env, gp)
                                         .unwrap_or(false)
@@ -1383,6 +1639,18 @@ fn rep_collision(
                     && px.iter().zip(py.iter()).all(|(p, q)| union_identical(p, q));
                 (rust_backed && !same).then(|| (a.clone(), b.clone()))
             }
+            // CR claude for claude: [bug/high] This arm compares the pointee types and
+            // ignores mutability. At run time `is_a` matches any reference against any
+            // `ByRef` type, so &i64 and &mut i64 share one runtime form. As a result,
+            // `[&i64, &mut i64]` passes the one-runtime-form rule, and an `&mut i64 as
+            // m` arm catches a read-only reference. Writing `*m <- v` through it then
+            // mutates a place that was handed out only as `&T`, which breaks the
+            // place_references rule that a write needs `&mut`. Match the mutability
+            // too, `(Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y`, so
+            // that mixed mutability falls through to `rep_overlaps` and is refused, as
+            // `[&i64, &mut string]` already is. Probe:
+            // design/review-2026-10-12/repro/t-cast-setops-02.gx (prints "wrote 5").
+            // (t-cast-setops-02)
             (Type::ByRef(_, x), Type::ByRef(_, y)) if x == y => None,
             (Type::Fn(x), Type::Fn(y)) if x == y => None,
             (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
@@ -1421,6 +1689,33 @@ impl Indiscernible {
     }
 }
 
+// CR claude for eric: [bug/medium] Abstract types are opaque to every comparison rule:
+// `rep_ambiguity` and `compared_ref` return nothing for `Type::Abstract`, and
+// `require_compared` skips it. At run time, though, `GxAbstract` with no core-trait
+// impl compares and orders by its payload. So `array::sort` and map keys over
+// `Abstract<fn..>` or `Abstract<&T>` are accepted and order by LambdaId or bind id (the
+// kind of order x-diff-par-02 ruled out for bare functions). `T(r1) == T(r2)` is false
+// where `r1 == r2` and `[r1] == [r2]` are true. `U(`A) == U("A")` over `Abstract<[`A,
+// string]>` is accepted and true, though `==` over `[`A, string]` is refused. Proposed
+// fix: for an abstract type with no Eq/Ord impl, all three walks descend into its
+// representation, with params substituted, and `map_refs` rewrites references in the
+// payload. One with a user impl stays opaque. Needs your ruling on two points: a hidden
+// representation would then show up in bound errors outside its module, and a
+// Rust-backed abstract has no representation to descend into. probe:
+// design/review-2026-10-12/repro/x-fix-types-05.gx (x-fix-types-05)
+// CR claude for eric: [bug/medium] rep_ambiguity treats Type::Abstract as opaque (`_ =>
+// None`), and so does Type::require_compared. But when no core Eq/Ord hook applies,
+// GxAbstract's eq, cmp and hash are the payload's. So `type T = Abstract<[`A, string]>`
+// makes T(`A) == T("A") true, and a map keyed by both keeps one entry. Writing `a.0 ==
+// b.0` is refused, so the abstract wrapper lets an indiscernible comparison through.
+// The same happens for `Box<'a> = Abstract<'a>` at Box<[`A, string]>, where the use
+// site can see the argument. One of three rules is needed: (1) look through an abstract
+// with no core Eq/Ord impl to its rep in env.abstract_reps, substituted by its params;
+// (2) refuse comparing or keying such an abstract; or (3) refuse `Abstract<rep>` over a
+// non-Discernible rep unless Eq/Ord is implemented. With a hidden rep, (1) would show
+// the rep in the error message. Whichever is chosen, update design/tvar_constraints.md
+// (the Discernible section) to match. probe:
+// design/review-2026-10-12/repro/x-expr-walks-03.gx (x-expr-walks-03)
 fn rep_ambiguity(
     env: &Env,
     seen: &mut AHashSet<Type>,
@@ -1430,6 +1725,25 @@ fn rep_ambiguity(
     t: &Type,
 ) -> Option<Indiscernible> {
     ensure_sufficient(|| {
+        // CR claude for claude: [bug/high] rep_ambiguity/rep_collision never terminate
+        // on non-regular recursive types: --check hangs. rep_ambiguity and compared_ref
+        // stop recursion with a `seen: AHashSet<Type>` keyed by the whole Ref.
+        // rep_collision and rep_overlaps use RepSeen pairs of whole types. For a
+        // contractive typedef whose params grow as it recurses, such as `type N<'a> =
+        // [null, ('a, N<Array<'a>>)]`, every expansion is a new key, so the walk never
+        // ends. cast.rs cites exactly this type as one holds/check_cast must handle;
+        // their ShapeKey memo does. These walks run in the checker for every
+        // comparison, map key, Ordered/Discernible bound and select arm, and map_refs
+        // runs at run time. Failure: type N<'a> = [null, ('a, N<Array<'a>>)]; let x:
+        // N<i64> = null; let y: N<i64> = (1, null); x == y. `graphix --check` runs
+        // until killed (60 s). A Map<N<i64>, i64> or a select over [N<i64>, N<string>]
+        // with type-test arms hangs the same way. The language server would hang on the
+        // same buffer. Fix: Key these walks the way holds/check_cast already do: by
+        // definition plus an abstraction of the params (for example ShapeKey, or the
+        // definition with params erased to their heads), with the same decide_once
+        // discipline. Or bound the depth and treat a cut-off as 'collides'
+        // (conservative). Unverified: the reviewer's report, not checked by a verifier.
+        // (t-cast-setops-08)
         if matches!(t, Type::Ref(_)) && !seen.insert(t.clone()) {
             return None;
         }
@@ -1555,6 +1869,20 @@ impl Type {
 
 /// Whether a comparison of values of `t` meets a reference: one where
 /// [`Type::indiscernible`] looks.
+// CR claude for eric: [bug/medium] compared_ref, map_refs and rep_ambiguity all stop at
+// Type::Abstract. GxAbstract's eq and ord still compare the payload when no Eq/Ord impl
+// rides the value, so a reference inside an abstract (in its rep or in a type
+// parameter) is compared by its raw session cell id. Example: `type R =
+// Abstract<&i64>`. Here `R(&x) == R(&x)` is false while `&x == &x` is true. `R(&x) <
+// R(&y)` orders by cell id, which a warm start relocates. `array::sort` and the map
+// literal `{R(&x) => 1, R(&y) => 2}` pass Ordered, although a bare `&i64` is refused in
+// both places. One fix: when an abstract has no Eq/Ord impl, walk its rep
+// (env.abstract_reps with the params substituted) in all three functions. The other:
+// refuse `==` and Ordered over an abstract whose rep or params hold a reference unless
+// it has an impl. The choice also decides how much of a hidden rep a refusal may reveal
+// outside the defining module, and whether tvar_constraints.md's rule that the checks
+// do not look under an abstract still holds. probe:
+// design/review-2026-10-12/repro/x-expr-walks-04.gx (x-expr-walks-04)
 fn compared_ref(env: &Env, seen: &mut AHashSet<Type>, t: &Type) -> bool {
     ensure_sufficient(|| {
         if matches!(t, Type::Ref(_)) && !seen.insert(t.clone()) {
@@ -1599,8 +1927,35 @@ fn carries_tag(env: &Env, t: &Type, v: &Value) -> bool {
 /// `v` as the primitive `t`. An integer target holds the value exactly
 /// or refuses it, whatever the source: a number, a float (its fraction
 /// dropped) or a string; every other conversion is netidx's.
+// CR claude for claude: [bug/high] `convert` passes array sources and null targets to
+// netidx's `Value::cast`. For an array and any primitive target other than
+// Array/Bytes/Map, that cast keeps the first element and drops the rest. It also turns
+// every number into null for `Typ::Null`. So cast<i64>([7, 8, 9]) is 7,
+// json::read<i64>("[[7, 8], 9]") is 7, toml::read<{port: i64}>("port = [8080, 1]") is
+// {port: 8080}, json::read<null>("42") is null, cast<bool>([7, 0]) is true, and a union
+// target with null takes any number as null: cast<[null, Array<string>]>([5, "a"]) is
+// null. This breaks the rule that a cast holds the value exactly or is an InvalidCast,
+// and these reads are how external data gets its type. Both engines agree, so the
+// fuzzer cannot see it. Fix: refuse before delegating. An Array source converts only to
+// Bytes (the documented array-of-numbers case); a String source whose parse yields an
+// array is refused the same way; `Typ::Null` accepts only null. Add lang cast pins for
+// each case. Probe: design/review-2026-10-12/repro/x-security-02.gx. Related:
+// t-cast-setops-04, t-cast-setops-14. (x-security-02)
 fn convert(v: Value, t: Typ) -> Option<Value> {
     if !is_integer(t) {
+        // CR claude for claude: [bug/high] This hands an Array (or Map) source to
+        // netidx_value::Value::cast. That function's Array arm recurses through first
+        // elements with no stack guard, and the `_ => return v.cast(t)` arm below does
+        // the same for integer targets. The ensure_sufficient guard around
+        // Type::cast_inner does not cover this recursion, so data nested a few hundred
+        // levels deep aborts the process with a stack overflow. In the debug build,
+        // about 1 KB of pack bytes read as `type T = [null, Array<T>]` is enough, and
+        // the bytes can come from a file or the network. Fix: convert should return
+        // None for Array and Map sources and never call netidx's cast on them, which
+        // also removes the first-element cast that finding x-security-02's sibling
+        // reports. netidx-value's Value::cast Array arm should also become
+        // non-recursive or guarded, because other callers pass it wire data too. probe:
+        // design/review-2026-10-12/repro/x-security-03.sh (x-security-03)
         return v.cast(t);
     }
     let n = match &v {
@@ -1621,6 +1976,15 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
                 Ok(parsed) => return convert(parsed, t),
             },
         },
+        // CR claude for claude: [bug/low] This fallback hands every non-number,
+        // non-string source to netidx's Value::cast, which unwraps a one-element array
+        // and converts its element with Rust `as`. So `cast<u16>([u64:70000])` is 4464
+        // and `cast<u8>([300])` is 44, not the InvalidCast the integer-cast rule
+        // promises. Match Value::Array here: either recurse `convert` on a lone element
+        // (keeping netidx's unwrapping, but exact) or refuse it with None. Name the
+        // remaining sources (bool, decimal, duration) explicitly instead of the
+        // catch-all, so a new netidx conversion cannot wrap silently. probe:
+        // design/review-2026-10-12/repro/x-fix-types-12.gx (x-fix-types-11)
         _ => return v.cast(t),
     };
     match t {
@@ -1677,6 +2041,26 @@ fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) 
         };
         match (t, v) {
             (Type::ByRef(..), v) => f(v),
+            // CR claude for claude: [perf/low] is_a here checks the member against the
+            // whole remaining value, and map_refs then recurses one level down and does
+            // it again. Comparing two n-deep values of `type L = [`Cons(&i64, L),
+            // `Nil]` is therefore O(n^2): 3.6s at n=4000 against 0.5s to build them
+            // (probe: design/review-2026-10-12/repro/x-stack-map-refs-quadratic.gx).
+            // tval's member_of already chooses a union member cheaply, using
+            // shape_excludes before falling back to is_a. Share it here and in
+            // graphix-package-core's shape(), which has the same per-level is_a. Also
+            // stop allocating a fresh set for compared_ref at every level. (x-stack-05)
+            // CR claude for claude: [perf/medium] To choose a member, this runs a full
+            // is_a over the rest of the value. For a recursive type such as `[`Nil,
+            // `Cons(&i64, L)]`, each list cell walks the whole tail, so == on two
+            // 2000-element lists takes about 4 s and 4000 elements take tens of
+            // seconds. map_refs also calls compared_ref with a freshly allocated
+            // AHashSet at every value node. Choose the member by its shallow shape (tag
+            // and arity, as tval::member_of does) and fall back to is_a only when
+            // several members admit that shape. Decide compared_ref once per type, not
+            // once per value node. probe:
+            // design/review-2026-10-12/repro/t-cast-setops-01-map-refs-quadratic.gx
+            // (t-cast-setops-12)
             (Type::Set(ts), v) => match ts.iter().find(|m| m.is_a(env, v)) {
                 Some(m) => map_refs(env, m, v, f),
                 None => v.clone(),

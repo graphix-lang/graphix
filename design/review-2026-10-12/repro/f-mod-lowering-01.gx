@@ -1,0 +1,29 @@
+let n = 0;
+// f-mod-lowering-01: lowering::arm_io_blocker lets a performing call under a
+// select arm fuse when its triggers merely READ the scrutinee or an arm bind
+// (for a lambda call, every argument counts as a trigger). That does not make
+// the effect fire at every entry of the arm: the node-walk re-fires a constant
+// at the arm's wake, a kernel picks its arm fresh and has no wake view.
+// Three shapes, one per print: (a) the read sits in an untaken nested arm,
+// (b) the read feeds a function that ignores it, (c) the callee's own print
+// has a constant trigger.
+//
+// command: graphix-fuzz check design/review-2026-10-12/repro/f-mod-lowering-01.gx
+// expected: AGREE, each of a/b/c printed at cycles 0, 2, 4, 6 (every entry of
+//   arm 0), as the node-walk does.
+// observed (HEAD 7324207f, debug build): DIVERGENCE (interp != jit): interp
+//   prints both dbg lines and "c" at 0+0, 0+2, 0+4, 0+6; jit (nocache, cold, warm) at 0+0
+//   only. Traced values agree. Each shape alone: f-mod-lowering-02a/b/c.gx.
+n <- select n { 6 => never(), x => x + 1 };
+let y = 1;
+let g = |v: i64| -> i64 7;
+let h = |v: i64| -> i64 { print("c"); v + 1 };
+let f = |s: i64, y: i64| -> i64 select s {
+  0 => {
+    dbg(#dest: `Stdout, select y { 0 => s, _ => 7 });
+    dbg(#dest: `Stdout, g(s));
+    h(s)
+  },
+  _ => 0
+};
+f(n % 2, y)

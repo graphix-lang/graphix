@@ -1,0 +1,15 @@
+// small-pkgs-04: json/toml/hbs writers serialize a reference as its session bind id
+// run: graphix --no-cache small-pkgs-04.gx   (same with --no-fusion)
+// expected: each writer refuses the reference (JsonErr / TomlErr / HbsErr), as a
+//   cast does ("a reference is not a number"); printing it gives "&ref"
+// observed (HEAD 7324207f, debug build):
+//   {h: "4611686018427392011", j: "{\"a\":4611686018427392013,\"b\":1}", t: "a = 4611686018427392015\nb = 1\n"}
+//   the number is the cell's BindId: it differs per `&x`, per engine and per image
+//   (graphix-fuzz check on json::write_str({a: &x, b: 1}) answers UNSURE: nondeterminism)
+let x = 5;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+{
+    j: json::write_str({a: &x, b: 1}),
+    t: toml::write_str({a: &x, b: 1}),
+    h: hbs::render("{{a}}", {a: &x, b: 1})
+}

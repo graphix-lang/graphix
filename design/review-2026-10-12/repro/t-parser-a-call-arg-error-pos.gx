@@ -1,0 +1,6 @@
+// A syntax error inside a call's argument list is reported at column 8,
+// after the last complete argument, with no note, not at the missing
+// `:` or `,` before `2` (column 13). With `f(#a 2)` the caret lands on
+// the call's `(`.
+let f = |#a, #b| a + b;
+f(#a: 1, #b 2)

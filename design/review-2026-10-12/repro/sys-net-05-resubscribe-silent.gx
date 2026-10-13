@@ -1,0 +1,19 @@
+// sys-net-05: a subscriber that sleeps and wakes gets nothing when another
+// holder outside NetState's routes (here the rpc client cache, which keeps
+// a Dval of the rpc's path) kept the netidx subscription alive: the route
+// was dropped with its last held Dval, so `streamed` is false and no replay
+// is made, while netidx still has the shared channel registered and
+// NO_SPURIOUS suppresses its last value.
+//   graphix --no-cache sys-net-05-resubscribe-silent.gx | grep '^b'
+// Expected: b ["x"] at every wake. Seen: b ["x"] once, then "off" only.
+sys::net::rpc(#path: "/test/r", #doc: "d", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x)$;
+let p = "/test/r";
+let c: i64 = sys::net::call(p, sys::time::timer(duration:100.ms, false) ~ {x: 5})$;
+println("call [c]");
+let t = sys::time::timer(duration:300.ms, true);
+let on = true;
+on <- t ~ !on;
+let b = select on { true => { let x: Array<string> = sys::net::subscribe(p)$; x }, false => ["off"] };
+println("b [b]");
+sys::exit(sys::time::timer(duration:1600.ms, false) ~ 0);
+b

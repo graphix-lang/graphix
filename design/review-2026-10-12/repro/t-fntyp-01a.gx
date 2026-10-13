@@ -1,0 +1,3 @@
+// accepted: the outer 'b is not held rigid (y + 1 binds it to i64); swap the two parameters and the check refuses
+let f = |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| -> 'b y + 1;
+0

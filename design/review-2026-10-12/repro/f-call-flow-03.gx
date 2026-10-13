@@ -1,0 +1,12 @@
+let xs: Array<[i64, Error<`E>]> = [1, error(`E), 3];
+// f-call-flow-03: a dead statement holding a handler-less `?` or `$` is skipped in a
+// kernel (fusion/emit/flow.rs block_live via stmt_subtree_effect_free), so the JIT
+// never logs the error the node-walk logs.
+// Run: graphix-fuzz run f-call-flow-03.gx
+// Expected (CLAUDE.md: "`$` and handler-less `?` log a swallowed error from both
+// backends"): the "unhandled error ... line: 10, column: 48 "E"" line under both
+// Interp and Jit. Observed: Interp logs it, Jit (fused=1) logs nothing; values agree.
+// Same with `graphix --no-cache --log-dir D` vs `--no-fusion`: the `$` "ignored error" line too.
+let h = |r: [i64, Error<`E>]| -> i64 { let u = r?; 5 };
+let g = |r: [i64, Error<`E>]| -> i64 { r$; 7 };
+[array::map(xs, |r| h(r)), array::map(xs, |r| g(r))]

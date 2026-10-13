@@ -1,0 +1,6 @@
+// mustreject ref-widen: `x` is a let over bottom, a cell its first use
+// decides; the annotation `&mut Any` decides it to Any and the mutant is
+// rightly accepted. references() checks only that the map's snapshot of x
+// is a concrete primitive, never `types.cell(x)`. typemorph-one:
+// FLIP ref-widen#1 LEAK: accepted at let
+{ let x = never(); let r = &mut x; *r <- 2; x }

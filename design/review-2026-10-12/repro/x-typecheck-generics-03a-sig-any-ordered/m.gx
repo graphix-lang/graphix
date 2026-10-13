@@ -1,0 +1,1 @@
+let lt = 'a: Any |x: 'a, y: 'a| -> bool x < y

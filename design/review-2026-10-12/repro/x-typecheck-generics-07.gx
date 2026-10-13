@@ -1,0 +1,10 @@
+// x-typecheck-generics-07: a declared quantifier only in the return type
+// settles to its bound at the call, so an annotation cannot narrow it.
+// command: graphix --check design/review-2026-10-12/repro/x-typecheck-generics-07.gx
+// expected: accepted (as it is with the `'b: Any` header removed)
+// observed: type mismatch Array<i64> does not contain Array<'b: Any>
+//   (GRAPHIX_DBG_BIND=1 shows SETTLE 'b := Any before the annotation's check;
+//   `'b: Number |s: string| -> ['b, null] null` with r: [i64, null] fails the same way)
+let f = 'b: Any |s: string| -> Array<'b> [];
+let r: Array<i64> = f("1");
+r

@@ -1,0 +1,21 @@
+let server = http::serve(
+    #addr: "127.0.0.1:0",
+    #handler: |req| select req.path {
+        "/hang" => never(),
+        _ => {body: "ok [req.path]", headers: [], status: u16:200, url: ""}
+    }
+)$;
+let addr = http::server_addr(server);
+let client = http::default_client(addr)$;
+let clock = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let url = select n {
+    1 => "http://[addr]/hang",
+    k if k > 1 => "http://[addr]/ok[k]",
+    _ => never()
+};
+let resp = http::get(client, url);
+println("n=[n] resp=[resp]");
+sys::exit(select n { 30 => 0, _ => never() });
+resp

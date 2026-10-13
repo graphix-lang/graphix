@@ -379,6 +379,15 @@ async fn resolve_from_files(
             text,
         })
     };
+    // CR claude for claude: [risk/low] `rel` is built from the name alone, because
+    // FilesResolver::resolve drops its scope. A VFS body's submodule that the VFS lacks
+    // (resolve() chains a VFS body to every resolver) is then read as `<base>/x.gx`
+    // from the script directory, GRAPHIX_MODPATH or the data dir, and it takes the
+    // package's module path. For example, a_vfs_body_resolves_its_submodules_in_the_vfs
+    // without its /m/x.gx entry would load the script directory's x.gx as m::x. Join
+    // the scope's parts before the name here, which leaves root scope unchanged, or
+    // chain a VFS body's submodules to VFS resolvers only. Add the fixture without
+    // /m/x.gx as a pin that this is refused. (t-format-resolver-04)
     let rel = Path::parts(&name).collect::<Vec<_>>().join("/");
     let mut found: SmallVec<[(PathBuf, Option<ArcStr>, PathBuf, Option<ArcStr>); 2]> =
         SmallVec::new();
@@ -821,6 +830,14 @@ impl Expr {
         chain: &'a Option<Arc<LoadChain>>,
         resolvers: &'a Resolvers,
     ) -> Result<Option<SmallVec<[Option<Expr>; 4]>>> {
+        // CR claude for claude: [bug/low] try_join_all returns the first error to
+        // complete, not the first in program order. When two sibling `mod` statements
+        // both fail to resolve, the error reported (by --check, and the LSP's
+        // diagnostic) varies from run to run on an unchanged file. Probe:
+        // design/review-2026-10-12/repro/x-engine-seq-errors-02.gx gave 15 reports of
+        // the first mod and 5 of the second over 20 --check runs. Fix: use join_all and
+        // return the first Err in input order, so the earliest failing statement is
+        // always the one reported. (x-engine-seq-errors-05)
         let resolved = try_join_all(exprs.into_iter().map(|e| async move {
             match e.holds_unresolved() {
                 true => e.resolve_modules_int(scope, prepend, chain, resolvers).await,
@@ -896,6 +913,21 @@ impl Expr {
                     // for a VFS body, through the transport for a netidx one.
                     let prepend = match source {
                         Some(Source::File(p)) => {
+                            // CR claude for claude: [bug/low] A File body whose path is
+                            // not UTF-8 returns Ok(None) here, so its `mod` children
+                            // stay unresolved. The compile then fails with 'external
+                            // modules are not allowed in this context', which names the
+                            // wrong cause. submodule_base also strips only a "/mod"
+                            // suffix, so on Windows a package root loaded by
+                            // RootFile::load (`...\graphix\mod.gx`, a native path)
+                            // would look for its submodules one directory too deep.
+                            // Compute a File body's base with Path operations: the
+                            // parent when file_stem is "mod", else with_extension("").
+                            // Keep the string submodule_base for netidx paths only, and
+                            // never return Ok(None) for a body that still holds
+                            // unresolved modules. probe:
+                            // design/review-2026-10-12/repro/t-format-resolver-non-utf8-dir.sh
+                            // (t-format-resolver-02)
                             let Some(p) = p.to_str() else { return Ok(None) };
                             Some(files(PathBuf::from(submodule_base(p))))
                         }
@@ -998,6 +1030,20 @@ impl LoadChain {
     ) -> Result<Arc<Self>> {
         let mut cur = chain.as_ref();
         while let Some(c) = cur {
+            // CR claude for claude: [dead/low] This comparison never matches. Every
+            // submodule's File or Netidx source is strictly deeper than its parent's
+            // (`<stem>/name.gx`), so no two entries on one chain are equal, and
+            // graphix-shell/tests/import_cycle.rs pins that two files naming each other
+            // are no cycle. The one real cycle, a directory symlink, gives different
+            // path strings, so the load recurses until the kernel reports 'Too many
+            // levels of symbolic links' at a 40-segment path. Delete LoadChain, since
+            // the filesystem's ELOOP already bounds depth. Alternatively, key File
+            // entries by canonical path so the symlink loop is reported as an import
+            // cycle. Either way, fix the comment above nested_module_of_its_own_name in
+            // stdlib/graphix-tests/src/lang/modules.rs, which calls import_cycle.rs a
+            // real cycle. probe:
+            // design/review-2026-10-12/repro/t-format-resolver-symlink-cycle.sh
+            // (t-format-resolver-03)
             if c.source == *source {
                 let mut names: SmallVec<[&ArcStr; 4]> = SmallVec::new();
                 let mut back = chain.as_ref();

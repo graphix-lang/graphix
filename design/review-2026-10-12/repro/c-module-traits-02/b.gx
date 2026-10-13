@@ -1,0 +1,4 @@
+use super::a::Show;
+type T = Abstract<i64>;
+let mk = |x| T(x);
+impl Show for T

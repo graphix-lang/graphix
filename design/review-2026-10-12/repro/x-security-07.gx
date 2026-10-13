@@ -1,0 +1,6 @@
+// x-security-07: mutually recursive handlebars partials overflow the stack and abort the process
+// run: timeout -s KILL 60 graphix --no-cache design/review-2026-10-12/repro/x-security-07.gx
+// expected: error:["HbsErr", ...] (as for direct self-inclusion {p: "x{{> p}}"}), then exit 0
+// observed: thread 'tokio-rt-worker' has overflowed its stack / fatal runtime error: stack overflow, aborting (SIGABRT)
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+hbs::render(#partials: {p: "x{{> q}}", q: "y{{> p}}"}, "{{> p}}", {a: 1})

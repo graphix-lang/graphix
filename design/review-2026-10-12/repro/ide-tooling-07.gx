@@ -1,0 +1,7 @@
+// ide-tooling-07: Emacs graphix-ts-mode faces
+// command: emacs --batch, treesit-extra-load-path at the built grammar, load ide/editors/emacs/graphix-mode.el, graphix-ts-mode on this file, font-lock-ensure, print the face at each word
+// expected: `count` after the let is a variable; sys and time are namespaces, timer alone is a function
+// observed: the connect target `count` is font-lock-constant-face; sys, time and timer are all font-lock-function-name-face
+let count = 0;
+count <- sys::time::timer(duration:1.s, true) ~ count + 1;
+count

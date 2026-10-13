@@ -1,0 +1,1 @@
+val parse: fn<'b: Any>(s: string, d: 'b) -> Result<'b, `ParseError(string)>;

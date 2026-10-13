@@ -1,0 +1,9 @@
+// args::parse flattens every command level into one values map, the
+// subcommand's args inserted after the parent's: a subcommand arg named like
+// a parent arg overwrites it, null when the subcommand did not get it.
+// run: graphix --no-cache gx-stdlib-07.gx --level 1 sub
+// prints {command: ["sub"], values: {"level" => null, "v" => "false"}}: the --level 1 is lost
+let cmd = args::command(#name: "t", #subcommands: [args::command(#name: "sub", [args::option(#name: "level")])], [args::option(#name: "level"), args::flag(#name: "v")]);
+let r = args::parse(cmd);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

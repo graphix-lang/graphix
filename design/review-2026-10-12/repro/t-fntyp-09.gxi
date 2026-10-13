@@ -1,0 +1,2 @@
+// t-fntyp-09: the declared union names its variables in the other order
+val f: fn(x: ['a, 'b], y: 'a) -> 'a;

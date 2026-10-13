@@ -1,0 +1,33 @@
+// sys-net-04: sys::net::call and sys::net::list (and write) don't restart at a
+// wake over standing arguments. Every argument is bound outside the toggled
+// arm, so none fires at the wake; the fs::is_file control (CachedArgsAsync)
+// restarts at every wake.
+//   graphix --no-cache sys-net-04.gx | grep -E '^(call|list|ctl|writes)'
+// (same output with --no-fusion)
+// Expected at each wake (on=true): call 42, list ["/review-sysnet04/d/a"],
+//   ctl /etc/passwd, and (by design/async_sleep_outputs.md) writes N+1.
+// Observed: call 42 and the listing once, then only "call -1" and
+//   "list [\"off\"]"; ctl restarts every wake; writes stays at 1.
+sys::net::rpc(#path: "/review-sysnet04/rpc", #doc: "doc", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x + 1)$;
+sys::net::publish("/review-sysnet04/d/a", 1)$;
+let wcount = 0;
+sys::net::publish(#on_write: |v: i64| wcount <- v ~ wcount + 1, "/review-sysnet04/w", 0)$;
+let args = {x: 41};
+let p = "/review-sysnet04/rpc";
+let lp = "/review-sysnet04/d";
+let wp = "/review-sysnet04/w";
+let wv = 7;
+let fp = "/etc/passwd";
+let t = sys::time::timer(duration:300.ms, true);
+let on = true;
+on <- t ~ !on;
+let c = select on { true => { let r: i64 = sys::net::call(p, args)$; r }, false => -1 };
+let l = select on { true => sys::net::list(#update: never(), lp)$, false => ["off"] };
+let ctl = select on { true => sys::fs::is_file(fp)$, false => "off" };
+select on { true => sys::net::write(wp, wv)$, false => null };
+println("call [c]");
+println("list [l]");
+println("ctl [ctl]");
+println("writes [wcount]");
+sys::exit(sys::time::timer(duration:1700.ms, false) ~ 0);
+c

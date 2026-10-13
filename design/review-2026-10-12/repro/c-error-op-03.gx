@@ -1,0 +1,27 @@
+// c-error-op-03: `?`/`$` drop the WAKE bit when stripping an error, so a
+// woken arm resets a `<-` target.
+// Command: timeout -s KILL 30 graphix --no-cache c-error-op-03.gx
+//   (and again with --no-fusion; the program exits itself at sw = 8)
+// strip_production (node/error.rs) turns a fired stripped error into
+// `set_bottom(true)`: FRESH_BOTTOM, losing the input's WAKE bit. At the arm's
+// wake the constant `error(`E)` fires with WAKE only, so the `<-` target `t`
+// takes the stripped bottom as a real fire of its initializer and forgets 100
+// (the value written while the arm slept).
+// Expected (what `1 / 0`, `never()` or `5` as the initializer give):
+//   (1, -1) (2, -1) (3, 100) (3, 103) (4, -1) (5, -1) (6, 103) (6, 106) (7, -1)
+// Observed, fused and --no-fusion alike:
+//   (1, -1) (2, -1) (3, 103) (4, -1) (5, -1) (6, 106) (7, -1)
+// `(error(`E))?`, `cast<i64>("x")$` and `{ let e = error(`E); e$ }` behave
+// the same. The select bottom arm (SelectCtx::emit) has the same loss: with
+// the initializer `select 1 { 1 => 1 / 0, _ => 2 }` (or `1 => never()`) the
+// fused run gives the expected output and --no-fusion the observed one, an
+// engine divergence.
+let sw = 0;
+let tick = sys::time::timer(duration:30.ms, true);
+sw <- tick ~ (sw + 1);
+let r = select sw % 3 {
+   0 => { let t: i64 = error(`E)$; t <- tick ~ (100 + sw); t },
+   _ => -1
+};
+sys::exit(sw ~ select sw { 8 => 0, _ => never() });
+(sw, r)

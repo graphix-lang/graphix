@@ -1,0 +1,15 @@
+// Run in a pty: script -q -c 'stty cols 40 rows 5; graphix --no-cache tui-core-rebuild-loop.gx' /dev/null
+// The terminal never changes size, yet `reports` climbs to 200: every fire of an
+// equal widget value rebuilds the subtree, whose fresh SizeReport writes sz again.
+use tui::{
+  block::block,
+  text::text
+};
+let sz: [tui::Size, null] = null;
+let reports = 0;
+reports <- sz ~ reports + 1;
+tui::exit(select reports { 200 => null, _ => never() });
+select sz {
+  tui::Size as s if s.width < 20 => block(#size: &sz, &text(&"narrow [reports]")),
+  _ => block(#size: &sz, &text(&"wide [reports]"))
+}

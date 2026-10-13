@@ -12,6 +12,11 @@ type Form = {
   handle: fn(e: input_handler::Event) -> [`Stop, `Continue]
 };
 
+// CR claude for claude: [doc-drift/low] The doc shows the focused editor edited through
+// `line_edit::handle(&vals[i], e)`, but handle takes `st: &mut State`, so a read-only
+// `&` reference is refused, and form's own body writes `&mut vals[i]`. A reader who
+// copies the doc gets a type error. Write `&mut vals[i]` here, and `&mut editors[i]` in
+// line_edit.gxi's doc on `step`, which has the same mistake. (gx-ui-06)
 /// A modal form over `fields`: one line editor per field, Tab and
 /// Down move to the next field, BackTab and Up to the previous, Enter
 /// calls `#on_submit` with every field's text in order, Esc calls

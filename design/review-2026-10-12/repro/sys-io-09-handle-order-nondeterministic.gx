@@ -1,0 +1,13 @@
+// sys-io-09: stream/proc/listener/watcher handles are ordered and hashed by Arc address
+// run: graphix --no-cache sys-io-09-handle-order-nondeterministic.gx, several times
+// expect: one answer every run (handles are not ordered, or ordered by something stable)
+// actual: `a < b` and the map's order flip from run to run: Stream's Ord is its Arc address
+let dir = sys::fs::tempdir::create(null)$;
+let p0 = sys::join_path(sys::fs::tempdir::path(dir), "f");
+let p = sys::fs::write_all(#path: p0, "x")$ ~ p0;
+let a = sys::fs::open(`Read, p)$;
+let b = sys::fs::open(`Read, p)$;
+let m = {a => "a", b => "b"};
+let r = (a < b, m);
+sys::exit(sys::time::after_idle(duration:200.ms, r) ~ 0);
+r

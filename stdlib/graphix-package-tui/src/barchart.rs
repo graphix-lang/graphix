@@ -102,6 +102,15 @@ impl<X: GXExt> BarChartW<X> {
     }
 
     async fn set_data(&mut self, v: Value) -> Result<()> {
+        // CR claude for claude: [structure/low] This repeats compile_each (cast to an
+        // array, then try_join_all a compile over it). The same hand-rolled copy is in
+        // chart.rs DatasetsW set_datasets, canvas.rs CanvasW::set_shapes, tabs.rs
+        // set_tabs and BarGroupW::compile, so a change to how widget arrays compile has
+        // to be made in each of them. Route them all through compile_each. Here that is
+        // `compile_each(v, |g| BarGroupW::compile(&self.gx, g))`. canvas takes the
+        // table.rs set_rows form. tabs casts each element to (LineV, Value) inside the
+        // closure. BarGroupW takes its `bars` field as a Value. Then drop the
+        // try_join_all imports. (tui-widgets-05)
         let groups = v.cast_to::<SmallVec<[Value; 8]>>()?;
         self.data =
             try_join_all(groups.into_iter().map(|g| BarGroupW::compile(&self.gx, g)))

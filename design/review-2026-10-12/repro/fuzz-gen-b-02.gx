@@ -1,0 +1,6 @@
+// fuzz-gen-b-02: the shape patterns.rs::general_select emits (bound or-arm, then an
+// unguarded refutable arm drawing the or-arm's literal) is refused as an
+// unreachable arm; the module doc (patterns.rs:14-16) says it stays live.
+// Expect: `graphix --check` reports "unreachable arm".
+let p: (i64, i64) = (i64:1, i64:5);
+select p { (i64:1, v) | (v, i64:2) => v, (i64:1, _) => i64:0, _ => i64:1 }

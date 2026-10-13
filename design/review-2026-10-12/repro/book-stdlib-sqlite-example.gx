@@ -1,0 +1,18 @@
+// book/src/stdlib/sqlite.md lines 25-35, verbatim except for the two
+// marked changes. As written the example is refused (`undefined type
+// SqlVal`). With the type qualified it runs, and the CREATE, the INSERT
+// and both SELECTs race: run it a few times (GRAPHIX_PAR=off is enough)
+// and `users` and `raw` come back [] some of the time.
+let conn = sqlite::open(":memory:")?;
+sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
+sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
+
+let users: Array<{id: i64, name: string, age: i64}> =
+    sqlite::query(conn, "SELECT * FROM users", [])?;
+
+// the book writes `Map<string, SqlVal>`, which is refused
+let raw: Array<Map<string, sqlite::SqlVal>> =
+    sqlite::query(conn, "SELECT * FROM users", [])?;
+// added so the run prints and ends
+println("[users] [raw]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

@@ -1,0 +1,20 @@
+// `graphix fmt --stdout` on this file is refused as a formatter bug:
+// a decorated child printed right after inline text (`if `, `until `,
+// `abort(`, `select `) puts its comment on that line.
+let r = select x {
+  a if
+    // c
+    a > 1 => 1,
+  _ => 2
+};
+seq t; abort(
+  // c
+  e
+) {
+  a;
+  until
+    // d
+    b;
+  c
+};
+r

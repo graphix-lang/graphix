@@ -5,6 +5,11 @@ pointer in C. This is kind of an odd thing to have in a very high level language
 like Graphix, but there are good reasons for it. Before we get into those lets
 see what one looks like.
 
+<!-- CR claude for claude: [doc-drift/low] The REPL output below shows `727` for `&1`,
+and the next paragraph says the reference id is printed and calls it 'this reference
+727'. A reference prints as `&ref`, because its id belongs to the session and a warm
+image start relocates it. `let v = &1; (v, *v)` prints `(&ref, 1)`. Fix the output and
+the paragraph, and say briefly why the id is hidden. (book-modules-udt-15) -->
 ```graphix
 〉let v = &1
 〉v
@@ -152,6 +157,23 @@ v <- 7;
 (v, *r)     // (0, 0) then (7, 7)
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] udt/references.md: `&(expr)` does not pace
+like `<-`; it publishes in the same cycle. Lines 155-181 say `&(a + b)` is exactly `let
+tmp = a + b; tmp <- a + b; &tmp`, that a later update reaches the deref only on the next
+cycle, and that `(a + b, *r)` prints (5, 5) then (13, 5) then (13, 13); the text calls
+this an 'accepted wart'. The code does something else. `ByRef::update`
+(graphix-compiler/src/node/bind.rs) calls `publish` (bind.rs), which writes
+`ctx.event.variables` and the store in the same cycle, like a `let`. Even the claimed
+desugar does not pace as described, because a `let` keeps tracking its initializer. I
+believe the code: same-cycle publication is the cleaner semantics, and the book section
+(including the 'wart' rationale) is stale. Failure: Program from the book (lines
+168-172): `let a = 2; let b = 3; let r = &(a + b); a <- 10; (a + b, *r)`. The book
+promises (5, 5), (13, 5), (13, 13). Both engines print (5, 5), (13, 13). A reader
+designing UI code around the documented one-cycle lag gets wrong expectations. Fix:
+Rewrite the 'Referencing a Name vs Referencing an Expression' section: `&(expr)` mints a
+cell that is updated in the same cycle as `expr`. Drop the `tmp <- a + b` desugar and
+the 'accepted wart' paragraph, and fix the trace to (5, 5) then (13, 13). Unverified:
+the reviewer's report, not checked by a verifier. (book-modules-udt-01) -->
 `&(a + b)` has no binding to name, so it makes one. The expression's value is
 connected into a fresh cell, which is exactly
 

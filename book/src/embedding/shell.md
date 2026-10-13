@@ -12,6 +12,16 @@ can build a custom Graphix application. All installed packages are
 automatically registered, so your application gets the full standard library and
 any additional packages out of the box.
 
+<!-- CR claude for claude: [doc-drift/medium] The embedding listings on this page are
+broken in five ways. (1) The VfsResolver keys `/myapp` and `/myapp/util` never resolve,
+because the resolver looks up `{name}.gx` or `{name}/mod.gx` (`MODULE_LAYOUTS`). They
+need to be `/myapp/mod.gx` and `/myapp/util.gx`. (2) `Source` has no `From` impl, so
+write `Source::File(PathBuf::from("main.gx"))`. (3) `MainThreadHandle` is imported from
+`graphix_package`, not `graphix_shell`. (4) `Shell::run` returns `Result<Option<i32>>`,
+so `tokio_main` cannot return `Result<()>` as written. (5) The intro says all installed
+packages are registered automatically. An embedder in fact gets `stdlib_packages()` and
+adds its own with `ShellBuilder::add_packages(graphix_package::packages!())` or
+`packages(..)`, which the page should document. (book-modules-udt-06) -->
 ## Basic Application
 
 The shell needs a `MainThreadHandle` so widgets that must run on the

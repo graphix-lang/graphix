@@ -283,6 +283,14 @@ async fn radio_click_no_panic() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/medium] This test only checks that a click produces a
+// Call with the right argument. It never dispatches the call, so it cannot see whether
+// radio's wrapped on_select runs once per click and never at init, and the radio
+// wrapper bug (gx-ui-01) passes it. Do what slider_on_change_produces_call does: watch
+// a variable the callback writes, assert its value before any click, then click A, B, A
+// with dispatch_calls and assert after each click. Do the same for the other widgets
+// whose tests stop at the message (button, checkbox, toggler, pick_list, text_input,
+// combo_box). (gx-ui-10)
 async fn radio_on_select_produces_call() -> Result<()> {
     let code = format!(
         "{IMPORTS};\n\
@@ -764,6 +772,11 @@ async fn checkbox_clicks_outrun_their_echoes() -> Result<()> {
         h.apply(&msgs);
     }
     h.drain().await?;
+    // CR claude for claude: [test-gap/low] c starts false, so this assertion also holds
+    // when no click produces a Call at all, for example a missed hit, on_toggle ignored
+    // while an echo is pending, or apply dropping the calls. The only failure it can
+    // catch is both calls carrying true. Collect each click's Call argument and assert
+    // they are [true, false] before draining. (tests-gui-b-03)
     assert_eq!(h.get_watched("test::c"), Some(&Value::Bool(false)));
     Ok(())
 }

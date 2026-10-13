@@ -1,0 +1,9 @@
+// t-tvar-10: Concrete refuses a fn type without a throws clause but accepts one with it
+// command: graphix --check t-tvar-10.gx; graphix --no-cache t-tvar-10.gx
+// expected: both fn targets judged alike (a function can't be read from data: refused at the check)
+// observed: `fn(x: i64) -> i64` is refused ('b: unbound within Concrete), because its
+// throws slot is ⊥ and concrete_holds walks it; the `throws `E` form below passes --check
+// and at run time yields error:["ParseError", "[\"InvalidCast\", \"... not a function\"]"]
+let f: [fn(x: i64) -> i64 throws `E, Error<`ParseError(string)>] = str::parse("1");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f

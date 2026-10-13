@@ -1,0 +1,9 @@
+// tests-lib-a-02: sum/product/divide failures log to the default target: silent in the shell
+// Run: graphix --no-cache --no-fusion tests-lib-a-02.gx   (same with fusion)
+// Expected: a failure line on stderr for divide(7, z) as for 7 / z
+// Observed: only `arith error ... "attempt to divide by zero"` (the `/`);
+//   divide logs `ERROR [graphix_package_core] divide: "arithmetic error"`
+//   (seen only with --log-dir and RUST_LOG=error), not under graphix::failure.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let z = 0;
+(divide(7, z), 7 / z)

@@ -1,0 +1,26 @@
+// http-sqlite-db1-06: cursor/subscription #prefix is an exact match unless the
+// key type is a single primitive string or bytes.
+// rm -rf /tmp/graphix-review-db1-06.db; timeout -s KILL 60 graphix --no-cache http-sqlite-db1-06.gx
+// expected: ([("aaa", 1), ("aab", 2)], [("aaa", 1), ("aab", 2)], [(["x", "y"], 1), (["x", "z"], 2)])
+// observed: ([("aaa", 1), ("aab", 2)], [], [])
+// the same keys and prefix over a Tree<string, _>, a Tree<[string, i64], _>
+// and an Array<string> key; db::subscription::new(#prefix:) behaves the same.
+let db = db::open("/tmp/graphix-review-db1-06.db")$;
+let s: db::Tree<string, i64> = db::tree(db, "s")$;
+let s1 = db::insert(s, "aaa", 1)$;
+let s2 = db::insert(s, s1 ~ "aab", 2)$;
+let s3 = db::insert(s, s2 ~ "bbb", 3)$;
+let sr = db::cursor::read_many(db::cursor::new(#prefix: "aa", s3 ~ s), 10)$;
+let u: db::Tree<[string, i64], i64> = db::tree(db, "u")$;
+let u1 = db::insert(u, "aaa", 1)$;
+let u2 = db::insert(u, u1 ~ "aab", 2)$;
+let u3 = db::insert(u, u2 ~ "bbb", 3)$;
+let p: [string, i64] = "aa";
+let ur = db::cursor::read_many(db::cursor::new(#prefix: p, u3 ~ u), 10)$;
+let a: db::Tree<Array<string>, i64> = db::tree(db, "a")$;
+let a1 = db::insert(a, ["x", "y"], 1)$;
+let a2 = db::insert(a, a1 ~ ["x", "z"], 2)$;
+let a3 = db::insert(a, a2 ~ ["w"], 3)$;
+let ar = db::cursor::read_many(db::cursor::new(#prefix: ["x"], a3 ~ a), 10)$;
+sys::exit(sys::time::after_idle(duration:300.ms, (sr, ur, ar) ~ 0));
+(sr, ur, ar)

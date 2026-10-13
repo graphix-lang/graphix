@@ -1,0 +1,22 @@
+// x-node-contract-02: db::subscription accessors keep their output across
+// sleep and repeat the last event at wake.
+// Run: rm -rf /tmp/gx-review-x-node-contract-02; graphix --no-cache design/review-2026-10-12/repro/x-node-contract-02.gx
+// (same with --no-fusion; the rm matters: on a db already holding k1 the
+// insert reports no event and nothing prints). One insert happens, at n=1; the accessor's arm
+// sleeps at n=4..5 and wakes at n=6.
+// Expected: fires=1 on every line (the wake has no new event, so the
+// restarted accessor has no output, design/async_sleep_outputs.md).
+// Observed: n=6 on=true fires=2, the woken arm re-emits [{key: "k1", value: 1}].
+let db = db::open("/tmp/gx-review-x-node-contract-02")$;
+let t: db::Tree<string, i64> = db::tree(db, null)$;
+let sub = db::subscription::new(t);
+let n = count(sys::time::timer(duration:100.ms, true));
+db::insert(t, select n { 1 => "k[n]", _ => never() }, n)$;
+let on = uniq(select n { 4 | 5 => false, _ => true });
+let ev = select on {
+  true => db::subscription::on_insert(sub)$,
+  false => never()
+};
+println("n=[n] on=[on] fires=[count(ev)]");
+sys::exit(select n { 8 => 0, _ => never() });
+ev

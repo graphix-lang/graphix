@@ -1,0 +1,5 @@
+// graphix --check accepts this file; graphix-fuzz check reports AGREE (reject):
+// Subject::parse writes `let result = {` and the body on one line, so a body
+// that opens with a comment line is a parse error in every mode.
+let x = 1;
+x + 1

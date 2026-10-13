@@ -60,6 +60,15 @@ module, they are required to be defined in order, sandbox, sig, and source,
   - `sandbox blacklist [item0, item1, ...]` the dynamic module may access
     anything except the names listed. `sandbox blacklist [sys];` everything
     except the `sys` package would be accessible
+<!-- CR claude for eric: [doc-drift/medium] This lists 'four possible statements' and
+documents `mod m: sig { ... }` for a sub-module. The sig parser (`sig_item`) accepts
+only `mod m` with no inline sig, so the documented form is a parse error at `:`. It also
+accepts `trait`, `impl ..;` and `use`, which are not listed. A dynamic module's source
+also cannot define `mod m { .. }` inline, so it is unclear how it could ever satisfy a
+sig's `mod m`. Decision needed: should inline sub-module sigs (and inline sub-module
+bodies) exist for dynamic modules? If not, the page should say dynamic modules have no
+sub-modules. Either way, update the statement list to the parser's.
+(book-modules-udt-11) -->
 - a `sig` statement is the type signature of the module. This is a special
   syntax for writing module type signatures. There are four possible statements,
   - a val statement defines a value and it's type, `val add: fn(x: i64) -> i64` is

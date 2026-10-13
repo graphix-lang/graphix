@@ -1,0 +1,20 @@
+// x-panics-05: netidx's `Pack for Duration` decode calls Duration::new(secs,
+// nanos) unchecked (../netidx/netidx-core/src/pack.rs:1676), which panics
+// "overflow in Duration::new" when nanos >= 1e9 carries secs past u64::MAX.
+// pack::read now turns its task's panic into a `Panicked` error, so here
+// the symptom is a misleading error plus a panic on stderr; the same decode
+// runs unguarded in netidx's subscriber/publisher connection tasks (a hostile
+// peer's update or write), and the db package's key decoder has its own copy
+// (stdlib/graphix-package-db/src/encoding.rs:311).
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-12/repro/x-panics-05.gx
+// expected: read: error:["PackErr", "..."]
+// observed: thread 'tokio-rt-worker' panicked at .../core/src/time.rs:201:18:
+//           overflow in Duration::new
+//           read: error:["Panicked", "pack_read panicked"]
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+let b = buffer::encode([`U8(u8:11), `U64(u64:18446744073709551615), `U32(u32:1000000000)]);
+let d: Result<duration, [`PackErr(string), `InvalidCast(string)]> = pack::read(b);
+println("read: [d]");
+let t = sys::time::timer(duration:100.ms, false);
+t ~ "alive"

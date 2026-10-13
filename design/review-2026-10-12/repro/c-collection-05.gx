@@ -1,0 +1,6 @@
+// c-collection-05: the value of a slow first cycle is lost when a sys::exit
+// fires in the next cycle: the shell select! picks the exit request over the
+// pending output batch at random. Run 5x: graphix --no-cache --no-fusion this.gx;
+// most runs print nothing, some print 10000.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::len(array::map(array::init(10000, |i| i), |x| x + 1))

@@ -1,0 +1,11 @@
+// CALLEE_BODY_OTHER_INSTANCE never runs its second arm (`x` fires once,
+// so `count(x)` is 1); the `k -> g -> h` instance's VALUE is unpinned.
+// With two fires both arms run; both engines answer 12 then 44:
+//   graphix-fuzz run tests-fusion-traits-06.gx
+{
+  let h = |a: i64| a * 3 + 1;
+  let g = |a: i64| h(a) + 1;
+  let k = |c: i64| g(c) * 3;
+  let x = array::iter([3, 4]);
+  select count(x) { 1 => #[native] (g(x) + 1), _ => #[native] (k(x) + 2) }
+}

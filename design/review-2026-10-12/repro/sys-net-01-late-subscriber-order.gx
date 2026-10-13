@@ -1,0 +1,21 @@
+// sys-net-01: a second subscriber of a busy path sees its values twice and
+// out of order. Run a few times:
+//   graphix --no-cache sys-net-01-late-subscriber-order.gx | grep BAD
+// Expected: no output (each of b's fires is newer than the last).
+// Seen: "b#1=751 b#2=721" (30 values back in time), or "b#1=8762 b#2=8762".
+let x = 0;
+sys::net::publish("/test/burst", x)$;
+let a: i64 = sys::net::subscribe("/test/burst")$;
+let go = false;
+go <- once(a) ~ true;
+x <- select (go, x) { (true, n) if n < 30000 => n + 1, _ => never() };
+let late = sys::time::timer(duration:300.ms, false) ~ "/test/burst";
+let b: i64 = sys::net::subscribe(late)$;
+let prev = -1;
+prev <- b;
+let nb = count(b);
+select nb { n if n < 4 => println("b#[n]=[b]"), _ => null };
+let pair = b ~ (b, prev);
+select pair { (v, p) if v <= p => println("BAD b=[v] prev=[p]"), _ => null };
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0);
+0

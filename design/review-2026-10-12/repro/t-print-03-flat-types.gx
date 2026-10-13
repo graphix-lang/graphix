@@ -1,0 +1,9 @@
+// `graphix fmt --stdout`: every type annotation here prints flat (110+ columns at width 90)
+// though Type has a multi-line layout: args, cast<T>, never<T>, with(e: T), throws, catch(e: T).
+let f = |x: {aaaaaaaaaaaaaaa: i64, bbbbbbbbbbbbbbbbbbbbbbb: string, ccccccccccccccccccc: f64, ddddddddddddd: i64}| x;
+let r = cast<{aaaaaaaaaaaaaaa: i64, bbbbbbbbbbbbbbbbbbbbbbb: string, ccccccccccccccccccc: f64, ddddddddddddd: i64}>(y);
+let t = try { a; b } with(e: [`Aaaaaaaaaaaaaaaaaaaaaaa, `Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, `Cccccccccccccccccccccccc]) { c; d };
+let g = |x| -> i64 throws [`Aaaaaaaaaaaaaaaaaaaaaaa, `Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, `Cccccccccccccccccccccccc] x;
+{ catch(e: [`Aaaaaaaaaaaaaaaaaaaaaaa, `Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, `Cccccccccccccccccccccccc]) e; x? };
+let n = never<{aaaaaaaaaaaaaaa: i64, bbbbbbbbbbbbbbbbbbbbbbb: string, ccccccccccccccccccc: f64, ddddddddddddd: i64}>();
+1

@@ -428,6 +428,17 @@ impl FusionCtx {
     }
 
     /// What this context or task emits into, built with the JIT.
+    // CR claude for claude: [structure/low] `emission: Mutex<Option<Emission>>` cannot
+    // tell a root that has not emitted yet from a compile-task fork that must never
+    // emit. FusionCtx::fork leaves it None, so this function builds a fresh ROOT
+    // emission in a fork. A fork from CompileCtx::fork, such as a compile_each task,
+    // that reached cache_kernel or build_region would get a root emission. On join,
+    // FusionCtx::join would then either panic with "a fusion task's parent emits" or
+    // renumber a root emission's function ids as if it were a task's. Nothing does this
+    // today, but only by convention. Make the slot an enum (root, possibly unbuilt;
+    // task with its own fork; non-emitting fork), have fork() set the non-emitting
+    // state and emission() refuse it, and make join exhaustive over the cases.
+    // (f-mod-lowering-06)
     pub(crate) fn emission(
         &self,
     ) -> anyhow::Result<MappedMutexGuard<'_, emit::Emission>> {
@@ -496,6 +507,11 @@ impl FusionCtx {
         matches!(self.share, Some(share::Share::Reuse { .. }))
     }
 
+    // CR claude for claude: [style/low] This constructor cannot fail: the JIT is built
+    // lazily (JitSlot::Unbuilt) and nothing else here can error. The `anyhow::Result`
+    // return and the `?` at its one call site, where the CompileCtx is built, suggest
+    // that creating a context can fail on fusion. Return Self, or implement Default,
+    // and drop the `?` at the caller. (f-mod-lowering-08)
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             jit: Arc::new(parking_lot::Mutex::new(JitSlot::Unbuilt)),
@@ -930,6 +946,16 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         let mut discovery = lowering::BuiltinCallDiscovery::default();
         let feed =
             lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err();
+        // CR claude for claude: [perf/low] `raises(node)` walks the argument and every
+        // callee body it reaches, and it runs for every argument even when no argument
+        // feeds. When nothing feeds, the result is Ok(None) regardless. Each level of
+        // the descent after a failed region repeats this, so a nest of calls that fail
+        // to fuse costs quadratic reachable walks. Compute `feeds` first and return
+        // early when none is true. Run `raises` only when some argument feeds, and only
+        // up to the last fed argument. The same layer also does redundant work:
+        // calls_a_function walks the whole subtree after it finds a call (make it stop
+        // at the first hit), and fuse_parts' visitor recomputes calls_a_function for
+        // parts that fuse_each has already partitioned by it. (f-mod-lowering-07)
         match (feed, raises(node)) {
             (true, true) if fused_raise => return Ok(None),
             (false, true) => fused_raise = true,
@@ -1102,6 +1128,22 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
         ctx.join(task);
     }
     ctx.fusion.emission()?.thaw();
+    // CR claude for claude: [bug/medium] This is the only batch check a parallel
+    // fuse_each makes, and it runs after every task has joined. A task's emission never
+    // counts as unlinked, so the check in try_fuse never fires inside a task. N heavy
+    // parts therefore become one link batch of N regions, with every CLIF function held
+    // uncompiled, and LINK_BATCH bounds nothing. Jit::install installs a batch as one
+    // unit and retries only once, in a fresh arena of the same size. A batch bigger
+    // than the arena therefore panics in install_or_panic ("the JIT code arena is
+    // exhausted") and kills the runtime, even though the cause is only program size,
+    // not a JIT bug. With a 1.25MB arena, the probe's 400 statements panic under
+    // parallel fusion and run under GRAPHIX_FUSE_SERIAL=1, so the A/B gives different
+    // results. Fix: link_batch while joining, as the unlinked count crosses LINK_BATCH.
+    // Joins run in order on the root, so the result stays deterministic. Also bound
+    // Jit::install's retry by splitting a batch that a fresh generation cannot hold,
+    // rather than panicking. try_install has a related flaw: when Generation::new
+    // fails, the failed generation stays current and the reservation error hides the
+    // install error. probe: design/review-2026-10-12/repro/f-jit-02.sh (f-jit-02)
     if ctx.fusion.unlinked() >= LINK_BATCH {
         ctx.fusion.link_batch();
     }
@@ -1183,6 +1225,16 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     let phase = profile::phase(Phase::ReturnType);
+    // CR claude for claude: [bug/low] A region whose type is null or unit (an
+    // effect-only body such as `|x| #[native] println(x + 1)`, or a select whose arms
+    // are all null) returns Ok(None) here, before build_region, so nothing is counted
+    // and no FusionFailure is recorded. #[native] then refuses with the bare 'did not
+    // fully fuse to native code', with no reason given, and the blocker profile does
+    // not show the region. The emitted call path already handles AbiKind::Unit |
+    // AbiKind::Null: it returns a NULL disc carrying the tag bits. A region could
+    // return the same way and fuse. At the very least, record a failure here ("a region
+    // of type null has no kernel return") so that #[native] names the cause. probe:
+    // design/review-2026-10-12/repro/x-fix-fusion-03.gx (x-fix-fusion-03)
     let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
         if crate::dbgenv::gxdbg_freeze_ret() {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -1400,6 +1452,16 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
 
 /// A region root must emit a value. Declarations stay in the graph;
 /// a bare binding read forwards an input without computation.
+// CR claude for claude: [perf/low] A lone constant is a candidate region, so every
+// literal `let` (`let k = 3`, reached through `Bind::fuse`) is emitted, linked and
+// imaged as a kernel that returns the value its Constant node already holds. 400
+// literal lets build 400 kernels (probe:
+// design/review-2026-10-12/repro/tests-fusion-traits-05.gx with GRAPHIX_DBG_KERNELS=1).
+// These kernels are also what makes the fusion counter asserts and `FuseExpect::Jit` in
+// graphix-tests' fusion.rs vacuous (tests-fusion-traits-01, -05). Fix: exclude
+// `NodeView::Constant(_)` here, the same reasoning as for a bare `Ref`. Do not restrict
+// `Bind::fuse` to `calls_a_function`, because that would de-fuse arithmetic lets in
+// impure callbacks. Then re-bless fusecheck.manifest. (tests-fusion-traits-07)
 pub(crate) fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {

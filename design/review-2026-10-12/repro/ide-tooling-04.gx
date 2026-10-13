@@ -1,0 +1,10 @@
+// ide-tooling-04: postfix after any/seq and radix literals are ERROR in tree-sitter
+// command: graphix --check ide-tooling-04.gx; (cd ide/tree-sitter-graphix && npx tree-sitter parse <this file>)
+// expected: both accept (the combine parser's postfix loop applies to every primary)
+// observed: --check rc=0; tree-sitter reports ERROR nodes at any(a, b).f, seq {..}.a, 0XFF and -0xFF
+let a = {f: 1};
+let b = {f: 2};
+let s = seq { {a: 1} }.a;
+let h = 0XFF;
+let n = -0xFF;
+any(a, b).f + s + h + n

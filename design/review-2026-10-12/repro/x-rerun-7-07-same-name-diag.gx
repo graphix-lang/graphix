@@ -1,0 +1,20 @@
+// x-rerun-7-07 (after t-typ-mod-06's fix): two distinct typedefs of one
+// name are refused, but the message prints both sides identically:
+//   type mismatch Error<ErrChain<E>> does not contain Error<ErrChain<E>>
+// command: graphix --check <this file>
+let f = {
+  type E = `A(string);
+  |x: i64| -> i64 throws Error<ErrChain<E>> select x {
+    0 => error(`A("one"))?,
+    n => n
+  }
+};
+let g = {
+  type E = `A(i64);
+  |x: i64| -> i64 throws Error<ErrChain<E>> f(x)
+};
+let r = {
+  catch(e) println("[e]");
+  g(0)
+};
+r

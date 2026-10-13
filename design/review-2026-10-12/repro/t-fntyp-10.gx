@@ -1,0 +1,8 @@
+// t-fntyp-10: an array literal of a generic and a monomorphic function cannot be called
+// command: graphix --check design/review-2026-10-12/repro/t-fntyp-10.gx
+// expected: accepted, as `select b { true => |x: i64| x * 2, false => |x| x }` then
+//   `f(5)` is (select joins arms with Type::union_of_alternatives)
+// observed: refused "expected fn not [fn(x: i64) -> i64, fn(x: '_: unbound) -> '_: unbound]";
+//   the list literal `[<..>]` and `any(|x: i64| x * 2, |x| x)` are refused the same way
+let fs = [|x: i64| x * 2, |x| x];
+array::map(fs, |f| f(5))

@@ -1,0 +1,32 @@
+// tests-seq-01: a seqq step that passes a reference to a call makes every
+// capture live, even one nothing writes.
+// The seq lowering issues a call over `core::once(seqargs)` (issue_call in
+// graphix-types/src/expr/seq.rs). When the args tuple holds a `&mut i64`,
+// local_summary's builtin arm sees an argument that reaches out and marks
+// the step opaque (reads all, writes all). plan_machines then sets every
+// capture live. Here `look` only reads through the reference, and nothing
+// in the body writes `e`, so `e` should keep its enqueue-time snapshot.
+// A dereferenced write makes no capture live (design/seq_blocks.md §8), so
+// the reviewer's direct `*r <- c + 1; c` -> 0 0 0 is the documented rule.
+// command: graphix --no-cache tests-seq-01.gx   (same with --no-fusion)
+// expected: ([0, 10, 20], [0, 10, 20])  -- `e` as each request was enqueued
+// observed (HEAD 7324207f, both engines): ([30, 30, 30], [0, 10, 20])
+//   GXDBG_SEQPLAN=1: `opaque builtin core::once`, `S0 reads all writes all`,
+//   `capture ... live true` for the first seqq only.
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let request = select step { 1 | 2 | 3 => step, _ => never() };
+let e = 0;
+e <- request ~ e + 10;
+let d = 0;
+let q = &mut d;
+let look = |p: &mut i64| *p;
+let look2 = |k: i64| k;
+let a: Array<i64> = [];
+let ra = seqq request { look(q); e };
+a <- ra ~ array::push(a, ra);
+let b: Array<i64> = [];
+let rb = seqq request { look2(1); e };
+b <- rb ~ array::push(b, rb);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select step { 12 => (a, b), _ => never() }

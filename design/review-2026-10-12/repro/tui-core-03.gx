@@ -1,0 +1,8 @@
+// tui-core-03: tui::suspend(true) with no display running waits forever instead of the documented TerminalError
+// run: graphix --no-cache design/review-2026-10-12/repro/tui-core-03.gx </dev/null
+// expected: Error(`TerminalError("no terminal display is running")) printed by 1 s, then exit 0
+// observed: nothing is printed at all; the gated exit fires at 2 s (exit 0)
+let r = tui::suspend(true);
+let t = sys::time::timer(duration:1.s, false);
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0);
+t ~ r

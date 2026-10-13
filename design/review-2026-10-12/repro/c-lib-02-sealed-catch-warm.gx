@@ -1,0 +1,16 @@
+// c-lib-02: a catch's `sealed` bit is not carried by the session image.
+// Run twice with the cache on (XDG_CACHE_HOME pointing at a scratch dir).
+// Cold: the dynamic module is refused ("this error reaches a catch whose
+// handler was checked to take Error<ErrChain<i64>>"). Warm: it loads, the
+// i64 handler receives "hello", and `+ 1` logs an arith error.
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let out = 0;
+let r = {
+    catch(e: Error<ErrChain<i64>>) out <- (e.0).error + 1;
+    mod foo dynamic {
+        sandbox unrestricted;
+        sig { val v: i64 };
+        source "let v = 1; let w = error(\"hello\")?"
+    }
+};
+(r, out)

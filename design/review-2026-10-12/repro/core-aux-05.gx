@@ -1,0 +1,21 @@
+// queuefn: a wrapper call site asleep in an unselected arm keeps its
+// queued calls, and each trigger that pops one is spent on the sleeping
+// site: nothing runs, the live site's call waits behind them, and at the
+// wake the site runs only the last of them.
+// Site A queues 2 and 3 (c=1, c=2), the arm sleeps at c=3 where site B
+// queues 10, triggers fire at c=4, 5, 6, the A arm wakes at c=8.
+// Prints: ran 1, ran 10 (at c=7, after two wasted releases), ran 3 (at
+// the wake); `ran 2` never prints. Dropping a site's calls at its sleep,
+// as delete does, runs 10 at c=5 from the first release.
+// command: graphix --no-cache core-aux-05.gx (same with --no-fusion)
+let c = 0;
+c <- select c { n if n < 10 => n + 1, _ => never() };
+let trig: Any = select c { 4 => null, 5 => null, 6 => null, _ => never() };
+let q = queuefn(#trigger: trig, |x: i64| -> i64 { println("ran [x]"); x });
+let mode = select c { n if n < 3 => `A, n if n < 8 => `B, _ => `A };
+let xa = select c { 0 => 1, 1 => 2, 2 => 3, _ => never() };
+let xb = select c { 3 => 10, _ => never() };
+let r = select mode { `A => q(xa), `B => q(xb) };
+println(r ~ "c=[c] r=[r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

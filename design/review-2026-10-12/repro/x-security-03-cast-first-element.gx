@@ -1,0 +1,9 @@
+// every value below should be an InvalidCast error (or the array member)
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let x: Any = i64:5;
+let y: Any = [i64:5, "a"];
+let a = cast<i64>([i64:7, 8, 9]);
+let b: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read(r"[[7, 8], 9]");
+let c: Result<null, [`JsonErr(string), `InvalidCast(string)]> = json::read("42");
+let d: Result<{x: [null, i64]}, [`JsonErr(string), `InvalidCast(string)]> = json::read(r#"{"x": [1, 2]}"#);
+(a, b, c, d, cast<null>(x), cast<[string, null]>(x), cast<[null, Array<string>]>(y), cast<bool>([i64:7, 0]))

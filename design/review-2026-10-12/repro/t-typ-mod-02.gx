@@ -1,0 +1,20 @@
+// t-typ-mod-02: a raised struct shaped like an ErrChain keeps its own field types: unsound
+// command: graphix --no-cache t-typ-mod-02.gx   (and --no-fusion; graphix-fuzz check on it without the exit line)
+// expected: refused at the `?` (the payload has the chain's field names but not ErrChain<E>'s
+//   field types), or a value that fits the static types r: i64, s: string
+// observed: --check passes; with fusion the runtime panics in fusion/kernel.rs Kernel::stage
+//   ("kernel param `r`: runtime Array(..) does not match the compiled Scalar(I64) slot", abort;
+//   graphix-fuzz check aborts too); with --no-fusion r prints a nested array of parse errors
+//   (Ori struct + 1) and s, typed string, prints the user's whole struct
+//   [["cause","c"],["error","X"],["ori",41],["pos",3]] (wrap_error made it the chain's cause)
+let r: i64 = never();
+let s: string = never();
+{
+    catch(e) {
+        r <- (e.0).ori + 1;
+        s <- (e.0).cause
+    };
+    error({cause: "c", error: `X, ori: 41, pos: 3})?
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(r, s)

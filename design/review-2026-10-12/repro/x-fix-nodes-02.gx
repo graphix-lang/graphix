@@ -1,0 +1,21 @@
+// x-fix-nodes-02: a builtin's callback literal whose body calls a function
+// value is judged PURE: def_body_facts (analysis.rs) counts a call not resolved
+// yet as nothing, "leaving it to the instance analysis", but no instance
+// analysis ever reaches a literal only a builtin calls (filter instantiates it
+// at run time), so its definition keeps the optimistic facts and
+// callback_facts joins them into the call.
+// Run: graphix --no-cache x-fix-nodes-02.gx
+// expected: refused, "#[sync]: this function is async" (as it is when the same
+//   body is written outside the callback: `#[sync] let g = |v: i64| { let k =
+//   pick(v > 0); k(v) }`, or with after_idle written in the callback directly,
+//   pin lang::attributes::sync_on_async_filter_callback)
+// observed: accepted; prints 3 once after_idle's 10 ms reply arrives
+let pick = |b: bool| select b {
+  true => |x: i64| sys::time::after_idle(duration:10.ms, x > 0),
+  false => |x: i64| x > 0
+};
+#[sync]
+let g = |v: i64| filter(v, |x| { let k = pick(x > 0); k(x) });
+let a = g(3);
+sys::exit(sys::time::after_idle(duration:100.ms, a ~ 0));
+a

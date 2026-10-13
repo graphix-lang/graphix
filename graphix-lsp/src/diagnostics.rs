@@ -42,6 +42,15 @@ fn location(source: &Source, pos: SourcePosition, end: WrittenAt) -> ErrorLocati
 }
 
 /// The chain's leaf is the human-readable failure text.
+// CR claude for claude: [readability/low] For a parse error, the leaf is the terminal
+// rendering that grow::parsing concatenates into ParseFailure's msg. That is the 'Parse
+// error at line/column' header, the full Expected list, the source line with a caret
+// under it, and the note with 1-based positions. An editor shows all of that in the
+// hover, though the squiggle already marks the place, and the caret lines up only in a
+// monospace terminal. Fix: give ParseFailure its parts (headline, expected, note) and
+// render the snippet only in its Display. The LSP then publishes the headline and, as
+// relatedInformation, the note. Do not strip lines from the rendered text.
+// (x-lsp-probe-10)
 pub fn error_leaf_message(err: &anyhow::Error) -> String {
     err.chain().last().map(|c| c.to_string()).unwrap_or_else(|| "error".into())
 }

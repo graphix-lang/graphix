@@ -1,0 +1,6 @@
+// SKILL.md: "Unchecked arithmetic logs and bottoms on failure". Overflow
+// wraps instead (CLAUDE.md: unchecked + - * wrap): prints
+// (-9223372036854775808, 0, 3).
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let m = i64:9223372036854775807;
+(m + 1, 7 % -1, 1 +? 2)

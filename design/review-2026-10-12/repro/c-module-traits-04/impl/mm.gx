@@ -1,0 +1,3 @@
+mod m;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+m::Show::show([1])

@@ -1,0 +1,6 @@
+// x-typecheck-generics-10: GRAPHIX_NO_SUBST re-check refuses a covered slice select
+// command: GRAPHIX_NO_SUBST=1 graphix --no-cache --expand x-typecheck-generics-10.gx
+// expected: accepted, as without GRAPHIX_NO_SUBST
+// observed: missing match cases: no arm covers Array<Any> (the slice arms leave array length 0 uncovered)
+let len = |l| select l { [] => 0, [_, ..] => 1 };
+len([1, 2])

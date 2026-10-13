@@ -47,6 +47,13 @@ pub const REGISTER: &[&dyn Package<NoExt>] = graphix_package::package_refs!();
 /// The mode a program was run under. The single `FusionDisabled` flag
 /// toggles all of fusion: there is no "fuse but don't JIT" mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// CR claude for claude: [structure/low] This enum repeats
+// graphix_package_core::testing::Mode: the same four variants and the same flags() and
+// node_walk(). Only par() differs, and on purpose: the fuzzer's JitPar is Auto over
+// AUTO_T and its serial modes ignore GRAPHIX_PAR. A fifth mode or a flag change made in
+// one copy and not the other makes the fuzzer and the tests disagree on what a mode
+// means. Use testing::Mode here and keep the fuzzer's policy as one `fn fuzz_par(Mode)
+// -> ParMode`. (x-dup-11)
 pub enum Mode {
     /// Node-walk interpreter (`CFlag::FusionDisabled`) — the reference.
     Interp,
@@ -293,6 +300,16 @@ impl Outcome {
         use Outcome::*;
         match (s, self, other) {
             (Strength::Final, Trace(a), Trace(b)) => a.agrees_final(b),
+            // CR claude for eric: [test-gap/medium] At Strength::Kind a Trace agrees
+            // with a Timeout, and Oracle::settle returns Agree before its ladder. So an
+            // Excluded program whose warm restore wedges the runtime (an image_decode
+            // of a sys::net, process or timer builtin that blocks) agrees with its cold
+            // trace, and the session axis that exists to fuzz those codecs never sees
+            // it. design/graphix_fuzz.md says a Timeout beside anything else never
+            // agrees. Either send a one-sided Timeout at Kind through the ladder (a
+            // slow retry, then the reference again, agreeing only if the reference also
+            // times out), or, if Excluded hangs are too noisy for that, write the
+            // exception into graphix_fuzz.md. (fuzz-lib-a-08)
             (Strength::Kind, Trace(_) | Timeout(_), Trace(_) | Timeout(_)) => true,
             _ => self.agrees_with(other),
         }
@@ -376,6 +393,165 @@ impl Subject {
         let statements =
             parser::parse(Origin::unspecified(body)).map_or(1, |items| items.len());
         let (open, close) = if statements > 1 { ("{", "\n}") } else { ("", "") };
+        // CR claude for claude: [bug/high] Every `// expect: reject` pin passes regress
+        // whatever its program does; 3 such pins compile. Subject::parse wraps the body
+        // as `use super::*; {inputs}let result = {open}{body}{close}` (lib.rs) without
+        // removing comment lines. build.rs strip_header (build.rs) keeps `// expect:
+        // reject` as the first line of each embedded pin. So every expect-reject pin
+        // compiles as `let result = // expect: reject\n...`, which the parser refuses
+        // since eb97e70d (comments only on their own line). run_regression then records
+        // Verdict::Rejected, and undeclared_rejection (lib.rs) skips the pin because it
+        // carries the marker. The pin's program is never parsed or typechecked, so a
+        // checker that started accepting a refused program would not be noticed. The
+        // fusecheck counts for these pins are vacuous too. Three of the 82 pins do not
+        // reject even on their own program; they are accepted only because a trailing
+        // write-up comment block also fails to parse:
+        // tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx (its header says 'Both
+        // modes now AGREE with real values'; with comments removed: AGREE (trace)),
+        // abort-seam-jul2026/01_depth_trip_settled_taint.gx (AGREE (contained)), and
+        // select-guard-prenarrow-bind-aug2026/02 (EXCLUDED). The marker was added to
+        // them in 0695927a, which means the tvar constraint self-deadlock pin has not
+        // been checked since then. Failure: Pin `// expect: reject\ni64:2 + i64:3` (a
+        // valid program) gives `graphix-fuzz check` -> `AGREE (reject)`. If the tvar
+        // self-deadlock fix (35e00e34) regressed, `regress` would still say 0
+        // regressions: tvar-lock-jul2026/01 is rejected by the parser before typecheck
+        // ever runs. Fix: Make Subject::parse drop the leading `//` block (keeping the
+        // `-v1` headers it already consumes and the expect marker) before wrapping, or
+        // start the body on its own line after `let result =`. Move the trailing
+        // write-ups of the tvar-lock and abort-seam pins above their programs (a
+        // trailing comment never parses), remove their wrong `// expect: reject` lines,
+        // and re-bless outcome.manifest and fusecheck.manifest. Add a unit test that
+        // check_verdict("// expect: reject\ni64:1") is not Rejected. Unverified: the
+        // reviewer's report, not checked by a verifier. (fuzz-main-aux-01)
+        // CR claude for claude: [test-gap/high] Fuzz wrapper puts body line 1 on the
+        // `let result = {` line: comment-led pins reject vacuously. `Subject::parse`
+        // builds `format!("use super::*; {inputs}let result = {open}")` and appends the
+        // body directly, so the body's first line shares the wrapper's line. Since
+        // eb97e70d (parser: own-line comments) a `//` comment must stand on its own
+        // line, so any body whose first line is a comment fails to PARSE at column 29.
+        // build.rs (`strip_header`) re-attaches `// expect: reject` above every
+        // must-reject pin in the embedded regress corpus, and `Subject::parse` only
+        // removes the schedule/callable headers (schedule.rs `split_header`). As a
+        // result all 81 `reject` pins in outcome.manifest are refused by the wrapper's
+        // parse error, not by the checker. `check_verdict` sees `Rejected`,
+        // `undeclared_rejection` (lib.rs) is satisfied by the marker, and the pin
+        // passes whatever the type checker does. The `check`, `run`, `minimize`,
+        // `check-isolated` and `typemorph` subcommands read a file and `trim()` it. 532
+        // of the 547 saved findings start with a `// bisect:` header, so checking one
+        // of them by hand always prints `AGREE (reject)`. Failure: A regression makes
+        // the checker accept arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx
+        // (or any `// expect: reject` pin). `regress` still reports it `reject` (a
+        // parse error at `let result = {// expect: reject`) and passes. Separately,
+        // `graphix-fuzz check
+        // graphix-fuzz/findings/arm-entry-raise-sep2026/00_fold_init_constant_raise.gx`
+        // prints `AGREE (reject)`, while the manifest says `trace` and the
+        // comment-stripped program gives `AGREE (trace)`, so a divergence in a
+        // re-checked finding is invisible. Fix: In `Subject::parse`, strip the leading
+        // `//` block (keeping the marker for `undeclared_rejection`, which reads the
+        // original text), or open the wrapper with a newline (`let result = {\n`) and
+        // carry a body LINE offset next to `body_col`. Also have a `Rejected` verdict
+        // record the refusal class, so a parse error at the wrapper can never stand in
+        // for a checker refusal. Add a unit test: a valid body under `// expect:
+        // reject` must be a regression. Unverified: the reviewer's report, not checked
+        // by a verifier. (examples-rest-01)
+        // CR claude for claude: [bug/low] The body is appended to this prefix on the
+        // same line. A body whose first line is a `//` comment (one that is not a -v1
+        // header, which the header parsers strip) then fails to parse in every mode ('a
+        // comment stands on a line of its own'). Both failures agree, so `graphix-fuzz
+        // check` reports AGREE (reject) for a file `graphix --check` accepts. End the
+        // prefix with a newline and have body_col's users account for the body starting
+        // on line 2, or strip the body's leading comment lines before wrapping. probe:
+        // design/review-2026-10-12/repro/fuzz-lib-a-10.gx (fuzz-lib-a-10)
+        // CR claude for claude: [test-gap/high] The body is spliced onto the `let
+        // result = {` line. A body whose first line is a `//` comment therefore puts
+        // that comment after the `{`, and the parser refuses it. build.rs strip_header
+        // keeps `// expect: reject` as the first line of every such corpus pin, so all
+        // of them reject at parse whatever the program says. A pin whose program the
+        // checker starts accepting stays green in `regress`, and `check`/`run` on any
+        // file with a comment header report a false AGREE (reject). A pin with its
+        // comments removed (abort-seam-jul2026/01) passes `graphix --check`. Fix: take
+        // the oracle comment lines out of the body before wrapping (blank them so rows
+        // keep their numbers), or start the body on its own line and adjust body_col
+        // and the line offset. Then re-bless outcome.manifest, look at every pin that
+        // leaves `reject`, and add a selfcheck that a valid program marked `// expect:
+        // reject` fails the gate. probe: design/review-2026-10-12/repro/x-rerun-6-01.sh
+        // Also reported as (x-rerun-8-04). (x-rerun-6-02)
+        // CR claude for claude: [test-gap/high] The body starts on the same line as
+        // `let result = {`, and the parser refuses a `//` comment that does not start
+        // its line. So any body whose first line is a comment fails to parse in /test.
+        // That covers every corpus pin with `// expect: reject` (strip_header keeps
+        // that line first), every campaign finding file with its header, and every
+        // review repro. A reject pin therefore agrees as `reject` whatever the checker
+        // does with the program: a regression that starts accepting a pinned program
+        // passes regress unnoticed. A valid program behind `// expect: reject` checks
+        // as AGREE (reject). Fix: start the body on its own line (`let result =
+        // {open}\n`, with body_col and the line mapping adjusted to match), or drop the
+        // header comments in Subject::parse once they have been read. Then add a test
+        // that a reject pin's CompileErr is not a parse error at line 1 of /test.
+        // probe: design/review-2026-10-12/repro/x-rerun-1-01.gx Also reported as
+        // (x-rerun-7-01). (x-rerun-1-01)
+        // CR claude for claude: [bug/medium] The body starts on the same line as `let
+        // result = {open}`. So when a program's first line is a `//` comment, every
+        // mode fails to parse it ("a comment stands on a line of its own"). This covers
+        // every commented pin under findings/ and every divergence_*.gx the fuzzer
+        // writes (`// bisect:` header). The oracle then reports AGREE (reject) and
+        // never runs the program. `graphix-fuzz check <pin>` silently tests nothing.
+        // Only the embedded regression corpus escapes this, because
+        // `build.rs::strip_header` drops the header first. Fix: either start the body
+        // on its own line (`{open}\n`, with `body_col` and the reported line offsets
+        // shifted to match), or have `Subject::parse` drop the leading comment lines
+        // the same way `strip_header` does. probe:
+        // design/review-2026-10-12/repro/f-call-flow-04.sh Also reported as
+        // (x-rerun-2-06), (x-engine-collections-05). (f-call-flow-04)
+        // CR claude for claude: [bug/high] The body is appended right after `let result
+        // = ` on the same line. A body whose first line is a `//` comment therefore
+        // becomes `let result = // ...`, and the own-line comment rule refuses it as a
+        // parse error. build.rs `strip_header` keeps `// expect: reject` as the first
+        // line of every embedded pin, and `schedule::split_header` keeps every
+        // non-header comment. As a result, all 82 expect-reject pins in findings/ are
+        // rejected by the parser in every mode, regress (`check_verdict`,
+        // `undeclared_rejection`) reads that as the pinned refusal, and a checker
+        // change that starts accepting one of them goes unnoticed. The same applies to
+        // `graphix-fuzz check` on any hand-written witness that starts with a comment:
+        // it prints "AGREE (reject)". Fix: drop the leading non-header comment lines
+        // (the marker included) before wrapping, in one helper shared with
+        // `strip_header`, or end the prefix with a newline and shift `body_col` and the
+        // line offsets to match. Add a pin: a valid program under `// expect: reject`
+        // must be reported as not rejected, and one under a note comment must run.
+        // probe: design/review-2026-10-12/repro/x-rerun-3-01.sh (x-rerun-3-01)
+        // CR claude for claude: [bug/high] The body is spliced onto this line after
+        // `let result =`, but only the schedule-v1 and callable-v1 headers were taken
+        // off it. So the `// expect: reject` line that build.rs::strip_header keeps on
+        // top of every refusal pin ends up mid-line. The parser refuses it ("a comment
+        // stands on a line of its own"), and every one of those pins agrees as `reject`
+        // in every mode whatever the type checker does. A checker that starts accepting
+        // one of them still passes regress. A well-typed `{ let x = 1; x + 1 }` under
+        // the marker gives AGREE (reject). The same thing makes any hand-run
+        // `graphix-fuzz check|run findings/<pin>.gx` that has a commentary header a
+        // parse error. Fix: drop the whole leading `//` block (EXPECT_REJECT included)
+        // before wrapping, or start the body on a line of its own and adjust body_col.
+        // Add a selfcheck that a well-typed program under EXPECT_REJECT does not give a
+        // `reject` verdict. Fix or delete
+        // findings/dyncall-pending-taint-jul2026/03_pend_chain_cached_downstream.gx: it
+        // is rejected only because its u64 schedule type is unsupported. probe:
+        // design/review-2026-10-12/repro/tests-select-01.sh (tests-select-01)
+        // CR claude for claude: [bug/high] build.rs strip_header keeps the `// expect:
+        // reject` marker (EXPECT_REJECT) as the program's first line, and this prefix
+        // puts it on the same line as `let result =`, where a comment is a parse error.
+        // Every marked pin is refused by the parser whatever its program does. Verdict
+        // `reject` always matches outcome.manifest, and undeclared_rejection skips
+        // marked pins, so none of the 81 `reject` rows can fail: a typechecker refusal
+        // that regresses to acceptance (infinite-type-jul2026/00) stays green. Two
+        // marked pins are not rejects at all. Once the marker and its trailing comments
+        // are removed, tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx runs to a
+        // trace and abort-seam-jul2026/01_depth_trip_settled_taint.gx is containment,
+        // so the compile-wedge regression they pin is never compiled. Fix: drop
+        // EXPECT_REJECT lines from the body here, as the -v1 headers are dropped
+        // (undeclared_rejection still reads the raw text). Then fix those two pins,
+        // re-run `regress --bless`, and add a unit test that a well-typed program
+        // carrying the marker gets verdict `trace`. probe:
+        // design/review-2026-10-12/repro/fuzz-lib-b-01.sh Also reported as
+        // (x-fix-fuzz-tests-01). (fuzz-lib-b-01)
         let prefix = format!("use super::*; {inputs}let result = {open}");
         let body_col = prefix.chars().count();
         let wrapped = ArcStr::from(format!("{prefix}{body}{close}"));
@@ -482,6 +658,15 @@ enum CompileOutcome {
 /// program's own compile-time [`FusionStats`] delta. The timeout covers
 /// the construction, where the program compiles, and the first cycle's
 /// result. A stats value is never synthesized from a failure.
+// CR claude for claude: [structure/low] This repeats run_subject's start step by step:
+// parse the Subject, put a VfsResolver over its table, install a PrintSink, get the
+// registration image, build Source::Program(compile_text), call init_session_with_setup
+// with the same sink-and-par-mode setup under the timeout, then shut down with a grace
+// period. A change to how a subject reaches the runtime would have to land in both, or
+// gen-check/fusecheck would judge a different compile than the oracle ran. Factor the
+// start into one function both call, with the image choice and the event limits as
+// arguments. check_only can stay as it is, since it never runs the program.
+// (fuzz-lib-a-14)
 async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> CompileOutcome {
     let subj = match Subject::parse(code, "test") {
         Ok(s) => s,
@@ -504,6 +689,15 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         None,
         None,
         move |ctx| {
+            // CR claude for claude: [bug/low] The fuzz session installs no
+            // graphix_package_core::ExitRequest. A subject's sys::exit therefore calls
+            // std::process::exit in whatever process runs it. `graphix-fuzz check` on
+            // `let x = 42; sys::exit(x ~ 0); x` prints nothing and exits 0, which reads
+            // as a pass with nothing compared. `check-isolated` reports it as "CRASH —
+            // exit status: 0". Fix: install an ExitRequest here, as the shell's init
+            // does, and end the run's outcome at the requested cycle with the code as
+            // an event, so both engines' exits are compared like any other output.
+            // probe: design/review-2026-10-12/repro/x-rerun-3-06.gx (x-rerun-3-06)
             ctx.libstate.set(sink);
             ctx.control.set_par_mode(mode.par());
         },
@@ -588,6 +782,20 @@ async fn drive(
     {
         let control = ctx.rt.control();
         return Outcome::Timeout(
+            // CR claude for claude: [structure/low] drive() guesses which budget
+            // stopped the runtime by comparing live_activations with activation_budget
+            // after the stop. activation_born and the stack guard both call
+            // Control::abort_budget, which sets one CtlFlag::Budget bit, so the cause
+            // is never recorded. The guess fails if an activation is deleted after the
+            // abort, which brings live back down to the budget, or if more are born
+            // after a stack abort, which pushes live past it. settle's Par exemption
+            // drops only StackBudget, so a misread changes what is recorded. Fix:
+            // record the cause at the abort (a separate flag, or a
+            // Control::abort_reason enum set by activation_born and
+            // abort_current_control_budget) and read that here. Also correct the docs
+            // on CtlFlag::Budget, Control::abort_budget, Control::budget_aborted and
+            // GXHandle::budget_aborted, which all say only the stack budget sets it.
+            // (x-fix-fuzz-tests-06)
             match control.live_activations() > control.activation_budget() {
                 true => Containment::ActivationBudget,
                 false => Containment::StackBudget,
@@ -987,11 +1195,36 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // `iter(` is a self-clocked sequence: one element per cycle,
         // so anything async landing beside it samples whichever element
         // that cycle held.
+        // CR claude for claude: [bug/medium] These markers are matched with
+        // `code.contains`, as raw substrings with no identifier boundary. So "all("
+        // matches `sys::fs::read_all(` and `write_all(`. "or(" matches `error(`,
+        // `xor(`, `floor(` and `ok_or(`. "any(" matches `get_many(`, "and(" matches
+        // `bit_and(`, and "sum(" matches `checksum(`. As a result, every sys:: program
+        // that reads or writes a file with read_all/write_all, or that builds an error
+        // value, is classified Excluded, and its values are never compared. That
+        // contradicts the one-sided fs rule above and the FinalValues tier in
+        // design/graphix_fuzz.md. The fix: match each marker as a whole name, meaning
+        // the character before it is not an identifier character or `::`. Add unit
+        // tests showing that a read_all-only sys program and an error()-using one both
+        // classify as FinalValues. probe:
+        // design/review-2026-10-12/repro/fuzz-lib-a-01.sh (fuzz-lib-a-01)
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
             "any(", "queue(", "take(", "skip(", "window(", "iterq", "iter(", "group(",
             "hold(",
         ];
+        // CR claude for claude: [bug/medium] The markers are matched as raw substrings
+        // with no identifier boundary. So `error(` matches `or(`, the generator's own
+        // `m0::tsum(` matches `sum(`, and a user name like `myor(` matches too. Any
+        // async program that contains one of these drops from FinalValues to Excluded
+        // and has none of its values compared (the reviewer counted 227 of 358 Excluded
+        // programs out of 3000 generated ones that matched only through `error(`). Text
+        // in comments and strings matches as well. Match on call names instead: either
+        // require that the character before the marker is not an identifier character
+        // or `:`, or better, walk the parsed Expr for applications whose function
+        // resolves to the core builtin. Apply the same fix to the `excluded` and
+        // `async_markers` tests above. probe:
+        // design/review-2026-10-12/repro/fuzz-gen-a-02.sh (fuzz-gen-a-02)
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| code.contains(m)) {
             return OracleTier::Excluded;
         }
@@ -1162,6 +1395,19 @@ async fn run_subject(
                 "runtime init failed: {e:?}"
             )));
         }
+        // CR claude for eric: [test-gap/low] A construction timeout (the program's
+        // compile or check) becomes the same Timeout(Deadline) as an evaluator wedge.
+        // Every pair runs the same checker, so the hang is always symmetric and agrees.
+        // In the sessions it ends as SLOW, or, for a deadlock, as a Pair::Warm
+        // divergence against "no program image was written" (see fuzz-lib-a-12).
+        // typemorph_subject treats TmVerdict::Hung as a measurement failure, so
+        // typemorph_work_order writes 'A'. No lane can report the checker going
+        // nonterminating or superlinear, which the rule that the typechecker stays
+        // instant would want caught. Decide whether a construction timeout gets its own
+        // containment (e.g. Containment::Compile) and becomes a single-run finding like
+        // Pair::Twin once it is confirmed at slow_budget, and whether a typemorph base
+        // or probe that hangs again at the slow budget counts as a finding.
+        // (fuzz-lib-a-05)
         Err(_) => return SubjectRun::failed(Outcome::Timeout(Containment::Deadline)),
     };
     let outcome = drive(&ctx, &mut rx, &subj, route, timeout, &sink).await;
@@ -1218,6 +1464,16 @@ pub async fn cold_warm(
     let (cold, image) =
         run_session(code, mode, route, SessionImage::Write, timeout).await;
     let warm = match (&cold, image) {
+        // CR claude for claude: [perf/low] Only a CompileErr carries over to warm. A
+        // cold run that timed out before writing an image (the program never finished
+        // compiling) makes warm RuntimeErr("no program image was written"). Pair::Warm
+        // then pays two slow-budget session runs in Oracle::settle, and for a
+        // deadlocked compile it records an image divergence that is not one. Treat a
+        // cold Timeout with no image like a CompileErr (warm = cold). Separately,
+        // run_one for Session::Cold runs the whole cold_warm and discards the warm
+        // restore, which can cost a full slow budget when the warm side is the one that
+        // hangs. Give it a cold-only path through run_session with SessionImage::Write.
+        // (fuzz-lib-a-12)
         (Outcome::CompileErr(_), _) => cold.clone(),
         (_, Ok(image)) => {
             run_session(code, mode, route, SessionImage::Read(image), timeout).await.0
@@ -1285,6 +1541,14 @@ pub struct Divergence {
 /// node-walk-vs-JIT check; `EngineDispatch` and `Route` exist only for
 /// `callable-v1` programs (see [`callable`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// CR claude for claude: [doc-drift/low] The variant docs say which of `interp`/`jit`
+// holds what (Engine, Route, Cold, Warm, Check, Par), but Divergence's fields are
+// `reference` and `tested`. Par says 'a run with every fork forced', but Mode::par runs
+// JitPar at ParMode::Auto over AUTO_T. Rewrite them in terms of reference/tested and
+// say JitPar is Auto. Two more doc fixes: batch_size's doc repeats its first sentence
+// on one line, and Outcome::agrees_with's doc says same-kind outcomes agree without
+// comparing messages, while CompileErr compares normalize_diag'd diagnostics.
+// (fuzz-lib-a-13)
 pub enum Pair {
     /// node-walk vs fused+JIT, in-language route (`interp`/`jit`
     /// fields hold exactly that).
@@ -1591,6 +1855,20 @@ impl Pair {
 /// program whose values are not comparable owes only its sessions, at
 /// kind strength.
 fn comparisons(code: &str, tier: OracleTier, sessions: bool) -> Vec<Pair> {
+    // CR claude for claude: [bug/medium] An Excluded program owes no Pair::Engine (or
+    // Par) comparison at all. Its interp and jit runs are made, but they feed only
+    // check_pair, which looks at the case where both engines refuse. So one engine
+    // running while the other refuses to compile or fails at run time is never
+    // reported. That covers every rand::, sys::time, sys::net and tempdir program.
+    // Strength::of already maps Excluded to Strength::Kind, which compares no values,
+    // so Engine and Par should be pushed for every tier, with only the twin check
+    // staying value-gated. The tier itself is also over-wide: oracle_tier matches
+    // markers with `contains` on the source, so a string literal (`"throttle"`) or a
+    // binding name (`local_addr`, `tempdir`) turns a pure program Excluded. Matching on
+    // the parsed program's paths, outside literals and binding names, would fix that.
+    // Probe: design/review-2026-10-12/repro/fuzz-lib-a-03.sh shows a #[native]
+    // interp-vs-jit split that prints DIVERGENCE plain and EXCLUDED with `let s =
+    // "throttle";` added or with the binding renamed `local_addr`. (fuzz-lib-a-03)
     let values = tier != OracleTier::Excluded;
     let mut out = Vec::new();
     if values {
@@ -1846,6 +2124,22 @@ impl<'a> Oracle<'a> {
             }
             // A wedge sits at ~0% CPU; seconds of burn are an honestly slow
             // reference, which refutes nothing
+            // CR claude for eric: [risk/medium] This drop reads only the reference's
+            // CPU burn. A node-walk that loops forever inside one cycle beside a JIT
+            // trace burns CPU like an honestly slow one, so it lands here as
+            // SLOW/unsure and is never recorded. design/graphix_fuzz.md calls fusion
+            // removing nontermination a top-tier finding, and this rule silently
+            // swallows that half. The JIT-side hang is still recorded, because the rule
+            // requires run == ra. A tested-side speed ratio cannot separate the two
+            // cases, since the kernel and node-walk gap is legitimately hundreds of
+            // times (probe: design/review-2026-10-12/repro/fuzz-lib-a-07.sh drops an
+            // honestly slow program through this branch). A progress signal on the
+            // reference could: the cycle it reached at the first timeout versus at the
+            // slow rerun, recording a reference stuck on one cycle while burning CPU.
+            // That needs a decision on whether one heavy cycle counts as slowness. The
+            // "asymmetric timeout" text in Divergence::bisect then describes only an
+            // idle-wedged or starved reference; its comment about a heavy terminating
+            // program is the case this branch already drops. (fuzz-lib-a-07)
             if run == ra
                 && matches!(a, Outcome::Timeout(_))
                 && burned >= Duration::from_secs(5)
@@ -1861,7 +2155,35 @@ impl<'a> Oracle<'a> {
             }
         }
         // a reference that disagrees with itself is nondeterminism
+        // CR claude for claude: [bug/medium] A reference in the watched value reaches
+        // the trace as its raw bind id. The id is session-global and differs on every
+        // run, including two node-walk runs in one process and warm runs (which
+        // relocate ids). trace::normalize canonicalizes only function values, so this
+        // re-run of the reference always disagrees with `a`. settle then returns
+        // Settled::Drop without printing anything. Any program whose value holds a
+        // reference anywhere therefore gets no comparison at all: a JIT error in its
+        // other fields is dropped, and `check` answers UNSURE "(see above)" with
+        // nothing above. Fix: in trace::normalize, replace each reference by its
+        // first-seen ordinal in the trace (the result type says which positions hold
+        // one, via Type::holds_ref / map_refs), or, failing that, compare such programs
+        // at Strength::Kind under their own tier. Either way, eprintln a
+        // NONDETERMINISTIC line with the program on this Drop, as the other Drop arms
+        // do. probe: design/review-2026-10-12/repro/fuzz-main-aux-03.sh
+        // (fuzz-main-aux-03)
         let again = run_one(self.code, ra, budget).await;
+        // CR claude for eric: [risk/medium] This is the only Drop exit in settle that
+        // prints nothing. The CONTAINED, JIT ASSERTION and SLOW drops each eprintln a
+        // label and the program, so `graphix-fuzz check` ends with "UNSURE ...
+        // nondeterminism decided it (see above)" and nothing is above it. Campaigns and
+        // regress discard the drop outright. For an Exact-tier program (no rand, no
+        // clock, by oracle_tier's own definition), a reference that disagrees with its
+        // own rerun is either a determinism bug in that engine or a normalization gap
+        // in the oracle. Probe: design/review-2026-10-12/repro/fuzz-lib-a-06.sh drops
+        // fuzz-lib-a-01's raw-BindId program this way without a word. At minimum,
+        // eprintln a NONDETERMINISTIC line with the program and both renders (the
+        // reference and its rerun). Decide whether an Exact-tier self-disagreement
+        // should become a finding class of its own (a Pair or Divergence kind) instead
+        // of a drop. (fuzz-lib-a-06)
         if !again.agrees_at(&a, s) {
             return Settled::Drop;
         }
@@ -1872,6 +2194,35 @@ impl<'a> Oracle<'a> {
     /// decided something or the program is excluded. A contained callable
     /// is unsure: its runs are four, the budget's race decides it.
     fn verdict(&self) -> Verdict {
+        // CR claude for claude: [bug/low] The Excluded tier wins here before the Engine
+        // runs are read. Two engines that both reject an excluded program therefore get
+        // Verdict::Excluded, never Rejected. `run_regression` calls
+        // `undeclared_rejection` only for Rejected, so an excluded pin that stopped
+        // compiling, or now fails at run time in both engines, passes the outcome half
+        // of regress. The manifest row stays "excluded". Only the fusion half can still
+        // catch it, and only when the pin's recorded fused count was non-zero: it then
+        // reports "LOST fusion", which names the wrong cause. A rejection is a compile
+        // verdict, and design/graphix_fuzz.md runs compile verdicts at every tier. Fix:
+        // match on `Verdict::of` for the Engine runs first, and return Excluded only in
+        // place of Ran, Contained or Unsure. Probe:
+        // design/review-2026-10-12/repro/fuzz-lib-a-04.sh (`let t = sys::time::now(); t
+        // + 1` prints EXCLUDED; the same error without sys::time prints AGREE
+        // (reject)). (fuzz-lib-a-04)
+        // CR claude for claude: [bug/medium] The Excluded tier returns before the
+        // engines' outcomes are read, so an Excluded program that both engines reject
+        // gets verdict `excluded`, the same as one that compiles and runs.
+        // run_regression calls undeclared_rejection only for Verdict::Rejected, and the
+        // outcome manifest records `excluded` either way. As a result `// expect:
+        // reject` is not enforced in either direction on an Excluded pin. An unmarked
+        // pin that stopped compiling is never flagged. A marked pin that starts
+        // compiling, like
+        // select-guard-prenarrow-bind-aug2026/02_guard_leaks_fn_value.gx (excluded by
+        // `sys::` plus `iter(`), passes at Kind strength. A compile verdict owes
+        // nothing to values, as check_pair already says. Fix: return Rejected when both
+        // engine runs are CompileErr, whatever the tier. Also make run_regression fail
+        // a pin carrying EXPECT_REJECT whose engine pair is not CompileErr/CompileErr.
+        // Then re-bless the outcome manifest. probe:
+        // design/review-2026-10-12/repro/fuzz-lib-b-02.sh (fuzz-lib-b-02)
         if self.tier == OracleTier::Excluded {
             return Verdict::Excluded;
         }
@@ -1898,6 +2249,17 @@ fn slow_budget(timeout: Duration) -> Duration {
 /// check, a twin's rerun) and one comparison's ladder (a slow retry and
 /// the reference again at the slow budget), each run with its shutdown
 /// grace.
+// CR claude for claude: [risk/low] This deadline budgets one comparison's ladder (two
+// slow-budget runs). Oracle::settle runs a ladder for each comparison check_verdict
+// judges, though, and a remake replaces only the run it names. A callable subject whose
+// node-walk is slow but finishes within slow_budget can therefore owe about seven
+// sequential slow runs: the interp nocache run on each route, each interp Sessions job
+// (cold then warm) on each route, and Par(Par). At the 3 s campaign budget that is more
+// than the 286 s here. check_isolated then records a working program as a "HANG (outer
+// deadline)" crash. Fix: derive the deadline from the comparisons the subject owes (the
+// distinct remakeable reference and tested runs, with Sessions counting twice, times
+// slow_budget plus grace), or have the child report a heartbeat per ladder instead of
+// relying on a fixed wall deadline. (x-rerun-3-05)
 fn check_deadline(timeout: Duration) -> Duration {
     let grace = Duration::from_secs(5);
     (timeout + grace) * 12 + (slow_budget(timeout) + grace) * 2 + Duration::from_secs(60)
@@ -2403,6 +2765,16 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
         Some(d) => d,
         None => return (code.to_string(), 1),
     };
+    // CR claude for claude: [risk/low] The target comes from this process's own
+    // re-check, not from the Finding that derive_suspect claimed and will record.
+    // bucket leaves out the pair, so Cold/Warm across routes, or Par/JitPar, share a
+    // bucket. If the re-check here first diverges on another comparison (under load, or
+    // on another first-differing pair), the program is minimized toward that bug.
+    // Corpus::record then files it under the original Finding's key, labels and
+    // outcomes, which is the bug-A-into-bug-B morph the design forbids. Fix: pass the
+    // encoded Finding to minimize-one, compare candidates by the full Finding::key
+    // (pair plus bucket), and return the input unchanged when the first re-check does
+    // not reproduce that key. (fuzz-lib-b-06)
     let target = bucket(&d0);
     let Ok((mut sched, body)) = schedule::Schedule::parse(code) else {
         return (code.to_string(), 1);
@@ -2826,6 +3198,16 @@ pub const TM_CAP: usize = 3;
 /// The most checks one typemorph subject runs: its base, every
 /// transform kind's probes, the typed base, and every must-reject
 /// family's (retype takes two per site).
+// CR claude for claude: [doc-drift/low] The budget counts one extra cap for retype's
+// second probe, but two more families also exceed one probe per site per cap.
+// `function_bound` pushes two probes per site (a literal and a defaulted lambda), and
+// `widen_through_let` adds its own cap of `Family::WidenConsumer` probes beside
+// `widen_consumer`'s. A subject can run 2 * cap more checks than the child's deadline
+// allows, and design/must_reject.md's 'the cap per family per subject is TM_CAP' is not
+// true. The two function-bound mutants also share the id `function-bound#i`, so the
+// scan's confirmation by id can match the wrong one. Count from the families' real
+// per-site probes, or cap `mustreject::probes` per Family. Give the defaulted-lambda
+// mutant an id of its own. (fuzz-mutate-10)
 pub fn tm_checks(cap: usize) -> u32 {
     (2 + (typemorph::TmKind::ALL.len() + mustreject::Family::ALL.len() + 1) * cap) as u32
 }
@@ -2954,6 +3336,19 @@ async fn must_reject(
     };
     let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test", body_col);
     for p in mustreject::probes(body, &types, cap) {
+        // CR claude for claude: [test-gap/low] A mutant is classified only by where it
+        // is refused. Any refusal inside the expected spans (the whole select for
+        // same-form and variant-widen, the whole call for widen-consumer) counts as the
+        // family's rule holding, even when a different refusal caused it.
+        // design/review-2026-10-12/repro/fuzz-mutate-same-form-dead-arm-mask.gx shows
+        // one: an added dead arm is refused at the same site, so a regression of the
+        // one-runtime-form rule still reads ok. Record an expected error-head fragment
+        // per `mustreject::Family` and report a right-site refusal with another head as
+        // a verdict of its own. Also bring
+        // `must_reject_families_are_refused_where_their_rules_say` up to what
+        // design/must_reject.md's Tests section asks: sites each family must skip (the
+        // false-LEAK repros from this review are natural cases) and the mutant's text.
+        // (fuzz-mutate-09)
         let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
             TmCheck::Unparsed(_) => continue,
             TmCheck::Hung => break,
@@ -3131,6 +3526,14 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
     windowed(entries.len(), regress_parallelism(), job, |i, res| {
         let (d, v) = match res {
             Ok(r) => r,
+            // CR claude for claude: [dead/low] This arm cannot be reached from the CLI.
+            // main installs an abort-on-panic hook for `regress` (and `fusecheck`), so
+            // a pin whose check panics aborts the whole process, and panicked() is used
+            // only by its unit test. The abort's backtrace does not say which pin it
+            // was, and the other pins' regressions and the outcome-manifest comparison
+            // are never printed. Fix: log the pin name to stderr before each job starts
+            // (so the abort names it), then delete this arm and panicked(). Or take
+            // `regress` out of the abort hook and keep them. (fuzz-lib-b-09)
             Err(e) => {
                 return regressions
                     .push((entries[i].0.to_string(), panicked(entries[i].1, e)));
@@ -3339,6 +3742,14 @@ pub async fn run_fusecheck(
             CompileOutcome::Failed(e) => Err(e),
         }
     };
+    // CR claude for claude: [risk/low] fusecheck runs every pin's compile and first
+    // cycle in this process, the budget-aborting pins included, at parallelism() (8x
+    // cores) in flight. regress_parallelism exists because those runaways grow toward
+    // the stack budget in-process, so this half of the regress gate goes around the
+    // memory cap that the other half applies. On a small box several abort pins can run
+    // at once and the gate runs out of memory. Use regress_parallelism() here. Also
+    // have the `fusecheck --bless` path in main go through on_all_cores like the
+    // compare path, so both measure under one runtime shape. (fuzz-lib-b-10)
     windowed(entries.len(), parallelism(), job, |i, r| counts[i] = r.and_then(|r| r))
         .await;
     entries.iter().zip(counts).map(|((name, _), c)| (name.to_string(), c)).collect()
@@ -3533,6 +3944,12 @@ impl Corpus {
     /// canonical repro collapse to one.
     /// Claim a minimization for `key`: false once [`MINIMIZE_PER_KEY`]
     /// findings have it.
+    // CR claude for claude: [readability/low] The doc block above, from 'Record a
+    // divergence if its minimized form is new' through 'collapse to one', belongs to
+    // record, but it is attached to claim along with claim's own two lines, and record
+    // has no doc. Move those lines above `pub fn record`. Also, len's doc says
+    // 'distinct divergences', but `seen` counts crash and typeflip findings too: say
+    // 'distinct findings'. (fuzz-lib-b-11)
     pub fn claim(&self, key: &str) -> bool {
         let mut keys = self.keys.lock().unwrap();
         let n = keys.entry(key.to_string()).or_default();
@@ -3874,6 +4291,12 @@ async fn run_child(
         .args(args)
         // the pool provides the concurrency; small children keep the
         // total thread count sane
+        // CR claude for claude: [dead/low] This env var has no effect. Tokio reads
+        // TOKIO_WORKER_THREADS only when a builder leaves `worker_threads` unset, and
+        // the child's `main` sets `worker_threads = 2` in its `#[tokio::main]`. Nothing
+        // else in the child builds a multi-thread runtime. The child's real thread caps
+        // are RAYON_NUM_THREADS and GRAPHIX_EVAL_THREADS in `child_command`. Delete
+        // this line and the comment above it. (fuzz-main-aux-11)
         .env("TOKIO_WORKER_THREADS", "2")
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
@@ -4011,6 +4434,17 @@ pub fn apply_mem_limit() {
             let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
             // best effort: a hard limit already below `limit` makes this
             // EPERM, and the subject timeout is the real guard
+            // CR claude for eric: [risk/low] On macOS, RLIMIT_AS is an alias of
+            // RLIMIT_RSS, which the kernel does not enforce. This call therefore caps
+            // nothing on katana, the fleet's darwin host (32 workers, 16GB). A subject
+            // whose memory grows without deep recursion, such as an array doubled every
+            // cycle, is bounded there only by the subject timeout times the host's
+            // scale. design/graphix_fuzz.md describes the 8GB cap as what keeps one
+            // runaway subject from taking a box and does not mention this gap. Options:
+            // a darwin child watches its own resident size (`task_info`) on a timer and
+            // aborts above the limit, or the parent polls its children's RSS. At
+            // minimum, document that darwin hosts run uncapped and size their workers
+            // for that. (fuzz-main-aux-09)
             unsafe { libc::setrlimit(libc::RLIMIT_AS, &rl) };
         }
     }
@@ -4119,6 +4553,16 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
 /// keeps its context's JIT pages, so the child pays the leak and exits.
 async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> {
     // up to 8 in-child runs, each bounded by the per-run timeout
+    // CR claude for claude: [risk/low] The comment above and this bound do not match
+    // selfcheck_one. Each mode and route runs a concurrent pair, then up to two
+    // sequential confirms at 4x the timeout: 9 timeouts each, 18 for a plain program
+    // and 36 for a callable one. Under load, two 4x confirms already pass this
+    // deadline. The killed child leaves no verdict, which is reported as `crash`, a
+    // false determinism failure. Fix: derive the bound from the loop (routes x modes x
+    // 9 timeouts plus slack), or have the child append each mode's result as it
+    // completes and use Deadline::Stall. Also fix detcheck_one_pair's doc: it says a
+    // timeout is 'exit 4' and that exit codes are compared, but the code skips on a
+    // `timeout` verdict and compares verdicts. (fuzz-lib-b-12)
     let deadline = Deadline::Fixed(timeout * 10 + Duration::from_secs(30));
     // a dead or wedged child left no verdict: nondeterminism by definition
     match run_child("selfcheck-one", &[], &[], prog, false, deadline).await.verdict {
@@ -4389,6 +4833,21 @@ async fn died(
     // budget's abort is, when the node-walk alone runs away too. One that
     // runs alone beside another engine that dies alone is that engine's
     // runaway.
+    // CR claude for claude: [risk/medium] This re-runs only the two plain no-cache
+    // serial runs (run-one is run_program). check-one also makes the cold and warm
+    // image sessions, the dispatch route, the forked Par/JitPar runs and settle's
+    // slow-budget remakes, and Oracle::make runs each group concurrently under one
+    // RLIMIT_AS. A death that the two plain runs alone do not reproduce therefore comes
+    // out as (Some(true), Some(true)) and is recorded as Agree, and the session and
+    // forked comparisons are never made. That includes a runaway confined to an image
+    // decode or a forked branch. probe:
+    // design/review-2026-10-12/repro/x-fix-fuzz-tests-03.sh (under a 2 GB cap both
+    // run-one children trace, check-one aborts with "memory allocation of 576000024
+    // bytes failed", and check-isolated prints AGREE). Fix: have check-one report the
+    // run in flight when it dies (a progress line on stderr naming the Run). Then
+    // re-run that Run alone (run-one taking mode, route, session and par mode), and
+    // call it containment only when the node-walk's run of the same path also dies.
+    // (x-fix-fuzz-tests-03)
     match (
         run_isolated(prog, Mode::Interp, timeout).await,
         run_isolated(prog, Mode::Jit, timeout).await,
@@ -4420,6 +4879,17 @@ pub const CAMPAIGN_MINIMIZE_BUDGET: usize = 80;
 async fn minimize_isolated(prog: &str, timeout: Duration) -> (Option<String>, Duration) {
     // worst case the whole budget is bottom programs sleeping the
     // per-mode timeout
+    // CR claude for claude: [risk/medium] This deadline assumes each minimizer check
+    // costs about two per-mode timeouts. For a one-sided Timeout divergence (a JIT
+    // wedge), every check that keeps the hang runs Oracle::settle's ladder: a remake at
+    // slow_budget, which has a 60 s floor, then the reference again. That is about 63 s
+    // per check, so the child is killed after roughly 8 of its CAMPAIGN_MINIMIZE_BUDGET
+    // checks. minimize-one writes its verdict only when minimize returns, so the kill
+    // discards every accepted reduction and derive_suspect records the raw mutant. Fix:
+    // have minimize write its current best to the verdict file after each accepted
+    // reduction, and switch this to a Deadline::Stall on file growth (or read whatever
+    // is there after a kill), so a killed child still returns a partial minimum.
+    // (fuzz-lib-b-05)
     let deadline = Deadline::Fixed(
         timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60),
     );
@@ -4703,6 +5173,18 @@ async fn derive_suspect(
         PoolResult::Agree => false,
         // a hang of a program on the clock, the network or a process is
         // the environment's
+        // CR claude for claude: [bug/low] This guard drops a whole-child HANG
+        // (check_isolated's outer deadline, past every in-child run deadline) for any
+        // program whose raw text contains `sys::`, `http::` or `rand::`, comment lines
+        // included, with no output, no crash record and no tally. The comment above
+        // names the clock, the network and processes, but `sys::` also covers sys::io,
+        // sys::fs and sys::exit, whose programs oracle_tier rates FinalValues, so a JIT
+        // wedge (fusion adding nontermination, the top-tier class in graphix_fuzz.md)
+        // in a mutant of one of those seeds vanishes. Match only the markers the
+        // comment names (rand::, sys::time, sys::net, sys::process, http::) on code
+        // lines, reusing oracle_tier's comment stripping, and print a one-line "HANG
+        // (environment) - not recorded" so the drop is visible in the campaign log.
+        // (fuzz-lib-b-03)
         PoolResult::Crash(status)
             if status.contains("HANG")
                 && ["rand::", "sys::", "http::"].iter().any(|m| prog.contains(m)) =>
@@ -4756,6 +5238,21 @@ async fn confirm_typeflip(
             f => (f, true),
         },
         // a confirm that measured nothing confirms nothing
+        // CR claude for claude: [bug/medium] An `Err` from `typemorph_child` means the
+        // confirm child was killed at its deadline (a wedged checker) or died without a
+        // verdict (SIGSEGV, abort, OOM kill). It is not an acceptance flap. Filing it
+        // as `unconfirmed` gives every such event one fixed class,
+        // `TYPEFLIP:unconfirmed: child deadline` or `.. no verdict (signal: N ..)`.
+        // `Corpus::load` reloads that class, so only the first wedge or crash of each
+        // signal kind is ever written, in any campaign. Every later one is dropped
+        // without a print. Because confirmed=false, it also never reaches
+        // `Tally::crashes` or the breakage window. The other lanes record a dead child
+        // through `record_crash` (keyed per program) and count it. Spawn failures
+        // already exit FATAL in `spawn_child`, so the reason for this arm is gone. Fix:
+        // on `Err(e)`, call `corpus.record_crash(prog, &e)`, print `CRASH` when it
+        // returns true, bump `tally.crashes` (pass the tally in, or return a crash bit
+        // to `derive_suspect`), and report it as a finding. Keep `unconfirmed` for a
+        // fresh child that ran to a verdict and showed no flip. (fuzz-lib-b-04)
         Err(e) => (vec![Flip::harness("unconfirmed", e)], false),
     };
     for Flip { id, head, mutant } in flips {
@@ -5105,6 +5602,18 @@ mod tests {
             "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 f(n, *(&acc)); \
              f(0, 0) }",
         ] {
+            // CR claude for claude: [test-gap/low] The second case's comment says the
+            // activation budget stops the node-walk's runaway, but no budget is set
+            // here. Only main.rs and child_resource_env set ACTIVATION_BUDGET, and
+            // check_verdict runs the subjects in-process at the default unlimited
+            // budget. So the interp run grows for the full 10 s, reaching about 2 GB,
+            // and ends as a Deadline timeout, which the tail-loop exemption in settle
+            // accepts. The containment path is never tested, and a regression in how
+            // settle treats Timeout(ActivationBudget) beside the JIT's refusal would
+            // pass. Fix: set the fuzzer's budgets for the unit tests the way main.rs
+            // does (graphix_compiler::set_activation_budget(ACTIVATION_BUDGET) and
+            // set_stack_budget in a shared test init), and assert that the node-walk's
+            // outcome is Timeout(ActivationBudget). (x-fix-fuzz-tests-05)
             let (d, _) = check_verdict(code, Duration::from_secs(10)).await;
             assert!(d.is_none(), "{code}: {d:?}");
         }
@@ -5119,6 +5628,17 @@ mod tests {
         agree_fused("{ let a = i64:7; a > i64:3 && a < i64:10 }").await;
         agree_fused("f64:3.0 + f64:1.0").await;
         // `cast` node-walks: deliberate fallback
+        // CR claude for claude: [test-gap/low] This probe and several others are
+        // written as agree (no fusion assertion), with comments saying the construct
+        // node-walks or is an ASPIRE gap. All of them fuse cleanly today: `graphix-fuzz
+        // run` shows fused=1, with only module-statement noise. The others are the
+        // nested map and destructured callback in jit_map_probes, the destructured
+        // predicate and fold callbacks, jit_flat_map_probes, the HOF-in-callee and
+        // lambda-in-callback probes, and jit_destructure_probes (the composite leaf
+        // included). Because they check values only, a change that de-fuses any of
+        // these shapes passes. Switch each one that fuses to agree_fused_clean and
+        // delete the stale node-walks/ASPIRE comments and doc lines. Keep agree only
+        // where a probe really does not fuse. (fuzz-lib-b-08)
         agree("cast<f64>(i64:7)$ + f64:1.0").await;
         // the inner block reads `outer`, a scalar kernel param
         agree_fused("{ let outer = i64:100; { let t = outer - i64:1; t * i64:2 } }")

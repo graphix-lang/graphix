@@ -1,5 +1,12 @@
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
+// CR claude for claude: [style/low] The use statements are not grouped and some sit
+// mid-file. These two lines should be `use graphix_compiler::expr::{ExprId,
+// VfsResolver};`. The iced_core, iced_runtime, iced_wgpu and tokio OnceCell uses after
+// GuiTestHarness's impl belong up here. `use graphix_rt::CallableId;` near expect_call
+// should join the graphix_rt group above, which also lets the fully qualified
+// graphix_rt::CallableId in call_callback and compile_named_callable shorten.
+// (tests-gui-b-14)
 use graphix_compiler::expr::ExprId;
 use graphix_compiler::expr::VfsResolver;
 use graphix_package_core::testing::{self, TestCtx};
@@ -134,6 +141,12 @@ impl GuiTestHarness {
 
     /// Dispatch iced Messages through the runtime and widget as
     /// `GuiHandler::about_to_wait` does, then drain.
+    // CR claude for claude: [structure/low] This body is InteractionHarness::apply
+    // followed by a drain: the same apply_messages closure over MessageShell and
+    // on_message appears twice. A change to how messages are applied, such as honouring
+    // on_message's redraw answer, then has to be made in both places. Move apply onto
+    // GuiTestHarness, make dispatch_calls `self.apply(msgs); self.drain().await`, and
+    // have InteractionHarness::apply forward to it. (tests-gui-b-09)
     async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
         // the event loop's own drain
         let widget = &mut self.widget;
@@ -149,6 +162,14 @@ impl GuiTestHarness {
     /// Build, lay out and draw the widget tree once, as a window frame
     /// does, on a headless renderer.
     async fn render(&self) -> Result<()> {
+        // CR claude for claude: [perf/low] Each render builds a fresh iced_wgpu Engine,
+        // which creates all of its pipelines, and chart_test::draw_in does the same on
+        // every draw. Tests that render or draw several times, such as reacts,
+        // bad_sizes_and_coordinates_are_refused and zero_and_negative_mesh_counts_draw,
+        // pay that cost each time on a software adapter, while InteractionHarness keeps
+        // one renderer. Keep a lazily created renderer on GuiTestHarness, with render
+        // taking &mut self, and have draw_in take a renderer created once per test.
+        // (tests-gui-b-12)
         let mut renderer = headless_gpu().await.create_renderer();
         let theme =
             crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
@@ -181,6 +202,10 @@ impl GuiTestHarness {
 
     /// Drain and `before_view` in a loop until `pred(self)` holds;
     /// panics when `within` elapses.
+    // CR claude for claude: [doc-drift/low] The doc says this panics when `within`
+    // elapses, but the body bails with an error. A caller who trusts the doc and
+    // discards the Result skips the wait silently. Change the doc to say it returns an
+    // error when `within` elapses. (tests-gui-b-13)
     async fn wait_until<F>(
         &mut self,
         mut pred: F,
@@ -340,6 +365,12 @@ struct InteractionHarness {
     renderer: widgets::Renderer,
     cache: user_interface::Cache,
     viewport: Size,
+    // CR claude for claude: [dead/low] This field is assigned by click, drag_live,
+    // move_cursor and drag_horizontal, but nothing reads it. The pointer every frame
+    // uses is `cursor`, which track_cursor derives from the events. Having two cursor
+    // fields invites fixing the wrong one. Delete the field and its assignments. In
+    // sliders_are_f64_and_continuous, `let id = expect_call(&msgs); let _ = id;` is the
+    // same kind of leftover: write `expect_call(&msgs);`. (tests-gui-b-08)
     cursor_position: Point,
     /// The pointer as the event loop tracks it from the events sent.
     cursor: mouse::Cursor,
@@ -382,6 +413,18 @@ impl InteractionHarness {
 
     /// Build a UserInterface, feed events, and return the messages the
     /// widgets produced.
+    // CR claude for claude: [structure/medium] The event loop's frame
+    // (GuiHandler::render) runs before_view, then take_ops, then frame inside
+    // with_view_theme. The test harness has three copies of that sequence, and each one
+    // differs. This one never calls before_view, so a data table's subscription
+    // reconcile and dirty-sort flush never run between interaction frames.
+    // GuiTestHarness::render calls neither before_view nor take_ops, so queued
+    // Focus/ScrollTo ops are dropped. frame_test::draw skips take_ops. None of the
+    // three sets the view theme. Move the whole sequence into one function in frame.rs
+    // that takes the widget and does before_view, take_ops and
+    // with_view_theme(frame(..)), and call it from GuiHandler::render and from all
+    // three harness sites. A departure from production then shows up in the tests, as
+    // frame.rs's module doc says it should. (tests-gui-b-01)
     fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
         // the event loop's own frame, the draw included
         let mut messages = Vec::new();
@@ -415,6 +458,17 @@ impl InteractionHarness {
     /// responsive-wrapped widgets see the new size immediately.
     fn resize(&mut self, viewport: Size) {
         self.viewport = viewport;
+        // CR claude for claude: [test-gap/low] Resetting the cache throws away the
+        // whole iced widget tree: scroll offsets, focus, text-input and editor state.
+        // The event loop's `render` keeps `tw.cache` across a resize and sends a
+        // `window::Event::Resized` with the new size. `UserInterface::build` lays out
+        // again at the new bounds on every frame, and iced's `responsive` calls its
+        // view at every layout, so the reset is not needed for the new size to show. So
+        // a test that scrolls or focuses and then resizes would see state that
+        // production keeps come back reset, and no widget's `Resized` handling can be
+        // tested through this harness. Fix: keep the cache and run
+        // `self.process_events(&[Event::Window(window::Event::Resized(viewport))])`.
+        // (tests-gui-b-02)
         self.cache = user_interface::Cache::default();
         let _ = self.process_events(&[]);
     }

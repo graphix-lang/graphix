@@ -1,0 +1,17 @@
+// x-rerun-8-04 (variant of x-typecheck-generics-F7): a defaulted label hidden
+// by a fn type is judged only where the function is PASSED as an argument
+// (eec725ee, callsite.rs callee_param / checked_default_at). A `let`
+// annotation or a struct field that hides the label is not judged.
+// command: graphix --check x-rerun-8-04.gx; graphix-fuzz check x-rerun-8-04.gx
+// expected: the check refuses `let h: fn(y: string) -> bool = g` (or h("seven")):
+//   type mismatch string does not contain i64, at 4096
+// observed: --check exits 0; the build refuses at 4096 ("type mismatch string
+//   does not contain i64"); graphix-fuzz check: DIVERGENCE (the check accepted
+//   what the build refused). With the struct shape
+//     let s: {h: fn(y: string) -> bool} = {h: g}; let k = s.h; k("seven")
+//   the check and the build both pass and the call is bottom forever; only the
+//   log says "k("seven"): binding the callee failed: .. 4096: type mismatch
+//   string does not contain i64".
+let g = |#x = 4096, y| x == y;
+let h: fn(y: string) -> bool = g;
+h("seven")

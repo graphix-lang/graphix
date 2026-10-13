@@ -103,6 +103,20 @@ impl<X: GXExt> Gui<X> {
 impl<X: GXExt> CustomDisplay<X> for Gui<X> {
     async fn clear(&mut self) {
         let (tx, rx) = oneshot::channel::<()>();
+        // CR claude for claude: [bug/high] This waits for an answer from an event loop
+        // that may already have stopped. When the user closes the last window,
+        // GuiHandler::finish sends Ok on the Stop channel and exits the loop. The shell
+        // then calls clear. If this Stop arrives after the iteration's user-event
+        // drain, run_app_on_demand returns with it still queued. event_loop::run then
+        // stores the EventLoop, and its receiver with it, back in EVENT_LOOP, so tx is
+        // never dropped and rx.await never resolves. The window closes but graphix
+        // never exits, and Ctrl-C does not free it: about half of close-button exits
+        // hang. The run_app_on_demand error path always hangs, because stop is sent
+        // after the loop has returned. Fix: give Gui a way to see that the loop is
+        // gone. For example, run() could fire a `done` oneshot (or set a shared flag)
+        // once run_app_on_demand returns, and clear would select on rx vs done, or skip
+        // the send once done. user_event should also ignore a Stop whose tx is closed.
+        // probe: design/review-2026-10-12/repro/gui-core-01.sh (gui-core-01)
         let _ = self.proxy.send_event(ToGui::Stop(tx));
         let _ = rx.await;
     }

@@ -1,0 +1,5 @@
+// two args sharing a name (or a positional named help/version) pass check_spec and
+// panic in clap (debug assert), killing the runtime: "runtime did not respond".
+// run: graphix --no-cache small-pkgs-args-dup-name.gx a b
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+args::parse(args::command(#name: "t", [args::positional(#name: "x"), args::positional(#name: "x")]))

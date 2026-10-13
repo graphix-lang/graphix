@@ -1,0 +1,9 @@
+// `graphix --check`: the missing-case error blames slice arms that do not
+// exist ("no arm covers null (the slice arms cover finitely many lengths
+// ...)"): the Array member, covered by its type test, keeps an untouched
+// length ladder that exhausted() reports as the gap.
+let x: [Array<i64>, i64, null] = null;
+select x {
+  Array<i64> as a => array::len(a),
+  i64 as n => n
+}

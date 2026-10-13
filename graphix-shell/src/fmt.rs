@@ -60,6 +60,15 @@ pub fn run(args: Args) -> Result<()> {
             let text = fs::read_to_string(path)?;
             let cfg = args.config(path)?;
             let formatted = format_source(SourceKind::of_path(path), &text, &cfg)?;
+            // CR claude for claude: [bug/low] With `--stdout`, the file is printed and
+            // `Ok(false)` is returned before `changed` is computed, so `--check
+            // --stdout` never counts an unformatted file and exits 0. `format_stdin`
+            // does the opposite: `--check` wins and nothing is printed. Either make the
+            // flags conflict in clap (`conflicts_with = "stdout"` on `check` in
+            // `Command::Fmt`), or compute `changed` first and return it from the stdout
+            // branch. probe:
+            // design/review-2026-10-12/repro/shell-10-fmt-check-stdout.sh Also reported
+            // as (x-formatter-02). (shell-10)
             if args.stdout {
                 io::stdout().write_all(formatted.as_bytes())?;
                 return Ok(false);
@@ -71,6 +80,19 @@ pub fn run(args: Args) -> Result<()> {
                 let mut tmp = file.clone().into_os_string();
                 tmp.push(format!(".fmt.{}", std::process::id()));
                 let tmp = PathBuf::from(tmp);
+                // CR claude for claude: [risk/low] The temporary file name
+                // `<file>.fmt.<pid>` is predictable. `fs::write` follows a symlink
+                // there and truncates its target, and `set_permissions` follows it too.
+                // In a directory another user can write, that user can plant the
+                // symlink: formatting then overwrites a file the formatting user owns
+                // (pointed at ~/.bashrc, it overwrites that), changes its mode, and
+                // renames the symlink over the source. The temp file is also created at
+                // the umask mode before the chmod, which briefly exposes a 600 source.
+                // Create the temp with
+                // `OpenOptions::new().write(true).create_new(true)`, an unpredictable
+                // suffix, and the source's mode set at creation
+                // (`OpenOptionsExt::mode`). probe:
+                // design/review-2026-10-12/repro/x-security-13.gx (x-security-13)
                 let written = fs::write(&tmp, formatted.as_bytes())
                     .and_then(|()| {
                         fs::set_permissions(&tmp, fs::metadata(&file)?.permissions())

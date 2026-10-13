@@ -178,6 +178,16 @@ pub(super) trait BodyEmitter {
 pub(super) enum BodyRole<'a> {
     /// The region root, the only body that claims per-instance state
     /// words (see [`StateChannel::enabled`]).
+    // CR claude for claude: [doc-drift/low] The doc link `StateChannel::enabled` points
+    // at nothing: the channel a body claims from is `LowerCtx::claims`
+    // (`Channel::State` for a parent). design/kernel_instance_state.md is also stale.
+    // Its "callee declares its layout" bullet says a missing layout makes the call pass
+    // 0, and its null-guard bullet says recursive back-edges pass 0. `emit_site_block`
+    // now refuses a non-self back-edge and roots a per-activation block tree for a
+    // self-call. Fix the link, and rewrite those sentences: a missing layout is a
+    // self-call, which roots an activation tree; a mutual edge de-fuses; and only a
+    // body that claims nothing receives a null block. See f-scaffold-body-01, whose
+    // dead null guards rest on that stale sentence. (f-scaffold-body-10)
     Parent,
     /// A callee body, claiming per-call-site block words; `Some` when it
     /// is self-recursive: the binding its self-references carry and the
@@ -307,6 +317,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// or the slot's first iteration, as a new slot is a new instance.
     /// The ABI kind a value of node type `t` has in the kernel: the one
     /// classification producers and consumers share.
+    // CR claude for claude: [readability/low] The first three doc lines above
+    // `node_kind` ("Nonzero on an init view ...") belong to `init_flag`, which has no
+    // doc of its own. Hovers show the wrong text for `node_kind` and nothing for the
+    // function the scaffold's init-view rule depends on. Move them onto `init_flag`.
+    // `call_helper`'s doc opens with a stale "FuncRef for a registered `emit_helpers`
+    // runtime helper.": delete that line. Its arity check is a copy of what
+    // `HelperShape` already says (`HelperFuncIds::arity` is computed from the same
+    // params, and `HelperRefs::call` checks the count in every build, but as an Err
+    // that de-fuses). Have `HelperRefs::call` panic on a count mismatch, an emitter
+    // bug, and drop the `arity` table and the debug_assert. (f-scaffold-body-09)
     pub(crate) fn node_kind(&self, t: &Type) -> Option<AbiKind> {
         freeze_node_typ(self.ctx, t).and_then(|t| kernel_abi::abi_kind(&t))
     }
@@ -382,6 +402,17 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// caller must emit its stateless approximation. The buffer is
     /// zero-initialized per instance, so store `value + 1` and read 0
     /// as "no previous observation".
+    // CR claude for claude: [structure/low] `claim_state_word`, `claim_state_anchor`,
+    // `claim_site_word` and `claim_site_anchor` repeat the same `next.get();
+    // next.set(idx + 1); idx * 8` and differ only in the channel they refuse. Callers
+    // then try one channel and fall back to the other (`claim_block_run`,
+    // `claim_slot_tables`, `claim_callee_block`). A body always claims from exactly one
+    // channel, so the remaining `None` arms (`None => break` in `claim_slot_tables`,
+    // the `return 0` in `claim_callee_block`) cannot happen. They suggest a failure
+    // that does not exist. Give `StateChannel` one `claim() -> i32`, add `BodyCx`
+    // claims that use the body's own channel (returning a Sure or Guarded `StateWord`),
+    // keep the in-loop refusal only where it is a rule, and delete the dead arms. See
+    // also f-scaffold-body-01. (f-scaffold-body-06)
     pub fn claim_state_word(&self) -> Option<i32> {
         if self.ctx.claims != Channel::State || self.env.loop_depth > 0 {
             return None;

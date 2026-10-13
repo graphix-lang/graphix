@@ -1,0 +1,20 @@
+// x-typecheck-patterns-05: union dispatch over an open member: --check accepts,
+// the build refuses at the instance.
+// cmd: graphix --check design/review-2026-10-12/repro/x-typecheck-patterns-05.gx
+//   -> exit 0, no error
+// cmd: graphix --no-cache design/review-2026-10-12/repro/x-typecheck-patterns-05.gx
+//   (same with --no-fusion)
+// expected: both refuse, or both accept (the check and the build agree)
+// observed: the run fails "in the instance of f(`A) at this call site ...
+// this pattern can't tell string from `A: both have the same runtime form"
+// Sibling, same root cause, a WRONG ANSWER instead of a refusal (check and run
+// both accept):
+// let f = |x: [string, 'b]| select x { string as s => s, _ => "other" };
+// f(`A)
+// prints "A" (the variant was taken by the string arm), both engines.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+trait Show { val show: fn(self) -> string };
+impl Show for string { let show = |x| "string [x]" };
+impl Show for `A { let show = |x| "variant A" };
+let f = 'b: Show |x: [string, 'b]| Show::show(x);
+f(`A)

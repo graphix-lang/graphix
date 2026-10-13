@@ -1,0 +1,12 @@
+// book/src/functions/recursion.md says activations past the new end of a
+// shrunk array SLEEP; they are deleted: the 4th line shows [4, 1, 1], the
+// re-reached levels counting from 1 again (a slept count would give [4, 3, 3]).
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+let tick = sys::time::timer(duration:30.ms, 6)$;
+let n = count(tick);
+let a = select n { 1 => [1, 2, 3], 2 => [1, 2, 3], 3 => [1], 4 => [1, 2, 3], _ => [1, 2, 3] };
+let rec walk = |xs: Array<i64>, t: datetime| -> Array<i64> select xs {
+  [] => [],
+  [x, rest..] => array::push_front(walk(rest, t), count(t))
+};
+walk(a, tick)

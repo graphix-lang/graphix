@@ -268,6 +268,17 @@ fn bind_sig_item(
             }
         }
         SigKind::TypeDef(td) => {
+            // CR claude for claude: [risk/low] Env::deftype aliases and freezes the
+            // type variables of the parsed interface's typedef in place (alias_tvars,
+            // TVar::freeze). Those vars were created at parse, outside this module's
+            // task, so every parameterized interface typedef is a real foreign write. A
+            // program of just `sys::exit(0)` prints 15 FOREIGN-WRITE backtraces under
+            // GRAPHIX_TASK_AUDIT, which drowns the statement-elaboration writes the
+            // audit exists to show. The writes are not refused: OwnWrites is not
+            // entered here, so decided_of lets them through. Hand deftype copies of the
+            // params and body made in this task (fresh cells, as the compile of a
+            // typedef statement would), so the AST's vars are never written. probe:
+            // design/review-2026-10-12/repro/c-lambda-08.gx (c-lambda-08)
             env.deftype(
                 &scope.lexical,
                 &td.name,
@@ -319,6 +330,15 @@ fn bind_sig_item(
                     im.trait_name
                 )
             }
+            // CR claude for claude: [risk/low] This ExprId is minted only to name the
+            // scope `impl{N}`. It is never written through `Pack`, so the image's
+            // minted span (`IdSpans`) does not count it. A warm reader's counter is
+            // lifted only past the written ids (`ids::reserve_above`), so the reader
+            // can mint N again. That breaks `reserve_above`'s promise that a new id
+            // never spells an id in the image's text. `lower_over_operands`' `op` scope
+            // has the same shape. Name these scopes from an id the image writes (the
+            // spec's or the item's id), or narrow the claim in `reserve_above`'s doc.
+            // (t-expr-core-05)
             let bscope = scope.append_block("impl", ExprId::new().inner());
             let mut methods: Map<CompactString, BindId> = Map::new();
             for d in trait_def.methods.iter() {
@@ -447,6 +467,15 @@ fn check_sig<R: Rt, E: UserEvent>(
                     let typ = if single.is_some() { bind.typ() } else { &inner.typ };
                     proxy_bind.typ.unbind_tvars();
                     if let Err(e) = proxy_bind.typ.sig_matches(&ctx.env, typ) {
+                        // CR claude for claude: [readability/low] The implemented type
+                        // prints with plain Display, so the user sees inferred cell ids
+                        // instead of the inferred type. A gxi `val add: fn(x: i64) ->
+                        // i64` over `let add = |x| x + 1.` reports "implemented fn(x:
+                        // '_7517) -> '_7518", and the ids change from run to run.
+                        // check_script_sig's matching anyhow! has the same problem.
+                        // Build both messages under
+                        // format_with_flags(PrintFlag::DerefTVars, ..), as the other
+                        // type-error sites in node/ do. (tests-modules-image-04)
                         bail!(
                             "val {name} is declared {} but implemented {typ}: {e:#}",
                             proxy_bind.typ
@@ -705,6 +734,20 @@ fn check_sig<R: Rt, E: UserEvent>(
 /// each `val` is the binding of its name there, of a type that matches
 /// the declaration, and each declared impl is implemented. The
 /// interface's other items were spliced into the script.
+// CR claude for claude: [bug/medium] This is a weaker second copy of check_sig. It
+// checks only that each `val` matches and that some impl with an overlapping head
+// exists anywhere (`impl_entry(..).is_some()`). TypeDef and Trait items are skipped.
+// add_interface_modules splices a sig typedef or trait only when the script does not
+// define one, so a script definition that contradicts its .gxi is never compared. A
+// declared impl's bounds are never compared either (check_sig uses
+// `head_sig(..).sig_matches` against an Impl node the module holds). A script with
+// `type T = string` under a .gxi with `type T = i64; val x: T` runs, and so do a trait
+// whose method returns string where the .gxi says i64 and `impl<'a> Show for Array<'a>`
+// under a declared `impl<'a: Show>`. --check accepts all three, while the same pair
+// compiled as `mod m` is refused. Fix: give both paths one checker. Run check_sig's
+// typedef, trait and impl comparisons over the script block's compiled statements, and
+// keep only the val lookup by scope as script-specific. probe:
+// design/review-2026-10-12/repro/c-module-traits-04.sh (c-module-traits-04)
 pub fn check_script_sig<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     sig: &Sig,
@@ -717,6 +760,32 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
         };
         let missing = || at(anyhow!("sig item {si} is missing an implementation"));
         match &si.kind {
+            // CR claude for claude: [bug/low] When a .gx is checked as a root of its
+            // own (single-file mode, or any open file outside a project), its .gxi goes
+            // through check_script_sig, which records nothing for the IDE. Hover and
+            // definition on a `val` name in the .gxi then return nothing, while the
+            // same file in a workspace (the Module path, which records a SigImplLink
+            // through push_sig_link) answers with the type, the doc, and a jump to the
+            // `let`. Fix: when ctx.env.ide.is_lsp(), record a reference site at the
+            // val's name (its Name position in the .gxi) whose target is `bind.id`, so
+            // the query layer resolves it as it does any reference. Pin it with a hover
+            // and a definition on `val |double` in a graphix-shell/tests/lsp test that
+            // opens only api.gx and api.gxi without a workspace.
+            // an_interface_alone_is_checked_with_its_implementation asserts only that
+            // no diagnostics appear, so it also needs a mismatch case to show the .gxi
+            // is checked at all. Probe: design/review-2026-10-05/repro/lsp-05.py case 1
+            // (no workspace, hover on api.gxi `double` returns None). (x-rerun-4-05)
+            // CR claude for claude: [bug/medium] A script's interface `val` is checked
+            // here but never shown to the language server. No bind is recorded for it
+            // (no origin, position or doc) and no SigImplLink is pushed, which is
+            // different from the module path in Module's check. So in the LSP, hover
+            // and definition on a script's .gxi `val` return nothing, its `///` doc
+            // reaches no query, and references from the script leave out the val. A
+            // module and its .gxi answer all of these. Under `ctx.env.ide.is_lsp()`,
+            // record the val as an IDE bind with its origin, `Name` position and doc,
+            // and push `SigImplLink { sig_id, impl_id: bind.id }`. Add a script twin of
+            // the e2e pin `an_interface_val_and_its_implementation_are_one_symbol`.
+            // probe: design/review-2026-10-12/repro/x-lsp-probe-02.py (x-lsp-probe-02)
             SigKind::Bind(BindSig { name, typ: declared }) => {
                 let bind = ctx
                     .env
@@ -1094,6 +1163,17 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     /// An instance checks this node as its definition's check did.
+    // CR claude for eric: [structure/low] Module::typecheck0_instance runs the full
+    // typecheck0, which checks every child statement with its full typecheck0 and not
+    // typecheck0_instance. A `mod m;` inside a function body (`let f = |y| { mod m;
+    // m::x + y }` compiles and runs) is therefore re-checked for each instance, Binds
+    // and CallSites included, instead of taking its definition's types, against the
+    // rule that an instance does not check again. A module file cannot see the
+    // function's locals, so the re-check is redundant work and gives no different
+    // answer. `trait` in a function body is accepted the same way. Either refuse `mod`
+    // and `trait` in a function body as Impl::compile refuses `impl` (a declaration
+    // does not belong to an activation), or walk the children with typecheck0_instance
+    // here. (c-module-traits-06)
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -1195,6 +1275,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
         let view = if compiled { View::Birth } else { View::Cycle };
         ctx.under(view, |ctx| {
+            // CR claude for claude: [bug/high] An exported val is one variable with two
+            // BindIds. When the module body's own write (to inner) and an outside write
+            // (to outer) land in the same cycle, this copy replaces the inner event and
+            // its store value with the outer one. The inner write is silently lost,
+            // never queued. A single variable would deliver both writes, the second one
+            // cycle later. Probe: design/review-2026-10-12/repro/c-module-traits-02.sh
+            // prints 0, 100 for the module program and 0, 1, 100 for the same program
+            // without a module. Fix: when inner already has an event this cycle, queue
+            // one of the two writes for the next cycle through the runtime as a second
+            // write to one variable is queued (rt.set_var), instead of overwriting. The
+            // root fix is to make the interface binding an alias of the
+            // implementation's so there is only one id. (c-module-traits-02)
             for Proxy { inner, outer, private_inner } in &self.proxy {
                 if *private_inner && let Some(tv) = ctx.event.variables.get(outer) {
                     let tv = tv.clone();
@@ -1288,6 +1380,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 })?;
             }
         }
+        // CR claude for claude: [perf/medium] proxy_lambda_defs runs inside this
+        // module's compile task. When the inner binding belongs to a sibling module of
+        // the same run, as with a declared impl that takes a trait default from the
+        // trait's module, typecheck0_modules forked this task before the sibling
+        // checked. The sibling's bind_to_lambda entry is missing here, so the outer id
+        // is never mapped. Calls through the impl then dispatch dynamically and do not
+        // fuse, and a `#[native]` around them fails. Putting any statement between the
+        // two `mod`s makes the call static. Moving the mapping into typecheck1 does not
+        // fix this, because statement elaboration is also forked before any statement
+        // runs. Redo the mapping for every module of the run after check_in_tasks joins
+        // in typecheck0_modules. probe:
+        // design/review-2026-10-12/repro/c-module-traits-02/ (main.gx vs main3.gx,
+        // GXDBG_RESOLVE / GXDBG_CS). (c-module-traits-03)
         self.proxy_lambda_defs(ctx);
         Ok(())
     }

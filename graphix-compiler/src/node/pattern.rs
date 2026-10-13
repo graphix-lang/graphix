@@ -461,6 +461,24 @@ impl StructPatternNode {
 
     /// The id of every [`Leaf::fresh`] name: each capture and every
     /// name an or-pattern binds.
+    // CR claude for claude: [bug/critical] fresh_ids recurses into an Abstract's
+    // payload. That payload compiles against its declared rep under a written
+    // predicate, so its or-names and captures already have final types.
+    // PatternNode::compile still frees them to empty tvars, and bind_narrowed never
+    // re-binds them. Under the written rep, leaves reaches a constructor at a union
+    // position through child_types, which returns None over a Set, so an or-pattern's
+    // shared name stays a free type variable that the arm body decides. That is
+    // unsound: `let r: string = select t { T(`A(x) | `B(x)) => x }` is accepted and
+    // prints an i64. With fusion, an i64 arm body panics a kernel ("runtime String does
+    // not match the compiled Scalar(I64) slot"). A capture inside the payload is
+    // widened to the whole rep, so `T(v@ `A(_)) => select v { `A(m) => m }` is refused
+    // for a missing `B arm. Fix: stop both walks at an Abstract. In fresh_ids, report
+    // only its `all`. In leaves_inner, push only its `all` leaf and do not descend.
+    // Both are needed: either half alone still frees the binds, or refuses the capture
+    // in bind_narrowed's check_contains. probe:
+    // design/review-2026-10-12/repro/c-pattern-02.gx (also
+    // c-pattern-01-abstract-or-unbound.gx, c-pattern-02-abstract-capture-widened.gx)
+    // (c-pattern-02)
     fn fresh_ids(&self, f: &mut impl FnMut(BindId)) {
         crate::stack::ensure_sufficient(|| match self {
             Self::Or { .. } => self.ids(&mut *f),
@@ -638,6 +656,22 @@ impl StructPatternNode {
                 None => shape,
             };
             let shape = shape.any_as_tvar();
+            // CR claude for claude: [bug/critical] Under a written union,
+            // check_contains binds the pattern's cells to the FIRST member that fits,
+            // but the runtime test still admits every member the constructor matches.
+            // With `P = [(i64, string), (string, i64)]`, `P as (x, y)` types x as i64
+            // while a ("s", 1) value binds "s" into it. The check accepts this. The JIT
+            // then panics in the runtime thread (fusion/kernel.rs, "runtime String does
+            // not match the compiled Scalar(I64) slot"), and the node-walk runs `x + 1`
+            // on a string. Full tuple, variant (`A(x, y)) and full struct ({x, y})
+            // patterns all do this. Only partial struct patterns are refused, through
+            // unique_completion. The rep_collision guard below does not catch it. Fix:
+            // refuse when the shape can match more than one member of the union, using
+            // unique_completion's counting and its "matches more than one member"
+            // message, or type each bind as the union of its position over every member
+            // that matches. probe:
+            // design/review-2026-10-12/repro/x-typecheck-patterns-01.gx
+            // (x-typecheck-patterns-01)
             type_predicate.check_contains(env, &shape)?;
             let node = Self::compile_int_inner(ctx, cx, &shape, spec, mode)?;
             let env = &ctx.env;
@@ -1196,6 +1230,22 @@ impl StructPatternNode {
                 }
                 _ => false,
             },
+            // CR claude for claude: [bug/critical] The struct structure test reads each
+            // bound field at the index it has in this pattern's own struct type and
+            // never compares the field name stored in the pair. bind_inner's Struct arm
+            // does the same. An or-pattern takes the first alternative whose structure
+            // passes, but the check's guard (`footprint` + `rep_collision` in `leaves`)
+            // compares field names, so it accepts alternatives that this test cannot
+            // tell apart. Over `[{a: i64, x: i64}, {x: i64, z: string}]`, `{a: 0, x} |
+            // {x, z: "q"}` matches `{x: 0, z: "q"}` through the first alternative and
+            // binds x to "q". In the node-walk an i64 then holds a string. A fused
+            // kernel panics in `stage` ("runtime String does not match the compiled
+            // Scalar(I64) slot") and takes the runtime down. Fix: in is_match_inner and
+            // bind_inner, require `a[i]` to be `[String(n), v]` with `n` equal to the
+            // bind's name, and apply the same name test in the JIT's composite struct
+            // condition. That makes `footprint` honest. A name-blind footprint would
+            // refuse valid programs instead. probe:
+            // design/review-2026-10-12/repro/c-pattern-01.sh (c-pattern-01)
             Self::Struct { all: _, binds } => match v {
                 Value::Array(a) => {
                     a.len() >= binds.len()
@@ -1227,6 +1277,21 @@ impl StructPatternNode {
         let shaped = match (self, &shape) {
             (Self::Bind(_) | Self::Ignore, _) => return true,
             (
+                // CR claude for eric: [bug/low] covers returns false for every Or,
+                // whatever the type. A nested or-pattern in a let or a lambda parameter
+                // is therefore always refused as refutable, even when its alternatives
+                // cover every member of the written union: `let (`A | `B, x) = p` over
+                // `p: ([`A, `B], i64)` fails with "refutable patterns are not allowed
+                // in let", and `|(`A(x) | `B(x), y): ([`A(i64), `B(i64)], i64)| ..`
+                // fails the same way. design/or_patterns.md says nested alternation is
+                // legal in every bracketed position, including inside lambda params, so
+                // as built that only holds for select arms. Fix it one of two ways.
+                // Either an Or covers `typ` when every member of `typ` (union_members)
+                // is covered by some alternative, the same per-member test Reach::arm
+                // applies under a written union. Or or_patterns.md says nested
+                // or-patterns are select-only. probe:
+                // design/review-2026-10-12/repro/c-pattern-06.gx Also reported as
+                // (t-parser-b-04). (c-pattern-06)
                 Self::Or { .. }
                 | Self::Literal(_)
                 | Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
@@ -1260,6 +1325,14 @@ impl StructPatternNode {
     /// `Select`'s wildcard test. Not `!is_refutable()`: a variant
     /// pattern with an all-bind payload is irrefutable given its tag
     /// matched, but its inferred predicate still carries the tag test.
+    // CR claude for claude: [doc-drift/low] This doc says "Not `!is_refutable()`", but
+    // no is_refutable exists. Drop that sentence; the variant-pattern explanation after
+    // it stands on its own. The StructPatternNode::Or variant doc lists `unbind` among
+    // the id walks, and no such walk exists: the walks are ids, fresh_ids and delete.
+    // design/or_patterns.md says the same, and also gives `is_refutable(Or) = true`:
+    // fix both to name the real functions. covers_inner returns early for Bind and
+    // Ignore and then matches `(Self::Bind(_) | Self::Ignore, _)` again as the first
+    // arm of its match. That second arm is unreachable; delete it. (c-pattern-07)
     pub fn matches_anything(&self) -> bool {
         crate::stack::ensure_sufficient(|| self.matches_anything_inner())
     }
@@ -1446,6 +1519,27 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         narrowed: &Type,
         checking: bool,
     ) -> Result<()> {
+        // CR claude for claude: [bug/medium] c-data-map-09 variant: `error as e` binds
+        // bare `error`, so `e.0` and `f(e)` are refused. An explicit type predicate
+        // binds its capture at the predicate's type verbatim (bind_narrowed returns
+        // early when explicit_type_predicate). For `error as e` that is the primitive
+        // `error`, which contains.rs lets only Error<Any> hold, and tuple_field_type
+        // (data.rs) has no arm for it. So the documented idiom `select r { error as e
+        // => recover(e), v => v }` is refused whenever `recover` takes the scrutinee's
+        // real Error<E>, and `e.0` is refused outright ('expected tuple not error').
+        // The c-data-map-09 fix typed the `error:` literal but left this site of the
+        // same rule; the original repro already listed `select error:"boom" { error as
+        // x => x.0 }` as refused. Failure: let g = |x: i64| -> [i64, Error<`Boom>]
+        // select x { 0 => error(`Boom), x => x }; let handle = |e: Error<`Boom>| select
+        // e.0 { `Boom => -1 }; select g(0) { error as e => handle(e), v => v } is
+        // refused: `type mismatch Error<`Boom> does not contain error`. With `e.0` in
+        // the arm instead: `expected tuple not error`. Writing `Error<`Boom> as e`
+        // works and prints -1. Fix: For a type test whose predicate is the primitive
+        // `error` (or any predicate wider than the matching member), type the capture
+        // as the scrutinee narrowed by the predicate (the Error<..> member or members),
+        // as captures of inferred predicates are. Also give tuple_field_type an arm for
+        // a union of Error types. Unverified: the reviewer's report, not checked by a
+        // verifier. (x-rerun-1-04)
         if self.explicit_type_predicate {
             return Ok(());
         }
@@ -1482,6 +1576,24 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // carries; a Rust-backed value carries its id alone, and the
         // select refuses a test over two of its instantiations
         match &type_predicate {
+            // CR claude for eric: [bug/high] A select over `Any` can test for a
+            // reference type and for u64, and at runtime a reference is its bind id as
+            // a bare `Value::U64` (`ConnectDeref` resolves any U64 as a `BindId`). So
+            // `u64 as n` reads a reference's raw id, and `&mut Any as r` turns any u64
+            // into a writable reference. `rep_collision` treats `Any` as
+            // `Open::Benign`, so this passes the check, while the same pair inside a
+            // union is refused. A checked program can then write a string into an `i64`
+            // binding, or an i64 into an `Array<i64>`; the fused `sum` over the second
+            // panics the runtime in `fusion/kernel.rs` ("runtime I64 does not match the
+            // compiled Array slot"). Raw ids also print where CLAUDE.md promises
+            // `&ref`, and they differ between engines and between cold and warm images.
+            // Root fix: give a reference its own runtime form, so no numeric test can
+            // match it and no number can match a reference test. Stopgap: refuse a
+            // predicate that `holds_ref` over a scrutinee that is open or can hold an
+            // integer. Either way, the CLAUDE.md line "a reference widened to Any is
+            // the program's own business" needs restating. probe:
+            // design/review-2026-10-12/repro/x-invalid-states-01.gx
+            // (x-invalid-states-01)
             Type::Fn(_) => bail!("can't match on Fn type"),
             t if explicit && t.holds_fn(&ctx.env) => {
                 bail!(
@@ -1636,6 +1748,19 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // tuple and an array are the same `Value::Array` at runtime. An
         // inferred predicate is checked permissively (an abstract's
         // hidden rep cannot be verified); an explicit one strictly.
+        // CR claude for claude: [perf/medium] For an explicit type predicate
+        // (`Array<i64> as a`), this runs a full structural is_a on every match: every
+        // element of an array, every node of a recursive type. Only an inferred
+        // predicate gets the O(1) shallow discriminator, because shallow_discriminant
+        // returns None when explicit_type_predicate is set. A guarded arm also pays
+        // this twice per update: Select::update's guard-tick loop calls shape_matches,
+        // and the chain calls it again through arm_match. probe:
+        // design/review-2026-10-12/repro/x-alloc-02-explicit.gx takes 1.41 s and
+        // x-alloc-02-inferred.gx 0.29 s (3000 cycles over 20000 elements). Fix: build a
+        // shallow discriminator for an explicit predicate too when the scrutinee's type
+        // fully determines the member (no Any, no open variable, no abstract whose rep
+        // it cannot see). In Select::update, keep each arm's shape_matches result from
+        // the guard-tick loop and reuse it in the chain. (x-alloc-03)
         let typed = if self.explicit_type_predicate {
             self.type_predicate.is_a(env, v)
         } else {

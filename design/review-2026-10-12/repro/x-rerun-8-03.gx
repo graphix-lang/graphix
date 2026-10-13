@@ -1,0 +1,21 @@
+// x-rerun-8-03 (x-panics-05 still reproduces at its root): netidx-core's
+// Duration::decode (../netidx/netidx-core/src/pack.rs:1676, Duration::new)
+// still panics on secs = u64::MAX, ns = 1e9. The fix catches the panic in
+// CachedArgsAsync (stdlib/graphix-package-core/src/lib.rs:1599-1606) and
+// replies error:["Panicked", "pack_read panicked"], a value outside the
+// call's declared error type, so a select exhaustive over the declared
+// errors matches nothing. The panic message still goes to stderr.
+// command: GRAPHIX_ABORT_ON_NO_MATCH=1 graphix --no-cache x-rerun-8-03.gx
+// expected: r = pack <message> (a `PackErr, as decode returning Err gives)
+// observed: "thread .. panicked .. overflow in Duration::new" on stderr, then
+//   "select e.0.error {..}: no arm matches ["Panicked", "pack_read panicked"]:
+//   a coverage hole in the check", abort (exit 134); without the env var the
+//   select is silently bottom and nothing is printed
+let b = bytes:C///////////O5rKAA==;
+let d: Result<duration, [`PackErr(string), `InvalidCast(string)]> = pack::read(b);
+let r: string = never();
+catch(e) r <- select (e.0).error { `PackErr(s) => "pack [s]", `InvalidCast(s) => "cast [s]" };
+let v = d?;
+println("r = [r]");
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+r

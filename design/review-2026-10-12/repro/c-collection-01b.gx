@@ -1,0 +1,10 @@
+// c-collection-01b: control for c-collection-01a — the first cycle has no slots,
+// so the sibling decision waits for bound slots and the slots fork.
+let tick = sys::time::timer(duration:150.ms, true);
+let x = 0;
+x <- tick ~ x + 1;
+let big = select x { 0 => [], _ => array::init(200000, |i| (i * 7919) % 200003) };
+let src = select x { 0 => [], n => array::init(16, |i| i + n * 100) };
+let r = array::map(src, |v| { let c = count(v); let s = array::len(array::sort(array::push(big, v))); println("[v] [s] [c]"); s });
+sys::exit(select x { 12 => 0, _ => never() });
+array::len(r)

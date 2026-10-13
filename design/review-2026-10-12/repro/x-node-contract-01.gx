@@ -1,0 +1,30 @@
+// x-node-contract-01: writes queued for a released id land after the release
+// and leave a store entry nothing removes.
+// run: timeout -s KILL 40 graphix --no-cache x-node-contract-01.gx | grep VmRSS
+// Each tick the arm runs array::iter over three copies of a fresh 1 MB
+// string; the iter's first delivery puts `on` to false, so the arm sleeps
+// (Iter::sleep -> release_var -> store_remove) while the third write is still
+// queued in var_updates. That write then lands on the dead id via
+// GX::deliver -> store_insert, one 1 MB entry per tick.
+// expected: VmRSS flat, as in the controls:
+//   array::iter([big]) (nothing queued at release): 96 -> 112 MB over 5 s;
+//   `on <- out ~ true` (writes queued, arm never sleeps): 100 -> 124 MB, plateau.
+// observed: 48 [130 MB], 95 [176 MB], 142 [217 MB], 189 [264 MB], 236 [312 MB]:
+// about 1 MB retained per tick, without bound.
+let clock = sys::time::timer(duration:20.ms, true);
+let n = count(clock);
+let base = str::join(#sep: "", array::init(100000, |i| "xxxxxxxxxx"));
+let big = str::concat(base, "[n]");
+let on = false;
+on <- clock ~ true;
+let out = select on {
+  true => array::iter([big, big, big]),
+  false => never()
+};
+on <- out ~ false;
+let probe = sys::time::timer(duration:1.s, true);
+let st = sys::fs::read_all(probe ~ "/proc/self/status")$;
+let rss = array::filter(str::split(#pat: "\n", st), |l| str::starts_with(#pfx: "VmRSS", l));
+println(rss ~ "[n] [rss]");
+sys::exit(sys::time::after_idle(duration:6.s, 0));
+str::len(out)

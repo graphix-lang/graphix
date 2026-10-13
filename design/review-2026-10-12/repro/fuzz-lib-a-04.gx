@@ -1,0 +1,5 @@
+let r = sys::fs::metadata("/nonexistent-review-path");
+// graphix-fuzz check: prints EXCLUDED; without the `let e` line it AGREEs at
+// FinalValues. The marker "or(" matches `error(`.
+let e = error(`Boom);
+select r { error as _ => 0, _ => 1 }

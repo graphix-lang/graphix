@@ -1,0 +1,15 @@
+// schedule-v1: cap=64 events=512; in2=i64:0; in1=i64:5; in0=i64:1; in0=i64:0; in1=i64:6; in0=i64:1
+{
+// x-engine-firing-01: an arm that reaches a captured input only through a
+// DYNAMIC call misses its wake catch-up the first time it is selected.
+// in1 fires (e2, e5) while the `k(0)` arm sleeps; the arm is selected at e3
+// and again at e6, the same scenario both times.
+// `graphix-fuzz run` (both engines, all sessions):
+//   Trace([0:-1]; []; []; []; [0:-1]; []; [0:1])   e3 is bottom, e6 is 1
+// With the static call `g(i64:0)` in place of `k(i64:0)` e3 is 1 too.
+// TrackedFires::new (select.rs:84) sees only compile-time refs; the
+// instance's refs reach the tracker at the first deselect (select.rs:683).
+let g = |x| count(in1) + x;
+let f = |c, k: fn(x: i64) -> i64| select c {i64:1 => k(i64:0), _ => i64:-1};
+f(in0, select in2 {i64:0 => g, _ => g})
+}

@@ -42,6 +42,13 @@ pub type Set<K> = imhm::Set<K, Hasher>;
 #[derive(Clone)]
 pub struct Bind {
     pub id: BindId,
+    // CR claude for claude: [dead/low] Nothing reads export. Env::bind_variable always
+    // sets true and DefGate's faux bind sets false, but no code branches on it. Its
+    // only uses are Bind's Debug impl, the Pack impl in image/env.rs and the assertion
+    // in graphix-tests lang/image.rs. It looks like a visibility flag but decides
+    // nothing, since visibility comes from interfaces and the names map, and every
+    // image stores it. Delete the field, its Debug output, its codec entry (bump the
+    // image format) and the test comparison. (t-env-05)
     pub export: bool,
     pub typ: Type,
     pub doc: Option<ArcStr>,
@@ -630,6 +637,15 @@ impl Env {
         if flags.contains(CFlag::WarningsAreErrors) {
             return Err(anyhow!("{message}").at(spec));
         }
+        // CR claude for eric: [risk/low] Warnings are published only while compiling,
+        // and a program restored from its session image compiles nothing. So a script
+        // prints 'WARNING: .. error raised by ? will not be caught' on its first run
+        // and never again, which is when a user reruns it to read the warning (probe:
+        // design/review-2026-10-12/repro/x-errors-09.gx, three runs without
+        // --no-cache). This makes a cold start and a warm start visibly different.
+        // Either record a program compile's warnings in the program image entry and
+        // replay them through `publish_warning` on restore, or rule that warnings come
+        // from `--check`/the LSP and say so. (x-errors-09)
         self.publish_warning(&spec.ori, pos, end, message);
         Ok(())
     }
@@ -659,6 +675,23 @@ impl Env {
         message: impl fmt::Display,
     ) {
         match self.ide.sink() {
+            // CR claude for claude: [readability/low] The position is printed after the
+            // Origin's Display, and that Display ends with 'included from file
+            // <includer>'. For a warning in a module, the line and column read as a
+            // place in the includer: 'in file a.gx / included from file main.gx at
+            // line: 1, column: 9'. Errors are formatted position first and then the
+            // file (ParserContext's Display). Format warnings the same way, for example
+            // 'WARNING at {pos} in {ori}: {message}', or reuse ParserContext, so the
+            // two read alike. Shares the probe of t-env-02. (t-env-03)
+            // CR claude for claude: [bug/low] Without an IDE sink a warning goes
+            // straight to stderr from whichever compile task raises it. Sibling module
+            // checks run as parallel tasks, so their warnings (Qop's 'will not be
+            // caught', for example) print in completion order, which changes from run
+            // to run. The sink path stays in program order because IdeMode::fork gives
+            // each task its own buffer and IdeMode::join appends them in join order.
+            // Fix: buffer warnings per task even when there is no sink (always fork a
+            // private warning buffer), and print them at join or after the check.
+            // probe: design/review-2026-10-12/repro/t-env-02.gx (t-env-02)
             None => eprintln!("WARNING: {ori} at {pos} {message}"),
             Some(ide) => ide.lock().warnings.push(Warning {
                 pos,
@@ -745,6 +778,24 @@ impl Env {
                 let kept = |k: &ModPath| under_listed(k) || names.contains_key(k);
                 let mut t = self.clone();
                 t.typedefs = retain(&self.typedefs, |k, _| kept(k));
+                // CR claude for claude: [bug/medium] The whitelist keeps a listed
+                // module or a listed value's scope but drops its ancestors.
+                // Qualified-path descent (descend_step / module_at) needs every
+                // interior module in `modules`, so a whitelisted `sys::fs::tempdir`, a
+                // value `a::b::f` or a module `a::b` cannot be reached: "no module `fs`
+                // in `sys`" or "no module `a` in `/`". The package_roots shortcut in
+                // resolve_module_seg rescues only the first segment. grant_trait has
+                // the same root cause: it re-inserts `traits[scope]` but not the module
+                // path. Under `whitelist [core]`, a granted trait declared in any user
+                // module, even one level down (`super::a::Show`), cannot be named. Fix:
+                // also insert into `t.modules` every ancestor path of each kept module
+                // and of each listed value's dir, as module entries only, without their
+                // binds, typedefs or traits. Do the same for the trait's scope in
+                // grant_trait. Add a pin with a nested module, a value two levels deep
+                // and a non-root granted trait (the existing dynamic-trait tests use
+                // only root-level traits). probe:
+                // design/review-2026-10-12/repro/t-env-01.gx and
+                // repro/t-env-01-trait/main.gx (t-env-01)
                 t.modules = retain_set(&self.modules, kept);
                 t.binds = retain(&self.binds, |k, _| kept(k));
                 t.traits = retain(&self.traits, |k, _| kept(k));
@@ -853,6 +904,17 @@ impl Env {
         depth: usize,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
+        // CR claude for claude: [perf/low] A reference to a name bound d block levels
+        // out runs `lookup_at` at every level. Each level hashes and copies a scope
+        // prefix of length O(d) (`names.get`, `module_at`, and the caller's `binds`
+        // lookup), and each call also recomputes `mod_root`. That makes one reference
+        // O(d^2), and every instance build pays it again. With 1000 parameter reads 160
+        // blocks deep, InstanceGraph takes 2.3 s, against 0.04 s for reads of an inner
+        // local. Fix: hash each level once, e.g. carry interned level ids or prehashed
+        // prefixes in the Scope, built at block entry, and take `mod_root` from the
+        // Scope. Alternatively, memoize `(scope, name) -> BindId` per compile. probe:
+        // design/review-2026-10-12/repro/t-misc-02-outer.gx vs t-misc-02-local.gx
+        // (t-misc-02) (t-misc-02)
         for level in chain_levels(from) {
             if let Some(t) = self.lookup_at(origin, level, n, depth, f)? {
                 return Ok(Some(t));
@@ -1182,6 +1244,17 @@ impl Env {
     /// declaration stays the entry of record and the implementation's
     /// methods proxy to it. Returns the fulfilled declaration.
     pub fn register_impl(&mut self, im: Arc<ImplDef>) -> Result<Option<Arc<ImplDef>>> {
+        // CR claude for claude: [perf/low] Registering an impl clones the trait's whole
+        // list and runs `heads_overlap` (two `reset_tvars` and two `contains` calls)
+        // against every existing impl. N impls of one trait therefore cost O(N^2) type
+        // walks: 800 abstract-type impls take 1.6 s to check. Two abstract heads with
+        // different ids never overlap, so decide that pair by id before calling
+        // `heads_overlap`, as `find_impl` already does when it skips a mismatched
+        // abstract id. Also push onto the list with `Arc::make_mut` instead of cloning
+        // it. If many abstract impls make the linear scan in `find_impl` show up as
+        // well, keep a map from abstract id to impl beside the list. probe:
+        // design/review-2026-10-12/repro/x-perf-compile-09-impls-quadratic.gx
+        // (x-perf-compile-09)
         let mut list: Vec<Arc<ImplDef>> =
             self.impls.get(&im.trait_id).map(|l| (**l).clone()).unwrap_or_default();
         for other in list.iter() {
@@ -1234,6 +1307,12 @@ impl Env {
     #[doc(hidden)]
     pub fn impls_of(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
         let list = self.impls.get(&trait_id)?;
+        // CR claude for claude: [structure/low] This closure repeats scope_is_under: a
+        // prefix test plus a '/' boundary. Use scope_is_under(&im.scope.0, &m.0)
+        // instead. Also, find_impl only iterates, so it can walk
+        // self.impls.get(&trait_id) and skip hidden entries with the same predicate.
+        // Then the filtered Arc<Vec> is built only for the callers that keep a list
+        // (trait_refusal, coretraits::impls_on, Type's dispatch-head walk). (t-env-04)
         let hidden = |im: &ImplDef| {
             !im.declared
                 && self.hidden_impls.iter().any(|m| {
@@ -1564,6 +1643,13 @@ impl Env {
         ori: Arc<Origin>,
     ) -> Result<Unguarded> {
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
+            // CR claude for claude: [readability/low] The root ModPath displays as the
+            // empty string, so a top-level duplicate (`type T = i64; type T = string;`)
+            // reads 'T is already defined in scope ' with a trailing space and nothing
+            // after it. The same `{scope}` formatting is in `deftype`'s trait check and
+            // in `deftrait`'s three refusals. Add one helper that names the root as the
+            // top level and use it at all five sites. Point at the earlier definition's
+            // position where the entry has one. (x-errors-10)
             bail!("{name} is already defined in scope {scope}")
         }
         if self.traits.get(scope).and_then(|m| m.get(name)).is_some() {
@@ -1631,6 +1717,25 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
+        // CR claude for claude: [bug/high] x-engine-seq-errors-10 variant: a reload can
+        // change a hidden rep through a private typedef. Env::deftype refuses a
+        // re-registration whose Abstract rep differs by comparing `was` and `now` with
+        // sig_matches (env.rs). sig_matches_inner's Ref/Ref arm (typ/matches.rs)
+        // accepts two refs with the same scope and name without expanding them. So
+        // `type C = Abstract<R>` with R = {x: string} matches a reload's `type C =
+        // Abstract<R>` with R = {x: i64}: the private typedef R is redefined freely,
+        // and values minted by the old body reach code compiled for the new
+        // representation. Failure: The program below prints 7. When the reload lands,
+        // the JIT panics the runtime: "kernel param `r`: runtime String(\"v41\") does
+        // not match the compiled Scalar(I64) slot" (fusion/kernel.rs). A second panic
+        // follows, tokio oneshot 'called after complete', then 'Error: tokio thread
+        // panicked'. --no-fusion logs an arith error parsing "v41" as i64. Fix: Compare
+        // representations structurally, not by name. Expand every Ref on both sides
+        // through each side's own resolution cell (the old rep's cells still hold the
+        // old R), or compare Type::content_key of the fully expanded reps. Add a pin
+        // beside lang::modules::reload_changes_a_representation in which the change
+        // goes through a typedef. Unverified: the reviewer's report, not checked by a
+        // verifier. (x-rerun-8-02)
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep)
             && let Some(old) = self.abstract_reps.get(id)
         {
@@ -1684,6 +1789,23 @@ impl Env {
         // Every self-reference must sit under a constructor: `type T =
         // [i64, T]` (or `type A = B; type B = A`) names no value, and
         // contains' coinductive memo would accept it against anything.
+        // CR claude for claude: [bug/high] x-parallel-02 variant: a non-regular
+        // recursive typedef hangs the type checker. Env::deftype checks only that a
+        // recursive typedef is contractive (env.rs, reaches_unguarded). It accepts a
+        // non-regular typedef, whose self-reference applies the formal to a bigger
+        // type: `type T<'a> = {n: [T<['a, string]>, null], v: 'a}`. Comparing T<i64>
+        // with T<[i64, f64]> then unfolds to T<[i64, string]> vs T<[i64, f64, string]>,
+        // then to deeper pairs, and so on. The coinductive RefPair memo never meets a
+        // pair twice, so containment never terminates. CPU stays at 100% with slow
+        // memory growth. Failure: `graphix --check` on the 4-line program below never
+        // answers; it is killed by the 20 s timeout (exit 137). A run and the LSP share
+        // the path, so an editor that opens such a file is stuck. `let g = |t: T<'b>|
+        // -> T<['b, i64]> t` alone hangs the same way. Fix: Refuse non-regular
+        // recursion at the typedef: every self-reference must apply the formals
+        // unchanged (or a permutation of them), the usual restriction that keeps the
+        // set of reachable ref pairs finite. Name it in the contractivity refusal and
+        // pin it beside x-parallel-02's controls. Unverified: the reviewer's report,
+        // not checked by a verifier. (x-rerun-8-03)
         match typ.reaches_unguarded(self, key) {
             Unguarded::Reaches => {
                 if let Type::Abstract { id, .. } = &typ {
@@ -1699,6 +1821,20 @@ impl Env {
     /// [`Self::deftype`]'s contractiveness again, for a definition whose
     /// body named something not defined yet: at the end of the check
     /// every name it reaches is.
+    // CR claude for claude: [bug/medium] x-typecheck-patterns-05 variant: a forward
+    // alias plus an annotated let hangs the check. `type T = G<T>; type G<'a> = 'a;` is
+    // non-contractive. Because G is defined after T, the refusal is deferred to
+    // check_contractive (env.rs). A `let x: T = 1` placed before that deferred check
+    // makes the pattern compile run StructPatternNode's lookup_ref loop on T, which
+    // expands to T forever. The original 256-deep W chain is now refused; this second
+    // shape, also listed in the original repro, is not. Failure: `graphix --check` on
+    // the 4-line program below never answers (killed at 15 s, exit 137); the LSP shares
+    // the path. Without the let, the refusal arrives in 0.06 s. Fix: Run
+    // check_contractive for every typedef of a statement run before anything in that
+    // run resolves the types (or at the first lookup of an unchecked typedef).
+    // Alternatively, bound lookup_ref's expansion by a visited set of TypeDef keys and
+    // treat a revisit as non-contractive. Unverified: the reviewer's report, not
+    // checked by a verifier. (x-rerun-8-10)
     pub fn check_contractive(&self, scope: &ModPath, name: &str) -> Result<()> {
         let Some(td) = self.typedefs.get(scope).and_then(|m| m.get(name)) else {
             return Ok(());

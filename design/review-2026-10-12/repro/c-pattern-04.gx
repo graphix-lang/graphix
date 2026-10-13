@@ -1,0 +1,19 @@
+// c-pattern-04: slice/tuple patterns over a union of collections narrow to the first member: wrong arm
+// command: graphix --no-cache design/review-2026-10-12/repro/c-pattern-04.gx (also --no-fusion; graphix-fuzz check AGREEs)
+// expected: ("one", "one", "one")  -- ["s"] has one element, so `[x]` matches it
+// observed: ("one", "other", "one") in both engines; `[_]` (no bind) matches, so the
+//   bind's cell, bound to the first member's element (i64), narrows the arm's run-time test.
+// The same cause refuses exhaustive selects under --check:
+//   `[h, rest..] => 1, [] => 0` over [Array<i64>, Array<string>] ("no arm covers Array<string>"),
+//   `[<h, rest..>] => 1, [<>] => 0` over [List<i64>, List<string>] ("no arm covers List<string>"),
+//   `(a, b) => 0, null => 1` over [(i64, string), (string, i64), null] ("no arm covers (string, i64)").
+let g = |p: [Array<i64>, Array<string>]| select p {
+  [x] => "one",
+  _ => "other"
+};
+let u = |p: [Array<i64>, Array<string>]| select p {
+  [_] => "one",
+  _ => "other"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(g([1]), g(["s"]), u(["s"]))

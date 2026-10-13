@@ -48,7 +48,24 @@ fn example_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+// CR claude for claude: [test-gap/medium] This gate checks only the files under
+// book/src/examples and bench. None of the ```graphix fences inline in the book's
+// chapters (about 560 of them) are parsed or checked. So a syntax or typing change (the
+// comment rule, Singleton arithmetic, type-directed reads) breaks book snippets with no
+// failing test, which is what book-core-03, 04, 05, 06, 12, 13 and 14 found. Fix: add a
+// test that extracts the fenced graphix blocks from book/src/**/*.md, skips REPL
+// transcripts (lines starting with 〉) and blocks marked e.g. ```graphix,ignore or
+// ```graphix,refused, and runs the rest through this same check. A refused block should
+// be checked to be refused. Also reported as (book-stdlib-06). (book-core-10)
 #[tokio::test(flavor = "multi_thread")]
+// CR claude for claude: [test-gap/low] The TUI examples are only typechecked here.
+// Nothing runs one for a few cycles or presses a key in one, so runtime defects pass
+// the gate, such as the blank view after one Down in scroll_paragraph.gx
+// (examples-tui-03). Add a graphix-package-tui test that loads each
+// book/src/examples/tui/*.gx with TuiTestHarness, renders through a few updates, and
+// asserts no error. For the interactive examples (list_interactive, tabs_navigation,
+// overlay_modal, layout_nested_focus, the scroll examples), also dispatch a scripted
+// key sequence and assert the rendered lines. (examples-tui-09)
 async fn examples_compile() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = example_files(&root.join("book/src/examples"))?;

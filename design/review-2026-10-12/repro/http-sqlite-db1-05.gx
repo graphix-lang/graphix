@@ -1,0 +1,29 @@
+// http-sqlite-db1-05: one stalled HTTP request blocks every later request at its
+// call site (Calls::Fifo, no default timeout on the default client).
+// Two separate servers: `hang` never answers, `good` answers at once. The first
+// request goes to `hang`; requests 2..29 go to `good`.
+// command: graphix --no-cache design/review-2026-10-12/repro/http-sqlite-db1-05.gx
+// expected: a line "n=.. resp={body: \"ok /okN\" ..}" for each request to `good`
+// (as when request 1 also targets `good`).
+// observed: nothing is printed; the program exits at n=30 after 3 s with every
+// reply from `good` still queued behind the stalled first call.
+let hang = http::serve(#addr: "127.0.0.1:0", #handler: |req| req ~ never<http::Response>())$;
+let good = http::serve(
+    #addr: "127.0.0.1:0",
+    #handler: |req| {body: "ok [req.path]", headers: [], status: u16:200, url: ""}
+)$;
+let hang_addr = http::server_addr(hang);
+let ok_addr = http::server_addr(good);
+let client = http::default_client(null)$;
+let clock = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let url = select n {
+    1 => "http://[hang_addr]/hang",
+    k if k > 1 => "http://[ok_addr]/ok[k]",
+    _ => never()
+};
+let resp = http::get(client, url);
+println("n=[n] resp=[resp]");
+sys::exit(select n { 30 => 0, _ => never() });
+n

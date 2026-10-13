@@ -21,6 +21,12 @@ if [[ ! -x "$graphix" ]]; then
 fi
 
 # best <mode> <cpus> <threads> <program> [flags...]
+# CR claude for claude: [structure/low] This best() and the cargo-metadata binary lookup
+# above repeat bench/run.sh's almost line for line. The only differences are the
+# env/taskset prefix and --no-cache: par.sh passes it and run.sh does not, so run.sh
+# writes a session image per bench program into the user's cache and measures warm
+# starts. Move the lookup and best() into a sourced bench/lib.sh that takes the prefix
+# command, and pass --no-cache in both. (ide-tooling-16)
 best() {
     local mode="$1" cpus="$2" threads="$3" prog="$4"; shift 4
     local best="" t out

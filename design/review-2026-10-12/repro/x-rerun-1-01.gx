@@ -1,0 +1,15 @@
+// x-rerun-1-01: graphix-fuzz wraps the body as `let result = {<body>` with no
+// newline, so a body whose first line is a comment (every `// expect: reject`
+// pin, every finding file's header) is a parse error at line 1 of /test.
+//
+// command: graphix-fuzz check design/review-2026-10-12/repro/x-rerun-1-01.gx
+//
+// expected: DIVERGENCE or a failure: this program is valid (it yields 2), so
+// a pin claiming `expect: reject` over it should not agree.
+// observed: AGREE (reject); `graphix-fuzz run` shows CompileErr "a comment
+// stands on a line of its own" at `use super::*; let result = {// ...`.
+// The fuzzer keeps only its own header line below; strip_header drops the
+// others, so the program the fuzzer sees starts with it.
+// expect: reject
+let x = 1;
+x + 1

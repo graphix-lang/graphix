@@ -1,0 +1,8 @@
+let x = 1;
+let f = |r: &i64| {
+  let u: [&i64, &mut i64] = r;
+  select u { &mut i64 as m => { *m <- 5; "wrote" }, &i64 as s => "shared" }
+};
+println("[f(&x)] [x]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

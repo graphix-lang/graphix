@@ -1,0 +1,14 @@
+// x-rerun-7-05 (variant of x-diff-par-02): functions widened to Any still
+// order by a LambdaId parallel compile mints, so a map keyed by them
+// iterates in a run-dependent order.
+// command: GRAPHIX_PAR=force graphix --no-cache <this file>  (several runs)
+//          graphix-fuzz check <a copy without comments or the exit line>
+// expected: one order on every run
+// observed: a new permutation per forced run; GRAPHIX_PAR=off gives 0..15;
+//   graphix-fuzz: DIVERGENCE — parallel evaluation bug
+let mk = |x: i64| |y: i64| -> i64 x + y;
+let fs = array::map(array::init(16, |i| i), |i| mk(i));
+let init: Map<Any, i64> = {};
+let m = array::fold(fs, init, |acc, f| { let k: Any = f; map::insert(acc, k, f(0)) });
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+map::fold(m, [], |acc, kv| array::push(acc, kv.1))

@@ -1,0 +1,10 @@
+// t-cast-setops-14: the type printer nests a struct field's value twice; a named
+// type's lone bracketed argument does not hug
+// command: graphix fmt --stdout t-cast-setops-14.gx
+// expected: alpha's fields at 8 columns and its `}` at 4; `O<{` hugging as `Array<{` does
+// observed: alpha's fields at 12 columns and its `},` at 8; `O<` and `{` on separate lines
+type O<'a> = [null, 'a];
+type T = {alpha: {beta_long_field_name: i64, gamma_long_field_name: string, delta_long_long_long: f64, eps: i64}, z: i64};
+type U = O<{beta_long_field_name: i64, gamma_long_field_name: string, delta_long_long_long: f64, eps: i64}>;
+type V = Array<{beta_long_field_name: i64, gamma_long_field_name: string, delta_long_long_long: f64, eps: i64}>;
+0

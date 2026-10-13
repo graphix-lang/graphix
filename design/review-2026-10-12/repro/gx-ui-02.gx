@@ -1,0 +1,26 @@
+// gx-ui-02: line_edit::State's cursor invariant is unenforced; a stale cursor drops keys
+// Command: graphix --no-cache design/review-2026-10-12/repro/gx-ui-02.gx
+// netidx-admin tui/remote.gx builds { value: c.server, cursor: str::len(c.server) }:
+// str::len is the byte length, 6 for "héllo" whose char_len is 5. Events fed through
+// line_edit::handle, one per 20ms: Char x, Backspace, Left, Char y.
+// Expected: n=1 r=Stop (x inserted), n=2 r=Stop (x removed), n=3, n=4.
+// Observed (both engines): no line for n=1 or n=2 (step produced nothing, the key is
+// dropped silently); n=3 Left brings the cursor to 5 and only then does n=4 insert y.
+use tui::{line_edit, input_handler::Event};
+let key = |c: tui::input_handler::KeyCode| -> Event `Key({ code: c, kind: `Press, modifiers: [], state: [] });
+let srv = "héllo";
+let ed: line_edit::State = { value: srv, cursor: str::len(srv) };
+let t = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- t ~ n + 1;
+let ev = select n {
+  1 => key(`Char("x")),
+  2 => key(`Backspace),
+  3 => key(`Left),
+  4 => key(`Char("y")),
+  _ => never()
+};
+let r = line_edit::handle(&mut ed, ev);
+println("n=[n ~ n] r=[r] ed=[ed ~ ed]");
+sys::exit(sys::time::after_idle(duration:300.ms, ed) ~ 0);
+ed

@@ -1,0 +1,8 @@
+// gx-ui-08: a two-character mask over "abc" with the cursor after "a" prints
+// ["*", "*", "****"]: the cursor sits inside the first character's mask; expected ["**", "**", "**"].
+use tui::line_edit;
+let st = { value: "abc", cursor: 1 };
+let l = line_edit::view(#mask: "**", &st);
+let parts = select l.spans { string as s => [s], a => array::map(a, |s| s.content) };
+sys::exit(sys::time::after_idle(duration:200.ms, parts) ~ 0);
+parts

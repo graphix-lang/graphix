@@ -1,0 +1,12 @@
+// x-rerun-1-12: a variadic builtin argument typed by a trait is refused,
+// and the message tells the author to write the trait as a parameter's
+// type, which is what was written.
+//
+// command: graphix --check design/review-2026-10-12/repro/x-rerun-1-12.gx
+//
+// expected: accepted as `'a: Eq |@args: 'a|` is, or refused with a message
+// that names variadics.
+// observed: "trait Eq used as a type: a trait is a bound — write it as a
+// parameter's type (`fn(x: Eq)`) or a quantifier's (`fn<'a: Eq>`)".
+let f = |@args: Eq| -> Any 'core_all;
+f(1, 1)

@@ -1,0 +1,9 @@
+// t-typ-mod-05: ErrChain collapse in lookup_ref keys on the written name
+// command: graphix --check design/review-2026-10-12/repro/t-typ-mod-05.gx
+// expected: checks (EC is core::ErrChain, so EC<EC<`A>> is ErrChain<`A>),
+// as the same program spelled with ErrChain does
+// observed: type mismatch Error<ErrChain<`A>> does not contain Error<EC<EC<`A>>>
+use core::ErrChain as EC;
+let f = |e: Error<ErrChain<`A>>| 0;
+let g: Error<EC<EC<`A>>> = never();
+f(g)

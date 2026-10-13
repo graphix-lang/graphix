@@ -1,0 +1,15 @@
+// x-rerun-5-09: an abstract type restored from a session image prints as
+// <abstract#ID>: AbstractId's name table (ABSTRACT_NAMES) is filled only when
+// an id is minted (AbstractId::of / declared), and a warm start decodes the
+// id as a bare u64 without minting it, so the same refusal names the type
+// Tree<i64, i64> cold and <abstract#11463945668770139902><i64, i64> warm.
+// command: XDG_CACHE_HOME=$scratch graphix --check x-rerun-5-09.gx (twice)
+// expected: both runs "... does not contain Tree<i64, i64>" (as --no-cache)
+// observed (HEAD 7324207f): the first run (cold, writes the image) says
+//   Tree<i64, i64>; the second (warm) says <abstract#11463945668770139902><i64, i64>
+let d = db::open("/tmp/x-rerun-5-09-db")$;
+let t: db::Tree<i64, i64> = db::tree(d, "nums")$;
+let put = |t: db::Tree<i64, [i64, string]>, v: [i64, string]| db::insert(t, 1, v)$;
+let ins = put(t, "hello");
+let w = db::get(t, ins ~ 1)$$;
+w + 1

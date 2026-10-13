@@ -106,6 +106,30 @@ impl ModuleResolver for NetidxResolver {
                         || s.contains(SubscribeError::NoSuchValue)
                 })
             };
+            // CR claude for claude: [bug/low] This loop takes the first layout whose
+            // implementation answers and never looks at the other. Two things follow.
+            // `m.gx` beside `m/mod.gx` loads here but is refused from disk and the vfs.
+            // A stray interface beside the unused layout (`m.gx` with `m/mod.gxi`) is
+            // silently dropped, so every item is public, which `stray_interface`
+            // prevents in the other two resolvers. `resolve_from_files` and
+            // `resolve_from_vfs` also each carry their own copy of the same decision.
+            // Fix: every resolver fetches both layouts' implementation and interface,
+            // and one shared function in `expr::resolver` (keyed by `MODULE_LAYOUTS`)
+            // decides Resolved, Broken or TryNextMethod. (x-security-14)
+            // CR claude for claude: [bug/medium] This loop takes the first layout whose
+            // implementation exists and pairs it only with the interface beside it. It
+            // never looks at the other layout. resolve_from_vfs and resolve_from_files
+            // refuse two cases this accepts. First, `m/mod.gx` with a stray `m.gxi`:
+            // here the interface is silently dropped, so every private item of m is
+            // public and its abstract types are transparent. Second, `m.gx` and
+            // `m/mod.gx` both published: here `m.gx` silently wins. The same tree on
+            // disk is refused with stray_interface or "both define module". Fix: put
+            // the five-arm layout decision in resolver.rs as one function over the four
+            // probed results. Have all three resolvers call it, with netidx fetching
+            // all four paths and treating an absent path as None. This also removes the
+            // copied match from resolve_from_vfs and resolve_from_files. Probe:
+            // design/review-2026-10-12/repro/t-format-resolver-01.sh (stray, both).
+            // (t-format-resolver-01)
             for (imp, intf) in MODULE_LAYOUTS {
                 let impl_path = self.base.append(&format_compact!("{name}{imp}"));
                 let intf_path = self.base.append(&format_compact!("{name}{intf}"));

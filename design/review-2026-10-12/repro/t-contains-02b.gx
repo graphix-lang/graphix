@@ -1,0 +1,6 @@
+// expect: refused with a type mismatch (i64 does not hold [i64, string]); got: "cannot
+// compare two instances of N", because the one-candidate distribution probe walks
+// position 1 after position 0 already failed
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let f = |x: N<[i64, string]>| -> N<i64> x;
+f(null)

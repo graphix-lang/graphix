@@ -1,0 +1,25 @@
+// c-node-mod-01: collection slots woken after a bottom source run under
+// View::Cycle: a slot's `<-` target resets to its initializer, and the
+// fires the paused slots slept through are never re-raised.
+// run: graphix --no-cache c-node-mod-01.gx   (same with --no-fusion)
+// expected (the `arm` column, the same bodies in a select arm that sleeps
+// at k=3): at k=4 `reset` keeps its counters ([3, 30] or [2, 20]) and
+// `caught` catches up to v=5 ([1005, 10005]), as `arm` does (30, 10005).
+// observed: (2, [2, 20], [1000, 10000], (20, 10000))
+//           (4, [0, 0], [1000, 10000], (30, 10005))
+// array::fold resets the same way.
+let clock = sys::time::timer(duration:100.ms, true);
+let k = 0;
+k <- clock ~ k + 1;
+let v = 0;
+v <- select k { 3 => 5, _ => never() };
+let src = [1, 10];
+let s2 = select k { 3 => never(), _ => src };
+sys::exit(select k { 7 => 0, _ => never() });
+let reset = array::map(s2, |x| { let acc = 0; acc <- clock ~ acc + x; acc });
+let caught = array::map(s2, |x| v ~ x * 1000 + v);
+let arm = select k {
+  3 => (-1, -1),
+  _ => { let acc = 0; acc <- clock ~ acc + 10; (acc, v ~ 10000 + v) }
+};
+(k ~ k, reset, caught, arm)

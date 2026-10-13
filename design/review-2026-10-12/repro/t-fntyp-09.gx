@@ -1,0 +1,8 @@
+// t-fntyp-09: sig_matches pairs union members positionally when a variable is open
+// command: graphix --check design/review-2026-10-12/repro/t-fntyp-09.gx (with t-fntyp-09.gxi beside it)
+// expected: accepted, ['b, 'a] is the declared ['a, 'b] (a union is a set)
+// observed: refused "val f is declared fn(x: ['a, 'b], y: 'a) -> 'a but implemented
+//   fn(x: ['b, 'a], y: 'a) -> 'a: in argument 1: type variable usage mismatch:
+//   expected 'b: unbound, got 'a: unbound"; writing ['a, 'b] here is accepted
+let f = |x: ['b, 'a], y: 'a| -> 'a y;
+f(1, 2)

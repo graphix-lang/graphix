@@ -1,0 +1,5 @@
+let f = |n: i64| println("f [array::fold(array::map(array::init(n, |i| i), |x| x % 7), 0, |acc, x| acc + x)]");
+let g = |n: i64| println("g [n]");
+let a = (f(2000000), g(1));
+sys::exit(a ~ 0);
+a

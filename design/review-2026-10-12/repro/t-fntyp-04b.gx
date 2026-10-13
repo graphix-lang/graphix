@@ -1,0 +1,3 @@
+// --check runs out of memory (6 GB cap); without the call, or with [string, i64], it checks at once
+let f = 'a: fn(x: 'a) -> [string, 'b] |g: 'a| 0;
+f(|x| 0)

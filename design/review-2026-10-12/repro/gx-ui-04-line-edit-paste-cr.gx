@@ -1,0 +1,8 @@
+// gx-ui-04: a paste carrying CR line breaks (what VTE/xterm send in bracketed paste) keeps
+// the \r in a single-line editor: value is "a\r b\rc", expected "a  b c".
+use tui::{line_edit, input_handler::Event};
+let key = |c: string| -> Event `Key({ code: `Char(c), kind: `Press, modifiers: [], state: [] });
+let good = line_edit::step(line_edit::state("ab"), key("c"));
+let paste = line_edit::step(line_edit::state(""), `Paste("a\r\nb\rc"));
+sys::exit(sys::time::after_idle(duration:200.ms, good) ~ 0);
+"good=[good] paste=[paste]"

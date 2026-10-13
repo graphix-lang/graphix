@@ -1,0 +1,8 @@
+// Run with an EMPTY image cache (XDG_CACHE_HOME=$(mktemp -d) graphix this.gx):
+// the cold run writes the registration and program images before the
+// shell's event loop starts; the exit request then wins over the batch
+// holding the value 42, and nothing is printed. The warm run, and any
+// --no-cache run, print 42. Debug build: 6/6 cold runs print nothing.
+let x = 41 + 1;
+sys::exit(sys::time::after_idle(duration:30.ms, 0));
+x

@@ -1,0 +1,13 @@
+// gx-stdlib-01: opt::contains lacks the Discernible bound and compares
+// references by cell, disagreeing with ==.
+// command: graphix --no-cache gx-stdlib-01.gx   (same with --no-fusion)
+// expected: refused at check time (`A vs string and a tuple vs an array
+// share a runtime form, as `==` says), or (false, false, true, true)
+// observed: (true, true, false, true)
+let v: [[`A, string], null] = `A;
+let w: [`A, string] = "A";
+let t: [[(i64, i64), Array<i64>], null] = (1, 2);
+let u: [(i64, i64), Array<i64>] = [1, 2];
+let a = 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(opt::contains(v, w), opt::contains(t, u), opt::contains(&a, &a), &a == &a)

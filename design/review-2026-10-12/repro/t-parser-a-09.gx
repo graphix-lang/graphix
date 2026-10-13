@@ -1,0 +1,8 @@
+// t-parser-a-09: a slice bound of i64::MIN is refused.
+// Command: graphix --check t-parser-a-09.gx
+// Expected: checks (-9223372036854775808 is a valid i64 literal elsewhere).
+// Observed: Parse error at line 7, column 32; `a[-9223372036854775807..]`
+// checks.
+let a = [1, 2, 3];
+let y = a[-9223372036854775808..];
+y

@@ -1,0 +1,4 @@
+// expect: accepted; refused: pattern Any will never match 'c<'_> (could_match's App arm is ==,
+// ahead of the Any arm)
+let f = |c: Collection| select c { _ => 0 };
+f([1, 2])

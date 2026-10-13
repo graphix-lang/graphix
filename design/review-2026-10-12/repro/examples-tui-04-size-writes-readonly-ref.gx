@@ -1,0 +1,13 @@
+// tui block/layout-child #size is declared &[Size, null] (read-only, covariant)
+// but the widget writes its area through it (SizeReport::report, set_deref,
+// stdlib/graphix-package-tui/src/lib.rs:520). Covariance lets &n with n: null
+// in, the widget stores a Size struct in a null-typed binding, and the
+// checker-exhaustive select below finds no arm at run time:
+//   select n { null as _ => ... }: no arm matches [["height", ..], ["width", ..]]:
+//   a coverage hole in the check
+// Run in a pty: examples-tui-04-size-writes-readonly-ref.sh
+use tui::{block::block, text::text};
+let n = null;
+let shown = select n { null as _ => "still null" };
+sys::exit(sys::time::after_idle(duration:500.ms, n ~ 0));
+block(#size: &n, &text(&"<[shown]> [n]"))

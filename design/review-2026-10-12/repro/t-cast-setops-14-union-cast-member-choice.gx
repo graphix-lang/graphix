@@ -1,0 +1,6 @@
+let a = cast<[string, Array<f64>]>([1, 2]);
+let b = cast<[bool, Array<f64>]>([1, 2]);
+let c = cast<[f64, (f64, f64)]>((1, 2));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("a=[a] b=[b] c=[c]");
+0

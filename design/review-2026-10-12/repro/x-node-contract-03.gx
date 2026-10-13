@@ -1,0 +1,31 @@
+// x-node-contract-03: http::serve keeps its server handle across sleep
+// command: graphix --no-cache x-node-contract-03.gx   (same with --no-fusion)
+// expected: at n=2 the serve arm wakes with `addr` bottom, starts no server,
+//   and its value is nothing yet (no v line, no request)
+// observed: n=2 v=127.0.0.1:<port> (the aborted server's handle stands) and a
+//   request to it fails: HTTPError "request failed: error sending request"
+let clk = sys::time::timer(duration:1500.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let addr = select n { 0 => "127.0.0.1:0", _ => never() };
+let handler = |req: http::Request| {
+    body: "hello [req.method]",
+    headers: [],
+    status: u16:200,
+    url: ""
+};
+let v = select n % 2 == 0 {
+    true => http::server_addr(http::serve(#addr: addr, #handler: handler)$),
+    false => "asleep"
+};
+let client = http::default_client(null)$;
+let r = select v {
+    "asleep" => "-",
+    a => {
+        let resp = http::request(#timeout: duration:500.ms, client, "http://[a]/");
+        select resp { error as e => "[e]", rs => rs.body }
+    }
+};
+println("n=[n ~ n] v=[v] r=[r]");
+sys::exit(select n { 3 => 0, _ => never() });
+v

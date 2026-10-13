@@ -1,0 +1,18 @@
+// gui-chart-05: two pie datasets, the draw shows the first (even an empty
+// one), the tooltip hit-tests the last.
+// command: graphix --check design/review-2026-10-12/repro/gui-chart-05.gx
+// (run in a window to see it; --check only shows the program is accepted)
+// expected: one pie chosen for both the draw and the hover, or the pair
+// refused as a mode conflict.
+// observed (by reading the draw's find_map and find_nearest_point's loop):
+// window 1 draws `first` but hovering shows `second`'s slices; window 2
+// is in Pie mode yet draws nothing, since the empty pie is drawn.
+use gui::{window, chart};
+
+let first = [("a", 1.0), ("b", 3.0)];
+let second = [("x", 3.0), ("y", 1.0)];
+let empty: Array<(string, f64)> = [];
+[
+    &window(#title: &"two pies", &chart::chart(&[chart::pie(&first), chart::pie(&second)])),
+    &window(#title: &"empty first", &chart::chart(&[chart::pie(&empty), chart::pie(&second)]))
+]

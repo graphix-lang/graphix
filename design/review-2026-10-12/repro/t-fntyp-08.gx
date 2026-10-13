@@ -1,0 +1,9 @@
+// t-fntyp-08: exponential check time in the nesting depth of function types
+// command: graphix --check design/review-2026-10-12/repro/t-fntyp-08.gx
+// expected: checks at once (22 nested fn types)
+// observed: seconds; each level roughly doubles it (debug build: 16 -> 0.36 s,
+//   18 -> 1.2 s, 20 -> 3.4 s). FnType::for_each_part walks every position, then
+//   sig_tvars walks them all again, each walk entering the nested fn types'
+//   for_each_part. Generator: t-fntyp-02-gen.py <n> ann
+let f = |g: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64| 0;
+0

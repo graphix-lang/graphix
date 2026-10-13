@@ -236,6 +236,14 @@ def vendor_external_path_deps(ws_deps, vendor_dir):
     for name, dep in ws_deps.items():
         if isinstance(dep, dict) and "path" in dep:
             path = (ROOT / dep["path"]).resolve()
+            # CR claude for claude: [structure/low] A string-prefix test counts a
+            # sibling like ../graphix-extras as inside the workspace, so a path dep
+            # there is never vendored and the offline build fails. Use
+            # `path.is_relative_to(root_resolved)`. The copytree in the external-dep
+            # loop below repeats the member copy in vendor_member with a weaker ignore
+            # set (no `#*#`, `*~` or `.DS_Store`), so editor junk from ../netidx lands
+            # in vendor/. Factor one copy-crate helper with the member's ignores and
+            # call it from both places. (ide-tooling-13)
             if not str(path).startswith(str(root_resolved)):
                 queue.append(path)
 

@@ -1,0 +1,6 @@
+// c-collection-02-control: the same slots with a static callback fork under force.
+let x = array::iter([0, 1, 2, 3, 4, 5]);
+let pr = |v: i64| -> i64 { println("[v]"); v };
+let r = array::map(array::init(24, |i| i + x * 100), pr);
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+array::len(r)

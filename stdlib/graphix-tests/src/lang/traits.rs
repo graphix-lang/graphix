@@ -1624,6 +1624,17 @@ run!(default_calls_its_sibling_through_dispatch, r#"{
 // target, an impl in a function body would register per call, and a method
 // may not need a bound the trait does not declare.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/medium] Only the union, function-body and
+// undeclared-bound refusals are pinned here. No test anywhere pins the orphan rule that
+// `check_target` enforces. A regression that let a user program write `impl Display for
+// i64` or `impl Eq for {x: i64}` would silently change printing or `==` for every such
+// value, and nothing would fail. Add these rows: `impl Display for i64` and `impl Eq
+// for` a struct alias, expecting "only the trait's own package"; `impl<'a> T for 'a`,
+// expecting "a bare type variable is not an implementation target"; `impl T for Any`,
+// expecting "not an implementation target". Also add a multi-module case where a
+// package implements a foreign trait for a foreign abstract type, expecting "must live
+// in the type's package". Probe:
+// design/review-2026-10-12/repro/tests-fusion-traits-07.gx. (tests-fusion-traits-04)
 async fn implementations_are_declared_ones() {
     use graphix_package_core::testing::refusal;
     for (src, why) in [
@@ -1647,6 +1658,13 @@ async fn implementations_are_declared_ones() {
 
 // A trait call whose self argument is never produced dispatches nothing:
 // it is bottom, its other arguments still live, and the program builds.
+// CR claude for claude: [test-gap/low] The pin binds never_sized but its value is
+// `sized` alone, so it only checks that the program builds. If resolve_trait_call
+// lowered the bottom-self call to a value, made it fire, or dispatched to an impl, the
+// pin would still pass. Make the value observe the lowered call, e.g. `let seen =
+// false; seen <- never_sized ~ true;` with the value `(sized, seen)` and the predicate
+// (2, false), which both engines give today. Also add the written-later case (`let x =
+// never(); let s = csize(x); x <- ["a", "b"]; s` gives 2). (x-fix-nodes-07)
 run!(
     trait_call_over_bottom_self,
     r#"{

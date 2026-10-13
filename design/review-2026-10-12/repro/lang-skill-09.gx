@@ -1,0 +1,5 @@
+// SKILL.md (Idioms) says an annotation on the outer let does not reach
+// json::read through a nested seq or try. It does: prints {x: 1}.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let b: {x: i64} = seq { try { json::read("{\"x\": 1}")? } with(e) { {x: 0} } };
+b

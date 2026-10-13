@@ -1,0 +1,15 @@
+// x-rerun-6-09: place_index_u64_above_i64_max (stdlib/graphix-tests/src/lang/byref.rs)
+// orders its write and its read by 20 ms / 50 ms timers; when both fire in one cycle,
+// `t2 ~ obs` reads obs before `obs <- t1 ~ *r` lands, so the fixture yields null whatever
+// `*r` reads. This copy reads a real element (a[2] = 30, what a from-the-end bug would read)
+// with both timers merged at 20 ms: it prints null, which the fixture's predicate accepts.
+// command: graphix --no-cache x-rerun-6-09.gx
+// expected (if the fixture could fail): 30. observed: null. With t2 at 0.05s it prints 30.
+let a = [10, 20, 30];
+let r = &a[u64:2];
+let t1 = sys::time::timer(duration:0.02s, false);
+let obs: [i64, null] = null;
+obs <- t1 ~ *r;
+let t2 = sys::time::timer(duration:0.02s, false);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+t2 ~ obs

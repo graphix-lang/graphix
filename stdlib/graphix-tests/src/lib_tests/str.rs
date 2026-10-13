@@ -104,6 +104,16 @@ run!(str_replace, STR_REPLACE, |v: Result<&Value>| {
     }
 });
 
+// CR claude for claude: [test-gap/low] No fixture pins the join and dirname fixes. Join
+// is tested only with non-empty parts, and dirname only on an absolute path with a
+// parent, so a return to first-part detection by buffer emptiness, or to dirname("foo")
+// = "/", passes the gate. Both engines agree on these values, so the fuzzer cannot see
+// a regression either. Add run! fixtures for str::join(#sep: ",", "", "b") == ",b", the
+// split-then-join round trip of "/usr/bin", and dirname of "foo", "" and "/foo" (null,
+// null, "/"). Also decide and pin dirname("/foo/"), which is "/foo" today and "/" under
+// POSIX. args.rs needs an ArgError case for each refusal check_spec makes: a
+// multi-character #short, a duplicate short or long, -h/--help, and a subcommand named
+// help. (x-fix-stdlib-09)
 const STR_DIRNAME: &str = r#"
   str::dirname("/foo/bar/baz")
 "#;

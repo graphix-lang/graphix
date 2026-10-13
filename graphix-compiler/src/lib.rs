@@ -125,6 +125,14 @@ macro_rules! tdbg {
     };
 }
 
+// CR claude for eric: [structure/low] UserEvent has one implementation, NoUserEvent
+// (the only GXExt is NoExt, here and in ../netidx), and nothing reads Event::user
+// except Event::fork, Event's clear and the core-trait hook's take_event clone. Still,
+// the E parameter is on Node, Update, Apply, BuiltIn, ExecCtx, CompileCtx and every
+// node and builtin. That is about a thousand mentions for an extension point no
+// embedder uses. Decide whether GXExt's user events stay. If not, delete UserEvent,
+// Event::user and the E parameter. If an embedder later needs non-Value events, they
+// can reach builtins through libstate rather than through every node's type. (c-lib-05)
 pub trait UserEvent: Clone + Debug + Any + Send + Sync {
     fn clear(&mut self);
 }
@@ -932,6 +940,18 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
             use std::fmt::Write;
             let _ = write!(reasons, "\n  - {}", failure.reason);
         }
+        // CR claude for claude: [readability/low] A destructuring `let` under #[native]
+        // is refused with no reason. The "non-single-bind let pattern not supported"
+        // failure from emitting the block is recorded under the specs of the regions
+        // that contain the let, and native_residue's leaf-most filter reports none of
+        // them, so this branch prints a bare "did not fully fuse". The cause shows only
+        // under GXDBG_NATIVE_ALL. Probe: `let f = |x: {bar: f64, baz: f64}| #[native] {
+        // let { bar, baz } = x; bar + baz }; f({bar: 42.0, baz: 84.0})`. Record the
+        // let-pattern failure at the Bind child's spec, or, when native_residue finds
+        // no leaf failure, fall back to the innermost failure recorded under `node`
+        // rather than listing nothing. Other regions satisfy the bindstruct fixture's
+        // FuseExpect::Jit, so the de-fuse of destructuring lets is not pinned either
+        // (select destructuring fuses). (tests-lang-rest-b-09)
         if reasons.is_empty() {
             crate::bailat!(
                 node.spec(),
@@ -981,6 +1001,16 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
             subtree_fused |= ctx.fusion.stats.source_fused(desc.spec());
             has_failed_desc |= ctx.fusion.stats.failure_for_source(desc.spec()).is_some();
         });
+        // CR claude for claude: [bug/medium] When a fused descendant exists, this skips
+        // a node's own recorded failure. A call whose callee does not lower but whose
+        // argument fused (`#[native] simplify(deriv(..))`) then reports nothing.
+        // `check` bails with a bare 'did not fully fuse to native code' and no reason,
+        // while `#[native] run_one(seed)` over the same callee names the blocker.
+        // Probe: design/review-2026-10-12/repro/examples-rest-05.gx (`--no-cache
+        // --expand`). Drop the `!subtree_fused` condition. A node that failed and has
+        // no failed descendant is residue for its own reason, whatever fused under it.
+        // `!has_failed_desc` already keeps containers from repeating a descendant's
+        // failure. (examples-rest-05)
         if !subtree_fused
             && !has_failed_desc
             && !report.iter().any(|prior| prior.id == failure.id)
@@ -1294,6 +1324,14 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     discarded: Vec<Discarded<R, E>>,
     /// The id of the concurrent compile task this one runs in
     /// ([`typ::tvar::InTask`]); 0 at the root.
+    // CR claude for claude: [structure/low] This field mirrors the InTask thread-local,
+    // but only typecheck1's task loop sets it. with_runtime_settles, compile_each,
+    // fuse_each and CxView forks all inherit the parent's value through fork, so it is
+    // stale there. check_in_tasks is its only reader. typecheck0_modules feeds it plain
+    // forks, so its workers enter whatever id the field inherited, not the caller's
+    // current task. Fix: delete the field. Carry the task id in check_in_tasks' work
+    // tuple: new_task() from typecheck1's loop, and the caller's current thread-local
+    // task from typecheck0_modules. (c-lib-06)
     pub(crate) task: u32,
     /// This task's share of the compile's profile ([`profile::Task`]).
     profile: profile::Task,
@@ -1541,6 +1579,20 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// type, which every value written takes (the value restriction). One
     /// an earlier compile generalized stays so, its uses having relied on
     /// it, and a write is held to its type (`Connect::typecheck0_with`).
+    // CR claude for claude: [bug/medium] A `<-` inside a lambda body is marked too
+    // late. Lambda bodies compile at check time, after the target's let has been
+    // checked and generalized, so `generalized_earlier` is already true and the write
+    // takes the REPL rule. With an unannotated parameter (`let set = |g| f <- g`), the
+    // rigid copy's variables become generic in `set`'s signature. `set(|x: i64| x + 1)`
+    // then checks while `f("s")` uses f at string. At run time the call site fails to
+    // rebind; the failure is logged under node::callsite and the program silently stops
+    // updating. With an annotated parameter, the same write is refused as "made generic
+    // by an earlier compile" in a single script, while the same write at top level is
+    // accepted. Fix: collect every `<-` and `&mut` target of a block, lambda bodies
+    // included, before its lets generalize (the dependency summaries already gather
+    // writes). Then generalized_earlier holds only for a real earlier compile, and the
+    // refusal in `Connect::typecheck0_with` is worded for that case alone. probe:
+    // design/review-2026-10-12/repro/x-fix-types-04.gx (x-fix-types-04)
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
@@ -1568,6 +1620,22 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// A value's type as a written binding holds it: a function's
     /// generalized signature as one instance of it.
+    // CR claude for claude: [bug/high] The value restriction stops at a binding whose
+    // type IS a function: `monomorphic` and `generalized_earlier` look only at a
+    // top-level `Type::Fn`, so a written binding that HOLDS a generalized lambda (a
+    // struct field, a tuple or array element, a variant payload) keeps its generic
+    // cells and each use copies them. `let s = {f: |x| x}; let n = s.f(41); let k =
+    // s.f("a"); s <- clock ~ {f: |x| x + 1}` passes the check, then every mode fails
+    // the run-time bind of `s.f("a")` ("a run-time bind ... did not type", the
+    // compiler-bug path) and the program produces nothing; the same through `&mut t.0`
+    // on a tuple. Writing the `<-` above the use makes the check refuse it, so the
+    // verdict depends on statement order. Fix: walk the whole type and instantiate
+    // every function type (every generic cell) it reaches as one shared instance, in
+    // both `monomorphic` and `generalized_earlier`, and pin a struct field, a tuple
+    // element and a place reference with the use before the write next to
+    // `written_binding_is_monomorphic`. probe:
+    // design/review-2026-10-12/repro/tests-types-01.gx, tests-types-01b.gx
+    // (tests-types-01)
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
         t.with_deref(|d| match d {
             Some(Type::Fn(ft)) => Type::Fn(Arc::new(ft.instantiate(&self.rec_defs))),
@@ -1814,6 +1882,21 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Release an id this node minted for its own deliveries: unregister
     /// it and forget the value the store holds for it, which nothing will
     /// read again.
+    // CR claude for claude: [perf/medium] release_var unregisters the id and drops its
+    // store entry, but leaves the writes already queued for it in the runtime's
+    // var_updates. A builtin that queues many writes to its private id keeps getting
+    // them delivered after it sleeps or is deleted, one per cycle. This affects core
+    // range (one set_var per element, up to MAX_ARRAY_INIT_LEN), queue, the fs watch
+    // stream and NetState::subscribe's replay. Each delivery is a worked cycle, so the
+    // runtime never goes idle. Each one is also a Via::Write, which deliver does not
+    // drop, so it re-inserts a store entry for the dead id. A range of 2M elements
+    // whose arm sleeps after 10 values burns seconds of CPU cycling through writes
+    // nothing reads. Fix: add an Rt operation that discards an id's pending writes
+    // (remove its Waiting queue; take skips ids with none) and call it from
+    // release_var. Then releasing a private id is complete, and x-concurrency-10's
+    // timer cancel can live there too. probe:
+    // design/review-2026-10-12/repro/x-concurrency-03.gx (control:
+    // x-concurrency-03-control.gx, driver x-concurrency-03.sh) (x-concurrency-04)
     pub fn release_var(&mut self, id: BindId, top_id: ExprId) {
         self.unref_var(id, top_id);
         self.rt.store_remove(&id);
@@ -1837,6 +1920,16 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Apply to the runtime what compiling deferred: delete what it
     /// discarded, whose unreplayed references cancel, then register
     /// every reference it recorded.
+    // CR claude for claude: [perf/low] apply_deferred, drop_deferred and
+    // delete_discarded reach pending_refs and discarded through CxView's DerefMut. In a
+    // forked branch with no compile fork yet, that builds one (CompileCtx::fork: env
+    // and tracked-map forks, rec_defs/def_gate_params clones, fresh scratch
+    // allocations), which is then joined at the merge, even when nothing was compiled.
+    // branch::fork_instances calls apply_deferred on every update of an http::serve or
+    // rpc handler, so a server in a forked sibling pays a fork and join every cycle. At
+    // the root, an empty drain() still clears the retained capacity's control bytes.
+    // Fix: start apply_deferred and drop_deferred with `if !self.deferred_pending() {
+    // return }`. That check reads through Deref, as unref_var already does. (c-lib-03)
     pub fn apply_deferred(&mut self) {
         self.delete_discarded();
         for ((id, top_id), n) in self.cx.pending_refs.drain() {
@@ -1848,6 +1941,20 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 
     /// Undo what a failed compile deferred: delete what it discarded and
     /// forget the references it recorded.
+    // CR claude for claude: [risk/low] unref_var cancels a pending (id, top_id) count
+    // by key, whichever node recorded it. One deferred batch can hold both an OLD
+    // discard whose references are already registered (CallSite::clear_prepared_bind
+    // discards the previous callee apply) and a NEW build's pending references to the
+    // same key. Deleting the old node then cancels the new build's pending count
+    // instead of unregistering at the runtime. drop_deferred is right only if every
+    // node the failed build compiled is later deleted, never just dropped. A partial
+    // instance body that GXLambda's init drops on `?` would leave the old registration
+    // with no owner, and Rt::unref_var silently ignores unknown keys, so neither
+    // direction of imbalance is seen. Not reachable today: a run-time body of a checked
+    // def fails to compile only on a compiler bug. Fix: keep registered discards apart
+    // from fresh ones (a Discarded variant whose delete unrefs straight to the runtime)
+    // so the counts no longer depend on who deletes what, and debug-assert in the
+    // runtime's unref_var that the key is registered. (c-lib-04)
     pub fn drop_deferred(&mut self) {
         self.delete_discarded();
         self.cx.pending_refs.clear();
@@ -2418,6 +2525,13 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
 /// A written type name that did not resolve at its definition's check
 /// must name something once the check ends.
 /// A question a check leaves open until it ends.
+// CR claude for claude: [doc-drift/low] Pending's doc opens with two summaries. The
+// first ("A written type name that did not resolve ... once the check ends.") belongs
+// to check_pending_names, which has no doc of its own. Move it there. Also,
+// CompileCtx::pending_imports' doc says the deferred imports are re-checked at the end
+// of compile_stmt. They are actually re-checked by check_pending_imports, from
+// compile_top (statements and scripts) and from Module's load. Name that function.
+// (c-lib-07)
 pub(crate) enum Pending {
     /// A type name a definition's written types hold that did not
     /// resolve at its check (a `use` the interface defers may name it
@@ -2672,6 +2786,17 @@ fn compile_top<R: Rt, E: UserEvent>(
     // An attribute the fusion walk neither dispatched nor absorbed
     // would silently assert nothing; a check runs no fusion walk and
     // leaves the attributes to a build.
+    // CR claude for claude: [bug/low] This census check ignores whether fusion actually
+    // ran. check_and_fuse_inner skips the fusion walk when `!ctx.fusion.available()`,
+    // which happens when the JIT failed to build: a bad GRAPHIX_JIT_ARENA, a tight
+    // address-space limit, or an ISA Cranelift lacks. In that case no attribute is
+    // dispatched, and every one is reported as "attribute in a position the fusion pass
+    // cannot check", which blames the program for a host problem. Gate this check on
+    // fusion having run. A `#[native]` that could not be checked because fusion is
+    // unavailable should then get its own error that carries the JIT build error kept
+    // by FusionCtx::jit, or be waived on purpose. probe:
+    // design/review-2026-10-12/repro/f-mod-lowering-04.gx (run with
+    // GRAPHIX_JIT_ARENA=1000000000000000) (f-mod-lowering-04)
     if fusion_on(flags) && !flags.contains(CFlag::CheckOnly) {
         let census = ctx.attr_census.lock();
         if !census.is_empty() {

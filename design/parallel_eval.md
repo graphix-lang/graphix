@@ -144,6 +144,12 @@ earlier independent one and reorder their writes.
   are out of every sibling's scope.
 - A summary reads through a fused kernel's feeders and records the
   reference a `*r <- v` reads.
+<!-- CR claude for claude: [doc-drift/low] Stale. `plan_blocks` plans every block the
+analysis reaches, using the holder-aware summaries, and `Block::image_encode` writes the
+plan into the image. Only a block no analysis reached is planned at its first update.
+Rewrite the bullet to say this. Also say that the sibling decisions of the other fork
+sites (`ForkSite`, `SlotSite`) are made at first update and are not imaged, which is why
+a warm start loses them (c-analysis-branch-03). (c-analysis-branch-07) -->
 - The plan is made at a block's first update that may fork and kept in
   the node, not imaged: a runtime that never forks pays nothing for it.
   A callee bound later than the plan stays opaque in it (conservative).
@@ -215,6 +221,13 @@ into the parent (a delta, a log, or the root's state):
 - **Deltas.** Overlay (`Layered::merge`), store and ref-path entries
   (`RtView::merge`) insert into the parent. Two branches publishing the
   same id is an analysis bug, except for error handlers. Here the
+  <!-- CR claude for claude: [doc-drift/low] `fork_join`'s `delivered_in_both` does not
+  exist. The serial rule for a handler that two branches both deliver to is
+  `branch::merge_in_order`: it re-queues a later branch's delivery with
+  `ForkRt::queue_first`. `Layered::merge` alone overwrites. The seq-machine paragraph
+  further down names `ExecCtx::serial`, which also does not exist; the flag is
+  `ForkFlags::seq`, which a callee body clears through `ForkFlags::body`. Cite the real
+  names in both places. (x-doc-drift-11) -->
   serial rule is reproduced: the left (earlier) delivery keeps the
   slot, and the right's becomes a queued write (`fork_join`'s
   `delivered_in_both`), as `deliver_error`'s `Occupied` arm does. A
@@ -379,6 +392,13 @@ direction is safe: the child is already parallel inside. True work
 accounting (each branch summing its leaves' time) is possible later if
 the wall-time bias turns out to cost.
 
+<!-- CR claude for claude: [doc-drift/low] This section and §3.3's 'kept in the node,
+not imaged' are wrong for blocks. Block::image_encode writes the analysis plan
+(Block::planned) and image_decode restores it. Only a block no analysis reached plans at
+its first update. The histograms and the ForkSite sibling verdicts are what a warm start
+relearns. Restate both places to match. Note that this is why warm blocks keep their
+cold verdicts while call, constructor and operator fork sites decide again
+(x-parallel-03). (x-parallel-09) -->
 **Not imaged.** Histograms are run-time state; a warm start relearns
 them. Fork plans (§3.3) are not imaged either: a block plans at its
 first update that may fork, cold or warm (`Block::image_encode`).
@@ -680,6 +700,15 @@ one in a task of its own (`build_site`), and puts it back in the shared
 pool when it returns (`return_site`); a site whose entry went stale
 meanwhile is deleted.
 
+<!-- CR claude for eric: [doc-drift/low] This paragraph lists the id-dependent sites as
+'to fix before phase 4', but phase 4 and later have shipped and none of them changed.
+The sites are: WatchValue and SubscriptionValue ordered and hashed by bind_id,
+WatchStream::update emitting a cycle's events in IntSet order, the gui event loop's
+windows in an IntMap<BindId>, '_<TVarId> names in error text, and sorted_tvars breaking
+ties by TVarId. Now that branches and compile tasks mint ids in parallel, these orders
+vary from run to run. Decide per site: fix it (order by a node-local creation sequence
+or an insertion-ordered map) or record it as accepted with the reason. Then rewrite the
+table to match, and refresh its stale file:line references. (x-parallel-07) -->
 **Ids.** Ids minted in parallel are unique (global atomics,
 T/ids.rs:138) but their values depend on scheduling. That is acceptable
 only if nothing observable depends on id order or value. The phase 1
@@ -746,6 +775,12 @@ it through its own `CURRENT`.
 
 ## 10. Fused kernels
 
+<!-- CR claude for claude: [doc-drift/low] Two parts of §10 are stale. Kernel feeders
+are not polled in order: FusedKernel::update gathers them through node::gather over its
+own ForkSite, so they form a fork point, as a call's arguments do. And the outlined
+loop's helper is graphix_par_loop(chunk, frame, len, site, kind, out), where kind
+carries the FIND and ROOT bits that par_loop::run reads. Fix both sentences.
+(f-kernel-07) -->
 A kernel invocation is a leaf. Its state is node-owned (`state`/`site`
 blocks), its loans are per call, and its feeders are polled in order,
 not forked. So kernels need nothing for the node-level design.

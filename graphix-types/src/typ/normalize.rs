@@ -128,6 +128,20 @@ struct Kept {
 
 impl Kept {
     /// Take out the earliest kept member `t` merges with, and the merge.
+    // CR claude for claude: [bug/low] The normal form depends on member order.
+    // merge_with merges an incoming member into the earliest kept member that accepts
+    // it, and product merges are not confluent. So `[(i64, string), (f64, string),
+    // (i64, bool)]` normalizes to `[(i64, bool), ([i64, f64], string)]`, but the same
+    // set written as `[(i64, string), (i64, bool), (f64, string)]` normalizes to
+    // `[(i64, [bool, string]), (f64, string)]`. merge_inner's Fn arm and flat_eq
+    // compare by union_identical, which compares Set members position by position. Two
+    // functions of one parameter type, written in different orders, then stay a union
+    // of fn types, and a call on that union is refused: "expected fn not [fn(..),
+    // fn(..)]". Fix: make the normal form canonical, for example by sorting the
+    // flattened members before saturating and iterating to a fixpoint, or by making the
+    // product merge order-independent. Then sig_matches' mutual-containment special
+    // case for ground unions can go. probe:
+    // design/review-2026-10-12/repro/t-fntyp-06.gx (t-fntyp-06)
     fn merge_with(&mut self, t: &Type) -> Option<Type> {
         let key = MergeKey::of(t);
         let keyed: &[usize] = match &key {
@@ -294,6 +308,13 @@ impl Type {
         ensure_sufficient(|| self.resolve_tvars_seen(cx))
     }
 
+    // CR claude for claude: [structure/low] This walk and `normalize_int_inner` each
+    // spell out the structural rebuild of every compound variant, which is
+    // `Type::cow_children`; only the memo and the TVar, Set and Fn arms are their own.
+    // The copies have drifted already: `normalize_int_inner` treats `Abstract` as a
+    // leaf while this walk and `cow_children` rebuild its params. Keep the memo and the
+    // distinct arms and send every other variant through `self.cow_children(&mut |c|
+    // ..)`, and decide explicitly whether an abstract's params normalize. (t-fntyp-12)
     fn resolve_tvars_seen(&self, cx: &mut ResolveTvarsCx) -> Option<Self> {
         let key = norm_key(self);
         if let Some(k) = key
@@ -592,6 +613,16 @@ impl Type {
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
                 if union_identical(self, t) { Some(self.clone()) } else { None }
             }
+            // CR claude for eric: [bug/low] Two function types merge only when
+            // identical, so `[|x: i64| x * 2, |x| x]` has element type `[fn(x: i64) ->
+            // i64, fn(x: '_) -> '_]` and calling an element is refused ('expected fn
+            // not [..]'), while the same two lambdas as select arms are accepted and
+            // called. The two joins disagree on one program shape, and a union of two
+            // function types is never callable (one runtime form). Decide the rule:
+            // either an array literal joins function elements as select arms do (one
+            // cell, unified), or merge unifies two function types whose only
+            // differences are open cells. probe:
+            // design/review-2026-10-12/repro/t-fntyp-10.gx. (t-fntyp-10)
             (Type::Fn(_), Type::Fn(_)) => {
                 if union_identical(self, t) {
                     Some(self.clone())

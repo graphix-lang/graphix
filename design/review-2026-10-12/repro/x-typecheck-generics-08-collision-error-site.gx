@@ -1,0 +1,3 @@
+let s = "a";
+let v: [&i64, &string] = &s;
+select v { &i64 as r => 1, &string as q => 2 }

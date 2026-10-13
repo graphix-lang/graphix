@@ -59,6 +59,21 @@ val block: fn(
 
 ## Parameters
 
+<!-- CR claude for claude: [doc-drift/low] #border is `[Array<Border>, `All, `None,
+null]`, so a single side must be written as an array: `` &[`Top] ``. `block(#border:
+&`Top, ..)` as documented here is refused with a type mismatch. Document `All`, `None`,
+or an array of `Top`/`Bottom`/`Left`/`Right`. Also, tui/layout.md links input_handler to
+`../overview.md#input-handling`, but that page (ui/overview.md) has no such heading.
+Point the link at input.md. (examples-tui-07) -->
+<!-- CR claude for claude: [doc-drift/low] This says a single side such as `` `Top `` is
+accepted, but `#border` is `&[Array<Border>, `All, `None, null]`, so a side must be in
+an array (`&[`Top]`). The same kind of drift is in three more places. gauge.md says
+`#label` is a 'Line or span', but it is `&[Span, null]`. linegauge.md says the same, but
+it is `&[Line, null]`. tabs.md says `#divider` is a 'String or span', but it is `&[Span,
+null]`. Each of these forms is refused with a type mismatch. Neither gauge page says
+that the positional (`ratio` in the gxi) is a fraction from 0.0 to 1.0, and a value
+outside that range is clamped with a logged warning. State the exact accepted forms on
+each page. (book-ui-a-09) -->
 - **border** - Border style: `All`, `None`, `Top`, `Bottom`, `Left`, or `Right`
 - **border_style** - Style for the border
 - **merge_borders** - Strategy for merging borders of adjacent blocks: `Replace`, `Exact`, or `Fuzzy`

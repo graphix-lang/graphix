@@ -1,0 +1,9 @@
+// t-print-04: a select arm's pattern is measured against ` =>` alone; the guard written
+// after it never enters the decision.
+// command: graphix fmt --stdout t-print-04.gx | awk '{print length}'
+// expected: every line within the default width 90; observed: the arm head is one
+// 111-column line.
+select x {
+  `Aaaaaaaaaaaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccc, ddddddddd) if bbbbbbbbbbbbbbbbbbbbb => 1,
+  _ => 0
+}

@@ -269,6 +269,25 @@ impl Type {
     ) -> Result<Self> {
         match (self, t) {
             (Type::Ref(t0), Type::Ref(t1))
+                // CR claude for claude: [bug/medium] Two refs merge here only if they
+                // were written in the same scope (`t0.scope == t1.scope`), not if they
+                // resolve to the same definition. `same_inner` and `same_ref` make the
+                // same comparison. So `ErrChain<`A>` written in a block, a lambda body
+                // or a module does not merge with the root-scope `ErrChain<`B>` that a
+                // fresh `?` raises. A catch that joins them (`join_raised` ->
+                // `Type::union`) gets a union of two expanded chain structs, and
+                // `(e.0).error` is refused with "expected struct not [..]". The same
+                // code at the file root, or behind a root-scope type alias, gets
+                // `Error<ErrChain<[`A, `B]>>` and runs. The common case is a module
+                // function that returns its caught error and a caller that re-raises it
+                // beside another error. graphix-fuzz also refuses such programs,
+                // because it wraps them in a module. Fix: when both resolution cells
+                // are filled, decide by the definition alone (`cells_agree` already
+                // compares `def_key`), and keep the scope+name test only for two
+                // unfilled refs. Add a pin for a block-local and a module-returned
+                // `Error<ErrChain<..>>` re-raised beside a fresh error. probe:
+                // design/review-2026-10-12/repro/x-engine-seq-errors-03.sh
+                // (x-engine-seq-errors-03)
                 if t0.name == t1.name
                     && t0.scope == t1.scope
                     && t0.cells_agree(t1)
@@ -276,6 +295,15 @@ impl Type {
             {
                 self.union_ref_params(env, hist, merge, t0, t1, t)
             }
+            // CR claude for claude: [readability/low] This arm matches before the
+            // identity arms for Bottom and the empty primitive, so `T ∪ ⊥` returns T's
+            // expanded body instead of T. Every select with a never() arm builds this
+            // union. Error messages then print the whole body, e.g. 'i64 does not
+            // contain [`Circle(f64), `Rect(f64, f64), `Tri(f64, f64, f64)]' where they
+            // should say Shape. Move the `(Type::Bottom, t) | (t, Type::Bottom)` arm
+            // and the empty-primitive arm above this one. probe:
+            // design/review-2026-10-12/repro/t-cast-setops-18-union-bottom-expands-name.gx
+            // (t-cast-setops-13)
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
                     (hist.ref_id(tr, env), hist.ref_id(t, env))
@@ -523,6 +551,21 @@ impl Type {
                 }
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
+                // CR claude for claude: [bug/high] Seeding the in-progress (ref, ref)
+                // pair with an empty difference assumes the subtrahend covers the
+                // minuend while that is still being computed. The List/Array arm reads
+                // that empty value as "covered" and drops the whole collection, and the
+                // Error arm turns the wrong residual into Error<residual>. For T = [`B,
+                // Array<T>] and U = [`A, Array<U>], Error<T> - Error<U> comes out as
+                // Error<`B>. The arm after an `Error<U> as` arm is then judged
+                // exhaustive with only i64 and Error<`B> arms, and error([`B]) reaches
+                // no arm at run time (an abort under GRAPHIX_ABORT_ON_NO_MATCH). Fix:
+                // decide the List/Array/Error "covered" test with the coinductive
+                // containment check (`contains_with_flags` with t1 containing t0)
+                // instead of an emptiness test on a diff that reads a provisional memo,
+                // or seed the memo with the conservative residual (t0, nothing
+                // subtracted) instead of empty. probe:
+                // design/review-2026-10-12/repro/t-cast-setops-07.gx (t-cast-setops-07)
                 hist.insert(key, Type::Primitive(BitFlags::empty()));
                 let r = t0.diff_int(env, hist, &t1);
                 hist.remove(&key);

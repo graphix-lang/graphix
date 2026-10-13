@@ -1,0 +1,12 @@
+// sys-net-06: stream handles order and hash by heap address
+// (graphix-package-sys/src/lib.rs Ord for Stream), so a map keyed by them
+// iterates in a different order on every run.
+//   for i in 1 2 3 4 5 6; do graphix --no-cache sys-net-06-handle-order.gx | head -1; done
+// Expected: one order every run. Seen: [3, 1, 2], [3, 2, 1], [2, 3, 1], [1, 2, 3], ...
+let a = sys::io::stdout(null);
+let b = sys::io::stderr(null);
+let c = sys::io::stdin(null);
+let m = {a => 1, b => 2, c => 3};
+let r = map::fold(m, [], |acc, (_, v)| array::push(acc, v));
+sys::exit(sys::time::after_idle(duration:50.ms, r) ~ 0);
+r

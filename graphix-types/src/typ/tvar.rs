@@ -194,6 +194,16 @@ static TASKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1
 /// larger one; 0 is outside every task.
 #[doc(hidden)]
 pub fn new_task() -> u32 {
+    // CR claude for claude: [risk/low] A process-global u32 that wraps silently.
+    // with_runtime_settles mints a task per run-time bind (each CallSite::build_bound,
+    // each core-trait hook site) for the life of the process. After 2^32 of them,
+    // earlier_task (`cell.task < TASK`) inverts and 0, the outside-every-task id, is
+    // minted again. A run-time bind then passes the decided/written guards and may
+    // write or settle the check's cells while parallel branches read them, and
+    // GRAPHIX_TASK_AUDIT stops reporting it. A long-running server doing thousands of
+    // dynamic binds per second gets there in days. Make the counter a u64 (TCell.task
+    // and the TASK thread-local with it), or treat exhaustion as fatal. At minimum,
+    // never hand out 0. (t-tvar-08)
     TASKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -360,6 +370,17 @@ pub struct TCell {
     /// An occurs check refused to bind or link this cell (the only
     /// solution was an infinite type). A flagged cell still open at
     /// the terminal settle must error rather than default to ⊥.
+    // CR claude for claude: [structure/low] cycle_refused, bottom_fed and
+    // bottom_required are loose bools, and each site that carries a cell's facts lists
+    // its own subset. TVar::freshen and merge_into each spell out the same
+    // `cycle_refused |= ..; bottom_fed |= ..` pair, and cell_encode/cell_decode carry
+    // those two plus the level. bottom_required is dropped by every copy and by the
+    // image, so a copied or restored cell bound to ⊥ as a requirement reads as a
+    // vacuous ⊥ to unbind_vacuous_tvars. Today only a definition's own gate reads the
+    // flag, so nothing observes the loss, but the next caller that does will get a
+    // cold/warm or original/copy difference. Fold the three into one BitFlags<CellFact>
+    // with a single `absorb` used by freshen, merge_into and both codecs, and encode
+    // the whole set. (t-tvar-09)
     pub(crate) cycle_refused: bool,
     /// A ⊥ was produced into this cell while it was unbound. Every other
     /// production binds a cell, so one still open once its writers are
@@ -368,6 +389,18 @@ pub struct TCell {
     /// The cell is bound to ⊥ because something required it (`⊥ ⊇ 'x`:
     /// a `_` annotation, a `-> _` return): a fact the gate keeps, where
     /// a ⊥ nothing required is vacuous and reopens.
+    // CR claude for claude: [risk/low] `bottom_required` only means something when
+    // `binding` is `Some(Bottom)`, and two writers of a cell drop it. The session image
+    // (`cell_encode`/`cell_decode` in image/mod.rs) encodes `cycle_refused`,
+    // `bottom_fed` and `level` but not this flag. `TVar::freshen` carries the other two
+    // flags into a copy but not this one. A restored or copied cell bound to ⊥ because
+    // a `_` or `-> _` required it then reads as a vacuous ⊥, which
+    // `Type::unbind_vacuous_tvars` reopens. Today that runs only at a definition's own
+    // gate, so a warm start would type differently only if a later definition's
+    // signature shared such a cell. Fold the flag into the binding, e.g. `enum Binding
+    // { Open, Bound(Type), RequiredBottom }`, so the image codec and the copy walk have
+    // to handle it and `unbind_vacuous_tvars` matches on it. At minimum, encode it and
+    // copy it beside `bottom_fed`. (x-invalid-states-04)
     pub(crate) bottom_required: bool,
     /// Nonzero while a declared (named) lambda tvar is inside its def's
     /// body check: a rigid unbound cell never binds, so the body must
@@ -974,9 +1007,30 @@ impl TVar {
         }
         s.cell = o_cell;
         drop(s);
+        // CR claude for claude: [risk/low] `lower` skips a generic cell, which is right
+        // for a binding (a scheme bound into a cell is still a scheme). A merge is
+        // different: it welds two cells into one, and the survivor must take the
+        // shallower level. When `other` is generic (a pattern-predicate cell, a frozen
+        // annotation var, a let-rec placeholder, a trait quantifier) and self's cell is
+        // Top or Def, the merged cell stays generic. Level::copied_by then copies it at
+        // every call, making polymorphic a cell the environment owns, and the value
+        // restriction no longer holds for it. No route to it is known: the direction
+        // rules usually keep the generic side as the abandoned cell. When `level` is
+        // not generic, call `other.claim(level)` here (claim lowers generic cells too)
+        // instead of `lower`. (t-tvar-07)
         lower(&Type::TVar(other.clone()), level);
     }
 
+    // CR claude for claude: [risk/low] On every cold start, module compile tasks set
+    // frozen on type variables owned by task 0. The path is Module::compile_static ->
+    // bind_sig -> Env::deftype -> Type::alias_tvars -> freeze, and it happens even for
+    // the program `1`. GRAPHIX_TASK_AUDIT prints 15 foreign-write backtraces, so it
+    // cannot serve as a zero-report gate, and real elaboration foreign writes get lost
+    // in the noise. Frozen decides alias direction in contains' OpenPair::of, so a
+    // sibling task that reads the flag while another sets it may alias the other way.
+    // Fix: freeze an interface's named variables where the type is built, or have the
+    // task alias over its own copy. Then pin a zero foreign-write count in a test.
+    // (x-parallel-08)
     pub fn freeze(&self) {
         let mut l = self.write();
         if !l.frozen && !decided_of(l.task, "var") {
@@ -1306,6 +1360,19 @@ impl Type {
     /// says "not numeric, or this number").
     pub(crate) fn require_one_number(&self) {
         let mut parts = UnionParts::new(Measure::Numbers);
+        // CR claude for eric: [bug/medium] When the binding already has a numeric
+        // member, the open members get no conjunct at all. So `'a: [Number, null] +
+        // OneNumber` bound to `[i64, 'y]` leaves 'y free. A generic caller (`let g =
+        // |b, y| f(select b { true => 1, false => y })`) then generalizes with an
+        // unconstrained 'y, and `g(false, 2.5)` passes the check. The build refuses it:
+        // the instance of f at fn(x: [i64, f64]) is refused. So --check and the LSP
+        // accept what elaboration refuses, which CLAUDE.md calls a type-system bug
+        // (graphix-fuzz check reports the DIVERGENCE). A statement-settle recheck is
+        // not enough, because 'y is still open when g settles: the constraint has to
+        // reach g's signature. Options: narrow the open members to the known numeric
+        // member plus the non-numeric types (needs a way to say "not a number"), refuse
+        // such a binding at the definition, or let a bound name a compound type. Needs
+        // a rule. Probe: design/review-2026-10-12/repro/t-tvar-01.gx (t-tvar-01)
         if self.union_parts(None, &mut parts).is_err() || parts.known > 0 {
             return;
         }
@@ -1400,6 +1467,18 @@ impl Type {
     /// them the conjunct).
     pub(crate) fn concrete_holds(&self) -> bool {
         ensure_sufficient(|| match self {
+            // CR claude for eric: [bug/low] The Type::Fn arm below walks the signature
+            // with for_each_part, throws slot included. A fn type that throws nothing
+            // has `throws: ⊥`, and this arm reads that as a ⊥ value. So `fn(x: i64) ->
+            // i64` fails Concrete (a type-directed read is refused with "'b: unbound
+            // within Concrete"), while `fn(x: i64) -> i64 throws `E` holds and the read
+            // fails at run time with InvalidCast "not a function" (probe:
+            // design/review-2026-10-12/repro/t-tvar-10.gx). Every Concrete target in
+            // the stdlib is a data read, and data cannot hold a function, just as it
+            // cannot hold a reference. The suggested rule is that Concrete refuses
+            // every Type::Fn, in concrete_holds and require_concrete together, with the
+            // must-reject family updated to match. The alternative, skipping the throws
+            // slot, admits targets that can only fail at run time. (t-tvar-10)
             Type::Bottom | Type::ByRef(..) => false,
             Type::TVar(tv) => tv.binding().is_none_or(|b| b.concrete_holds()),
             Type::Fn(ft) => {
@@ -1473,6 +1552,20 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
+            // CR claude for claude: [bug/medium] collect_tvars goes into a nested fn
+            // type's own quantifiers and keeps the first cell seen for each name,
+            // unlike alias_tvars just above. In `'b: Number |g: fn<'b: Number>(x: 'b)
+            // -> 'b, y: 'b| y + 1` the inner 'b is recorded for the signature. Every
+            // name-keyed consumer then works on the wrong cell: DefGate's rigid set,
+            // FnType::sig_tvars (and so the printed quantifier bounds),
+            // has_open_quantifier, fresh_quantifiers, open_quantifier_gates and
+            // ctor_quantifiers. The effects: the outer declared 'b binds to i64; the
+            // outer quantifier prints with the inner one's bound; whether a program
+            // checks depends on parameter order; and with the parameters swapped the
+            // check passes but the build refuses the instance. Fix: skip a nested Fn's
+            // quantifier names the way alias_tvars does, leaving them to
+            // inner_quantifiers. Better, key signature cells by cell address, not by
+            // name. probe: design/review-2026-10-12/repro/t-fntyp-03.gx (t-fntyp-03)
             Type::Fn(ft) => ft.collect_tvars(known),
             t => t.for_each_child(&mut |c| c.collect_tvars(known)),
         })
@@ -1667,6 +1760,19 @@ impl Type {
                     }))
                 }
             }),
+            // CR claude for claude: [risk/low] replace_tvars_int has no Type::Fn arm. A
+            // nested fn type therefore goes through FnType::cow_walk, which clones
+            // lambda_ids, or is returned shared when it holds no TVar. Every typedef
+            // expansion (lookup_ref_by) then shares the stored FnType's LambdaIds node,
+            // and each committing (Fn, Fn) contains links into it. As a result, the
+            // lambda_ids of any value typed by `F<..>` pool every lambda checked
+            // against any expansion of F, and the consumers read that pool: the
+            // omitted-default checks, recheck_builtin, polymorphic_in, and the rec_defs
+            // knot tests in Ref::decide and CallSite::typecheck0. reset_tvars_int
+            // states the invariant this breaks (a nested fn type's lambda_ids is the
+            // copy's own). No wrong answer has been reached yet. Give replace_tvars_int
+            // the same Type::Fn arm: rebuild through FnType::replace_tvars_int and set
+            // `lambda_ids = ft.lambda_ids.instantiate()`. (t-tvar-06)
             t => t.cow_children(&mut |c| c.replace_tvars_int(known, fresh)),
         })
     }
@@ -1829,6 +1935,22 @@ impl UnionParts {
 
     /// Whether two different rigid cells are open members beside no
     /// known one: nothing can make them one type.
+    // CR claude for claude: [bug/medium] rigid_pair refuses only two distinct rigid
+    // cells beside no known member. With exactly one known member, singleton_holds
+    // passes and narrowing() hands that member to require_singleton / narrow_singleton,
+    // which add it as a conjunct to every open cell, rigid ones included. A declared
+    // variable in its own body check then absorbs a concrete type, against the rule
+    // that a rigid variable binds to nothing concrete. Example: `let g = 'a: Singleton
+    // |x: 'a| -> 'a x; let f = 'r: Number |x: 'r, b: bool| g(select b { true => x,
+    // false => 1 })`. The body is accepted and f's scheme silently becomes `'r: Number
+    // & i64`. As a result, `f(2.5, false)` is refused at the caller, and `f(3, false)`
+    // passes --check but its build refuses g's instance at `[i64, i64]`, so elaboration
+    // disagrees with the check. The analogue `h(x, 1)` with `h = 'a: Number |x: 'a, y:
+    // 'a| x` is correctly refused in the body. Fix: a rigid open member beside any
+    // known member cannot be made one type, so refuse it here (known >= 1 with any
+    // rigid open member, or two distinct rigid with none). Then singleton_holds fails
+    // and narrow_singleton bails, and a rigid cell never takes a concrete member as a
+    // conjunct. probe: design/review-2026-10-12/repro/t-tvar-02.sh (t-tvar-02)
     fn rigid_pair(&self) -> bool {
         let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
         self.known == 0

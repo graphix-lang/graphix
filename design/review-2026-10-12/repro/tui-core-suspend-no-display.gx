@@ -1,0 +1,4 @@
+// Text output, no display: nothing prints; the gxi says this is a TerminalError.
+let r = tui::suspend(true);
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+r

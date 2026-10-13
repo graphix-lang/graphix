@@ -1,0 +1,20 @@
+// gui-core-05: a window that fails to open is silent and blocks every later
+// window in the root array.
+//
+// Run headless through the gui-core-03.sh harness (kwin_wayland --virtual +
+// Xwayland; nothing opens on the desktop), with this file in place of its
+// built-in program (identical to it):
+//   GRAPHIX=/path/to/graphix timeout -s KILL 120 bash gui-core-03.sh
+// expected: gxprobe-good opens, and the bad window's refusal is reported.
+// observed (HEAD 7324207f, debug build):
+//   windows after 6s: []   graphix running: True
+//   graphix stdout: ''  stderr: ''
+// controls: [good, bad] opens gxprobe-good; two good windows open both. With
+// --log-dir and RUST_LOG=error the swallowed error appears:
+//   ERROR [graphix_package_gui::event_loop] reconcile windows: resolve window
+//   ... text: size: a text size must be finite and positive, got 0
+use gui::{window, text::text};
+
+let bad = &window(#title: &"gxprobe-bad", &text(#size: &0.0, &"bad"));
+let good = &window(#title: &"gxprobe-good", &text(&"good"));
+[bad, good]

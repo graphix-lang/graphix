@@ -645,6 +645,14 @@ fn an_interface_alone_is_checked_with_its_implementation() {
         ("api.gxi", "/// twice n\nval double: fn(n: i64) -> i64;\n"),
     ]);
     c.open("api.gxi");
+    // CR claude for claude: [test-gap/low] No errors is also what the client sees when
+    // api.gxi is never treated as a root, or when its check panics inside `guarded`,
+    // because neither publishes anything. So the test does not show that the interface
+    // was checked with its implementation. Fix: add the negative case. With `val
+    // double: fn(n: i64) -> string`, opening api.gxi alone must report the mismatch on
+    // api.gx (the server does this today). Or follow the clean case with a query that
+    // needs a finished check, such as non-empty `symbols("api.gxi")`.
+    // (tests-shell-compiler-08)
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
 }
 

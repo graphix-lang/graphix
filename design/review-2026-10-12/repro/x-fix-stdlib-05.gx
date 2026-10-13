@@ -1,0 +1,12 @@
+// x-fix-stdlib-05: the typed writers (json/toml write_str, write_bytes; pack::write_bytes) serialize a
+// reference as its raw session BindId. 'a is unconstrained and core's shape() has no ByRef case,
+// so the id leaks as a number: different in every engine, and the warm image relocates it.
+// (pack::write_bytes and str::sprintf take Any, which CLAUDE.md leaves to the program; json/toml take 'a
+// since 2d2cad08, so their static type says &i64 and the writer could refuse it as it refuses a function.)
+// graphix-fuzz run (abridged):
+//   Interp:      ["4611686018427389929", "{\"a\":4611686018427389929}", ..., "&ref", "a = 4611686018427389929\\n"]
+//   Interp/warm: ["8093", "{\"a\":8093}", ..., "&ref", "a = 8093\\n"]
+// str::sprintf("%d", &x) leaks it too ("4611686018427392013"). graphix-fuzz check says UNSURE, not DIVERGENCE. A function value is refused (JsonErr); a reference should be too.
+let x = 42;
+let r = &x;
+[json::write_str(r)$, json::write_str({a: r})$, cast<string>(pack::write_bytes(r)$)$, "[r]", toml::write_str({a: r})$]

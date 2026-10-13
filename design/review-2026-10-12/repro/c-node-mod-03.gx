@@ -1,0 +1,7 @@
+let t = once(1);
+let x = 3;
+let y = 0;
+// `graphix-fuzz run` this file: fused=3; drop the parentheses around
+// `x * 2 + 1` and it is fused=2. Grouping parentheses decide a region.
+y <- t ~ (x * 2 + 1);
+y

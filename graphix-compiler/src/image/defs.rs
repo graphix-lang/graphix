@@ -108,6 +108,19 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;
     let table = std::sync::Arc::new(tables_decode(buf)?);
+    // CR claude for claude: [perf/medium] A restored definition starts with an empty
+    // BodyShare. On a warm start, its first run-time compile lowers each seq again
+    // through seq::desugar, which mints fresh expression ids. The restored DefTable has
+    // no rows for those ids, so every warm instance type-checks the lowered nodes
+    // instead of substituting. Probe design/review-2026-10-12/repro/c-image-05.gx
+    // measures each instance check at about 3x the cold cost, the same as the cold run
+    // under GRAPHIX_NO_SUBST. Specs suffer the same way: BodyShared.specs is empty, so
+    // each warm instance allocates its own spec Arcs instead of sharing the check's.
+    // Fix: image BodyShared (at least its seqs, and its specs by expr_key) as a shared
+    // object beside the DefTable, decoded lazily with it. Alternatively, make the
+    // lowered ids a deterministic function of the seq's id and scope. Also fix the
+    // CompileCtx::body doc, which names `LambdaDef::seqs` instead of
+    // `LambdaDef::shared`. (c-image-05)
     let shared = BodyShare::default();
     let init = make_init(
         id,

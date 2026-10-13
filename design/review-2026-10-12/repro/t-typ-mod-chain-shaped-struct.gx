@@ -1,0 +1,8 @@
+let r = never();
+{
+    catch(e) r <- (e.0).ori + 1;
+    let v = error({cause: 1, error: `X, ori: 41, pos: 3});
+    v?
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

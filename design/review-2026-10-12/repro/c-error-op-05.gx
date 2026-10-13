@@ -1,0 +1,7 @@
+// c-error-op-05: unary `-` on decimal never fuses, though `+` on decimal does
+// command: graphix-fuzz run design/review-2026-10-12/repro/c-error-op-05.gx
+// expected: h and g both fuse (decimal arithmetic goes through the Value helpers)
+// observed: "failed ...: emit_neg: operand of non-scalar type Primitive(..Decimal)"; only g fuses
+let h = |x: decimal| -> decimal -x;
+let g = |a: decimal, b: decimal| -> decimal a + b;
+(h(decimal:1.5), g(decimal:1.5, decimal:2.0))

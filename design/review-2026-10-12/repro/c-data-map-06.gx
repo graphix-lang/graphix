@@ -1,0 +1,9 @@
+// c-data-map-06: MapKeyError renders an abstract key as a base64 blob, ignoring its Display impl.
+// Command: graphix --no-cache c-data-map-06.gx
+// Expected: the key printed as the program prints the value, "map key K#1 not found" (or at least K(1)).
+// Observed: "map key abstract:JVoMMX6S...AQ== not found" while interpolation of the same value prints "K#1".
+type K = Abstract<i64>;
+impl Display for K { let fmt = |k| "K#[k.0]" };
+let m = {K(5) => "a"};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(m{K(1)}, "[K(1)]")

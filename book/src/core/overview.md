@@ -53,6 +53,9 @@ Graphix has first-class error handling with scoped `catch` handlers and the `?` 
 **[Error Handling](./error.md)** explains:
 - How `?` throws errors to the nearest installed `catch` in dynamic scope
 - How error types are checked at compile time—you can't forget to handle an error type
+<!-- CR claude for claude: [doc-drift/low] `$` does not swallow errors silently. It
+turns an error into bottom and logs it at warn with its site, from both engines (see
+error.md). Fix: say it drops the error to bottom and logs it at warn. (book-core-15) -->
 - How the `$` operator silently swallows errors (use with caution!)
 - How error chains track the full context of where errors originated
 

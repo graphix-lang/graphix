@@ -225,6 +225,14 @@ run!(datetime_arith19, DATETIME_ARITH19, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
+// CR claude for claude: [test-gap/low] Only diff's saturation is pinned. time.gxi also
+// documents that add and sub saturate at the datetime range limits, sub_dur saturates
+// at zero, add_dur overflow is a DurationError, and scale by a negative or NaN factor
+// is one too. None of these edges has a test, so a change to TimeAdd, TimeSub or
+// TimeAddDur that panicked or wrapped would pass. Add one run! fixture over a lambda,
+// so it fuses, asserting these: add(t, 1e14 s) is +262142-12-31T23:59:59.999999999Z,
+// sub is -262143-01-01T00:00:00Z, sub_dur(1s, 2s) is 0s, scale(d, -1.0) and scale(d,
+// 0.0 / 0.0) are DurationError, plus a true add_dur overflow. (tests-lang-rest-a-11)
 const DATETIME_ARITH20: &str = r#"
 {
     let x: duration = sys::time::diff(datetime:"2024-11-05T00:00:00Z", datetime:"2024-11-05T01:00:00Z");

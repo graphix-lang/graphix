@@ -17,6 +17,14 @@ use std::{
 };
 use triomphe::Arc;
 
+// CR claude for claude: [style/low] This is a std::sync::Mutex, locked with `.unwrap()`
+// in the font conversion, where the repo's default is parking_lot::Mutex. parking_lot
+// is already a dependency of this crate, and it has no poisoning and no unwrap. Each
+// distinct family name is also leaked with Box::leak, because iced's Family::Name needs
+// `&'static str`. That leak is bounded only by the number of distinct names, so a
+// program that builds `Name(..)` fonts from data grows it without limit. Switch to
+// parking_lot::Mutex, and add a short invariant comment saying the set is deliberately
+// leaked (one allocation per distinct name). (x-alloc-11)
 static FONT_NAMES: LazyLock<Mutex<HashSet<&'static str>>> =
     LazyLock::new(Default::default);
 
@@ -50,6 +58,19 @@ pub struct TextSizeV(pub f32);
 impl FromValue for TextSizeV {
     fn from_value(v: Value) -> Result<Self> {
         let f = v.cast_to::<f64>()? as f32;
+        // CR claude for claude: [bug/medium] Any finite positive size is accepted, but
+        // swash/zeno cannot rasterize a glyph at huge sizes. At #size 100000 zeno's
+        // Format::buffer_size overflows u32 (a panic in debug, a wrap in release, and
+        // its unchecked to_fixed is UB further out). The panic then unwinds into the
+        // drop of GuiHandler, where render::WindowSurface destroys a surface the frame
+        // still holds: a second panic, then an abort with a core dump. Every widget
+        // that takes TextSizeV (text, canvas, text_input, text_editor, radio, toggle,
+        // markdown) can reach this from a data-driven size. Refuse sizes above a fixed
+        // bound (e.g. 4096 px), the same way 0.0 is refused, and state the bound in
+        // this doc and in the .gxi docs for #size. Separately, teardown should not
+        // panic during unwind (drop the frame's texture before the surface). probe:
+        // design/review-2026-10-12/repro/gui-core-04.gx (driver gui-core-05.sh)
+        // (gui-core-04)
         if f.is_finite() && f > 0.0 {
             Ok(Self(f))
         } else {
@@ -573,6 +594,21 @@ impl FromValue for ShortcutV {
         if logo {
             modifiers |= iced_core::keyboard::Modifiers::LOGO;
         }
+        // CR claude for claude: [bug/low] menu::shortcut claims any character works,
+        // but matching ignores modifiers, so shifted and AltGr characters never fire.
+        // ShortcutV stores `Key::Character(key.to_lowercase())`. menu_bar_widget.rs
+        // compares it with the event's `key`, which convert.rs builds from winit's
+        // `key_without_modifiers()`. A character that needs a modifier to type
+        // therefore never equals the unmodified key, and that includes '?', '!', and
+        // '€' (AltGr+E on many layouts). menu.md nonetheless says 'any one character,
+        // `é` or `€` included'. Failure: `menu::shortcut(#ctrl: true, "€")` on a German
+        // layout, or `menu::shortcut(#ctrl: true, #shift: true, "?")` on US: the label
+        // shows Ctrl+€ / Ctrl+Shift+?, but pressing those keys never triggers the
+        // action. Fix: Match on the event's `modified_key` (which has every modifier
+        // except Ctrl applied) when the shortcut's character differs from its
+        // unmodified form, or document that the key is the unmodified key on the user's
+        // layout. Unverified: the reviewer's report, not checked by a verifier.
+        // (book-ui-a-18)
         let iced_key = iced_core::keyboard::Key::Character(key.to_lowercase().into());
         Ok(Self { display, key: iced_key, modifiers })
     }

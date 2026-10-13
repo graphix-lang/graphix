@@ -1,0 +1,7 @@
+// impure_trycatch_catch_capture is vacuous: the handler `res <- (x + k)`
+// does not sample `e`, so it writes at init whether or not anything
+// raises. This program has NO raise and yields the same [4, 5, 6, 7]
+// the test pins (graphix-fuzz run: both engines).
+let counter = 0;
+let k = 3;
+array::map([1, 2, 3, 4], |x: i64| { counter <- x; let res = never(); catch(e) res <- (x + k); res })

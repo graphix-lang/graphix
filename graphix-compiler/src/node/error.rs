@@ -42,6 +42,29 @@ fn typ_echain(param: Type) -> Type {
 
 /// The fields of `ErrChain<'a>` in a structurally typed world: a struct
 /// with exactly these names IS the chain.
+// CR claude for claude: [bug/medium] This decides chain-ness by the four field names
+// alone. fix_echain_typ and is_chain_type therefore keep Error<{cause: i64, error: i64,
+// ori: i64, pos: i64}> unwrapped. At run time wrap_error extends the same value as a
+// chain: the old struct moves into `cause`, and `ori`/`pos` become the real Ori and
+// Pos, while the types still say i64. The check passes. Both engines then fail with "no
+// arm matches ...: a coverage hole in the check". The shape test must also require
+// ErrChain's field types (cause: [ErrChain<_>, null], ori: Ori, pos: Pos), or chains
+// need a nominal marker (see c-error-op-01) that both the check and chain_error use.
+// probe: design/review-2026-10-12/repro/c-error-op-02.gx (c-error-op-02)
+// CR claude for eric: [bug/high] A struct counts as a chain here when its field names
+// are cause, error, ori and pos, whatever their types. `Type::chain_type` and
+// `chain_error` use the same name-only test. When it matches, `fix_echain_typ` keeps
+// the user's field types, but `wrap_error` replaces cause, ori and pos with a new link
+// (the raised struct, an Ori, a {column, line} struct). So a handler that reads
+// `(e.0).pos` or `(e.0).cause` as i64 gets a struct. With fusion on, the kernel panics
+// on the param-kind check in fusion/kernel.rs and the runtime dies. With fusion off, an
+// i64 binding ends up holding an array of errors. A generic `Result<i64, 'e>`
+// instantiated at such a struct does the same. One fix is to decide "is a chain" by
+// type and value shape together: cause fits [ErrChain<_>, null], ori is Ori, pos is
+// Pos, both at check and at delivery, and wrap any other struct as a new chain. The
+// other is to make the chain nominal. This is a language-rule choice. Either way,
+// `raise_chains_by_shape` should also read cause and pos. probe:
+// design/review-2026-10-12/repro/tests-lang-rest-a-01.gx (tests-lang-rest-a-01)
 fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
     const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
     fields.len() == NAMES.len()
@@ -51,6 +74,20 @@ fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
 /// A raised value that is a chain already, by its top-level shape alone
 /// (the check decides by the same shape, [`fix_echain_typ`]): its
 /// `error` field.
+// CR claude for eric: [bug/medium] chain_error decides chain-ness from the value's
+// shape, but the check (fix_echain_typ via is_chain_type) decides it from the type, and
+// a struct, a tuple and an array share one runtime form. Any payload whose value is
+// four [name, value] pairs named cause/error/ori/pos, typed Array<Array<string>> or as
+// a tuple of pairs, is typed Error<ErrChain<payload>> but delivered as an extended
+// chain whose `error` is the inner entry. A handler reading `(e.0).error` then gets a
+// value of another type: a select over it hits "no arm matches: a coverage hole in the
+// check" in both engines, and a tuple destructure produces nothing. Fix: make
+// chain-ness a nominal fact rather than a shape, either a runtime marker user data
+// cannot forge (an abstract ErrChain) or a per-`?`-site static decision stored in the
+// Qop, its image and QopSite so wrap_error never inspects the value; union payloads
+// that mix chains and non-chains need the marker. Share one NAMES constant with
+// is_echain_shape. probe: design/review-2026-10-12/repro/c-error-op-01.gx
+// (c-error-op-01)
 fn chain_error(e: &Value) -> Option<Value> {
     const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
     let Value::Array(fields) = e else { return None };
@@ -73,6 +110,16 @@ fn chain_error(e: &Value) -> Option<Value> {
     error
 }
 
+// CR claude for claude: [perf/low] Every raise rebuilds the parts of the chain that
+// depend only on the site: the `pos` pair array and `spec.ori.to_value()` (for a file
+// origin: the path string, its parent chain and the pair arrays). A `?` on null also
+// calls null_error per raise, in the node-walk and in the JIT helper alike, and
+// null_error pretty-prints the operand Expr through format_compact! each time. A
+// program that uses `?` on lookups as normal control flow pays roughly ten allocations
+// per miss, plus a print of the operand (the reviewer measured about 50 µs per raise
+// for a long operand). Fix: cache the site's constant parts lazily, built on first
+// raise: the `ori` and `pos` values and the NullError payload, held on Qop and on the
+// JIT's QopSite. wrap_error then allocates only the four-field chain. (x-alloc-04)
 pub(crate) fn wrap_error(spec: &Expr, e: Value) -> Value {
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
@@ -171,6 +218,14 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
         {
             return Ok(());
         }
+        // CR claude for claude: [readability/low] A catch that saw no raise at its own
+        // check seals at bottom. Every later raise compiled under it, such as a later
+        // REPL input or a dynamic module's body, is then refused with "handler was
+        // checked to take _". The `_` names nothing, and the message does not mention
+        // the cure. Example: in the REPL, `catch(e) println("caught [e]")` then `let v
+        // = error(41)?`. When the sealed type is bottom (or still open), say that this
+        // catch saw no error when it was checked and must be annotated with the error
+        // type it should take (`catch(e: Error<..>)`). (x-rerun-1-07)
         Some(t) if handler.sealed() && !etyp.has_unbound() => bail!(
             "this error reaches a catch whose handler was checked to take {t}, \
              which does not contain {etyp}"
@@ -382,6 +437,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             .as_ref()
             .and_then(|a| a.capture().filter(|_| a.pending.is_none()));
         // a delivery whose raise was given up while asleep is not counted again
+        // CR claude for claude: [bug/high] `received != generation()` is supposed to
+        // reject a delivery whose raise give_up_in_flight already acknowledged. A seq
+        // abort also advances generation (ErrorHandler::abort), and then the test lets
+        // the stale delivery through. When it happens: a run raises several errors in
+        // one cycle, so their deliveries queue one per cycle. The arm sleeps while they
+        // are still arriving, and give_up_in_flight acknowledges them all. After the
+        // wake, abort(..) fires in a cycle where an old delivery still arrives. What
+        // follows: - The stale delivery is counted, and its handled() decrements the
+        // enclosing handlers' `nested` with no raise behind it. Debug builds panic with
+        // "unraised nested error". In release `nested` wraps, so the enclosing
+        // handler's action never runs again. - The manual abort fire then pushes
+        // `received` one past `generation`. The machine's action never runs, so the seq
+        // stays busy and drops every trigger. - The next sleep's give_up_in_flight loop
+        // spins about 2^64 times. Probe:
+        // design/review-2026-10-12/repro/x-invalid-states-03.sh. Fix: count raises and
+        // aborts separately (a raise cursor that only raise() moves, which
+        // give_up_in_flight and handled() follow). Also recognize a delivery from
+        // before a give-up by an epoch rather than by counter equality: today the
+        // Rethrow handler still re-raises those stale errors to the outer catch, and a
+        // `try` can capture an error from a given-up run. Catch::update and
+        // ErrorRelay::update carry copies of the same cursor logic. Make it one struct
+        // that both use. (x-invalid-states-03)
         let delivered = match read_var(ctx, &self.bind_id) {
             Some(VarRead::Delivered(tv))
                 if self.last_cycle != Some(cycle)
@@ -618,6 +695,18 @@ fn strip_production<'a>(
         return resident.ride();
     }
     tv.with_value(sink);
+    // CR claude for claude: [bug/medium] A stripped error becomes a bare FRESH bottom
+    // here, which drops the input tag's WAKE bit. Arithmetic bottoms with
+    // `set_bottom_as(tag)` and keeps it. At an arm's wake, a constant `error(`E)` fires
+    // with WAKE only. After `$` or `?`, the `<-` target's `let` takes it as a real fire
+    // of its initializer and forgets its written value. With `1 / 0`, `never()` or `5`
+    // as the initializer the value survives, as the wake catch-up rule requires. Fix:
+    // return `resident.set_bottom_as(tv.tag())`. SelectCtx::emit has the same loss: its
+    // bottom arm is a bare `Tag::FRESH_BOTTOM` while a value gets WAKE_FIRED, so with
+    // the initializer `select 1 { 1 => 1 / 0, _ => 2 }` the node-walk forgets the value
+    // and the JIT keeps it. The SeqGuard `set_bottom(true)` sites in this file have the
+    // same shape. Add a pin that compares these initializers under a wake. probe:
+    // design/review-2026-10-12/repro/c-error-op-03.gx (c-error-op-03)
     resident.set_bottom(true)
 }
 
@@ -703,6 +792,20 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
 /// The error type a `?` delivers for `etyp`: the payload wrapped in an
 /// `ErrChain`, once. `wrap_error` chains a caught error rather than
 /// nesting it, so a chain arriving from a callee's throws keeps its type.
+// CR claude for claude: [bug/high] A struct payload with the chain's four field names
+// (cause/error/ori/pos) counts as a chain here, in `is_chain_type` and in
+// `Type::chain_type`, by its names alone. So `?` keeps the user's field types as the
+// thrown type. At run time, `wrap_error` (via `chain_error`) also recognizes it by its
+// names, and the caught value it builds has a real Ori in `ori`, a {column, line}
+// struct in `pos` and the user's whole struct in `cause`. As a result, `error({cause:
+// "c", error: `X, ori: 41, pos: 3})?` checks with `(e.0).ori: i64` and `(e.0).cause:
+// string`. Under the node-walk it computes garbage. Under the JIT it panics in
+// `Kernel::stage` ("runtime Array does not match the compiled Scalar(I64) slot") and
+// aborts the runtime. Fix: treat a payload with those names as a chain only when it
+// fits `ErrChain<E>`, with E its `error` field's type, at all three sites, and refuse
+// at `?` any other struct with those four names, because `chain_error` would rewrite
+// it. The alternative is to make run-time chain recognition nominal. probe:
+// design/review-2026-10-12/repro/t-typ-mod-02.gx (t-typ-mod-02)
 fn fix_echain_typ<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     etyp: &Type,
@@ -731,6 +834,25 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             {
                 Ok(etyp.clone())
             }
+            // CR claude for eric: [bug/high] The check and the delivery disagree on the
+            // type of the link a chain-shaped raise produces. Both `is_echain_shape`
+            // and `chain_error` decide chain-ness by field names alone. `wrap_error`
+            // then builds a new link: its cause is the whole raised struct, and its ori
+            // and pos are the real Ori and Pos. This arm keeps the raised struct's own
+            // field types, and `Type::chain_type` collapses `ErrChain<S>` to `S` by the
+            // same names. As a result, `error({cause: 1, error: 20, ori: 3, pos: 4})?`
+            // gives a handler whose `(e.0).cause`, `.ori` and `.pos` are typed i64 but
+            // hold a struct and the Ori/Pos records. Under fusion this panics in
+            // `Kernel::stage` (the param does not match its compiled slot), which kills
+            // the runtime. The node-walk computes garbage instead. Possible fixes: (a)
+            // make the chain link something a user value cannot imitate, such as an
+            // Abstract or a reserved tag that `chain_error` tests; or (b) keep shapes,
+            // but have this arm type the extended link as `ErrChain<typeof error>` and
+            // refuse a chain-shaped payload whose cause/ori/pos types are not
+            // ErrChain's. With either fix, extend the pin `raise_chains_by_shape` so it
+            // reads `.cause`, `.ori` and `.pos`. probe:
+            // design/review-2026-10-12/repro/x-engine-seq-errors-03.gx
+            // (x-engine-seq-errors-01)
             Some(Type::Struct(fields)) if is_echain_shape(fields) => Ok(etyp.clone()),
             // a payload chains by the shape of each value's own type, as
             // delivery decides (`chain_error`): the chain members of a
@@ -758,6 +880,17 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
                 let wrap = Type::Error(Arc::new(typ_echain(rest)));
                 match chains.is_empty() {
                     true => Ok(wrap),
+                    // CR claude for claude: [bug/low] A union payload with both chain
+                    // and non-chain members comes out as a set of separate Error types,
+                    // [Error<chain>, Error<ErrChain<rest>>]. Two separate raises of the
+                    // same payloads join into one Error<[..]>. So a handler that reads
+                    // `e.0` works for separate raises but is refused for the union
+                    // raise: tuple_field_type has no arm for a set of Errors, and the
+                    // error is "expected tuple not [Error<..>, Error<..>]". Fix: build
+                    // one Error over the union of the payloads, Error<[chain members..,
+                    // ErrChain<rest>]>. Delivery wraps per value, so that type holds
+                    // every delivered value. probe:
+                    // design/review-2026-10-12/repro/x-rerun-1-10.gx (x-rerun-1-10)
                     false => Ok(Type::Set(Arc::from_iter(chains.drain(..).chain([wrap])))),
                 }
             }
@@ -1249,6 +1382,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
 }
 
 #[derive(Debug)]
+// CR claude for claude: [structure/low] OrNever repeats Qop almost whole: the fields,
+// the image codec, compile, the strip choice in typecheck0_with, the strip_production
+// update and emit_qop_node emission. The two differ only in where a stripped error goes
+// (`?`: raise to a handler or log as unhandled; `$`: log as ignored, or drop a null). A
+// rule change to `?`'s strip or typing has to be made twice, or `$` drifts. Fix: one
+// node whose sink is an enum (`Raise { handler: Option<ErrorHandler>, top_id, flags }`
+// or `Ignore`), with one typecheck that joins into the handler only for Raise, and the
+// sink mapped straight onto QopSink. The two NodeTags can stay if the image format
+// wants them. (c-error-op-07)
 pub struct OrNever<R: Rt, E: UserEvent> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
@@ -1468,6 +1610,33 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }
         if let Some(handler) = &self.handler {
             let etyp = match self.strip {
+                // CR claude for eric: [bug/low] The raised type is the operand minus
+                // what passes through. For an operand typed Any (or [Any, null]),
+                // Strip::of picks the error form, because Any holds an error. What
+                // passes through is still Any, so the difference is the empty set.
+                // fix_echain_typ then refuses with "expected error not []", which names
+                // neither the operand nor its type. `x$` on the same operand is
+                // accepted. Decide whether `?` on Any raises Error<ErrChain<Any>> to
+                // the catch, with the error part computed directly rather than by
+                // subtraction, or is refused with a message like the open-operand one
+                // in Strip::of ("the operand of ? has type Any, ...: annotate it").
+                // probe: design/review-2026-10-12/repro/x-rerun-1-14.gx (x-rerun-1-14)
+                // CR claude for claude: [bug/medium] Strip::of picks Strip::Error for
+                // an Any operand or a union with an open member (`['a, null]`), since
+                // both contain Error<_>. strip_typ's diff cannot split them, so the
+                // success type is the whole operand, the raised type computed here is
+                // the empty union, and fix_echain_typ refuses with "expected error not
+                // []". So `|x: ['a, null]| x?` is refused with a meaningless message,
+                // even though it follows the "annotate it" advice Strip::of gives. `let
+                // x: Any = ..; { catch(e) ..; x? }` is refused the same way. The strip
+                // is recomputed per instance, so the definition and its instances also
+                // disagree: under `$` the definition types `['a, null]` as keeping
+                // null, but the i64 instance strips it. Fix: compute the raised type
+                // positively (the operand's Error members, or Error<Any> for an
+                // Any/open operand), and have Strip::of choose Strip::Null when the
+                // only error candidate is an open cell beside a written null. At the
+                // least, refuse with Strip::of's annotate diagnostic. probe:
+                // design/review-2026-10-12/repro/c-error-op-04.gx (c-error-op-04)
                 Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
                 Strip::Null => NULL_ERR.clone(),
             };
@@ -1521,6 +1690,15 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 /// it tells the builtin when the function raised, and passes each error
 /// on to the handler covering the builtin, or logs it where none does.
 #[derive(Debug)]
+// CR claude for claude: [structure/low] ErrorRelay copies Catch's raise-receipt
+// protocol. Both have the same handler/received/last_cycle fields, the same delivery
+// guard (not taken this cycle, fired, generation outstanding) followed by `received +=
+// 1; handled()`, and an identical give_up_in_flight. A change to the rule in one, such
+// as how a delivery given up while asleep is counted, will not reach the other, and
+// http/rpc handler errors would then be acknowledged differently from in-language
+// catches. Fix: one struct holding the ErrorHandler, `received` and `last_cycle`, with
+// `take(ctx) -> Option<TagValue>` and `give_up_in_flight()`, owned by both Catch and
+// ErrorRelay. (c-error-op-06)
 pub struct ErrorRelay {
     handler: ErrorHandler,
     received: u64,

@@ -1,0 +1,1 @@
+trait Show { val show: fn(self) -> string = |s| "dflt" }

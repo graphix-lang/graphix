@@ -1,3 +1,10 @@
+// CR claude for claude: [doc-drift/low] The defaults are f64 (0.0 and 1.0). For an
+// integer 'a, a call that omits either bound is refused, and the error points at the
+// default inside module /rand: `rand(#start: 5, #clock: c)` gives "'a: i64 does not
+// contain f64". The draw also fires on any argument, not only #clock, because the args
+// are CachedVals, so a change to #start or #end draws a new number. Fix the doc: an
+// integer range must give both bounds, and a bound change also draws. An empty range
+// produces nothing, which is also worth stating. (gx-stdlib-10)
 /// generate a random number between #start and #end (exclusive)
 /// every time #clock updates. If start and end are not specified,
 /// they default to 0.0 and 1.0

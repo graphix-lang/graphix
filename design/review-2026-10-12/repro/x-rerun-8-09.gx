@@ -1,0 +1,15 @@
+// x-rerun-8-09 (variant of x-parallel-02, the unbounded ref expansion): a
+// non-regular recursive typedef, whose self-reference applies the formal
+// to a bigger type, hangs the checker. Each step of the coinductive walk
+// meets a new pair T<['a, string, ..]> vs T<[i64, f64, string, ..]>, so the
+// RefPair memo never closes. Env::deftype accepts the typedef (it is
+// contractive: graphix-types/src/env.rs:1687 checks guardedness only).
+// command: timeout -s KILL 20 graphix --check x-rerun-8-09.gx   (the LSP shares the path)
+// expected: refused at the typedef (a recursive reference must apply the
+//   formals unchanged), or the let checked at once
+// observed: no answer, CPU-bound, killed by the timeout (exit 137); also
+//   `let g = |t: T<'b>| -> T<['b, i64]> t` alone hangs
+type T<'a> = {n: [T<['a, string]>, null], v: 'a};
+let x: T<i64> = {n: null, v: 1};
+let y: T<[i64, f64]> = x;
+y.v

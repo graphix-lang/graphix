@@ -1,0 +1,21 @@
+// c-lambda-01: builtin callbacks judged by def facts that count unresolved
+// calls pure, so #[sync] accepts async fns.
+// Command: graphix --no-cache design/review-2026-10-12/repro/c-lambda-01.gx
+// (same with --no-fusion). Controls: `opt::map(y, k)` and `k(y)` in place of
+// the literal are both refused "#[sync]: this function is async".
+// `#[sync]` is accepted on `f` and `h`, yet each result lands one second
+// after its call. Each hands opt::map a callback literal that calls a
+// function the literal's definition check cannot resolve (the enclosing
+// parameter `k`; its own parameter `g`, which opt::map takes from the
+// data), and analysis::def_body_facts counts both calls pure. A builtin's
+// callback is judged by its definition's facts alone.
+// Expect: two `#[sync]` refusals. Got: prints (3, 1.00..s, 3, 1.00..s).
+#[sync]
+let f = |y: [i64, null], k: fn(v: i64) -> i64| opt::map(y, |v| k(v));
+#[sync]
+let h = |m: [fn(x: i64) -> i64, null]| opt::map(m, |g| g(3));
+let t0 = sys::time::now(null);
+let r = f(3, |v| sys::time::after_idle(duration:1.s, v));
+let q = h(|v| sys::time::after_idle(duration:1.s, v));
+sys::exit(sys::time::after_idle(duration:500.ms, (r, q) ~ 0));
+(r, sys::time::diff(sys::time::now(r), t0), q, sys::time::diff(sys::time::now(q), t0))

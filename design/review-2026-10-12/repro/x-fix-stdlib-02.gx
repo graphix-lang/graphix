@@ -1,0 +1,17 @@
+// x-fix-stdlib-02: http::serve idle connections hold #max_connections permits forever
+// (hyper http1::Builder has no timer, so no header_read_timeout applies).
+// Command (two shells, or background the server):
+//   timeout -s KILL 40 graphix --no-cache x-fix-stdlib-02.gx &
+//   timeout -s KILL 35 python3 -I x-fix-stdlib-02.py
+// Expected: a peer that sends nothing is dropped after a header timeout, and the
+// third request is answered.
+// Observed: "third request failed after 8.06 s: timed out", then
+// "after closing idle: b'hi' 0.0". Held 40 s (past hyper's 30 s default, which needs
+// a timer), both idle sockets are still open and a new request still times out.
+let s = http::serve(
+  #addr: "127.0.0.1:18431",
+  #max_connections: 2,
+  #handler: |req: http::Request| -> http::Response { body: "hi", headers: [], status: u16:200, url: req.path }
+);
+sys::exit(sys::time::after_idle(duration:20.s, 0));
+s

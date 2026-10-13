@@ -1,0 +1,11 @@
+// gx-ui-01: the same wrapper called every 50ms runs its callback once: hits stays 1 while n climbs.
+let hits = 0;
+let value = &5;
+let cb = |v: i64| hits <- v ~ hits + 1;
+let wrap = |v: Any| cb(*value);
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+wrap(n);
+sys::exit(sys::time::timer(duration:600.ms, false) ~ 0);
+"n=[n] hits=[hits]"

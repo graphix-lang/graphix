@@ -1,0 +1,17 @@
+// sys-io-03: Lines::lines (unbatched) reads the whole input ahead into the runtime's
+// per-variable write queue (var_updates): no backpressure, ~80-90 bytes per pending line.
+// Setup: python3 -c "open('/tmp/l.txt','w').write('x\n'*10000000)"   (20 MB, 10M lines)
+// Run:   timeout -s KILL 60 probe-run 1G graphix --no-cache sys-io-03.gx
+// expect: memory bounded by the reader's channel (a few 64 KiB chunks), as with
+//         Lines::lines_batched (same file, `n <- l ~ n + array::len(l)`, under the
+//         1G cap: prints 10000000 every second, exits 0)
+// actual: OOM-killed under the 1G cap before the first print. On a 1M-line file
+//         RSS at 3 s is 174 MB vs 93 MB batched while lines arrive ~90k/s, one
+//         per cycle, the reader having already read the whole file.
+use sys::io::Lines;
+let f = sys::fs::open(`Read, "/tmp/l.txt")$;
+let l = Lines::lines(f)$;
+let n = 0;
+n <- l ~ n + 1;
+sys::exit(sys::time::timer(duration:6.s, false) ~ 0);
+sys::time::timer(duration:1.s, true) ~ n

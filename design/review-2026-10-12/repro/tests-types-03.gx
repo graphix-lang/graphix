@@ -1,0 +1,8 @@
+// The "not polymorphic" refusal names the environment's variable by its raw
+// 19-digit id (callsite.rs:460 prints tv.name), and so does the
+// unsatisfiable-constraints refusal (settle.rs:101); a35fde31 shortened ids
+// only in TVar's Display.
+let st = never();
+let g = |x| { st <- x; st };
+let h = |f: fn<'b: Any>(x: 'b) -> 'b| f(1);
+h(g)

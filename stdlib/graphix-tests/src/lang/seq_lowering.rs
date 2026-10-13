@@ -61,6 +61,14 @@ async fn try_value_takes_the_annotation(mode: Mode) -> Result<()> {
 }
 
 // An attribute on a seq statement annotates its computation.
+// CR claude for claude: [test-gap/low] This test passes with both attributes dropped:
+// 83 does not depend on them. `#[sync]` on a lambda let is pinned in lowering_refusals.
+// Nothing pins `#[native]` on a non-lambda statement, which the lowering moves onto the
+// step's value. A lowering that lost it there would accept `seq { #[native] let y = t ~
+// 5; y }` silently, and the positive `#[native]` fixtures in seq_calls and seqq would
+// still pass. Add to lowering_refusals: `{ let t = sys::time::timer(duration:1.ms,
+// false); seq { #[native] let y = t ~ 5; y } }` must be refused with 'did not fully
+// fuse'. Then drop the attributes from this test, or delete it. (tests-seq-07)
 async fn statement_attributes_apply(mode: Mode) -> Result<()> {
     let code = r#"seq {
         #[sync]

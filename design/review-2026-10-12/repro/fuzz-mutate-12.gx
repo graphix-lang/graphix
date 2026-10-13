@@ -1,0 +1,12 @@
+// fuzz-mutate-12: mustreject has no reserved-name guard, unlike typemorph::probes.
+// The subject binds `tm__0` and its lambda body reads it; rigid-var inserts
+// `let tm__0 = x == 1;` as the lambda's first statement, which shadows the
+// outer name, so the body now returns bool.
+// Command: graphix-fuzz typemorph-one <verdict-file> 5000 < this file
+//   observed: REJECT rigid-var#3 ok
+// The mutant `{ let tm__0 = 1; let f = 'a: Number |x: 'a| -> i64 { let tm__0 = x == 1; tm__0 }; f(2) }`
+// with `'a` replaced by i64 (no rigid variable left) is still refused by
+// `graphix --check`: "type mismatch i64 does not contain bool". Expected: a
+// rigid-var mutant refused only for rigidity; observed: a second refusal at
+// the same site, so a regression of the rigid-variable rule stays "ok".
+{ let tm__0 = 1; let f = 'a: Number |x: 'a| -> i64 tm__0; f(2) }

@@ -1,0 +1,6 @@
+type Shape = [`Circle(f64), `Rect(f64, f64), `Tri(f64, f64, f64)];
+let s: Shape = `Circle(1.0);
+let b = true;
+let r = select b { true => s, false => never() };
+let q: i64 = r;
+0

@@ -58,6 +58,14 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 /// The process's clipboard, one instance for every call and the event
 /// loop: on X11 the instance owns what was written, so dropping it after
 /// each call would lose the text unless a clipboard manager took it.
+// CR claude for claude: [risk/low] A static is never dropped, and the shell ends with
+// std::process::exit or a return from main. arboard's X11 backend (Wayland too, since
+// wayland-data-control is off) hands the selection to a clipboard manager only in the
+// Drop of the last Clipboard. So text written by write_text, or copied from a widget,
+// is lost when graphix exits, even on a desktop whose manager would have kept it. Fix:
+// take the Option and drop the instance when the session ends, in GuiHandler::finish
+// and on the shell's exit path before it exits (for example a package shutdown hook).
+// That keeps one instance while running and still does the handover. (gui-core-06)
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
 pub(crate) fn clipboard<T>(

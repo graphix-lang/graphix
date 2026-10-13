@@ -1,0 +1,3 @@
+type T = string;
+let x: T = "a";
+trait Show { val show: fn(self) -> string }

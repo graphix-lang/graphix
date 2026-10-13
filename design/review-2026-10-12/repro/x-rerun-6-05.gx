@@ -1,0 +1,13 @@
+// x-rerun-6-05: a kernel drops the unhandled-error log of a `?` whose value is unused
+// run: graphix --no-cache --no-fusion x-rerun-6-05.gx   vs   graphix --no-cache x-rerun-6-05.gx
+// expected (CLAUDE.md: handler-less `?` logs from both backends): both print
+//   `unhandled error in file ... line: 7, column: 41 "T"` beside the values 0..10
+// observed: the node-walk prints it; the fused run (graphix-fuzz run: fused=5) prints
+//   only the "will not be caught" warning and the values; `let k = e?; s` is the same
+let f = |e: [i64, Error<`T>], s: i64| { e?; s };
+let step = 0;
+step <- select step { n if n < 10 => n + 1, _ => never() };
+let e: [i64, Error<`T>] = select step { 5 => error(`T), n => n };
+let r = f(e, step);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+r

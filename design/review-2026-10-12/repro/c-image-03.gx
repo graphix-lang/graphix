@@ -1,0 +1,11 @@
+// c-image-03: Shell panics ("called after complete") when the runtime aborts after its first cycle
+// command: GRAPHIX_ACTIVATION_BUDGET=20 graphix --no-cache design/review-2026-10-12/repro/c-image-03.gx
+// expected: 0, 55, 210, then the clean "a runaway recursion exceeded the runtime's budget" error
+// observed (about 5 runs in 6; select! picks branches at random): 0, 55, 210, then "thread 'graphix-tokio' panicked at .../tokio/src/sync/oneshot.rs:
+//   called after complete" and "Error: tokio thread panicked" (backtrace through Shell::run);
+//   Shell::run polls the exit oneshot again after it resolved Err (sender dropped with the runtime).
+let rec f = |n: i64| -> i64 select n { 0 => 0, k => k + f(k - 1) };
+let depth = 0;
+depth <- select depth { d if d < 100 => d + 10, _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, depth ~ 0));
+f(depth)

@@ -1,0 +1,10 @@
+// `[x]` over [Array<i64>, Array<string>] narrows x to i64 (the first
+// member) so a one-element string array skips the arm. Both engines
+// print ["one", "other"]; expected ["one", "one"].
+// `[h, rest..] => 1, [] => 0` over the same union is refused
+// ("no arm covers Array<string>"), as is the List analogue.
+let g = |p: [Array<i64>, Array<string>]| select p {
+  [x] => "one",
+  _ => "other"
+};
+(g([1]), g(["s"]))

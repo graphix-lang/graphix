@@ -1,0 +1,11 @@
+// A select arm's restart builtin (count, once, take, skip, uniq, hold)
+// starts over when the arm wakes: prints c 1, 2, 3, -1, then 1, 2, ...
+// SKILL.md says only that unselected arms are "paused".
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+let t = sys::time::timer(duration:20.ms, true);
+let on = true;
+on <- sys::time::timer(duration:70.ms, false) ~ false;
+on <- sys::time::timer(duration:150.ms, false) ~ true;
+let c = select on { true => count(t), false => -1 };
+println("c [c]");
+null

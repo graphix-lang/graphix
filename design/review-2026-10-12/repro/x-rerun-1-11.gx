@@ -1,0 +1,10 @@
+// x-rerun-1-11: a builtin handed to a collection HOF reports its call site
+// as the compiler's placeholder expression `"nop"` at line 1, column 1.
+//
+// command: graphix --no-cache design/review-2026-10-12/repro/x-rerun-1-11.gx
+//
+// expected: each dbg line names a site in this file (the callback argument
+// or the array::map call), as `array::map([1, 2, 3], |x| dbg(x))` does.
+// observed: `line: 1, column: 1 dbg("nop"): 1` (and 2, 3).
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::map([1, 2, 3], dbg)

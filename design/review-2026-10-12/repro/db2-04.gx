@@ -1,0 +1,14 @@
+// db2-04: #prefix is a string prefix for Tree<string, _> but an exact match for a union key type
+// run: rm -rf /tmp/db2-04.db && graphix --no-cache design/review-2026-10-12/repro/db2-04.gx
+// expected: (("aa1", 1), ("aa1", 1))   both trees hold key "aa1", both cursors filter by #prefix "aa"
+// observed: (("aa1", 1), null)         the [string, i64]-keyed tree's prefix encodes with the 0 0 terminator
+let db = db::open("/tmp/db2-04.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "x")$;
+let a = db::insert(t, "aa1", 1)$;
+let r = db::cursor::read(db::cursor::new(#prefix: "aa", t), a);
+let u: db::Tree<[string, i64], i64> = db::tree(db, "u")$;
+let ua = db::insert(u, "aa1", 1)$;
+let pp: [string, i64] = "aa";
+let ur = db::cursor::read(db::cursor::new(#prefix: pp, u), ua);
+sys::exit(sys::time::after_idle(duration: 300.ms, 0));
+(r, ur)

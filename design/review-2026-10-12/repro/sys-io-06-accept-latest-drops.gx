@@ -1,0 +1,16 @@
+// expect: (100, 0) every run: every connection the clients made is accepted
+// actual: occasionally (99, 1): Calls::Latest renews the reply id while a completed accept is in flight, dropping (closing) that connection
+use sys::io::Read;
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(l)$;
+let clients = array::init(100, |i| sys::tcp::connect(addr)$);
+let ev = never();
+let held = array::map(clients, |c| { ev <- Read::read(c, u64:1) ~ 1; c });
+let lost = 0;
+lost <- ev ~ lost + 1;
+let conn = sys::tcp::accept(l, sys::time::timer(duration:1.ms, true))$;
+let all = [];
+all <- conn ~ array::push(all, conn);
+let r = (array::len(all), lost);
+sys::exit(sys::time::timer(duration:3.s, false) ~ 0);
+sys::time::timer(duration:2900.ms, false) ~ r

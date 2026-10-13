@@ -1,0 +1,9 @@
+let size = 500;
+let go = 1;
+let last = -1;
+let cnt = count(last);
+let t0 = sys::time::now(go);
+let w = array::init(size, |i| { last <- go ~ i; i });
+let t1 = sys::time::now(select cnt { c if c == size => c, _ => never() });
+sys::exit(sys::time::after_idle(duration:50.ms, t1 ~ 0));
+(array::len(w), sys::time::diff(t1, t0))

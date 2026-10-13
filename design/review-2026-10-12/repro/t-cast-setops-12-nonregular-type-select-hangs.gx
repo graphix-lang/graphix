@@ -1,0 +1,4 @@
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let x: [N<i64>, N<string>] = (1, ([2], null));
+let s = select x { N<i64> as a => 0, N<string> as b => 1 };
+s

@@ -1,0 +1,25 @@
+// http::serve (stdlib/graphix-package-http/src/graphix/mod.gxi:72-75,
+// shown in book/src/stdlib/http.md).
+// 1. A handler that raises: the 500's body is the whole ErrChain, with
+//    the server's absolute source path and position, sent to the client.
+// 2. A handler with no value for a request (`/never`): the gxi says 500;
+//    the request hangs until the client gives up (here: 1s timeout).
+// 3. `/fast`, sent 50ms after `/slow`, is answered first: each request
+//    has an instance of its own, not "in turn".
+let resp = |b: string| -> http::Response {body: b, headers: [], status: u16:200, url: ""};
+let srv = http::serve(#addr: "127.0.0.1:18731", #handler: |req: http::Request| -> http::Response select req.path {
+  "/slow" => sys::time::timer(duration:400.ms, false)$ ~ resp("slow"),
+  "/raise" => { let r: [http::Response, Error<`Boom>] = error(`Boom); r? },
+  "/never" => never(),
+  _ => resp("fast")
+})$;
+let c = http::default_client(srv)$;
+let a = http::get(c, "http://127.0.0.1:18731/slow");
+let b = http::get(sys::time::timer(duration:50.ms, false) ~ c, "http://127.0.0.1:18731/fast");
+let d = http::get(c, "http://127.0.0.1:18731/raise");
+let n = http::request(#timeout: duration:1.s, c, "http://127.0.0.1:18731/never");
+println("a [sys::time::now(a)] [a]");
+println("b [sys::time::now(b)] [b]");
+println("d [d]");
+println("n [n]");
+sys::exit(sys::time::after_idle(duration:2.s, 0))

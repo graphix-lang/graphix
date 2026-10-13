@@ -1,0 +1,16 @@
+An interface val over a compound of a signature variable (Array<'a>) hides a
+bound the implementation needs (Discernible / Ordered on the element).
+  graphix --check p.gx        # accepted (exit 0)
+  graphix --no-cache p.gx     # refused: "an instance at ... of a definition typed fn(x: '_N, ..)"
+  graphix --no-cache dynamic.gx   # loads, then the call never produces; logs
+                                  # "a run-time bind at m::eq(a, b) did not type"
+Expected: the module is refused: "the implementation requires 'a: Discernible".
+Same with `let lt = |x, y| x < y` and a call over Array<&i64> (Ordered).
+
+More witnesses (m.gxi | m.gx | call in p.gx), each: --check exit 0, run refused
+with the same internal "an instance at ... of a definition typed ..." message:
+  val f: fn(x: ['a, i64], y: ['a, i64]) -> ['a, i64] | let f = |x, y| x + y | m::f(1.5, 2)
+  val f: fn(x: ('a, i64), y: ('a, i64)) -> bool       | let f = |x, y| x < y | m::f((&1, 1), (&2, 2))
+  val f: fn(x: {a: 'a}) -> Map<{a: 'a}, i64>          | let f = |x| {x => 1}  | m::f({a: &1})
+The trait-method check refuses the same shape ("the implementation requires
+'a: Discernible"): trait Cmp { val same: fn(self, x: Array<'a>, y: Array<'a>) -> bool }.

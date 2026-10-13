@@ -353,6 +353,15 @@ impl<X: GXExt> Shell<X> {
             let mut image = RegistrationImage::default();
             // a fusion profile is of this process's compile, so it never
             // starts from the program's entry
+            // CR claude for claude: [bug/low] A restored program entry compiles
+            // nothing, so the warnings its compile emitted through `Env::warn`
+            // (`CFlag::WarnUnhandled`'s unhandled `?`, unused imports) are shown on the
+            // cold run only. The same program with the same flags prints different
+            // diagnostics depending on cache state. Fix: store the compile's warnings
+            // in the program entry and print them again on restore. They are fixed by
+            // the key and the verified sources. The simpler alternative is to write no
+            // program entry for a compile that warned. probe:
+            // design/review-2026-10-12/repro/shell-04-warm-drops-warnings.sh (shell-04)
             if !self.fusion_stats
                 && let Some(entry) = c.load(Entry::Program)
             {
@@ -400,6 +409,29 @@ impl<X: GXExt> Shell<X> {
             .context("building rt config")?
             .start()
             .await
+            // CR claude for claude: [bug/medium] Shell loses a script's output on a
+            // cold-cache run: the program image is stored before the output exists, and
+            // select! may drop queued batches. In script mode, `init` starts the
+            // runtime, which immediately runs cycles and queues GXEvent batches. The
+            // shell then awaits storing the registration and program images (lib.rs)
+            // before `load_env` builds the Output and the event loop starts. When the
+            // loop starts, the program's exit request (exit_rx) may already be ready
+            // beside the queued update batches. The loop's `select!` (lib.rs) is
+            // unbiased tokio::select!, so it can take the exit and drop every queued
+            // batch, including the program's value. With --no-cache or a warm image the
+            // loop starts at once and the value prints. On a first run in a fresh cache
+            // it is lost. The skill's own test idiom
+            // (`sys::exit(sys::time::after_idle(duration:100.ms, 0))`) hits this for
+            // larger programs. Failure: The 3-line program below prints `3` with
+            // --no-cache and on warm runs, and prints nothing on the first run in a
+            // fresh $XDG_CACHE_HOME (exit 0). With a 100 ms exit, f-jit-06's 20-element
+            // program lost its value in about 1 of 6 cold runs; with a 20 ms exit it
+            // lost it in 6 of 6 cold runs and 0 of 6 --no-cache runs. Fix: Store the
+            // images off the event path: spawn the store, or do it after Output is
+            // built and the loop runs. Make the loop `biased;` with from_gx ahead of
+            // exit_rx, and drain from_gx with try_recv before honoring an exit, so a
+            // value produced before the exit is always shown. Unverified: the
+            // reviewer's report, not checked by a verifier. (x-rerun-2-05)
             .context("loading initial modules")?;
         if let Some(cache) = cache.as_ref() {
             if let Some(rx) = pending_registration {
@@ -452,6 +484,14 @@ impl<X: GXExt> Shell<X> {
         match &self.mode {
             Mode::Check(_) => {
                 self.check_with(gx).await?;
+                // CR claude for claude: [structure/low] The library ends the process
+                // here, from inside the public `Shell::run`. That skips the teardown
+                // its other exits do, and it kills an embedder that calls `run` in
+                // `Mode::Check`. `Shell::check` exists only to avoid this. Fix: handle
+                // `Mode::Check` at the top of `run` (call `check_with`, return
+                // `Ok(Some(0))`) and let `main` exit, as it does for `sys::exit`. Then
+                // `Shell::check` is the only other path and its doc no longer needs the
+                // caveat. (shell-11)
                 exit(0)
             }
             Mode::Script(_) => {
@@ -541,6 +581,16 @@ impl<X: GXExt> Shell<X> {
         }
         // Armed before the first cycle: a program may wedge inside
         // `load_env`, before the input loop exists.
+        // CR claude for claude: [risk/low] Two error exits skip the gx.abort() and
+        // sigint.abort() at the end of run: the `?` on load_env, which is any script
+        // that fails to compile, and the `return Err(gx.stopped(..))` arm. The sigint
+        // task holds a GXHandle clone, so the runtime never sees its last handle drop.
+        // In an embedder or a test calling Shell::run, the runtime task and the Ctrl-C
+        // handler live for the rest of the process. Every cycle with work then logs
+        // 'could not send batch' to a dropped receiver. Fix: once the sigint task is
+        // armed, hold a guard whose Drop calls gx.abort() and sigint.abort(), so every
+        // exit, `?` included, stops both. See x-concurrency-09 for the runtime's send
+        // loop ignoring abort. (x-concurrency-08)
         let sigint = {
             let gx = gx.clone();
             tokio::spawn(async move {
@@ -564,7 +614,109 @@ impl<X: GXExt> Shell<X> {
         }
         let mut exit_rx = self.exit.take().expect("init installs the exit request");
         let exit = 'repl: loop {
+            // CR claude for claude: [bug/medium] When the exit request and an output
+            // batch are both ready, this unbiased select! picks one at random. The exit
+            // arm breaks without draining from_gx, so output the program has already
+            // computed is lost. Example: a script whose first cycle runs about 1s and
+            // ends with `sys::exit(sys::time::after_idle(duration:10.ms, 0))` prints
+            // nothing in about half its runs and still exits 0. Adding `biased;` with
+            // the batch arm first fixes only the cross-cycle case. ExitRequest::request
+            // runs inside the cycle, before GX::do_cycle sends that cycle's batch, so
+            // an exit in the same cycle as a value can still win. A real fix orders the
+            // exit after the batch: either deliver the exit code through from_gx at the
+            // end of the cycle (a GXEvent, say), or have the exit arm wait for the
+            // current cycle's batch and print it before breaking. probe:
+            // design/review-2026-10-12/repro/x-stack-03.gx (x-stack-03)
+            // CR claude for claude: [bug/medium] This select! is unbiased. When
+            // sys::exit completes exit_rx while an update batch from an earlier cycle
+            // is still queued in from_gx, tokio picks between the two arms at random.
+            // When it picks the exit arm, the loop breaks and the batch is dropped:
+            // output the program produced before exiting is never printed, and the
+            // process still exits 0. This hits the
+            // `sys::exit(sys::time::after_idle(..))` idiom whenever cycle 0 outlasts
+            // the delay. Fix: make the loop `biased;` with the from_gx arm ahead of
+            // exit_rx. When the exit arm wins, also drain `from_gx.try_recv()` through
+            // the same batch processing before breaking. Probe:
+            // design/review-2026-10-12/repro/x-perf-compile-05.sh (prints 100 in 5/20
+            // runs, expected 20/20). (x-perf-compile-05)
+            // CR claude for claude: [bug/medium] This select is unbiased. In script
+            // mode, when an Updated batch and the exit request are both ready, the
+            // random rotation reaches exit_rx first 3 times in 4 (terminated and input
+            // are pending and wrap round to it), and `break 'repl` drops the batch
+            // still queued in from_gx. A script gated by
+            // `sys::exit(sys::time::after_idle(..))` whose first cycle outlasts the
+            // idle loses its result about 75% of the time. A script that exits in the
+            // cycle that produces its value (`sys::exit(r ~ 0)`) loses it most of the
+            // time too, because `Exit::update` signals before `do_cycle` sends that
+            // cycle's batch. Fix: on exit, drain from_gx with `try_recv` through
+            // `output.process_update` before breaking. That covers a batch already
+            // queued. The same-cycle case also needs the runtime to send the cycle's
+            // batch before the shell acts on the exit (e.g. deliver the exit code as an
+            // event after the batch), or a documented rule that exit ends the program
+            // before its own cycle's output. probe:
+            // design/review-2026-10-12/repro/c-collection-04.gx (c-collection-04)
             select! {
+                // CR claude for claude: [bug/medium] The exit request can win this
+                // unbiased select! while from_gx still holds batches, and breaking here
+                // drops them unprinted. ExitRequest::request sends during the cycle
+                // that calls sys::exit, before that cycle's batch is sent, so even the
+                // exit cycle's own value is usually lost: `let x =
+                // sys::time::after_idle(duration:200.ms, 42); sys::exit(x ~ 0); x`
+                // under --no-cache prints nothing in about 2 of 3 runs. On a cold start
+                // Shell::init is still writing the images while the runtime runs, so a
+                // script can lose all of its output: a counter that exits at 6 prints
+                // nothing in about 1 of 9 cold runs and always prints 0..5 warm.
+                // Draining from_gx with try_recv before breaking fixes the earlier
+                // cycles but not the exit cycle's own value. A full fix delivers the
+                // exit in order with the output: the runtime sends it on the event
+                // channel after the batch of the cycle that requested it, or the shell
+                // does a round trip to the runtime after the exit request and then
+                // drains from_gx. probe: design/review-2026-10-12/repro/x-image-01.sh
+                // (x-image-01)
+                // CR claude for claude: [bug/medium] This arm breaks as soon as
+                // `sys::exit` asks, so the script's last value is often never printed.
+                // `Exit::update` sends on the oneshot in the middle of the cycle,
+                // before `do_cycle` has sent that cycle's `GXEvent::Updated` batch.
+                // When the timer exit lands after a slow cycle, the batch may already
+                // be queued, and the unbiased select still picks the exit about half
+                // the time. Either way `from_gx` is never drained: `let r = 42;
+                // sys::exit(r ~ 0); r` exits 0 but prints 42 in only about 3 runs out
+                // of 8. `biased;` alone does not fix the same-cycle case, because the
+                // batch does not exist yet when the exit arrives. Instead, deliver the
+                // exit in order with the output: the runtime sends it on the batch
+                // channel after the cycle's batch (for example an exit `GXEvent`), or
+                // on exit the shell waits for the runtime to finish the cycle and then
+                // processes everything left in `from_gx` before breaking. Pin it with a
+                // script test that checks the value is printed. probe:
+                // design/review-2026-10-12/repro/x-engine-collections-04.gx
+                // (x-engine-collections-04)
+                // CR claude for claude: [bug/medium] When the runtime stops, its
+                // ExitRequest sender is dropped and this branch resolves Err. The loop
+                // neither breaks nor disables the branch, so the next select! polls the
+                // completed oneshot again and tokio panics with "called after
+                // complete". The user sees "Error: tokio thread panicked" instead of
+                // the runtime's own error, such as the activation-budget message. It
+                // happens in most runs, because select! picks branches in random order
+                // and the clean path wins only when from_gx's None is taken first. Fix:
+                // guard the branch with a flag (`code = &mut exit_rx, if !exit_closed
+                // => match code { Ok(c) => break 'repl Ok(Some(c)), Err(_) =>
+                // exit_closed = true }`), or treat Err as the runtime having stopped
+                // and return gx.stopped(..). Probe:
+                // design/review-2026-10-12/repro/c-image-03.gx with
+                // GRAPHIX_ACTIVATION_BUDGET=20. (c-image-03)
+                // CR claude for claude: [bug/high] When the runtime stops (a stack or
+                // activation budget abort, a panic), the ExitRequest sender is dropped
+                // and exit_rx resolves Err. This arm then falls through without
+                // breaking, and the next select! polls the completed tokio oneshot
+                // again, which panics with "called after complete". The process dies
+                // with "Error: tokio thread panicked" and never shows the message from
+                // GXHandle::stopped. Fix: once exit_rx has resolved Err, stop polling
+                // it, for example with a select! precondition flag or by holding it as
+                // an Option or a fused future. The from_gx None arm then returns
+                // gx.stopped(..). Also add a graphix-shell test that runs a
+                // budget-aborting script through Shell::run and checks for that
+                // message. probe: design/review-2026-10-12/repro/x-concurrency-04.sh
+                // Also reported as (f-kernel-04), (x-rerun-6-03). (x-concurrency-01)
                 code = &mut exit_rx => if let Ok(code) = code {
                     break 'repl Ok(Some(code))
                 },
@@ -603,6 +755,17 @@ impl<X: GXExt> Shell<X> {
                             gx.interrupt();
                             output.clear().await;
                         }
+                        // CR claude for claude: [bug/low] An interrupted script ends
+                        // with no exit code, so the process exits 0. `graphix long.gx
+                        // && deploy` followed by Ctrl-C therefore runs `deploy`.
+                        // `Terminated::recv` reports 128+n for SIGTERM and SIGHUP,
+                        // which makes SIGINT the only end signal that reads as success.
+                        // Probe:
+                        // design/review-2026-10-12/repro/tests-shell-compiler-04.gx
+                        // (SIGINT exits 0, SIGTERM 143). Fix: `break Ok(Some(128 +
+                        // 2))`, and assert the exit status in interrupt_wedge.rs, which
+                        // today checks only that the process exits.
+                        // (tests-shell-compiler-04)
                         Ok(Signal::CtrlC) if script => break Ok(None),
                         Ok(Signal::CtrlC) => {
                             // Interrupt first: a wedged runtime cannot serve `output.clear()`.

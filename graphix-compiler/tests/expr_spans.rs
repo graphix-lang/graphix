@@ -64,6 +64,17 @@ fn wrong(text: &str, e: &Expr, parent: Option<&Expr>) -> Option<String> {
             _ => Some(format!("does not read back: `{slice}`")),
         };
     }
+    // CR claude for claude: [test-gap/low] This pin passes any span with whitespace at
+    // either edge, because `parse_one` trims it before the read-back compare. It also
+    // checks only forms that appear in the corpus or FIXTURE. So the variant span that
+    // runs onto the next line (t-parser-a-07, in 27 corpus files) passes, and so does
+    // any parser site only an absent form reaches: a lambda as an operator's operand,
+    // `&|x| ..`, or a seq trigger ending in a lambda. Fix: refuse a non-NoOp span whose
+    // slice starts or ends with whitespace (interpolation text runs excepted, which are
+    // content). Add `t ~ |x| x + 1`, `&|x| x`, `&mut |x| x`, `seq t ~ |x| x { 1 }` and
+    // a variant followed by spaces to FIXTURE. Probe:
+    // design/review-2026-10-12/repro/t-parser-a-spans.rs (corpus_span_edges).
+    // (t-parser-a-02)
     match parser::parse_one(slice) {
         Ok(back) if back == *e => None,
         Ok(_) => Some(format!("reads back as something else: `{slice}`")),

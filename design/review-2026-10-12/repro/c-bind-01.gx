@@ -1,0 +1,23 @@
+// c-bind-01: collection slots resumed after a bottom source reset `<-` targets
+// (the slots resume under View::Cycle, so Bind::update's wake_phantom is false,
+// `held` stays empty, and wake_refresh republishes the slot's `let k = 0` over
+// k's last write).
+// run: graphix --no-cache c-bind-01.gx   (--no-fusion: identical)
+// expected (sleep is pause; the same body under a select arm that sleeps and
+// wakes keeps k: (3,[3,6]) .. (5,[3,6]) (5,[4,8])):
+//   (0, [0, 0]) (1, [1, 2]) (2, [2, 4]) (3, [3, 6]) (5, [3, 6]) (6, [4, 8]) ...
+// observed:
+//   (0, [0, 0]) (1, [1, 2]) (2, [2, 4]) (3, [3, 6]) (5, [0, 0]) (6, [1, 2]) (7, [2, 4])
+// array::fold with the same body (acc + k) gives (5, 0) where (5, 9) is expected.
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let src: [Array<i64>, null] = [1, 2];
+src <- select n { 3 => null, 5 => [1, 2], _ => never() };
+sys::exit(select n { 8 => 0, _ => never() });
+let out = array::map(src$, |x| {
+  let k = 0;
+  k <- clock ~ k + x;
+  k
+});
+(n, out)

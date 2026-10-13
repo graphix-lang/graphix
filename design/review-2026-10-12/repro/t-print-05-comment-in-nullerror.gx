@@ -1,0 +1,19 @@
+// Run: the NullError payloads read "(\n// why\ns.b)" and "f(\n// c\ns.b)":
+// source comments reach a program-visible value.
+let f = |q: [i64, null]| q;
+let x: [i64, null] = null;
+let r = {
+  catch(e) println("[e]");
+  let s = { a: 1, b: x };
+  let v = (
+    // why
+    s.b
+  )?;
+  let u = f(
+    // c
+    s.b
+  )?;
+  v + u
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

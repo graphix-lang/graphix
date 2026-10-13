@@ -1,0 +1,7 @@
+let app = |f: fn<'b: Any>(x: 'b) -> 'b| f;
+let g = app(|x| x);
+let a = g(1);
+let b = g("s");
+println("a=[a]");
+println("b=[b]");
+(a, b)

@@ -1,0 +1,6 @@
+use tui::{input_handler::{Event, input_handler}, text::text};
+let hits = 0;
+let inner = |e: Event| -> [`Stop, `Continue] { hits <- (e ~ hits) + 1; e ~ `Stop };
+let outer = |e: Event| -> [`Stop, `Continue] e ~ `Continue;
+tui::exit(sys::time::timer(duration:2.s, false));
+input_handler(#enabled: &false, #handle: &outer, &input_handler(#handle: &inner, &text(&"hits=[hits]")))

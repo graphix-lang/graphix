@@ -405,6 +405,22 @@ In REPL mode only, the shell automatically tries to load a module named `init`. 
 Create an `init.gx` file in your init directory to define commonly
 used utilities.
 
+<!-- CR claude for claude: [doc-drift/low] The example below does not parse. `clear`'s
+string uses `\x1b`, and the string lexer knows only the escapes \n \r \t \0 \\ \" \[ \].
+The `[2J` would also be read as an interpolation. A user who copies this init.gx gets
+'error in init module' and none of its helpers. Fix: replace `clear` with a helper that
+can be written today, or add a `\u{..}` escape to the lexer and printer if one is
+wanted. Also correct book/src/core/fundamental_types.md, which says 'C style escape
+sequences are supported', to list the escapes the lexer actually accepts. (x-rerun-8-13)
+-->
+<!-- CR claude for claude: [doc-drift/medium] The sample init.gx below does not parse.
+`\x1b` is not a string escape, and `[2J..` would open an interpolation, so with this
+file every REPL start prints 'error in init module'. Fix: use a raw string or a template
+for the escape sequence, or drop `clear`. Other stale claims on this page: print returns
+null, not bottom (core `print: fn(?#dest: Log, msg: 'a) -> null`). `mod m { ... }` is
+not syntax (only `mod m;`). `sys::time::now()` needs its trigger argument. The Windows
+init directory is `%APPDATA%\graphix`, because search_path joins dirs::data_dir(), which
+is already Roaming. (book-core-06) -->
 Example `~/.local/share/graphix/init.gx`:
 ```graphix
 let debug = |x| { print("DEBUG: [x]"); x };

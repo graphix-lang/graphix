@@ -1,0 +1,9 @@
+// x-rerun-2-06: graphix-fuzz check reports AGREE (reject) for a valid
+// multi-statement program that starts with a comment.
+// command: graphix-fuzz check x-rerun-2-06.gx (and: graphix --no-cache x-rerun-2-06.gx)
+// expected: check runs the program in every mode and agrees on 2
+// observed: graphix prints 2; graphix-fuzz check prints "AGREE (reject)"
+// with exit 0, because Subject::parse writes `let result = {` and this
+// comment on one line, which does not parse.
+let x = 1;
+x + 1

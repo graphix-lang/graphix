@@ -1,0 +1,8 @@
+// Run: sleep 12 | graphix --no-cache sys-io-05-exit-waits-for-stdin.gx
+// expect: the process exits ~0.5 s in (sys::exit fired), as it does without the stdin reader
+// actual: it exits only when stdin yields (12 s here; at a terminal, when Enter is pressed):
+// graphix-shell/src/main.rs tokio_main drops its Runtime, which waits for the blocking stdin read
+use sys::io::Lines;
+let l = Lines::lines(sys::io::stdin(null));
+sys::exit(sys::time::timer(duration:500.ms, false) ~ 0);
+l

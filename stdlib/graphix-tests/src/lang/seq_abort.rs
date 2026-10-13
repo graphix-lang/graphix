@@ -30,6 +30,17 @@ async fn abort_ends_run(mode: Mode) -> Result<()> {
 
 // A fire between runs belongs to no run, and neither does the value it
 // leaves standing.
+// CR claude for claude: [test-gap/medium] This fixture cannot fail. `cancel` is bottom
+// from step 21, so no value stands at run 2's entry, and wake catch-up re-raises the
+// step-20 fire at its current value, which is bottom. A seq aborted while idle is
+// unobservable. So the test passes with the `armed` filter removed from `run_event`,
+// and also with the abort event awake between runs. No fixture fires an abort event in
+// its run's entry cycle, so the rule 'only fires after the entry cycle count' is
+// unpinned. Make `cancel` a standing level (`let cancel = never(); cancel <- select
+// step { 20 => step, _ => never() }`, expected [1, 30]). Add a case whose event fires
+// at entry: `seq let c = go; abort(c) { until step > c + 3; c }` with go at 1 and 10
+// must give [1, 10]. Add a seqq variant too. All of these give the right answer at
+// HEAD. (tests-seq-02)
 async fn idle_fire_is_dropped(mode: Mode) -> Result<()> {
     let body = r#"
         let cancel = select step { 20 => step, _ => never() };

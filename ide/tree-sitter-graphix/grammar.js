@@ -48,6 +48,16 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
+    // CR claude for claude: [dead/low] `tree-sitter generate` reports this conflict as
+    // unnecessary. Delete it. Also `_expression_inner` is `_expression` plus
+    // parenthesized_expression, which `_primary_expression` already contains, so the
+    // lambda body can take `_expression`. Some query rules are subsumed and report
+    // duplicate captures: in queries/locals.scm the let_binding and lambda_param
+    // definition rules are covered by the bare `(pattern_bind name: ..)` rule (each let
+    // name gets two @local.definition captures), the sig_use rule in
+    // queries/highlights.scm by the general `(use_path (identifier) @namespace . "::")`
+    // rule, and the let_binding variable rule in graphix-mode.el by its pattern_bind
+    // rule. Remove the subsumed copies. (ide-tooling-14)
     [$._expression, $.map_ref],
     // `seq {x}`: a punned struct literal as trigger, or a body with no
     // trigger; the trigger reading dies when no body follows.
@@ -432,6 +442,27 @@ module.exports = grammar({
 
     parenthesized_type: $ => seq('(', $._type, ')'),
 
+    // CR claude for claude: [bug/medium] Primitive types in type positions parse as
+    // ref_type(type_path), so @type.builtin never fires. `_type` offers
+    // `primitive_type` (via `_scalar_primitive`) and `ref_type -> type_path ->
+    // _binding_name`, and `_binding_name` aliases i64/string/bool/f64/... to
+    // `identifier`. The declared conflict [$._scalar_primitive, $._binding_name] has no
+    // dynamic precedence, and GLR settles on the type_path reading in almost every
+    // position. That covers `fn(x: i64) -> string`, `Map<string, i64>`, `[i64, null]`,
+    // `Array<f64>`, `cast<i64>`, `never<string>` and select `i64 as i`. The ones that
+    // came out as primitive_type are a trailing `val c: bool`, tuple types and
+    // labeled-param types. highlights.scm:88 `(primitive_type) @type.builtin` and
+    // graphix-mode.el:171 therefore almost never apply, while ide/README.md advertises
+    // primitive-type highlighting. This dates from making type keywords legal binding
+    // names (ac6007b9). Failure: In stdlib/graphix-package-str/src/graphix/mod.gxi, 128
+    // occurrences of string/i64/bool/null/bytes produce one `type.builtin` capture (it
+    // is `Any`). In helix, nvim, zed and emacs, every `string`/`i64` in a signature is
+    // left uncolored or colored as a plain identifier. Fix: `primitive_type: $ =>
+    // prec.dynamic(20, choice('bytes', $._scalar_primitive))`. I verified it in a
+    // scratch copy: all the shapes above become (primitive_type), and the corpus still
+    // has exactly the 35 ERROR files it had before. Add tree-shape pins (see the
+    // test-gap finding). Unverified: the reviewer's report, not checked by a verifier.
+    // (ide-tooling-01)
     primitive_type: $ => choice('bytes', $._scalar_primitive),
 
     _scalar_primitive: $ => choice(
@@ -760,6 +791,30 @@ module.exports = grammar({
     // ends with the literal and its unit, so `i64:4/i64:2` is a division.
     type_ascription: $ => choice(
       seq(
+        // CR claude for claude: [bug/medium] `let x: T = v` and `|a: T|` parse as typed
+        // literal `x:T`, losing the binding. The first `type_ascription` alternative
+        // accepts any `$.identifier` as its head, and `_typed_value` accepts
+        // `_binding_name`/`type_identifier` as the value. A let pattern or lambda
+        // parameter written `x: i64`, `x: string` or `x: Foo` therefore matches
+        // `structure_pattern -> type_ascription(identifier, identifier)`, and the
+        // declared conflicts [$._binding_name, $.type_ascription] / [$._field_name,
+        // $.type_ascription] let GLR keep that reading. The real typed-literal heads
+        // are a fixed set (netidx-value parser.rs: the numeric types, bytes, abstract,
+        // error, decimal, datetime, duration), so only `error`/`abstract` need an
+        // identifier head. The let loses its `type:` field, there is no pattern_bind,
+        // and locals.scm records no definition for `x`/`a`. Failure: `let x: i64 = 1;`
+        // gives (let_binding pattern: (structure_pattern (type_ascription (identifier)
+        // (identifier))) value: ..). `|a: i64, b| a + b` marks only `b` as a local
+        // definition. Every annotated let and annotated lambda parameter (common in
+        // stdlib and the netidx-admin package) loses its definition and variable color
+        // in nvim, helix and zed. Fix: Give the identifier-headed alternative negative
+        // dynamic precedence and keep the primitive-headed one as is:
+        // `prec.dynamic(-20, seq($.identifier, ':', choice($._typed_value, ...)))`.
+        // Verified in a scratch copy: `let x: i64` becomes pattern_bind plus `type:
+        // (primitive_type)`, `error:"x"` still parses, and the corpus is unchanged at
+        // 35 ERROR files. Restricting the head to the keywords 'error'/'abstract' broke
+        // 96 files, because keyword extraction steals `error(...)` calls. Unverified:
+        // the reviewer's report, not checked by a verifier. (ide-tooling-02)
         choice($.identifier, alias($._scalar_primitive, $.primitive_type)),
         ':',
         choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
@@ -964,6 +1019,16 @@ module.exports = grammar({
     parenthesized_expression: $ => seq('(', $._expression, ')'),
 
     // Primary expressions
+    // CR claude for claude: [bug/low] The accessors (struct_ref, tuple_ref, array_ref,
+    // array_slice, map_ref, apply) take a `_primary_expression` base. cast, never, any,
+    // select, seq_block, try_with and block live only in `_arithmetic_expression`, but
+    // the combine parser's `primary` includes them and its postfix loop applies to
+    // every primary. As a result `any(a, b).f` and `seq { {a: 1} }.a` pass `graphix
+    // --check` and are ERROR here. The number token also rejects `0XFF`, and lexes
+    // `-0xFF` as `-0` followed by `xFF`, while netidx's integer parser accepts both.
+    // Fix: move those forms into `_primary_expression`, and give the radix regexes
+    // `0[xX]`/`0[bB]`/`0[oO]` plus an optional leading `-`. probe:
+    // design/review-2026-10-12/repro/ide-tooling-04.gx (ide-tooling-04)
     _primary_expression: $ => choice(
       $.literal,
       // Trailing-dot float (e.g., 50.) — token.immediate ensures the dot must be
@@ -1250,6 +1315,15 @@ module.exports = grammar({
     )),
 
     // Identifiers
+    // CR claude for claude: [bug/low] tree-sitter-cli 0.24.7 compiles `\p{Lo}` into a
+    // table that keeps only the endpoints of the UnicodeData range entries.
+    // src/parser.c has {0x4e00,0x4e00},{0x9fff,..} and {0xac00,0xac00},{0xd7a3,0xd7a3},
+    // so the CJK ideograph and Hangul syllable blocks do not lex, apart from their
+    // first and last code points. `let 名前 = 1` passes `graphix --check`, but it is an
+    // ERROR in every tree-sitter editor. Fix: spell those ranges explicitly in the
+    // class (U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+20000-2A6DF), or regenerate with
+    // a CLI that expands range entries, and pin one such identifier in ts_tree_shapes.
+    // probe: design/review-2026-10-12/repro/ide-tooling-05.gx (ide-tooling-05)
     identifier: $ => /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_][\p{L}\p{N}_]*/,
 
     // Type-name keywords are legal BINDING names (2026-08-18): let,

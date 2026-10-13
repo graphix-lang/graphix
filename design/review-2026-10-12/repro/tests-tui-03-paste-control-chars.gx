@@ -1,0 +1,6 @@
+use tui::{input_handler::Event, line_edit};
+let ed = line_edit::state("");
+let e: Event = `Paste("a\rb\tc");
+let r = line_edit::handle(&mut ed, e);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(r, ed.value, str::len(ed.value), ed.cursor)

@@ -1,0 +1,25 @@
+// x-engine-seq-errors-06: a seqq whose select arm sleeps loses every queued
+// request: core::queue clears its queue in sleep()
+// (stdlib/graphix-package-core/src/lib.rs, Queue::sleep), so the request
+// queued behind the run in progress (3) never runs after the wake; only
+// the run itself is documented as reset (design/seq_blocks.md §6.5).
+// command: graphix --no-cache x-engine-seq-errors-06.gx
+// observed: ([(1, 1), (2, 2), (14, 14)], [(1, 1), (14, 14)])  -- 3 never logged
+// (the n in the tuples is seqq's capture, i.e. the enqueue cycle)
+let n = 0;
+n <- select n { s if s < 40 => s + 1, _ => never() };
+let mode = select n { s if s < 10 => `A, s if s < 12 => `B, _ => `A };
+let trig = select n { 1 | 2 | 3 | 14 => n, _ => never() };
+let gate = n > 4 && (n < 6 || n > 20);
+let log: Array<(i64, i64)> = [];
+let done: Array<(i64, i64)> = [];
+let r = select mode {
+  `A => seqq let t = trig {
+    log <- array::push(log, (t, n));
+    until gate;
+    done <- array::push(done, (t, n));
+    t * 10
+  },
+  `B => never()
+};
+select n { 40 => (log, done), _ => never() }

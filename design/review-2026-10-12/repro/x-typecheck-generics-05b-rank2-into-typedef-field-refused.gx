@@ -1,0 +1,6 @@
+type T = {f: fn<'b: Any>(x: 'b) -> 'b};
+let mk = |g: fn<'b: Any>(x: 'b) -> 'b| -> T {f: g};
+let t = mk(|x| x);
+let a = (t.f)(1);
+let b = (t.f)("s");
+(a, b)

@@ -1,0 +1,6 @@
+// refused, as it should be: 'y is annotated, so 'a is bound before the settle
+let f = 'b: Array<'a> |x: 'a| -> ('a, ['b, null]) (x, null);
+let g = |y: i64| f(y);
+let (a, b) = g(1);
+let c: [Array<string>, null] = b;
+c

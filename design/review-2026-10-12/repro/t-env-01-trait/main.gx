@@ -1,0 +1,16 @@
+mod a;
+let status = mod foo dynamic {
+    sandbox whitelist [core, a::b];
+    sig {
+        use super::a::b::Show;
+        type Counter;
+        impl Show for Counter;
+        val make: fn(x: i64) -> Counter
+    };
+    source "type Counter = Abstract<i64>; impl Show for Counter { let show = |c| \"Counter(\[c.0\])\" }; let make = |x| Counter(x)"
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select status {
+    error as e => "[e]",
+    null as _ => a::b::Show::show(foo::make(7))
+}

@@ -1,0 +1,6 @@
+let b = true;
+let y = never();
+let x = select b { true => y, false => 1 };
+y <- 2;
+mod m;
+m::z

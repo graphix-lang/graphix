@@ -113,6 +113,18 @@ fn open_db(path: &str) -> Result<Db> {
 }
 
 #[derive(Debug)]
+// CR claude for claude: [bug/medium] A tree, and a cursor's `sled::Iter` made from one,
+// keeps sled's context alive, and that context holds the database's file lock. Neither
+// keeps the `Db` Arc alive. So once the last `DbValue` drops, the `OPEN` entry's Weak
+// is dead while the lock is still held, and `open_db` calls `sled::open` again, which
+// fails with WouldBlock. A program that switches a.db -> b.db -> a.db while a tree of
+// a.db is still alive (for example, kept by `once`) gets `DbErr("IO error: could not
+// acquire lock ...")`. Fix: have `TreeInner` own the `Db` Arc, and have `CursorInner`
+// own the `Arc<TreeInner>` it iterates. Then the registry entry stays upgradable for as
+// long as any handle holding the lock exists. The async drop in `Reaped` leaves a
+// smaller window of the same kind: the lock is released on a blocking thread after the
+// Weak is already dead. Consider having that drop clear the registry entry only once
+// sled's drop has finished. probe: design/review-2026-10-12/repro/db2-03.gx (db2-03)
 pub(crate) struct TreeInner {
     pub(crate) tree: Reaped<sled::Tree>,
     pub(crate) key_typ: Option<Typ>,
@@ -389,6 +401,14 @@ fn stored_type(t: &Type, env: &Env) -> ArcStr {
 }
 
 /// A builtin over a db, its work on a blocking thread.
+// CR claude for claude: [structure/low] db_op, tree_op, tree_arg_op and db_name_op
+// here, and txn_op in txn.rs, each repeat the same struct, EvalCachedAsync impl,
+// unit_image_state! and alias. They differ only in the Args type, the prepare_args
+// expression and the eval body. Write one base macro that takes those three, and make
+// each of the five a one-line delegation to it, the way tree_arg_op's short arm already
+// delegates, so the call sites stay as short as they are. Then a change to the shared
+// shape, such as moving encoding into the blocking closure (db2-08), is made once.
+// (db2-11)
 macro_rules! db_op {
     ($ev:ident, $alias:ident, $name:literal, |$db:ident| $body:expr) => {
         #[derive(Debug, Default)]
@@ -453,6 +473,15 @@ macro_rules! tree_arg_op {
 
             fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
                 let tree = get_tree_inner(cached, 0)?;
+                // CR claude for claude: [perf/low] prepare_args runs on the runtime
+                // thread during the cycle, so $enc (encode_key, the batch and get_many
+                // encoders) does O(n) encoding and allocation there, and only the sled
+                // call moves to the blocking thread. A db::batch of 100k ops stalls the
+                // cycle for the whole encoding before any I/O starts. Make Args the
+                // handle plus the raw argument Values (clones are cheap) and encode
+                // inside the blocking closure. That also removes the Result<$arg>
+                // plumbing. txn_op in txn.rs has the same shape and needs the same
+                // change. (db2-08)
                 let arg = $enc(&tree, cached)?;
                 Some((tree, arg))
             }
@@ -709,6 +738,35 @@ db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {
     let data = ExportData::decode(&mut buf.as_slice())?;
     let collections: Vec<_> =
         data.trees.into_iter().map(|t| (t.typ, t.name, t.entries.into_iter())).collect();
+    // CR claude for claude: [bug/medium] sled's `Db::import` panics instead of
+    // returning errors. It asserts that no key it inserts already exists, it `expect`s
+    // every insert and every entry's key and value, and it panics on a collection type
+    // other than "tree". The export carries graphix's meta tree, so a database that has
+    // only opened a tree (no entries, so empty as the gxi demands) collides on that
+    // tree's meta key. The task panics, the panic is printed on stderr, and the caller
+    // gets `DbErr "task panicked: ..."`. Every entry inserted before the collision
+    // stays written. In the probe, the meta entry of a tree the destination never
+    // opened is stored with no data, so opening that tree later fixes its type to what
+    // the file said. A crafted or corrupt file panics the same way. Fix: never hand
+    // file input to sled's import. Validate the collection type and entry shape, refuse
+    // an existing key with a DbErr (or skip an identical meta entry), and check every
+    // key before writing anything, so a refused import writes nothing. Also state
+    // precisely in the gxi what "empty" means. probe:
+    // design/review-2026-10-12/repro/http-sqlite-db1-07.gx (http-sqlite-db1-07)
+    // CR claude for claude: [bug/medium] sled's `Db::import` asserts that no key it
+    // writes already exists, and it expects and panics on a malformed file (an entry
+    // that is not [k, v], or a collection type other than "tree"). Here we call it on
+    // whatever the file decodes to. An export carries the meta tree, so a destination
+    // where the program has only called `db::tree(dst, "a")` already collides. The
+    // import then panics partway: `blocking` reports DbErr("task panicked: ...import is
+    // overwriting existing data"), the panic is printed on stderr, and the trees
+    // imported before the collision stay imported (probe:
+    // design/review-2026-10-12/repro/db2-06.gx prints a=0 b=1 c=1 beside the error).
+    // Fix: validate ExportData before writing (every entry is [k, v], every typ is
+    // "tree"), and refuse with a clean DbErr when any destination tree, the meta tree
+    // included, already holds a key the import would write. Alternatively, do the
+    // inserts ourselves in one transaction so a refusal changes nothing. Then the
+    // .gxi's "must be empty" should say what counts as empty. (db2-06)
     db.import(collections);
     Ok(Value::Null)
 });

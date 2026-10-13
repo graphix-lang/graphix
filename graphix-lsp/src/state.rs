@@ -143,6 +143,15 @@ impl ServerState {
             let known = self.documents.contains_key(&gx)
                 || self.workspace.file_to_projects.contains_key(&gx)
                 || gx.exists();
+            // CR claude for claude: [bug/low] An interface whose implementation does
+            // not exist yet gets no roots. So it is never dirty, never checked and
+            // never published, and a syntax error in it shows nothing: an api.gxi
+            // holding `val x: i64 = ;` alone publishes no diagnostics, while with
+            // api.gx beside it the parse error appears at 0:11. Writing the interface
+            // first is a natural order. Fix: when the .gxi has no implementation, parse
+            // it with parser::parse_sig (as symbols.rs does) and publish its parse
+            // error. probe: design/review-2026-10-12/repro/x-lsp-probe.py lone-gxi
+            // (x-lsp-probe-06)
             return if known { self.roots_of(&gx) } else { vec![] };
         }
         match self.workspace.file_to_projects.get(path) {
@@ -171,6 +180,17 @@ impl ServerState {
     /// when nothing open needs them, retired.
     pub fn close_document(&mut self, uri: &Uri) -> Diagnostics {
         let Some(path) = uri_to_path(uri) else { return vec![] };
+        // CR claude for claude: [bug/low] The Document is removed before `retire`
+        // publishes the clear, so `publish_files` falls back to `path_to_uri`. A file
+        // the client opened as .../a%3Ab/b.gx gets its error under that URI and its
+        // clear under .../a:b/b.gx, and a client that keys diagnostics by URI string
+        // keeps the stale error. `Query::location` has the same problem for an open
+        // file. Fix: remember the URI each path was opened or last published under,
+        // keep it until the clear goes out, and use it in `publish_files` and
+        // `Query::location`. Also add ':' and '*' to `PATH_ENCODE`, since uri.rs claims
+        // VS Code's spelling. The harness only checks spelling while a buffer is open,
+        // so the close case is untested. probe:
+        // design/review-2026-10-12/repro/lsp-05.gx (lsp-05)
         self.documents.remove(&path);
         self.backend.buffer_overrides().lock().remove(&path);
         let live = self.live();
@@ -186,6 +206,15 @@ impl ServerState {
     /// may read the file. A root that stopped being one is retired.
     pub fn saved(&mut self) -> Diagnostics {
         self.workspace = scan(&self.workspace_roots, &self.workspace);
+        // CR claude for claude: [perf/low] Every didSave and didChangeWatchedFiles
+        // marks every live root dirty, so each save, a format-on-save included,
+        // re-checks every open root at the next idle. An open file's save changes
+        // nothing a check reads, because the check already reads its buffer through
+        // BufferOverrides. On netidx-admin each check takes about 1.5 s, and queries
+        // wait behind them. Fix: have `scan` report the files it re-read (mtime
+        // changed) and whether the project graph changed. Then dirty only the live
+        // roots whose project gained or lost a file, or contains a changed file that is
+        // not open. (lsp-03)
         self.dirty.extend(self.live());
         self.retire()
     }

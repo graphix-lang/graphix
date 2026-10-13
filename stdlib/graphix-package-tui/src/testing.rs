@@ -73,6 +73,16 @@ impl TuiTestHarness {
     /// stdlib default — the entry point for a package outside this
     /// crate testing its own TUI (pass the crate's `defpackage!`
     /// TEST_REGISTER so the program can `use` the package's modules).
+    // CR claude for claude: [structure/low] This constructor and GuiTestHarness::new in
+    // graphix-package-gui's test module are the same code. Both build a VfsResolver
+    // over /test.gx, call init_with_resolvers, compile `{ mod test; test::result }` by
+    // hand (testing::compile_result does this) and wait on next_update with a 5 s
+    // deadline. The two harnesses also share the same
+    // ctx/gx/compiled/rx/watches/refs/callables fields and identical watch,
+    // get_watched, compile_named_callable and call_callback. A fix to watch semantics
+    // or callable lifetime has to be made twice. Put a `testing::Fixture` holding those
+    // fields and methods in graphix-package-core, and have each harness hold one plus
+    // its own widget tree. (x-dup-10)
     pub async fn with_register(
         code: &str,
         register: &[PackageRef],
@@ -208,6 +218,14 @@ impl TuiTestHarness {
 
     /// The display's path: `tui::size` on a resize, `tui::event`, the
     /// widgets; a Ctrl-C stops it.
+    // CR claude for claude: [test-gap/low] deliver claims to be the display's path, but
+    // on Event::Resize it only sets tui::size through Screen::event. The TestBackend
+    // keeps the size it was built with, while the live display's terminal autoresizes
+    // on draw. After dispatch_event(Event::Resize(80, 20)) on a 40x10 harness, the
+    // program lays out for 80x20 and render() draws into 40x10. No test can check a
+    // layout that depends on resize. Fix: on Event::Resize, also resize the backend
+    // (TestBackend::resize, then Terminal::resize) so render draws at the new size.
+    // (tui-core-10)
     async fn deliver(&mut self, e: &Event) -> Result<()> {
         if !self.stopped {
             self.stopped = !self.screen.event(e).await.context("widget handle_event")?;
@@ -274,6 +292,11 @@ impl TuiTestHarness {
     }
 
     /// Quick "did anything render at this cell" probe.
+    // CR claude for claude: [dead/low] Neither cell_at nor render_through_updates has a
+    // caller in graphix or in netidx's graphix-package-netidx-admin.
+    // render_through_updates also paces updates with fixed 10 ms sleeps, which
+    // next_update replaced. Delete render_through_updates. Delete cell_at, or turn it
+    // into the style-aware cell accessor tests-tui-06 asks for. (tests-tui-09)
     pub fn cell_at(&mut self, x: u16, y: u16) -> Result<String> {
         let buf = self.render()?;
         if x >= buf.area.width || y >= buf.area.height {
@@ -324,6 +347,14 @@ impl TuiTestHarness {
 /// Render a `Buffer` into one `String` per row by concatenating each
 /// cell's `symbol()`. Empty / overdrawn cells render as a single space;
 /// a wide glyph leaves a trailing space for the cell after it.
+// CR claude for claude: [test-gap/low] Every TUI test asserts through this symbol-only
+// rendering, so no test can see a style. A broken ColorV/ModifierV/StyleV decode (a
+// wrong Rgb channel or a renamed field) passes the whole suite, as does every #style
+// and #highlight_style prop. The list and table #selected cases in widgets_test cannot
+// fail when the selection is ignored. Add a style-aware assertion to TuiTestHarness
+// that compares (symbol, fg, bg, modifiers) per cell. Pin one Rgb + Bold span, one
+// Indexed color, and one highlight_style selection each for list and table. This
+// accessor could replace cell_at (see tests-tui-09). (tests-tui-06)
 fn buffer_lines(buf: &Buffer) -> Vec<String> {
     let mut out = Vec::with_capacity(buf.area.height as usize);
     for y in 0..buf.area.height {

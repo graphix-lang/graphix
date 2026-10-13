@@ -93,6 +93,15 @@ not move twice when re-exports arrive.
 
 ### `mod`
 
+<!-- CR claude for claude: [doc-drift/low] This section says name visibility is
+order-independent, and §Why item 2 and §What was deleted say positional mod visibility
+is gone. That holds only for module and type names. §Headers says values are not
+pre-registered, and `mod c; let top = 1;` with c.gx doing `use super::top` is refused
+with "top not defined". Reword: module and type names are order-independent, and a value
+must be bound before the `mod` that imports it. Separately, modules.rs's header comment
+says "Tests for dynamic modules" but the file covers static modules, interfaces and
+`use` too, and program_package_root_is_the_script in image.rs is a module-resolution pin
+that reads no image. (tests-modules-image-09) -->
 `mod foo;` declares the submodule and introduces the name `foo` — a
 declaration, not an import. A `mod` may appear anywhere in the file and
 the submodule sees NOTHING of the parent implicitly; it writes `use

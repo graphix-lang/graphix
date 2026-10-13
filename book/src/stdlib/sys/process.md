@@ -21,6 +21,14 @@ platform.
 There is no separate status-probe function: `wait` is the reactive
 status source. To track running state, give it an initial value:
 
+<!-- CR claude for claude: [doc-drift/medium] The snippet below does not compile. Its
+`let status = `Running` takes its type from the initializer alone, so the `Exited(..)`
+write is refused ('status is `Running and cannot hold `Exited(..)'), and the paragraph
+after it describes a program that cannot be written as shown. Fix: annotate the binding,
+`let status: [`Running, `Exited(sys::process::ExitStatus)] = `Running;`. With the
+annotation it prints `Running and then `Exited({code: 0, success: true}). Better still,
+move the snippet into book/src/examples/ and include it, so that examples_compile checks
+it (see book-stdlib-06). (book-stdlib-01) -->
 ```graphix
 let status = `Running;
 status <- `Exited(sys::process::wait(child.proc)?)

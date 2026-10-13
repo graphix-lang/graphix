@@ -12,6 +12,15 @@ mod icon;
 // are real netidx paths, so scrolling also exercises the
 // subscribe-on-enter / drop-on-exit window around the viewport.
 
+// CR claude for claude: [doc-drift/low] The header comment and the Scrolling section of
+// book/src/ui/gui/data_table.md say that scrolling this table subscribes the rows that
+// enter the viewport and drops the rows that leave it. The subscription window is the
+// displayed rows plus ROW_BUFFER (50) on each side (subscription_row_range in
+// widgets/data_table/layout.rs). With 40 rows, every row is subscribed at every scroll
+// position, so the example shows nothing of the windowing it claims to show. Either
+// generate a few hundred hosts (array::init over an index) so rows really enter and
+// leave the window, or drop the claim from both places. Also replace "at the default
+// window size": the window sets #size to 900x400. (examples-gui-01)
 let host_ids = [
     "001", "002", "003", "004", "005", "006", "007", "008", "009", "010",
     "011", "012", "013", "014", "015", "016", "017", "018", "019", "020",

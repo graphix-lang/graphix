@@ -1,0 +1,19 @@
+// c-bind-04: a place reference fires its reference value at every write
+// of its root, though its address never moves
+// run: graphix --no-cache design/review-2026-10-12/repro/c-bind-04.gx
+// (same output with --no-fusion)
+// expected: (1, 1, 1, 2) every line: `&a[1]` and `&s.b` have constant
+// paths, the element they name never changes, so like `&x` they fire once
+// observed: (1, 1, 1, 2) (2, 2, 1, 2) (3, 3, 1, 2) (4, 4, 1, 2) (5, 5, 1, 2)
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let a = [1, 2, 3];
+a <- clock ~ [n, 2, 3];
+let s = {a: 1, b: 2};
+s <- clock ~ {a: n, b: 2};
+let x = 0;
+x <- clock ~ n;
+let calls = |r: &i64| count(r);
+sys::exit(select n { 5 => 0, _ => never() });
+(count(&a[1]), calls(&s.b), calls(&x), *(&a[1]))

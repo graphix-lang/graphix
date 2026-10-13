@@ -1,0 +1,24 @@
+// t-tvar-04: a let annotation's same-named type variables are not one
+// variable unless the annotation is a fn type.
+// command: graphix --no-cache design/review-2026-10-12/repro/t-tvar-04.gx
+// expected: every let below refused (('a, 'a) cannot hold (i64, string);
+//   {x: 'b, y: 'b} cannot hold {x: i64, y: string}; the tuple's 'a and the
+//   fn type's 'a are one variable), or, for the last, the body's 'a is the
+//   definition's rigid 'a and `let v: 'a = 1` is refused.
+// observed: --check exits 0; the run prints
+//   ((1, "s"), {x: 1, y: "s"}, (1, "hello"), 2.5)
+// control: `let f: fn(x: 'a) -> 'a = buffer::from_string` is refused.
+let w: ('a, 'a) = (1, "s");
+let s: {x: 'b, y: 'b} = {x: 1, y: "s"};
+let p: ('c, fn(x: 'c) -> 'c) = (1, |x: string| x);
+let y = "hello";
+let t = |x| {
+    let u: ('d, 'd) = (x, y);
+    u
+};
+let f = 'e: Number |x: 'e| -> 'e {
+    let v: 'e = 1;
+    x
+};
+sys::exit(sys::time::after_idle(duration: 100.ms, 0));
+(w, s, t(1), f(2.5))

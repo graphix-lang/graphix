@@ -1,0 +1,16 @@
+// buffer::decode refuses references the language accepts: a fresh cell
+// (`&mut u8:0`, `&u64:1`) and a place used as a length (`&s.n`). Each
+// type-checks; each decode answers DecodeError "ref does not point to ...",
+// while `*r <- v` on the same fresh cell works.
+// Expected: [bytes, u8:9], [bytes, u8:2], [bytes, bytes:YWJj]
+{
+  let r = &mut u8:0;
+  let a = buffer::decode(buffer::encode([`U8(u8:9)]), [`U8(r)]);
+  let x: u8 = u8:0;
+  let b = buffer::decode(buffer::encode([`U8(u8:1), `U8(u8:2)]), [`Skip(&u64:1), `U8(&mut x)]);
+  let s = {n: u64:0};
+  let d: bytes = bytes:;
+  let enc = buffer::encode([`U64(u64:3), `Bytes(buffer::from_string("abc"))]);
+  let c = buffer::decode(enc, [`U64(&mut s.n), `Bytes(&s.n, &mut d)]);
+  ((a, *r), (b, x), (c, d))
+}

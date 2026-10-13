@@ -1,0 +1,20 @@
+// db2-06: db::import into a database that holds only a tree's meta entry panics in sled and leaves it partly imported
+// run: rm -rf /tmp/db2-06 && mkdir /tmp/db2-06 && graphix --no-cache db2-06.gx
+// expected: a clean DbErr and dst unchanged (a=0 b=0 c=0), or the import succeeds (a=1 b=1 c=1)
+// observed: stderr "panicked at sled-0.34.7/src/db.rs:381:25: import is overwriting existing data", then
+//   error:["DbErr", "task panicked: ... import is overwriting existing data"] a=0 b=1 c=1
+let src = db::open("/tmp/db2-06/src")$;
+let s: db::Tree<string, i64> = db::tree(src, "a")$;
+let s2: db::Tree<string, i64> = db::tree(src, "b")$;
+let s3: db::Tree<string, i64> = db::tree(src, "c")$;
+let i1 = db::insert(s, "x", 1)$;
+let i2 = db::insert(s2, "y", 2)$;
+let i3 = db::insert(s3, "z", 3)$;
+let e = db::export(src, ((i1 ~ i2) ~ i3) ~ "/tmp/db2-06/exp.bin")$;
+let dst = db::open("/tmp/db2-06/dst")$;
+let d: db::Tree<string, i64> = db::tree(dst, "a")$;
+let r = db::import(dst, (e ~ d) ~ "/tmp/db2-06/exp.bin");
+let d2: db::Tree<string, i64> = db::tree(dst, r ~ "b")$;
+let d3: db::Tree<string, i64> = db::tree(dst, r ~ "c")$;
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+println("[r] a=[db::len(r ~ d)$] b=[db::len(d2)$] c=[db::len(d3)$]")

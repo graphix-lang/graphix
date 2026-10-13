@@ -436,6 +436,14 @@ impl<'a> Ornaments<'a> {
                 {
                     self.sig(sig)
                 }
+                // CR claude for claude: [test-gap/low] The pattern of `seq let
+                // <pattern> = trigger` (SeqTrigger::Bind) is never visited, because its
+                // BindExpr is not an ExprKind::Bind child. A printer change that
+                // rewrote a `r".."` or `""".."""` delimiter in a seq trigger pattern
+                // would therefore pass the refuse check, and `graphix fmt` would write
+                // it. Add an ExprKind::Seq arm that calls self.pattern on the trigger's
+                // pattern when it is SeqTrigger::Bind. Also add a seq trigger case to
+                // string_patterns_keep_their_delimiters. (t-format-resolver-05)
                 _ => (),
             }
             e.for_each_child(&mut |c| self.expr(c))
@@ -488,6 +496,14 @@ pub fn format_source(
 ) -> Result<LPooled<String>> {
     let n = super::parser::shebang_len(text);
     if n > 0 {
+        // CR claude for claude: [bug/low] The text after the `#!` line is formatted as
+        // a fresh text, so every parse or refusal position that `fmt` (and the LSP's
+        // `format_source` error response) reports for a script with a shebang is one
+        // line too low. `--check` numbers lines through `without_shebang`, which keeps
+        // the newline for exactly this reason. Format the rest with that newline kept
+        // in front (as `without_shebang` does) and drop the extra leading newline from
+        // the output, so positions match the file. Probe:
+        // design/review-2026-10-12/repro/t-parser-a-11.gx. (t-parser-a-11)
         let (line, rest) = text.split_at((n + 1).min(text.len()));
         let mut out: LPooled<String> = LPooled::take();
         out.push_str(line);
@@ -496,6 +512,29 @@ pub fn format_source(
     }
     // a file whose every line ends in CRLF keeps them; the layout is LF
     let lines = text.matches('\n').count();
+    // CR claude for claude: [bug/medium] This path turns every CRLF into LF, inside
+    // string literals as well, and format_lf's reparse guard compares against that
+    // rewritten text, not the input. A CR LF inside a non-raw string is part of its
+    // value. The printer writes the newline as the escape `\n`, so turning LF back into
+    // CRLF afterwards cannot restore the CR, and the formatter changes the program
+    // without refusing. Example: `let s = "a<CR><LF>b"; str::len(s)` prints 4 before
+    // `graphix fmt` and 3 after. The LSP's formatting goes through the same path. Fix:
+    // check the reparse against the original text, or convert only the line endings the
+    // layout owns and leave literal contents alone. Add a multi-line non-raw string to
+    // the pin crlf_lines_stay_crlf. Probe:
+    // design/review-2026-10-12/repro/x-fix-tools-01.sh (x-fix-tools-01)
+    // CR claude for claude: [bug/high] The CRLF path rewrites the input before the
+    // guard: format_lf parses `text.replace("\r\n", "\n")`, so the reparse check
+    // compares the output with that rewritten text and never with the original. A
+    // quoted string that spans a line changes value from "a\r\nb" to "a\nb". The
+    // printer writes it as the escape `\n`, which the final `replace('\n', "\r\n")`
+    // cannot undo. `graphix fmt` (in place and --stdout) and the LSP's formatting both
+    // write the changed program without a refusal. Fix: parse the original text,
+    // convert only the printer's own line breaks (or the whole output) to CRLF, and
+    // reparse that result against the parse of the original, so a literal that cannot
+    // survive is refused. Add a quoted-string case and a template case to
+    // crlf_lines_stay_crlf. Probe: design/review-2026-10-12/repro/x-formatter-01.sh
+    // (value 4 becomes 3 after fmt). Also reported as (x-rerun-6-04). (x-formatter-01)
     if lines > 0 && text.matches("\r\n").count() == lines {
         let formatted = format_lf(kind, &text.replace("\r\n", "\n"), cfg)?;
         let mut crlf: LPooled<String> = LPooled::take();

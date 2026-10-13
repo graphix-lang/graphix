@@ -1,0 +1,20 @@
+// c-error-op-02: is_echain_shape matches field names only: a struct with those names but other types is unsound
+// command: graphix --no-cache design/review-2026-10-12/repro/c-error-op-02.gx  (also --no-fusion; --check accepts it)
+// A struct payload with ErrChain's four field NAMES but other field types is
+// judged a chain by name alone (node/error.rs is_echain_shape), so `?` keeps
+// its type unwrapped; at run time wrap_error extends it as a chain, moving the
+// whole struct into `cause` and replacing `ori`/`pos`. `(e.0).cause` is typed
+// i64 and holds the struct.
+// expected: "cause 2" (or the error typed ErrChain<{cause: i64, ..}> by the check)
+// observed (both engines): select e.0.cause { i64 as n => "cause [n + 1]" }: no arm
+//   matches [["cause", i64:1], ["error", i64:2], ["ori", i64:3], ["pos", i64:4]]: a
+//   coverage hole in the check; the value stays "none"
+let out = "none";
+let t = {
+  catch(e) out <- select (e.0).cause {
+    i64 as n => "cause [n + 1]"
+  };
+  error({cause: 1, error: 2, ori: 3, pos: 4})?
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+out

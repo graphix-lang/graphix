@@ -1,0 +1,21 @@
+// run: GRAPHIX_DBG_BIND=1 graphix --check t-contains-06.gx 2>&1 | grep 'ctor\|CONTAINS Cell'
+// shows 'BIND ctor ''c := Cell' and 'CONTAINS Cell<[i64, string]> >= Cell<i64> -> Ok(true)':
+// the open-constructor walk (app_contains) takes the element covariantly; the
+// later check of the filled type (invariant abstract params) refuses it
+type Cell<'a> = Abstract<&mut 'a>;
+type Other<'a> = Abstract<Array<'a>>;
+trait Store {
+    val put: fn(self<'a>, v: 'a) -> i64
+};
+impl Store for Cell<'_> {
+    let put = |c, v| { let r = c.0; *r <- v; 0 }
+};
+impl Store for Other<'_> {
+    let put = |c, v| 1
+};
+let widen = 'c: Store |c: 'c<[i64, string]>| -> i64 Store::put(c, "oops");
+let x: i64 = 1;
+let c: Cell<i64> = Cell(&mut x);
+let r = widen(c);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+x + 1

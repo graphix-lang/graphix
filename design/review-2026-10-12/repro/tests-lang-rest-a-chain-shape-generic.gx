@@ -1,0 +1,7 @@
+let must = |r: Result<i64, 'e>| -> i64 r?;
+let r: i64 = never();
+let x: Result<i64, {cause: i64, error: i64, ori: i64, pos: i64}> = error({cause: 1, error: 20, ori: 3, pos: 4});
+catch(e) r <- (e.0).pos + 1;
+must(x);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+r

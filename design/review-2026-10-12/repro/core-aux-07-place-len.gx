@@ -1,0 +1,17 @@
+// core-aux-07: buffer::decode refuses a length given as a place reference
+// (`&s.n`, a legal `&u64`), though a write to the same place is accepted.
+// command: graphix --no-cache core-aux-07-place-len.gx
+// Expected: r is the remaining (empty) bytes and s = {b: AQID, n: 3}, as
+// the let-binding twin gives r2= n=3 b=AQID.
+// Observed: r=error:["DecodeError", "ref does not point to a let binding"]
+// s={b: AA==, n: 0}; the twin prints n=3 b=AQID.
+let buf = buffer::encode([`U64(u64:3), `Bytes(bytes:AQID)]);
+let s = { n: u64:0, b: bytes:AA== };
+let r = buffer::decode(buf, [`U64(&mut s.n), `Bytes(&s.n, &mut s.b)]);
+println("r=[r] s=[s]");
+let n = u64:0;
+let b = bytes:AA==;
+let r2 = buffer::decode(buf, [`U64(&mut n), `Bytes(&n, &mut b)]);
+println("r2=[r2] n=[n] b=[b]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

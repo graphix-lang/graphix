@@ -1,0 +1,13 @@
+{
+ // x-fix-fusion-01 (variant): a callee that prints a constant. performing_args treats
+ // the callee's arguments as its triggers, and the argument reads the scrutinee, so the
+ // select fuses; but the println fires on its own constant, which the node-walk fires at
+ // every entry to the arm (hi at cycles 0, 2, 4, 6, 8) and the kernel only at its first
+ // call (hi once). DIVERGENCE.
+ let step = i64:0; step <- select step {s if s < i64:8 => s + i64:1, _ => never()};
+ let p = |x: i64| { println("hi"); x + i64:1 };
+ let f = |s: i64| #[native] select s {
+   i64:0 => p(s),
+   _ => i64:-1
+ };
+ f(step % i64:2)}

@@ -1,0 +1,10 @@
+use gui::{window, chart};
+
+let nan = 0.0 / 0.0;
+let d = [
+  {x: 1.0, open: 10.0, high: 15.0, low: 8.0, close: 12.0},
+  {x: 2.0, open: 12.0, high: 14.0, low: nan, close: 11.0},
+  {x: 3.0, open: 11.0, high: 13.0, low: 9.0, close: nan}
+];
+let e = [{x: 1.5, min: nan, avg: 11.0, max: 13.0}];
+[&window(#title: &"nan", &chart::chart(&[chart::candlestick(&d), chart::error_bar(&e)]))]

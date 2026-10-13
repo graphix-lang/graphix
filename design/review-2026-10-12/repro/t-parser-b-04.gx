@@ -1,0 +1,12 @@
+// t-parser-b-04: nested or-pattern always refused in let / lambda params
+// command: graphix --check t-parser-b-04.gx
+// expected: accepted (the alternatives cover [`A, `B]), prints 1
+// observed: "refutable patterns are not allowed in let";
+// StructPatternNode::covers answers false for every Or. The lambda form
+// |(`A(x) | `B(x), c): ([`A(i64), `B(i64)], i64)| x + c is refused the
+// same way ("refutable patterns are not allowed in lambda arguments").
+// design/or_patterns.md advertises `|(a | b, c)| e`.
+let v: [`A, `B] = `A;
+let (`A | `B, c) = (v, 1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+c

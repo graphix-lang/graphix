@@ -27,6 +27,18 @@ fn datetime() -> impl Strategy<Value = DateTime<Utc>> {
 
 /// A duration a literal can denote: a literal goes through an f64 of
 /// seconds, which resolves a nanosecond below 2^23 seconds.
+// CR claude for claude: [bug/low] This strategy stays below 2^23 seconds because a
+// duration literal is read through an f64 of seconds. That lossy read is the bug.
+// netidx-value's parser reads the count with flt::<f64> and duration_of calls
+// Duration::try_from_secs_f64, and duration_display prints through as_secs_f64, despite
+// its doc saying every form parses back to the same duration.
+// `duration:10000000.000000001s` evaluates to 10000000.000000002s, and graphix fmt
+// silently rewrites the source literal to that value. The guard does not refuse it
+// because both texts read to the same Duration. Fix it in netidx-value: parse the count
+// as an exact decimal (whole part plus up to 9 fractional digits, scaled by the unit),
+// print from integer seconds and nanoseconds, then widen this strategy to the full
+// Duration range. probe: design/review-2026-10-12/repro/tests-expr-04.gx
+// (tests-expr-04)
 fn duration() -> impl Strategy<Value = Duration> {
     (0..1u64 << 23, 0..1_000_000_000u32).prop_map(|(s, ns)| Duration::new(s, ns))
 }
@@ -1075,6 +1087,15 @@ macro_rules! select {
     ($inner:expr) => {
         (
             $inner,
+            // CR claude for claude: [test-gap/low] The guard is generated undecorated,
+            // as are until_stmt!, the seq abort/flush clauses, the select scrutinee and
+            // a dynamic module's source, because `inner` is undecorated_expr and
+            // decorated() wraps only the top level, arm bodies, struct fields and seq
+            // items. So the formatter's refusals of a decorated guard, until or abort
+            // (t-print-01) pass expr_pp_round_trip. Wrap every child position where the
+            // parser accepts decorations in decorated(..). Also run expr_pp_round_trip
+            // at width 0 and at a random width, not only 80, so the hug, give-way and
+            // retry paths of the pretty printer get exercised. (t-print-06)
             collection::vec((option::of($inner), pattern(), decorated($inner)), (1, 10)),
         )
             .prop_map(|(arg, arms)| build_pattern(arg, arms))
@@ -1429,6 +1450,16 @@ fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
 
 /// Add the ExplicitParens a generated tree needs to reparse with the same
 /// shape.
+// CR claude for claude: [test-gap/low] add_parens puts ExplicitParens around every
+// operand that needs them, using the same rule the printer's `under` applies. qop!
+// wraps only kinds that need no parens. So the printer's own decisions (`under` for
+// binop operands, `suffixed` for the operands of `?` and `$`) never answer true in any
+// round trip. Those paths print trees the compiler builds without parens: error
+// messages, --expand, hover. A regression such as treating equal precedence on the
+// right as safe would print `a - (b - c)` as `a - b - c` with no test failing. Fix: add
+// a property that strips every ExplicitParens from a generated tree, prints it,
+// reparses, and compares while seeing through ExplicitParens. Let qop! wrap any kind.
+// (tests-expr-06)
 fn add_parens(mut e: Expr) -> Expr {
     if let Some((op, lhs, rhs)) = BinOp::of(&e.kind) {
         let prec = op.precedence();
@@ -1607,6 +1638,18 @@ fn acc_strings<'a>(args: impl IntoIterator<Item = &'a Expr> + 'a) -> Arc<[Expr]>
     Arc::from_iter(v.drain(..))
 }
 
+// CR claude for claude: [test-gap/medium] check_type compares with Type's PartialEq.
+// Its TVar arm is TVar's binding equality, under which any two unbound cells are equal,
+// and every type variable the generator or the parser builds is unbound.
+// check_typedef's param comparison and FnType's constraint list compare the same way.
+// So no round trip can see a printer that renames, swaps or merges type variables: `|x:
+// 'a, y: 'b| -> 'a` printed as `|x: 'a, y: 'a| -> 'a`, or swapped typedef params, both
+// pass. The formatter's guard (format.rs Parsed::difference) uses the same derived Expr
+// equality, so it would not refuse that output either. Fix: compare types by name as
+// well, with a walk that checks TVar names and constraints, or by comparing the
+// canonical printed forms of the normalized types. Use it in check_type and
+// check_typedef. Add ("|x: 'a| x", "|x: 'b| x") and ("type T<'a> = 'a", "type T<'b> =
+// 'b") to check_sees_a_lost_element. (tests-expr-02)
 fn check_type(t0: &Type, t1: &Type) -> bool {
     t0.normalize() == t1.normalize()
 }
@@ -1840,8 +1883,25 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
     if !check_dec(&s0.dec, &s1.dec) {
         return false;
     }
+    // CR claude for claude: [structure/low] This match has 20 identical binary-operator
+    // arms, one per operator from Add to Or plus Sample and StrictSample, each of the
+    // form `(Op{lhs,rhs}, Op{lhs,rhs}) => check(lhs0, lhs1) && check(rhs0, rhs1)`.
+    // BinOp::of already enumerates them, and add_parens in this file uses it. An
+    // operator added to BinOp without a new arm here falls to `(_, _) => false`, and
+    // the round trip fails with a confusing error. Fix: before the match, put `if let
+    // (Some((o0, l0, r0)), Some((o1, l1, r1))) = (BinOp::of(&s0.kind),
+    // BinOp::of(&s1.kind)) { return o0 == o1 && check(l0, l1) && check(r0, r1); }` and
+    // delete the 20 arms. (tests-expr-07)
     match (&s0.kind, &s1.kind) {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
+        // CR claude for claude: [test-gap/low] Value's PartialEq treats -0.0 as equal
+        // to 0.0 and compares decimals numerically (1.00 == 1). Programs can see both
+        // differences: `1.0 / -0.0` is -inf, and a decimal prints with its scale.
+        // value() generates both cases, but this comparison cannot fail on them, so a
+        // printer that drops the sign of zero or a decimal's scale would pass every
+        // round trip. Fix: compare floats by to_bits (with every NaN treated as equal)
+        // and decimals by mantissa and scale. Add ("-0.0", "0.0") and ("decimal:1.00",
+        // "decimal:1") to check_sees_a_lost_element. (tests-expr-05)
         (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0 == v1,
         (ExprKind::Array { args: a0 }, ExprKind::Array { args: a1 })
         | (ExprKind::List { args: a0 }, ExprKind::List { args: a1 })
@@ -1931,6 +1991,20 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             .iter()
             .zip(srs1.iter())
             .fold(true, |r, ((n0, s0), (n1, s1))| r && n0 == n1 && check(s0, s1)),
+        // CR claude for claude: [structure/low] check repeats one arm 20 times for the
+        // binary operators, and duplicates the lambda arm and the name pools. `check`
+        // has 18 identical binop arms (test.rs) plus separate Sample/StrictSample arms
+        // (2189-2196), although `BinOp::of` exists and `add_parens` already uses it.
+        // The two Lambda arms (2083-2153) differ only in the body comparison.
+        // `valid_fname` (217-267) and `valid_modpath` (328-355) repeat the same name
+        // list. A new operator needs a new arm, and a missing one fails confusingly.
+        // Failure: Maintenance cost: about 90 lines that one `BinOp::of` arm replaces;
+        // a newly added BinOp variant falls to `(_, _) => false` with an unhelpful
+        // message. Fix: `if let (Some((o0,l0,r0)), Some((o1,l1,r1))) =
+        // (BinOp::of(&s0.kind), BinOp::of(&s1.kind)) { return o0 == o1 && check(l0,l1)
+        // && check(r0,r1) }` before the match. Write one Lambda arm that compares
+        // bodies with a small match. Derive `valid_modpath` from one shared name list.
+        // Unverified: the reviewer's report, not checked by a verifier. (tests-expr-10)
         (
             ExprKind::Add { lhs: lhs0, rhs: rhs0 },
             ExprKind::Add { lhs: lhs1, rhs: rhs1 },
@@ -2252,6 +2326,16 @@ proptest! {
 
     #[test]
     fn expr_round_trip(s in expr()) {
+        // CR claude for claude: [test-gap/low] Every round-trip property prints
+        // canonically. PrintFlag::AsWritten, the mode graphix fmt prints in, is never
+        // run on a generated tree. That leaves the as-written paths covered only by
+        // format.rs's example tests and the hand-run gxfmt corpus: string delimiters
+        // chosen from str_form, written field and union order, and use-tree merging. It
+        // also means the `template` choice in interpolation() does nothing, because the
+        // canonical printer ignores str_form and check never compares it. Fix: run
+        // expr_round_trip and expr_pp_round_trip again under AsWritten. Have the
+        // generator set str_form on string constants too, and make check compare
+        // str_form in that mode. (tests-expr-03)
         let st = format_with_flags(BitFlags::empty(), || s.to_string());
         let e = parse_one(st.as_str()).unwrap();
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
@@ -2395,6 +2479,13 @@ mod tree_sitter_compat {
                 return;
             };
             if !out.status.success() {
+                // CR claude for claude: [readability/low] This holds 'we are in a git
+                // checkout', not 'this is a shallow clone', so `assert!(!shallow, ..)`
+                // reads backwards. In fact a depth-1 clone, which lacks the pinned rev,
+                // fails here. Rename it (`in_checkout`). Decide whether a shallow clone
+                // skips the test (`git rev-parse --is-shallow-repository`) or fails it,
+                // and say which in the doc comment. Also reported as (tests-expr-09),
+                // (tests-expr-11). (ide-tooling-15)
                 let shallow = std::path::Path::new(root).join(".git").exists();
                 assert!(!shallow, "the zed grammar rev {rev} has no {path}: {out:?}");
                 return;
@@ -2517,6 +2608,16 @@ mod tree_sitter_compat {
     /// The tree, not only its absence of errors: forms the grammar once
     /// read as another valid tree.
     #[test]
+    // CR claude for claude: [test-gap/medium] These shapes are the only check on what
+    // tree tree-sitter builds. Every other gate (ts_repo_sources_parse, the ts-compat
+    // proptests, check.sh) only looks for ERROR/MISSING nodes, and nothing here covers
+    // an annotation or a primitive type. At HEAD, `let x: Foo = 1` and `|e: Event| e`
+    // parse as type_ascription patterns with no pattern_bind, and `i64` in `Array<i64>`
+    // or `i64 as n` parses as ref_type, yet every gate passes. Add pins: `let x: Foo =
+    // 1` -> `(let_binding pattern: (structure_pattern (pattern_bind`, `|e: Event| e` ->
+    // `(lambda_param (structure_pattern (pattern_bind`, `let a: Array<i64> = []` ->
+    // `(array_type (primitive_type))`, `select x { i64 as n => n }` -> `(pattern
+    // (primitive_type)`. (ide-tooling-03)
     fn ts_tree_shapes() {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
@@ -2659,10 +2760,22 @@ fn an_interface_module_has_the_interface_origin() {
     assert!(Arc::ptr_eq(&exprs[0].ori, &ori));
 }
 
+// CR claude for claude: [readability/low] A doc comment sits on the wrong test. `///
+// The comparator fails on a dropped or added element.` (test.rs) is stacked onto
+// compiler_kinds_children_agree's own doc, so the two docs merge.
+// check_sees_a_lost_element (test.rs), the test it describes, has no doc. Failure: A
+// reader of compiler_kinds_children_agree sees a description of a different test. Fix:
+// Move line 2662 to just above `fn check_sees_a_lost_element` (test.rs). Unverified:
+// the reviewer's report, not checked by a verifier. (tests-expr-12)
 /// The comparator fails on a dropped or added element.
 /// The kinds only the compiler builds (seq lowering, module resolution):
 /// `map_children` rebuilds from the children `for_each_child` visits.
 #[test]
+// CR claude for claude: [readability/low] The first doc line above this test, 'The
+// comparator fails on a dropped or added element.', describes
+// check_sees_a_lost_element, which has no doc of its own. Here it says this test checks
+// the comparator, which it does not. Move that line to sit above
+// check_sees_a_lost_element. (tests-expr-08)
 fn compiler_kinds_children_agree() {
     use ExprKind::*;
     let leaf = |n: &str| Ref { name: ModPath::from([n]) }.to_expr_nopos();

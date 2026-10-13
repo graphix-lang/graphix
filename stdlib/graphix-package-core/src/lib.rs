@@ -103,7 +103,25 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
 
 /// Whether a read can cast to `t`: no unbound cell and no ⊥ (which has no
 /// surface syntax, so a ⊥ anywhere in it is an unconstrained cell).
+// CR claude for claude: [structure/low] This is a second copy of the checker's Concrete
+// rule (`Type::concrete_holds` plus `has_unbound` in graphix-types), and it differs
+// from it. It does not walk List, Fn or Abstract parameters, it accepts a ByRef target
+// that the checker refuses, and past depth 64 it reports "no bottom" instead of
+// looking. extract_cast_type and sys::net's publish decide the run-time cast target
+// with it, so a change to the checker's rule leaves this one deciding differently.
+// Export one `Type::is_concrete()` (no unbound cell, concrete_holds) from graphix-types
+// and call it here and in sys::net, then delete this walk. (x-dup-08)
 pub fn castable(t: &Type) -> bool {
+    // CR claude for claude: [structure/low] This is a second, weaker copy of the
+    // Concrete rule. It reports a ⊥ deeper than 64 as absent, does not descend into
+    // List, Ref, Abstract or Fn, and clones the type at every Ref. Type::concrete_holds
+    // already refuses ⊥ (and references) with a guarded full walk. Expose it from
+    // graphix-types and make castable `!t.has_unbound() && t.concrete_holds()`. The
+    // reads already carry `'b: Concrete`. The one caller with no bound is sys::net's
+    // extract_publish_cast_type for on_write's argument type, and it gets the full rule
+    // too. When castable says no, CastTarget holds None and the value passes through
+    // uncast, so a missed ⊥ and a refused target both deliver an unchecked value.
+    // (x-stack-07)
     fn contains_bottom(t: &Type, depth: u32) -> bool {
         if depth > 64 {
             return false;
@@ -425,6 +443,16 @@ pub use memo::FastMemo;
 
 /// A map key as a text format (JSON, TOML, a template's data) writes it:
 /// a string bare, any other value in its naked form.
+// CR claude for claude: [bug/medium] `to_string_naked` is netidx's formatter, and it is
+// naked only at the top level: an array, map or error key goes through the typed
+// `Display`. So `json::write_str({[1, 2] => 3})` writes the key `"[i64:1, i64:2]"`,
+// while `println` shows `[1, 2]`, and the toml and hbs keys do the same. The GUI
+// data_table's `NakedValue`/`format_value` copies the same netidx call, so a cell
+// holding an array shows typed elements too. Fix: expose graphix-types'
+// `typ::tval::fmt_naked` (for example a public `Naked(&Value)` Display), use it here
+// and in the GUI's `format_value`, delete the GUI's own `NakedValue` wrapper, and add a
+// json pin with a composite key. probe: design/review-2026-10-12/repro/x-dup-01.gx
+// (x-dup-01)
 pub fn map_key(k: &Value) -> String {
     match k {
         Value::String(s) => s.to_string(),
@@ -471,9 +499,32 @@ pub enum Shape {
 /// payload a sequence; a union reads as the first member `v` inhabits.
 /// Where the type says nothing (`None`, `Any`, an open variable), a
 /// non-empty array of `(string, _)` pairs in key order reads as an object.
+// CR claude for claude: [bug/medium] `shape` has no arm for `Type::ByRef`, so a
+// reference falls to `untyped_shape` and becomes a `Shape::Leaf` holding its cell's
+// BindId. The json, toml and hbs writers then write that id as a number:
+// `json::write_str({a: &x, b: 1})` gives `{"a":4611686018427392013,"b":1}`. The number
+// differs per `&x`, per engine and per image (graphix-fuzz answers UNSURE), and it
+// cannot be read back. A reference is not a number, and a cast already refuses one
+// through `Type::holds_ref`, so the writers should refuse it too. Fix: give `Shape` a
+// refusal for a `ByRef` type, and have json `encode`, toml `encode` and hbs `fc_render`
+// turn it into their JsonErr/TomlErr/HbsErr. Better still, refuse at check time with a
+// bound on the writers' value variable that excludes references, as `'b: Concrete` does
+// for the reads. probe: design/review-2026-10-12/repro/small-pkgs-04.gx Also reported
+// as (x-fix-stdlib-04). (small-pkgs-04)
 pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
     let typed = t.and_then(|t| constructor(env, t));
     match (typed.as_ref(), v) {
+        // CR claude for claude: [perf/low] A union picks its member with a full is_a
+        // walk of the value. Writers recurse through shape() level by level, so a value
+        // of a recursive union type (`type J = [.., Array<J>, Map<string, J>]`)
+        // re-walks its whole subtree at every level: O(nodes × depth). Fix: choose the
+        // member by a shallow head test, falling back to is_a only when two members
+        // share a head. Separately, the json package doubles each document.
+        // json_to_value parses into a serde_json::Value and copies every string and key
+        // again, and value_to_json builds a serde_json::Value tree before serializing,
+        // so peak memory and allocations are about twice what they need to be. A serde
+        // Visitor straight into Value, and a Serialize wrapper over (env, type, &Value)
+        // that streams to the writer, would remove the intermediate tree. (x-alloc-07)
         (Some(Type::Set(ts)), v) => shape(env, ts.iter().find(|m| m.is_a(env, v)), v),
         (Some(Type::Struct(fs)), Value::Array(a)) if fs.len() == a.len() => {
             let mut entries: LPooled<Vec<_>> = LPooled::take();
@@ -599,6 +650,13 @@ pub enum Invocation {
 }
 
 #[derive(Debug)]
+// CR claude for claude: [structure/low] A value slice and a tag slice must stay the
+// same length, but the type does not say so, and both fields are public. `update_full`
+// indexes `self.1[i]` assuming the lengths match. Store one `Box<[(Option<Value>,
+// Tag)]>`, which is also one allocation per call site, and make the field private with
+// a `get(i) -> Option<&Value>` accessor. That accessor replaces the
+// `cached.0.get(i)?.as_ref()?` repeated across the db, gui, http, sqlite and sys
+// packages. (core-lib-09)
 pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 
 /// A builtin payload's image: its state after `init` and the typecheck
@@ -635,6 +693,24 @@ pub(crate) enum WriteTarget {
     Var(BindId),
 }
 
+// CR claude for claude: [structure/low] The rule 'a reference cell writes to its
+// registered place, else to the binding at the end of its byref chain, else to itself'
+// is written out again here, with its own WriteTarget enum. graphix-compiler has the
+// same rule in `node::bind::ref_target` and in `ConnectDeref::resolve` (with another
+// `WriteTarget`), and buffer.rs `Decoder::target`/`Decoder::put` check a narrower
+// version that has already drifted (it refuses a chainless cell). Fix: make one public
+// resolver in graphix-compiler (`ref_target`, or a `WriteTarget` built on it), delete
+// this copy and `ConnectDeref::resolve`, and have `Decoder` validate and write through
+// that resolver. (tests-lib-b1-02)
+// CR claude for claude: [structure/low] `write_target` repeats the rule 'the cell's
+// place if it has one, else its byref chain, else the cell'. That rule is also in the
+// compiler's `node::bind::ref_target` and in `ConnectDeref::resolve`, which has its own
+// `WriteTarget` enum. If one copy changes, for example to follow a longer byref chain,
+// `buffer::decode` and `queuefn` writes would go to a different binding than `*r <- v`,
+// and `==` on references would compare a third answer. Make one public function in
+// graphix-compiler (an `ExecCtx` method returning the target) and use it from all three
+// places. Then delete `WriteTarget` and `write_target` here, and the compiler's private
+// enum. (core-lib-07)
 pub(crate) fn write_target<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<'_, R, E>,
     r: BindId,
@@ -661,6 +737,10 @@ pub trait Elements: Debug + Send + Sync + 'static {
 
 /// `iter`: every element of each collection that fires, in one cycle.
 #[derive(Debug)]
+// CR claude for claude: [doc-drift/low] The doc above says the elements come 'in one
+// cycle'. They come one per cycle: each `set_var` to `self.id` queues behind the last,
+// and `array::iter([1, 2, 3])` fires 1, 2, 3 over three cycles. Reword it to 'each
+// element of every collection that fires, one per cycle, in order'. (core-lib-08)
 pub struct Iter<C> {
     id: BindId,
     top_id: ExprId,
@@ -727,6 +807,16 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
         ctx.release_var(self.id, self.top_id)
     }
 
+    // CR claude for claude: [structure/medium] About fifteen builtins (core, sys
+    // net/io/watch/time, http, db, queuefn) repeat the life of a runtime variable by
+    // hand. They record_ref in init and again in image_decode, re-mint on sleep
+    // (release_var, BindId::new, ref_var; sys::net names it both `renew` and `remint`),
+    // release at delete, and encode id and top_id. A new async builtin that copies init
+    // but forgets the record_ref in decode is deaf after a warm start, and nothing in
+    // the types catches it. Add a `RtVar { id, top_id }` to graphix-package-core with
+    // new, image_encode, image_decode (decode plus record_ref), remint and release.
+    // Hold it in place of the two fields so the re-registration rule lives in one
+    // place. (x-dup-05)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
@@ -1179,6 +1269,15 @@ pub fn sort_values(
     numeric: bool,
     vals: impl Iterator<Item = Value>,
 ) -> Option<LPooled<Vec<Value>>> {
+    // CR claude for claude: [perf/medium] With #numeric, sort_values casts both
+    // operands to f64 inside every comparison through cn. For a String that cast runs
+    // the full Value parser, so array::sort and list::sort do 2·n·log n parses where n
+    // would do: 30k numeric strings sort in ~5.6 s against ~20 ms without #numeric
+    // (probe: design/review-2026-10-12/repro/collections-str-04.gx). Cast each element
+    // once: decorate into an LPooled<Vec<(Value, Value)>> of (key, value), stable-sort
+    // by key (reversed for Descending), then strip the keys. Avoid sort_by_cached_key,
+    // which allocates its index vector on every call. Also reported as (x-alloc-02).
+    // (collections-str-04)
     fn cn(v: &Value) -> Value {
         v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
     }
@@ -1210,6 +1309,14 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 {
     const NAME: &str;
     /// The builtin's classification — see `graphix_compiler::Effect`.
+    // CR claude for claude: [risk/low] `EvalCached` answers in the cycle it is called,
+    // but its `EFFECT` defaults to `Effect::Async`, the one classification that is
+    // never true for it. A package builtin that leaves out the declaration compiles
+    // anyway. Every caller is then reported async, nothing around it fuses, and
+    // `CachedArgs` skips its wake recompute. Every `EvalCached` in the workspace and in
+    // netidx-admin already declares `EFFECT`, so removing the default costs nothing and
+    // makes the choice between Sync, Stateless and Io a compile error to forget.
+    // (x-builtin-effects-09)
     const EFFECT: Effect = Effect::Async;
     /// See `graphix_compiler::BuiltIn::ORDERED`.
     const ORDERED: bool = false;
@@ -1427,6 +1534,20 @@ impl<T> CachedArgs<T> {
                     last_result.retag(Tag::STALE)
                 }
             }
+            // CR claude for claude: [bug/medium] This arm runs `quiet` (which is `eval`
+            // by default) on every stale join whose last result is bottom. A bottom
+            // that `eval` itself returned (None) is stored as the same STALE_BOTTOM
+            // Null as the never-produced phantom, so the arm keeps re-running `eval` on
+            // unchanged slots every cycle the statement updates. A standing `divide(10,
+            // 0)` logs "arithmetic error" once per cycle, while `10 / 0` logs once.
+            // This breaks the dense_delivery rules "retag STALE without eval on a stale
+            // join" and "standing bottoms never log", and Sync builtins run `eval` on
+            // non-fires. Fix: record whether the present slots have already been
+            // evaluated, for example a flag that is set whenever eval or quiet runs and
+            // cleared when `CachedVals::update_full` overwrites a slot value or marks a
+            // taint, and by sleep and image_decode. Recompute here only when that flag
+            // is clear, and otherwise ride. probe:
+            // design/review-2026-10-12/repro/core-lib-03.gx (core-lib-03)
             Some(_) => {
                 // Nothing to re-surface yet: compute the value once to
                 // establish the value channel, STALE.
@@ -1578,6 +1699,39 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         let invocation = self.cached.update(ctx, from);
         let start = match invocation {
             Invocation::Fired => true,
+            // CR claude for eric: [bug/high] A wake restarts every async builtin over
+            // its standing arguments, including the ones that act on the world. A woken
+            // arm therefore performs the effect again even though its trigger never
+            // fired: sqlite::exec/exec_batch/begin/commit/rollback, non-GET http
+            // requests, the db writers, the cursor reads that advance a shared
+            // iterator, and sys::fs::write_all. In the probe, one trigger fire plus two
+            // wakes inserts three rows, while a sync println under the same trigger
+            // prints once. This follows design/async_sleep_outputs.md, but it
+            // contradicts the wake catch-up rule (a wake re-raises only fires no
+            // selected reader saw) and the sync Io rule (EvalCached::quiet computes
+            // without the effect). Proposed fix: give EvalCachedAsync an effect
+            // classification parallel to Effect::Io (for example an `ACTS` constant).
+            // An acting builtin would restart at a wake only when an argument fired
+            // during the sleep, never on `woke` alone; queries would keep restarting.
+            // Then mark the acting builtins, update async_sleep_outputs.md and
+            // CLAUDE.md, and add a pin per family. probe:
+            // design/review-2026-10-12/repro/http-sqlite-db1-02.gx (http-sqlite-db1-02)
+            // CR claude for eric: [bug/high] A wake reissues the call over its standing
+            // arguments even when the last call already completed before the arm slept.
+            // For a builtin that acts on the world, that repeats the action with no new
+            // trigger. Probe: design/review-2026-10-12/repro/db2-02.gx. There, one fire
+            // of the trigger pops two entries: db::pop_min runs again at the wake. The
+            // same holds for every effectful user of this wrapper: db
+            // insert/remove/batch/compare_and_swap/generate_id/cursor read/txn commit,
+            // sqlite exec, http requests, and stream writes. The rule is the documented
+            // one (CLAUDE.md's async-sleep sentence, design/async_sleep_outputs.md, pin
+            // wake_reissues_standing_async). It conflicts with wake catch-up, where a
+            // wake re-raises only fires no reader saw, and with the Io rule. Options:
+            // restart at the wake only a call that was in flight or queued when the arm
+            // slept, recorded in sleep(), with a completed call staying completed and
+            // its output phantom. Or add an EvalCachedAsync flag so only idempotent
+            // builtins restart. Either way, update the doc and the pin to match.
+            // (db2-02)
             Invocation::Quiet => woke,
             Invocation::Bottom { .. } => false,
         };
@@ -1603,6 +1757,28 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                     future::Either::Left((Ok(v), _)) => v,
                     // a panicking eval still answers, so the site runs its next call
                     future::Either::Left((Err(_), _)) => {
+                        // CR claude for claude: [bug/medium] x-panics-05 fixed at the
+                        // symptom: a caught panic replies an error outside the declared
+                        // type. The fix catches the async builtin's panic and replies
+                        // `errf!("Panicked", ..)` (lib.rs). The root cause,
+                        // netidx-core's Duration::decode calling
+                        // Duration::new(u64::MAX, 1e9), still panics and still prints a
+                        // panic message to stderr. `Panicked` is not in pack::read's
+                        // declared error type ([`PackErr, `InvalidCast]), so a handler
+                        // that is exhaustive over the declared errors matches nothing.
+                        // The checker considers such a select complete. Failure: With
+                        // GRAPHIX_ABORT_ON_NO_MATCH=1 the program below aborts: 'select
+                        // e.0.error {..}: no arm matches ["Panicked", "pack_read
+                        // panicked"]: a coverage hole in the check' (exit 134). Without
+                        // it the select is silently bottom and r is never printed.
+                        // stderr also shows 'panicked .. overflow in Duration::new',
+                        // which corrupts a TUI. Fix: Fix the decode in netidx-core: use
+                        // Duration::checked_add or validate ns < 1e9 and return a
+                        // PackError. In the catch, map a panic to the builtin's own
+                        // declared error tag (`PackErr` here), or declare `Panicked` in
+                        // every async builtin's error type, so the static types stay
+                        // honest. Unverified: the reviewer's report, not checked by a
+                        // verifier. (x-rerun-8-08)
                         errf!(arcstr::literal!("Panicked"), "{} panicked", T::NAME)
                     }
                     // an aborted eval's id was released, which drops this reply
@@ -1644,6 +1820,22 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // CR claude for eric: [bug/medium] Sleep aborts the call in flight, and the
+        // wake re-issues it from the start. That is only correct for an eval that loses
+        // nothing when dropped. The stream overrides do lose something. IoReadExactEv
+        // and IoReadAllEv drop the bytes they already read: a read_exact of 6 asleep
+        // across "abc" | "def" | "ghi" returns "defghi". IoWriteExactEv leaves a
+        // partial write_all and then writes the whole buffer again: 192000 bytes sent
+        // arrive as 257536. DbCursorReadEv and DbCursorReadManyEv run on a blocking
+        // task that keeps advancing the cursor after the abort, so those entries are
+        // lost. design/async_sleep_outputs.md prescribes this abort for stream I/O, yet
+        // keeps IoLines' reader across sleep for exactly this reason. The rule is
+        // decided per wrapper but needs to be per eval. Options: EvalCachedAsync
+        // declares whether an eval is cancel-safe, and a sleep lets an unsafe one
+        // finish and banks its reply for the wake; or the stream halves get a pushback
+        // buffer that an aborted read refills, while writes stay non-abortable. Either
+        // way, write the rule into design/async_sleep_outputs.md. Probe:
+        // design/review-2026-10-12/repro/x-builtin-effects-03.sh (x-builtin-effects-03)
         self.renew(ctx);
         self.cached.clear();
         self.slept = true;
@@ -1675,6 +1867,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
         Ok(Box::new(FilterErr::default()))
     }
 
+    // CR claude for claude: [risk/low] `filter_err` keeps its last error and rides it
+    // over later non-error fires and bottoms. Its output depends on what arrived
+    // before, not only on the current argument, the same as `core_filter`, which is
+    // `Sync`. Declaring it `Stateless` gives every lambda that calls it PURE facts
+    // (`analysis::def_body_facts`). An arm holding it then skips sleep, and any future
+    // use of PURE facts to recompute or share calls would treat the held error as
+    // derivable from the current argument. Declare `Effect::Sync`. (core-lib-05)
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_filter_err";
 
@@ -1772,6 +1971,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
             _ => None,
         };
         match res {
+            // CR claude for claude: [bug/high] Once builds its output as
+            // `TagValue::fired(v)` and drops the WAKE bit of the input that fired it. A
+            // wake's own constant passed through once therefore becomes a real event,
+            // and the enclosing `let` overwrites its `<-` targets' last writes at every
+            // wake of the arm. That breaks "sleep is pause": `let v = once(100); v <-
+            // ep ~ v + 1` in an arm that sleeps and wakes restarts at 100, while `let v
+            // = 100` or a CachedArgs builtin resumes at 103. take/skip (Counted), uniq,
+            // hold, count, filter, filter_err and throttle do the same. Fix: carry the
+            // bit of the input production that caused the emission,
+            // `TagValue::tagged(v, tv.tag().fresh_or_wake())` (for hold and throttle,
+            // the join of the tags that fired). Do it in one helper all of these
+            // builtins use. Pin each one beside
+            // `lang::select::wake_constant_keeps_target`. probe:
+            // design/review-2026-10-12/repro/core-lib-01.gx (core-lib-01)
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
@@ -1843,6 +2056,20 @@ impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         seed_count(from[0].update(ctx), &mut self.n);
+        // CR claude for claude: [bug/medium] A bottom input rides the old output here.
+        // seam_tick answers None for a bottom as well as for a stale delivery, and the
+        // None branch calls `self.out.ride()`, which re-surfaces the last value as
+        // STALE. So `(c, take(#n: 5, x))` prints `(2, 1)` in the cycle where x is
+        // bottom. design/activation_state.md Ruling 1 (bottom in, bottom out; only hold
+        // rides) and design/dense_delivery.md delta 13 both rule that out, and uniq, `x
+        // + 0` and every CachedArgs builtin print nothing in that cycle. once, count,
+        // Filter, FilterErr and throttle share the defect through the same `None =>
+        // self.out.ride()` path. Fix: in each raw builtin except hold, check the
+        // consumed input's tag before seam_tick and return
+        // `self.out.set_bottom(tag.triggers())` on a bottom, as Uniq::update does. A
+        // seam helper that hands the bottom back as an Err would make this hard to
+        // miss. Pin it in lib_tests/bottom.rs. probe:
+        // design/review-2026-10-12/repro/core-lib-02.gx (core-lib-02)
         let res = seam_tick(from[1].update(ctx)).and_then(|tv| {
             let counting = matches!(self.n, Some(n) if n > 0);
             if let Some(n) = &mut self.n
@@ -1866,6 +2093,15 @@ impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
     }
 }
 
+// CR claude for claude: [bug/low] `all` tests its arguments with raw `==` on the
+// values, so references compare by their per-site ids. Two references to one variable
+// are "different" here, though `r1 == r2` is true and `uniq` treats them as equal
+// through `ExecCtx::ref_targets`. As a result, `all(&a, &a)` written at two sites never
+// produces. Fix: mirror `Uniq`. At init, record the argument type when
+// `Type::compares_refs` holds, and compare `ctx.ref_targets(t, v)` in a custom
+// `EvalCached::eval`, keeping the fast fn for the other types. The alternative is to
+// bound `all` by `'a: Ordered` so references are refused. probe:
+// design/review-2026-10-12/repro/x-builtin-effects-05.gx (x-builtin-effects-05)
 fn fc_all(args: &[Value]) -> Option<Value> {
     match args {
         [] => None,
@@ -1889,6 +2125,13 @@ fn flat(args: &[Value]) -> impl Iterator<Item = Value> + '_ {
 /// `op` over the flattened arguments, left to right. A failed step (a
 /// division by zero, an overflow) is logged and the result is nothing,
 /// as the `/` operator does, never an error the type does not admit.
+// CR claude for claude: [doc-drift/low] The doc comment says an overflow is a failed
+// step that is logged and gives nothing. That holds only for decimal and duration
+// overflow, which `Value`'s operators turn into an error. Integer `+` and `*` wrap, so
+// `sum(1, 9223372036854775807)` is `-9223372036854775808` with no log, as the operators
+// do. Reword it to say that integer steps wrap as `+` and `*` do, and that a step the
+// value arithmetic refuses (a division by zero, a decimal or duration overflow) is
+// logged and the result is nothing. (x-builtin-effects-10)
 fn arith(name: &str, args: &[Value], op: fn(Value, Value) -> Value) -> Option<Value> {
     let mut acc: Option<Value> = None;
     for v in flat(args) {
@@ -1897,6 +2140,18 @@ fn arith(name: &str, args: &[Value], op: fn(Value, Value) -> Value) -> Option<Va
             Some(l) => op(l, v),
         };
         if let Value::Error(e) = &next {
+            // CR claude for claude: [bug/medium] This failure is logged under the
+            // crate's default target, not graphix_compiler::FAILURE_TARGET, so the
+            // shell drops it: its logger is `off, graphix::failure=error`. `divide(7,
+            // 0)` produces nothing and prints nothing, while `7 / 0` prints its arith
+            // error. That breaks the CLAUDE.md rule for a running program's failures
+            // and the "is logged" promise in core's mod.gxi. The message also carries
+            // no source position and only says "arithmetic error". The `Pad` limit in
+            // buffer::encode has the same untargeted log::error!. Fix: log both with
+            // `target: FAILURE_TARGET`, naming the cause. Also add a test that a
+            // failing divide is reported. Probe:
+            // design/review-2026-10-12/repro/tests-lib-a-02.gx Also reported as
+            // (core-lib-04). (tests-lib-a-02)
             log::error!("{name}: {e}");
             return None;
         }
@@ -2046,6 +2301,17 @@ crate::fast_builtin!(Shr, ShrEv, "core_shr", fc_shr);
 /// Feeds each input value to `pred` and emits it when `pred` returns
 /// `true`. A new input arriving while `pred` is still working replaces
 /// the pending value; wrap with `queue` for strict pairing.
+// CR claude for claude: [structure/low] `Filter` repeats `opt::OptHof`'s callback
+// scaffolding: the genn::bind / genn::reference / genn::apply init, and a `delete`,
+// `refs` and `typecheck0` that match line for line. Its `update` also writes
+// `opt::feed` inline twice. The same feed is inlined in array's group, queuefn's
+// `WrapperApply`, sys::net's publish and core's handler.rs. Dropping a private bind is
+// spelled three ways: `release_var`; `unref_var` + `store_remove` in `Sample::delete`,
+// which is `release_var` written out; and `release_var` + `store_remove` in
+// `QueueFn::delete`, which removes twice. A change to how a private bind is fed or
+// released has to find every copy. Put `feed` beside `genn::bind` in
+// graphix_compiler::node::genn, use it at each of these sites, and build `Filter` on
+// the same callback struct `OptHof` uses. (x-node-contract-06)
 #[derive(Debug)]
 struct Filter<R: Rt, E: UserEvent> {
     pred: Node<R, E>,
@@ -2129,6 +2395,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
             ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
             ctx.event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
+        // CR claude for claude: [bug/medium] When the input delivers a bottom,
+        // `seam_value` skips it and the update falls through to `self.out.ride()`, so
+        // filter keeps delivering its last accepted value as Stale while the input it
+        // consumed is bottom. That breaks the bottom-out rule
+        // (design/activation_state.md Ruling 1, dense_delivery delta 13): hold is the
+        // only builtin that rides over bottoms. `OptHof::update` gets this right: it
+        // reads `input.tag().is_bottom()` before the seam, still ticks the callback,
+        // and returns `self.out.set_bottom(trig)`. Do the same here. `array::group`'s
+        // update has the same shape (`seam_tick` on the input, then `ride()`) and needs
+        // the same gate; its queue and buf should survive the bottom. Probe:
+        // design/review-2026-10-12/repro/x-dup-03.gx (at n=2, filter and group print
+        // stale values and opt::filter prints nothing). A shared callback-HOF scaffold
+        // (x-dup-04) would put this rule in one place. (x-dup-03)
         if let Some(tv) = seam_value(from[0].update(ctx)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
@@ -2142,6 +2421,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
+            // CR claude for claude: [bug/medium] core-lib-03/core-aux-08 variant: core
+            // filter and raw-Apply builtins ride their last value through a bottom
+            // input. bfb34d1d made range bottom on a bottomed argument, and 274ab649
+            // made the opt HOFs and queuefn bottom too. The same R3 rule
+            // (design/dense_delivery.md R3 and ruled delta 13: "Builtins bottom on any
+            // bottomed argument"; CLAUDE.md: "a bottom input SETS a node's resident,
+            // never rides it") is still broken by the other raw-Apply builtins. They
+            // read inputs with seam_tick or seam_value and fall to `self.out.ride()` on
+            // a bottom. Core `filter` (Filter::update, lib.rs) does this for a bottomed
+            // value AND for a bottomed predicate; opt::filter now bottoms in both
+            // cases. once (1776), count (2645-2655), take/skip, queue, throttle,
+            // filter_err (1709), array::group, array::iter and array::iterq all keep
+            // re-delivering their last output as a value while the input stands bottom.
+            // R3 allows exactly three Held rides (scrutinee, guard, `~`); hold is the
+            // documented bottom-riding tool. None of these is either. Failure: s turns
+            // null at c=2, so s$ is a fresh, then standing, bottom. Each tuple below
+            // should be silent from then on, as `(uniq(s$), s)`, `(str::len(s$), s)`
+            // and `(opt::filter(s$, ..), s)` are. Instead they print {once: (5, null)},
+            // {count: (1, null)}, {take: (5, null)}, {skip: (5, null)}, {queue: (5,
+            // null)}, {throttle: (5, null)}, {group: ([5], null)}, {iterq: (5, null)},
+            // {iter: (5, null)}, {err: (error:5, null)}, and core filter prints ("5",
+            // null). A filter predicate that bottoms (`|t| parse(t) > 0` over "x")
+            // gives ("5", "x") where opt::filter is silent. Fix: Give the raw-Apply
+            // builtins the gate range got: read every argument through one helper that
+            // reports Invocation::Bottom { fresh }, and return
+            // `self.out.set_bottom(fresh)` before any state change. For filter, also
+            // bottom when the predicate's answer is bottom. Leave hold as the only
+            // designated ride. Add a bottom.rs pin that iterates the restart and
+            // iteration builtins over a bottomed input. Unverified: the reviewer's
+            // report, not checked by a verifier. (x-rerun-2-03)
             None => self.out.ride(),
         }
     }
@@ -2266,6 +2575,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.triggered = 0;
+        // CR claude for eric: [doc-drift/low] Queue::sleep discards every queued value.
+        // A seqq whose select arm sleeps therefore loses not only the run in progress
+        // (the reset seq_blocks.md §6.5 documents) but every request queued behind it,
+        // silently. Probe: design/review-2026-10-12/repro/x-engine-seq-errors-06.gx,
+        // where request 3 is never run after the wake and both engines agree. Needs a
+        // rule. If dropping is intended, add queue to CLAUDE.md's restart-builtin list
+        // and say in §6.5 and in core::queue's interface doc that a sleeping seqq
+        // discards its queue. If sleep should be a pause, keep the queue here, re-arm
+        // one credit at the wake, and pin it. (x-engine-seq-errors-06)
         self.queue.clear();
         self.out = TagValue::phantom();
     }
@@ -2454,6 +2772,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
 }
 
 #[derive(Debug)]
+// CR claude for claude: [risk/low] Throttle releases a pending timer's id with
+// `ctx.release_var` when the rate changes, on `sleep` and on `delete`, but never calls
+// `ctx.rt.cancel_timer`. The tokio timer task therefore stays in `rt.timers` and the
+// JoinSet until it expires, then wakes the runtime for a cycle that delivers to an id
+// nobody reads. With a long rate in an arm that sleeps often, these tasks pile up.
+// `sys::time::release` already does it right (cancel_timer + release_var +
+// store_remove), but core cannot reach it. Move it onto `ExecCtx` (e.g.
+// `release_timer`) and use it from Throttle, Timer and AfterIdle. The run state is also
+// three loose fields with an unstated rule (`tid` implies `last`); `enum Run { Idle,
+// Open { last: Instant }, Pending { last: Instant, tid: BindId } }` makes the rule
+// structural and removes the `tid.take() && let Some(last)` chain that would drop an id
+// if the rule broke. (x-invalid-states-07)
 struct Throttle {
     wait: Duration,
     last: Option<Instant>,
@@ -2592,6 +2922,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.out.ride()
     }
 
+    // CR claude for claude: [perf/low] `Throttle` arms timers with `ctx.rt.set_timer`
+    // but drops them with `ctx.release_var`, here, in `sleep` and on a `#rate` retune
+    // in `update`. `release_var` never calls `cancel_timer`, so each dropped timer's
+    // tokio task and `rt.timers` entry live until the timer expires, up to `#rate`
+    // later. An arm that toggles while a fire is pending piles them up. The private
+    // `release` in graphix-package-sys's time.rs (cancel_timer + release_var +
+    // store_remove) does the whole job. Move it to one shared place, for example an
+    // `ExecCtx::release_timer`, and use it here and in sys::time. (x-node-contract-04)
+    // CR claude for claude: [structure/low] Throttle's delete, sleep and rate-retune
+    // paths release the timer id with ctx.release_var but never ctx.rt.cancel_timer.
+    // The timer task and its entry in the runtime's timers map therefore live until the
+    // deadline: throttle(#rate: 1.h, x) in a slot or arm that is torn down repeatedly
+    // keeps one hour-long task per teardown. sys::time keeps its own `release` helper
+    // (cancel_timer + release_var + a store_remove that release_var already does) to
+    // get this right by hand. Fix: have ExecCtx::release_var also cancel any timer on
+    // the id (a no-op for ids with none), together with dropping its queued writes
+    // (x-concurrency-04). Then delete sys::time's `release` and every private-id
+    // builtin releases completely. (x-concurrency-10)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.tid.take() {
             ctx.release_var(id, self.top_id);
@@ -2647,6 +2995,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // CR claude for claude: [risk/low] The `||` short-circuits, so once one
+        // argument has fired, the arguments after it are not updated that cycle. Every
+        // argument must be updated every cycle (see `seam_arg`). count has one
+        // argument, so this cannot happen today, but the fold looks like it handles
+        // several and does it wrong. Write `if
+        // seam_tick(from[0].update(ctx)).is_some()`, which matches the signature.
+        // (core-lib-06)
         if from.into_iter().fold(false, |u, n| u || seam_tick(n.update(ctx)).is_some()) {
             self.count += 1;
             self.out.set(TagValue::fired(Value::I64(self.count)))
@@ -2867,6 +3222,17 @@ impl Printer {
         .unwrap();
         coretraits::with_display_hooks(ctx, |env| {
             match (self, v) {
+                // CR claude for eric: [bug/low] This arm picks raw output by the value,
+                // not by the type. A bare variant shares its runtime form with a
+                // string, so `println(`A)` prints `A`, while `println(`B(1))`,
+                // `println([`A])` and `log(`A)` all print the backtick: a value of one
+                // type `[`A, `B(i64)]` is printed in two notations. `typ` is in hand
+                // here, so print raw only when the site's type says string, and send
+                // everything else through TVal. `perform` reaches the same code, so the
+                // node-walk and fused output stay the same. One decision is needed:
+                // what a string under `Any`, or under a union that also holds a bare
+                // variant, should print. probe:
+                // design/review-2026-10-12/repro/book-stdlib-11.gx (book-stdlib-11)
                 (Self::Print | Self::Println, Value::String(s)) => write!(line, "{s}"),
                 (_, v) => write!(line, "{}", TVal { env, typ, v }),
             }

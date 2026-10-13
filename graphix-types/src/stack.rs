@@ -183,6 +183,18 @@ pub fn record_invocation(jit: bool) {
 /// Count `n` per-activation kernel blocks allocated (or freed, negative)
 /// against the runtime whose cycle runs on this thread.
 #[doc(hidden)]
+// CR claude for claude: [risk/low] This charges and releases a kernel's per-activation
+// blocks through the thread's CURRENT control, which is set only while a cycle's nodes
+// run (with_control). Kernels are also dropped outside a cycle: GXRt's ToGX::Delete,
+// delete_callable and the apply_deferred at the start of do_cycle all delete nodes with
+// CURRENT null. The block is freed there, but neither Control::self_blocks nor
+// Control::activations goes down. Under Control::set_activation_budget, an embedder
+// that keeps compiling and deleting expressions that call a recursive fused lambda
+// leaks its count until a spurious budget abort. LambdaInstance avoids this by
+// recording the Control it charged (`charged`) and releasing against ctx.control. Fix:
+// record the charged Control alongside the kernel's block tree and release against it
+// in FusedKernel's drop, or run those three delete paths under with_control. Also
+// reported as (x-node-contract-05). (x-concurrency-06)
 pub fn record_self_blocks(n: i64) {
     if let Some(c) = current_control() {
         // SAFETY: see `current_control`.
@@ -193,6 +205,22 @@ pub fn record_self_blocks(n: i64) {
         1 => {
             activation_born();
         }
+        // CR claude for claude: [bug/high] A kernel's per-activation block is charged
+        // to the Control of the cycle that allocates it, but it is released against
+        // whatever Control is ambient when it is freed. `free_self_block_tree` runs
+        // when a node is deleted, and `ToGX::Delete` and `DeleteCallable` in graphix-rt
+        // run `delete` outside `with_control`. There `current_control()` is None, so
+        // neither `self_blocks` nor `activations` comes back down. In a REPL or
+        // embedder that re-evaluates a fused recursion, the deleted ones keep counting,
+        // and an activation budget aborts the runtime spuriously. With
+        // GRAPHIX_ACTIVATION_BUDGET=120, the third evaluation of a 50-deep recursion
+        // aborts; --no-fusion is fine. The reverse case also exists: a block born
+        // outside a cycle charges nothing but is decremented when it is freed inside
+        // one. Fix: release against the Control that was charged, as
+        // `GXLambda::charged` does. Store `activation_born()`'s result in a spare word
+        // of the block, past the generation stamp, and have `free_self_block_tree`
+        // release that Control's `self_blocks` and `activations`. probe:
+        // design/review-2026-10-12/repro/t-misc-01.sh (and t-misc-01.rs) (t-misc-01)
         -1 => activation_died(current_control().map(|p| p as usize)),
         _ => (),
     }
@@ -243,6 +271,15 @@ impl Drop for Grown {
 /// unwind at its next interrupt poll instead of overflowing here.
 #[doc(hidden)]
 pub fn grow<R>(f: impl FnOnce() -> R) -> R {
+    // CR claude for claude: [risk/low] Every segment grown past the budget calls
+    // `budget_abort`, which logs "aborting the runtime" each time. `activation_born`
+    // logs only when `!budget_aborted()`. Outside a cycle (compile, image decode),
+    // `grow_exceeds_budget` checks the thread-local GROWN against the default budget,
+    // but `abort_current_control_budget` does nothing there: the log claims an abort
+    // that never happens, once per 32 MB segment. Log only on the transition. Either
+    // drop the out-of-cycle budget check (GROWN then has no use) or make it do
+    // something real. Note in the budget docs that the budget is counted in whole
+    // segments. (t-misc-06) (t-misc-06)
     if grow_exceeds_budget() {
         budget_abort();
     }
@@ -261,6 +298,14 @@ pub enum CtlFlag {
     Interrupt = 1,
     Abort = 2,
     /// Set beside `Abort` when the stack budget stopped the runtime.
+    // CR claude for claude: [doc-drift/low] `Budget` is set by both budgets:
+    // `activation_born` aborts through `Control::abort_budget` too. Yet this doc,
+    // `Control::abort_budget`, `Control::budget_aborted` and graphix-rt's
+    // `GXHandle::budget_aborted` all say "the stack budget". An embedder reading
+    // `budget_aborted` would report the wrong cause. Say "a budget (stack or
+    // activations)" in those docs, or rename the flag to cover both. Also, `CURRENT`'s
+    // doc cites `InterruptScope`, which no longer exists; point it at `with_control`.
+    // (t-misc-05) (t-misc-05)
     Budget = 4,
 }
 

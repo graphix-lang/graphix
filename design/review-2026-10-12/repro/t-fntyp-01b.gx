@@ -1,0 +1,3 @@
+// the check passes, the build refuses: an instance its definition's table cannot type
+let apply = 'b: Number |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| -> 'b (g(1), g(2.5), g(y)).2;
+apply(u8:3, |x| x * x)

@@ -1,0 +1,2 @@
+let rec len = |l| select l { [] => 0, [_, rest..] => 1 + len(rest) };
+(len([1, 2]), len(["a"]))

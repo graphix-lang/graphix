@@ -1,0 +1,5 @@
+let s = http::serve(
+    #addr: "127.0.0.1:38931",
+    #handler: |req: http::Request| { body: "ok [req.path]", headers: [], status: u16:200, url: "" }
+);
+s

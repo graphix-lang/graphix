@@ -1,0 +1,12 @@
+// fusion.rs counter assertions (`inv > 0`, `f > 0`) are vacuous: a
+// constant `let` gets a kernel of its own. Here the callback cannot
+// fuse (`count` has no fast call), yet one region fuses and runs:
+//   GRAPHIX_DBG_KERNELS=1 graphix-fuzz run tests-fusion-traits-01.gx
+//   -> fusion: attempted=7 fused=1, KERNEL DEFINED region_..
+// so `pure_select_value_and_fusion`'s `f > 0` (fused_select_*) holds
+// whether or not the select under test fuses. The same holds for
+// `let counter = 0` (impure_hof_callback_splits) and `let y = 7`
+// (closure_primitive_capture): GRAPHIX_DUMP_CLIF shows that kernel
+// returning the literal.
+let k = 3;
+array::map([1, 2, 3, 4], |x: i64| count(x) * k)

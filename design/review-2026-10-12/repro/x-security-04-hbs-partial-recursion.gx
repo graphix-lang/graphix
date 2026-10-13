@@ -1,0 +1,3 @@
+// two partials that include each other overflow the stack and abort the process
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+hbs::render(#partials: {p: "x{{> q}}", q: "y{{> p}}"}, "{{> p}}", {a: 1})

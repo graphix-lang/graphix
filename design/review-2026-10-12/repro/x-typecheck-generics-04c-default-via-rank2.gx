@@ -1,0 +1,3 @@
+let f = 'a: Any |#x: 'a = 1, y: 'a| -> 'a select y { _ => x };
+let app = |g: fn<'b: Any>(y: 'b) -> 'b| (g(1), g("s"));
+app(f)

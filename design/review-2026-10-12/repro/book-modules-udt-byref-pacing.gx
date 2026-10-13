@@ -1,0 +1,7 @@
+// references.md says `&(a + b)` paces like `<-`: (5, 5) then (13, 5)
+// then (13, 13). It publishes in the same cycle: (5, 5) then (13, 13).
+let a = 2;
+let b = 3;
+let r = &(a + b);
+a <- 10;
+(a + b, *r)

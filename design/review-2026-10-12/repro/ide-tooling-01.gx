@@ -1,0 +1,11 @@
+// ide-tooling-01: tree-sitter reads the annotation of `x` and of the
+// parameter `a` as the typed literal `x:i64` / `a:string` (no let type,
+// no pattern_bind, so neither name is a local definition), and each
+// primitive type below parses as ref_type(type_path(identifier)), so
+// highlights.scm's (primitive_type) @type.builtin never fires.
+// Run: design/review-2026-10-12/repro/ide-tooling-01.sh
+let x: i64 = 1;
+let f = |a: string| a == "x";
+let m: Map<string, i64> = {"a" => x};
+let c = cast<f64>(x)$;
+(f("x"), m, c)

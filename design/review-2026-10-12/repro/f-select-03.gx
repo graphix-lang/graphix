@@ -1,0 +1,17 @@
+{
+    // f-select-03: a lazily emitted select guard over decimal arithmetic
+    // reads an overflow bottom as false. guard_is_pure_of_binds
+    // (fusion/emit/select.rs) admits `*` (and `+`, `-`, neg) as never-bottom,
+    // but decimal arithmetic logs and bottoms on overflow. The kernel emits
+    // such a guard in the chain, where a bottom guard is false and control
+    // falls to `_`; the node-walk (canonical, consulted-guard rule) makes the
+    // selection undecidable, so the select is bottom.
+    // command: graphix-fuzz check design/review-2026-10-12/repro/f-select-03.gx
+    // should be: AGREE, both engines Trace([]) (bottom select; arith error logged)
+    // actually: DIVERGENCE: interp Trace([]), jit Trace([0:"small"])
+    let g = |v: decimal| select v {
+        x if x * x > decimal:1.0 => "big",
+        _ => "small"
+    };
+    g(decimal:79228162514264337593543950335.0)
+}

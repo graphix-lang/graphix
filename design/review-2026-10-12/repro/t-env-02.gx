@@ -1,0 +1,15 @@
+// t-env-02: warnings printed to stderr from parallel module checks come out in nondeterministic order
+// (also t-env-03: the position is printed after the include chain, so it reads as main.gx's)
+// This is main.gx; its modules need files beside it. Create them with:
+//   for m in a b c d e f; do printf 'val v: i64;\n' > $m.gxi; printf 'let v = error(`E%s)? + 1\n' $m > $m.gx; done
+// command: graphix --check main.gx   (run it several times)
+// expected: the six "will not be caught" WARNING lines in program order a..f every run
+// observed: a different order on nearly every run (a d e c b f / d e c b f a / d f e c a b ...);
+//   each line reads "included from file main.gx at line: 1, column: 9" where 1:9 is the `?` in the module file
+mod a;
+mod b;
+mod c;
+mod d;
+mod e;
+mod f;
+a::v + b::v

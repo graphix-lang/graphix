@@ -1,0 +1,3 @@
+mod child;
+let private_setup = 10;
+let public_helper = |x| x + 1

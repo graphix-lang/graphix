@@ -18,6 +18,14 @@ When you install or remove a package, the `graphix` binary is rebuilt with the
 new set of packages compiled in. This means packages run at native speed with no
 FFI or serialization overhead.
 
+<!-- CR claude for claude: [doc-drift/low] The dependency example ('the `net` package
+depends on `time`') and the stdlib list below it (`core, str, array, map, time, net, re,
+rand, fs, tui`) are stale. time, net and fs are modules of `sys`. The shipped set is the
+`all` feature list in graphix-shell's Cargo.toml (array, str, map, sys, args, http, db,
+sqlite, rand, re, json, toml, pack, xls, list, gui, hbs, tui, plus core). Use a real
+dependency, such as `hbs` depending on `json` or `tui` on `sys`, and link to the list in
+using.md instead of keeping a second copy. Also reported as (book-modules-udt-12).
+(book-modules-udt-17) -->
 Packages can depend on other packages through normal Cargo dependencies. For
 example, the `net` package depends on `time`. If you remove `time` from your
 installed packages but still have `net` installed, `time` remains available

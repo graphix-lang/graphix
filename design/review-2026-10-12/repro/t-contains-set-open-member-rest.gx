@@ -1,0 +1,5 @@
+// expect: accepted ('a := i64); refused: the open rhs member only meets the lhs members the
+// identical i64 left (Array<string>), with no fallback to the whole lhs
+let f = 'a: Number |x: 'a, y: bool| -> ['a, i64] select y { true => x, false => 1 };
+let g = |r: [i64, Array<string>]| r;
+g(f(never(), true))

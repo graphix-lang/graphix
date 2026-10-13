@@ -134,6 +134,14 @@ pub(super) struct ColumnSpec {
     pub(super) typ: ColumnType,
     pub(super) display_name: Option<ArcStr>,
     /// `source` ref bind id; `0` for bare-string columns.
+    // CR claude for claude: [risk/low] source_bid, width_bid and on_resize_bid use 0 to
+    // mean 'bare string column, no ref'. BindId 0 is a real id after a warm start:
+    // image_id!'s reserved counter starts at 0, and ids::reserve_above places a
+    // restored image's lowest id there. A column whose ref got that id would be treated
+    // as having no source and would subscribe netidx instead. Fix: make the fields
+    // Option<BindId>, with None from the bare-string branch of parse_column_entry and
+    // Some from the struct fields. compile_column_refs and apply_table_sync then test
+    // for is_some instead of != 0. (gui-datatable-14)
     pub(super) source_bid: u64,
     /// Width ref bind id.
     pub(super) width_bid: u64,
@@ -273,6 +281,13 @@ pub(super) fn parse_table_columns(v: &Value) -> LPooled<Vec<ColumnSpec>> {
     out
 }
 
+// CR claude for claude: [bug/low] `str::parse::<f64>` accepts "inf", "infinity" and
+// "nan" in any case, with an optional sign. `SortKey::of` therefore files ordinary
+// words such as "Nan", "Inf" or "Infinity" as numbers. Numbers sort before all text,
+// and NaN sorts below every number, so a name column ["Bob", "Nan", "Alice"] sorted
+// ascending reads Nan, Alice, Bob. Accept only finite results, plus the exact spellings
+// `format_value` prints for a non-finite value. Pin "Nan" and "inf" as text next to
+// `sort_is_a_total_order`. (tests-gui-a-03)
 pub(super) fn numeric_key(s: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
@@ -428,6 +443,16 @@ pub(super) fn parse_or_quote(s: &str) -> Value {
 /// The path a cell stands for: the row's own for the row-name cell and a
 /// Value-mode cell, else `<row>/<col>`. Selections and callbacks name
 /// cells by it.
+// CR claude for claude: [bug/low] A cell's path is built two ways. `cell_path` and
+// `is_cell_path` join `<row>/<col>` verbatim. The on_edit commit
+// (`handle_cell_edit_submit`), `render_cell`'s widget callbacks and the cell
+// subscriptions use `Path::append`, which canonizes: it drops empty parts, and
+// `append("")` returns the row itself. So for a column named "cpu/", "/cpu" or "",
+// on_select and on_update report one path, while on_edit/on_click and the subscription
+// use another. A program that feeds an on_edit path back into `#selection` never
+// highlights that cell. Fix at the root: refuse, when the columns are parsed, a column
+// name that is not one canonical path part. Then the two forms agree and every site can
+// use `cell_path`. (tests-gui-a-02)
 pub(super) fn cell_path(row: &Path, col: &ArcStr) -> ArcStr {
     if col == &ROW_NAME_KEY || col == &VALUE_COL_KEY {
         row.clone().into()
@@ -487,6 +512,17 @@ pub(super) fn age_sparkline(
 
 /// Record a point at `now`, age the window and keep the history at most
 /// `MAX_SPARKLINE_POINTS` long.
+// CR claude for claude: [bug/medium] A non-finite sample is stored as is. value_to_f64
+// passes F64 NaN and ±inf through, and both feeds reach this function: a subscription
+// update and push_defaults_to_sparklines, whose default can come from the program's own
+// column source. compute_sparkline_bounds never lets a NaN win, but
+// SparklineCanvas::draw computes y = NaN for a NaN sample. An inf sample makes the
+// bounds infinite, so its y is inf/inf = NaN as well. That point reaches lyon_path's
+// builder, whose nan_check debug_asserts finite points, so a dev build's GUI thread
+// panics during the canvas draw. A release build strokes a path with NaN coordinates.
+// Fix: drop samples where `!v.is_finite()` here, and skip non-finite points in
+// SparklineCanvas::draw as a backstop. probe:
+// design/review-2026-10-12/repro/gui-datatable-01.rs (gui-datatable-01)
 pub(super) fn push_sparkline_point(
     history: &mut VecDeque<(Instant, f64)>,
     now: Instant,

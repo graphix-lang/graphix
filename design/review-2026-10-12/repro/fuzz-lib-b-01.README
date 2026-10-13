@@ -1,0 +1,15 @@
+fuzz-lib-b-01: `// expect: reject` turns any pin into a parse error.
+
+build.rs::strip_header keeps the `// expect: reject` line above the
+program; Subject::parse (graphix-fuzz/src/lib.rs:357) wraps the body as
+`use super::*; let result = <body>`, so the marker lands after `=` on the
+same line, where a comment is a parse error. Every pin carrying the marker
+is therefore refused by the PARSER, whatever its program does.
+
+  graphix-fuzz check fuzz-lib-b-01.gx   -> AGREE (reject)
+  (the same program without the marker -> AGREE (trace))
+
+Consequences at HEAD: all 81 `reject` rows in outcome.manifest guard
+nothing; two of them are runnable pins mislabeled as rejects
+(tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx runs to a trace;
+abort-seam-jul2026/01_depth_trip_settled_taint.gx is contained).

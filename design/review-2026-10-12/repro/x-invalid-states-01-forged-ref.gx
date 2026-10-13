@@ -1,0 +1,27 @@
+// A reference's runtime form is its BindId as a bare Value::U64, and a
+// select over Any tells the two apart: `u64 as n` reads a reference's
+// id, `&mut T as r` turns any u64 into a writable reference. The program
+// below checks, then writes a string into `victim: i64` and an i64 into
+// `arr: Array<i64>`; the fused `sum(arr)` then panics the runtime
+// ("kernel param `a`: runtime I64(1234567) does not match the compiled
+// Array .. slot"). With --no-fusion it prints 41, 7, "a string" for
+// `victim`: an i64 binding holding a string.
+// command: graphix --no-cache x-invalid-states-01-forged-ref.gx
+let sum = |a: Array<i64>| -> i64 array::fold(a, 0, |acc, x| acc + x);
+let victim = 41;
+let arr: Array<i64> = [1, 2, 3];
+let id = |p: Any| -> u64 select p { u64 as n => n, _ => u64:0 };
+let forge_i64 = |n: u64, v: i64| select cast<Any>(n)$ {
+  &mut i64 as r => { *r <- v; null },
+  _ => null
+};
+let forge_str = |n: u64, v: string| select cast<Any>(n)$ {
+  &mut string as r => { *r <- v; null },
+  _ => null
+};
+forge_i64(id(&victim), 7);
+forge_str(id(&victim), "a string");
+forge_i64(id(&arr), 1234567);
+println("victim = [victim]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+sum(arr)

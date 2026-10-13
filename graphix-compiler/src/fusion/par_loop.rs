@@ -117,6 +117,16 @@ unsafe impl Send for Run {}
 
 /// Run `chunk` over slots `lo..hi` on this thread, the run's loans as
 /// the invoking thread had them.
+// CR claude for claude: [risk/low] FusedKernel::update, run_here and the forked closure
+// in run each save and restore their own subset of the kernel-run thread-locals
+// (KERNEL_ABORT, KERNEL_PANIC, SELF_BLOCK_GEN/REACHED/MADE, KERNEL_ENV, PAR_LOAN,
+// DEFERRED), and none restores on unwind. run_here does not set aside an enclosing
+// run's KERNEL_PANIC. After guard_panic the enclosing chunk keeps running, and if it
+// enters a nested outlined loop, a stolen chunk that aborts there takes the outer panic
+// as its own or overwrites it. The outer run then reports a pending abort with no
+// panic, or the wrong kernel resumes the panic. Fix: one guard type that installs a
+// fresh set of all kernel-run thread-locals on construction and restores the previous
+// set on Drop, used in all three places. (f-kernel-05)
 unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
     let prev_abort = KERNEL_ABORT.with(|c| c.replace(false));
     let prev_reached = SELF_BLOCK_REACHED.with(|c| c.replace(0));
@@ -158,6 +168,15 @@ pub(crate) unsafe fn run(
     let mut runs: LPooled<Vec<Run>> = LPooled::take();
     // SAFETY: the site is a constant of the running code's record.
     let site = unsafe { &*site };
+    // CR claude for claude: [structure/low] This match re-implements ProbeSite::plan
+    // and the uncalibrated-then-probe sequence of ProbeSite::run in cost.rs, and the
+    // copies already differ. On the uncalibrated path this one calls site.probes(len -
+    // at) before the calibration probe's tick is in the histogram (it is only folded in
+    // at LoopSite::grain), so it times one more probe than ProbeSite::run, which calls
+    // probed first. Any later change to the plan has to be made in both places. Build
+    // the plan once in cost.rs (a ProbePlan from mode, forced grain and n) and drive
+    // both ProbeSite::run and this loop from it, keeping only the run-a-chunk and abort
+    // callbacks here. (f-kernel-06)
     let (at, grain) = match mode(&loan) {
         ParMode::Off => unreachable!("an Off loan is filtered"),
         ParMode::Force => {
@@ -192,6 +211,17 @@ pub(crate) unsafe fn run(
                     }
                 }
             };
+            // CR claude for claude: [perf/medium] Once the LoopSite's histogram has
+            // settled, ProbeSite::probes asks for one probe, so k is 1. That slot is
+            // timed as a run of its own, and its tick count includes the run's fixed
+            // cost (and any cold start). The estimate stays inflated, and est * n >= 2T
+            // keeps forking loops whose slots cost nanoseconds. Measured: a 100-slot `i
+            // * 3 + n` fold on a 2 ms timer forks in nearly every cycle under the
+            // default Auto mode. It spends about twice the CPU of GRAPHIX_PAR=off for
+            // the same wall time and output. Fix: once settled, time a batch of slots
+            // large enough to amortize the run's cost (as the unsettled path does with
+            // `each = total / k`), or feed the measured time of a whole in-order run
+            // back into the estimate when the loop does not fork. (x-rerun-1-05)
             let Some(k) = site.probes(len - at) else {
                 if at == 0 {
                     return unsafe { in_order(chunk, frame, len, find, out) };

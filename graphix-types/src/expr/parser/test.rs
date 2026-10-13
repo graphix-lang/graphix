@@ -10,6 +10,16 @@ use crate::{
 use arcstr::literal;
 use netidx_value::Typ;
 
+// CR claude for claude: [structure/low] `parse_typexpr` is a copy of `parse_type`.
+// `parse_doc` and `parse_structure_pattern` repeat the body of `parse_all` but leave
+// out `grow::parsing`. As a result the type, pattern and doc tests run without the
+// depth scope, without `FIRST_COLUMNS` (so `starts_line` is always true) and without
+// the reason reporting the real entry points have. They pin a parser configuration
+// production never uses. Delete `parse_typexpr` and call `parse_type`. Write the other
+// two as `parse_all(s, text_origin(s), doc_comment())` and `parse_all(s,
+// text_origin(s), structure_pattern())`. Do the same with `pattern()` in `pattern0`,
+// which calls `easy_parse` with no eof. Every helper here is used, so drop the
+// `#[allow(unused)]`s. (tests-parser-04)
 #[allow(unused)]
 fn parse_typexpr(s: &str) -> anyhow::Result<Type> {
     typ()
@@ -144,6 +154,15 @@ fn comment_above_block_item() {
     }
 }
 
+// CR claude for claude: [test-gap/low] Every comment test here starts its `//` on a
+// fresh line, so the rule that a comment stands on a line of its own
+// (`grow::starts_line`, called from `comment_line`) has no test. If `starts_line`
+// answered true everywhere (for example, if `grow::parsing` stopped installing
+// `FIRST_COLUMNS`), `let x = 1; // c` would parse again and the suite would still pass.
+// Add a test where `parse_one("{ let y = 1; // c\n y }")`, `parse_program("let x = 1;
+// // c\nx")` and `parse_one("select x {\n0 => 1, // c\n_ => 2\n}")` must each fail, and
+// the message must contain "a comment stands on a line of its own" at the `//`'s
+// column. (tests-parser-02)
 #[test]
 fn interior_comment_is_error() {
     assert!(parse_one("1 +\n// nope\n2").is_err());
@@ -1728,6 +1747,15 @@ fn print_bare_chains_round_trip() {
     }
 }
 
+// CR claude for claude: [structure/low] `checked_add` through `checked_associativity`
+// are eight copies of one AST-building test, and each is one row of the `shape` table
+// in `arith_precedence`: `("1 +? 2", "(1 +? 2)")`, `("1 -? 2 -? 3", "((1 -? 2) -?
+// 3)")`, `("1 +? 2 * 3", "(1 +? (2 * 3))")`. Fold them into that table. Likewise,
+// `arrayref0`..`arrayref4` should become one table of (source, start, end) as
+// `an_integer_before_dots_is_a_slice_bound` already is. Move `refx` to the top of the
+// file and use it in place of the ~70 spelled-out `ExprKind::Ref { ..
+// }.to_expr_nopos()`, so that an AST field change is not edited into dozens of
+// literals. (tests-parser-06)
 #[test]
 fn checked_add() {
     let e = ExprKind::CheckedAdd {

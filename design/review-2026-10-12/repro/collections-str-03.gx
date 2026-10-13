@@ -1,0 +1,5 @@
+// str::sprintf with a precision that cuts a multibyte char panics inside
+// fish-printf ("end byte index 3 is not a char boundary"): the runtime
+// dies (node-walk) or the process aborts (graphix-fuzz run, JIT).
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+str::sprintf("%.3s|", "💖💖💖💖")

@@ -284,6 +284,16 @@ impl<'a> Completer<'a> {
             }
         }
         let part = typed_path(&typed.path);
+        // CR claude for claude: [bug/low] The env here is the one left at the end of
+        // the last check, so it holds every root binding of this file: those declared
+        // after the cursor, and the non-rec `let` whose body the cursor is in. Graphix
+        // has no hoisting, so accepting one gives `not defined`. In `let f = |a: i64| a
+        // + 1; let g = ..; let later = 1;` completion inside f's body offers a, f, g
+        // and later, and only `a` is in scope. Fix: skip an env result whose bind is in
+        // this file (`in_file(&bind.ori, self.file)`) and is declared at or after the
+        // start of the enclosing statement. The locals pass already offers this file's
+        // earlier binds. probe: design/review-2026-10-12/repro/x-lsp-probe.py
+        // completion-scope (x-lsp-probe-03)
         for (name, id) in self.env.lookup_matching(&self.scope, &part) {
             if let Some(bind) = self.env.by_id.get(&id)
                 && seen.insert(name.clone())

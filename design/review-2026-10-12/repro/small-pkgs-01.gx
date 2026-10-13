@@ -1,0 +1,7 @@
+// small-pkgs-01: hbs::render: mutually recursive partials overflow the stack and abort the process
+// command: graphix --no-cache design/review-2026-10-12/repro/small-pkgs-01.gx
+// expected: an `HbsErr` error value (as for a partial that includes itself), then exit 0
+// observed: thread 'tokio-rt-worker' has overflowed its stack
+//           fatal runtime error: stack overflow, aborting   (SIGABRT, exit 134)
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+hbs::render(#partials: {a: "x{{> b}}", b: "y{{> a}}"}, "{{> a}}", {x: 1})

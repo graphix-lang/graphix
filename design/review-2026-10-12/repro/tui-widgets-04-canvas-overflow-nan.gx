@@ -1,0 +1,5 @@
+use tui::canvas::canvas;
+
+tui::exit(sys::time::timer(duration:1.s, false));
+let a = `Line({color: `Red, x1: -1.0e308, y1: -1.0e308, x2: 1.0e308, y2: 1.0e308});
+canvas(#x_bounds: &{min: 0.0, max: 10.0}, #y_bounds: &{min: 0.0, max: 10.0}, &[&a])

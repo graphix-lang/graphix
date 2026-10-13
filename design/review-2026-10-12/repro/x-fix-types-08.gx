@@ -1,0 +1,14 @@
+// x-fix-types-08: a generic formal over a nested (non-regular) datatype refuses even the
+// plain instance N<'a> := N<i64> as a growing comparison; f(n2) with equal params checks.
+// command: graphix --check design/review-2026-10-12/repro/x-fix-types-08.gx
+// expected: checks ('a := i64).
+// observed: at g(n1): "cannot compare two instances of N: its parameters grow at every
+// level of its recursion, so no comparison ends". `let x: N<'b> = n1` and the variant
+// form [`Nil, `Cons('a, N<Array<'a>>)] refuse the same way; the regular
+// L<'a> = [null, ('a, L<'a>)] checks.
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let n1: N<i64> = (1, ([2], null));
+let n2: N<i64> = n1;
+let f = |n: N<i64>| n;
+let g = |n: N<'a>| -> N<'a> n;
+(f(n2), g(n1))

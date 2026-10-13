@@ -1,0 +1,9 @@
+let code = 10;
+// x-rerun-3-06: a subject's sys::exit ends graphix-fuzz check, and
+// check-isolated reports it as a crash.
+// command: graphix-fuzz check x-rerun-3-06.gx; echo $?
+//          graphix-fuzz check-isolated x-rerun-3-06.gx
+// expected: an AGREE verdict (both engines exit alike), rc 0.
+// observed: check prints nothing and exits 10; check-isolated prints
+// "CRASH — exit status: 10".
+sys::exit(code)

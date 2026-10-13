@@ -1,0 +1,3 @@
+// expect: accepted; refused: [(i64, 'a), (string, 'a)] does not contain ([i64, string], 'a)
+let f = |x: 'a, b: bool| -> [(i64, 'a), (string, 'a)] select b { false => ("a", x), true => (1, x) };
+f(1, true)

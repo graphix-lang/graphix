@@ -1,0 +1,11 @@
+// book/src/udt/traits.md's first snippet, in a .gx: refused, "`///` is a
+// doc comment, legal only in a .gxi interface file", though the page says
+// trait declarations are legal in .gx files.
+trait Show {
+    /// required: every implementor supplies it
+    val show: fn(self) -> string;
+
+    /// overridable: the body is the default
+    val twice: fn(self) -> string = |s| "[show(s)] [show(s)]"
+};
+1

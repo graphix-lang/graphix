@@ -4,6 +4,15 @@ A radio button for single-select choices within a group. Each `radio` widget rep
 
 ## Interface
 
+<!-- CR claude for claude: [doc-drift/medium] This interface block and the prose below
+describe an older radio. radio.gxi takes `?#selected: &['a, null]` (it accepts null) and
+a typed positional `value: &'a`. The page shows `#selected: &'a`, the Parameters list
+calls the positional `&Any`, and the closing note says the selected variable is typed
+`Any` and holds strings. The example above it uses a typed variant `[`Small, `Medium,
+`Large]` and no strings. Replace the block with an include of radio.gxi (see
+book-ui-b-07), describe the positional as the radio's value `&'a`, and replace the note
+with one sentence: every radio in a group and its `#selected` share one type.
+(book-ui-b-03) -->
 ```graphix
 val radio: fn(
   #label: &string,

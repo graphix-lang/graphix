@@ -256,6 +256,9 @@ struct Inner {
     publish_timeout: Option<Duration>,
 }
 
+// CR claude for claude: [dead/low] Nothing in this workspace or in ../netidx uses
+// NetConfigExport. Embedders import NetConfig from graphix_package_core. Delete the
+// alias. (sys-net-12)
 pub use graphix_package_core::NetConfig as NetConfigExport;
 
 /// The libstate entry. Clone-cheap; one per ExecCtx.
@@ -414,6 +417,12 @@ impl NetState {
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
     ) -> Result<&Handles> {
+        // CR claude for claude: [perf/low] LibState::get clones the NetConfig on every
+        // subscribe, write target, publish, list and rpc call. For NetConfig::Config
+        // that clone copies a netidx Config (heap data) that get_or_materialize throws
+        // away whenever the handles already exist, which is every call after the first.
+        // Return `self.0.handles.get()` first, and read the config from libstate only
+        // on the materializing path. (sys-net-09)
         let cfg = ctx.libstate.get::<NetConfig>().unwrap_or(NetConfig::Internal);
         self.0.handles.get_or_materialize(cfg)
     }
@@ -430,10 +439,54 @@ impl NetState {
         // subscriber of the path gets the path's last value alone, never a
         // re-send to every subscriber of it.
         let flags = flags | UpdatesFlags::NO_SPURIOUS;
+        // CR claude for claude: [risk/low] The route is created and the id pushed only
+        // after subscribe_updates has returned. Two consequences follow. (1) For a Dval
+        // that is already live (one held by write_target), subscribe_updates makes the
+        // connection task replay the last value into updates_tx on another thread. The
+        // pump drops that replay if it reaches the routes lock before route.ids holds
+        // this id. (2) drop_dval removes the route when `held` reaches 0, but netidx
+        // keeps our updates_tx on a Dval that someone else still holds (the GUI
+        // data_table through NetState::subscriber). A later subscribe makes a fresh
+        // route with streamed=false, and the connection dedups the channel and skips
+        // the replay (already registered + NO_SPURIOUS), so the new reader gets no
+        // value until the path changes. Fix: push the id under the routes lock before
+        // calling subscribe_updates, and replay dv.last() whenever a reader joins a
+        // route that netidx already streams, which needs `streamed` to outlive held==0
+        // while the Dval does. (x-concurrency-07)
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         let mut routes = self.0.routes.lock();
         let route = routes.subs.entry(dv.id()).or_default();
+        // CR claude for claude: [bug/medium] `streamed` only says whether a Dval that
+        // NetState handed out is still alive. It does not say whether netidx still has
+        // the shared updates channel registered, and that registration lasts as long as
+        // any Dval of the path. The rpc client cache in `call_rpc`, the gui
+        // data_table's raw `subscriber`, or an embedder sharing the subscriber can each
+        // keep one alive. When a subscribe arm sleeps, `drop_dval` removes the route.
+        // On wake, the subscribe creates a new route with `streamed = false` and
+        // replays nothing, and netidx sends no last value because NO_SPURIOUS sees the
+        // channel is already registered. The reader then stays bottom until the
+        // publisher's value changes. Fix: give each reader its own channel with plain
+        // BEGIN_WITH_LAST so netidx decides when to send the last value (the same root
+        // fix as the late-subscriber finding), or always replay `dv.last()` here and
+        // drop the duplicate in the pump. probe:
+        // design/review-2026-10-12/repro/sys-net-02.gx (sys-net-02)
+        // CR claude for claude: [bug/high] A late second reader of a busy path sees the
+        // same value twice, or newer then older values. This replay sends dv.last()
+        // through set_var, and then the reader's BindId joins route.ids. The pump reads
+        // route.ids when it drains a batch, not when netidx queued it, so updates
+        // already waiting on the shared netidx_updates_tx channel (older than or equal
+        // to last) also go to the new reader, after the replay. Any uniq, delta or
+        // state machine over a subscription goes wrong. Probe:
+        // design/review-2026-10-12/repro/sys-net-01.gx, run several times: "b#1=10473
+        // b#2=10471" and "b#1=10968 b#2=10968". Fix: let netidx order the replay with
+        // the stream. Give each Subscribe its own updates channel, registered with
+        // BEGIN_WITH_LAST and without NO_SPURIOUS, and drop the set_var replay and
+        // route.streamed. If one shared channel stays, store a join point per reader so
+        // the pump skips batches queued before that reader joined. Add a pin with a
+        // fast publisher and a late subscriber that asserts strictly increasing values.
+        // The existing net_second_subscriber pin uses a static value, so it cannot
+        // catch this. (sys-net-01)
         if route.streamed
             && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
             && let ev @ NEvent::Update(_) = dv.last()
@@ -520,6 +573,13 @@ impl NetState {
             };
             val.update(batch, value);
         }
+        // CR claude for claude: [perf/low] Every published value update pushes a ()
+        // into an unbounded channel: one queued node per update. While a commit is
+        // stalled (a slow subscriber, publish_timeout None), the queue grows with every
+        // update, and the flusher then wakes once per stale ping. The flusher only
+        // needs to know that a batch is pending. A tokio::sync::Notify (notify_one
+        // keeps one permit) coalesces the pings, costs no allocation, and needs no
+        // queue. (sys-net-08)
         let _ = self.0.flush_tx.unbounded_send(());
     }
 
@@ -528,6 +588,17 @@ impl NetState {
         drop(val)
     }
 
+    // CR claude for claude: [risk/low] call_rpc and list spawn their futures with
+    // spawn_var and keep no abort handle. remint, sleep and delete only stop listening
+    // to the id. netidx's rpc Proc::call waits for its reply with no timeout, so every
+    // call to a procedure that never answers stays in the runtime's task set for the
+    // life of the runtime, and repeated calls pile up. The list builtins do not remint
+    // when the path changes. A reply for the old path that lands after the new path's
+    // reply stands as the current listing. Both tasks also share the per-id
+    // ChangeTracker and reset each other's path, so the newer one can see 'unchanged'
+    // and return Null, which the builtin ignores. Fix: keep an abort handle per
+    // in-flight call and list, as CachedArgsAsync does, and drop it at remint, sleep
+    // and delete; remint the list id on a path change. (x-concurrency-11)
     pub(crate) fn call_rpc<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
@@ -567,6 +638,18 @@ impl NetState {
         };
         match proc {
             Err(e) => {
+                // CR claude for claude: [bug/low] Every anyhow error sys::net turns
+                // into a program-visible Value is formatted with {e:?}: here, the other
+                // rpc and list sites in this file,
+                // WriteError/SubscribeError/PublishError in net.rs, and the watcher
+                // errors in watch.rs. anyhow's Debug appends a captured backtrace when
+                // RUST_BACKTRACE is set, so an RpcError's text grows from 40 to about
+                // 4000 characters with the environment. Use {e:#} at each of these
+                // sites, as str and re already do. Separately, the ListError arm in
+                // net.rs's list update formats the inner Value with "{e}", which quotes
+                // the string; route it through remote_err as subscribe and rpc do.
+                // probe: design/review-2026-10-12/repro/x-fix-stdlib-06.gx
+                // (x-fix-stdlib-06)
                 let e = compact_str::format_compact!("{e:?}");
                 ctx.rt.set_var(id, Value::error(e.as_str()));
             }
@@ -578,6 +661,21 @@ impl NetState {
                     let r = match proc.call(args).await {
                         Ok(v) => v,
                         Err(e) => {
+                            // CR claude for claude: [bug/low] Every Value::error in
+                            // NetState (call_rpc, list, and the handles failures)
+                            // formats an anyhow::Error with `{e:?}`. anyhow's Debug
+                            // output adds a Rust stack backtrace whenever
+                            // RUST_BACKTRACE or RUST_LIB_BACKTRACE is set, so the
+                            // RpcError or list error a program reads, prints or
+                            // compares changes with the environment: 43 chars plain,
+                            // about 4000 under RUST_BACKTRACE=1. Format with `{e:#}`
+                            // (the context chain without the backtrace) at every
+                            // Value::error site here. The same applies to fc_mean's
+                            // cast error in graphix-package-core and to the watcher
+                            // creation error in sys watch.rs, which build anyhow errors
+                            // the same way. probe:
+                            // design/review-2026-10-12/repro/x-rerun-5-03.sh
+                            // (x-rerun-5-05)
                             let e = compact_str::format_compact!("{e:?}");
                             Value::error(e.as_str())
                         }

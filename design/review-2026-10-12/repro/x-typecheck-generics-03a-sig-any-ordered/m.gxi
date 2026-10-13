@@ -1,0 +1,1 @@
+val lt: fn<'a: Any>(x: 'a, y: 'a) -> bool;

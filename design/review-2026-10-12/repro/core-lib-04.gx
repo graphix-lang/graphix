@@ -1,0 +1,12 @@
+// core-lib-04: sum/product/divide failures log under the default target,
+// invisible in the shell, with no position.
+// run: graphix --no-cache --no-fusion core-lib-04.gx
+// expected: two failure lines on stderr, one for `a / b`, one for divide(a, b)
+// observed: one line, `arith error in file .. line: 9 .. "attempt to divide by zero"`
+// (the operator's); divide's failure is not shown.
+let a = 10;
+let b = 0;
+let x = a / b;
+let y = divide(a, b);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+a

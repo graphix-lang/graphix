@@ -1,0 +1,11 @@
+// t-contains-06: a constrained open cell under a primitive-union lhs is refused
+// run: graphix --check t-contains-06-prim-union.gx
+// expected: accepted ('a := i64, as for an lhs of [i64, Array<i64>])
+// observed: type mismatch [i64, null] does not contain '_N: unbound within Number & Singleton
+// control: with `let r: [i64, Array<i64>]` the same program checks; [i64, null, Array<i64>]
+// is refused too (its [i64, null] member is one multi-bit Primitive)
+let f = 'a: Number |x: 'a| -> 'a x + x;
+let y = never();
+let r: [i64, null] = f(y);
+y <- 3;
+r

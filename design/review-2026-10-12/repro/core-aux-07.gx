@@ -1,0 +1,17 @@
+// opt::contains compares raw values: it has no 'a: Discernible bound and
+// does not compare references by what they name, so it disagrees with
+// `==` both ways.
+// Expected: refeq=true contains=true; and the second print refused as
+// `x == y` is ("Array<i64> and (i64, i64) have the same runtime form").
+// Prints refeq=true contains=false, then mixed=true (a tuple equals an
+// array).
+// command: graphix --no-cache core-aux-07.gx
+let a = 1;
+let r1: [&i64, null] = &a;
+let r2 = &a;
+println("refeq=[r1$ == r2] contains=[opt::contains(r1, r2)]");
+let x: [(i64, i64), Array<i64>, null] = (1, 2);
+let y: [(i64, i64), Array<i64>] = [1, 2];
+println("mixed=[opt::contains(x, y)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

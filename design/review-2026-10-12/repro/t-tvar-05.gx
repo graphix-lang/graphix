@@ -1,0 +1,6 @@
+// graphix --check takes ~2^depth: depth 16 0.27 s, 18 0.72 s, 20 2.5 s, 22 ~10 s
+// (debug build). FnType::for_each_part computes sig_tvars, whose
+// collect_tvars re-enters for_each_part of every nested fn type, and then
+// the part walk itself enters each nested fn type again: T(d) = 2 T(d-1).
+let f = |h: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: fn(x: i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64) -> i64| 0;
+f

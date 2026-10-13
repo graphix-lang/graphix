@@ -1,0 +1,24 @@
+// x-security-04: HTTP server sends a raised handler error's full ErrChain
+// (inner error text, file path, OS error, source path, line/column) to the
+// client as the 500 body, even when a catch covers the server.
+// Run: graphix --no-cache design/review-2026-10-12/repro/x-security-04.gx
+// Expected: `500 Internal Server Error` (the error goes to the catch only).
+// Observed: `500 [["cause", null], ["error", ["IOError", "could not read
+//   /etc/graphix-secret-dir//x, Os { code: 2, ... }"]], ["ori", [... ["source",
+//   ["File", "<path of this file>"]] ...]], ["pos", [["column", i32:24], ...]]]`
+let server = {
+    catch(e) println("caught: [e]");
+    http::serve(
+        #addr: "127.0.0.1:0",
+        #handler: |req: http::Request| {
+            let body = sys::fs::read_all("/etc/graphix-secret-dir/[req.path]")?;
+            {body, headers: [], status: u16:200, url: ""}
+        }
+    )$
+};
+let addr = http::server_addr(server);
+let client = http::default_client(addr)$;
+let r = http::get(client, "http://[addr]/x")$;
+println("[r.status] [r.body]");
+sys::exit(sys::time::after_idle(duration:500.ms, r ~ 0));
+r.status

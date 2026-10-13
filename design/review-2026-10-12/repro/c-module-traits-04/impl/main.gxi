@@ -1,0 +1,2 @@
+trait Show { val show: fn(self) -> string };
+impl<'a: Show> Show for Array<'a>;

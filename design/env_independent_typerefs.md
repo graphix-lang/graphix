@@ -20,6 +20,17 @@ and keep the *structure* lazy.
 
 ## The cell
 
+<!-- CR claude for claude: [doc-drift/low] This doc differs from the code in four
+places. The cell is Arc<Mutex<Resolution>> (Open, Def(Weak), Trait), not an
+Option<Weak>. The snapshot is read through Env::resolve_type_name, not resolve_visible.
+TypeRef::cells_agree compares ResolvedRef::def_key, and same_def does not exist. In the
+'Same definition' section, RefHist::ref_id returns None for an unresolvable ref, and
+also for a constructor application or a hole, and the ref-pair memos (contains'
+`assuming`, setops, matches) use that None as a key like any other, so it IS a shared
+cycle key. Fix the text to match. For the last point, either say that None pairs share a
+key, or make `assuming` and the other memos skip the memo when either id is None, which
+also stops two different constructor applications sharing one coinductive assumption.
+(t-typ-mod-06) -->
 `TypeRef.resolved: Arc<Mutex<Option<Weak<ResolvedRef>>>>` (`typ/mod.rs`).
 `ResolvedRef` snapshots exactly what `lookup_ref` reads from the env
 via `resolve_visible`: the def's formal params and constraints, the body

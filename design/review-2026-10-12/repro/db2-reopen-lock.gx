@@ -1,0 +1,10 @@
+// the last line prints a DbErr "could not acquire lock" for the reopen of a.db
+let p = "/tmp/db2-reopen-a.db";
+p <- sys::time::timer(duration:200.ms, false) ~ "/tmp/db2-reopen-b.db";
+p <- sys::time::timer(duration:400.ms, false) ~ "/tmp/db2-reopen-a.db";
+let d = db::open(p);
+let t: db::Tree<string, i64> = db::tree(d$, "x")$;
+let keep = once(t);
+let n = db::len(keep)$;
+sys::exit(sys::time::after_idle(duration:800.ms, 0));
+println("[p] -> [d]")

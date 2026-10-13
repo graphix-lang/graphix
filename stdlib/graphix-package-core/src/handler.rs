@@ -52,6 +52,17 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
 
 /// One call of the function over its own request binding.
 #[derive(Debug)]
+// CR claude for claude: [structure/medium] Six builtins build "call a Graphix function
+// from Rust" by hand: this Request, core Filter, array Group, opt OptHof/OrElse,
+// queuefn and sys::net Publish. Each one binds args, references and applies the
+// function, feeds fid and args every cycle, removes and unbinds at delete, and forwards
+// refs/sleep/image. The copies have drifted. Filter, Group and opt's feed put the
+// production's tag in the event, while this file and net put FIRED. OptHof refuses a
+// non-quiescent image, while Filter encodes `pending` and Group encodes its queue.
+// Input-bottom handling differs too (x-dup-03). Make this a public `Callback { call,
+// fid, args }` with new, feed_fn, feed_arg (over the shared deliver of x-dup-06),
+// update, delete, refs, sleep and an image codec. Each builtin then holds one and keeps
+// only its own policy. (x-dup-04)
 struct Request<R: Rt, E: UserEvent> {
     f: Node<R, E>,
     relay: ErrorRelay,

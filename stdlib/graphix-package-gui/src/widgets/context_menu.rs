@@ -17,6 +17,15 @@ pub(crate) struct ContextMenuW<X: GXExt> {
 
 impl<X: GXExt> ContextMenuW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
+        // CR claude for claude: [structure/low] This casts the source to a local
+        // `Fields` struct and calls `compile_ref` itself, where every other widget uses
+        // `Child::field` / `gx.compile_field`, which also supply the shared field-name
+        // error context. It then awaits `Child::compile` and `MenuItems::compile` one
+        // after the other, so each context menu waits for two round trips in sequence
+        // instead of overlapping them as the other widgets do. Replace both with
+        // `try_join!(Child::field(&gx, &source, "child"), async {
+        // MenuItems::compile(&gx, gx.compile_field(&source, "items").await?).await })`
+        // and delete `Fields`. (gui-widgets-a-10)
         #[derive(FromValue)]
         struct Fields {
             child: u64,

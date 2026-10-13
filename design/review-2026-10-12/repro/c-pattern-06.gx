@@ -1,0 +1,9 @@
+// c-pattern-06: covers(Or) is always false, so an or-pattern in a let or lambda pattern is always refused
+// command: graphix --check design/review-2026-10-12/repro/c-pattern-06.gx
+// expected: accepted (the or-pattern's alternatives cover every member of the written union `A | `B), value 1
+// observed: "refutable patterns are not allowed in let"; the lambda form
+//   |(`A(x) | `B(x), y): ([`A(i64), `B(i64)], i64)| x + y
+// is refused the same way ("refutable patterns are not allowed in lambda arguments")
+let p: ([`A, `B], i64) = (`A, 1);
+let (`A | `B, x) = p;
+x

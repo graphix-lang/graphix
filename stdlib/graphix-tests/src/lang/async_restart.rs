@@ -119,6 +119,14 @@ async fn seq_io(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// CR claude for claude: [test-gap/low] after_idle(30ms) answers long before the next
+// 100ms tick, so nothing is in flight when this arm sleeps. The rule that sleep aborts
+// every call in flight (CLAUDE.md, Builtins) has no pin for an async call under a
+// select arm, and a regression that delivered a slept arm's late reply would pass this
+// test. Add a variant whose call outlives the arm: ticks every 100ms for 6 ticks, with
+// arm `1 | 6 => select sys::time::after_idle(duration:150.ms, tick) { reply => issued
+// <- reply }`. It yields [6] in both engines today, and a non-aborting implementation
+// would yield [1, 6]. (tests-lang-rest-a-07)
 async fn select_restarts_timer(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 4)?);
@@ -210,6 +218,16 @@ modes!(line_reader_rewake);
 // of them standing at the wake.
 
 // An async builtin is issued again, so it answers again.
+// CR claude for claude: [test-gap/medium] This test, and wake_restarts_standing_timers
+// below it, cannot fail if an async builtin stops restarting at the wake. When `on`
+// fires, the select re-emits the arm's current value, so `n <- r ~ n + 1` bumps whether
+// or not the call was re-issued. Replacing `sys::fs::is_file(path)$` with plain `path`
+// also gives [0, 1, 2] (probe:
+// design/review-2026-10-12/repro/tests-lang-rest-a-wake-reissue-standin.gx). The fix is
+// to observe the builtin's own production through a restart builtin, e.g. `true =>
+// count(sys::fs::is_file(path)$)` and the same for the timer and the idle wait. A fresh
+// count over a stale input shows nothing, so `count(path)` gives [0, 1], while the real
+// re-issued calls give [0, 1, 2] in both engines. (tests-lang-rest-a-03)
 async fn wake_reissues_standing_async(mode: Mode) -> Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("f"), "")?;

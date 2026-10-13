@@ -1,0 +1,21 @@
+// x-engine-seq-errors-03: a raised struct whose field NAMES are ErrChain's
+// (cause, error, ori, pos) is extended as a chain at run time (wrap_error ->
+// chain_error, by names alone) but the check keeps the struct's own field
+// types (fix_echain_typ: is_echain_shape -> etyp unchanged). The handler's
+// (e.0).cause is typed i64 and holds the raised struct; (e.0).ori/.pos are
+// typed i64 and hold the real Ori/Pos.
+// command: graphix --no-cache x-engine-seq-errors-03.gx
+// observed (JIT): panic at graphix-compiler/src/fusion/kernel.rs:218
+//   "kernel param `x`: runtime Array(..) does not match the compiled
+//   Scalar(I64) slot" -> "tokio thread panicked", runtime dead.
+// observed (--no-fusion): [[error:"can't add error types", ..], ..]
+// expected: the check gives the handler the type the value has (or refuses).
+let n = 0;
+n <- select n { s if s < 4 => s + 1, _ => never() };
+let got: Array<i64> = [];
+let f = |x: i64| x * 2 + 1;
+let r = {
+  catch(e) got <- e ~ array::push(got, f((e.0).cause) + f((e.0).ori) + f((e.0).pos));
+  error(select n { 2 => {cause: 1, error: 20, ori: 3, pos: 4}, _ => never() })?
+};
+select n { 4 => got, _ => never() }

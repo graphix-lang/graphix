@@ -1,0 +1,17 @@
+// gx-stdlib-04: http::rest sends duplicate Content-Type/Accept when the caller supplies its own
+// (saved beside gx-stdlib-04.gx, which already held another probe)
+// run: graphix --no-cache design/review-2026-10-12/repro/gx-stdlib-04-rest.gx
+// expected: "content-type=application/merge-patch+json|accept=application/json"
+// observed: "content-type=application/json|content-type=application/merge-patch+json|accept=application/json"
+use http::Request;
+let srv = http::serve(#addr: "127.0.0.1:0", #handler: |req: Request| {
+    body: str::join(#sep: "|", array::map(array::filter(req.headers, |(k, _)| (k == "content-type") || (k == "accept")), |(k, v)| "[k]=[v]")),
+    headers: [],
+    status: u16:200,
+    url: ""
+})$;
+let addr = http::server_addr(srv);
+let client = http::default_client(addr)$;
+let r = http::rest::post(#headers: [("content-type", "application/merge-patch+json")], #body: "{}", client, "http://[addr]/x");
+sys::exit(sys::time::after_idle(duration:500.ms, r ~ 0));
+(r$).body

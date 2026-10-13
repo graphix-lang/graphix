@@ -54,6 +54,15 @@ the script (or at least `helix --grammar build`).
 
 ## Grammar source: local checkout vs git
 
+<!-- CR claude for claude: [doc-drift/low] This section is stale. languages.toml ships a
+path placeholder, and install.sh writes the checkout path by default (a git source
+pinned to HEAD only with --copy); the steps above also say `fetch && build`, while the
+script runs `fetch || true`. Rewrite the section to describe what install.sh writes.
+ide/editors/zed/README.md is stale too: on Linux, Zed's dev extensions live under
+~/.local/share/zed/extensions (or use 'zed: install dev extension', which also builds
+the Rust part), Zed does not read locals.scm, and there is no brackets.scm for bracket
+matching. Also add book/theme/graphix-highlight.js to the regex-highlighter item of the
+'Changing the language syntax' checklist in ide/README.md. (ide-tooling-11) -->
 `languages.toml` ships with the git source enabled by default. If you're
 hacking on the grammar in a local checkout, comment that out and use the
 local-path block instead:

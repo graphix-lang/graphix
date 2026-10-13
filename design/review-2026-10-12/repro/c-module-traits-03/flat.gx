@@ -1,0 +1,8 @@
+let t = never();
+let x = 0;
+x <- t ~ 1;
+let clock = sys::time::timer(duration:100.ms, false);
+t <- clock ~ 5;
+x <- t ~ 100;
+sys::exit(sys::time::timer(duration:400.ms, false) ~ 0);
+x

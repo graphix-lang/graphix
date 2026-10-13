@@ -27,6 +27,11 @@ val text_editor: fn(
 - **`#padding`** -- Interior padding around the text content. Accepts `Padding` values.
 - **`#font`** -- Font to use, or `null` for the default font.
 - **`#size`** -- Font size in pixels, or `null` for the default size.
+<!-- CR claude for claude: [doc-drift/low] A disabled editor can still be clicked, and
+its text scrolled, selected and copied. Only edits are refused. An editor without
+`#on_edit` is read-only in the same way, and the `#on_edit` line does not say so. Write:
+'disabled: edits are refused; the text can still be scrolled, selected and copied.
+Without #on_edit the editor is read-only in the same way.' (book-ui-a-13) -->
 - **`#disabled`** -- When `true`, the editor cannot be focused or edited. Defaults to `false`.
 - **positional `&string`** -- Reference to the current content. The editor displays this text and you update it from the `#on_edit` callback.
 

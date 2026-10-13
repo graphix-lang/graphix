@@ -1,0 +1,7 @@
+let a = 1;
+let r1 = &a;
+let r2 = &a;
+println("r1 == r2: [r1 == r2]");
+println("all(r1, r2) produced: [all(r1, r2)]");
+sys::exit(sys::time::after_idle(duration:100.ms, a) ~ 0);
+r1 == r2

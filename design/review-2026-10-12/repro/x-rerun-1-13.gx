@@ -1,0 +1,12 @@
+// x-rerun-1-13: ../netidx/netidx-tools/src/browser/browser.gx's Backspace
+// computes str::sub's char count from str::len (bytes), so a command holding
+// a non-ASCII char does not shrink.
+//
+// command: graphix --no-cache design/review-2026-10-12/repro/x-rerun-1-13.gx
+//
+// expected: (3, "a", "a")
+// observed: (3, "aé", "a"): the byte-length form (browser.gx) keeps "aé",
+// the char_len form (book/src/examples/tui/browser_commands.gx) gives "a".
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let command = "aé";
+(str::len(command), str::sub(#start:0, #len:str::len(command) - 1, command)$, str::sub(#start:0, #len:str::char_len(command) - 1, command)$)

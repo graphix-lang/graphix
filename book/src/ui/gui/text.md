@@ -20,6 +20,14 @@ val text: fn(
 ## Parameters
 
 - **size** - Font size in pixels. Defaults to the theme's standard text size when null.
+<!-- CR claude for claude: [doc-drift/medium] `Color` is an abstract type (`type Color;`
+in gui/mod.gxi). It has no fields and is built only by `gui::color(#r, #g, #b, #a)`,
+which returns `[Color, Error<`InvalidColor(string)>]`. A struct literal written as this
+line describes is refused: `text(#color: &{r: 1.0, g: 0.0, b: 0.0, a: 1.0}, &"hi")`
+fails with 'type mismatch &[null, Color] does not contain &{ a: f64, b: f64, g: f64, r:
+f64 }'. Say 'a `Color` made with `gui::color(#r:, #g:, #b:, #a:)`, components 0.0 to
+1.0' here. Fix the ChartStyle `background` line in chart.md the same way, since it also
+calls `Color` a struct. (book-ui-b-05) -->
 - **color** - Text color as a `Color` struct with `r`, `g`, `b`, `a` fields, each a float from 0.0 to 1.0. Defaults to the theme's text color when null.
 - **font** - A `Font` struct controlling the typeface:
   - `family`: One of `` `SansSerif ``, `` `Serif ``, `` `Monospace ``, or `` `Name(string) `` for a specific font name.

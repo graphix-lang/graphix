@@ -1,0 +1,3 @@
+mod m;
+let x = 1;
+m::parse("1", &x)

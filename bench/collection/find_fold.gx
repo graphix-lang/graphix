@@ -6,6 +6,15 @@ let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;
 let target = seed % n;
 let init: [i64, null] = null;
+// CR claude for claude: [doc-drift/medium] This fold carries an Option alone. The
+// Collection `find` default in core's mod.gxi now carries a `(bool, Option<'a>)` tuple,
+// so a found null is not read as not-found. The bench, its rows and the find verdict in
+// bench/collection/README.md, and the `collection_bodies_find_array` pin all measure a
+// shape no impl runs. With the debug binary the default's tuple shape takes about 15x
+// this fold (0.155 s against 0.010 s at 500k, see examples-rest-04), not the README's
+// 2.4x of the intrinsic. Rewrite this bench and the pin as the default's tuple fold,
+// reading back `.1`, then re-run and restate the README rows and verdict. Or keep this
+// one under another name and say it is not the default. (examples-rest-03)
 let result = array::fold(src, init, |acc, x| select acc {
     null as _ => select x == target { true => x, false => null },
     found => found

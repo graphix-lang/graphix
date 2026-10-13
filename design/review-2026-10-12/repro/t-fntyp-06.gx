@@ -1,0 +1,10 @@
+// t-fntyp-06: union normal form depends on member order; equal function types fail to merge
+// command: graphix --check design/review-2026-10-12/repro/t-fntyp-06.gx
+// expected: accepted (f and g have one parameter type, written in two member orders;
+// writing one order for both is accepted)
+// observed: refused "expected fn not [fn(x: [(i64, bool), ([i64, f64], string)]) -> i64,
+// fn(x: [(i64, [bool, string]), (f64, string)]) -> i64]"
+let f = |x: [(i64, string), (f64, string), (i64, bool)]| 0;
+let g = |x: [(i64, string), (i64, bool), (f64, string)]| 1;
+let fs = [f, g];
+array::map(fs, |h| h((i64:1, true)))

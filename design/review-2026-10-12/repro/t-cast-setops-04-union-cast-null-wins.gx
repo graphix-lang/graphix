@@ -1,0 +1,17 @@
+type E = Error<[`JsonErr(string), `InvalidCast(string)]>;
+let a: Any = (1, 2);
+println("1: [cast<[i64, (f64, f64)]>(a)]");
+println("2: [cast<[(f64, f64), null]>(a)]");
+println("3: [cast<i64>(a)]");
+let b: [[(f64, f64), null], E] = json::read(r"[1, 2]");
+println("4: [b]");
+let c: [[{x: f64, y: f64}, null], E] = json::read("{\"x\": 1, \"y\": 2}");
+println("5: [c]");
+let d: [[f64, (f64, f64)], E] = json::read(r"[1, 2]");
+println("6: [d]");
+let e: [Array<f64>, E] = json::read(r"[1, 2]");
+println("7: [e]");
+let f: [[Array<f64>, null], E] = json::read(r"[1, 2]");
+println("8: [f]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

@@ -1,0 +1,9 @@
+// c-collection-04: the shell drops the last output when sys::exit fires in the next cycle
+// The first cycle takes longer than the idle, so the timer fires in cycle 2: cycle 1's
+// batch is already in the shell's channel when the exit request arrives, and the shell's
+// unbiased select! picks the exit (about 3 times in 4: four branches, random start).
+// command (fish/sh): for i in (seq 20); graphix --no-cache --no-fusion c-collection-04.gx; end
+// expected: 10000 printed on every run
+// observed: 10000 printed on 4 of 20 runs; the other 16 print nothing and exit 0
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::len(array::map(array::init(10000, |i| i), |x| x + 1))

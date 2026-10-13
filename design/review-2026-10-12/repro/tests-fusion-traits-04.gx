@@ -1,0 +1,12 @@
+// A handler-ful `?` whose error derives only from the arm's own bind,
+// under an unguarded select, is refused by #[native]:
+//   graphix --expand tests-fusion-traits-04.gx
+//   -> a `?` under a handler raises an edge its arm may owe to the
+//      select's fire tracker — arm entry is the node-walk's
+// CLAUDE.md says only a constant-derived error de-fuses
+// (`lowering::entry_raise_blocker`, which does not exist); the code's
+// `arm_raise_blocker` refuses every handler-ful `?` under any arm,
+// while the Io analogue (`arm_io_blocker`) fuses this shape.
+let n = 0;
+let f = |x: i64| -> i64 { catch(e) n <- e ~ n + 1; #[native] select x { 0 => 0, y => (y /? (y - 2))? } };
+array::map([1, 2, 3], |x| f(x))

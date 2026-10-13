@@ -1,0 +1,4 @@
+select tui::event {
+  `Key(k) => dbg(k),
+  _ => ()
+}

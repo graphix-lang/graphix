@@ -1,0 +1,12 @@
+// t-fntyp-05: a function-typed bound holding a union is never applied to
+// an unannotated lambda argument: the check passes, the build refuses.
+// The bound's x is i64 but the lambda's body makes x a string.
+//   graphix --check t-fntyp-05.gx                  -> exit 0 (expected: refused, x is i64)
+//   graphix --no-cache t-fntyp-05.gx               -> "an instance at fn(g: fn(x: string, y: _) -> i64) -> i64
+//                                                      of a definition typed fn<'a: fn(x: i64, y: [i64, string]) -> i64>(g: 'a) -> .."
+//   GRAPHIX_NO_SUBST=1 graphix --no-cache t-fntyp-05.gx -> prints 0
+// Without the union (y: i64) the check refuses: "string does not contain i64".
+// A well-typed call, f(|x, y| 0), passes the check and is refused by the
+// build the same way: its params are never bound and settle to bottom.
+let f = 'a: fn(x: i64, y: [i64, string]) -> i64 |g: 'a| 0;
+f(|x, y| str::len(x))

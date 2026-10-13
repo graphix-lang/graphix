@@ -1,0 +1,16 @@
+// x-dup-03: core::filter and array::group keep delivering a stale value when their input goes bottom
+// run: graphix --no-cache x-dup-03.gx   (same with --no-fusion)
+// expected at n=2 (x is bottom): no filter= and no group= line, like opt::filter
+// observed at n=2: "n=2 filter=(1, 2)" and "n=2 group=([1], 2)"; the opt::filter line is absent
+let t = sys::time::timer(duration:50.ms, 3);
+let n = 0;
+n <- t ~ n + 1;
+let x = select n { 2 => never(), v => v };
+let f = filter(x, |v| v >= 0);
+let o = opt::filter(x, |v| v >= 0);
+let g = array::group(x, |len, v| len >= 1);
+println("n=[n] filter=[(f, n)]");
+println("n=[n] opt::filter=[(o, n)]");
+println("n=[n] group=[(g, n)]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+n

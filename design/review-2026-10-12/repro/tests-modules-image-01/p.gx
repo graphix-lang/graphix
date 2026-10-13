@@ -1,0 +1,4 @@
+mod m;
+let a: Array<[(i64, i64), Array<i64>]> = [(1, 2)];
+let b: Array<[(i64, i64), Array<i64>]> = [[1, 2]];
+m::eq(a, b)

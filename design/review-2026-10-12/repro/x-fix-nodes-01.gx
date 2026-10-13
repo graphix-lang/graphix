@@ -1,0 +1,27 @@
+// x-fix-nodes-01: whether a select arm sleeps (analysis::arm_sleeps) is judged
+// from the arm's own nodes plus its callees' LambdaFacts. Neither carries a
+// callee's events: raises_to_handler looks only at Qop nodes written in the
+// arm, and a callee's `<-` to a variable it does not own counts as PURE in its
+// facts (node_facts, OwnTargets::Bound). So an arm that raises or writes
+// through a call is judged pure, is not slept, and is re-entered as a birth:
+// the standing error is raised again / the write lands again. Written inline,
+// the same arm sleeps and its re-entry raises and writes nothing new (the
+// ruling pinned by lang::async_restart::reentry_raises_once).
+// Run: graphix --no-cache x-fix-nodes-01.gx (and --no-fusion)
+// expected: (1, 2)   -- what the inline forms give:
+//   select s { 1 => cast<i64>(t)? + 1, _ => 0 }   and
+//   select s { 1 => { log <- [n]; 1 }, _ => 0 }
+// observed (both engines): (2, 3)
+let s = array::iter([1, 2, 1, 2]);
+let t = "x";
+let n = 7;
+let raised = 0;
+let log: Array<i64> = [];
+let g = |v: string| cast<i64>(v)? + 1;
+let bump = |e: i64| { log <- [e]; 1 };
+let out = {
+    catch(x) raised <- x ~ raised + 1;
+    select s { 1 => (g(t), bump(n)), _ => (0, 0) }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, s ~ 0));
+(raised, count(log))

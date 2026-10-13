@@ -494,6 +494,16 @@ run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
 
 // A let-bound helper whose body is `array::fold` over a literal, called
 // transitively: helper(5) + 1 = 51.
+// CR claude for claude: [readability/low] The name says nonfusable dynamic call, but
+// this is a static chain that fuses whole (FuseExpect::Jit; `#[native] outer(5)` fuses
+// and gives 51). Nearby names have the same problem: the KIR_ prefix names a typed IR
+// that no longer exists, KIR_FUSED_DEFERRED_MAP / fused_deferred_map is a fold, the
+// lazy_*/ *_dyncall* names cover static calls over a cast, and FLAT_MAP_DECLARED_UNION
+// backs flat_map_bare_element_refused. Rename each fixture after what it pins (e.g.
+// static_fold_helper_fuses, fold_deferred_callback, call_through_cast_callee,
+// FLAT_MAP_BARE_ELEMENT). Also delete the two `use array::*;` lines: every call is
+// already qualified, and the glob is against the repo's import rule.
+// (tests-functions-07)
 const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 {
     use array::*;
@@ -1739,6 +1749,18 @@ run!(open_return_callee_in_callback, OPEN_RETURN_CALLEE_IN_CALLBACK, |v: Result<
 // A formal every self-call passes through unchanged is never rebound,
 // so an fn-typed invariant formal does not gate the tail loop.
 
+// CR claude for claude: [test-gap/medium] FuseExpect::Jit holds when any kernel ran
+// (check_fuse_expectation), and here the callback `|a, x| a + x` is a kernel of its
+// own. If `fold_go`'s tail loop lost its kernel (the 'fn-typed formal is not forwarded
+// unchanged' gate misfiring on an invariant formal), this test would stay green, and so
+// would its siblings FN_FORMAL_TWO_CALLBACKS, FN_FORMAL_CAPTURE_COLLIDES_BOUND/ACC, the
+// carried-formal loops, RECURSIVE_LAMBDA0, KIR_LAZY_THREE_LEVEL, TRANSITIVE_CHAIN and
+// FOLD_CALLBACK_NAME_COLLISION, whose comments all claim a particular loop or chain
+// fuses. FN_FORMAL_REBOUND shows it: `g` has no kernel, yet the fixture is annotated
+// Jit and passes. Put `#[native]` on the call each fixture is about (`#[native]
+// fold_go(|a, x| a + x, 10, 0)` fuses today), and change FN_FORMAL_REBOUND's comment to
+// say the callbacks fuse and `g` does not. Probe:
+// design/review-2026-10-12/repro/tests-functions-02.gx. (tests-functions-02)
 const FN_INVARIANT_TAIL_LOOP: &str = r#"
 {
   let rec fold_go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
@@ -2293,6 +2315,16 @@ run!(flat_map_tuple_refused, FLAT_MAP_TUPLE_REFUSED, |v: Result<&Value>| {
 
 // A binding that is not generalized holds one instance: used twice, the
 // second use meets cells the first linked.
+// CR claude for claude: [test-gap/low] Both uses of `t` are now at Array<i64> with an
+// array-returning callback, so no change to cell sharing can fail this test. Its
+// premise is also false: `{ let z = 1; array::flat_map }` names a generalized binding,
+// and `b(["s"], |x| [x])` checks and runs (FORWARDED_POLY_REF_TWICE already pins that).
+// Delete it, or make it a real monomorphism pin over a binding that is not generalized
+// (a `<-` target) used at two types, expecting the refusal. In FLAT_MAP_TUPLE_REFUSED,
+// the comment ('it is refused, and the result is the arrays' concatenation') should
+// just say the tuple result is refused. Both flat_map refusal fixtures match only 'does
+// not contain', which almost any type error satisfies. Pin the specific text, e.g.
+// 'does not contain fn(x: i64) -> (i64, i64)'. (tests-functions-04)
 const MONOMORPHIC_FLAT_MAP_TWICE: &str = r#"
 {
   let t = { let z = 1; array::flat_map };
@@ -2489,6 +2521,12 @@ run!(
 ; FuseExpect::None);
 
 // A function value prints as its source, the same cold and warm.
+// CR claude for claude: [test-gap/low] The comment promises 'the same cold and warm',
+// but run! never restores a session image, and no image test prints a function value.
+// An image codec change that rewrote or dropped a lambda's spec would pass this and
+// every other gate. Add a twin in lang/image.rs over cold_and_warm that compares the
+// printed string, or drop 'the same cold and warm' from the comment.
+// (tests-functions-06)
 const FN_PRINTS_ITS_SOURCE: &str = r#"
 {
   let f = |acc, x| str::len(x) + acc;
@@ -2555,6 +2593,16 @@ run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, |v: Result<&Value>| matches!(v,
 
 // A fresh bind runs each omitted default once: a counting default in a
 // collection callback reads 1 in every slot, in every mode.
+// CR claude for claude: [test-gap/medium] Nothing pins the rule that a labeled default
+// is born with the binding and delivers FIRED at a fresh callee's first dispatch. If
+// the bound dispatch went back to seeding defaults STALE, `let d = 5; let f = |#k = d,
+// x: i64| k ~ x; select array::iter([0, 1]) { 0 => 0, _ => f(10) }` would yield [0]
+// instead of [0, 10]. That would happen on both engines, so the fuzzer sees agreement.
+// The default-arg-birth-sep2026 corpus pins exercise it, but regress only compares
+// their verdict class. Add a run_delta fixture over that program asserting [0, 10],
+// plus a rebind variant (`g <- select t { 1 => |#k = d, x| k ~ (x + 1), _ => never()
+// }`, expecting [10, 11]). Probe: design/review-2026-10-12/repro/tests-functions-03.gx.
+// (tests-functions-03)
 const DEFAULT_RUNS_ONCE_PER_BIND: &str = r#"
 {
     let f = |#n = count(1), x: i64| (x, n);
@@ -2714,6 +2762,17 @@ const BUILTIN_BOUND_WITHOUT_ITS_DEFAULT: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] This checks only that the result has length 3,
+// so losing `array::rotate`'s omitted `#n = 1` (a result of [1, 2, 3]) would pass. Pin
+// "[i64:3, i64:1, i64:2]". The same looseness appears in other fixtures in this file.
+// widest_argument_any_order checks only len 3; pin "[[i64:1, i64:1], [i64:1, f64:2.],
+// [i64:3, i64:1]]". instance_node_narrower_than_its_row checks only len 2; pin ["ok",
+// "ok"]. abstract_union_return_is_fine and open_callee_obligation_is_per_instance
+// accept any Ok; pin their values. abandoned_kernel_closure never reads the `v` it
+// computes; return `(v, false)` and expect [38, false]. DEFAULT_IN_CONSTRAINT_SET
+// defines identical `f` and `g`, so one definition never serves both the omitting site
+// and the passing site its comment describes. Call `f` twice instead (that form gives 1
+// today). (tests-functions-05)
 run!(builtin_bound_without_its_default, BUILTIN_BOUND_WITHOUT_ITS_DEFAULT, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a.len() == 3,
     _ => false,
@@ -2830,6 +2889,14 @@ run!(
 /// An embedder bounds the activations its runtime holds: a node-walked
 /// recursion without end aborts the runtime at the budget, where it would
 /// otherwise fill memory, and the count follows the program.
+// CR claude for claude: [test-gap/low] The budget bounds calls, slots and kernel
+// blocks, but this test, the only one that sets it, builds with CFlag::FusionDisabled,
+// so a change that stopped counting kernel blocks in a fused non-tail recursion would
+// pass every gate. Run it over Mode::Interp and Mode::Jit, with a non-tail runaway as
+// the JIT case (`let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) };
+// f(-1)`, which stops at 2000 today). Also assert that `compile` succeeds, so a refused
+// program fails at once instead of after a 30 s wait with 'not stopped', and call
+// ctx.shutdown() as run! does. (tests-functions-08)
 #[tokio::test(flavor = "multi_thread")]
 async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
     use graphix_compiler::CFlag;

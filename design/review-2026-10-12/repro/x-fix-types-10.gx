@@ -1,0 +1,7 @@
+// x-fix-types-10: pre_unify_arg leaves an ambiguous argument to its own check only when the
+// formal IS a union; a union behind an alias, or inside a tuple or struct, still commits an
+// inline literal to its first member: each program below is refused with
+// 'Array<f64> does not contain Array<string>' (the inline-union form checks).
+type D = [Array<f64>, Array<string>]; let g = |x: D| 0; g(["a"])
+// let g = |x: (i64, [Array<f64>, Array<string>])| 0; g((1, ["a"]))
+// let g = |x: {a: [Array<f64>, Array<string>]}| 0; g({a: ["a"]})

@@ -1,0 +1,11 @@
+// A capture inside an abstract payload types as the whole rep union, not
+// the member its pattern matches (outside an abstract, `v` is `A(i64)).
+// Expected: 3. Actual: refused, "missing match cases: no arm covers `B(string)".
+type T = Abstract<[`A(i64), `B(string)]>;
+let t: T = T(`A(3));
+let r = select t {
+  T(v@ `A(_)) => select v { `A(m) => m },
+  T(`B(_)) => 0
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

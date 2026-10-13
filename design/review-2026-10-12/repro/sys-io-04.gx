@@ -1,0 +1,20 @@
+// sys-io-04: sys::fs::watch::watch never rebuilds after a wake, so events stay bottom
+// run: graphix --no-cache design/review-2026-10-12/repro/sys-io-04.gx (same with --no-fusion)
+// expected: "event Established" then "event CreateFile" (the arm sleeps 300-600 ms, the file is written at 1200 ms)
+// observed: "event Established" only; deleting the 300 ms deselect line gives "event CreateFile"
+// isolation: with `let wt = watch::watch(w, p)$` outside the select and only watch::events(wt) in the arm, the wake works (CreateFile arrives): WatchApply is the culprit
+use sys::fs::watch;
+let dir = sys::fs::tempdir::create(null)$;
+let p = sys::fs::tempdir::path(dir);
+let w = watch::create(null)$;
+let on = true;
+on <- sys::time::timer(duration:300.ms, false) ~ false;
+on <- sys::time::timer(duration:600.ms, false) ~ true;
+let ev = select on {
+  true => watch::events(watch::watch(w, p)$),
+  false => never()
+};
+let wr = sys::fs::write_all(#path: sys::join_path(p, "f.txt"), sys::time::timer(duration:1200.ms, false) ~ "hello");
+let r = select ev { error as e => "error [e]", e => "event [e.event]" };
+sys::exit(sys::time::timer(duration:2500.ms, false) ~ 0);
+r

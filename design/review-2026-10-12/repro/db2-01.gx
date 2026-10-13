@@ -1,0 +1,19 @@
+// db2-01: a db subscription stops draining after no-op writes; writers then hang and the runtime freezes
+// run from an empty scratch dir: rm -rf db2-01.db; timeout -s KILL 15 graphix --no-cache db2-01.gx; echo $?
+// every insert writes the same key/value, so all but the first are no-op writes in sled
+// expected (as with `let sub = 0;` and no subscription): "answered inserts: ~15000", "second subscription made", exit 0 at 3.5 s
+// observed: "answered inserts: 1025", nothing more, exit 137 (the runtime thread is blocked in watch_prefix)
+let db = db::open("db2-01.db")$;
+let t: db::Tree<i64, i64> = db::tree(db, "x")$;
+let sub = db::subscription::new(t);
+let go = sub;
+let k = 0;
+let b = db::insert(t, go ~ 0, 1)$;
+k <- b ~ k + 1;
+go <- b ~ sub;
+println(sys::time::timer(duration:2.s, false) ~ "answered inserts: [k]");
+let late: [i64, null] = sys::time::timer(duration:2500.ms, false) ~ 5;
+let sub2 = db::subscription::new(#prefix: late, t);
+println(sub2 ~ "second subscription made");
+sys::exit(sys::time::timer(duration:3500.ms, false) ~ 0);
+"started"

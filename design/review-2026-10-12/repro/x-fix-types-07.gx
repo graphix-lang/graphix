@@ -1,0 +1,8 @@
+// x-fix-types-07: a constructed abstract value's parameter is pre-unified only at a let and a
+// call argument; a return annotation, an array element, a select arm and a connect refuse it.
+// each line below is refused; the let form (first line) checks.
+type Box<'a> = Abstract<'a>; let b: Box<[i64, string]> = Box(1); b
+// type Box<'a> = Abstract<'a>; let g = || -> Box<[i64, string]> Box(1); g()
+// type Box<'a> = Abstract<'a>; let b: Array<Box<[i64, string]>> = [Box(1)]; b
+// type Box<'a> = Abstract<'a>; let b: Box<[i64, string]> = select true { true => Box(1), false => Box("s") }; b
+// type Box<'a> = Abstract<'a>; let b: Box<[i64, string]> = never(); b <- Box(1); b

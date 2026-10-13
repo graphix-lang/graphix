@@ -1,0 +1,5 @@
+let x: [(`A, i64), (string, string)] = (`A, 1);
+let y: [(`A, i64), (string, string)] = ("A", "b");
+println("[x == y]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

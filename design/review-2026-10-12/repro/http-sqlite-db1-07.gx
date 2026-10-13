@@ -1,0 +1,27 @@
+// http-sqlite-db1-07: db::import panics on any existing key (meta tree included) and applies partially
+// run: rm -rf /tmp/db1-07 && mkdir /tmp/db1-07 && graphix --no-cache http-sqlite-db1-07.gx
+// expected: dst holds no entries (only tree "z" opened), so the documented "database must be
+//   empty" holds; the import succeeds, or fails with a DbErr that writes nothing
+// observed: stderr "panicked at sled-0.34.7/src/db.rs:381 import is overwriting existing data";
+//   import: error:["DbErr", "task panicked: task N panicked with message \"import is overwriting existing data\""]
+//   open dst.a as i64 keys: error:["DbErr", "tree 'a' has type Tree<string, i64> but was opened as Tree<i64, i64>"]
+//   (the failed import wrote tree "a"'s meta entry, never its data)
+//   control import: null (into a db that opened nothing)
+let dir = "/tmp/db1-07";
+let src = db::open("[dir]/src")$;
+let sa: db::Tree<string, i64> = db::tree(src, "a")$;
+let sz: db::Tree<string, i64> = db::tree(src, "z")$;
+let i1 = db::insert(sa, "k1", 1)$;
+let i2 = db::insert(sz, i1 ~ "k2", 2)$;
+let ex = db::export(src, i2 ~ "[dir]/exp")$;
+let dst = db::open(ex ~ "[dir]/dst")$;
+let dz: db::Tree<string, i64> = db::tree(dst, "z")$;
+let im = db::import(dst, dz ~ "[dir]/exp");
+println("import: [im]");
+let da: Result<db::Tree<i64, i64>, `DbErr(string)> = db::tree(dst, im ~ "a");
+println("open dst.a as i64 keys: [da]");
+let ctl = db::open(ex ~ "[dir]/ctl")$;
+let imc = db::import(ctl, ctl ~ "[dir]/exp");
+println("control import: [imc]");
+sys::exit(sys::time::after_idle(duration:500.ms, da ~ 0));
+null

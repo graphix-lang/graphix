@@ -1,0 +1,21 @@
+// tests-lang-rest-b-02: an arm's first-entry catch-up depends on static vs
+// dynamic callee resolution.
+// Command: graphix --no-cache tests-lang-rest-b-02.gx   (same with --no-fusion)
+// `a` fires (7) at cycle 4 while both n-selects sit in their never() arm,
+// which does not read it. At n = 6 each arm is entered for the first time
+// and calls a callee whose body is `a ~ x`. Per wake catch-up ("the fork",
+// design/wake_catchup.md) the missed fire of `a` is raised at the entry.
+// Expected: "static 6" and "dynamic 6" (then n's values 0..8).
+// Observed: "static 6" only: the dynamically dispatched gd's body was never
+// in the arm's tracked refs before its first dispatch, so the fire is lost.
+let a = 0;
+let mode = 0;
+let gs = |x| a ~ x;
+let gd = select mode { 0 => |x| a ~ x, _ => |x| x };
+let n = 0;
+n <- select n { k if k < 8 => k + 1, _ => never() };
+a <- select n { 3 => 7, _ => never() };
+println(select n { 6 => "static [gs(n)]", _ => never() });
+println(select n { 6 => "dynamic [gd(n)]", _ => never() });
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+n

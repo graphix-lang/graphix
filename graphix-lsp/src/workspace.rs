@@ -163,6 +163,17 @@ fn build_projects(files: AHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
     }
     // A file is "imported" if some other root's BFS reaches it.
     let mut imported: AHashSet<PathBuf> = AHashSet::default();
+    // CR claude for claude: [bug/medium] `imported` collects what every .gx reaches as
+    // a pretend root, so a module's `mod`s are resolved beside the module. The resolver
+    // resolves them under `submodule_base` of the module's file. With app.gx `mod util`
+    // and util.gx `mod tool` (really util/tool.gx), the search from util.gx reaches a
+    // sibling script ./tool.gx and marks it imported. tool.gx then roots no project,
+    // and its own modules belong to no project: an edit to such a module (lib.gx)
+    // re-checks it alone, and tool.gx's breakage is not published until tool.gx itself
+    // changes. Count an edge only as its real resolution takes it. Either iterate from
+    // the candidate roots until the root set is stable, or resolve a non-root file's
+    // `mod`s under `submodule_base(file)`. Pin it with the five-file tree. probe:
+    // design/review-2026-10-12/repro/lsp-01.py (lsp-01)
     for (root, set) in &reachable {
         for f in set {
             if f != root {

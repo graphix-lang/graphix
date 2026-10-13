@@ -26,6 +26,23 @@ fn strings(v: &[&str]) -> Value {
 #[tokio::test]
 async fn a_guard_refire_answers_nothing() -> Result<()> {
     let mut h = TuiTestHarness::new(
+        // CR claude for claude: [test-gap/medium] a_guard_refire_answers_nothing cannot
+        // fail: a misattributed re-fire yields the same counts. The test should catch a
+        // guard re-fire's second answer (`Continue) being taken as the answer to the
+        // next event. Every event after Up correctly gets `Continue as well, so
+        // misattribution only shifts each answer one event later and the inner handler
+        // still sees x and y: inner_hits = 2 and sel = 0 either way. I traced the
+        // pre-38041142 handler, which consumed the queue front on every call-site
+        // update (the CR's bug): queue [Up, x, y]. Stop pops Up. The re-fire's
+        // `Continue pops x, so inner sees x. x's answer pops y, so inner sees y. Same
+        // totals, so the test passes on the code it was written to reject. Failure:
+        // Bring back an input handler that takes any production of the handler's call
+        // site as the answer for the head of the queue: this test still passes. Fix:
+        // Make the event after Up one that outer answers `Stop, so a misattributed
+        // `Continue becomes visible. For example, add an arm `` `Char("x") => `Stop ``
+        // to outer and dispatch [Up, x]: the correct inner_hits is 0, a misattribution
+        // gives 1. Unverified: the reviewer's report, not checked by a verifier.
+        // (tests-tui-04)
         r#"
 use tui::input_handler::{self, *};
 use tui::text::text;
@@ -308,6 +325,19 @@ let result = browser(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_scroll_keeps_the_rows_that_stay() -> Result<()> {
     let mut h = TuiTestHarness::with_viewport(
+        // CR claude for claude: [risk/low] Browser scroll test relies on a fixed 600 ms
+        // load window and is flaky under load.
+        // a_browser_scroll_keeps_the_rows_that_stay counts #SUB rows only once i >= 6,
+        // that is 600 ms after start, 400 ms after the path arrives at 200 ms. It
+        // asserts the worst count is exactly 1. If listing and subscribing the 12
+        // published rows takes longer than ~400 ms on a loaded machine, the initial
+        // all-#SUB rows count, worst becomes 3 or 4, and the test fails although
+        // scrolling is correct. Failure: A slow CI box or a busy shared machine: the
+        // initial load lands after the timer reaches 6 and the test reports worst=3.
+        // Fix: Gate the scrolling on the load: start the Down moves only after a
+        // `flashed == 0` frame has been seen (e.g. a `loaded` latch), not after a fixed
+        // tick count. Unverified: the reviewer's report, not checked by a verifier.
+        // (tests-tui-10)
         r##"
 use tui::{Tui, browser::{MoveCursor, browser}};
 let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k]", k));

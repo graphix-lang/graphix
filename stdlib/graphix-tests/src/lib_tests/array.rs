@@ -208,6 +208,17 @@ const ARRAY_FILTER_MAP: &str = r#"
 "#;
 
 // `x ~ null` in a fully sync kernel lowers to `null`, so the body fuses.
+// CR claude for claude: [test-gap/low] The comment above says `x ~ null` lowers in a
+// kernel and the body fuses. That is false: #[native] on this filter_map is refused
+// because `x ~ null` does not emit CLIF (probe:
+// design/review-2026-10-12/repro/tests-lib-a-03.gx). The default FuseExpect::Jit does
+// not catch it, because check_fuse_expectation passes on any fused region and the `let
+// a = [..]` literal is one. The same weakness applies to every comment in this file
+// that claims a construct fuses (ARRAY_MAP_NESTED_CONST, ARRAY_FIND_SCALAR).
+// ARRAY_FIND_SCALAR's "early-exit loop" wording also contradicts
+// design/collection_intrinsics.md, which says find scans every slot. Fix: delete this
+// comment, put #[native] on the expression in fixtures whose point is that a construct
+// fuses, and correct the find comment. (tests-lib-a-03)
 run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -763,6 +774,14 @@ const ARRAY_GROUP2: &str = r#"
 }
 "#;
 
+// CR claude for claude: [readability/low] A one-argument callback passed where
+// array::group passes two is reported as `type mismatch fn(len: i64, x: 'a: i64) ->
+// bool throws 'e: unbound does not contain fn(v: i64) -> bool`. The user sees
+// inference-cell state (`'a: i64`, `'e: unbound`) rather than the actual problem, an
+// arity mismatch. This pin freezes that wording, so improving the message breaks the
+// test. Fix: have the checker report a lambda-versus-expected-function arity mismatch
+// as such (the callback takes 1 argument, the expected type passes 2), and pin a stable
+// phrase of that message here. (tests-lib-a-07)
 run!(array_group2, ARRAY_GROUP2, refused("bool throws 'e: unbound does not contain fn(v:"); FuseExpect::None);
 
 // A predicate that answers bottom holds group until it answers: the
@@ -1256,6 +1275,15 @@ run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
 ); FuseExpect::Jit);
 
 // filter: the leaf drops on both edges; no-match and all-match covered.
+// CR claude for claude: [test-gap/low] The comment above claims no-match and all-match
+// coverage, but this filter has one match and one non-match, and the predicate checks
+// only `a.len() == 1`. A filter that kept ((1, 2), 0) instead of ((5, 6), 1) would
+// pass. The HOF block's heading promises a found-at-last path, but every find in it
+// matches a middle element (hof_str_find, hof_variant_find). hof_variant_filter checks
+// only the length (`[`Red, `Green]` would pass), and
+// array_map_union_callback_push_front checks only its last element. Fix: pin exact
+// values in these predicates, and add a found-at-last find plus no-match and all-match
+// filters, or correct the comments. (tests-lib-a-06)
 const HOF_LEAF_FILTER: &str = r#"
 array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 3)
 "#;

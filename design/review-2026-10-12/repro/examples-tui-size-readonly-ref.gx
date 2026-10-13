@@ -1,0 +1,8 @@
+// run under a sized pty: script -qec "stty cols 80 rows 24; graphix --no-cache this.gx" /dev/null
+// size_null.out then reads s=[["height", 24], ["width", 80]]: a `null`-typed binding holds a struct
+use tui::{block::block, text::text};
+let s = null;
+let n: null = s;
+sys::fs::write_all(#path: "size_null.out", "s=[n]\n");
+sys::exit(sys::time::after_idle(duration:500.ms, s ~ 0));
+block(#size: &s, &text(&"x"))

@@ -1,0 +1,14 @@
+// queuefn: a bottom argument of the wrapper's call is dropped, so the
+// wrapper rides its previous answer where the direct call is bottom.
+// Expected: no queued line at c=2, as no direct line (s$ is bottom).
+// Prints "c=2 queued=10" (the c=1 answer, STALE).
+// command: graphix --no-cache core-aux-03.gx (same with --no-fusion)
+let c = 0;
+c <- select c { n if n < 3 => n + 1, _ => never() };
+let s: [i64, null] = select c { 2 => null, n => n };
+let f = |x: i64| -> i64 x * 10;
+let q = queuefn(#trigger: c, f);
+println("c=[c] direct=[f(s$)]");
+println("c=[c] queued=[q(s$)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

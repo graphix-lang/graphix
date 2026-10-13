@@ -1,0 +1,14 @@
+// `(a, b)` over a union of two tuple types is accepted as exhaustive,
+// but its predicate narrows to the first member: at run time
+// ("s", 1) matches no arm ("no arm matches ...: a coverage hole in the
+// check") and the select is bottom. Same for `{x, y}` over a union of
+// two struct types. Adding a `null` member makes the check refuse
+// instead ("no arm covers (string, i64)").
+let g = |p: [(i64, string), (string, i64)]| select p {
+  (a, b) => 0
+};
+let s = |p: [{x: i64, y: string}, {x: string, y: i64}]| select p {
+  {x, y} => 0
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(g((1, "s")), g(("s", 1)), s({x: 1, y: "s"}), s({x: "s", y: 1}))

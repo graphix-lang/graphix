@@ -83,6 +83,17 @@ async fn unknown_attribute_is_error() {
 
 // `#[native]` inside a HOF callback body is checked: a wholly sync
 // `list::map` callback satisfies it.
+// CR claude for claude: [test-gap/medium] From here down, 13 positive #[native] tests
+// (native_hof_callback_fusable_ok through native_hof_composite_leaf_ok) assert only
+// `r.is_ok()`. A JIT emission bug that reads the wrong element in `{ foo: [a, b, ..],
+// .. } => a + b`, or copies the wrong field in a struct-with, still builds natively and
+// passes. These are exactly the fused paths where a miscompile is the risk, and they
+// run only in eval's serial Jit mode. Fix: pin each value ([3,5,7]; [0,0,0,0]; [1,2,5];
+// 6; 1; {x:1,y:10,z:3}; {name:"x",n:2}; [1,2,3]; 7; 3.0; 3.0; 0.0; [11,23]). Better,
+// make them run! fixtures so every mode holds the value, as lists.rs
+// list_flat_map_native does. While there, fix native_transitive_callee_dyncall_ok's
+// message (it says 'DynCall'; the callee holds a cast) and the 'conditional final arm'
+// comment (the final arm is unconditional). (tests-lib-b2-04)
 #[tokio::test]
 async fn native_hof_callback_fusable_ok() {
     let prog = "list::to_array(list::map(list::from_array([1, 2, 3]), \

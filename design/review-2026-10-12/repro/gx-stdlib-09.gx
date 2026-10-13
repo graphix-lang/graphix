@@ -1,0 +1,12 @@
+// gx-stdlib-09: sys::time::after_idle with an invalid (negative) timeout
+// never produces and reports nothing, where timer returns a TimerError.
+// run: graphix --no-cache gx-stdlib-09.gx
+// expected: a for after_idle(-1, 5) is an error, like c
+// observed: dbg(c) prints the TimerError, dbg(b) prints 6, a never prints
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+let a = sys::time::after_idle(-1, 5);
+let b = sys::time::after_idle(0.2, 6);
+let c = sys::time::timer(-1, false);
+dbg(c);
+dbg(b);
+a

@@ -1,0 +1,18 @@
+// x-typecheck-generics-01: a run-time bind of a lambda checked against a
+// rank-2 formal commits into the definition's shared quantifier copy, so
+// only the first bind's type ever works.
+// run: RUST_LOG=warn graphix --no-cache --log-dir <dir> x-typecheck-generics-01.gx
+// expected: a=1, b=s, (1, "s")
+// observed: a=1 only; the log says `g("s"): binding the callee failed: a
+// run-time bind at g("s") did not type: an instance at fn(x: string) ->
+// string of a definition typed fn(x: '_N) -> '_M`. Swap the two calls and
+// b=s prints, a never does. Passes --check. GRAPHIX_NO_SUBST=1 prints all
+// three; `let id = |x| x; app(id)` prints all three.
+let app = |f: fn<'b: Any>(x: 'b) -> 'b| f;
+let g = app(|x| x);
+let a = g(1);
+let b = g("s");
+println("a=[a]");
+println("b=[b]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(a, b)

@@ -1,0 +1,20 @@
+// book/src/ui/tui/input.md:250-268 Conditional Handling: Esc, re-enable editing, Esc again.
+// Expected: true, false, true, false. Actual: true, false, true -- the second Esc re-matches the
+// same arm, and its constant write does not fire again.
+type Ev = [`Esc, `Char(string), `Other];
+let editing = true;
+let ev: Ev = never();
+ev <- sys::time::after_idle(duration:100.ms, `Esc);
+editing <- sys::time::after_idle(duration:200.ms, true);
+ev <- sys::time::after_idle(duration:300.ms, `Esc);
+let handle = |event: Ev| select event {
+    `Esc => {
+      editing <- false;
+      `Stop
+    },
+    `Char(c) => c ~ `Stop,
+    _ => `Continue
+  };
+handle(ev);
+sys::exit(sys::time::after_idle(duration:600.ms, 0));
+editing

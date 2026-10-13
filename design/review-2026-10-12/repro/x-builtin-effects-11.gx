@@ -1,0 +1,20 @@
+// x-builtin-effects-11: tcp::accept with Calls::Latest drops connections it already accepted
+// run: graphix --no-cache design/review-2026-10-12/repro/x-builtin-effects-11.gx
+// expected: (1001, 1001): every client connection is accepted and held by the server
+// observed: (1001, 982..984): a trigger that renews the reply id while a completed
+// accept's reply is still queued drops that reply, closing an accepted TcpStream
+use sys::tcp;
+let l = tcp::listen("127.0.0.1:47312")$;
+let t = sys::time::timer(duration:200.us, true);
+let s = tcp::accept(l, t)$;
+let served: Array<tcp::TcpStream> = [];
+served <- s ~ array::push(served, s);
+let k = sys::time::timer(duration:100.us, true);
+let n = 0;
+n <- k ~ n + 1;
+let c = tcp::connect(select n { n if n <= 1000 => n ~ "127.0.0.1:47312", _ => never() })$;
+let clients: Array<tcp::TcpStream> = [];
+clients <- c ~ array::push(clients, c);
+let result = (array::len(clients), array::len(served));
+sys::exit(sys::time::after_idle(duration:3.s, result) ~ 0);
+result

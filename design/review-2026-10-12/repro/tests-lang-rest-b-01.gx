@@ -1,0 +1,18 @@
+// tests-lang-rest-b-01: a collection whose source went bottom does not
+// catch its slots up when the source returns (CLAUDE.md: "its slots pause
+// as a deselected arm does and wake, caught up, when it returns").
+// `a` fires at n = 6 while `xs` is bottom; when `xs` returns at n = 9 both
+// slots hold x = 9, yet slot 0 keeps its stale 2 and only the fresh slot 1
+// reads 9.
+// Run: graphix --no-cache tests-lang-rest-b-01.gx   (and --no-fusion)
+// Expected: [2] then [9, 9]. Observed (both engines): [2] then [2, 9].
+// The arm twin (tests-lang-rest-b-01-arm.gx) prints 2 then 9 (caught up).
+// FoldQ too: `array::fold(xs, 0, |acc, x| acc + (a ~ x))` prints 2 then 11
+// (expected 18); a one-slot source (`9 => [n]`) prints [2] then [2].
+let a = 0;
+let n = 0;
+n <- select n { k if k < 12 => k + 1, _ => never() };
+a <- select n { 6 => 7, _ => never() };
+let xs = select n { 2 => [n], 9 => [n, n], _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+array::map(xs, |x| a ~ x)

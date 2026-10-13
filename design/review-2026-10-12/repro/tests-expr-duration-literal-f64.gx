@@ -1,0 +1,2 @@
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+duration:10000000.000000001s

@@ -1,0 +1,25 @@
+// gui-chart-04: a non-finite y in a candlestick or error bar, and any
+// non-finite or out-of-range 3D point, is drawn at a plot edge.
+// Command (needs a display; checked headless with --check):
+//   graphix --no-cache design/review-2026-10-12/repro/gui-chart-04.gx
+// Expected: the candle at x 2 (low NaN), at x 3 (close NaN) and the error
+// bar (min NaN) are left out; the 3D point (2, NaN, 2) is left out and
+// (100, 100, 100) is not drawn outside the 0..5 cube.
+// Observed (by the code path): draw.rs passes view.clamp_y(NaN) = NaN to
+// CandleStick/ErrorBar; plotters RangedCoordf64::map(NaN) returns limit.0,
+// the bottom edge (repro gui-chart-01.rs::nan_y_maps_to_an_edge printed
+// "NaN maps to pixel 300 of (300, 20)"); the 3D series map NaN to the
+// axis minimum and project (100, 100, 100) far outside the cube.
+let nan = 0.0 / 0.0;
+let d = [
+  {x: 1.0, open: 10.0, high: 15.0, low: 8.0, close: 12.0},
+  {x: 2.0, open: 12.0, high: 14.0, low: nan, close: 11.0},
+  {x: 3.0, open: 11.0, high: 13.0, low: 9.0, close: nan}
+];
+let e = [{x: 1.5, min: nan, avg: 11.0, max: 13.0}];
+let pts = [(1.0, 1.0, 1.0), (2.0, nan, 2.0), (3.0, 3.0, 3.0), (100.0, 100.0, 100.0)];
+let r = {min: 0.0, max: 5.0};
+[
+  &gui::window(#title: &"2d", &gui::chart::chart(&[gui::chart::candlestick(&d), gui::chart::error_bar(&e)])),
+  &gui::window(#title: &"3d", &gui::chart::chart(#x_range: &r, #y_range: &r, #z_range: &r, &[gui::chart::scatter3d(&pts), gui::chart::line3d(&pts)]))
+]

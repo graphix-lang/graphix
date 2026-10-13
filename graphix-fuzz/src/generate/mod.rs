@@ -5,6 +5,14 @@
 //! collide with names from other scopes; only pure, deterministic
 //! constructs are generated so the oracle's comparison is sound.
 
+// CR claude for claude: [doc-drift/low] The module doc above says only pure,
+// deterministic constructs are generated so the oracle's comparison is sound. The
+// generator also emits connects (the catch-slot counter), `*r <-` write-through and
+// async type-directed readers (try_format_round_trip). The async readers move a program
+// to oracle_tier's FinalValues, and together with a `<-` to Excluded (see
+// fuzz-gen-a-01). Fix: state the real contract. Generated values are deterministic,
+// async readers and `<-` lower the oracle tier, and a new template keeps the Exact tier
+// unless its doc says otherwise. (fuzz-gen-a-08)
 mod exprs;
 mod funcs;
 mod modules;
@@ -193,6 +201,13 @@ pub struct GenStats {
     pub ref_op: bool,
     /// A shape template was emitted (primitive union, option of a
     /// composite, nested variant, recursive typedef).
+    // CR claude for claude: [test-gap/low] This field and use_vocab below are written
+    // (gen_shape_template, the modules use-vocabulary emitters) but never read.
+    // audit_bug_shapes_reachable checks every other tracked shape at 1% or more and
+    // skips these two, although the GenStats doc says the gate asserts each stays
+    // reachable. A change that shadowed the p_shape branch, or stopped emitting `use
+    // super::{..}` headers, would pass every test. Fix: add both to the audit table.
+    // (fuzz-gen-a-09)
     pub shape: bool,
     /// A `use super::{…}` header, an inline `super::`/`package::`
     /// spelling, a main-scope item import, a rename, or a module glob.
@@ -436,6 +451,14 @@ pub(crate) fn geo_slots(rng: &mut Rng, mean: usize, cap: usize) -> usize {
 /// One run of statement slots. `files` present = top level (module arms
 /// enabled; `mod` statements only parse at the program's top level);
 /// `None` = a nested subprogram block.
+// CR claude for claude: [test-gap/low] No generated program calls queuefn, the ORDERED
+// builtin, or carries #[parallel]/#[serial]. The forked runs exercise fork points in
+// general. But the plan_block rule that two siblings both reaching an ORDERED builtin
+// never fork is guarded only by hand-written pins: a regression would reorder their
+// effects under Pair::Par, and no generated subject has that shape. Fix: add a low-rate
+// slot (both lanes) with two sibling statements that share one queuefn, plus an
+// occasional `#[serial]` on a block, which is legal anywhere. `#[parallel]` needs a
+// known fork point, or it is a compile error. (fuzz-gen-b-06)
 fn gen_slots(
     ctx: &mut GenCtx,
     rng: &mut Rng,

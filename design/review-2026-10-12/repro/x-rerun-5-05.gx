@@ -1,0 +1,13 @@
+// x-rerun-5-05: a select with no slice arm whose only gap is a variant is
+// told "the slice arms cover finitely many lengths" (node/select.rs:559-565):
+// a type-test arm `array as _` / `Array<i64> as _` opens a length ladder
+// that is never complete, so the parenthetical fires though no arm is a
+// slice pattern. The same text follows t-cast-setops-09's and
+// t-cast-setops-14's (alias) refusals.
+// command: graphix --check design/review-2026-10-12/repro/x-rerun-5-05.gx
+// expected: missing match cases: no arm covers `Foo
+// observed (HEAD 7324207f): ... no arm covers `Foo (the slice arms cover
+//   finitely many lengths — an array or list scrutinee also needs a rest
+//   pattern or a wildcard)
+let f = |x: [`Foo, Array<i64>]| select x { Array<i64> as _ => 1 };
+f(`Foo)

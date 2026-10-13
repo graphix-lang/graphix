@@ -3,6 +3,15 @@
 //! the ruled values themselves (findings/wake-catchup-sep2026/ pins
 //! engine agreement).
 
+// CR claude for claude: [doc-drift/low] The module doc above says a reselected arm
+// 'never re-raises events'. The rule (design/wake_catchup.md) is that a wake re-raises
+// the fires no selected reader saw, once, at their current value, and the code follows
+// the rule, so the doc is the stale side. Say instead: 'recomputes from the world as it
+// stands, reading standing values stale, and re-raises only fires no selected reader
+// saw'. The corpus path it cites is graphix-fuzz/findings/wake-catchup-sep2026/.
+// Separately, wake_recompute_table separates its epochs with three throwaway
+// `gx.compile("i64:0")` round trips each. `gx.wait_idle().await?` says what is meant.
+// (tests-lib-b2-11)
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use graphix_compiler::expr::VfsResolver;

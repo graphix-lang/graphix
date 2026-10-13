@@ -1,0 +1,13 @@
+// schedule-v1: cap=64 events=512; in1=i64:4; in0=i64:1; in0=i64:0; in0=i64:1; in0=i64:0
+{
+// x-engine-firing-03: at an arm's wake a connect writes again when a
+// constant reaches its right-hand side, though the input it carries did
+// not fire: `x <- a * 2` re-writes 6 at every re-entry, `y <- a` does not.
+// The same holds for `(a /? 0)?` (re-raised per entry) vs `(a /? b)?`.
+// `graphix-fuzz run` (both engines): count(x) 1 2 3 4, count(y) stays 2.
+let x = never();
+let y = never();
+let f = |c, a| select c {i64:0 => {x <- a * i64:2; y <- a; i64:0}, _ => i64:1};
+let r = f(in0, in1);
+(r, count(x), count(y))
+}

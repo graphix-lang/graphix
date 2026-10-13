@@ -1,0 +1,4 @@
+// a declared quantifier 'b written again in a rank-2 formal: the definition binds the outer 'b to i64
+let f = 'b: Number |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| -> 'b y + 1;
+let h: string = f;
+0

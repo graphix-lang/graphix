@@ -1,0 +1,6 @@
+let on = true;
+let r = select on { true => range(0, 10)$, false => never() };
+on <- select r { 9 => false, _ => never() };
+let done = sys::time::after_idle(duration:3.s, on ~ null);
+sys::exit(done ~ 0);
+r

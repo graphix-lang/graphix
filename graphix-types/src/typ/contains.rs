@@ -175,6 +175,22 @@ impl ContainsHist {
 /// ends in.
 /// A union whose open member's cell another member mentions, as
 /// `['b, Array<'b>]`: where a member goes decides that cell.
+// CR claude for claude: [readability/low] The doc above this function is two docs run
+// together. Its first two lines ('A cell whose chain of bindings ends open...') belong
+// to is_unbound_tvar, which now has none. Likewise, the 'A constructor application
+// (`self<'a>`, `'c<'b>`) ...' paragraph that opens place_members' doc belongs to
+// app_contains, which has none. Move each back to its function. In this function, the
+// candidate filter uses `!tv.is_bound()` while the other filter uses is_unbound_tvar,
+// which follows a chain of bindings. A bare member that is an alias of an open cell is
+// therefore neither a candidate nor an 'other', and its cell goes unseen. Use the
+// open-cell notion (TVar::open_cell) on both sides. (x-fix-types-13)
+// CR claude for claude: [doc-drift/low] Two misplaced docs. The first sentence of this
+// function's doc ('A cell whose chain of bindings ends open is as free as the cell it
+// ends in.') describes a helper that no longer exists. Delete it. place_members' doc
+// opens with app_contains' doc ('A constructor application (`self<'a>`, `'c<'b>`)
+// against another type, ... is not a constructor.'), which tells the reader that
+// place_members binds constructor variables, which it does not. Move those lines above
+// `fn app_contains`, which has no doc. (t-contains-14)
 fn shares_bare_cell(s0: &[Type]) -> bool {
     s0.iter()
         .filter_map(|m| match m {
@@ -277,10 +293,55 @@ fn commit_cell_constraints(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
+    // CR claude for claude: [bug/high] Only an `exact` conjunct is committed here. One
+    // that holds a union (`'a: Array<[i64, null]>`) or comes from a body (`let f = |i|
+    // a[i]$`) is only probed by cell_constraints_ok, which admits the open `'y` free,
+    // and then it is dropped. So in `let g = |y| f([y])` the `'y` generalizes
+    // unbounded. `--check` accepts `g("hello")`, the build refuses the instance of f,
+    // and graphix-fuzz reports "the check accepted what the build refused". Through a
+    // dynamic call (`let hs: Array<fn(y: string) -> i64> = [g]; hs[0]$("hello")`) the
+    // run silently produces nothing. Fix: pass a non-exact conjunct's parts down as
+    // cell constraints on the open cells they meet (`'y: [i64, null]`), not as a
+    // binding to the whole union. That way inferred conjuncts reach the cells too. Pin
+    // a union-bearing bound and the inferred form beside the `Array<i64>` pin. probe:
+    // design/review-2026-10-12/repro/x-fix-types-01.gx, x-fix-types-01b.gx
+    // (x-fix-types-01)
     for c in tv.cell_constraints().iter() {
         let predicate = c.is_predicate();
+        // CR claude for claude: [bug/medium] A conjunct that is not exact is dropped
+        // here. That includes Int, Number and any other primitive set, and any
+        // structural type with a union inside. The probe in cell_constraints_ok has
+        // already accepted the open cells inside `t` without binding them, so those
+        // cells never receive the conjunct. In `let f = |i| a[i]$; let g = |b, k|
+        // f(select b { true => 1, false => k })`, f's Int is checked against [i64, 'k],
+        // 'k stays free, and g checks as fn(b: bool, k: 'k) -> i64. `g(false, "s")`
+        // then passes --check and the LSP, and elaboration refuses it
+        // (GRAPHIX_ELAB_AUDIT reports it). Behind a dynamic call (x-rerun-5-02-dyn.gx),
+        // the run-time bind fails and the value is silently never produced. The written
+        // bound `'a: Int |i: 'a|` behaves the same way. Fix: when a conjunct that is
+        // not exact holds `t`, narrow each open cell that `t` places directly (a union
+        // member, or `t` itself) by that conjunct (TVar::narrow_cell), the way exact
+        // conjuncts are committed. Add must-reject pins for the static and dynamic
+        // forms. This is the inferred-conjunct form of t-contains-08, same as
+        // x-fix-types-01b. probe: design/review-2026-10-12/repro/x-rerun-5-03.gx
+        // (x-rerun-5-03)
         if !predicate
             && !c.is_trait_ref(env)
+            // CR claude for claude: [bug/medium] A conjunct that holds a union anywhere
+            // is not `exact`, so this skips the whole conjunct, its exact parts
+            // included. With the bound `'a: fn(x: i64, y: [i64, string]) -> i64`,
+            // binding 'a to an unannotated lambda never gives the lambda's x the type
+            // i64. The probe in `cell_constraints_ok` admits the open param cells
+            // freely, and once the lambda's body binds x := string nothing checks the
+            // conjunct again. Effects: the check accepts `f(|x, y| str::len(x))`, and
+            // the build then refuses it in `InstanceTypes::new` ("an instance at .. of
+            // a definition typed .."). It also refuses the well-typed `f(|x, y| 0)`,
+            // whose params settle to bottom. Without the union the check refuses
+            // correctly. Fix: commit the exact parts of the conjunct (a function's
+            // argument and return positions that hold no union), or check the conjunct
+            // again at the statement's settle. InstanceTypes is right to refuse and
+            // should not be loosened. probe:
+            // design/review-2026-10-12/repro/t-fntyp-05.gx (t-fntyp-05)
             && exact(c)
             && !c.contains_int(flags, env, hist, t)?
         {
@@ -327,6 +388,23 @@ impl OpenPair {
             return OpenPair::Distinct;
         }
         // a rigid cell survives only a merge
+        // CR claude for claude: [bug/medium] When an open cell meets a rigid one this
+        // returns Merge, and `TVar::merge_into` then adds the other cell's conjuncts to
+        // the rigid cell without checking that the rigid cell's declared bound implies
+        // them. That absorption is right for a definition's own declared variables
+        // during its own check. It is wrong for the rigid gates `FnType::contains_int`
+        // opens on a rank-2 formal's quantifiers, because the callee's body was already
+        // checked against the declared bound alone. So `app(add)` passes the check,
+        // where `app` takes `f: fn<'b: Number>(..)` and `add` declares `'a: Int`. The
+        // same holds for an implied Singleton, and for Ordered or Discernible under
+        // `'b: Any`. The build then refuses the callee's instance of `f` with the
+        // internal "an instance at .. of a definition typed .." error, while --check
+        // and the LSP report the program clean. A fix: let a gate opened by
+        // `open_quantifier_gates` refuse a merge that would add a conjunct its cell's
+        // own conjuncts do not imply, so the argument is refused at the passing site
+        // with a message naming the missing bound. probe:
+        // design/review-2026-10-12/repro/x-typecheck-generics-02.gx
+        // (x-typecheck-generics-02)
         if t0.is_rigid() || t1.is_rigid() {
             return OpenPair::Merge;
         }
@@ -458,6 +536,15 @@ pub struct TypeMismatch {
 impl std::fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+            // CR claude for claude: [readability/low] When the two sides are distinct
+            // typedefs with one written name (a block-local `type E` in each of two
+            // blocks), this prints 'type mismatch Error<ErrChain<E>> does not contain
+            // Error<ErrChain<E>>', which reads as a contradiction, and nothing tells
+            // the user that the two E's are different definitions. When the rendered
+            // sides are textually equal, render again with each Ref qualified by its
+            // definition (its scope or defining position), or expanded one level.
+            // probe: design/review-2026-10-12/repro/x-rerun-7-07-same-name-diag.gx
+            // (x-rerun-7-07)
             write!(f, "type mismatch {} does not contain {}", self.expected, self.actual)
         })
     }
@@ -582,6 +669,20 @@ impl Type {
                 });
                 return Some(match hidden {
                     None => anyhow::anyhow!("{m} does not implement {name}"),
+                    // CR claude for claude: [readability/low] im.scope is the impl's
+                    // synthetic module path, so the user reads "the impl in module
+                    // a::#impl4611686018427393777 is not in its interface". The
+                    // `#impl<id>` segment is an internal ExprId that changes between
+                    // runs and names nothing in the source. Print the enclosing user
+                    // module (the scope with the synthetic segment dropped), and if
+                    // possible the impl's source position. (x-rerun-1-15)
+                    // CR claude for claude: [readability/low] This message prints
+                    // im.scope, the impl's generated block scope, so the user reads
+                    // "the impl in module a::#impl4611686018427393767 is not in its
+                    // interface" and sees an internal relocated id. Print
+                    // mod_root(&im.scope), which names the module that declares the
+                    // impl. Also reported as (x-typecheck-patterns-09).
+                    // (tests-modules-image-05)
                     Some(im) => anyhow::anyhow!(
                         "{m} does not implement {name} here: the impl in module {} is \
                          not in its interface (declare `impl {name} for {m};` there)",
@@ -618,6 +719,21 @@ impl Type {
     }
 
     /// Two members a dispatch's runtime test can't tell apart.
+    // CR claude for eric: [bug/high] Type::rep_collision tests with Open::Benign, so an
+    // open member never collides. A definition like `'b: Show |x: [string, 'b]|
+    // Show::show(x)` therefore passes trait_contains and the check. Then f(`A) is
+    // refused at elaboration by the instance's dispatch select ("can't tell string from
+    // `A"), so --check and the LSP report clean a program the build refuses. The
+    // plain-select form has the same hole and gives a wrong answer instead. `|x:
+    // [string, 'b]| select x { string as s => s, _ => "other" }` checked against f(`A)
+    // is never refused: it returns "A" through the string arm on both engines, because
+    // an instance takes its definition's types and the arm's per-arm rep_collision in
+    // select.rs never runs again. Fixing this means choosing a rule. Option one: refuse
+    // an open union member at the definition (Open::Unknown: "annotate it"). Option
+    // two: give the open cells a pending settle like PendingSettle::Discernible, so the
+    // check of each call site refuses a binding that collides with a sibling member.
+    // Probe: design/review-2026-10-12/repro/x-typecheck-patterns-05.gx (its header
+    // holds the select sibling). (x-typecheck-patterns-05)
     fn dispatch_collision(env: &Env, members: &[Type]) -> Option<(Type, Type)> {
         members.iter().enumerate().find_map(|(i, a)| {
             members[i + 1..].iter().find_map(|b| a.rep_collision(env, b))
@@ -660,6 +776,17 @@ impl Type {
         if (self as *const Type) == (t as *const Type) || same_content(self, t) {
             return Ok(true);
         }
+        // CR claude for claude: [perf/medium] A committing call has no memo of finished
+        // pairs. Each one bumps the epoch and walks both sides, and probe_key is None
+        // for Ref and TVar, so Ref pairs are never memoized either. Two equal types
+        // held in distinct Arcs (`let x_i = (x_{i-1}, x_{i-1})`, likewise z_i, then `y
+        // <- z_N`) are walked once per path: --check doubles with every level, and a
+        // typedef chain `type T_i = (T_{i-1}, T_{i-1})` against such a value is the
+        // same. design/type_operation_scaling.md requires DAG cost. Fix: a commit where
+        // both sides are free of type variables binds nothing, so let it read and fill
+        // the probe memo. Key Ref pairs by their ref_id pair. Probe:
+        // design/review-2026-10-12/repro/t-contains-commit-dag-tree-walk.gx,
+        // t-contains-typedef-dag-tree-walk.gx. (t-contains-08)
         if flags.contains(ContainsFlags::Commit) {
             // A committing call may bind a cell a cached verdict read.
             hist.epoch += 1;
@@ -679,6 +806,15 @@ impl Type {
         let assumed = hist.low_water;
         hist.low_water = outer.min(assumed);
         let r = r?;
+        // CR claude for claude: [risk/low] Only `assuming` lowers low_water. A verdict
+        // can also depend on other walk state: a re-entered distribution probe
+        // (distribution_probes_in_progress answers false), a re-entered trait question
+        // (traits_in_progress answers true), and a rigid gate opened by
+        // FnType::open_quantifier_gates. Such a verdict is still cached by content
+        // identity and served to a later probe of the same pair in this ContainsHist,
+        // after that state has unwound. Fix: when any of those three decides a verdict,
+        // lower low_water (or set a taint flag), so the verdicts above it skip
+        // probe_put. No program shown. (t-contains-11)
         if assumed >= height {
             hist.probe_put(self, t, r);
         }
@@ -759,6 +895,21 @@ impl Type {
             // (whatever each param's variance). Two filled cells can
             // hold different defs for one name; disagreement, like any
             // other pair, takes the expansion arm.
+            // CR claude for claude: [bug/medium] Two refs to one nested datatype that
+            // differ only in open cells fail the MAX_GROWTH guard: `N<'a> ⊇ N<i64>`
+            // with `type N<'a> = [null, ('a, N<Array<'a>>)]` is refused as "parameters
+            // grow". So `let g = |n: N<'a>| ..; g(n1)` and `let x: N<'b> = n1` are
+            // refused, which makes any generic function over a nested datatype
+            // unusable. The cause: this arm wants identical params, so the pair
+            // expands. The union then decides by a probe (`set_commit`), which binds
+            // nothing, so `N<Array<'a>>` never becomes `N<Array<i64>>` and grows until
+            // the `bail!`. That Err escapes the probe through `?`. Fix: for two refs to
+            // one definition with open cells, relate the params pairwise and
+            // invariantly first (bind under commit, decide on the cells under a probe),
+            // and expand with the growth guard only when that fails. The widening
+            // `N<[i64, string]> ⊇ N<i64>` should stay refused
+            // (`growing_typedef_refused`). Probe:
+            // design/review-2026-10-12/repro/x-fix-types-08.gx (x-fix-types-08)
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
@@ -807,6 +958,21 @@ impl Type {
                     };
                     saved.push((*d, old));
                     hist.unfolding.get_mut().insert(*d, (*size, growth));
+                    // CR claude for claude: [bug/medium] This bails with a hard error
+                    // under probes too, and set_commit, place_members and the Tuple arm
+                    // all propagate it with `?`. A union member whose comparison grows
+                    // past MAX_GROWTH therefore aborts the whole check before its
+                    // siblings are tried. `|x: N<i64>| -> [N<string>, (Any, Any), null]
+                    // x` is refused with "cannot compare two instances of N", although
+                    // null and (Any, Any) cover every value. The Tuple arm keeps
+                    // walking positions after one is already false, so `N<i64>` against
+                    // `N<string>` also reports growth where a plain mismatch belongs
+                    // (t-contains-02b). Under a probe, growth past the limit should
+                    // answer false. Record it in the hist instead, and report it only
+                    // when a committing verdict actually depends on it, as
+                    // contains_mismatch already does for the infinite-type wording.
+                    // probe: design/review-2026-10-12/repro/t-contains-05-growth.gx
+                    // (t-contains-05)
                     if growth > MAX_GROWTH {
                         restore(hist, &saved);
                         let name = match (t0, t1) {
@@ -1067,6 +1233,21 @@ impl Type {
                     // a union the cell's constraints refuse whole may
                     // still hold it in one member: `['b, null] ⊇ 'r`
                     // with `'r` within `Array<_>`, by `'b`
+                    // CR claude for claude: [bug/medium] Only a Set lhs gets the
+                    // one-member fallback here. A union of primitives is a single
+                    // multi-bit `Type::Primitive`, so it falls through to the witness
+                    // path. That path probes `[i64, null] ⊇ Number`, which fails, and
+                    // binding the cell to the one bit i64 is never tried. Effect: `let
+                    // r: [i64, null] = f(y)` with `f: 'a: Number` and `y` still ⊥ is
+                    // refused. `[i64, Array<i64>]` is accepted. So is `[i64, null,
+                    // Array<i64>]`'s sibling form with no multi-bit member; that form
+                    // itself is refused, because the Set fallback hands its `[i64,
+                    // null]` member back to this same arm. Fix: also handle
+                    // `Self::Primitive(p) if p.len() > 1`. Offer the cell each bit as a
+                    // single primitive through `set_commit`, the way the `(Set, t)` arm
+                    // splits a multi-bit rhs. probe:
+                    // design/review-2026-10-12/repro/t-contains-06-prim-union.gx
+                    // (t-contains-06)
                     if let Self::Set(s) = t0 {
                         return Ok(
                             Self::set_commit(s, flags, env, hist, t)?.unwrap_or(false)
@@ -1179,6 +1360,16 @@ impl Type {
                     1 => rest.pop().unwrap(),
                     _ => Self::Set(Arc::from_iter(rest.drain(..))),
                 };
+                // CR claude for eric: [bug/low] An open rhs member is checked only
+                // against `rest`, the lhs members no known sibling used. When `rest`
+                // fails, typically because the cell's bound refuses it, the containment
+                // is refused, even when the cell could take a member a sibling used.
+                // `[i64, Array<string>] ⊇ [i64, 'a: Number]` is refused, although 'a :=
+                // i64 is sound. The rule ('an open member takes only the members its
+                // known siblings leave') does not say what happens when the leftover is
+                // refused. Decide whether to fall back to the whole lhs (`t0`) when
+                // `rest` fails, keeping `rest` as the first choice. Probe:
+                // design/review-2026-10-12/repro/t-contains-10.gx. (t-contains-10)
                 for m in open {
                     if !rest.contains_int(flags, env, hist, m)? {
                         return Ok(false);
@@ -1315,6 +1506,13 @@ impl Type {
         let (addr0, addr1) = (t0.cell_addr(), t1.cell_addr());
         let cyc0 = || would_cycle_inner(addr0, tt1);
         let cyc1 = || would_cycle_inner(addr1, tt0);
+        // CR claude for claude: [risk/low] `refuse` marks both cells cycle_refused even
+        // in a probe, which should bind nothing. Every other side effect in this file
+        // (mark_bottom_fed, bind_bottom_required, copy) is gated on `commit`. If a
+        // probe of a union member the commit never takes meets the occurs check, the
+        // cell is still flagged, and a cell left open then fails its terminal settle
+        // with the infinite-type error, not ⊥. Fix: mark the cells only under Commit. A
+        // probe returns the verdict alone. (t-contains-12)
         let refuse = || {
             if graphix_dbg_cycle_bt() {
                 eprintln!(
@@ -1345,6 +1543,22 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
+                // CR claude for claude: [bug/medium] An open cell meeting a bound cell
+                // checks its own constraints only when committing. A probe answers true
+                // whatever t0's conjuncts say. The mirror arm (Some(b0), None) does the
+                // same for t1. The (TVar, t1) arm of contains_int checks
+                // cell_constraints_ok in probes too, so the verdict depends on whether
+                // the rhs is a bound cell or its binding. set_commit trusts the probe
+                // and commits that member. The commit binds earlier cells (a 'q), then
+                // fails on the constraint, and the next member is tried with those
+                // binds left in place. `f(("s", "t", v), 3)` over `x: [(Any, 'q,
+                // Array<'a: Number>), (string, string, Array<[string, null]>)], y: 'q`
+                // is refused with `'q: string does not contain i64` when `v = [s]`, and
+                // accepted when v is annotated. Fix: run cell_constraints_ok(t0, env,
+                // hist, &b1) (t1/&b0 in the mirror) before the commit test in both
+                // arms, and return false on failure in a probe too. probe:
+                // design/review-2026-10-12/repro/t-contains-04.gx (control
+                // t-contains-04-control.gx, runner t-contains-03.sh) (t-contains-03)
                 if commit && !t0.is_rigid() {
                     if graphix_dbg_bind() {
                         eprintln!(
@@ -1452,6 +1666,23 @@ impl Type {
             .chain(s.iter().filter(|m| is_unbound_tvar(m)));
         let mut admitted = false;
         for m in members {
+            // CR claude for claude: [bug/medium] This guiding probe runs with empty
+            // flags, so it treats a rigid (declared) cell as free; the commit after it
+            // refuses the same cell. A member the probe admits can then bind some cells
+            // and fail on the rigid one, and the loop moves on with those binds left in
+            // place. `|x: 'a, y| -> [(i64, 'a), ([i64, string], string)] (y, "s")` is
+            // accepted with y fixed to i64, so `f(1, "str")` is refused; with `(string,
+            // string)` as the second member the def itself is refused. place_members
+            // has the same mismatch and returns false as soon as such a commit fails,
+            // instead of handing the member to the bare open member as residue: `g(x,
+            // select t { true => [1, 2], false => "s" })` with `g: fn(w: 'd, v: ['c,
+            // Array<'d>])` and `x: 'a` is refused. The used-marking probe in the Set ⊇
+            // Set arm and the witness probe in the `(t0, TVar)` arm follow the same
+            // pattern. Fix: whenever flags carry Commit or RigidCheck, run the guiding
+            // probes with RigidCheck. A failed member commit should also leave nothing
+            // bound, either by trying it on reset_tvars copies as the shares_bare_cell
+            // path does, or by falling through to the residue in place_members. probe:
+            // design/review-2026-10-12/repro/t-contains-04.sh (t-contains-04)
             if m.contains_int(BitFlags::empty(), env, hist, t)? {
                 admitted = true;
                 if flags.is_empty() || m.contains_int(flags, env, hist, t)? {
@@ -1516,6 +1747,19 @@ impl Type {
             Ok(cur)
         }
         let t = head(env, t)?;
+        // CR claude for claude: [bug/medium] `has_unbound` counts a definition's rigid
+        // variable as an open cell, so this guard refuses the distribution law for any
+        // scrutinee that holds one. The same rigid-blind test sits on the candidates
+        // before `covers_by_parts`. A rigid cell never binds, so it is a constant here,
+        // and the law should hold for it. Result: inside a generic definition, `` T<'a>
+        // = [`P(i64, 'a), `P(string, 'a)] `` does not contain `` `P([i64, string], 'a)
+        // ``. The same program over `bool` is accepted. Probe:
+        // design/review-2026-10-12/repro/t-contains-07.gx (also t-contains-01.gx and
+        // t-contains-01b.gx). Fix: at both guards, test only for cells that are open
+        // and not rigid, i.e. a `has_unbound` that skips rigid cells. The probes in
+        // this function must then hold a rigid cell to itself, by passing `RigidCheck`
+        // or relying on the committing walk's recheck, so that a rigid `'a` on the
+        // candidate side never stands in for a concrete type. (t-contains-07)
         if t.has_unbound() {
             return Ok(false);
         }
@@ -1639,6 +1883,16 @@ impl Type {
             if members.is_empty() {
                 members.push(first.clone())
             }
+            // CR claude for claude: [perf/medium] Each member of `first` recurses on
+            // its own, even when every member selects the same candidates. That happens
+            // whenever all candidates cover the position whole, and then the recursions
+            // are identical. A struct with k two-member fields (variants, `[T, null]`)
+            // costs 2^k: --check of a 20-field case takes about 2 s and doubles per
+            // field. Fix: recurse once per distinct `sub` candidate set, not once per
+            // member. The common case is a single recursion when every candidate's
+            // first argument covers `first` whole. Probe:
+            // design/review-2026-10-12/repro/t-contains-covers-by-parts-exponential.gx.
+            // (t-contains-09)
             for m in members.iter() {
                 let mut sub: SmallVec<[&[Type]; 8]> = SmallVec::new();
                 for c in cands.iter() {
@@ -1774,6 +2028,18 @@ impl Type {
                     env,
                     flags.contains(ContainsFlags::Commit),
                 )? {
+                    // CR claude for claude: [risk/low] After bind_ctor, this arm checks
+                    // the element covariantly (`a ⊇ last`), and so does the mirror arm
+                    // (`last ⊇ a`). An unknown constructor's parameter is invariant, as
+                    // the (None, None) arm treats it. So `'c<[i64, string]> ⊇
+                    // Cell<i64>` (Cell = Abstract<&mut 'a>) is true while 'c is open
+                    // and false once the type fills. Today only a later check of the
+                    // filled type refuses it. A path that asks only once would let a
+                    // string be written into an i64 cell. Fix: compare the element with
+                    // equal_int, or check the filled type (`Type::app(ctor, a)`) after
+                    // bind_ctor so the constructor's own variance decides. Probe:
+                    // GRAPHIX_DBG_BIND=1 on
+                    // design/review-2026-10-12/repro/t-contains-06.gx. (t-contains-13)
                     Some((ctor, last)) => {
                         Ok(Self::bind_ctor(c, &ctor, flags, env, hist)?
                             && a.contains_int(flags, env, hist, &last)?)
@@ -1923,6 +2189,20 @@ impl Type {
                     r
                 }
             },
+            // CR claude for claude: [bug/high] Checking a trait over a recursive
+            // typedef never ends when a generic impl's bound leads back to it. This arm
+            // calls Env::find_impl, which matches the impl head through Type::contains
+            // with a fresh ContainsHist. Binding the head's 'a to the typedef then
+            // checks the bound `'a: Show` through cell_constraints_ok in that fresh
+            // history. The traits_in_progress guard in the Ref arm above is empty
+            // there, so the typedef expands again, forever. `type Json = [i64, string,
+            // Array<Json>]` with `impl<'a: Show> Show for Array<'a>` and
+            // `Show::show(j)` gets `--check` OOM-killed. So does `type L = Array<L>`.
+            // Fix: make the caller's hist reach find_impl's head containments, e.g. a
+            // find_impl variant that takes `&mut ContainsHist` and is called from
+            // trait_contains, so traits_in_progress and the ref-pair memo carry across
+            // impl matching. probe: design/review-2026-10-12/repro/t-contains-01-oom.gx
+            // (t-contains-01)
             t => Ok(env.find_impl(tid, t)?.is_some()),
         }
     }

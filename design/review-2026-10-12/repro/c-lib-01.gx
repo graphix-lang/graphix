@@ -1,0 +1,23 @@
+// c-lib-01: a catch's `sealed` bit is not imaged, so a warm start accepts
+// a raise the cold run refuses.
+// Command (run it twice; the second run restores the program image):
+//   XDG_CACHE_HOME=<scratch dir> graphix design/review-2026-10-12/repro/c-lib-01.gx
+// Expected (both runs, and with --no-cache): (error:["DynamicLoadError",
+//   "... this error reaches a catch whose handler was checked to take
+//   Error<ErrChain<i64>>, which does not contain Error<ErrChain<string>>"], 0)
+// Observed on the second (warm) run: (null, 0), and the i64 handler receives
+//   "hello": `+ 1` logs "arith error ... Unexpected `h`".
+// Without the header and the exit, graphix-fuzz check reports
+//   "DIVERGENCE — image bug: the restored program differs from the cold one
+//   (interp)": interp/cold [error DynamicLoadError, 0] vs interp/warm [null, 0].
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let out = 0;
+let r = {
+    catch(e: Error<ErrChain<i64>>) out <- (e.0).error + 1;
+    mod foo dynamic {
+        sandbox unrestricted;
+        sig { val v: i64 };
+        source "let v = 1; let w = error(\"hello\")?"
+    }
+};
+(r, out)

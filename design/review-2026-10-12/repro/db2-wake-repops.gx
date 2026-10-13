@@ -1,0 +1,11 @@
+// remove /tmp/db2-wake-pop.db first. One fire of b, yet two entries popped: prints "popped (2, 2) left 1"; expected (1, 1) left 2
+let db = db::open("/tmp/db2-wake-pop.db")$;
+let t: db::Tree<i64, i64> = db::tree(db, "x")$;
+let b = db::batch(t, [`Insert(1, 1), `Insert(2, 2), `Insert(3, 3)])$;
+let on = true;
+on <- sys::time::timer(duration:200.ms, false) ~ false;
+on <- sys::time::timer(duration:400.ms, false) ~ true;
+let popped = select on { true => db::pop_min(b ~ t)$, false => never() };
+let left = db::len(sys::time::timer(duration:700.ms, false) ~ t)$;
+sys::exit(sys::time::after_idle(duration:900.ms, 0));
+println("popped [popped] left [left]")

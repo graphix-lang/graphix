@@ -1,0 +1,5 @@
+// expect: accepted ('c takes [string, Array<i64>]; the string-typed twin is); refused: the
+// probe of Array<'d> (rigid via 'a) admits Array<i64>, its commit fails, and place_members gives up
+let g = |w: 'd, v: ['c, Array<'d>]| 0;
+let f = |x: 'a, t: bool| -> i64 g(x, select t { true => [1, 2], false => "s" });
+f(1, true)

@@ -1,0 +1,18 @@
+// t-cast-setops-07: Type::diff assumes a recursive (ref, ref) difference is empty
+// while computing it, so Error<T> - Error<U> drops Array<T>: a coverage hole.
+// run: GRAPHIX_ABORT_ON_NO_MATCH=1 graphix --no-cache t-cast-setops-07.gx
+// (also: graphix --check passes; graphix-fuzz check: AGREE, both engines hit the hole)
+// expected: refused at --check ("no arm covers Error<T>" or similar) for the inner select,
+//   since error([`B]) fails Error<U> and is not Error<`B>
+// observed: check passes; at run time "select v { i64 as n => "int", Error<`B> as e =>
+//   "B-error" }: no arm matches error:["B"]: a coverage hole in the check"; abort under the knob
+type T = [`B, Array<T>];
+type U = [`A, Array<U>];
+let f = |x: [Error<T>, i64]| select x {
+  Error<U> as u => "U",
+  v => select v { i64 as n => "int", Error<`B> as e => "B-error" }
+};
+let r = f(error([`B]));
+println("r = [r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

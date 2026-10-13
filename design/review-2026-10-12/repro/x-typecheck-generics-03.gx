@@ -1,0 +1,15 @@
+// x-typecheck-generics-03: a signature quantifier bounded by `Any`
+// satisfies every predicate bound in FnType::sig_matches_int.
+// cmd: graphix --check --no-cache x-typecheck-generics-03.gx  (then run without --check)
+// expected: --check refuses: the implementation requires 'a: Ordered,
+// which the signature does not declare (as it does without `: Any`).
+// observed: --check exits 0; the run fails with "an instance at
+// fn(self: W, x: &i64, y: &i64) -> bool of a definition typed
+// fn<'a: Any + Ordered>(s: W, x: 'a, y: 'a) -> bool".
+// Interface forms: x-typecheck-generics-03a-sig-any-ordered/ (also with
+// `'a: Array<Any>` and [&a]), x-typecheck-generics-03b-sig-any-concrete/.
+trait Cmp { val lt: fn<'a: Any>(self, x: 'a, y: 'a) -> bool };
+type W = Abstract<i64>;
+impl Cmp for W { let lt = 'a: Any |s: W, x: 'a, y: 'a| -> bool x < y };
+let a = 1;
+Cmp::lt(W(1), &a, &a)

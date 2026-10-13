@@ -1,0 +1,8 @@
+// array::group with a predicate that answers late: after the first true
+// answer the queued elements 3..6 are never taken. Expected
+// [1, 2], [3, 4], [5, 6]; prints only [1, 2].
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+let x = array::iter([1, 2, 3, 4, 5, 6]);
+let g = array::group(x, |n, x| sys::time::after_idle(duration:20.ms, n == 2));
+println("g [g]");
+"done"

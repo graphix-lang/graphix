@@ -1,0 +1,12 @@
+// x-engine-firing-04: `~` banks EVERY trigger that finds its argument
+// absent and pays each one on its own cycle once the argument arrives:
+// a 10 ms clock sampling a level that arrives after 500 ms replays ~50
+// stale ticks back to back (count jumps by ~50 in ~50 cycles); the debt
+// is an unbounded usize and the payout queues one runtime write per tick.
+// run: graphix --no-cache x-engine-firing-04.gx   (prints 1 2 3 .. ~60 in 200 ms)
+let v = sys::time::after_idle(duration:500.ms, 42);
+let clk = sys::time::timer(duration:10.ms, true);
+let s = clk ~ v;
+let n = count(s);
+sys::exit(sys::time::after_idle(duration:200.ms, v));
+n

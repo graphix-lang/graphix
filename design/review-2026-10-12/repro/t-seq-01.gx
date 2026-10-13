@@ -1,0 +1,14 @@
+// t-seq-01: a plain `seq go; abort(..go..)` whose BODY does not read `go`
+// gets no trigger snapshot (seq.rs trigger_snapshot checks only the body),
+// so the abort reads the live trigger: every busy-dropped `go` restarts the
+// after_idle and the 120ms budget never fires. Each 500ms run completes.
+// Expected (design/seq_blocks.md §9): every run aborted, nothing printed.
+// Observed: "completed" printed. Changing the last line to `go ~ "completed"`
+// (the body now reads `go`) makes the abort fire. Run: graphix --no-cache t-seq-01.gx
+let go = sys::time::timer(duration:50.ms, true);
+let r = seq go; abort(sys::time::after_idle(duration:120.ms, go)) {
+  let x = sys::time::timer(duration:500.ms, false);
+  "completed"
+};
+sys::exit(sys::time::timer(duration:1500.ms, false) ~ 0);
+r

@@ -1,0 +1,8 @@
+// x-typecheck-generics-08: interface check refuses an implementation more general than its signature
+// command: graphix --no-cache --check main.gx
+// expected: accepted; pick's inferred fn('x, 'y) -> ['x, 'y] at 'x = 'y = 'a is the declared type
+// observed: val pick is declared fn<'a: Any>(b: bool, x: 'a, y: 'a) -> 'a but implemented
+//   fn(b: '_N, x: '_N, y: '_N) -> '_N: in return type: signature has type variable 'a where
+//   implementation has ['_N: unbound, '_N: unbound]
+mod m;
+m::pick(true, 1, 2)

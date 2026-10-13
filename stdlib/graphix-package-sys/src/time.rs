@@ -23,6 +23,11 @@ use std::time::Duration;
 fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, eid: ExprId) {
     ctx.rt.cancel_timer(id);
     ctx.release_var(id, eid);
+    // CR claude for claude: [dead/low] ExecCtx::release_var already does unref_var plus
+    // rt.store_remove for the same id, so this call repeats it. The same pair appears
+    // in io.rs IoLines::delete, core's CachedArgsAsync::release and queuefn's delete.
+    // Delete the trailing store_remove in each. Leave net.rs's pair alone: there
+    // store_remove removes a different id. (sys-io-13)
     ctx.rt.store_remove(&id);
 }
 
@@ -124,6 +129,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
                     ctx.rt.set_timer(id, dur);
                     return self.out.ride();
                 }
+                // CR claude for claude: [bug/low] A timeout that does not cast to a
+                // Duration (e.g. -1) releases the armed timer and rides. A value
+                // already waiting is lost, and nothing is logged. after_idle returns
+                // 'a, so it has no error channel. Log the refusal under FAILURE_TARGET,
+                // as hot operators do. Release the old timer only once the new timeout
+                // has cast. probe: design/review-2026-10-12/repro/sys-io-11.gx
+                // (sys-io-11)
                 Err(_) => {
                     self.id = None;
                     return self.out.ride();
@@ -356,6 +368,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
+// CR claude for claude: [structure/low] `time_fn!` writes out by hand the whole shell
+// that `graphix_package_core::fast_builtin!` produces: the unit struct,
+// `unit_image_state!`, an `EvalCached` with `Stateless(Some(FastCall::Plain(..)))` over
+// `fast_eval`, and the `CachedArgs` alias. So do `escape_fn!` in the str package and
+// `BytesToStringLossyEv` in core's buffer.rs, whose sibling `BytesToString` already
+// uses the macro. A change to how fast builtins are classified or imaged would miss
+// these copies. Fix: have `time_fn!` and `escape_fn!` define only the fast fn and call
+// `fast_builtin!`, as `f64_fn!` in math.rs does, and replace `BytesToStringLossyEv`
+// with one `fast_builtin!` line. netidx-admin's `ParseFingerprintEv`, `IdenticonEv` and
+// `InfoEv` are the same kind of copy. (x-builtin-effects-08)
 macro_rules! time_fn {
     ($ev:ident, $ty:ident, $fc:ident, $name:literal, |$a:ident, $b:ident| $body:expr) => {
         fn $fc(args: &[Value]) -> Option<Value> {

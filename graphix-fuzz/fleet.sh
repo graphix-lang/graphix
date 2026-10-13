@@ -322,6 +322,14 @@ verify_host() {
     local name=$1 camp=$2 want=$3 out gate n bad a b
     # the remote waits LAUNCH_WAIT for the launch, then up to 600s for
     # the counters
+    # CR claude for claude: [doc-drift/low] The remote script's comment says a counter
+    # line lands per completed batch. `run_aggregator` actually prints a source's line
+    # only when its run count crosses a multiple of 1000 (`stats[si].run % 1000 <
+    # count`, batches of 64). The two 300 s waits here therefore need at least 1000
+    # fuzz-source subjects per 5 minutes, about 3.3/s. A slower healthy host, such as a
+    # small or ASan or high-timeout-scale box, reports NO SUBJECTS CHECKED or COUNTERS
+    # NOT ADVANCING. Fix: have the aggregator also print each source's line on a timer
+    # (for example every 30 s), and correct the comment. (fuzz-main-aux-08)
     out=$(timeout $((LAUNCH_WAIT + 720)) ssh "$name" bash -s "$camp" "$LAUNCH_WAIT" <<'EOF' || echo "FLEET_UNREACHABLE"
 camp=$1; budget=$2
 log=~/tmp/fleet-$camp-launch.log
@@ -414,6 +422,14 @@ status() {
         name=$(f_name "$h")
         skip_host "$name" && continue
         say "=== $name ==="
+        # CR claude for claude: [bug/low] The remote script counts processes with `pgrep
+        # -f "$d/graphix-fuzz"`. Linux children are spawned as /proc/self/exe and their
+        # argv does not name the campaign, so only the soak leader matches. A healthy
+        # 80-worker campaign shows 1 proc, and an orphaned campaign whose leader died
+        # while its children kept running shows 0. `verify_host`'s PROC count has the
+        # same problem. soak.sh's `campaign_procs` already matches by executable. Use it
+        # here and in `verify_host`, for example by running `soak.sh status <camp>`
+        # remotely. (fuzz-main-aux-13)
         timeout 60 ssh "$name" bash -s "$camp" <<'EOF' || warn "  unreachable"
 camp=$1
 if [ -n "$camp" ]; then dirs=~/tmp/target/fuzz/$camp; else dirs=$(ls -d ~/tmp/target/fuzz/*/ 2>/dev/null); fi

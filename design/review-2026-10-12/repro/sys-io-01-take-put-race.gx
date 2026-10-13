@@ -1,0 +1,19 @@
+// expect: three "ok 5"; a close that returned null leaves no readable stream
+// actual: b and c are "stream unavailable"; the read after close succeeds
+use sys::fs;
+use sys::io::{Read, Close};
+let dir = sys::fs::tempdir::create(null)$;
+let p = sys::join_path(sys::fs::tempdir::path(dir), "f.bin");
+let wrote = fs::write_all(#path: p, "hello")$;
+let f = fs::open(`Read, wrote ~ p)$;
+let a = fs::fstat(f);
+let b = fs::fstat(f);
+let c = fs::fstat(f);
+let show = |m: Result<fs::Metadata, `IOError(string)>| select m { error as e => "[e]", m => "ok [m.len]" };
+let g = fs::open(`Read, wrote ~ p)$;
+let s = fs::fstat(g);
+let closed = Close::close(g);
+let after = Read::read(s ~ closed ~ g, u64:10);
+let r = (show(a), show(b), show(c), closed, select after { error as e => "read after close: [e]", b => "read after close returned [buffer::len(b)] bytes" });
+sys::exit(sys::time::after_idle(duration:300.ms, r) ~ 0);
+r

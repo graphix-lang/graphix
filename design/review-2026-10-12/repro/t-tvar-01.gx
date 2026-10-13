@@ -1,0 +1,11 @@
+// t-tvar-01: OneNumber: --check accepts what the build refuses
+// command: graphix --no-cache --check t-tvar-01.gx ; graphix --no-cache t-tvar-01.gx
+// expected: both refuse (g(false, 2.5) instantiates f at [i64, f64], two numeric types)
+// observed: --check exits 0 (the LSP reports the file clean); the run exits 1 with
+// "an instance at fn(x: [i64, f64]) -> [i64, f64] of a definition typed
+// fn<'a: [null, Number] + OneNumber>(x: 'a) -> 'a"; graphix-fuzz check prints
+// "DIVERGENCE — the check accepted what the build refused"
+let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x;
+let g = |b, y| f(select b { true => 1, false => y });
+sys::exit(sys::time::after_idle(duration: 100.ms, 0));
+g(false, 2.5)

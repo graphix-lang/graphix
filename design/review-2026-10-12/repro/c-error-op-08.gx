@@ -1,0 +1,7 @@
+// c-error-op-08: checked arithmetic does not always name its cause
+// command: graphix-fuzz run design/review-2026-10-12/repro/c-error-op-08.gx
+// expected (CLAUDE.md): an ArithError naming its cause, e.g. "attempt to divide by zero"
+// observed: decimal div0, rem0 and overflow all give "decimal arithmetic error"; f64 /? 0.0 is inf and %? 0.0 is NaN, no error
+let d = |a: decimal, b: decimal| (a /? b, a %? b, a *? b);
+let f = |a: f64, b: f64| (a /? b, a %? b);
+(d(decimal:1.0, decimal:0.0), d(decimal:79228162514264337593543950335.0, decimal:2.0), f(1.0, 0.0))

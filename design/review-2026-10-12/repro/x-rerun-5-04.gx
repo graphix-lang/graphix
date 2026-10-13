@@ -1,0 +1,18 @@
+// x-rerun-5-04: a failed run-time bind is logged off FAILURE_TARGET, so the shell never shows it
+// command: graphix --no-cache design/review-2026-10-12/repro/x-rerun-5-04.gx   (also with RUST_LOG=warn)
+// expected: stderr names the failed bind ("fs[n]$(false, "s"): binding the callee failed: ...")
+//   under graphix::failure, as an unhandled `?` is shown
+// observed: no output at all, exit 0; `graphix-fuzz run` on the same file logs
+//   [ERROR graphix_compiler::node::callsite] fs[n]$(false, "s"): binding the callee failed:
+//   a run-time bind at fs[n]$(false, "s") did not elaborate ...
+// (the bind failing at all is the separate type-system bug x-rerun-5-02)
+let a = [10, 20, 30];
+let f = |i| a[i]$;
+let g = |b, k| f(select b { true => 1, false => k });
+let h: fn(b: bool, k: string) -> i64 = g;
+let n = 0;
+n <- sys::time::timer(duration:50.ms, false) ~ 1;
+let fs = [h, h];
+let r = fs[n]$(false, "s");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r * 3

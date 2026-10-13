@@ -1,0 +1,25 @@
+// c-analysis-branch-01: bound queuefn wrapper calls lose ORDERED; fork_instances
+// then races server handler instances on the queue.
+// run: GRAPHIX_PAR=off   graphix --no-cache c-analysis-branch-01.gx
+//      GRAPHIX_PAR=force graphix --no-cache c-analysis-branch-01.gx   (also auto/default)
+// expected (any mode, = serial): one fixed order per tick for the whole run,
+//   e.g. "BABABABA..." or "ABABABAB..." (off prints exactly that)
+// observed (force/auto/default): the order flips between ticks and between runs,
+//   e.g. "ABABABBAABABABAB...", "BABABABABAABBAABBAAB..."
+let clk = sys::time::timer(duration:2.ms, true);
+let out: Array<string> = [];
+let q = queuefn(#trigger: clk, |x: string| -> string { out <- x ~ array::push(out, x); x });
+let handler = |req: http::Request| {
+    let c = 0;
+    c <- clk ~ c + 1;
+    let r = q(clk ~ req.path);
+    select c { n if n > 30 => { body: r, headers: [], status: u16:200, url: "" }, _ => never() }
+};
+let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+let addr = http::server_addr(server);
+let client = http::default_client(server)$;
+let a = http::request(client, "http://[addr]/a")$;
+let b = http::request(client, "http://[addr]/b")$;
+let done = (a, b);
+sys::exit(sys::time::after_idle(duration:200.ms, done ~ 0));
+str::join(#sep: "", array::map(done ~ out, |p| select p { "/a" => "A", _ => "B" }))

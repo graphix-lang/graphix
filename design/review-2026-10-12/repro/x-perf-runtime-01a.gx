@@ -1,0 +1,10 @@
+let size = 10000;
+let k = 2000;
+let big = array::map(array::init(size, |i| i), |x| uniq(x) * 2);
+let n = 0;
+n <- n + 1;
+let t0 = sys::time::now(select n { 10 => n, _ => never() });
+let t1 = sys::time::now(select n { c if c == k => n, _ => never() });
+let total = array::len(big);
+sys::exit(sys::time::after_idle(duration:50.ms, t1 ~ 0));
+sys::time::diff(t1, t0)

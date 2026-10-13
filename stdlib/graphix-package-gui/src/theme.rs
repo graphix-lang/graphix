@@ -700,6 +700,14 @@ impl_catalog_with_status!(toggler, toggler, toggler::default);
 impl_catalog_with_status!(slider, slider, slider::default);
 impl_catalog_with_status!(radio, radio, radio::default);
 // pick_list: needs fully qualified paths due to supertrait ambiguity
+// CR claude for claude: [structure/low] The pick_list, scrollable and menu Catalog
+// impls are hand copies of impl_catalog_with_status! and impl_catalog_no_status!. Only
+// pick_list and menu need the qualified <Self as X::Catalog>::Class because of
+// supertrait ambiguity, and scrollable needs nothing. Write the two macros with <Self
+// as $module::Catalog>::Class and use them for all three. The resolve methods also
+// repeat the same border_color/border_width/border_radius block, which only some of
+// them dim when disabled. A helper like apply_border(&mut Border, color, width, radius)
+// keeps the Graphix spec structs flat and puts the rule in one place. (gui-core-09)
 impl pick_list::Catalog for GraphixTheme {
     type Class<'a> = pick_list::StyleFn<'a, Self>;
 

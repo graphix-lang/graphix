@@ -1,0 +1,15 @@
+type F = Abstract<fn(x: i64) -> i64>;
+// fuzz-lib-a-02: reference values (raw BindIds) and lambdas inside abstracts
+// make every run of a program differ, so the oracle drops it as nondeterminism.
+// command: graphix-fuzz check design/review-2026-10-12/repro/fuzz-lib-a-02.gx
+// expected: AGREE (trace), as `let f = |x: i64| x + 1; (f, 2)` does
+// observed: UNSURE — no divergence, but a retry, slowness, containment or
+//   nondeterminism decided it. trace::normalize rewrites a bare LambdaDef to
+//   its source but does not descend into a GxAbstract payload, so the lambda
+//   compares by its minted id. The reference shape is fuzz-lib-a-01.gx:
+//   `let r = &x; (r, 2 + 3)` traces u64:4611686018427389929 under the
+//   node-walk, ...933 under the JIT, 8093 warm, and is UNSURE too. In
+//   Oracle::settle the reference rerun disagrees with itself (ids keep
+//   counting in-process), so every comparison is Settled::Drop, and a real
+//   divergence in `2 + 3` would be dropped the same way.
+F(|x: i64| x + 1)

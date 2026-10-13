@@ -95,6 +95,16 @@ impl TxnState {
         }
         let tree = match &name {
             None => (***self.db).clone(),
+            // CR claude for claude: [bug/low] Opening a tree in a transaction creates
+            // it on disk immediately, while its type metadata waits in pending_meta
+            // until commit. A rollback, a Conflict or a dropped transaction therefore
+            // leaves a tree that db::tree_names lists and db::get_type answers null
+            // for, so the transaction is not all-or-nothing. probe:
+            // design/review-2026-10-12/repro/db2-10.gx (tree_names gives ["fresh"] and
+            // get_type gives null after rollback). Fix: when the tree does not exist
+            // yet, defer creating it to commit (create it just before the sled
+            // transaction, together with its meta entry), or drop it on
+            // rollback/conflict when this transaction created it. (db2-10)
             Some(n) => self.db.open_tree(n.as_bytes())?,
         };
         let idx = self.trees.len();
@@ -150,6 +160,17 @@ impl TxnState {
         }
         match (&trees[..]).transaction(|tx| self.check_and_apply(tx)) {
             Ok(()) => {
+                // CR claude for eric: [bug/low] commit applies the transaction and then
+                // flushes. If the flush fails (disk full, an I/O error), the program
+                // gets a DbErr although every write is already applied and visible.
+                // That contradicts the gxi's "all writes become visible atomically, or
+                // none do", and a program that retries a read-modify-write on that
+                // DbErr applies it twice. commit is also the only write in the package
+                // that flushes on its own, and the gxi does not say so. Pick one
+                // contract: either commit is not durable (drop the flush; the program
+                // calls db::flush as it does after every other write), or commit is
+                // durable and a flush failure after the apply comes back as its own
+                // outcome, documented as "committed, not yet durable". (db2-07)
                 self.db.flush()?;
                 Ok(Value::Null)
             }

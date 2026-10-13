@@ -1,0 +1,15 @@
+// core-aux-06: queuefn's wrapper drops a bottom argument; it rides its old
+// answer, or fires a call no caller made (a new argument beside a stale one).
+// command: graphix --no-cache core-aux-06-bottom-arg.gx (same with --no-fusion)
+// expected (design/dense_delivery.md R3: a bottom argument bottoms the call):
+//   no "c=2 queued" line, as there is no "c=2 direct" line
+// observed: "c=2 queued=201", i.e. f(2, 1): x from c=2, y left over from c=1
+let c = 0;
+c <- select c { n if n < 3 => n + 1, _ => never() };
+let s: [i64, null] = select c { 2 => null, n => n };
+let f = |x: i64, y: i64| -> i64 x * 100 + y;
+let q = queuefn(#trigger: c, f);
+println("c=[c] direct=[f(c, s$)]");
+println("c=[c] queued=[q(c, s$)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

@@ -2,6 +2,15 @@
 
 The `menu` module provides menu bars and context menus. Both are built from the same `MenuItem` building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.
 
+<!-- CR claude for claude: [doc-drift/low] `MenuAction.on_click` below is written
+`&fn(a: null) -> Any`. The real field (menu.gxi) is `&[fn(e: null) -> Any, null]`: copy
+the block from the gxi. The TUI overview overclaims in the same way. It calls the table
+'Sortable', but there is no sorting. It calls the calendar a 'Date picker', but it only
+displays (no selection callback). The overview_styling.gx it includes evaluates to a
+`Style`, so running it draws nothing. overview_state.gx says 'as shown above' about a
+handler that does not appear on that page. Write 'selectable' and 'month calendar with
+highlighted dates', wrap the styling example in a widget, and point the state example's
+comment at input.md. (book-ui-a-14) -->
 ## Interface
 
 ```graphix

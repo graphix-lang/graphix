@@ -1,0 +1,5 @@
+// SKILL.md says "a null timeout STOPS" sys::time::timer and "a null path
+// tears the effect down" for sys::net; both are refused by the checker:
+// "type mismatch [duration, Number] does not contain [null, duration]".
+let d: [duration, null] = null;
+sys::time::timer(d, true)

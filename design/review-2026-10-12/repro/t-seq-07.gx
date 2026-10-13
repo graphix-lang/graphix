@@ -1,0 +1,10 @@
+// t-seq-07: `let rec x = try .. with ..` in a seq body silently drops `rec`.
+// seq.rs lower_stmt tests try_of before the `b.rec` refusal, and lower_try
+// builds a plain Write::Let from the pattern and type alone.
+// Command: graphix --no-cache t-seq-07.gx (or --check)
+// Expected: refused, like `let rec x = 1` in the same place ("let rec is not a
+// seq step") and outside a seq ("let rec may only be used for lambdas").
+// Observed: accepted; prints 1.
+let x = seq { let rec x = try { 1 } with(e) { 2 }; x };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+x

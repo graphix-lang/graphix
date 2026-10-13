@@ -1,0 +1,12 @@
+// sys::exit sends the shell an exit request mid-cycle; the shell answers with
+// gx.interrupt() (graphix-shell/src/lib.rs:652) while the runtime is still in
+// that cycle, so every collection loop / lambda dispatch after the exit
+// statement rides its last result while plain nodes and Io (println) go on.
+// Expected last line: x=6 head=6 ys0=6 ysN=2005. HEAD, both engines, every run:
+//   x=6 head=6 ys0=5 ysN=2004   (ys is the x=5 cycle's)
+let x = count(sys::time::timer(duration:20.ms, true));
+let xs = array::init(2000, |i| i + x);
+sys::exit(x ~ select x { n if n > 5 => 0, _ => never() });
+let ys = array::map(xs, |v| v * 2);
+println("x=[x] head=[xs[0]$] ys0=[ys[0]$ / 2] ysN=[ys[-1]$ / 2]");
+null

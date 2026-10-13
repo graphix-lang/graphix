@@ -324,6 +324,13 @@ impl LoopFrame {
         };
         cx.env.slot = Some(SlotView { init, new, standing, mark: cx.env.mark() });
         let r = bind(cx, self.i).and_then(|bound| {
+            // CR claude for claude: [perf/low] Every iteration of every scaffold loop
+            // makes an out-of-line `graphix_interrupted` call (a thread-local read plus
+            // an atomic load), on top of the element read and the push. A map or fold
+            // over 10^6 scalars makes 10^6 extra calls per cycle to read a flag that
+            // changes only on an interrupt or a budget abort. Poll every N slots, with
+            // a counter masked by a power of two. The abort path stays the same because
+            // the element binds are env locals either way. (f-scaffold-body-07)
             emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
             Ok((bound, body(cx)?))
         });
@@ -472,6 +479,20 @@ impl SlotFlags {
     /// Emit in the loop's preheader: the instance's word is claimed
     /// (its state, its call-site block, or in a loop the enclosing
     /// slot's chain word) and read.
+    // CR claude for claude: [dead/low] `word` is never None here. A parent claims a
+    // state word at depth 0, a callee claims a site word, and in a loop `slot_word`
+    // always finds the site, because `slot_state_sites` lists every collection site and
+    // `open_slot_tables` always anchors through one of the two channels. A callee that
+    // claims site words is never handed a null block, so the `StateWord::Guarded` null
+    // branch of `guarded_exact_stale` is dead as well. That leaves `conservative_stale`
+    // unreachable, and if it were ever reached, its Fold rule would be wrong: it drops
+    // the source term, so a shrink under an unchanged acc chain would not fire, the
+    // under-fire design/kernel_instance_state.md calls worse than a duplicate fire.
+    // Make the word non-optional, assert a non-null base wherever a callee claims
+    // words, and delete `conservative_stale`, `guarded_exact_stale` and the stale
+    // "nested loop without a chain word" sentence in `apply`'s doc. Related:
+    // f-scaffold-body-06 (the claim Options) and f-scaffold-body-10 (the design doc's
+    // null back-edges). (f-scaffold-body-01)
     fn new(cx: &mut BodyCx, len: ClifValue, kind: LoopKind) -> Self {
         let accs = Accs::new(cx);
         let word = match cx.claim_state_word() {
@@ -852,6 +873,17 @@ where
     Ok((sunk.array(), flags, n_disc))
 }
 
+// CR claude for claude: [structure/low] `emit_map_loop`, `emit_filter_loop`,
+// `emit_filter_map_loop`, `emit_flat_map_loop`, `emit_find_loop` and
+// `emit_find_map_loop` each repeat the same frame: `arr.hold`, `input_len`,
+// `SlotFlags::new`, `emit_slots`, `arr.drop_held`, with the same `lp.run(cx, |cx, i|
+// bind_elem(..), body)` inside. A change to that protocol (f-scaffold-body-02 is one)
+// has to be made in six places. The sink is picked by a runtime `SinkKind`, so a
+// mismatched pair (`Slots::buf` on a find loop, `Sunk::taken` on a buf loop) compiles
+// and panics in `unreachable!()`. Write one array-loop driver that owns the frame and
+// the element bind and takes each op's per-slot step, with separate buf and find entry
+// points that return `ClifValue` and `(disc, payload)` directly, so the unreachable
+// accessors go away. (f-scaffold-body-05)
 pub(crate) fn emit_map_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,

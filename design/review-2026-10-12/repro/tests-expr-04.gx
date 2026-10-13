@@ -1,0 +1,8 @@
+// tests-expr-04: a duration literal is read through an f64 of seconds
+// command: graphix --no-cache tests-expr-04.gx ; graphix fmt --stdout tests-expr-04.gx
+// expected: the run prints 10000000.000000001s and fmt leaves the literal as written
+// observed: the run prints 10000000.000000002s and fmt rewrites the literal to
+// duration:10000000.000000002s (netidx-value's parser reads flt::<f64> then
+// Duration::try_from_secs_f64; duration_display prints through as_secs_f64)
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+duration:10000000.000000001s

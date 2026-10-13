@@ -1,0 +1,9 @@
+// tests-parser-03: a zero-argument call that does not fit pretty-prints as `f(\n)`
+// command: graphix fmt --stdout design/review-2026-10-12/repro/tests-parser-03.gx
+// expected: the call prints as `ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff()` on one line inside the array
+// observed: `ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff(` then a line holding only `),`
+let ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff = || 1;
+
+let r = [ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff(), 2];
+
+r

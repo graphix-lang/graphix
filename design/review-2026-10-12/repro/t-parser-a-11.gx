@@ -1,0 +1,6 @@
+#!/usr/bin/env graphix
+// t-parser-a-11: `graphix fmt` numbers lines from after the `#!` line.
+// Command: graphix --check t-parser-a-11.gx; graphix fmt --stdout t-parser-a-11.gx
+// Expected: both report the error at line 7, column 1.
+// Observed: --check says line 7, fmt says line 6.
+let x = 1 +

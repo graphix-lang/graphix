@@ -66,6 +66,15 @@ pub fn len(v: &Value) -> Option<usize> {
     }
 }
 
+// CR claude for claude: [perf/low] from_iter always collects into a pooled Vec before
+// consing from the back. The list package's fc_flatten, fc_sort and fc_unzip already
+// hold such a buffer and pass drain(..), so every element is copied through two
+// vectors. fc_concat avoids that by hand-rolling the same cons-from-back fold, a copy
+// of this function. Add a variant that conses from the back of a caller's
+// LPooled<Vec<Value>> and use it in all four, and in from_iter itself. Iter::next
+// clones the whole cursor and then the tail: take the cursor with mem::replace instead.
+// to_array computes len and then discards it: build with ValArray::from_iter_exact over
+// that length. (collections-str-07)
 pub fn from_iter(iter: impl IntoIterator<Item = Value>) -> Value {
     let mut values: LPooled<Vec<Value>> = iter.into_iter().collect();
     let mut result = nil();
@@ -90,6 +99,13 @@ impl Iterator for Iter {
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // CR claude for claude: [perf/low] Cloning the cursor here costs an atomic
+        // increment and decrement on every list cell walked. It exists only to satisfy
+        // the borrow checker, and this is the per-element path for list map/fold slots,
+        // list casts and `to_array`. Take the cursor instead: `let cur =
+        // std::mem::replace(&mut self.cur, Value::Null);`, then split it, clone the
+        // head and the tail, and store the tail. A non-list leaves `Null`, which ends
+        // the iteration the same way. (t-expr-core-11)
         let cur = self.cur.clone();
         let (head, tail) = split(&cur)?;
         let head = head.clone();

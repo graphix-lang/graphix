@@ -1,0 +1,4 @@
+// a fn type nested 24 deep: parse + check take ~12 s, each level doubles it
+type F = fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> fn() -> i64;
+let x = 1;
+x

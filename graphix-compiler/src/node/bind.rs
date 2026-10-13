@@ -144,6 +144,22 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     ) -> Result<Node<R, E>> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let annotation = match annotation {
+            // CR claude for eric: [bug/medium] The parser makes a separate cell for
+            // every `'a` in a type, and only `typexp::fntype` and `Lambda::compile`
+            // alias same-named ones. This annotation never goes through
+            // `Type::alias_tvars`, so its same-named variables are tied together only
+            // inside one fn type. `let w: ('a, 'a) = (1, "s")`, `let s: {x: 'b, y: 'b}
+            // = {x: 1, y: "s"}` and `let p: ('c, fn(x: 'c) -> 'c) = (1, |x: string| x)`
+            // are all accepted. Inside a lambda, `let u: ('d, 'd) = (x, y)` relates x
+            // to nothing. The pin `annotation_variable_is_one_variable` states the rule
+            // but covers only a bare fn-type annotation. Fix: call `alias_tvars` once
+            // over the scoped annotation here, and likewise over the type argument of
+            // `never<T>`. A separate decision is needed: a body annotation's `'e` is
+            // currently a fresh variable, not the enclosing definition's rigid
+            // quantifier, so `'e: Number |x: 'e| -> 'e { let v: 'e = 1; x }` is
+            // accepted. Either seed `known` with the enclosing definition's declared
+            // quantifiers, or refuse the shadowing name. probe:
+            // design/review-2026-10-12/repro/t-tvar-04.gx (t-tvar-04)
             Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
             None => None,
         };
@@ -190,6 +206,17 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // a shape check: its cells lower nothing they bind; a
                     // partial struct pattern completes against the value, as
                     // a select arm's does against its scrutinee
+                    // CR claude for claude: [bug/low] The partial struct completion
+                    // runs here, at compile, against node.typ(). It therefore only
+                    // works when the value is already a struct before typecheck, e.g. a
+                    // literal. Over a call's result, or a let bound to one, the type is
+                    // still an open cell. StructPatternNode then refuses `let {y, ..} =
+                    // g(1)` with 'non exhaustive struct matches require type
+                    // annotations', although `select g(1) { {y, ..} => y }` is
+                    // accepted. Fix: defer the completion to the bind's typecheck, once
+                    // the value's type is known, as Select completes its arms against
+                    // its scrutinee. probe:
+                    // design/review-2026-10-12/repro/x-rerun-8-11.gx (x-rerun-8-11)
                     let ptyp = {
                         let _generic = AtLevel::enter(Level::GENERIC);
                         let ptyp = pat.infer_type_predicate(&ctx.env, &scope.lexical)?;
@@ -201,6 +228,17 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                             None => ptyp,
                         }
                     };
+                    // CR claude for claude: [bug/low] The `?` on this `contains` (and
+                    // on the `typ.contains(&ctx.env, ntyp)?` of the `let rec` branch
+                    // above) returns a contains error without the bind's site. So `let
+                    // x = never<Num<string>>()` with `type Num<'a: Number> = 'a` is
+                    // refused with only 'type mismatch Number does not contain string',
+                    // no line or column, and the LSP cannot place it. The annotated
+                    // form and a bare `never<Num<string>>()` both carry a position.
+                    // Attach the spec: `ptyp.contains(&ctx.env, &typ).at(&spec)?`, and
+                    // the same on the rec branch. probe:
+                    // design/review-2026-10-12/repro/x-rerun-7-06-never-bound-no-position.gx
+                    // (x-rerun-7-06)
                     if !ptyp.contains(&ctx.env, &typ)? {
                         let part = ptyp.could_match(&ctx.env, &typ)?;
                         format_with_flags(PrintFlag::DerefTVars, || match part {
@@ -364,6 +402,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        // CR claude for claude: [readability/low] The comments in this function are
+        // five overlapping fragments interleaved with the code ('At a wake the
+        // initializer's constants fire', 'under a wake view…', 'A stale RHS is already
+        // served by the store…', 'the ids whose last write a wake keeps', 'After a
+        // sleep the store entry may lag…'). They restate each other, and the rule
+        // itself is never written down in one place: which ids a wake holds (`held`),
+        // and when a production that does not trigger still publishes (`publish`,
+        // `wake_refresh`, `ever_published`). That makes the code hard to check against
+        // design/wake_catchup.md. Replace them with one invariant of at most three
+        // lines above the `held`/`publish` computation, e.g. 'a woken `<-` target keeps
+        // its last write unless its initializer delivered a real event; after a sleep a
+        // non-triggering production republishes quietly', and delete the rest.
+        // (c-bind-07)
         let woke = self.slept.take();
         // At a wake the initializer's constants fire; the fire is the wake's,
         // not an event's, unless one of its inputs fired too.
@@ -371,6 +422,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         let tag = tv.tag();
         // under a wake view, a production that is no real event leaves a
         // `<-` target's last write
+        // CR claude for claude: [bug/high] A `<-` target keeps its last write only
+        // under a View::Wake, but `wake_refresh` republishes the initializer whenever
+        // this node's own `slept` bit is set. Only Select and the seq machine resume
+        // under View::Wake. Collection slots resumed by
+        // take_source/update_slots_in_order after a bottom source, and a CallSite
+        // instance resumed after its callee was bottom (`callee_absent`), resume under
+        // View::Cycle. Their `<-` targets are therefore overwritten by the initializer.
+        // Neither site has a TrackedFires, so a captured input that fired during the
+        // pause is never caught up. This contradicts "slots pause as a deselected arm
+        // does and wake, caught up" and the callee_absent comment. The same body `{let
+        // t = 0; t <- a ~ t + 1; t*100 + x}` resumes at 210 then 310 under a select,
+        // but at 10 under array::map, array::fold and a dynamic call, in both engines.
+        // Rows of `array::map(rows$, ..)` lose their local state whenever `rows` is
+        // null for a cycle. Fix: run both resume sites under `ctx.under(View::Wake,
+        // ..)` and give MapQ/FoldQ slots and the callee-absent CallSite a TrackedFires
+        // over what they capture, as Select does. Pin the select/map/fold/dynamic-call
+        // quartet with one shared body. Keying `wake_phantom` on `woke` here alone
+        // fixes the reset but not the lost fire. Same root as c-callsite-01,
+        // c-node-mod-01/02, c-bind-03 and x-engine-firing-05. probe:
+        // design/review-2026-10-12/repro/x-engine-firing-02.sh (x-engine-firing-02)
         let wake_phantom = ctx.event.wake() && !tag.is_event();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
@@ -380,6 +451,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // the ids whose last write a wake keeps: a destructuring let's
         // other ids recompute
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
+        // CR claude for claude: [bug/medium] Whether this let published before is the
+        // wrong test for holding a `<-` target at a wake. Take a let whose initializer
+        // was bottom until the arm slept, while a `<-` had written its target. If the
+        // initializer gains a value during the sleep and another selected arm consumes
+        // that fire, the wake delivers it STALE and WAKE. `held` stays empty, and the
+        // `!self.ever_published` publish writes the stale value over the target's last
+        // write. wake_catchup.md says a target holding a value is held back from
+        // everything but a real fire of its initializer. The probe prints 1 where `let
+        // y: i64 = 0` keeps 5. Fix: hold a connect-target id when it already holds a
+        // value (`ctx.rt.store_get(&id)` is a non-bottom entry), not when
+        // `ever_published`. Pin it beside `lang::select::wake_constant_keeps_target`.
+        // probe: design/review-2026-10-12/repro/c-bind-02.gx (c-bind-02)
         if wake_phantom && (self.ever_published || tag.is_bottom()) {
             self.pattern.ids(&mut |id| {
                 if ctx.connect_targets.contains(&id) {
@@ -484,6 +567,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
             // an abstract type's parameters are invariant: the annotation,
             // not the payload, decides a constructed value's
+            // CR claude for eric: [bug/medium] With invariant abstract parameters,
+            // `Box(1)` is typed `Box<i64>` eagerly. A wider annotation can only decide
+            // the parameter here (a let whose initializer is itself the construction)
+            // and at call arguments (`pre_unify_arg`, which does not look inside an
+            // array argument). The following are all refused with "Box<[i64, string]>
+            // does not contain Box<i64>": a lambda return `-> Box<[i64, string]>
+            // Box(1)`, `let b: (Box<[i64, string]>, i64) = (Box(1), 2)`, the same in a
+            // struct or array literal, select arms building `Box(1)` and `Box("s")`,
+            // and `b <- Box(1)` into a `Box<[i64, string]>` variable. For the `<-` case
+            // write_mismatch also advises declaring the union `[Box<[i64, string]>,
+            // Box<i64>]`. That contradicts design/nominal_abstract_types.md rule 4 ("a
+            // let annotation decides ... as a formal decides an argument's"), and every
+            // case passes once it goes through a `let r: Box<[i64, string]> = Box(1)`
+            // first. The fix is a typing-rule choice. One option: give `T(v)` a fresh
+            // parameter cell that the payload only bounds from below, so context
+            // decides it wherever the value flows. The other: apply the pre-unify to
+            // every annotated position (returns, nested literals, select arms,
+            // connects). Either way, write_mismatch should not suggest a union of two
+            // instantiations of one abstract. probe:
+            // design/review-2026-10-12/repro/x-fix-types-07.sh (x-fix-types-07)
             if let Some(Type::Abstract { .. }) = self.node.typ().deref_cloned() {
                 wrap!(
                     self.node,
@@ -561,6 +664,16 @@ fn forwards<R: Rt, E: UserEvent>(
 ) -> bool {
     b.typ.is_none()
         && match node.view() {
+            // CR claude for claude: [bug/medium] `forwards` matches only a bare
+            // `NodeView::Ref` and does not look through `NodeView::ExplicitParens`,
+            // which `lambda_value` does. So `let f = g` over a generalized `g`
+            // generalizes, but `let f = (g)` stays monomorphic, and a second value use
+            // of `f` at another type is refused ("fn(x: 'a: string) -> .. does not
+            // contain fn(x: i64) -> i64"). Parentheses are only grouping, and typemorph
+            // grades parens-wrap as sound. Fix: strip the parens with one helper shared
+            // by `lambda_value` and `forwards`, used by both `Bind::compile` and
+            // `check_value`, and pin the parenthesized case next to the forwarding pin.
+            // probe: design/review-2026-10-12/repro/fuzz-mutate-06.gx (fuzz-mutate-06)
             NodeView::Ref(r) => env.poly_binds.contains(&r.id),
             _ => false,
         }
@@ -967,6 +1080,18 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     /// variable included.
     fn of(expr: &Expr) -> Option<(Expr, Vec<PlaceSpec>)> {
         let (root, steps) = expr.place()?;
+        // CR claude for claude: [bug/medium] A dereference with no accessors (`&mut
+        // *r`, `&*r`) returns None here, so ByRef::compile treats it as "any other
+        // expression" and mints a fresh cell seeded with `*r`. The check accepts it as
+        // `&mut T`, and every write through it lands in that detached cell, never in
+        // the binding `r` names. A reborrow handed to a writing callee (`bump(&mut
+        // *r)`) therefore drops its writes silently, while `bump(r)` and `&mut (*r).f`
+        // write through. Make a zero-step place over a Deref root a place (root = the
+        // deref, empty path: the `*r` root check `r: &mut` already applies), or make
+        // `&mut *r` the reference `r` itself; never a fresh cell. Add a reborrow pin to
+        // lang/byref.rs. probe:
+        // design/review-2026-10-12/repro/x-engine-seq-errors-05.gx
+        // (x-engine-seq-errors-04)
         if steps.is_empty() {
             return None;
         }
@@ -1362,6 +1487,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 moved
             }
         };
+        // CR claude for claude: [bug/medium] A place reference fires its reference
+        // value at every write of its root. `Place::update` seeds `moved` with the
+        // root's fire, and that flag both refreshes the cell mirror and fires the
+        // resident here. So `&a[1]` and `&s.b` fire whenever any part of `a` or `s` is
+        // written, even though their paths are static and the element did not change;
+        // `&x` fires once. Every consumer of the reference re-triggers: a callee's `&`
+        // formal, a widget's `&` prop, `count`, a seq trigger. That contradicts
+        // design/place_references.md, which says a reference re-fires when it moves.
+        // Nothing needs this fire: `Deref` already has interest on the root binding.
+        // Fix: have `Place::update` return the root's fire apart from the address
+        // change (a key fired, or `!same`). Use root fire OR address change for the
+        // mirror refresh, and the address change alone for the resident. Add a byref.rs
+        // pin that counts a place reference's fires. probe:
+        // design/review-2026-10-12/repro/c-bind-04.gx (c-bind-04)
         if ctx.event.init() || moved {
             self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
         } else {
@@ -1370,6 +1509,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // CR claude for claude: [bug/medium] c-bind-11 variant: a reference outliving
+        // its `&` reads bottom but still writes its referent. ByRef::delete now removes
+        // the cell's store entry and its byref_chain link (bind.rs), which fixes the
+        // leak. But a reference value that escaped the deleted site (kept in an outer
+        // variable) now behaves two ways at once. Deref resolves through ref_target on
+        // every read, finds no chain and no store entry, and reads bottom, although the
+        // referent `x` is alive. A ConnectDeref that had already resolved its target
+        // (`target: Option<WriteTarget>`, node/mod.rs) keeps writing `x`. A reference
+        // minted after the deletion would resolve to the dead cell and lose its writes
+        // silently. CLAUDE.md says a reference names the place or the byref chain's
+        // binding; nothing documents a reference dying with the expression that minted
+        // it. Failure: In the repro_sketch, after the slot is deleted (c = 3), the
+        // tuple goes bottom for good: `c ~ *keep` never produces again. Meanwhile
+        // `*keep <- c ~ c * 1000` keeps writing x (x reaches 7000). Reading through the
+        // reference says nothing while writing through it works. Fix: Decide the
+        // lifetime rule and apply it to both paths. Either a reference to a binding
+        // stays valid while the binding lives: keep the chain link (or encode the
+        // target in the value) and let Deref read the referent. Or the reference dies
+        // with its minting site: then ConnectDeref must drop its cached target too.
+        // Document the rule in design/place_references.md and pin it. Unverified: the
+        // reviewer's report, not checked by a verifier. (x-rerun-1-06)
         ctx.env.byref_chain.remove(&self.id);
         ctx.rt.store_remove(&self.id);
         self.unregister(ctx);
@@ -1592,6 +1752,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             Some(mut tv) => {
                 // a move of the path is a new element, read fired
                 let t = match moved {
+                    // CR claude for claude: [bug/medium] A path move is promoted to a
+                    // real event even under a wake view. Tag::fresh clears STALE and
+                    // WAKE, so when an arm wakes after its moving place reference
+                    // (`&a[i]`) changed key during the sleep, the woken arm sees the
+                    // move as a new fire even though a selected reader already consumed
+                    // it. The result is that `~`, counters and `<-` targets tick at the
+                    // wake. A target move does not do this: it takes `join(addr)`, and
+                    // wake catch-up decides. ByRef::update already fires its cell on a
+                    // key move, so the child's tag (addr) carries the catch-up verdict.
+                    // Fix: promote with fresh() only outside a wake
+                    // (`!ctx.event.wake()`), otherwise use `tv.tag().join(addr)`. Give
+                    // the bottom arm below (`|| moved == Moved::Path`) the same guard.
+                    // Add a pin beside deref_fires_on_address. probe:
+                    // design/review-2026-10-12/repro/c-bind-05.gx (c-bind-05)
                     Moved::Path => tv.tag().join(addr).fresh(),
                     Moved::No | Moved::Target => tv.tag().join(addr),
                 };

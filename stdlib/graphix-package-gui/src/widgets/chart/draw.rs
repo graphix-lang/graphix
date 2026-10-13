@@ -205,6 +205,14 @@ fn plot_info(
 
 /// Set up the mesh of a 2D chart; an x axis that cannot take zero grid
 /// lines (datetime, categories) gets `$x_min_lines`.
+// CR claude for claude: [structure/low] configure_mesh!, draw_xy_body! and xy_chart!
+// exist only to instantiate the 2D drawing over each x coordinate type, and they hide
+// control flow. configure_mesh! returns from the enclosing cache closure, and xy_chart!
+// returns error!(..), neither visible at the call site. The bodies are type-checked
+// only per expansion, with errors reported at the expansion site. Make them generic
+// functions over the x coordinate: configure_mesh(chart, ..) -> bool, and
+// draw_xy(chart, w, cs, view, to_x) bounded on plotters' Ranged. draw() then returns
+// explicitly. (gui-chart-11)
 macro_rules! configure_mesh {
     ($chart:expr, $x_label:expr, $y_label:expr, $mesh_style:expr, $x_min_lines:expr) => {{
         let mut mesh_cfg = $chart.configure_mesh();
@@ -371,6 +379,23 @@ macro_rules! draw_xy_body {
                         pick(style.loss_color, DEFAULT_LOSS),
                     );
                     let bw = style.bar_width.unwrap_or(5.0) as u32;
+                    // CR claude for claude: [bug/medium] Candlesticks and error bars
+                    // filter only on x, and `View::clamp_y` keeps NaN. plotters'
+                    // `RangedCoordf64::map` turns a NaN y into `limit.0`, so a candle
+                    // with a NaN low or close, or an error bar with a NaN min, is drawn
+                    // to the bottom edge of the plot. Because open and close are
+                    // clamped separately, a gain candle whose body lies wholly past one
+                    // edge compares Equal in `CandleStick::new` and gets the loss
+                    // style. The 3D series (Scatter3D/Line3D below) filter nothing:
+                    // `Cartesian3d::map_3d` maps NaN to the axis minimum corner, and a
+                    // point outside a user x/y/z range projects outside the cube.
+                    // `compute_3d_ranges` skips those same points, so the drawing and
+                    // the range disagree. Fix: apply the 2D XY rule everywhere. Leave
+                    // out a candle or error bar with any non-finite y. Choose the gain
+                    // or loss style from the unclamped open and close. For 3D, skip
+                    // non-finite points (break Line3D runs as `clip_polyline` does) and
+                    // drop or clip points outside the 3D ranges. Probe:
+                    // design/review-2026-10-12/repro/gui-chart-04.gx. (gui-chart-04)
                     let y = |v: f64| view.clamp_y(v);
                     let candles =
                         d.pts.iter().filter(|p| view.contains_x(p.x)).map(|p| {
@@ -457,6 +482,18 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
         bounds: iced_core::Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<iced_canvas::Geometry<Renderer>> {
+        // CR claude for claude: [bug/high] The geometry cache and plot_info live in
+        // ChartState, and iced keeps that state by position. A chart that
+        // Children::update keeps (keep_equal) but that moves to another chart's index
+        // takes over that chart's filled cache, and its dirty flag is false. If the
+        // bounds are equal, Cache::draw returns the other chart's picture. A swap [a,
+        // b] -> [b, a] shows each chart in the other's place until a mouse event clears
+        // the cache. reset_view also leaves plot_info as the other chart's, so the
+        // first wheel or press zooms or pans from the wrong ranges. Fix: keep the Cache
+        // and plot_info in ChartW, as canvas.rs does. Clear the cache in handle_update
+        // in place of dirty, and in handle_event when the view changes. ChartState then
+        // holds only the owner-checked view and interaction state. probe:
+        // design/review-2026-10-12/repro/gui-chart-02.rs (gui-chart-02)
         if self.dirty.get() {
             state.cache.clear();
             self.dirty.set(false);
@@ -571,6 +608,21 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         .unwrap_or_else(|| pad_range(lo, hi));
                     label_areas(&mut builder, y, descs, mesh_style, label_sz, (15, 8));
                     let mut chart = match builder.build_cartesian_2d(
+                        // CR claude for claude: [bug/low] With exactly one category,
+                        // plotters' RangedSlice::map divides by len - 1 = 0, and NaN
+                        // rounds to pixel 0. The bar itself is fine, because plotters
+                        // clamps element coordinates to the plotting area. The category
+                        // tick label is not clamped: it lands at plot_width/2 from the
+                        // canvas edge, which puts it limit.0 pixels (chart margin plus
+                        // y-label area) left of the bar's centre, and inside the
+                        // y-label area on a narrow chart. Fix: build the axis from an
+                        // index range, `(0..n as i32).into_segmented()`, with an x
+                        // label formatter that maps the index to `categories[i]`. That
+                        // never divides by zero and matches the (0, n) x_range that
+                        // `plot_info` records for the hit test. Pin it with a
+                        // one-category test that checks the label's x against the plot
+                        // rect's centre. probe:
+                        // design/review-2026-10-12/repro/gui-chart-03.rs (gui-chart-03)
                         categories.as_slice().into_segmented(),
                         y.0..y.1,
                     ) {
@@ -608,6 +660,18 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     draw_legend(&mut chart, self, chart_style, label_sz);
                 }
                 ChartMode::Pie => {
+                    // CR claude for claude: [bug/low] The pie is chosen in two places
+                    // that disagree. This find_map takes the first Pie entry whose data
+                    // is Some, even when that data is empty or has no positive slice.
+                    // find_nearest_point instead hit-tests every pie with mode() ==
+                    // Some(Pie) and keeps the last. With two pies the chart draws the
+                    // first and hovering shows the second's categories. With an empty
+                    // first pie the mode is Pie but nothing is drawn. Choose the pie
+                    // once, in a helper filtering ds.mode() == Some(ChartMode::Pie)
+                    // that both draw and find_nearest_point call. Or refuse two pies
+                    // with data as a mode conflict, as ChartMode::of refuses mixed
+                    // kinds, and say so in the book. probe:
+                    // design/review-2026-10-12/repro/gui-chart-05.gx (gui-chart-05)
                     let Some((pie_data, pie_style)) =
                         self.datasets.iter().find_map(|ds| match ds {
                             DatasetEntry::Pie { data, style } => {

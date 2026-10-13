@@ -1,0 +1,1 @@
+val pair: fn<'a: Any>(x: 'a, y: 'a) -> Array<'a>;

@@ -1,0 +1,19 @@
+// x-expr-walks-03: Discernible stops at Abstract, so different abstract
+// values compare equal and collapse as map keys / under dedup.
+// run: graphix --no-cache design/review-2026-10-12/repro/x-expr-walks-03.gx
+// expected: refused at check, as `a.0 == b.0` (and `x == y` below) is:
+// "string and `A have the same runtime form", or ((false, 2), (false, 2, 2))
+// observed: ((true, 1), (true, 1, 1)), node-walk and JIT alike
+type T = Abstract<[`A, string]>;
+type Box<'a> = Abstract<'a>;
+let a = T(`A);
+let b = T("A");
+let x: [`A, string] = `A;
+let y: [`A, string] = "A";
+let c = Box(x);
+let d = Box(y);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(
+    (a == b, map::len({a => 1, b => 2})),
+    (c == d, array::len(array::dedup([c, d])), map::len({c => 1, d => 2}))
+)

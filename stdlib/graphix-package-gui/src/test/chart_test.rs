@@ -131,6 +131,16 @@ async fn series_style_stroke_width() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] This test, mesh_style,
+// dark_background_label_colors, legend_style and series_style_stroke_width assert only
+// that the draw recorded a plot area. That holds whether or not the background, mesh,
+// legend or stroke settings are applied, so a draw that ignored chart_style.background
+// would leave them all green. They do check that the style parses. Screenshot the chart
+// as frame_test::draw does and assert the dominant colour of the plot interior is the
+// requested background, and likewise for one legend or mesh property.
+// dataset_meta_with_color draws an empty series, so its colour is never used. Name the
+// two empty-data tests after what they check, which is that an empty series draws
+// nothing. (tests-gui-b-05)
 async fn background_color() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
@@ -234,6 +244,14 @@ async fn mesh_style_3d() -> Result<()> {
 /// chart drew from inherits that chart's cache. Its first draw must
 /// not trust it.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [structure/low] This test and markers_draw_on_every_series_kind
+// each rebuild the renderer, theme, bounds and Program::draw call that draw_in already
+// does. Each also re-imports GraphixTheme, ChartState, ChartW, NoExt, Point, Rectangle,
+// Size, mouse and Program, which the file's top-level use statements already provide.
+// Here, draw both harnesses through `draw_in(&tall, &state, size)` and `draw_in(&short,
+// &state, size)` with one shared ChartState and read y_range from the result. In the
+// markers test, use `assert!(draw(&h).await.is_some())`. Delete the local use
+// statements. (tests-gui-b-10)
 async fn fresh_chart_redraws_an_inherited_cache() -> Result<()> {
     use crate::{
         theme::GraphixTheme,
@@ -359,6 +377,15 @@ async fn far_points_outside_the_view_draw() -> Result<()> {
 /// A pie whose slices sum to nothing, or with a non-finite start angle,
 /// draws nothing rather than looping forever.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [doc-drift/low] The name and doc say a degenerate pie draws
+// nothing, but the second case asserts the pie draws: pie_start_angle maps a non-finite
+// angle to 0. The first case is not a zero-sum pie as far as the code is concerned,
+// because pie_slices drops the negative slice and draws the positive one. Its result,
+// and the 20px case's, are thrown away. As written, the test checks only that nothing
+// hangs. Rename it after that (a degenerate pie draws what it can, without looping).
+// Assert the first case is_some, so a pie_slices that stopped dropping the negative
+// slice is caught. Add an all-zero pie and assert what the draw records for it.
+// (tests-gui-b-04)
 async fn degenerate_pies_draw_nothing() -> Result<()> {
     let h = chart_harness(r#"&[pie(&[("in", 100.0), ("out", -100.0)])]"#).await?;
     let _ = draw(&h).await;
@@ -426,6 +453,14 @@ let result = chart(
 /// A view panned on one chart is not the view of a chart drawn after it
 /// from the same state, nor of the same chart once its mode changes.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] The doc says the panned view is also not the
+// view of the same chart once its mode changes, but the test only draws a different
+// chart, so the mode half of ChartState's (chart id, mode) owner reset is untested.
+// double_clicks_are_clicks_in_one_place likewise says a press that moves is a drag, yet
+// no step presses and moves. Add the two cases: pan a chart, then change its data from
+// numeric to a time series and assert x_view is not reused; and press, move past
+// CLICK_SLOP and release twice at one spot, asserting the view is not reset. Otherwise
+// trim both docs to what the tests do. (tests-gui-b-07)
 async fn a_view_belongs_to_its_chart() -> Result<()> {
     use iced_core::{event::Event, mouse::Event as ME};
     let numeric = chart_harness("&[line(&[(0.0, 0.0), (10.0, 10.0)])]").await?;

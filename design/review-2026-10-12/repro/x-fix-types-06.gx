@@ -1,0 +1,13 @@
+// x-fix-types-06: pre_unify_arg leaves an argument several union members admit to its own
+// check only when the formal is literally a Set; a union behind a typedef alias commits the
+// inline literal's open element cell to the first member.
+// command: graphix --check design/review-2026-10-12/repro/x-fix-types-06.gx
+// expected: checks (Array<string> is a member of D; `|x: [Array<f64>, Array<string>]|`,
+//   and `let y = ["a"]; g(y)`, both check)
+// observed: type mismatch Array<f64> does not contain Array<string>
+// the same refusal for a union nested in a tuple or struct formal:
+//   let g = |x: (i64, [Array<f64>, Array<string>])| 0; g((1, ["a"]))
+//   let g = |x: {a: [Array<f64>, Array<string>]}| 0; g({a: ["a"]})
+type D = [Array<f64>, Array<string>];
+let g = |x: D| 0;
+g(["a"])

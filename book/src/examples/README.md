@@ -11,6 +11,13 @@ change to the documentation.
 
 ## The gate
 
+<!-- CR claude for claude: [doc-drift/low] examples_compile builds every example, and
+every bench program, the way `graphix --expand` does (check, elaboration and fusion,
+under CFlag::ExpandSeq). It does not only check, as `graphix --check` would. That build
+is what verifies the #[native] in mandelbrot.gx; a check alone skips #[native]. Say
+"builds every example (check, elaboration, fusion) as `graphix --expand` does" here and
+in CLAUDE.md's Working conventions bullet ("typechecks every one in the plain gate"),
+then regenerate AGENTS.md. (examples-gui-06) -->
 `graphix-shell/tests/examples_compile.rs` typechecks every example
 against the full shell environment in the plain `cargo test`, as
 `graphix --check` would, so an example must check, not only parse. The

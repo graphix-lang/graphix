@@ -1,0 +1,9 @@
+// f-nodes-scalar-01: emit_neg_node skips widen_to_declared_repr; a widened neg cell panics the JIT link
+// run: graphix --no-cache f-nodes-scalar-01.gx   (also: graphix-fuzz check f-nodes-scalar-01.gx)
+// expected: runs silently (filter_err of a non-error is bottom), as with --no-fusion,
+//   and as the arith twin `f64:0. - y` does under fusion
+// observed: panic at fusion/emit/jit.rs "the JIT could not link emitted code: compile:
+//   Verifier errors", then "Error: loading initial modules / channel closed";
+//   the i32 form `filter_err({let x = -(i32:7 * i32:3); x})` fails the same way
+let y = f64:2.5;
+filter_err({let x = -y; x})

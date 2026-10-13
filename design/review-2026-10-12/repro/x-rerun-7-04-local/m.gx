@@ -1,0 +1,1 @@
+let mk = |#label: &[Line, null] = &null, #style: &[Style, null] = &null, #text_value: &[string, null] = &null, #value_style: &[Style, null] = &null, value: &i64| -> B {label, style, text_value, value_style, value}

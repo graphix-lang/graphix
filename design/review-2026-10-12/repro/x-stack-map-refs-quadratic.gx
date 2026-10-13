@@ -1,0 +1,11 @@
+// `==` on a recursive value holding references runs Type::map_refs, which
+// picks a union member with a full `is_a` of the remaining value at every
+// level: n = 2000 0.9s, 4000 4.2s, 8000 31s (debug build, --no-fusion).
+type L = [`Cons(&i64, L), `Nil];
+let n = 8000;
+let z = 7;
+let init: L = `Nil;
+let l = array::fold(array::init(n, |i| i), init, |acc, i| `Cons(&z, acc));
+let l2 = array::fold(array::init(n, |i| i), init, |acc, i| `Cons(&z, acc));
+sys::exit(sys::time::after_idle(duration:120.s, 0));
+l == l2

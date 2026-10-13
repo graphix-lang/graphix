@@ -230,6 +230,15 @@ fn nth_stmt(root: &Expr, i: usize) -> Option<&Expr> {
 }
 
 /// Every mutant of `body` the families take, up to `cap` per family.
+// CR claude for claude: [risk/low] `typemorph::probes` skips a body that contains
+// `tm__` or `Tm__`, but this runs on the same body unguarded and inserts `tm__0`,
+// `Tm__1` and `TmSame`. Corpus pins bind `tm__0`. Take a body whose lambda reads an
+// outer `tm__0`. rigid-var's `let tm__0 = x == 1` shadows it, and the mutant is also
+// refused for returning bool, so a regression of the rigid-variable rule still reads
+// ok. Apply the same guard here (no probes for a body holding `tm__`, `Tm__` or
+// `TmSame`), or draw fresh names absent from the body. Sharing one helper with
+// typemorph keeps the two lists from drifting. probe:
+// design/review-2026-10-12/repro/fuzz-mutate-12.gx (fuzz-mutate-12)
 pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     let Some(root) = mutate::parse(body) else { return Vec::new() };
     let pre = mutate::preorder(&root);
@@ -260,6 +269,15 @@ fn same_form(root: &Expr, pre: &[Expr], cap: usize, out: &mut Vec<RejectProbe>) 
             break;
         }
         let e = &pre[i];
+        // CR claude for claude: [bug/low] same_form never reads the type map, so it
+        // also mutates a select whose scrutinee's type holds Any. Type::rep_collision
+        // finds no rep head for Any and passes, so the widened `[Any, `TmSame]` against
+        // a `string as x` arm is rightly accepted, and the lane reports a false `LEAK:
+        // accepted at select`. design/must_reject.md says a site whose type holds Any,
+        // an open cell or an abstract type is skipped. Pass `types` to same_form and
+        // skip the select unless the map's type for its scrutinee is `concrete` and
+        // holds no Any or abstract type, as the other families gate. probe:
+        // design/review-2026-10-12/repro/fuzz-mutate-02.sh (fuzz-mutate-02)
         let ExprKind::Select(se) = &e.kind else { continue };
         let tests_string = se.arms.iter().any(|(p, _)| {
             matches!(&p.type_predicate, Some(Type::Primitive(t)) if t.contains(Typ::String))
@@ -271,6 +289,20 @@ fn same_form(root: &Expr, pre: &[Expr], cap: usize, out: &mut Vec<RejectProbe>) 
             ExprKind::Variant { tag: ArcStr::from("TmSame"), args: Arc::from_iter([]) }
                 .to_expr_nopos();
         let mut arms = se.arms.to_vec();
+        // CR claude for claude: [bug/medium] Only a final `_` counts as a catch-all
+        // here. A select whose last unguarded arm is a bind (`y => ..`) gets `_ =>
+        // never()` appended anyway. That arm is dead and refused on its own
+        // ("unreachable arm") inside the select's span, so must_reject reports the
+        // mutant ok even if the one-runtime-form rule stops refusing. Probe:
+        // design/review-2026-10-12/repro/fuzz-mutate-03.sh. There, `REJECT same-form#4
+        // ok`, and the mutant with a non-colliding widening is still refused at the
+        // select. Fix: treat any final unguarded, untyped arm whose structure catches
+        // everything (bind, ignore, an or-pattern holding one, as catches_any in
+        // variant_widen does) as wild. Separately, must_reject checks only the error's
+        // position, so any family whose mutant has a second unrelated error at the
+        // expected site has the same blind spot. Giving each Family the error head its
+        // rule produces, and classing a right-site refusal with another head as its own
+        // verdict, would close it. (fuzz-mutate-03)
         let wild = arms.last().is_some_and(|(p, _)| {
             p.guard.is_none()
                 && p.type_predicate.is_none()
@@ -340,6 +372,16 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
             }));
             writes += 1;
         }
+        // CR claude for claude: [bug/medium] `pinned` checks only that the map shows x
+        // as a concrete primitive. When x is a `let` over ⊥ (`let x = never()`), the
+        // map shows what x's cell resolved to, and the mutant's `&mut Any` annotation
+        // decides that cell to Any instead. The mutant `{ let x = never(); let r: &mut
+        // Any = &mut x; *r <- 2; x }` is therefore rightly accepted, and the family
+        // reports a false `ref-widen LEAK: accepted at let`. Fix: skip a referent whose
+        // binding is open, the same way the other families skip use-decided leaves.
+        // That means testing `TypeMap::cell` on the referent or on its defining `let`,
+        // or applying `typemorph::open_value` to that let's initializer. probe:
+        // design/review-2026-10-12/repro/fuzz-mutate-04.sh (fuzz-mutate-04)
         let pinned =
             types.of(x).first().is_some_and(|t| concrete(t) && primitive(t).is_some());
         if pinned && widens < cap {
@@ -899,6 +941,20 @@ fn widen_consumer(
     // a lambda with an unannotated parameter: the parameter may be a cell
     // shared with the environment (`|y| z <- y` over `let z = never()`),
     // which a call widens rather than refuses
+    // CR claude for claude: [bug/medium] The skip for a callee with an unannotated
+    // parameter is built only from top-level `let f = <lambda literal>` names and
+    // matched only when the callee is a bare `Ref` to one of them. A callee that
+    // reaches the same shared cell another way is not skipped: a struct field
+    // (`s.f(..)`), a lambda literal applied directly, an alias (`let g = f; g(..)`), or
+    // a lambda under a block (`let f = { ..; |y| z <- y }`). Over `let z = never()` the
+    // call rightly widens z's cell to `[i64, string]`, the checker accepts, and
+    // typemorph reports `FLIP widen-consumer#N LEAK: accepted at call`, a false
+    // unsoundness report that lands in triage and the typeflip corpus. Fix: decide the
+    // skip from the callee's definition, not its name: take the Apply consumer only for
+    // a builtin or module path or a let-bound lambda whose parameter at that position
+    // is annotated, and skip every other callee shape; add the four bodies as must-skip
+    // cases to the lib test. probe: design/review-2026-10-12/repro/fuzz-mutate-01.sh
+    // (fuzz-mutate-01)
     let inferred: AHashSet<&str> = pre
         .iter()
         .filter_map(|e| match &e.kind {
@@ -1003,6 +1059,21 @@ fn retype(
         };
         // a let over ⊥ (its type a cell the first use decides) takes a
         // writer's type rather than refusing it
+        // CR claude for claude: [test-gap/medium] `types.cell(stmt)` is meant to skip a
+        // let over ⊥, but `record_expr_types` marks any node whose type is a
+        // `Type::TVar`, and `Bind::compile` keeps the initializer's type as the let's
+        // type. So every `let v = f(..)` (a call's return cell), and every let over a
+        // reference to such a binding, is skipped here and in `widen_through_let`.
+        // These are the most common lets in generated code, and their writer mutant is
+        // refused (`v <- "tm"`: 'v is i64 and cannot hold string'). The fix is to
+        // decide "over ⊥" from the initializer rather than the let. A ⊥ initializer's
+        // own type is Bottom (`disjoint_literal` already turns it down), and a call is
+        // never open, as the `open` closure in this file already rules. Mark the let as
+        // `cell` only when Bind seeds a fresh cell (its Bottom branch), so a reference
+        // to such a let still counts, and add a call-let case to the lib test's retype
+        // sites. probe:
+        // design/review-2026-10-12/repro/fuzz-mutate-retype-skips-call-lets.gx
+        // (fuzz-mutate-05)
         if matches!(b.value.kind, ExprKind::Lambda(_)) || types.cell(stmt) {
             continue;
         }

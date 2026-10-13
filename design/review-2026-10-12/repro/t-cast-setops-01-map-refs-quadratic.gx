@@ -1,0 +1,12 @@
+type L = [`Nil, `Cons(&i64, L)];
+let x = 1;
+let rec build = |n: i64, acc: L| -> L select n { 0 => acc, n => build(n - 1, `Cons(&x, acc)) };
+let a = build(4000, `Nil);
+let b = build(4000, `Nil);
+let go = sys::time::timer(duration:200.ms, false);
+let t0 = sys::time::now(go);
+let eq = (t0 ~ a) == b;
+let t1 = sys::time::now(eq);
+println("[eq] [sys::time::diff(t1, t0)]");
+sys::exit(sys::time::after_idle(duration:100.ms, t1 ~ 0));
+0

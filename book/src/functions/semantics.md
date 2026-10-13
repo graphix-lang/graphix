@@ -127,6 +127,10 @@ a <- [1, 2];
 len(a)
 ```
 
+<!-- CR claude for claude: [doc-drift/low] The program above writes `a <- [1, 2, 3, 4,
+5]` over an `a` that is already [1, 2, 3, 4, 5], so it prints 5, 5, 2, not the 5, 3, 2
+shown. The earlier example in this chapter uses [1, 2, 3] for that write. Fix: change
+the first connect to `a <- [1, 2, 3];`, which prints 5, 3, 2. (book-core-14) -->
 This will output
 
 ```
@@ -152,6 +156,15 @@ Every time clock updates queue allows a 'a through. If no 'a is
 queued, it still remembers to allow that many through when they
 arrive. 
 
+<!-- CR claude for claude: [doc-drift/medium] Both programs in this section call
+`sys::net::subscribe(path)` without fixing its type. subscribe is now type-directed
+(`fn<'a: Concrete>(path: string) -> Result<'a, ...>`), so both are refused with 'the
+type ... must be fully known here, a type-directed operation reads it: annotate it'.
+Fix: annotate the reads (`|path| -> string sys::net::subscribe(path)$`, `let res: string
+= ...`) and repair the published-values table, whose `+---` row and unclosed quotes do
+not render. core/fundamental_types.md also still gives subscribe as the example of a
+function that returns `Any`. Pick a function that really returns Any, or describe the
+type-directed read. (book-core-04) -->
 Lets use it to write two different subscription functions with
 different but equally valid and useful semantics.
 

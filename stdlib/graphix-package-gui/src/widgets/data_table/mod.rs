@@ -98,6 +98,17 @@ pub(crate) struct DataTableW<X: GXExt> {
     sort_by: LPooled<Vec<SortBy>>,
     /// Set of selected cell paths (`row_path` for the row-name column,
     /// `row_path/col_name` otherwise), controlled by graphix.
+    // CR claude for claude: [bug/medium] The selection is an AHashSet, and ahash seeds
+    // its RandomState from getrandom, so the iteration order changes from one process
+    // to the next and from one parse to the next. With several cells selected,
+    // `ensure_selection_visible` scrolls to the first off-screen cell in hash order.
+    // `handle_table_key` also starts from the first member in hash order: arrow keys
+    // move from it, Enter fires on_activate for its row and Space edits it. The same
+    // program and input can therefore jump to row 1 on one run and row 90 on the next,
+    // or activate a different row. Fix: keep the program's order (an IndexSet, or the
+    // parsed Vec beside a set used for membership). Both sites then take the first
+    // selected cell in that order. Add a pin with two off-screen selections and a key
+    // press over a multi-cell selection. (tests-gui-a-01)
     selection: LPooled<AHashSet<ArcStr>>,
     on_activate: Handler<X>,
     on_select: Handler<X>,
@@ -323,6 +334,19 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 let was_netidx = e.parsed.is_netidx();
                 e.r.last = Some(v.clone());
                 e.refresh_from_last();
+                // CR claude for claude: [bug/high] A source fire re-sorts only when the
+                // source switches between netidx and stored. A stored column (a
+                // `string` or `Map` source, or a `Netidx(map)` fallback that virtual
+                // rows read) has no SortMarker subscription to set `sort_col_dirty`, so
+                // when its value changes the cells redraw with the new value but the
+                // rows keep their old order until the table or sort_by changes. With
+                // static rows that can be forever. The gxi and the book present stored
+                // sources as the way to build computed sort columns. Fix: when the
+                // fired column is named in `self.sort_by`, re-sort too (set
+                // `reconcile`, or call `sort_rows` then `update_subscriptions`), and
+                // add a pin. Probe: design/review-2026-10-12/repro/gui-datatable-02.rs
+                // (after p0 <- "0" the column reads 1 2 0 instead of 0 1 2).
+                // (gui-datatable-02)
                 reconcile |= was_netidx != e.parsed.is_netidx();
                 source_fired = true;
                 changed = true;
@@ -364,6 +388,14 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         Ok(changed)
     }
 
+    // CR claude for claude: [structure/medium] The rule for a cell's text is written
+    // out five times: `data_table_snapshot` here, the grid rows in render,
+    // `auto_fit_all_columns`, `handle_cell_edit` and `sort_value_for`. The rule is: the
+    // live formatted value, else `default_for` in Table mode, and the row's
+    // VALUE_COL_KEY cell with no default in Value mode. Every `snap.grid` assertion
+    // reads this copy, not render's. A change to what render shows, or to this copy
+    // alone, passes every grid test. Add one `cell_text(&inner, row, col)` that covers
+    // both modes and call it from all five sites. (tests-gui-a-04)
     #[cfg(test)]
     fn data_table_snapshot(&self) -> Option<super::DataTableSnapshot> {
         let mut sel: Vec<String> = self.selection.iter().map(|s| s.to_string()).collect();

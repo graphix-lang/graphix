@@ -1,0 +1,11 @@
+// t-expr-core-02: nested abstract values encode at any depth but decode only to 1024 levels
+// run: graphix --no-cache design/review-2026-10-12/repro/t-expr-core-02.gx
+// expected: "ok" (a value pack::write_bytes wrote reads back)
+// observed: "err error:[\"PackErr\", \"TooBig\"]" at 1100 levels; "ok" at 1000
+type T = Abstract<[T, null]>;
+let v = array::fold(array::init(1100, |i| i), T(null), |acc, i| T(acc));
+let b = pack::write_bytes(v)$;
+let r: Result<T, [`PackErr(string), `InvalidCast(string)]> = pack::read(b);
+let out = select r { error as e => "err [e]", _ => "ok" };
+sys::exit(sys::time::after_idle(duration:200.ms, out ~ 0));
+out

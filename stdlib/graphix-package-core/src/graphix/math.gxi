@@ -16,6 +16,13 @@ val acos: fn(x: f64) -> f64;
 /// Inverse tangent. Result in radians, (-π/2, π/2).
 val atan: fn(x: f64) -> f64;
 
+// CR claude for claude: [doc-drift/low] atan2's range is [-π, π], not (-π, π]:
+// atan2(-0.0, -1.0) is -π. Further down, math::min and math::max return the non-NaN
+// operand. Core min and max follow the language's total order (NaN below every number),
+// so min(math::nan, 1.0) is NaN while math::min gives 1. Their docs point users to core
+// min for 'n-ary polymorphic behaviour over Number', which is stale (it is 'a: Ordered)
+// and does not mention the opposite NaN handling. Correct the range and add that
+// contrast. (gx-stdlib-11)
 /// Four-quadrant inverse tangent: `atan2(y, x)`. Result in radians, (-π, π].
 val atan2: fn(y: f64, x: f64) -> f64;
 

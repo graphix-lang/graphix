@@ -1,0 +1,13 @@
+// small-pkgs-06: rand::pick and rand::shuffle keep their old value through a bottom input
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-12/repro/small-pkgs-06.gx
+// (same with --no-fusion)
+// expected: (0, 7) only: x is bottom from t = 1 on, so pick(x) and the tuple are bottom
+// (array::len(x), rand::rand(#clock: x) and uniq(x) in its place print only the first tuple)
+// observed: (0, 7) then (1, 7); rand::shuffle(x) in its place prints (0, [7]) then (1, [7])
+let t = 0;
+t <- sys::time::timer(duration:50.ms, false) ~ 1;
+let x: Array<i64> = select t { 0 => [7], _ => never() };
+let y = 0;
+y <- sys::time::timer(duration:150.ms, false) ~ 1;
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(y, rand::pick(x))

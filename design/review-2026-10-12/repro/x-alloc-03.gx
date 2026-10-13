@@ -1,0 +1,8 @@
+// x-alloc-03: array::sort(#numeric: true) re-casts both operands on every
+// comparison (sort_values' `cn`), so a numeric sort of strings re-parses
+// O(n log n) strings: 40000 strings take ~20x the plain sort's time.
+// Flip #numeric to false to compare.
+let xs = array::init(40000, |i| "[(i * 7919) % 200003]");
+let s = array::sort(#numeric: true, xs);
+sys::exit(sys::time::after_idle(duration:200.ms, array::len(s)));
+s[0..3]

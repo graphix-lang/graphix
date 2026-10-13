@@ -1,0 +1,20 @@
+// x-expr-walks-05: a dynamic module bound in a seq step is invisible to
+// the steps after it. seq.rs is_declaration excludes `mod m dynamic`, so
+// the module is lowered as a step value, and entry_fire's
+// `{ let seqvN = <e>; any(pc ~! seqvN, seqvN) }` block scopes `foo` away.
+// Command: graphix --no-cache x-expr-walks-05.gx
+// Expected: 1 (as with `seq t {` replaced by `{`).
+// Observed: refused, "foo::x not defined". The bare `mod foo dynamic {..}`
+// statement, and the same pair inside a `{ .. }` statement of the seq
+// (lower_block's `let seqbN = ..`), are refused the same way.
+let t = 1;
+let r = seq t {
+  let s = mod foo dynamic {
+    sandbox unrestricted;
+    sig { val x: i64 };
+    source "let x = 1"
+  };
+  foo::x
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

@@ -1,0 +1,5 @@
+trait Cmp { val lt: fn<'a: Any>(self, x: 'a, y: 'a) -> bool };
+type W = Abstract<i64>;
+impl Cmp for W { let lt = 'a: Any |s: W, x: 'a, y: 'a| -> bool x < y };
+let a = 1;
+Cmp::lt(W(1), &a, &a)

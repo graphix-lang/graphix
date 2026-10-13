@@ -1,0 +1,35 @@
+// x-rerun-5-01: a List written by json::write_str / toml::write_str (flat,
+// by its static type) loses its last element on the typed read back when
+// that element is an empty array or list: the List cast with no static
+// source (typ/cast.rs, `list::len(v).is_some()`) takes a 2-element array
+// ending in [] for a cons cell.
+// command: graphix --no-cache design/review-2026-10-12/repro/x-rerun-5-01.gx
+//   (same output with --no-fusion)
+// expected: every line "equal true"
+// observed (HEAD 7324207f, debug build):
+//   json [[1,2],[]] -> [<[1, 2]>], equal false
+//   json -> [<[5], [1, 2], []>], equal true
+//   json -> [<[]>], equal false
+//   json [[1],[]] -> [<[<1>]>], equal false
+//   toml l = [[1, 2], []] -> [<[1, 2]>], equal false
+//   pack -> [<[1, 2], []>], equal true
+let l: List<Array<i64>> = [<[1, 2], []>];
+let s = json::write_str(l)$;
+let back: List<Array<i64>> = json::read(s)$;
+println("json [s] -> [back], equal [back == l]");
+let m: List<Array<i64>> = [<[5], [1, 2], []>];
+let back2: List<Array<i64>> = json::read(json::write_str(m)$)$;
+println("json -> [back2], equal [back2 == m]");
+let e: List<Array<i64>> = [<[], []>];
+let back3: List<Array<i64>> = json::read(json::write_str(e)$)$;
+println("json -> [back3], equal [back3 == e]");
+let k: List<List<i64>> = [<[<1>], [<>]>];
+let back4: List<List<i64>> = json::read(json::write_str(k)$)$;
+println("json [json::write_str(k)$] -> [back4], equal [back4 == k]");
+type R = {l: List<Array<i64>>};
+let r: R = {l: l};
+let back5: R = toml::read(toml::write_str(r)$)$;
+println("toml [toml::write_str(r)$] -> [back5.l], equal [back5 == r]");
+let p: List<Array<i64>> = pack::read(pack::write_bytes(l)$)$;
+println("pack -> [p], equal [p == l]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

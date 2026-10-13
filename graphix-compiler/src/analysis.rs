@@ -50,6 +50,13 @@ struct StaticEdge<'a, R: Rt, E: UserEvent> {
 /// holds them (every instance of a definition shares the machine's id),
 /// with the bind each is the value of.
 /// The instance a node belongs to; `None` outside every instance.
+// CR claude for claude: [readability/low] Five doc comments sit on the wrong item. The
+// paragraph above, "The instances reachable from an analysis root...", is
+// `StaticCallGraph`'s, which has no doc. `call_facts`'s doc begins with
+// `callee_facts`'s paragraph. `runs_hooks`'s doc begins with `local_summary`'s
+// paragraph. `is_work`'s doc begins with `check_parallel`'s paragraph. In branch.rs,
+// `Layered`'s paragraph sits on `SHRINK_FLOOR`. Move each paragraph onto the item it
+// describes. (c-analysis-branch-08)
 type Holder = Option<LambdaInstanceId>;
 
 struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
@@ -518,6 +525,20 @@ pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
         });
     }
     let own = |id: BindId| params.contains(&id);
+    // CR claude for claude: [bug/medium] Every call this definition check cannot
+    // resolve counts as PURE, not only a `let rec`'s own call. Take `let k = pick(x);
+    // k(x)`, a call through a local bound to a call's result: nothing later corrects
+    // its facts for a callback literal that only a builtin calls (filter, opt::map),
+    // because infer_effects never reaches that literal. callback_facts then joins these
+    // optimistic def facts into the builtin call. The result is that `#[sync] let g =
+    // |v: i64| filter(v, |x| { let k = pick(x > 0); k(x) })` is accepted while its
+    // result lands a timer reply later. The same body written without filter is
+    // refused. The same wrong facts also feed arm_sleeps and the `stateless` bit. Fix:
+    // keep PURE only for the definition's own parameters and its recursive self-binds,
+    // and give any other unresolved call `LambdaFacts::ASYNC`. The doc comment on
+    // call_facts ("anything else `Async`") would then be true again. This is the same
+    // root cause as c-lambda-01 (parameters); fix them together. probe:
+    // design/review-2026-10-12/repro/x-fix-nodes-02.gx (x-fix-nodes-02)
     let unresolved = Unresolved { params: &own, facts: LambdaFacts::PURE };
     walk_body(g, &mut |cs| match cs.fnode().view() {
         NodeView::Ref(r) if own(r.id) => LambdaFacts::PURE,
@@ -598,6 +619,18 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::SeqMachine(_)
         | NodeView::SeqCapture(_)
         | NodeView::Any(_)
+        // CR claude for eric: [perf/medium] never() is classified ASYNC here, which
+        // marks any function with a `never()` arm (the idiom the book teaches for 'no
+        // value here') as stateful or async. Its tail recursion then gets no loop head
+        // and keeps one activation per level, and #[tail_recursive] refuses it with a
+        // misleading message about stateful builtins. OrNever, which delivers the same
+        // standing bottom, is PURE, and the select emitter already lowers a never() arm
+        // as a pure standing bottom. Deciding: should never() with pure args be PURE?
+        // That also changes what #[sync]/#[async] and the arm-sleep skip see. If yes,
+        // emit_body_tail needs the never-arm rule that emit_select_value_arm uses
+        // (consume the args, return a STALE bottom), shared as one helper, or the
+        // change would de-fuse. probe: design/review-2026-10-12/repro/f-select-05.gx
+        // (f-select-05)
         | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         NodeView::Connect(c) => match own {
@@ -738,6 +771,22 @@ fn callback_facts<R: Rt, E: UserEvent>(
 ) -> LambdaFacts {
     let function = |n: &Node<R, E>| -> LambdaFacts {
         let lid = match n.view() {
+            // CR claude for claude: [bug/medium] A lambda literal handed to a builtin
+            // is judged here by its definition's facts alone. `def_body_facts` counts
+            // every call it cannot resolve as PURE: a parameter captured from the
+            // enclosing function, and the literal's own function parameters, which the
+            // builtin supplies from data. No instance analysis ever sees the literal's
+            // body, because the builtin instantiates it at run time. So `#[sync] |y, k|
+            // opt::map(y, |v| k(v))` and `#[sync] |m| opt::map(m, |g| g(3))` are
+            // accepted with an async `k` or `g`, while `opt::map(y, k)` and `k(y)` are
+            // correctly refused. Fix: for a literal argument, walk its checked body
+            // with `Unresolved::ASYNC`. Resolve captured function parameters through
+            // `fn_forward_resolutions` as `callee_own_facts` does, and count the
+            // literal's own function-typed parameters as unresolved. Alternatively,
+            // record in the definition whether its body made an unresolved call, and
+            // join ASYNC here when it did. Add pins for both shapes beside
+            // `sync_on_async_builtin_callback`. Probe:
+            // design/review-2026-10-12/repro/c-lambda-01.gx (c-lambda-01)
             NodeView::Lambda(l) => {
                 l.def_value().downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
             }
@@ -852,6 +901,23 @@ fn mark_recursion<R: Rt, E: UserEvent>(
                 lambda_def(ctx, g.id()).map_or(LambdaFacts::ASYNC, def_facts)
             })
             .is_pure();
+        // CR claude for claude: [bug/high] The tail-loop gate admits a body that
+        // reaches an Io builtin through a callee: `is_pure` does not exclude `io`, and
+        // `structural_tail_loop` / `claims_no_site_memory` only refuse collection loops
+        // and non-tail self-calls. The native loop then runs every pass under the
+        // kernel's one init view. In the node-walk, a depth first reached on a later
+        // cycle, or reached again after a shrink deleted it, is a fresh activation, and
+        // its callee's constant-triggered Io fires there. In the loop it never fires:
+        // dbg(7) prints once in the JIT and once per cycle in the node-walk. The
+        // non-tail native recursion handles this with the child block's fresh bit. Per
+        // tail_calls_are_calls.md, a loop that answers differently must recurse
+        // natively instead. So refuse `looped` when the body, transitively through
+        // callees, holds an Io call whose trigger does not derive from the formals, or
+        // OR a reached-depth high-water mark into each pass's init view. A related
+        // divergence, an Io in a callee under a select arm losing its entry/wake fire
+        // in a kernel even without recursion (`select n { 0 => g(n), n => n + 1 }`),
+        // may share the fix if arm_io_blocker looks through callees. probe:
+        // design/review-2026-10-12/repro/f-call-flow-02.gx (f-call-flow-02)
         let looped = pure
             && self_bind.is_some_and(|self_bind| {
                 lowering::structural_tail_loop(g, self_bind, ctx)
@@ -978,6 +1044,25 @@ fn arm_sleeps<R: Rt, E: UserEvent>(
                 let facts = node_facts(n, OwnTargets::All, &mut |cs| {
                     callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
                 });
+                // CR claude for claude: [bug/high] This decision misses events that a
+                // callee makes. raises_to_handler only sees a Qop written in the arm
+                // itself. callee_facts reports a callee's `?` as PURE, and node_facts
+                // under OwnTargets::Bound also reports a `<-` to a binding the lambda
+                // does not own as PURE. So an arm whose only raise or outer write
+                // happens inside a called helper is judged pure. It never sleeps and
+                // re-enters under View::Birth, which raises the standing error again or
+                // makes the write again on every re-selection. The inline form reads
+                // stale and does neither. Both engines agree on the wrong value: in the
+                // probe, `select s { 1 => (g(t), bump(n)), _ => (0, 0) }` prints (2,
+                // 3), while the same raise and write written inline print (1, 2).
+                // region_facts has the same gap for a fused arm: its `raises` looks
+                // only at the region's own Qops. Fix: give LambdaFacts an "event" bit,
+                // set by a handler-raising Qop and by a Connect to a non-own target
+                // under OwnTargets::Bound, and join it through callees and builtin
+                // callbacks the way io is joined. Then consult it here and in
+                // region_facts. Add callee-form pins next to
+                // lang::async_restart::reentry_raises_once. probe:
+                // design/review-2026-10-12/repro/x-fix-nodes-01.gx (x-fix-nodes-01)
                 *sleeps =
                     facts.sleeps() || raises_to_handler(n) || calls_recursive(n, ctx);
             }
@@ -1043,6 +1128,11 @@ impl Vars {
         }
     }
 
+    // CR claude for claude: [structure/low] `meets` repeats `meeting`'s unknown and
+    // small-into-large logic line for line. A change made to one copy only would make
+    // seq step planning (`plan_machines` uses `meets`) disagree with block and fork
+    // planning (which use `meeting`). Fix: make the body
+    // `self.meeting(other).is_some()`. (c-analysis-branch-09)
     fn meets(&self, other: &Vars) -> bool {
         match (self.unknown(), other.unknown()) {
             (true, _) => !other.is_empty(),
@@ -1098,6 +1188,14 @@ impl Summary {
 /// Whether `n` itself may run a core-trait impl (`Eq`, `Ord`,
 /// `Display`): a comparison or a print of a value that can hold an
 /// abstract one, or a kernel whose region holds one.
+// CR claude for claude: [doc-drift/low] Three items carry another item's doc paragraph
+// stacked on their own, and the item it belongs to has none. local_summary's doc sits
+// over runs_hooks. callee_facts' doc sits over call_facts. In node/callsite.rs,
+// update_args' doc sits over `type Published`. rustdoc and hovers show the wrong text.
+// Move each paragraph down to its own item. While moving callee_facts' doc, fix its
+// last clause. An unresolved callee contributes `unresolved.facts` (PURE under
+// def_body_facts), not `Async`, and a builtin call also joins its function arguments'
+// facts (callback_facts). (x-fix-nodes-04)
 fn runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
     let holds = |n: &Node<R, E>| n.typ().holds_abstract(env);
     match n.view() {
@@ -1218,6 +1316,18 @@ fn local_summary<R: Rt, E: UserEvent>(
         // a comparison or a print of an abstract value runs its core-trait
         // impl, whose reads no summary holds
         _ if runs_hooks(x, env) => s.opaque(),
+        // CR claude for claude: [perf/medium] After a warm image start, a child call's
+        // callee is still `Callee::Imaged` when a gather, argument, operator or slot
+        // site first updates. Its instance is not in the graph and `resolved_apply` is
+        // None, so this arm makes the call opaque. `ForkSite::decide_siblings` and
+        // `SlotSite::decide_siblings` then fix the site Dependent for the life of the
+        // program. The same program forks cold and never forks warm. Block plans avoid
+        // this only because `plan_blocks` runs at analysis and `Block::planned` is
+        // imaged. Fix: summarize an Imaged callee from the reference summary it carries
+        // (or its definition's check table), or keep the site Undecided while any child
+        // callee is still Imaged. Probe:
+        // design/review-2026-10-12/repro/c-analysis-branch-04.sh (cold prints "g 1"
+        // first, warm prints "f ..." first). (c-analysis-branch-03)
         NodeView::CallSite(cs) => {
             if let Some(t) = cs.static_target()
                 && graph.instances.contains_key(&t.instance)
@@ -1230,6 +1340,43 @@ fn local_summary<R: Rt, E: UserEvent>(
                 {
                     return callees.push(g.instance_id());
                 }
+                // CR claude for claude: [bug/medium] The seq lowering itself trips this
+                // arm. issue_call routes every issued call's arguments through
+                // `core::once(seqargs)`. When an argument is a reference, `reaches_out`
+                // holds and the whole step summarizes as opaque (reads all, writes
+                // all). plan_machines then makes every `seqq` capture live, including
+                // ones nothing writes. `seqq request { look(q); e }` with a read-only
+                // `look = |p: &mut i64| *p` reads `e` live (30 30 30) where `look2(1);
+                // e` keeps the enqueue snapshots (0 10 20). That contradicts
+                // design/seq_blocks.md §8: a dereferenced write makes no capture live.
+                // Callees that write through a captured reference already follow that
+                // rule. The step plan also over-serializes these steps. Fix: treat the
+                // pass-through builtins the seq lowering adds (`once`, and `hold` in
+                // the seqq preamble) as transparent here, summarizing their arguments
+                // rather than going opaque, or have issue_call snapshot the arguments
+                // without a builtin. Add a seqq pin to seq_steps.rs with a reference
+                // argument and an unwritten capture. probe:
+                // design/review-2026-10-12/repro/tests-seq-01.gx (tests-seq-01)
+                // CR claude for claude: [bug/high] An unnamed apply reads as a harmless
+                // builtin here. `Apply::view` defaults to `ApplyView::BuiltIn("")`, and
+                // `builtin_ordered("")` is false. So a bound queuefn wrapper call
+                // (`WrapperApply` does not override `view`) is neither ordered nor
+                // opaque, and the call to `f` inside it is never summarized.
+                // `independent` claims "a call not resolved yet is opaque, so this is
+                // decided before binds". That holds for `ForkSite`/`SlotSite`, which
+                // decide once, but `branch::fork_instances` prebinds and then calls
+                // `independent` on every update over instances that already ran. Two
+                // http::serve request handlers that both call a queuefn wrapper are
+                // then forked, and their queue pushes and `pop_count` hand-off race:
+                // GRAPHIX_PAR=off prints one fixed A/B order per tick, while
+                // force/auto/default flip it between ticks and runs. Fix: summarize an
+                // unnamed `BuiltIn("")` as opaque, and give `WrapperApply` a `view`
+                // that reads as ordered, or better, carry ORDERED on `ApplyView` itself
+                // so a wrapper cannot drop it. Then correct the doc on `independent`
+                // and add a pin for server instances. The existing ORDERED pins cover
+                // only siblings and slots. probe:
+                // design/review-2026-10-12/repro/c-analysis-branch-01.gx
+                // (c-analysis-branch-01)
                 Some(ApplyView::BuiltIn(name)) => {
                     s.ordered |= ordered(name);
                     let reaches = cs
@@ -1302,6 +1449,20 @@ fn instance_summaries<R: Rt, E: UserEvent>(
             callers.entry(*c).or_default().push(*i);
         }
     }
+    // CR claude for claude: [perf/medium] `instance_summaries` is quadratic even for
+    // one block, for two reasons. First, `local_summary` records every `Ref`, including
+    // the instance's own formals and lets, so each summary holds every bind id of its
+    // whole subtree. Second, this worklist pops in hash order, copies the instance's
+    // whole set on each pop (`acc.union(&sums[&i])`), and re-queues every caller after
+    // any change, so ancestors are re-unioned again and again. A binary call tree of
+    // 32768 instances spends about 3.9 s in Analysis, and the time grows 4x per
+    // doubling. A callee's own binds can never meet what a sibling statement publishes,
+    // so drop each instance's bound ids (its formals plus its body's
+    // `Refs::without_callees` bound set) before propagating. Then union each instance's
+    // callees once, in reverse topological order over `strongly_connected`'s
+    // components, iterating only the cyclic ones and making no full copy per pop.
+    // probe: design/review-2026-10-12/repro/x-perf-compile-04-summaries-fixpoint.gx
+    // (x-perf-compile-04)
     let mut work: LPooled<Vec<LambdaInstanceId>> = sums.keys().copied().collect();
     while let Some(i) = work.pop() {
         let mut acc = Summary::default();
@@ -1422,6 +1583,17 @@ fn plan_blocks<R: Rt, E: UserEvent>(
         if b.planned.get().is_some() {
             continue;
         }
+        // CR claude for claude: [perf/medium] Each block runs `accesses_in`, and
+        // `accesses_in` runs `instance_summaries` from scratch over every instance the
+        // block reaches. With B blocks over a chain of N instances whose read sets are
+        // O(N), the build is cubic: a chain of 400 block-bodied functions builds in
+        // about 3 s (6 s in debug) against 0.4 s for `--check`, and 800 takes 32 s.
+        // Compute the summaries once per analysis, over `graph.instances`, before the
+        // block loop. Then let `accesses_in` take that shared map and keep only the
+        // per-block `own` filtering. With x-perf-compile-04's fix each block then costs
+        // only its statements. probe:
+        // design/review-2026-10-12/repro/x-perf-compile-02-plan-blocks-cubic.gx
+        // (x-perf-compile-02)
         let accesses = accesses_in(b.children.iter(), graph, *holder, ctx);
         let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
         let _ = b.planned.set(plan);
@@ -1433,10 +1605,44 @@ fn plan_blocks<R: Rt, E: UserEvent>(
 /// collection's slots) compute in parallel what they do in order: none
 /// reads what an earlier one publishes, and no two make ordered calls.
 /// A call not resolved yet is opaque, so this is decided before binds.
+// CR claude for claude: [structure/low] independent and plan_runs each build the set of
+// what an earlier sibling publishes with their own copy of the same loop, and the
+// copies already differ. plan_runs also publishes every ByRef cell in the statement (a
+// later `*r` reads it), and independent publishes only the bound ids. No program found
+// today where the difference changes a fork decision, but the next change to what
+// counts as published will land in one copy only. Extract one `published(n, &mut Vars)`
+// (bound ids plus ByRef cells) and call it from both. (x-fix-nodes-05)
+// CR claude for claude: [bug/high] The premise on this doc ("a call not resolved yet is
+// opaque, so this is decided before binds") is false for collection slots. update_slots
+// asks this after the slots are bound, and local_summary follows
+// CallSite::resolved_apply, which is whatever instance the callback holds right now.
+// SlotSite::decide_siblings and ForkSite::decide_siblings keep the answer forever. So
+// when a dynamic callback changes from one that calls nothing ordered to one that calls
+// a queuefn wrapper, the slots keep forking, and the queue sees the calls out of order:
+// GRAPHIX_PAR=force (also auto with GRAPHIX_PAR_T=1) prints [301, 304, ..] where the
+// serial run prints [303, 304, ..]. Probe:
+// design/review-2026-10-12/repro/c-cost-misc-01.gx. There are two possible fixes. One
+// is to make the answer invariant under rebinding: here, a call with no static_target
+// counts as opaque even while it is bound. The other is to have a rebind of a slot's or
+// a call's callee reset the owning site's Siblings to Undecided. The second also covers
+// c-cost-misc-02's Nop-default case. (c-cost-misc-01)
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
 ) -> bool {
+    // CR claude for claude: [perf/medium] Every fork site that is not a block (an
+    // operator's operands, a call's arguments, a constructor's fields, a collection's
+    // slots) runs `independent` at its first update. Each run rebuilds
+    // `collect_static_graph_of` and `instance_summaries` over everything reachable
+    // below the site. A call chain with an operator at each level therefore pays
+    // quadratically in the first cycle under the default `GRAPHIX_PAR=auto`, and each
+    // new slot or activation pays again. At n=800 the first value takes 22 s with auto
+    // against 1.5 s with off (40 s against 3 s in debug). Decide these sites from
+    // summaries computed once. Either `analyze` keeps each instance's summary where
+    // `independent` can read it, or analysis decides each fork site's siblings the way
+    // `plan_blocks` decides blocks, and the decision rides the image. probe:
+    // design/review-2026-10-12/repro/x-perf-compile-03-independent-first-cycle.gx
+    // (compare GRAPHIX_PAR=auto with off) (x-perf-compile-03)
     let accesses = accesses(children.clone(), ctx);
     let mut published = Vars::default();
     let mut ordered = false;
@@ -1444,8 +1650,34 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
         if access.reads.meeting(&published).is_some() || (access.ordered && ordered) {
             return false;
         }
+        // CR claude for claude: [bug/medium] `independent` publishes only the ids
+        // `Refs::with_bound` reports. plan_runs also publishes each ByRef node's cell,
+        // because a moving place changes its path in the cycle it fires and a later
+        // `*r` reads that path. So a field or argument holding `&a[i]` and a later
+        // sibling that reads `*r` count as independent and fork. The forked reader then
+        // sees the old path for one cycle: the tuple `({ r <- &a[i % 4]; i }, *r)`
+        // prints (1, 10) where the serial node-walk prints (1, 20), and graphix-fuzz
+        // check reports a parallel divergence. Fix: write the "what a statement
+        // publishes" rule once (bound ids plus ByRef cells) as a helper that both
+        // plan_runs and independent call. probe:
+        // design/review-2026-10-12/repro/c-analysis-branch-02.gx (c-analysis-branch-02)
         let mut refs = Refs::without_callees();
         n.refs(&mut refs);
+        // CR claude for claude: [bug/high] `published` here holds only bound ids.
+        // `plan_runs` also counts every `NodeView::ByRef` cell in the statement,
+        // because a reference publishes its cell, and a moving place its path, in the
+        // cycle it fires. Because of this, a call argument, constructor field, operand
+        // or slot holding `&e` is judged independent of a later sibling whose `*r`
+        // reads that cell, and the fork reads a stale cell or path. Under
+        // GRAPHIX_PAR=force, `pair(&(i * 10), select held { .. r => *r })` prints -1
+        // and then nothing, where serial prints -1 10 20 ... 60. GRAPHIX_PAR_AUDIT
+        // panics, and graphix-fuzz check reports a parallel DIVERGENCE. The place form
+        // `#[parallel] (&a[i], .. *held)` reads the old path under the default auto
+        // mode. Fix: compute a statement's publications in one function that both
+        // `plan_runs` and `independent` call (bound ids plus every ByRef cell), and pin
+        // the call-argument and tuple shapes with `run!` fixtures. probe:
+        // design/review-2026-10-12/repro/x-parallel-01.gx (place form:
+        // x-parallel-01b-byref-place.gx) (x-parallel-01)
         refs.with_bound(|id| {
             published.ids.insert(id);
         });
@@ -1750,6 +1982,23 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
     fusion::for_each_node(target, &mut |n| {
         forks = forks
             || match n.view() {
+                // CR claude for claude: [bug/medium] Every map counts as a fork here,
+                // but a map whose callback is a function value never forks. Its
+                // prototype has no static target, so each slot calls through the
+                // callback parameter (`CallKind::Slot(None)`), `CallSite::prebind`
+                // leaves that call unbound, and `analysis::independent` reads it as
+                // opaque. `SlotSite::decide_siblings` then marks the site Dependent for
+                // good, and the slots run in order even under #[parallel] or
+                // GRAPHIX_PAR=force. So `#[parallel] array::map(xs, cb)` compiles but
+                // never runs in parallel, which breaks the assertion's contract (a
+                // compile error where nothing forks). Fix: count a MapQ as forking only
+                // when its prototype call resolves statically, and refuse the others
+                // with a reason ("the callback is a function value the compiler cannot
+                // resolve"). The alternative is to let a function-value callback fork
+                // by deciding slot independence after the slots bind, and deciding it
+                // again when the callback value changes. probe:
+                // design/review-2026-10-12/repro/x-parallel-04.gx Also reported as
+                // (c-analysis-branch-05). (x-parallel-04)
                 NodeView::MapQ(_) => true,
                 NodeView::Block(b) => {
                     let forks =

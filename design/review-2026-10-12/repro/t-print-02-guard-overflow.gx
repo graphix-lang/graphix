@@ -1,0 +1,7 @@
+// `graphix fmt --stdout` lays the arm head out on one 111-column line at
+// the default width 90: the pattern is measured against ` =>` alone, the
+// guard after it is not.
+select x {
+  `Aaaaaaaaaaaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccc, ddddddddd) if bbbbbbbbbbbbbbbbbbbbb => 1,
+  _ => 0
+}

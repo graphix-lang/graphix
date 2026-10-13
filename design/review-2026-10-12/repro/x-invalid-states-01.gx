@@ -1,0 +1,24 @@
+// x-invalid-states-01: a reference is a bare u64 at runtime; a select over Any
+// reads a reference's id (`u64 as n`) and forges a writable reference from any
+// u64 (`&mut Any as r`). Both pass the check (`graphix --check` exits 0).
+// command: graphix --no-cache x-invalid-states-01.gx   (and again with --no-fusion)
+// expected: the check refuses the `&mut Any as r` arm over Any (or the arm can
+//   never match a number), so `victim: i64` and `arr: Array<i64>` keep their types.
+// observed (JIT): `victim = 41`, `victim = a string`, then a panic at
+//   fusion/kernel.rs: "kernel param `arr`: runtime I64(1234567) does not match the
+//   compiled Array .. slot", "Error: runtime did not respond".
+// observed (--no-fusion): `victim = 41`, `victim = a string`, 6: an i64 binding
+//   holds a string and an Array<i64> binding is summed as [1, 2, 3] after holding an i64.
+let sum = |a: Array<i64>| -> i64 array::fold(a, 0, |acc, x| acc + x);
+let victim = 41;
+let arr: Array<i64> = [1, 2, 3];
+let id = |p: Any| -> u64 select p { u64 as n => n, _ => u64:0 };
+let forge = |n: u64, v: Any| select cast<Any>(n)$ {
+  &mut Any as r => { *r <- v; null },
+  _ => null
+};
+forge(id(&victim), "a string");
+forge(id(&arr), 1234567);
+println("victim = [victim]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+sum(arr)

@@ -202,6 +202,15 @@ fn put_header(buf: &mut BytesMut) {
     buf.put_slice(VERSION.as_bytes());
 }
 
+// CR claude for eric: [risk/low] A blob is accepted whenever the writer's
+// `CARGO_PKG_VERSION` matches. The AST's enums (`ExprKind`, `Type`, the patterns) use
+// derived `Pack`, which writes variant indices. So a variant inserted between two
+// builds at the same version string decodes as different kinds (one operator read as
+// another) with no error. That can happen when the AST-packing build-dependency and the
+// compiler come from different sources (git and registry). `unpack_module`'s doc claims
+// 'same compiler build', which nothing checks. Add a format key to the header: a
+// hand-bumped constant like `image::REGISTRATION_FORMAT`, pinned by a test over the
+// enum layouts, or a build-time hash of the AST types. (t-expr-core-07)
 fn check_magic(bytes: &mut &[u8]) -> Result<()> {
     if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
         bail!("packed AST: bad magic header");

@@ -1,0 +1,6 @@
+// expect: accepted (p7 twin, with v annotated, is); refused: 'q: string does not contain i64
+// the first member's probe ignores 'a: Number against a bound cell; its commit binds 'q := string, then fails
+let f = 'a: Number |x: [(Any, 'q, Array<'a>), (string, string, Array<[string, null]>)], y: 'q| -> i64 0;
+let s = "x";
+let v = [s];
+f(("s", "t", v), 3)

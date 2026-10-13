@@ -1,0 +1,19 @@
+// 32768 instances, one block: Analysis (instance_summaries' fixpoint) is
+// ~3.9 s of a ~5 s build and grows ~4x per doubling of the instances
+let f0 = |x| x + 1;
+let f1 = |x| f0(x) + f0(x);
+let f2 = |x| f1(x) + f1(x);
+let f3 = |x| f2(x) + f2(x);
+let f4 = |x| f3(x) + f3(x);
+let f5 = |x| f4(x) + f4(x);
+let f6 = |x| f5(x) + f5(x);
+let f7 = |x| f6(x) + f6(x);
+let f8 = |x| f7(x) + f7(x);
+let f9 = |x| f8(x) + f8(x);
+let f10 = |x| f9(x) + f9(x);
+let f11 = |x| f10(x) + f10(x);
+let f12 = |x| f11(x) + f11(x);
+let f13 = |x| f12(x) + f12(x);
+let f14 = |x| f13(x) + f13(x);
+sys::exit(sys::time::after_idle(duration:1.ms, 0));
+f14(1)

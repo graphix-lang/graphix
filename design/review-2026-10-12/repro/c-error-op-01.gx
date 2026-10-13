@@ -1,0 +1,21 @@
+// c-error-op-01: ErrChain is recognised by value shape at run time but by type in the check
+// Command: graphix --no-cache c-error-op-01.gx   (and with --no-fusion: same output)
+// The payload is typed Array<Array<string>>, so `?` raises Error<ErrChain<Array<Array<string>>>>
+// and `(e.0).error` checks as Array<Array<string>>. At run time `chain_error` in
+// node/error.rs takes the four [name, value] pairs for an existing chain and lifts
+// its "error" entry, so `(e.0).error` holds the string "x".
+// Expected: "first [\"cause\", \"w\"]"
+// Observed (both engines): select e.0.error { .. }: no arm matches "x": a coverage
+// hole in the check; out stays "none".
+// The tuple payload (("cause", 1), ("error", 2), ("ori", 3), ("pos", 4)) destructured
+// as ((_, a), (_, b), _, _) likewise yields nothing instead of 3.
+let out = "none";
+let r = {
+  catch(e) out <- select (e.0).error {
+    [] => "empty",
+    [a, ..] => "first [a]"
+  };
+  error([["cause", "w"], ["error", "x"], ["ori", "y"], ["pos", "z"]])?
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+out

@@ -1,0 +1,19 @@
+// expect: after = before - 50 (the 50 server sides closed, close returned null)
+// actual: after = before while a Lines reader is attached: the read half (and the fd) lives until the idle peer sends
+// (control: delete the `readers` line, then after drops by 50)
+use sys::io::{Lines, Close};
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(l)$;
+let clients = array::init(50, |i| sys::tcp::connect(addr)$);
+let conn = sys::tcp::accept(l, sys::time::timer(duration:5.ms, 60))$;
+let all = [];
+all <- conn ~ array::push(all, conn);
+let readers = array::map(all, |s| Lines::lines(s));
+let go = sys::time::timer(duration:500.ms, false);
+let closed = array::map(go ~ all, |s| Close::close(s));
+let fds = |t| array::len(sys::fs::readdir(t ~ "/proc/self/fd")$);
+let before = fds(sys::time::timer(duration:400.ms, false));
+let after = fds(sys::time::timer(duration:1500.ms, false));
+let r = (array::len(clients), array::len(all), before, after);
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0);
+sys::time::timer(duration:1900.ms, false) ~ r

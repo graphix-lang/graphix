@@ -1,0 +1,5 @@
+// `graphix fmt --stdout` rewrites the first literal as `duration:100000000.s`,
+// and a run prints `100000000.s`: the literal is read through an f64
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+
+[duration:100000000.000000001s, duration:1.000000001s]

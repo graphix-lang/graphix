@@ -1,0 +1,7 @@
+// json/toml/hbs writers serialize a reference as its session bind id: every mode
+// (interp/jit, cold/warm image) prints a different number for "a".
+// graphix-fuzz run small-pkgs-writer-ref.gx
+let y = 1;
+let x = 5;
+let s = {a: &x, b: 1};
+json::write_str(s)

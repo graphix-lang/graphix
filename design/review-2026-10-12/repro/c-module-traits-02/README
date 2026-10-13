@@ -1,0 +1,8 @@
+A declared impl (`impl Show for T;` in b.gxi) that takes a trait default from a
+sibling module a. main.gx has `mod a; mod b;` adjacent (a run of module checks in
+compile tasks); main3.gx puts `let z = 1;` between them (serial checks).
+
+  GXDBG_RESOLVE=1 graphix --no-cache main.gx  2>&1 | grep B2L-PROXY | tail -1   -> hit=false
+  GXDBG_RESOLVE=1 graphix --no-cache main3.gx 2>&1 | grep B2L-PROXY | tail -1   -> hit=true
+  GXDBG_CS=1 graphix --no-cache main.gx  2>&1 | grep -c "CS spec=a::Show"       -> 2 (dynamic dispatch)
+  GXDBG_CS=1 graphix --no-cache main3.gx 2>&1 | grep -c "CS spec=a::Show"       -> 0 (static)

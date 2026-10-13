@@ -1,0 +1,16 @@
+// `q@ (_, _)` over a union of two tuple types: the capture is typed from
+// the narrowed copy of the predicate, whose cells bound to the FIRST
+// member (i64, string), while the run-time predicate (Any, Any) admits
+// both members. `r: i64` holds "s" under the node-walk; the JIT yields 1
+// for `q.0 + 1` where the node-walk logs an arith error (graphix-fuzz
+// check: DIVERGENCE).
+let g = |p: [(i64, string), (string, i64)]| select p {
+  q@ (_, _) => q.0
+};
+let r: i64 = g(("s", 1));
+let h = |p: [(i64, string), (string, i64)]| select p {
+  q@ (_, _) => q.0 + 1
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let k = h(("s", 1));
+r

@@ -1,0 +1,12 @@
+// x-fix-stdlib-03: sys::net::write wraps its own WriteError in a second Value::Error
+// run: graphix --no-cache design/review-2026-10-12/repro/x-fix-stdlib-03.gx
+// expected: "WriteError: invalid path ..." (the handler's variant arm matches)
+// observed: stderr "no arm matches error:[\"WriteError\", ...]: a coverage hole in the check",
+// value "none"; the raw result prints error:error:["WriteError", ...]
+let out = "none";
+{
+  catch(e) out <- select (e.0).error { `WriteError(m) => "WriteError: [m]" };
+  sys::net::write("relative/path", 1)?
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+out

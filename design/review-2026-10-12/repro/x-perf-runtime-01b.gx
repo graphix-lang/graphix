@@ -1,0 +1,10 @@
+let size = 1000;
+let k = 2010;
+let n = 0;
+n <- n + 1;
+let rec f = |i| select i { 0 => 0, i => uniq(1) + f(i - 1) };
+let r = f(size);
+let t0 = sys::time::now(select n { 10 => n, _ => never() });
+let t1 = sys::time::now(select n { c if c == k => n, _ => never() });
+sys::exit(sys::time::after_idle(duration:50.ms, t1 ~ 0));
+(r, sys::time::diff(t1, t0))

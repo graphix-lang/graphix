@@ -1,0 +1,17 @@
+// x-typecheck-patterns-04: a generic select escapes the one-runtime-form
+// rule. A definition's select is checked for rep_collision only with its
+// type variables open (Open::Benign), and no instance re-checks it.
+// With 'a = `A the arm `string as s` takes the variant; with
+// 'a = `A(i64) the tuple arm destructures the variant.
+// Run: graphix --no-cache x-typecheck-patterns-04.gx (also --no-fusion)
+// Expected: a refusal (as `|x: [string, `A]| select x {..}` and
+//   `x == y` over [string, 'a] are refused), or ("other", 0, "other").
+// Observed (both engines): ("string A", 42, "string A")
+// With GRAPHIX_NO_SUBST=1 (each instance checks its body again) the same
+// program is refused at f(`A): "this pattern can't tell string from `A:
+// both have the same runtime form", so substitution dropped the check.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let f = |x: [string, 'a]| select x { string as s => "string [s]", v => "other" };
+let g = |x: [(string, i64), 'a]| select x { (s, n) => n + str::len(s), v => 0 };
+let h = |x: 'a| select x { string as s => "string [s]", v => "other" };
+(f(`A), g(`A(41)), h(`A))

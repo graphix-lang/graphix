@@ -6,6 +6,16 @@ shell by invoking `graphix` with no arguments.
 
 ## Numbers
 
+<!-- CR claude for claude: [doc-drift/low] The language has things this book never
+mentions. This list omits i8, i16, u8 and u16, and the Number Sets paragraph omits
+`Float`. The Bool section does not say `&&` and `||` are strict (`false && ⊥` is ⊥, no
+short circuit), which surprises anyone guarding an expression that may be bottom.
+recursion.md documents the stack budget but not the activation budget
+(GRAPHIX_ACTIVATION_BUDGET, Control::set_activation_budget). Nothing in the book covers
+parallel evaluation: #[parallel], #[serial], GRAPHIX_PAR, GRAPHIX_EVAL_THREADS, and the
+fact that external effects in forked branches are unordered. Fix: add the missing types
+and set, a sentence on strict boolean operators and the activation budget, and the
+deferred parallel-evaluation chapter. (book-core-16) -->
 `i32`, `u32`, `i64`, `u64`, `f32`, `f64`, and `decimal` are the fundamental
 numeric types in Graphix. Literals are written with their type prefixed, except
 for `i64` and `f64` which are written bare. for example, `u32:3` is a `u32`
@@ -36,6 +46,18 @@ Checked operators return a union type `[T, Error<`ArithError(string)>]`,
 allowing you to handle arithmetic errors explicitly using `?`, `$`, or
 `select`.
 
+<!-- CR claude for claude: [doc-drift/high] This section, and the sentence above the
+table ('implemented on all the number types with all the other number types'), describe
+the old arithmetic rule. Arithmetic is fn<'a: Number + Singleton>, so `1. + 1` is now
+refused ('cannot compute f64 + i64 ... cast one side explicitly'). The same old rule
+appears in functions/polymorphism.md 'Implicit Polymorphism' (`|x, y| x + y` as three
+independent Number variables, `f(1.0, 1)` returning Number) and in let_binds.md (`let x:
+Number = 1`, after which `x + 1` is refused). In polymorphism.md the one-argument
+OneNumber `f` is also called as `f(1.212, 2.0)`. Fix: say that both operands must be one
+numeric type and show the refusal and the cast. Replace the polymorphism walk-through
+with the Singleton reading that reading_types.md already gives, rename the OneNumber
+example's function, and choose a let_binds annotation example that still checks (e.g.
+`let x: [i64, null] = null`). (book-core-03) -->
 The compiler will let you do arithmetic on different types of numbers directly
 without casting, however the return type of the operation will be the set of all
 the types in the operation, representing that either type could be returned. If
@@ -476,6 +498,16 @@ O(log(N)) performance for all operations regardless of map size.
 
 ## Chaining Access Operators
 
+<!-- CR claude for claude: [doc-drift/low] Most of this section's examples are refused.
+Array and map indexing return a Result, so `data.users[0].name` fails ('expected struct
+not [{ name: string }, Error<`ArrayIndexError(string)>]'), as do `config{"db"}.port` and
+`matrix[i][j]`. A trailing `?` does not apply to the whole chain: `d.users[0].name?` is
+refused too, and the `?`/`$` must sit right after the fallible access
+(`data.users[0]?.name`). `(40 + 2).0` is a type error ('expected tuple not i64'). Fix:
+rewrite the examples with `?`/`$` at the index, explain where they go, and use a real
+tuple source such as `(a, b).0`. functions/overview.md also says a function stored in a
+struct sometimes needs `(s.f)(1, 1)`, but `s.f(1, 1)` works, so that advice can go.
+(book-core-12) -->
 The postfix access operators — struct field `.name`, tuple index `.0`, array
 index/slice `[i]` / `[i..j]`, map index `{key}`, and function call `(args)` —
 can be chained directly, left to right, without intermediate parentheses:

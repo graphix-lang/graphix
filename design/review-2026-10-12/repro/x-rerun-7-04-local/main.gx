@@ -1,0 +1,4 @@
+mod m;
+let a = array::init(1024, |i| m::mk(&(i % 10)));
+sys::exit(sys::time::after_idle(duration:10.ms, a ~ 0));
+0

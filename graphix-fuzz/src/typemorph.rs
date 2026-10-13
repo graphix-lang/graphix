@@ -192,6 +192,15 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         return (out, noparse);
     };
     let stmts: Vec<Expr> = stmts.to_vec();
+    // CR claude for claude: [structure/low] This computes each top-level statement's
+    // preorder index, as `mustreject::statements` also does. In mutate.rs,
+    // `mutate_once`, `reductions_all` and `drop_statement` each inline `preorder()`,
+    // and the test module defines its own `preorder`. Every one of these must agree
+    // exactly with `replace`'s indexing, so each copy is another place for the
+    // typemorph and must-reject site ids to drift apart. Keep one top-level statement
+    // helper in mutate (statement index, preorder index, expression), used by typemorph
+    // and mustreject. Have mutate's own callers and its tests call `preorder()`.
+    // (fuzz-mutate-13)
     let offsets: Vec<usize> = {
         let mut off = 1usize;
         let mut v = Vec::with_capacity(stmts.len());
@@ -238,6 +247,17 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     }
     // a let over ⊥ (or an empty collection) is a cell its first reader
     // decides, so two of its readers do not commute
+    // CR claude for claude: [bug/medium] `open` holds only lets whose own value is
+    // open. A let that reads an open name is left out, whether it is a lambda capturing
+    // it (`let f = |x: i64| z`) or an alias (`let v = z`). `permutable` and
+    // let-inline's `opens` check compare `open` with the names a statement mentions
+    // directly. So two statements that reach `z` through `f` or `v` still swap or
+    // inline, the first reader of `z` changes, and the mutant is refused. These are
+    // false TYPEFLIPs (stmt-permute and let-inline). Fix: make `open` transitive over
+    // the statement list, so any let whose value reads an open name (lambda bodies
+    // included) adds its own names, as `mustreject.rs::affected_stmts` does. Both
+    // guards then use that closure. Probe:
+    // design/review-2026-10-12/repro/fuzz-mutate-07.sh (fuzz-mutate-07)
     let open: HashSet<String> = stmts
         .iter()
         .filter_map(|st| match &st.kind {
@@ -430,6 +450,14 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 break;
             }
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
+            // CR claude for claude: [bug/low] alias-swap hoists any let annotation into
+            // `type Tm__0 = T` with no parameters. When `T` names a type variable (`let
+            // a: Array<'b> = [1]`), the typedef is refused with 'undeclared type
+            // variable', so the probe flips on a sound base. That is a false flip the
+            // scan records. Either skip an annotation that holds a TVar, or make its
+            // free variables the typedef's params and write `Tm__0<'b>` at the use.
+            // probe: design/review-2026-10-12/repro/fuzz-mutate-alias-swap-tvar.gx
+            // (fuzz-mutate-08)
             let Some(t) = &b.typ else { continue };
             let td = ExprKind::TypeDef(Arc::new(TypeDefExpr {
                 name: Name::from(TYP),
@@ -699,6 +727,18 @@ pub(crate) fn for_each_reached(
             reached &= !binds_after(st, f);
         }
     }
+    // CR claude for claude: [test-gap/low] One `inner` flag for all children hides the
+    // parts of a binding form that the outer `f` still reaches. Examples: a select's
+    // scrutinee and the arms whose pattern does not bind `f`, a seq's trigger
+    // expression when its trigger pattern binds `f`, and the value of a non-rec `let f
+    // = f(..)`. calls_reached and mustreject's uses_reached then miss those uses.
+    // Typemorph offers fewer call sites, and MonoReuse builds its expected refusal
+    // sites from an incomplete value-use list, so a refusal at a missed use can read as
+    // MISPLACED. Fix: scope per child. For Select, visit the arg with `reached` and
+    // each arm with `reached && !pattern_binds(arm pattern, f)`. For a non-rec Bind,
+    // visit the value with `reached`. For Seq, visit the trigger expression with
+    // `reached`, and visit abort, flush and body with the trigger-bind test.
+    // (x-expr-walks-07)
     let inner = reached && !binds(e, f);
     match &e.kind {
         ExprKind::Block { exprs } => stmts(exprs, f, reached, idx, visit),

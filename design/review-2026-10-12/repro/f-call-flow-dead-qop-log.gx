@@ -1,0 +1,7 @@
+let xs: Array<[i64, Error<`E>]> = [1, error(`E), 3];
+// f-call-flow-01: the dead `let u = r?` in the fused body of h is skipped (flow.rs
+// block_live), so the JIT never logs the unhandled error the node-walk logs.
+// Compare `graphix --no-cache --no-fusion` (prints "unhandled error ... E") with
+// `graphix --no-cache` (silent).
+let h = |r: [i64, Error<`E>]| -> i64 { let u = r?; 5 };
+array::map(xs, |r| h(r))

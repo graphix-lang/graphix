@@ -115,6 +115,16 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
     let reserved = [
         "true",
         "false",
+        // CR claude for eric: [doc-drift/low] `ok` is reserved, but no parser
+        // production, type or value literal uses it (netidx-value has no `Value::Ok`
+        // any more). So `let ok = check(x)` and `{ ok, err }` are refused with "`ok` is
+        // a reserved word" for a word the language does not use.
+        // book/src/udt/structs.md also lists `ok` among the literal words (`true`,
+        // `false`, `null`, `ok`), and `let x = ok` does not read it as a literal.
+        // Either drop `ok` from this list, from the book and from the graphix-lang
+        // skill's example, and switch `reserved_word_as_a_name_is_named` to a used
+        // reserved word such as `abort`. Or, if it is held for a planned feature, say
+        // so here and correct the book's sentence. (tests-parser-08)
         "ok",
         "null",
         "bytes",
@@ -615,6 +625,18 @@ where
         attempt(
             spaces().with((position(), look_ahead(satisfy(move |c| !closes(c))))).then(
                 move |(pos, _)| {
+                    // CR claude for claude: [readability/low] `separator` notes a
+                    // missing `,`/`;` whenever the next char is anything but `) ] } >
+                    // |`. That includes another separator or punctuation that points to
+                    // a different mistake, so the hint is often wrong. `let m = {"a":
+                    // 1};` gets the `;` note, `[`A, `B;` and `(x + 1;` get the `,` note
+                    // when the fix is the closing bracket, `|x: i64 -> i64 x` gets the
+                    // `,` note when the `|` is missing, and `mod a { let x = 1 }` gets
+                    // the `;` note. Note a missing separator only when the following
+                    // char could start an item (identifier, literal, opening bracket,
+                    // backtick, ...), not when it is `;`, `:`, `=`, `-` or another
+                    // separator. For a `;` inside a bracketed list, name the unclosed
+                    // opener instead. (x-errors-05)
                     grow::note_reason(pos, Some(1), CompactString::const_new(why));
                     satisfy(|_| false)
                 },
@@ -773,6 +795,14 @@ where
     I: StreamOnce,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
 {
+    // CR claude for claude: [bug/low] `finite` refuses only a bare non-finite F64/F32.
+    // The netidx value parser also reads floats inside `error:`, so `error:1e999`
+    // becomes `Constant(Error(F64(inf)))`. The program then runs and prints
+    // `error:f64:inf`, which no literal parses back, and `graphix fmt` refuses the file
+    // as a formatter bug. Make `finite` recurse into `Value::Error` (and any other
+    // container the value parser can produce), so the same "a float literal out of its
+    // type's range" refusal applies wherever the float sits. Probe:
+    // design/review-2026-10-12/repro/t-parser-a-error-literal-inf.gx. (t-parser-a-06)
     match v {
         Value::F64(f) if !f.is_finite() => {
             Err(grow::refusal::<I>(pos, "a float literal out of its type's range"))
@@ -889,6 +919,14 @@ where
         })
 }
 
+// CR claude for claude: [readability/low] `until` parses only as a seq statement
+// (seq_body_item). Inside a `{ .. }` block statement it hits the general expression
+// parser, and the user gets 'can't use keyword as a function or variable name' with a
+// dozen expected tokens. `try` in the same place gets a clear refusal from the seq
+// lowering ('try is a seq statement; write it at the seq level'). Fix: accept `until`
+// in a seq block's statements too and refuse it in the lowering with the same kind of
+// message ('until is a seq statement; write it at the seq level'). Also reported as
+// (x-engine-seq-errors-07). (book-core-18)
 fn until_expr<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1055,6 +1093,20 @@ where
                 sptoken('{'),
                 sptoken('}'),
                 spaces().with(sep_by1_tok(
+                    // CR claude for eric: [readability/low] `decorate` merges the
+                    // comments above an arm's pattern with those the body captured
+                    // below `=>`. The struct-field parser does the same with comments
+                    // under `name:`. leading_decorations also splits comments and
+                    // attributes into two lists. As a result `graphix fmt` moves a
+                    // comment written below `1 =>` above the pattern, and turns
+                    // `#[sync]` followed by `// note` into `// note` followed by
+                    // `#[sync]`. The per-node guard accepts this, and CLAUDE.md's
+                    // Formatter normalizations do not list it. Options: refuse
+                    // decorations after `=>` and after `name:`; keep the body's
+                    // decorations apart so the printer can put them back; or keep the
+                    // move and add it to CLAUDE.md's list. Either way, keeping comments
+                    // and attributes as one ordered list would preserve their order.
+                    // (x-formatter-03)
                     (leading_decorations(), pattern(), spstring("=>").with(expr()))
                         .map(|(dec, pat, body)| (pat, decorate(body, dec))),
                     csep(),
@@ -1265,6 +1317,18 @@ where
     (
         position(),
         token('`').with(ident(true)),
+        // CR claude for claude: [bug/low] `variant` consumes the whitespace after the
+        // tag even when no payload follows. Every span ending there (the Variant, a
+        // ByRef of it) then takes in the trailing spaces and newline: 27 corpus files
+        // have a variant span that runs onto the next line, so a diagnostic or hover on
+        // it covers the following indent. It also lets a postfix bind across the gap.
+        // `` let w = `B `` with `[0];` on the next line parses as `` (`B)[0] ``, while
+        // the same text with a name in place of the variant is a parse error. Consume
+        // the spaces only together with a payload:
+        // `optional(attempt(spaces().with(between(token('('), ..))))`. Whether `` `A
+        // (1) `` with a space should stay a payload variant, when `f (1)` is not a
+        // call, is a separate choice. Probe:
+        // design/review-2026-10-12/repro/t-parser-a-07.gx. (t-parser-a-07)
         spaces().with(optional(between(
             token('('),
             sptoken(')'),
@@ -1436,6 +1500,20 @@ where
     grow::parsing(text, || {
         p.skip(spaces())
             .skip(eof())
+            // CR claude for claude: [perf/low] Parsing user text is slower than
+            // checking it. A file of 4000 `let xN = N + 1;` lines spends about 0.4-1 s
+            // in the Parse phase against about 40 ms in ModuleCheck (debug build,
+            // GRAPHIX_PROFILE). Every script start and every LSP check of an edited
+            // file pays this, since only the stdlib arrives pre-packed. Likely causes,
+            // not yet profiled: - every failed alternative under `easy_parse` builds
+            // and merges `easy::Errors`, even where `many`/`optional` then throws them
+            // away; - `expr()` and `primary` try their alternatives in a fixed order
+            // (keywords first, `reference()` last), and `literal()` runs `idx()` before
+            // the netidx value parser. Measure the release build first. Then try
+            // parsing with a cheap error type and re-running under `easy_parse` only on
+            // failure, to build the message (FURTHEST/REASON are thread-locals, so the
+            // second pass reproduces them), and dispatching on the first character in
+            // `expr()` and `primary`. (t-parser-a-03)
             .easy_parse(position::Stream::new(text))
             .map(|(r, _)| r)
             .map_err(|e| {
@@ -1496,6 +1574,9 @@ pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
     parse_all(s, text_origin(s), expr())
 }
 
+// CR claude for claude: [dead/low] `test_parse_mapref` is called nowhere in this
+// workspace or in ../netidx. The `parse_one` tests already cover map access. Delete it.
+// (tests-parser-05)
 #[cfg(test)]
 pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
     parse_all(s, text_origin(s), arithexp::arith_term(true))

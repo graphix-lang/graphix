@@ -1,0 +1,21 @@
+// x-builtin-effects-02: an fstat/seek/truncate aborted by its arm's sleep destroys the file handle
+// Command (run ~15 times; the abort must land while fstat's metadata await is pending):
+//   for i in (seq 15); timeout -s KILL 30 graphix --no-cache x-builtin-effects-02.gx 2>&1 | grep -v '^null$' | tr '\n' ' '; echo; end | sort | uniq -c
+// Expected every run: r1: aGVsbG8= r2: IHdvcmw=  (nothing closed the file)
+// Observed 2 of 15 runs: r1 and r2 (200 ms and 400 ms after open) both
+//   error:["IOError", "stream unavailable"]: the file is gone for good.
+//   Without the `on <- f ~ false` line (no sleep) 15 of 15 runs read fine.
+use sys::fs::{fstat, open, write_all};
+use sys::io::Read;
+let temp = sys::fs::tempdir::create(null)$;
+let path = sys::join_path(sys::fs::tempdir::path(temp), "data.txt");
+let wrote = write_all(#path: path, "hello world")$;
+let f = open(`Read, wrote ~ path)$;
+let on = true;
+on <- f ~ false;
+let st = select on { true => fstat(f), false => never() };
+let r1 = Read::read(sys::time::after_idle(duration:200.ms, f), u64:5);
+let r2 = Read::read(sys::time::after_idle(duration:400.ms, f), u64:5);
+sys::exit(sys::time::after_idle(duration:600.ms, r2) ~ 0);
+println("r1: [r1]");
+println("r2: [r2]")

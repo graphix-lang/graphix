@@ -1,0 +1,2 @@
+// expect: reject
+i64:2 + i64:3

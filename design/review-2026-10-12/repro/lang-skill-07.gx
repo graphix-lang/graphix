@@ -1,0 +1,7 @@
+// A trait's methods are not bare names outside the trait and its impls:
+// `show(Counter(3))` is "show not defined"; `Show::show` or
+// `use Show::{show}` is needed. SKILL.md's Traits paragraph never says so.
+type Counter = Abstract<i64>;
+trait Show { val show: fn(self) -> string };
+impl Show for Counter { let show = |c| "C[c.0]" };
+show(Counter(3))

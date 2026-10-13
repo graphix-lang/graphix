@@ -1,0 +1,25 @@
+// book/src/ui/tui/input.md:306-328 Vim mode switching, with a timer standing in for one "i" key.
+// Expected: inserted stays 0. Actual: prints 0 then 1 -- the mode change re-fires the (mode, event) tuple.
+type Mode = [`Normal, `Insert];
+type Ev = [`Char(string), `Esc];
+let mode: Mode = `Normal;
+let inserted = 0;
+let ev: Ev = sys::time::after_idle(duration:100.ms, `Char("i"));
+let handle = |event: Ev| select (mode, event) {
+    (`Normal, `Char("i")) => {
+      mode <- `Insert;
+      `Stop
+    },
+    (`Insert, `Esc) => {
+      mode <- `Normal;
+      `Stop
+    },
+    (`Insert, `Char(c)) => {
+      inserted <- c ~ inserted + 1;
+      `Stop
+    },
+    _ => `Continue
+  };
+handle(ev);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+inserted

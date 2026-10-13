@@ -1,0 +1,16 @@
+// x-builtin-effects-04: opt::contains skips the Discernible check and compares references by id
+// run: graphix --no-cache design/review-2026-10-12/repro/x-builtin-effects-04.gx
+// expected: refused like `x == y` ("string and `A have the same runtime form"),
+//   and for references contains(r1, r2) true, as r3 == r1 is
+// observed: (true, true, false, true, false): `A contains "A", (1, 2) contains [1, 2],
+//   and two references to `a` are not contained while == says they are equal
+let x: [[`A, string], null] = "A";
+let y: [`A, string] = `A;
+let ta: [(i64, i64), Array<i64>, null] = [1, 2];
+let t: [(i64, i64), Array<i64>] = (1, 2);
+let a = 1;
+let r1: [&i64, null] = &a;
+let r2: &i64 = &a;
+let r3: [&i64, null] = &a;
+sys::exit(sys::time::after_idle(duration:100.ms, a) ~ 0);
+(opt::contains(x, y), opt::contains(ta, t), opt::contains(r1, r2), r3 == r1, opt::contains(r1, &a))

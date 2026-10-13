@@ -1,0 +1,13 @@
+// x-dup-01: core::map_key writes a composite key through netidx's
+// to_string_naked, which is naked only at the top level: json/toml/hbs
+// map keys carry typed inner elements (i64:1), unlike println.
+// command: graphix --no-cache x-dup-01.gx
+// expected: {[1, 2] => 3, [4] => 5} then {"[1, 2]":3,"[4]":5}
+// observed: {[1, 2] => 3, [4] => 5} then {"[i64:1, i64:2]":3,"[i64:4]":5}
+use json;
+let m = {[1, 2] => 3, [4] => 5};
+println(m);
+let j = json::write_str(m)$;
+println(j);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+j

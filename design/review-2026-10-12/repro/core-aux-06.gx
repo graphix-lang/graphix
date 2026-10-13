@@ -1,0 +1,16 @@
+// queuefn: `#count` through a place reference is not written as a level:
+// each depth change of a cycle queues its own patch, one landing per
+// cycle, while a binding target gets the cycle's final depth at once
+// (mod.gxi promises the level for a place "as to a binding").
+// Expected: place=-1 binding=-1, then place=3 binding=3.
+// Prints place=0, 1, 2, 3 over four cycles beside binding=3.
+// command: graphix --no-cache core-aux-06.gx
+let s = { depth: -1, other: 0 };
+let d = -1;
+let qp = queuefn(#count: &mut s.depth, #trigger: never(), |x: i64| -> i64 x * 10);
+let qd = queuefn(#count: &mut d, #trigger: never(), |x: i64| -> i64 x * 10);
+qp(1); qp(2); qp(3); qp(4);
+qd(1); qd(2); qd(3); qd(4);
+println("place=[s.depth] binding=[d]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

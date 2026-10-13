@@ -1,0 +1,15 @@
+// x-rerun-6-03: a runtime that stops after its first cycle (here the
+// activation budget aborts it) panics the shell instead of reporting.
+// Shell::run's loop (graphix-shell/src/lib.rs:568) polls `&mut exit_rx`
+// every iteration and ignores Err: once the runtime drops the exit
+// sender, the next iteration polls a completed oneshot.
+// command: GRAPHIX_ACTIVATION_BUDGET=1000 graphix --no-cache x-rerun-6-03.gx
+//   (also with GRAPHIX_STACK_BUDGET=64M --no-fusion and 40000)
+// expected: "Error: a runaway recursion exceeded the runtime's budget ..",
+//   as when the abort happens in the first cycle (f(5000) unsampled)
+// observed (HEAD 7324207f): thread 'graphix-tokio' panicked at
+//   tokio-1.52.2/src/sync/oneshot.rs:1289:13: called after complete;
+//   "Error: tokio thread panicked", exit 1
+let rec f = |n: i64| -> i64 select n { 0 => 0, n => f(n - 1) + 1 };
+let r = f(sys::time::timer(duration:100.ms, false) ~ 5000);
+r

@@ -1,0 +1,14 @@
+let rec g = |f: fn(x: i64) -> i64, n: i64| -> i64
+  select n {
+    0 => f(0),
+    _ => g(|x| x + 100, n - 1)
+  };
+// tests-functions-02: FuseExpect::Jit is satisfied by callback kernels alone
+// command: graphix-fuzz run tests-functions-02.gx
+// observed: fusion fused=4 while every attempt on `g` fails
+//   ("lambda `g` has no kernel: fn-typed formal `f` is not forwarded unchanged
+//   by its self-calls"); this is FN_FORMAL_REBOUND (functions.rs:1796), which
+//   run! annotates FuseExpect::Jit. So FN_INVARIANT_TAIL_LOOP,
+//   FN_FORMAL_TWO_CALLBACKS, FN_FORMAL_CAPTURE_COLLIDES_* (functions.rs:1742-1854)
+//   would still pass with their tail loops de-fused: only `#[native]` pins a loop.
+g(|x| x + 1, 0) * 1000 + g(|x| x + 1, 2)

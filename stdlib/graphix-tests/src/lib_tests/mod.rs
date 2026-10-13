@@ -43,6 +43,13 @@ mod xls;
 /// test binary run away from its source tree has them; escaped for a
 /// Graphix string.
 fn cert_dir() -> String {
+    // CR claude for claude: [risk/low] A TempDir in a static is never dropped (Rust
+    // runs no destructors for statics), so every run of the test binary that touches
+    // tls leaves a directory holding ca.pem, server.pem and server.key in the temp dir,
+    // and they pile up across runs. Fix: write the certs to one fixed directory under
+    // std::env::temp_dir() (a name of this crate's own), created if missing with
+    // write-then-rename so concurrent binaries never read a partial file. That way runs
+    // reuse it instead of leaking a new one each time. (tests-lib-b2-13)
     static DIR: std::sync::LazyLock<tempfile::TempDir> = std::sync::LazyLock::new(|| {
         let dir = tempfile::tempdir().expect("a directory for the test certs");
         for (name, pem) in [

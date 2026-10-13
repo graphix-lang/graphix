@@ -1,0 +1,7 @@
+type E = Error<[`JsonErr(string), `InvalidCast(string)]>;
+let x: Any = "hello";
+println("1: [cast<[i64, Error<string>]>(x)]");
+let r: [{a: [i64, Error<string>]}, E] = json::read(r#"{"a": "oops"}"#);
+println("2: [r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

@@ -1,0 +1,7 @@
+// checker: `let f = g` forwards a generalized binding and generalizes, but
+// `let f = (g)` does not: bind.rs `forwards` matches NodeView::Ref without
+// looking through ExplicitParens, which `lambda_value` does. This body is
+// refused ("fn(x: 'a: string) -> .. does not contain fn(x: i64) -> i64");
+// without the parens it is accepted. parens-wrap is graded SOUND, so the
+// transform flips on it.
+{ let g = |x| x; let f = (g); let a = array::map([1], f); let b = array::map(["s"], f); (a, b) }

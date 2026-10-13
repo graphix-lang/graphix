@@ -1,0 +1,7 @@
+// An array literal of records that differ in one variant field is typed
+// Array<[{act: `A, n: i64}, {act: `B, n: i64}]>, and every field read of
+// an element is refused, a map callback's included:
+// "expected struct not [{ act: `A, n: i64 }, { act: `B, n: i64 }]".
+// Expected: [1, 2].
+let a = [{act: `A, n: 1}, {act: `B, n: 2}];
+array::map(a, |r| r.n)

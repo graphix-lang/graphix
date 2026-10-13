@@ -115,6 +115,12 @@ without the type holds it opaquely, which `Value::Abstract` supports).
 The parse-time process counter it replaced made two parses of one
 interface two types.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says an abstract value's hash
+is the id alone. `GxAbstract`'s `Hash` impl hashes the id and the payload. It hashes the
+id alone only when a hook loan is installed and an `Eq` impl applies to that id
+(`eq_applies`), which is the rule its own doc comment states. Restate the rule as built.
+Also say that hash, eq and ord all follow the loan state, so a hashed or ordered
+container must be filled and probed under the same loan state. (t-expr-core-04) -->
 Runtime shape: `GxAbstract { id, name, params, payload }`
 (`graphix-types/src/abstract_value.rs`), registered once with
 netidx-value; `params` are the type arguments it was built at. Eq and

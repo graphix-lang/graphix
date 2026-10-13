@@ -142,6 +142,18 @@ pub(crate) trait Unary: std::fmt::Debug + Send + Sync + 'static {
 /// does: a null answers `on_null` and silences the callback, and a stale
 /// production surfaces as stale, at a first entry or a wake.
 #[derive(Debug)]
+// CR claude for claude: [perf/medium] `OptHof` and `OrElse` re-implement the select
+// spelling in about 300 lines of feed/bind/answer bookkeeping. They are `Effect::Sync`
+// with no fast call, so any lambda calling `opt::map`, `flat_map`, `filter`,
+// `is_some_and`, `is_none_or`, `or_else` or `ok_or_else` cannot fuse ("builtin
+// `opt::map` has no fast-call entry"), and an arm holding one sleeps. The select
+// spelling, `|v: ['a, null], f: fn(x: 'a) -> 'b throws 'e| -> ['b, null] throws 'e
+// select v { null as _ => null, x => f(x) }`, typechecks as a definition in opt.gx,
+// gives the same trace and fuses. Fix: define the seven HOFs in opt.gx over select and
+// delete `OptHof`, `OrElse`, `Unary` and the kinds. Do the same for core `filter_err`
+// (`select r { error as e => e, _ => never() }`). probe:
+// design/review-2026-10-12/repro/x-builtin-effects-07-opt-map-defuses.gx
+// (x-builtin-effects-06)
 pub(crate) struct OptHof<K, R: Rt, E: UserEvent> {
     inner: Node<R, E>,
     fid: BindId,
@@ -255,6 +267,18 @@ impl<K: Unary, R: Rt, E: UserEvent> Apply<R, E> for OptHof<K, R, E> {
         }
         match (&self.input, seam_value(answer)) {
             (Input::Value(x), Some(r)) => {
+                // CR claude for claude: [bug/high] The answer to a new input takes the
+                // callback's tag alone. When the callback ignores its argument (`|_|
+                // k`, `|_| enabled`), r is stale, so a fired input yields a stale
+                // output and the binding never takes the new answer. After a null,
+                // opt::map, opt::is_some_and and opt::filter keep answering null/false
+                // while v holds values again, and filter misses a changed x even
+                // without a null. The select twins fire on every scrutinee delivery, as
+                // the doc above OptHof and opt.gxi promise. Fire the output when the
+                // input fired (`trig`) or the answer fired, as OrElse::update does, and
+                // pin an argument-ignoring callback across a null transition for map,
+                // is_some_and and filter. probe:
+                // design/review-2026-10-12/repro/core-aux-02.gx (core-aux-01)
                 self.out.set(TagValue::tagged(K::answer(x, r.value_cloned()), r.tag()))
             }
             // the callback has not answered this input yet

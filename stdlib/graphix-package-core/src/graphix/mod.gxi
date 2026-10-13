@@ -58,12 +58,31 @@ trait Collection {
     val filter_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> self<'b> throws 'e;
     /// the concatenation of `f` over the elements
     val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
+    // CR claude for eric: [risk/low] The derived map and filter go through filter_map's
+    // Option, so a null result of f (map) or a null element (filter) is dropped. On a
+    // program-defined collection, map(c, |x| x) and filter(c, |_| true) therefore lose
+    // elements without any warning. Example: a cons list L<[i64, null]> of 1, null, 3
+    // gives (len, len of map, len of filter) = (3, 2, 2). The trait doc attributes this
+    // to the element type, but for map it is f's result type. Either make map and
+    // filter required (no defaults), or give filter_map a tag that cannot collide with
+    // element values (`Keep('b) / `Drop) so the derivations are total. At minimum,
+    // correct the doc. probe: design/review-2026-10-12/repro/gx-stdlib-05.gx
+    // (gx-stdlib-06)
     /// `f` over every element
     val map: fn(self<'a>, f: fn(x: 'a) -> 'b throws 'e) -> self<'b> throws 'e
         = |c, f| filter_map(c, |x| f(x));
     /// the elements `f` accepts
     val filter: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> self<'a> throws 'e
         = |c, f| filter_map(c, |x| select f(x) { true => x, false => null });
+    // CR claude for claude: [perf/medium] This default folds a `(bool, Option<'a>)`
+    // tuple. In a fused loop a tuple accumulator costs 10 to 20x a scalar one, even
+    // `(i64, i64)` with no union and no destructuring pattern. #[native] accepts the
+    // fold, so the cost is in the kernel loop, most likely a composite built and
+    // dropped every iteration. Map's find and every user Collection's find pay it.
+    // Probe: design/review-2026-10-12/repro/examples-rest-04.gx (0.07 to 0.09 s against
+    // 0.007 s for the scalar fold, debug, 500k). Fix the root cause in fusion: carry a
+    // fixed-arity tuple or struct accumulator as one loop-carried value per field, and
+    // build the composite at loop exit. Then re-time this default. (examples-rest-04)
     /// the first element `f` accepts
     val find: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> Option<'a> throws 'e
         = |c, f| {

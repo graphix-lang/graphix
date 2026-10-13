@@ -1,0 +1,11 @@
+// x-rerun-1-14: `?` on an operand typed Any (or [Any, null]) is refused with
+// "expected error not []", which names neither the operand nor its type.
+//
+// command: graphix --check design/review-2026-10-12/repro/x-rerun-1-14.gx
+//
+// expected: either accepted, raising Error<ErrChain<Any>> to the catch
+// (`x$` on the same operand is accepted), or refused with a message that
+// names the operand's type and what `?` needs.
+// observed: exit 1, "expected error not []" at x?.
+let x: Any = 3;
+{ catch(e) println("[e]"); x? }

@@ -1,0 +1,4 @@
+// expect: accepted (values are null or tuples); refused: "cannot compare two instances of N"
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let f = |x: N<[i64, string]>| -> [N<i64>, (Any, Any), null] x;
+f(null)

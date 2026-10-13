@@ -1,0 +1,16 @@
+// x-security-02: a cast to a primitive takes an array's first element, and any number casts to null
+// run: graphix --no-cache design/review-2026-10-12/repro/x-security-02.gx
+// expected: a..g each an InvalidCast error (b..e as the read's Err), h the Array<string> member, as cast<Array<string>>(y) gives
+// observed (HEAD 7324207f): (7, 7, {port: 8080}, null, {x: 1}, null, true, null)
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let x: Any = i64:5;
+let y: Any = [i64:5, "a"];
+let a = cast<i64>([i64:7, 8, 9]);
+let b: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read(r"[[7, 8], 9]");
+let c: Result<{port: i64}, [`TomlErr(string), `InvalidCast(string)]> = toml::read(r"port = [8080, 1]");
+let d: Result<null, [`JsonErr(string), `InvalidCast(string)]> = json::read("42");
+let e: Result<{x: [null, i64]}, [`JsonErr(string), `InvalidCast(string)]> = json::read(r#"{"x": [1, 2]}"#);
+let f = cast<null>(x);
+let g = cast<bool>([i64:7, 0]);
+let h = cast<[null, Array<string>]>(y);
+(a, b, c, d, e, f, g, h)

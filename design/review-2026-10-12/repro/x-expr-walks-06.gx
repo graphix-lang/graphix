@@ -1,0 +1,7 @@
+// x-expr-walks-06: Type::has_bottom treats a named type's parameters
+// as leaves, so `Box<_>` gets the bare "will never match" refusal while
+// `Array<_>` gets the hint that `_` in a type is bottom (spell it Any).
+// Run with --check.
+type Box<'a> = Abstract<'a>;
+let x: [Box<i64>, string] = Box(1);
+select x { Box<_> as b => 1, string as s => 2 }

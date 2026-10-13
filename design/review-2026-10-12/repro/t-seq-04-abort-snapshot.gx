@@ -1,0 +1,17 @@
+// t-seq-04: `seq go; abort(..go..)` reads the live trigger unless the body
+// also reads `go`. trigger_snapshot (graphix-types/src/expr/seq.rs) makes the
+// snapshot cell for a bare-variable trigger only when the BODY reads the
+// name, so an abort that alone reads `go` gets no redirect: every
+// busy-dropped `go` restarts the after_idle and the 120ms budget never fires.
+// Run: graphix --no-cache t-seq-04-abort-snapshot.gx (same with --no-fusion)
+// Expected (design/seq_blocks.md §9): every 500ms run aborted, nothing printed
+// (as with `seq let c = go; abort(after_idle(120.ms, c))`, or with the last
+// line `"completed [go]"`, which makes the body read `go`).
+// Observed: "completed" printed twice before the exit.
+let go = sys::time::timer(duration:50.ms, true);
+let r = seq go; abort(sys::time::after_idle(duration:120.ms, go)) {
+  let x = sys::time::timer(duration:500.ms, false);
+  "completed"
+};
+sys::exit(sys::time::timer(duration:1500.ms, false) ~ 0);
+r

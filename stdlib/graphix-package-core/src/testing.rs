@@ -255,6 +255,17 @@ where
     init_inner(sub, register, resolvers, flags, true, None, None, None, None, setup).await
 }
 
+// CR claude for claude: [structure/low] Nine public init_* wrappers exist only to
+// thread arguments into this function, which takes ten positional parameters (four
+// Options and a bool) and then just feeds a GXConfig builder. Each new knob adds
+// another wrapper or another parameter. The setup closure's bound `FnOnce(&mut
+// ExecState<GXRt<NoExt>, ..UserEvent>)` is spelled out eight times in this file. The
+// run! arms each format `let result = {}` although `result_source` exists, and
+// eval_packed formats it again. Return the configured builder from one function
+// (register packages, run setup, set root and resolvers) and let callers chain
+// flags/registration/program/trace/lsp_mode. Add a `TestState` alias for the closure's
+// argument, and use result_source in run! and eval_packed. The ../netidx admin tests
+// call init, init_with_session and init_with_flags_and_setup. (x-dup-09)
 async fn init_inner<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
@@ -729,12 +740,22 @@ macro_rules! run {
     // deeper than the stack budget allows activations).
     // A refusal only a build makes (`#[native]`, the definition
     // assertions): no check test.
+    // CR claude for claude: [readability/low] The comment above this arm, "The JIT
+    // alone: a program the node-walk cannot run ...", describes the `; jit_only` arm
+    // further down, not this build_only arm, so it reads as the wrong arm's rationale.
+    // Move it directly above the jit_only arm. Keep the ordering note at the top of the
+    // macro and only the build_only sentence above this arm. (core-aux-11)
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; build_only) => {
         $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr; build_only) => {
         $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
     };
+    // CR claude for claude: [dead/low] No fixture uses this arm: every `; build_only`
+    // fixture passes FuseExpect::None. The arm also could never pass. A build_only
+    // fixture is a refusal, a refusal fuses nothing, and so its jit test fails
+    // check_fuse_expectation under the FuseExpect::Jit this arm hard-codes. Delete the
+    // arm. (tests-lang-rest-b-10)
     ($name:ident, $code:expr, $pred:expr; build_only) => {
         $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
@@ -854,6 +875,16 @@ macro_rules! run {
 
             #[$interp]
             #[::tokio::test(flavor = "current_thread")]
+            // CR claude for claude: [test-gap/low] The par and jit_par tests run under
+            // ParMode::Force but assert only the predicate; nothing reads
+            // Control::forks(). If a construct stopped forking (a planner or analysis
+            // change that makes it opaque), these tests would quietly become copies of
+            // interp and jit and still pass. Only a few hand pins in par_attrs and
+            // image check fork counts. Have run_mode return the fork count in the Par
+            // and JitPar modes, and either report it under an env-gated audit like
+            // GRAPHIX_FUSE_AUDIT (a fixture with fork points that forked nothing is a
+            // finding) or add an optional `; forks` expectation that fails when Force
+            // forked nothing. (core-aux-10)
             async fn par() -> ::anyhow::Result<()> {
                 run_mode($crate::testing::Mode::Par, false, false, false).await.map(|_| ())
             }
@@ -916,6 +947,17 @@ macro_rules! run {
     };
 }
 
+// CR claude for claude: [test-gap/medium] run_with_tempdir! expands to one
+// #[tokio::test] over testing::init: fusion on, the default par mode, no check_fixture,
+// and compiled through rt.compile instead of the script path. Every db.rs fixture uses
+// it, and so do fs/{read,write,readdir,metadata,dir_ops} and xls.rs. Their
+// transactions, conflicts and subscriptions across an arm's sleep and wake therefore
+// never run under the node-walk, with every fork point forced, or with the
+// check-versus-build agreement that run! enforces. A node-walk-only or forced-fork
+// regression in an async db builtin ships with these suites green. Fix: expand per
+// testing::Mode like run! does (fixture_runtime(mode) plus check_fixture in interp,
+// with the tempdir setup run per mode), or move these fixtures onto run! with a setup
+// hook. (tests-lib-a-04)
 #[macro_export]
 macro_rules! run_with_tempdir {
     (

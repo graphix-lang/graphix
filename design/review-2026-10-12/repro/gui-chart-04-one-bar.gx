@@ -1,0 +1,3 @@
+use gui::{window, chart};
+
+[&window(#title: &"one bar", &chart::chart(#y_label: &"count", &[chart::bar(&[("only", 5.0)])]))]

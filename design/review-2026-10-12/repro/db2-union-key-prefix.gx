@@ -1,0 +1,14 @@
+// remove /tmp/db2-prefix.db first. Prints (("aa1", 1), null): #prefix "aa" finds "aa1" in Tree<string, i64> but nothing in Tree<[string, i64], i64>
+let db = db::open("/tmp/db2-prefix.db")$;
+let mk = |name: string| -> Result<db::Tree<'k, i64>, `DbErr(string)> db::tree(db, name);
+let t: db::Tree<string, i64> = mk("x")$;
+let a = db::insert(t, "aa1", 1)$;
+let c = db::cursor::new(#prefix: "aa", t);
+let r = db::cursor::read(c, a);
+let u: db::Tree<[string, i64], i64> = db::tree(db, "u")$;
+let ua = db::insert(u, "aa1", 1)$;
+let pp: [string, i64] = "aa";
+let uc = db::cursor::new(#prefix: pp, u);
+let ur = db::cursor::read(uc, ua);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(r, ur)

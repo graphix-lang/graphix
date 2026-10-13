@@ -1,0 +1,19 @@
+// buffer::decode refuses well-typed references: a `&mut` over a value
+// (a fresh writable cell, which `*r <- v` writes fine), a `&` over a
+// literal as a length, and a place (`&hdr.n`) as a length. Every rN
+// prints a DecodeError; each should decode.
+let data = buffer::from_string("abc");
+let encoded = buffer::encode([`U64(buffer::len(data)), `Bytes(data)]);
+let hdr = {n: u64:0, tag: u8:0};
+let d1: bytes = never();
+let r1 = buffer::decode(encoded, [`U64(&mut hdr.n), `Bytes(&hdr.n, &mut d1)]);
+let fresh = &mut u64:0;
+let d2: bytes = never();
+let r2 = buffer::decode(encoded, [`U64(fresh), `Bytes(fresh, &mut d2)]);
+let x: u64 = never();
+let r3 = buffer::decode(encoded, [`Skip(&u64:0), `U64(&mut x)]);
+let r4 = buffer::decode(encoded, [`U64(&mut u64:0)]);
+*fresh <- sys::time::timer(duration:50.ms, false) ~ u64:9;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+println("r1=[r1]\nr2=[r2]\nr3=[r3]\nr4=[r4]\nfresh=[*fresh]");
+0

@@ -58,6 +58,15 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         if id == self.p.content.r.id
             && let Some(text) = &self.p.content.t
         {
+            // CR claude for claude: [structure/low] This is Echoes::delivered written a
+            // second time: the `pending` queue, retiring an echo and every earlier
+            // send, and dropping them all on a foreign value. Every change to the echo
+            // rule has to be made in both places. The only extra thing text_editor
+            // needs is to know whether the delivery was an echo. Fix: make
+            // Echoes::delivered return whether `v` was an echo. Hold an
+            // `Echoes<ArcStr>` in TextEditorW, rebuild the editor only when delivered
+            // returns false and the text differs from the editor's, and call `sent`
+            // where on_edit fires. (gui-widgets-b-06)
             match self.pending.iter().position(|p| p == text) {
                 // an echo: what it answered and every earlier send are done
                 Some(i) => drop(self.pending.drain(..=i)),
@@ -65,6 +74,22 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                 None => {
                     let cursor = self.editor.cursor();
                     self.editor = text_editor::Content::with_text(text);
+                    // CR claude for claude: [bug/high] The cursor and selection from
+                    // the old text move into the new text unchecked. Neither iced's
+                    // Content::move_to nor cosmic-text's set_cursor clamps them. So a
+                    // program write shorter than the text before the cursor leaves the
+                    // cursor past the end. Examples: an on_edit filter or length limit,
+                    // a submit-and-clear, a timer rewrite. The next Insert then panics
+                    // in cosmic-text BufferLine::split_off (is_char_boundary), and
+                    // Backspace panics on an out-of-range slice. The panic poisons
+                    // iced's global font-system lock, so every later text operation in
+                    // the GUI panics too. Fix: clamp before the move. Limit line to
+                    // line_count - 1, then limit column to that line's byte length,
+                    // floored to a char boundary. Drop a selection that falls outside
+                    // the new text. Add a pin in test/interaction_test.rs where on_edit
+                    // writes back a shorter text and the user then types. Probe:
+                    // design/review-2026-10-12/repro/gui-widgets-b-01.rs
+                    // (gui-widgets-b-01)
                     self.editor.move_to(cursor);
                     self.pending.clear();
                 }

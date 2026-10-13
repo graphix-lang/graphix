@@ -351,6 +351,25 @@ pub fn abstract_uuid(path: &str) -> uuid::Uuid {
 
 /// The names of every abstract type minted in this process, for
 /// diagnostics (`Type::Abstract` carries only the id).
+// CR claude for claude: [bug/low] This table is filled only when AbstractId::of or
+// AbstractId::declared mints an id. A warm start decodes Type::Abstract's id as a bare
+// u64 and mints nothing, so after a restored image AbstractId::name returns None and
+// the type prints as <abstract#ID>. The same refusal names 'Tree<i64, i64>' cold and
+// '<abstract#11463945668770139902><i64, i64>' warm. Printed types also reach
+// program-visible values (cast errors), so the text can differ between cold and warm
+// starts. Fix: make the image carry each abstract id's name, and have the decode put it
+// back into this table, for example where the defining TypeDef decodes. probe:
+// design/review-2026-10-12/repro/x-rerun-5-09.gx (x-rerun-5-09)
+// CR claude for claude: [bug/medium] Only AbstractId::of/declared fill this map,
+// through Env::deftype. A session restored from an image never runs deftype, so after a
+// warm start every abstract type prints as "abstract" or "<abstract#N>": "cannot
+// compute Stdio + i64" becomes "cannot compute abstract + i64" in run output and in
+// --check, and so in the LSP. Re-registering from Env::abstract_reps is not enough,
+// because a type without a rep (sys::io::Stdio, File, Proc, the tcp/tls streams) has no
+// entry there. Register the name of every restored typedef whose type is Type::Abstract
+// when the env decodes (lexical_decode), through one helper shared with of/declared.
+// Alternatively, let the printer read the name from the env instead of a process
+// global. probe: design/review-2026-10-12/repro/t-image-02.sh (t-image-02)
 static ABSTRACT_NAMES: LazyLock<Mutex<IntMap<AbstractId, ArcStr>>> =
     LazyLock::new(|| Mutex::new(IntMap::default()));
 
@@ -390,6 +409,20 @@ impl AbstractId {
         let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
         let place = match in_body {
             false => format_compact!("{stable}::{name}"),
+            // CR claude for claude: [bug/low] A body-declared type's place is
+            // `Source`'s Display plus line:column. That Display prints "expr" for every
+            // `Source::Unspecified` (every rt.compile input, so every REPL line) and
+            // "program" for every `Source::Program`, whatever its text. So two REPL
+            // inputs that each declare a block-local `type T` at the same line and
+            // column mint one AbstractId. If the reps are the same, a value of the
+            // first T passes the second T's `T as o` test and `.0` reads it (`f(a)`
+            // prints 42 where 0 is right). If the reps differ, the second input is
+            // refused because Env::deftype thinks the type's representation is
+            // changing. Fix: for a source with no stable identity, add something unique
+            // to the compile unit to the place, such as a hash of `ori.text` or a
+            // per-compile counter. Such types never need to match across processes.
+            // Keep the File/Vfs/Netidx form unchanged so cold and warm starts agree.
+            // probe: design/review-2026-10-12/repro/t-typ-mod-04.sh (t-typ-mod-04)
             true => format_compact!("{stable}::#{}:{pos}::{name}", ori.source),
         };
         let (_, lo) = abstract_uuid(&place).as_u64_pair();
@@ -927,6 +960,20 @@ impl Ord for TypeRef {
 /// = [x1]; ..` builds a type as deep as the program is long), so every
 /// recursive walk, `Eq`, `Ord` and `Hash` included, runs under
 /// [`ensure_sufficient`].
+// CR claude for claude: [bug/medium] Debug is derived here, so it recurses through Type
+// -> TVar -> TVarInner -> TVarLink -> TCell -> Option<Type> with no ensure_sufficient.
+// TVar's hand-written Debug guards against cycles but not against depth. The doc
+// comment above says every walk is guarded, and this one is not. Fusion formats operand
+// types with `{:?}` in about 40 error messages built eagerly with anyhow!,
+// emit_cmp_node's "has no comparable runtime form" among them. A 6000-deep flat let
+// chain of arrays followed by `x6000 == x6000` therefore overflows the stack, and the
+// process aborts during check_and_fuse. The same program prints `true` under
+// --no-fusion and passes --check. Fix: implement Debug for Type by hand with its body
+// under ensure_sufficient, as Expr's Debug does, and wrap TVar's Debug body the same
+// way. Then switch the fusion messages to Display, which is already guarded and prints
+// the type rather than raw TCell internals. Add a deep_nesting shape that compares the
+// deep value, since the existing `flattype` shape never reaches fusion's error path.
+// probe: design/review-2026-10-12/repro/x-stack-01.py (x-stack-01)
 #[derive(Debug, Clone)]
 pub enum Type {
     Bottom,
@@ -966,6 +1013,17 @@ pub enum Type {
     /// The conjunct `'a: Concrete`: whatever binds the cell is fully known,
     /// with no open cell and no ⊥ in it, so a type-directed builtin can act
     /// on it. Legal only as a constraint.
+    // CR claude for eric: [structure/medium] Concrete, Function, Singleton, OneNumber,
+    // Discernible and Ordered are each a Type variant that is "legal only as a
+    // constraint". Yet every type walk (print, matches, setops, normalize, cast, tval,
+    // contains, fusion, pattern) lists all six, often in both pair orders, and they can
+    // appear in any type position. Adding the next bound means editing about thirty
+    // arms. Sites with a fallback (`require_bounds`'s `_ => ()`, settle's per-kind
+    // checks) silently give a new bound the default treatment. Two fixes are possible.
+    // The first is `Type::Bound(BoundKind)`, so the uniform arms become one pattern and
+    // only tvar/settle/contains match on the kind. The second is to take bounds out of
+    // Type altogether, as a constraint enum on the cell, so a bound in a type position
+    // cannot be written. (x-dup-07)
     Concrete,
     /// The conjunct `'a: Function`: whatever binds the cell is a function
     /// type, so a builtin wrapping a function can read its signature.
@@ -1620,6 +1678,13 @@ impl Drop for Type {
             | Type::Ordered
             | Type::Primitive(_)
             | Type::TVar(_) => false,
+            // CR claude for claude: [readability/low] This tests the wrong Arcs. A Ref
+            // drops deep content only when the outer Arc<TypeRef> is unique AND its
+            // params are unique, and `resolved` holds only a Weak, so its uniqueness
+            // never matters. As written, every drop of a shared Ref whose params are
+            // unique takes the guarded mem::take plus stacker path for nothing, and the
+            // condition misstates the invariant the guard relies on. Write
+            // `tr.is_unique() && tr.params.is_unique()`. (t-typ-mod-08)
             Type::Ref(tr) => tr.params.is_unique() || tr.resolved.is_unique(),
             Type::Fn(f) => f.is_unique(),
             Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.is_unique(),
@@ -2031,6 +2096,22 @@ impl Type {
             }
             // a union formal two of whose members admit the argument leaves
             // the choice to the argument's own check
+            // CR claude for claude: [bug/medium] The skip for a union formal with more
+            // than one admitting member fires only when the formal is itself a Set
+            // after deref_cloned. That deref does not expand a Type::Ref alias, and it
+            // does not look inside a tuple or struct. So `type D = [Array<f64>,
+            // Array<string>]; |x: D|` with `g(["a"])` falls to the `declared.contains`
+            // fallback. So does a formal `(i64, [Array<f64>, Array<string>])` with
+            // `g((1, ["a"]))`, and a struct field of that union. The fallback commits
+            // the inline literal's open element cell to Array<f64>, and the call is
+            // refused with "Array<f64> does not contain Array<string>". The bare union
+            // formal checks, and so does a let-bound argument. Fix: expand aliases
+            // before matching (lookup_ref, as contains does), and make the rule
+            // structural. Walk the formal and the argument together and commit nothing
+            // below a union position where more than one member admits the argument's
+            // part. Or commit only when a probe on a reset_tvars copy shows exactly one
+            // placement. probe: design/review-2026-10-12/repro/x-fix-types-06.gx
+            // (x-fix-types-06)
             (Some(Type::Set(ms)), _) => {
                 let mut admit = 0;
                 for m in ms.iter() {
@@ -2043,6 +2124,21 @@ impl Type {
                     _ => Ok(()),
                 }
             }
+            // CR claude for claude: [bug/medium] The rule "leave an ambiguous union to
+            // the argument's own check" applies only when the formal itself is a Set. A
+            // union nested in a struct field, tuple element or variant payload of the
+            // formal reaches this arm instead. Its `contains` commits an inline
+            // literal's open element cell to the first member in canonical order before
+            // the literal checks. So `g({a: ["a"]})` over `|x: {a: [Array<f64>,
+            // Array<string>]}|` is refused with "Array<f64> does not contain
+            // Array<string>". The tuple form `g((["a"], 1))` and the variant form
+            // ``g(`A(["a"]))`` are refused the same way, while the let-bound and
+            // annotated forms pass. Fix: recurse structurally, through Struct fields,
+            // Tuple elements, Variant payloads and other constructors, the way the
+            // ByRef arm already does. At any position where two members of a nested Set
+            // admit the argument's part, skip the commit. Add pins for the struct,
+            // tuple and variant forms beside the top-level union pin in lang/types.rs.
+            // probe: design/review-2026-10-12/repro/x-rerun-3-02.gx (x-rerun-3-02)
             _ => declared.contains(env, actual).map(|_| ()),
         }
     }
@@ -2274,9 +2370,38 @@ impl Type {
                     Some(f) => go(&f, env, def, path),
                     None => Unguarded::Guarded,
                 },
+                // CR claude for claude: [perf/low] reaches_unguarded expands each alias
+                // again at every occurrence, through replace_tvars, and keeps no record
+                // of what it already explored. Layered unions in which each alias names
+                // two aliases of the level below cost 2^depth expansions per deftype.
+                // design/review-2026-10-12/repro/t-typ-mod-contractive-exponential.gx
+                // (22 levels) spends about 8-12 s in --check, while the same shape
+                // behind a tuple takes 69 ms. Replace the unused `path` vector with a
+                // set of (def_key, params) already explored on this walk, and answer
+                // Guarded on a revisit. That is sound because `or` already folded in
+                // the first visit's verdict. (t-typ-mod-03)
                 Type::Ref(tr) => {
                     let Some(r) = tr.resolve_pure(env) else { return Unguarded::Unknown };
                     let key = r.def_key();
+                    // CR claude for claude: [bug/high] This walk does not always end.
+                    // The doc comment says a cycle among other definitions was refused
+                    // when its last member was defined, but a renaming `use` can close
+                    // the cycle after its members are defined. In `type A = X; use
+                    // self::A as X; type D = A`, A's own check returned `Unknown` and
+                    // was deferred to `Pending::Contractive`. The `use` makes X name A
+                    // without any check. D's walk then expands A -> X -> A forever
+                    // (`path` is pushed but never read), and `ensure_sufficient` grows
+                    // the stack until the process is OOM-killed. `let x: A = 1` in
+                    // place of `type D = A` hangs in another expansion loop instead
+                    // (t-typ-mod-import-closed-cycle-hang.gx), and the language server
+                    // would hang the same way while someone types such a buffer. Fix
+                    // both parts: in this arm, return `Guarded` when `path` already
+                    // holds `key` (that cycle is refused by its own deferred
+                    // `Env::check_contractive`), and have a `use` that binds a type
+                    // name run the deferred contractiveness check of every pending
+                    // definition that reaches it, so no relation ever expands a
+                    // non-contractive cycle mid-check. Probe:
+                    // design/review-2026-10-12/repro/t-typ-mod-01.gx (t-typ-mod-01)
                     if key == def {
                         return Unguarded::Reaches;
                     }
@@ -2390,6 +2515,19 @@ impl Type {
                 }
                 // a raise extends a chain rather than nesting it, so a chain
                 // of a chain is that chain
+                // CR claude for claude: [bug/low] The rule that ErrChain<ErrChain<X>>
+                // is ErrChain<X> fires only when the written name's basename is
+                // `ErrChain`, here and in chain_type's Ref arm. So `use core::ErrChain
+                // as EC` makes EC<EC<`A>> a different type from ErrChain<`A>, although
+                // a renaming import is the type it names (reaches_unguarded already
+                // compares by definition for this reason). probe:
+                // design/review-2026-10-12/repro/t-typ-mod-05.gx (refused with
+                // 'Error<ErrChain<`A>> does not contain Error<EC<EC<`A>>>'; the same
+                // program spelled ErrChain checks). Identify core's ErrChain by its
+                // definition's def_key, recorded once in Env, in both places.
+                // Separately, `ModPath::from(["core"])` allocates a Path on every
+                // lookup_ref: compare with `*canonical_scope == ["core"]`, which does
+                // not. (t-typ-mod-05)
                 if *canonical_scope == ModPath::from(["core"])
                     && Path::basename(&**name) == Some("ErrChain")
                     && let [payload] = &params[..]
@@ -2405,6 +2543,21 @@ impl Type {
 
     /// This type's expansion when it is an error chain: the `ErrChain`
     /// definition, or a struct with exactly its fields.
+    // CR claude for eric: [bug/medium] "Is a chain" is decided by field names alone,
+    // here and in the compiler's is_echain_shape / is_chain_type and the run-time
+    // chain_error; field types are never checked. Example: a program's own `type P =
+    // {cause: i64, error: string, ori: bool, pos: null}`. A `?` keeps Error<P>
+    // (fix_echain_typ), and a generic `?` that throws ErrChain<'e> collapses to P when
+    // 'e = P (lookup_ref). At run time wrap_error nests the value as `cause`, so
+    // `(e.0).cause` is typed i64 but holds the original struct. --check passes, the JIT
+    // panics at the kernel param slot check, and the node-walk delivers an array into
+    // an i64. Fix: define the chain test once, next to this function, as the core
+    // ErrChain or a struct whose field types are ErrChain's, and use it in
+    // fix_echain_typ, is_chain_type and lookup_ref. The run-time side must agree. One
+    // option is for wrap_error to extend only what the site's static type says is a
+    // chain, rather than reading the value's shape; that choice is yours. Same root as
+    // c-error-op-02 / x-engine-seq-errors-03. probe:
+    // design/review-2026-10-12/repro/x-fix-types-10.sh (x-fix-types-10)
     fn chain_type(&self, env: &Env) -> Result<Option<Type>> {
         let t = match self {
             Type::TVar(tv) => match tv.binding() {
@@ -2482,6 +2635,15 @@ impl Type {
     /// A `Bottom` anywhere in the type's own structure (fn signatures
     /// and references are leaves): the diagnostic for `_` written in
     /// type position where a wildcard was meant.
+    // CR claude for claude: [structure/low] has_bottom hand-lists the structural
+    // children and misses Type::Ref, Type::Abstract and Type::App params. A type test
+    // written `Box<_>` therefore gets only the bare "will never match" refusal in
+    // SelectNode's check, while `Array<_>` also gets the hint that `_` in a type is
+    // bottom and should be spelled Any. Fix: inside with_deref, answer Bottom as true
+    // and Fn as a leaf (false), and walk everything else with try_for_each_child, which
+    // already lists every child. That deletes the duplicate list. probe:
+    // design/review-2026-10-12/repro/x-expr-walks-06.gx (run with --check)
+    // (x-expr-walks-06)
     pub fn has_bottom(&self) -> bool {
         ensure_sufficient(|| {
             self.with_deref(|t| match t {
@@ -2549,6 +2711,13 @@ impl Type {
     /// trait anywhere else is an error. Returns the rewritten type.
     /// A predicate conjunct: a bound a type passes or fails, never a type
     /// a cell binds to. Exhaustive, so a new variant is decided here.
+    // CR claude for claude: [readability/low] The first three doc lines here ('A trait
+    // named as a parameter's type ... Returns the rewritten type.') describe
+    // rewrite_trait_args, not is_predicate: move them onto rewrite_trait_args. The same
+    // problem is in TypeRef::resolve_peek: its first doc paragraph says it never reads
+    // or writes the cell, but the body reads it. Delete that paragraph and keep 'The
+    // filled cell's definition, else the name's in its scope now; fills nothing.'
+    // (t-typ-mod-07)
     pub fn is_predicate(&self) -> bool {
         match self {
             Type::Concrete

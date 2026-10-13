@@ -55,6 +55,15 @@
     ;; reference ('array_map), and `\`` opens a variant (`Foo); making
     ;; either a string delimiter would swallow the rest of the buffer
     ;; up to the next one, and invites electric-pair to close it.
+    ;; CR claude for claude: [bug/low] `"` is the only string delimiter and `\` keeps
+    ;; escape syntax. Raw strings (`r"C:\"`, `r#".."#`) have no escapes, and a triple
+    ;; string may hold bare quotes, so syntax-ppss mis-pairs them. After `let r =
+    ;; r"C:\";` the rest of the buffer reads as a string in both modes. That breaks
+    ;; fontification in graphix-mode, and electric-pair, show-paren, comment-dwim and
+    ;; sexp motion in graphix-ts-mode. Fix: a `syntax-propertize-function` that gives
+    ;; raw and triple-string delimiters string-fence syntax and neutralizes their
+    ;; backslashes; in ts-mode it can take the ranges from the raw_string/triple_string
+    ;; nodes. probe: design/review-2026-10-12/repro/ide-tooling-09.gx (ide-tooling-09)
     (modify-syntax-entry ?\" "\"" table)
     (modify-syntax-entry ?\' "_" table)
     (modify-syntax-entry ?\` "_" table)
@@ -175,6 +184,16 @@ Falls back to this mode when tree-sitter is not available.
      ;; Level 2: functions
      :language 'graphix
      :feature 'function
+     ;; CR claude for claude: [bug/low] This rule has no last-child anchor, so in
+     ;; `sys::time::timer(..)` every segment gets the function face; treesit keeps the
+     ;; first face applied, so the later rules cannot fix it. The 'module rule
+     ;; `(module_path . (identifier) ..)` matches the first segment of every path,
+     ;; including a connect target, so `count <- ..` colours `count` as a constant.
+     ;; Mirror highlights.scm: in string form, `(apply (reference (module_path
+     ;; (identifier) @font-lock-function-name-face .)))`, `(module_path (identifier)
+     ;; @font-lock-constant-face . "::")`, plus `(connect target: (module_path
+     ;; (identifier) @font-lock-variable-name-face))`. probe:
+     ;; design/review-2026-10-12/repro/ide-tooling-07.gx (ide-tooling-07)
      '((apply (reference (module_path (identifier) @font-lock-function-name-face)))
        (builtin_ref (identifier) @font-lock-function-name-face))
 
@@ -252,6 +271,13 @@ Falls back to this mode when tree-sitter is not available.
                         "]" @font-lock-misc-punctuation-face)))
     "Tree-sitter font-lock rules for Graphix.")
 
+  ;; CR claude for claude: [bug/low] No rule covers a line whose parent is trait_def,
+  ;; impl_def, use_group, union_type, struct_pattern or a variant payload. It falls
+  ;; through to `no-node`, so indent-region puts the members of `trait Show {..}`, `impl
+  ;; Show for i64 {..}` and `use sys::{..}` at column 0. Add `parent-is` rules for those
+  ;; nodes. The shared queries/indents.scm has the same holes, plus try_with and list,
+  ;; so Helix and Zed do not indent inside `try { .. } with(e) { .. }` or `[< .. >]`;
+  ;; add them to its @indent list too. (ide-tooling-08)
   (defvar graphix--treesit-indent-rules
     `((graphix
        ((node-is "}") parent-bol 0)

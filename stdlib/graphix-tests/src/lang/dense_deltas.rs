@@ -140,6 +140,15 @@ modes!(callee_back_from_bottom);
 // points when its value fires: a retarget writes nothing already
 // written, and a write after its arm wakes goes where the reference
 // points now.
+// CR claude for claude: [test-gap/low] The 'a retarget writes nothing already written'
+// clause cannot fail here. `v` is `select ep { 1 => 99, _ => never() }`, which is
+// bottom from ep 2, so when `i` and `c` retarget ra/rx at ep 4 there is no value that a
+// buggy re-delivery could write. Give v a standing value with `let v = never(); v <-
+// select ep { 1 => 99, _ => never() };`. The correct result is unchanged, a = [99, 2,
+// 3], x = 99, y = 2 in both engines, while a rewrite-on-retarget bug would put 99 in
+// a[2] and y (probe:
+// design/review-2026-10-12/repro/tests-lang-rest-a-moving-ref-standing-v.gx).
+// (tests-lang-rest-a-06)
 const MOVING_REFERENCE_WRITES_ONCE: &str = r#"{
   let ep = 0;
   ep <- select ep { n if n < 6 => n + 1, _ => never() };
@@ -201,6 +210,15 @@ async fn any_wakes_bottom(mode: Mode) -> Result<()> {
 modes!(any_wakes_bottom);
 
 // So is a uniq: it holds nothing across a bottom.
+// CR claude for claude: [test-gap/low] This test cannot tell whether v0 went bottom
+// during the sleep. uniq clears itself in its own sleep(), and a fresh uniq over a
+// stale input emits nothing at the wake whether v0 is bottom or still 5. Removing the
+// `4 => 0` write still gives [10, 5, -1] (probe:
+// design/review-2026-10-12/repro/tests-lang-rest-a-uniq-wake-standin.gx).
+// any_wakes_bottom is the real pin, and wake_restarts_quietly covers uniq's wake.
+// Either delete this test, or pin uniq across a bottom without a sleep: an in-arm
+// `uniq(10 / in1)` with in1 going 1, 2, 0, 2 re-emits 5 after the bottom in both
+// engines. (tests-lang-rest-a-04)
 async fn uniq_wakes_bottom(mode: Mode) -> Result<()> {
     let code = ANY_WAKES_BOTTOM.replace("any(v0, never<i64>())", "uniq(v0)");
     let (values, _) = run_delta(&code, mode).await?;

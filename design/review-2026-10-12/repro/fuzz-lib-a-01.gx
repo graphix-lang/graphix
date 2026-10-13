@@ -1,0 +1,7 @@
+let x = 1;
+// graphix-fuzz check: prints UNSURE (dropped as "nondeterminism"), expected AGREE.
+// A reference reaches the trace as its raw BindId (a u64 from a process-global
+// counter), so every run differs and Oracle::settle drops the comparison: any
+// divergence in the other component (here 2 + 3) would be dropped the same way.
+let r = &x;
+(r, 2 + 3)

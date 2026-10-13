@@ -1,0 +1,3 @@
+let f = |x: [(i64, string), (f64, string), (i64, bool)]| 0;
+let s: string = f;
+0

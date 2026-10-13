@@ -1,0 +1,15 @@
+use sys::io::Lines;
+use opt;
+let options = sys::process::options(
+  #args: ["-c", "trap 'exit 0' TERM; echo ready; sleep 10 & wait"],
+  #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+  #kill_on_drop: true,
+  "/bin/sh"
+);
+let child = sys::process::spawn(options)$;
+let status = sys::process::wait(child.proc)$;
+let out = opt::ok_or(child.stdout, `Null("stdout"))$;
+let ready = Lines::lines(out)$;
+sys::exit(sys::time::after_idle(duration:100.ms, status) ~ 0);
+let t0 = sys::time::now(null);
+(status.success, sys::time::diff(sys::time::now(status), t0))

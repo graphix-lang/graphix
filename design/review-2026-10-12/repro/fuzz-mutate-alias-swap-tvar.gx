@@ -1,0 +1,4 @@
+// typemorph alias-swap: an annotation naming a type variable is hoisted into
+// a parameterless typedef, `type Tm__0 = Array<'b>`, refused "undeclared type
+// variable 'b'". typemorph-one: FLIP alias-swap#1 (false flip).
+{ let f = |x: 'a| -> Array<'a> { let y: Array<'a> = [x]; y }; let a: Array<'b> = [1]; (f(1), a) }

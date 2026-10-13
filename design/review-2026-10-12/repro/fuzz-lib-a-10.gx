@@ -1,0 +1,10 @@
+// fuzz-lib-a-10: Subject::parse puts the body on the prefix's line, so a body
+// that opens with a comment is refused in every mode.
+// command: graphix-fuzz check design/review-2026-10-12/repro/fuzz-lib-a-10.gx
+// expected: AGREE (a trace of 2), as `graphix --check` accepts the file
+// observed: "AGREE (reject)": the wrapped text is
+// `use super::*; let result = {// ...`, a comment not on a line of its own.
+// The reject needs the comment to be the body's first line; the fuzz header
+// parsers keep this block, since none of it is a `-v1` header.
+let x = 1;
+x + 1

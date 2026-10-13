@@ -1,0 +1,13 @@
+// f-kernel-03: a fused kernel with a standing-bottom feeder re-runs its
+// whole region every time its parent updates, though nothing it reads fired.
+// command: GRAPHIX_DBG_INVOKE=1 graphix --no-cache f-kernel-03.gx 2>&1 | grep 'KERNEL INVOKE' | awk '{print $3}' | sort | uniq -c
+// expected: g's region (the tuple over the 1M fold) runs once, as it does with `z` = null.
+// observed (debug build): 202 runs with z = never() vs 1 with z = null; wall 3.2 s vs 0.8 s.
+let clock = sys::time::timer(duration:1.ms, true);
+let n = count(clock);
+let z: [i64, null] = never();
+let a = array::init(1000000, |i| i);
+let f = |a: Array<i64>, z: [i64, null]| array::fold(a, 0, |acc, x| acc + x * x);
+let g = |a: Array<i64>, z: [i64, null]| (f(a, z), z);
+sys::exit(select n > 200 { true => 0, false => never() });
+n ~ g(a, z)

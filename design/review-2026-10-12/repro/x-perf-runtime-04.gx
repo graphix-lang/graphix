@@ -1,0 +1,11 @@
+let size = 4000;
+let k = 1010;
+let src = [];
+src <- array::init(size, |i| i);
+let big = array::fold(src, 0, |acc, x| acc + x);
+let n = 0;
+n <- n + 1;
+let t0 = sys::time::now(select n { 10 => n, _ => never() });
+let t1 = sys::time::now(select n { c if c == k => n, _ => never() });
+sys::exit(sys::time::after_idle(duration:50.ms, t1 ~ 0));
+(big, sys::time::diff(t1, t0))

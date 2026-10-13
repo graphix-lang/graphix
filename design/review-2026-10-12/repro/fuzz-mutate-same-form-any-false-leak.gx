@@ -1,0 +1,5 @@
+// mustreject same-form: the scrutinee's type holds Any, where no arm is
+// checked for one runtime form, so widening it by `TmSame is accepted
+// rightly; same_form never consults the type map (design: a site whose
+// type holds Any is skipped). typemorph-one: FLIP same-form#3 LEAK.
+{ let s: Any = "a"; select s { string as x => 1, _ => 2 } }

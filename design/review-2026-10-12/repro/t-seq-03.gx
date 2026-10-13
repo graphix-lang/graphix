@@ -1,0 +1,18 @@
+// t-seq-03: a step that holds a call anywhere is not entry-fired
+// (seq.rs issue_expr / has_call), so a select whose TAKEN arm is a standing
+// level and whose untaken arm holds the call never fires after the first
+// run: the step stalls forever from run 2 on. Both engines, seq and seqq.
+// Expected: runs reaches ~9. Observed: 1. With hit = false (the call arm): 9.
+// Run: graphix --no-cache t-seq-03.gx
+let fetch = |k: i64| k * 100;
+let cached = 7;
+let hit = true;
+let t = sys::time::timer(duration:50.ms, true) ~ 3;
+let runs = 0;
+let r = seq let k = t {
+  let v = select hit { true => cached, false => fetch(k) };
+  v
+};
+runs <- r ~ runs + 1;
+sys::exit(sys::time::timer(duration:500.ms, false) ~ 0);
+runs

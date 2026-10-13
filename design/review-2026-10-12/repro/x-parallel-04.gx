@@ -1,0 +1,17 @@
+// x-parallel-04: #[parallel] accepts any map, but slots of a function-value callback never fork, even forced
+// command: GRAPHIX_PAR=force graphix --no-cache --no-fusion x-parallel-04.gx 2>&1 | grep -o 's[0-9]'
+// expected: #[parallel] forks the slots (shuffled s0..s7 per cycle, as with a lambda-literal
+//   callback), or the build refuses it as having nothing to fork
+// observed: compiles, and every one of the 7 cycles prints s0..s7 in order under auto and force;
+//   replacing `cb` by the lambda literal prints shuffled orders every cycle
+let rec f = |d: i64, v: i64| -> i64 select d {
+    0 => v,
+    d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003
+};
+let k = 0;
+let cbs = [|x: i64| { let y = f(9, x + k); println(y ~ "s[x]"); y }, |x: i64| x];
+let cb = cbs[array::iter([0])]$;
+let r = #[parallel] array::map(array::init(8, |i| i), cb);
+k <- r ~ select k { k if k < 6 => k + 1, _ => never() };
+sys::exit(select k { 6 => r ~ 0, _ => never() });
+k

@@ -1,0 +1,19 @@
+// gx-stdlib-02: Write::write_exact default loops forever when write accepts 0 bytes.
+// run: timeout -s KILL 30 graphix --no-cache --no-fusion gx-stdlib-02.gx | wc -l
+//   (same with fusion on)
+// expected: one write call, then w is an IOError (as Rust's write_all gives WriteZero)
+// observed: ~38k-45k dbg lines (one write call per cycle) in 1 s, w never produces;
+//   rest <- rest[0..] re-issues the same write every cycle at 100% CPU.
+use sys::io::Write;
+type M = Abstract<i64>;
+impl Write for M {
+    let write = |s, data| {
+        let r: [u64, Error<`IOError(string)>] = dbg(data ~ cast<u64>(s.0)$);
+        r
+    };
+    let flush = |s| { let r: [null, Error<`IOError(string)>] = s ~ null; r }
+};
+let m = M(0);
+let w = Write::write_exact(m, buffer::from_string("hello"));
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+w

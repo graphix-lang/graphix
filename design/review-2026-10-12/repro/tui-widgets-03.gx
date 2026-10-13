@@ -1,0 +1,13 @@
+// tui-widgets-03: Scrollbar passes Index values up to i64::MAX to ratatui, whose thumb math overflows
+// command: GRAPHIX=<debug graphix> sh tui-widgets-run.sh tui-widgets-03.gx
+// expected: the thumb drawn at the end of the track
+// observed (debug build): panicked at ratatui-widgets scrollbar.rs:562 "attempt to add with overflow", the display failed
+use tui::{line, paragraph::paragraph, scrollbar::scrollbar};
+
+tui::exit(sys::time::timer(duration:1.s, false));
+let content = paragraph(&[line("hello")]);
+scrollbar(
+    #position: &9223372036854775807,
+    #content_length: &9223372036854775807,
+    &content
+)

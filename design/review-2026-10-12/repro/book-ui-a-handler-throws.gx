@@ -1,0 +1,3 @@
+use tui::{input_handler::{Event, input_handler}, paragraph::paragraph};
+let h = |e: Event| { error(`Boom)?; e ~ `Stop };
+input_handler(#handle: &h, &paragraph(&"x"))

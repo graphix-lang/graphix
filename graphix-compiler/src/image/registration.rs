@@ -79,6 +79,17 @@ pub struct Registration<R: Rt, E: UserEvent> {
 
 /// The context's tables that registration fills and later compiles
 /// read; each is a plain list on the wire.
+// CR claude for claude: [bug/medium] The image does not carry
+// CompileCtx::def_assertions, and write_registration's quiescence check ignores it. A
+// #[sync] stays pending forever, because check_def_assertions never retires one, and
+// analysis::analyze_bound_callee re-checks it at every run-time bind. After a warm
+// start the list is empty, so a run-time bind that makes a #[sync] function async is
+// never reported. The cold run and --no-cache log "#[sync]: this function is async"; a
+// warm run logs nothing. Fix: add the pending assertions to Tables as (LambdaId, kind,
+// spec), with the spec as a shared Expr object, and push them back into
+// ctx.def_assertions in restore_tables. Refusing NOT_QUIESCENT while any are pending
+// would turn off the cache for every program that uses #[sync]. probe:
+// design/review-2026-10-12/repro/c-lib-02.gx (c-lib-02)
 struct Tables<'a, R: Rt, E: UserEvent> {
     defs: Vec<&'a LambdaDef<R, E>>,
     bind_to_lambda: Vec<(BindId, LambdaId)>,
@@ -301,6 +312,21 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
                     n.delete(self);
                 }
                 self.drop_deferred();
+                // CR claude for claude: [risk/low] This rollback does not cover fusion.
+                // `Saved::take` skips it, and `Jit::load_wrapped` pushes each restored
+                // wrapper onto `restored` during decode. A program entry that fails
+                // after its first fused region leaves those records queued, and the
+                // registration entry's restore then links them through
+                // `install_restored` for nodes that no longer exist.
+                // `CallSite::materialize`'s error path leaves them queued the same way.
+                // Separately, `CallSite::image_decode` registers its refs directly with
+                // `rt.ref_var`, and a node decoded inside a parent that then fails is
+                // dropped without `delete`, so those refs stay registered. The rule
+                // that a failed read leaves the session untouched does not hold. Fix:
+                // note the length of the JIT's `restored` before decode and truncate it
+                // on failure, and register decode-time refs through `record_ref` so
+                // `drop_deferred` cancels them. No trigger is reachable today because
+                // the checksum guards the input. (x-image-06)
                 saved.restore(self);
                 Err(e)
             }
@@ -317,9 +343,36 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
             return Err(PackError::InvalidFormat);
         }
         bytes.advance(MAGIC.len());
+        // CR claude for eric: [risk/medium] Nothing in an image says which build wrote
+        // it. This reader checks the magic, this hand-bumped format byte, the seal and
+        // the ISA. The image's native code binds libcalls by their index in this
+        // build's LibCall::all_libcalls() and helpers by name, and it assumes this
+        // build's value layouts. Only the shell's cache keeps images apart by build id.
+        // RegistrationImage::load accepts any bytes, and its docs state no same-build
+        // contract. Probe: design/review-2026-10-12/repro/c-image-04.sh. Given a
+        // format-46 registration entry written by the 2026-10-11 19:23 build, HEAD
+        // restores it and compiles nothing. Given one from the 16:21 build with the
+        // same format byte, HEAD decodes partway and then fails, so the encoding
+        // changes without a bump. An embedder that stores images, kernels in a program
+        // entry included, can run code from another build after an upgrade. Fix: write
+        // a build fingerprint into the header and refuse a mismatch here, as the ISA
+        // check does. The fingerprint could be the executable's build id or a hash of
+        // the helper table, the libcall list and the crate versions. The other option
+        // is to document on RegistrationImage that an image must come from the same
+        // executable. (c-image-04)
         if bytes.get_u8() != REGISTRATION_FORMAT {
             return Err(PackError::InvalidFormat);
         }
+        // CR claude for eric: [perf/low] `image::sealed` runs crc32 over every byte of
+        // the entry before anything decodes, so a warm start reads the whole mapped
+        // file, including the instance heap and instances never reached. The admin
+        // image is about 10 MB, 7 MB of it heap. design/program_image.md and
+        // `RegistrationCache::load`'s comment say only the pages a restore touches are
+        // read. On a cold page cache over a network disk, that is a full sequential
+        // read per start. Either seal per region (the eager part and trailer checked
+        // here, each heap instance checked by its instance-table entry at
+        // `materialize`), or keep the whole-file seal and correct the doc and the
+        // `load` comment after measuring the cost on the target. (x-image-07)
         if !image::sealed(&image, MAGIC.len() + 1) {
             warn!("the image is corrupt: its checksum does not match");
             return Err(PackError::InvalidFormat);

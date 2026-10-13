@@ -1,0 +1,16 @@
+// gui-core-04: TextSizeV has no upper bound: a large text size aborts the process.
+// Run headless with the driver beside this file (kwin_wayland --virtual + Xwayland,
+// nothing opens on the desktop; it embeds this same program):
+//   GRAPHIX=/path/to/debug/graphix RTDIR=$(mktemp -d /tmp/gxrt.XXXX) \
+//     timeout -s KILL 120 bash gui-core-05.sh
+// (RTDIR must be short: a wayland socket path is limited to 108 bytes.)
+// expected: the size is refused like 0.0 is (or clamped); the window shows.
+// observed (HEAD 7324207f, debug build), on graphix's stderr:
+//   panicked at zeno-0.3.3/src/mask.rs:34:10: attempt to multiply with overflow
+//   panicked at wgpu-hal-27.0.4/src/vulkan/instance.rs:194:58: Trying to destroy
+//     a SurfaceAcquireSemaphores that is still in use by a SurfaceTexture
+//     (from drop of GuiHandler -> TrackedWindow -> WindowSurface)
+//   panic in a destructor during cleanup; thread caused non-unwinding panic. aborting.
+use gui::{window, text::text};
+
+[&window(#title: &"gxprobe-big", &text(#size: &100000.0, &"W"))]

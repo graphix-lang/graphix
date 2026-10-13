@@ -43,6 +43,14 @@ window(#theme: &`CatppuccinMocha, &content)
 
 Since `#theme` takes a `&Theme`, you can change the theme reactively:
 
+<!-- CR claude for claude: [doc-drift/low] Inline snippets lack the `;` that top-level
+statements require. theming.md (`let dark = true` / `let theme = select ..`),
+gui/overview.md and 65-66, and types.md all separate top-level statements with newlines
+alone. The parser requires `;` ('a `;` separates this statement from the one before').
+The included example files get this right; the hand-written snippets do not. Failure:
+Pasting the theming snippet gives a parse error at its second line. Fix: Add `;` after
+each `let` in these snippets. Unverified: the reviewer's report, not checked by a
+verifier. (book-ui-a-17) -->
 ```graphix
 let dark = true
 let theme = select dark {
@@ -73,6 +81,11 @@ The palette defines the core colors from which iced derives all widget styles au
 - `background` -- window and container backgrounds.
 - `text` -- default text color.
 - `primary` -- accent color for buttons, sliders, active elements.
+<!-- CR claude for claude: [doc-drift/low] A toggled-on toggler takes its colour from
+`primary`, not `success`: the toggler style starts from iced's `toggler::default`, which
+uses `palette.primary`. A user who sets `success` to restyle switches sees no change.
+Drop the toggler example here, or name a widget that does use `success`, and list
+togglers under `primary`. (book-ui-a-12) -->
 - `success` -- color for success states (e.g., toggler when enabled).
 - `danger` -- color for destructive actions and error states.
 - `warning` -- color for warning indicators.

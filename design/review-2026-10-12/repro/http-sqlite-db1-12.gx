@@ -1,0 +1,11 @@
+// http-sqlite-db1-12: sqlite query merges or misreports duplicate column names
+// command: graphix --no-cache design/review-2026-10-12/repro/http-sqlite-db1-12.gx
+// expected: a SqliteError naming the duplicated column "id" for both reads
+// observed: ([{"id" => 1}], error:["InvalidCast", "can't cast [[\"id\", 1], [\"id\", 2]] to { id: i64 }: struct size mismatch"])
+//   the Map read silently drops b.id; the struct read fails without naming the cause
+let c = sqlite::open(":memory:")$;
+let setup = sqlite::exec_batch(c, "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1); INSERT INTO t VALUES (2);")$;
+let m: Result<Array<Map<string, sqlite::SqlVal>>, [`SqliteError(string), `InvalidCast(string)]> = sqlite::query(setup ~ c, "SELECT a.id, b.id FROM t AS a, t AS b WHERE a.id = 1 AND b.id = 2", []);
+let s: Result<Array<{id: i64}>, [`SqliteError(string), `InvalidCast(string)]> = sqlite::query(setup ~ c, "SELECT a.id, b.id FROM t AS a, t AS b WHERE a.id = 1 AND b.id = 2", []);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(m, s)

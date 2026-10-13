@@ -1,0 +1,3 @@
+type Box<'a> = Abstract<{ value: 'a }>;
+let wrap = |x: 'a| -> Box<'a> Box({ value: x });
+let unwrap = |b: Box<'a>| -> 'a b.0.value

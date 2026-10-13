@@ -344,6 +344,10 @@ impl MapCollection for IndexRange {
 #[derive(Debug, Default)]
 /// A slot's last production. A fresh slot is bottom until its first
 /// run, which precedes every read of it.
+// CR claude for claude: [readability/low] The doc block above this enum says 'A slot's
+// last production.' twice, once before and once after #[derive(Debug, Default)], so
+// rustdoc renders the sentence twice. Delete the first line and keep the doc block
+// together above the derive. (c-collection-08)
 enum SlotState {
     Value(Value),
     #[default]
@@ -440,7 +444,22 @@ impl Callback {
                 let function = genn::reference(ctx, *id, fty, *top_id);
                 genn::apply_prototype(function, scope.clone(), args, typ, *top_id)
             }
+            // CR claude for claude: [structure/low] This arm repeats genn::apply_value
+            // (Constant::new over the def, then genn::apply). Call genn::apply_value
+            // and set `share` on the result. MapQ::new and FoldQ::new also repeat the
+            // same argument parsing: single_bind_id with ok_or_else for the source and
+            // the callback, the Type::Fn match on the callback type, and the Callback
+            // literal. One helper that returns the Callback and the source bind id,
+            // given the callback's argument index, would serve both. (c-collection-09)
             CallKind::Slot(Some(def)) => {
+                // CR claude for claude: [bug/low] A slot's call of a resolved callback
+                // is built over NOP, the compiler's placeholder expression. A builtin
+                // that reports its call site shows that placeholder: `array::map([1, 2,
+                // 3], dbg)` logs `line: 1, column: 1 dbg("nop"): 1`, and so does any
+                // error a builtin wraps with its call's spec. Fix: give the constant
+                // and the call the spec of the callback argument (or of the collection
+                // call), as the prototype path gets one through genn::reference. probe:
+                // design/review-2026-10-12/repro/x-rerun-1-11.gx (x-rerun-1-11)
                 let function = super::Constant::new(def, fty, NOP.clone());
                 let mut call = genn::apply(function, scope.clone(), args, typ, *top_id);
                 if let Some(cs) =
@@ -564,9 +583,33 @@ fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
     };
     let moved = tag.triggers() || woke;
     let source = sval.and_then(|value| C::select(value, tag.triggers()));
+    // CR claude for claude: [bug/high] A bottom source puts every slot to sleep, but
+    // when the source returns nothing catches the slots up. MapQ and FoldQ keep no
+    // TrackedFires, so a variable the callback reads as an event (`a ~ x`, or a
+    // stateful builtin's edge) that fired during the pause is never raised again. An
+    // old slot keeps its stale production while a fresh slot reads the current value:
+    // `array::map(xs, |x| a ~ x)` yields [2, 9] where the woken slots should give [9,
+    // 9]. The fold twin yields 11 instead of 18. Both engines do this. That breaks the
+    // CLAUDE.md promise that the slots "wake, caught up, when it returns", which the
+    // select-arm twin keeps. Fix: give MapQ/FoldQ a one-arm TrackedFires over the
+    // slots' refs, record fires while src_bottom is set, and hand them to the slots on
+    // `back` as Select's wake does. Also pin the missing half next to
+    // bottom_source_runs_no_slot. Probe:
+    // design/review-2026-10-12/repro/tests-lang-rest-b-01.gx. Also reported as
+    // (x-engine-collections-02). (tests-lang-rest-b-01)
     let Some(source) = source else {
         if !std::mem::replace(src_bottom, true) {
             for slot in slots.iter_mut() {
+                // CR claude for claude: [readability/low] The deselecting_arm(true)
+                // wrapper changes nothing. Its only reader, CallSite::sleep, deletes
+                // the callee of a recursive edge, but a slot's CallSite is never marked
+                // as one: mark_recursion sees only graphs built over for_each_child,
+                // which for MapQ/FoldQ never visits slots. GXLambda::sleep also resets
+                // the flag for the callee body. A reader concludes that recursion
+                // through a collection is deleted on a bottom source, but it pauses,
+                // which is the documented rule, and MapQ::sleep/FoldQ::sleep sleep the
+                // same slots without the wrapper. Call `(kind.call)(slot).sleep(ctx)`
+                // directly. (c-collection-05)
                 super::deselecting_arm(true, || (kind.call)(slot).sleep(ctx));
             }
         }
@@ -596,6 +639,17 @@ struct Slot<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Slot<R, E> {
+    // CR claude for claude: [perf/medium] Every slot is a full run-time bind: an env
+    // binding for the synthetic `collection_element` argument, a fresh instantiate of
+    // the callback type, and at first dispatch build_bound (compile, typecheck0/1,
+    // analysis::analyze_bound_callee and share::fuse_slot). The analysis gives the same
+    // result for every sibling. Measured with `array::init(100000, |i| i)` under
+    // --no-fusion: about 4.5 KB resident and about 40 us of setup per slot (debug
+    // build). A 1M-element node-walk collection therefore needs gigabytes. probe:
+    // design/review-2026-10-12/repro/c-collection-03.gx. Candidates: mint the element
+    // BindId without an env binding nothing looks up by name; run analyze_bound_callee
+    // once per prototype definition and copy its facts to sibling instances; reuse the
+    // prototype's instance types instead of instantiating per slot. (c-collection-03)
     fn new(
         ctx: &mut CompileCtx<R, E>,
         callback: &Callback,
@@ -684,6 +738,14 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
         let kept = |v: &&Value| !matches!(v, Value::Null);
         let mut elems: LPooled<Vec<Value>> = match self.op {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
+            // CR claude for claude: [perf/low] For a CMap source this arm builds a
+            // two-element ValArray pair for every entry through source.values(),
+            // including the ones the predicate drops. MapQBase::finish then hands the
+            // kept pairs to pairs_to_map, which splits them, clones keys and values
+            // again and sorts them back into a map. The kept entries are already sorted
+            // and unique, being a subsequence of the source. Fix: for CMap Filter, zip
+            // slots with the source's (k, v) entries and build the result map directly
+            // from the kept ones, with no pair values and no sort. (c-collection-06)
             MapOp::Filter => slots
                 .iter()
                 .zip(source.values())
@@ -832,6 +894,19 @@ fn update_slots<R: Rt, E: UserEvent>(
     site: &mut SlotSite,
     old_len: usize,
 ) -> Option<Option<Tag>> {
+    // CR claude for claude: [perf/high] decide_siblings records its answer permanently,
+    // but the first cycle that has two slots usually has slot 1 still unbound:
+    // build_fresh prebinds only what its ProbeSite plan touches (slot 0 while
+    // uncalibrated, nothing for a Serial rest). analysis::independent reads an unbound
+    // CallSite as opaque, so the site becomes Dependent for the rest of the run. Any
+    // collection that is non-empty in an early cycle, the common UI case, then never
+    // forks under Auto. probe: design/review-2026-10-12/repro/c-collection-01a.gx
+    // (serial, ~30 s) vs c-collection-01b.gx (identical except an empty first source:
+    // forks, ~9 s). Fix: decide only once slots 0 and 1 have a resolved callee and run
+    // in order until then, or prebind both before deciding. ForkSite::decide_siblings
+    // in gather makes the same once-only decision over possibly unbound calls; apply
+    // the same rule there. See c-collection-02 for the dynamic-callback case.
+    // (c-collection-01)
     site.decide_siblings(ctx, slots.len(), || {
         crate::analysis::independent(slots.iter().take(2).map(|s| &s.call), ctx)
     });
@@ -959,6 +1034,22 @@ fn update_slots_in_order<R: Rt, E: UserEvent>(
         if ctx.interrupted() {
             return None;
         }
+        // CR claude for claude: [bug/high] Slots paused by a bottom source are updated
+        // under View::Cycle when the source comes back (`back` from take_source), not
+        // as a wake. Inside a slot, a woken Bind sees `ctx.event.wake()` false, so
+        // `held` stays empty and `wake_refresh` republishes the let's initializer over
+        // its `<-` target. `array::map(s, |x| { let acc = 0; acc <- clock ~ acc + x;
+        // acc })` drops every slot's counter back to 0 after `s` is bottom for one
+        // cycle, while the same body in a sleeping select arm keeps it. FoldQ::update
+        // picks its view the same way, and nothing re-raises the fires the slots slept
+        // through (c-node-mod-02.gx), which breaks "wake, caught up, when it returns".
+        // Fix: thread `back` into update_slots and use View::Wake for surviving slots
+        // when it is set, in FoldQ::update too. Give the paused slots the select's
+        // catch-up: track the fires of the callback's free refs while the source is
+        // bottom. Bind should also keep a connect target on its own `woke` bit, not
+        // only on the view. Pin both repros in both engines. probe:
+        // design/review-2026-10-12/repro/c-node-mod-01.gx Also reported as (c-bind-01).
+        // (c-node-mod-01)
         let view = if i >= old_len { View::Birth } else { View::Cycle };
         let tv = ctx.under(view, |ctx| slot.call.update(ctx));
         let tag = tv.tag();
@@ -1043,6 +1134,41 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 return self.resident.set(TagValue::tagged(v, tag));
             }
         }
+        // CR claude for eric: [perf/high] Every update runs every standing slot's
+        // callback, even when take_source reports the source quiet and the event has no
+        // variable any slot reads. FoldQ::update's slot loop, CallSite::update_call and
+        // GXLambda::update do the same for each recursion activation. So a node-walk
+        // cycle costs the whole program plus all of its slots and activations, not what
+        // changed. An idle `array::map(src, |x| uniq(x) * 2)` of 2000 elements beside a
+        // ticking counter makes each tick about 50x slower than at size 0 (probe:
+        // design/review-2026-10-12/repro/x-perf-runtime-01a.gx; also -01b for recursion
+        // and -01c for queued writes, whose drain time is quadratic). The fused path
+        // rides its resident when no feeder triggered (FusedKernel::update), so this
+        // cost lands on node-walk residue: stateful builtins, `<-`, references, async
+        // calls. That is what UI code is made of. A fix applies R1 at slot and instance
+        // granularity. Each slot or bound instance keeps the BindIds its subtree reads
+        // (from `refs`, refreshed at rebind), with an inverse index beside rt.by_ref. A
+        // slot is skipped and its SlotState ridden when the source did not move,
+        // nothing woke, the view is Cycle, and none of its ids was delivered this
+        // cycle. Pin it with a test that counts slot updates in an idle map beside a
+        // ticking counter. (x-perf-runtime-01)
+        // CR claude for eric: [perf/high] Every cycle runs every slot's call here, and
+        // FoldQ::update does the same in its slot loop. The source does not have to
+        // move, the collection does not have to wake, and nothing a slot reads has to
+        // fire: a root Block updates all of its statements each cycle. So one unrelated
+        // variable's cycle costs O(live slots in the program). Fusion hides this only
+        // when the callback fuses whole; a callback holding `~`, state, a reference or
+        // an async builtin (most TUI/GUI row builders) is node-walked, and every
+        // keypress pays for every row. probe:
+        // design/review-2026-10-12/repro/x-alloc-01.sh gives 300 unrelated cycles in
+        // 0.62 s at 2000 slots and 3.95 s at 20000 (debug build). A fix is a gate: at
+        // bind/resize, record the BindIds the slots read, internal ids included (the
+        // refs walk or the slots' by_ref registrations). Skip the slot pass and ride
+        // the resident when the source did not trigger, the node did not wake, the view
+        // is not init, and none of those ids is in ctx.event.variables or the cycle's
+        // custom deliveries. The same gate would apply to any CallSite whose instance
+        // read nothing that fired. This changes the node-walk's dense update model, so
+        // it needs your decision on whether and where to gate. (x-alloc-01)
         let slots = update_slots(ctx, &mut self.slots, &mut self.fork, old_len);
         match slots {
             None => return self.resident.ride(),
@@ -1338,6 +1464,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
 /// Deliver `tv` to a callback argument this cycle and stand it in the
 /// store, a bottom as a stale bottom.
+// CR claude for claude: [structure/low] This is the only bottom-aware "deliver a value
+// to a binding this cycle", and it is private. The pair `rt.store_insert(id, fired(v));
+// event.variables.insert(id, ..)` is copied in core Filter, array Group, opt's feed,
+// handler.rs, queuefn, coretraits, sys::net and graphix-rt's GXRt set path. Some copies
+// put the production's tag in the event and others always put FIRED, so a change to how
+// a delivery is stamped has a dozen places to miss. Make this a public ExecCtx method
+// and route those sites through it. Separately, pattern.rs's restore and branch.rs's
+// restore both match a saved (TagValue, stamp) back into store_insert or
+// store_insert_standing. A `Rt::store_put(id, Option<(TagValue, u64)>)` that restores
+// an entry exactly would replace both. (x-dup-06)
 fn deliver<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, tv: TagValue) {
     let standing = if tv.tag().is_bottom() {
         TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
@@ -1461,6 +1597,21 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
             slot.state.set(&tv);
             // The production, a bottom included, travels the acc chain.
             if let Some(next) = self.slots.get(i + 1) {
+                // CR claude for claude: [perf/medium] The acc chain is delivered on
+                // every update, here and for init into slot 0. Each delivery is a
+                // store_insert plus an insert into the cycle's event map, and clones
+                // the value, even when the production is stale and the store already
+                // holds it. An idle fold of N makes 2N hash writes per unrelated cycle
+                // and grows the event by N entries, and in fork mode all of it goes
+                // through the layered overlay and the merge. A node-walk fold of 2000
+                // elements costs about 2x an equal map per unrelated tick (probe:
+                // design/review-2026-10-12/repro/x-perf-runtime-04.gx against
+                // -04-control.gx, FLAGS=--no-fusion). Follow CallSite's
+                // publish_production rule (QuietAtRoot::Skip): deliver an acc only when
+                // the production triggers, the slot is fresh, or the source moved, woke
+                // or came back. Where a wake refresh can leave the store behind a quiet
+                // value, use a store-only standing write rather than an event entry.
+                // (x-perf-runtime-04)
                 deliver(ctx, next.acc_id, tv);
             }
         }

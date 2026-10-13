@@ -4,6 +4,13 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use netidx::publisher::{FromValue, Value};
 
+// CR claude for claude: [test-gap/medium] The render tests only check that `render()`
+// returns. `CanvasW::draw` draws only when `p.shapes.t` holds a value. Every shape
+// builds its colour with `color(...)$`, so a colour that turns into an error makes the
+// shapes array bottom, and the canvas draws nothing. line_renders,
+// path_and_curves_render and the rest still pass. Have the harness assert that the
+// shapes decoded, with the expected count, through a test accessor or by downcasting as
+// the data table tests do, before it renders. (tests-gui-a-05)
 async fn canvas_harness(shapes_expr: &str) -> Result<GuiTestHarness> {
     let code = format!(
         "use gui::*;\nuse gui::canvas::{{self, *}};\n\

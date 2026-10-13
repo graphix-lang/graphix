@@ -6,6 +6,12 @@ use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 
+// CR claude for claude: [perf/low] view runs every frame, and every call here allocates
+// a fresh ArcStr from a &str, up to six per mouse_area per frame. The button names are
+// compile-time constants: pass `literal!("Left")` and the like (an ArcStr literal costs
+// nothing) and drop this helper. PickListW::view has the same pattern: it clones its
+// `selected: Option<String>` every frame, but iced's PickList::new takes `Option<impl
+// Borrow<T>>`, so passing `selected.as_ref()` needs no clone. (gui-widgets-b-09)
 fn mouse_button_value(button: &str) -> Value {
     Value::String(button.into())
 }

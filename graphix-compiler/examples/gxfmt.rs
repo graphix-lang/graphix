@@ -41,6 +41,14 @@ fn check(path: &Path, quiet: bool, unchecked: bool) -> Result<()> {
     let once = match format_source(kind, &text, &cfg) {
         Ok(s) => s,
         Err(e) if e.is::<Refused>() => return Err(e),
+        // CR claude for claude: [test-gap/low] The only errors that reach this arm come
+        // from parsing the input, so a file that does not parse is skipped silently. If
+        // a parser change breaks part of the corpus, the harness CLAUDE.md prescribes
+        // after a printer change reports 0 bad and never round-trips those files. Given
+        // one such file, it prints nothing and exits 0. Fix: count skipped files and
+        // report them ("N skipped: do not parse", with their names). In single-file
+        // mode, print the parse error and exit non-zero. Also reported as
+        // (tests-shell-compiler-12). (tests-shell-compiler-09)
         Err(_) => return Ok(()),
     };
     if !quiet {

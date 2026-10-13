@@ -1,0 +1,12 @@
+let y: (List<string>, i64) = ([<"a", "b", "c">], 3);
+let x: [(List<string>, i64), null] = y;
+let a = cast<(Array<string>, i64)>(x);
+let b = cast<(Array<string>, i64)>(y);
+let z: (List<i64>, i64) = ([<1, 2, 3>], 4);
+let w: [(List<i64>, i64), null] = z;
+let c = cast<(Array<i64>, i64)>(w);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("a=[a]");
+println("b=[b]");
+println("c=[c]");
+0

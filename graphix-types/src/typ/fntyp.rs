@@ -368,6 +368,20 @@ impl FnType {
     ) -> LPooled<Vec<(TVar, Type)>> {
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
         let Some(_guard) = Walking::enter(&VIEWING, self) else { return view };
+        // CR claude for claude: [bug/high] constraint_pairs lists conjuncts only for
+        // the cells sig_tvars reaches through args, vargs, rtype and throws.
+        // Type::collect_tvars does not descend into a cell's conjuncts, so a quantifier
+        // that occurs only inside another bound loses its own bound from
+        // constraint_view. Example: 'b in `fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a`.
+        // Display, PrettyDisplay and FnType Eq/Ord all read this view. As a result
+        // `graphix fmt` rewrites the type without `'b: Int`, and its reparse guard
+        // compares two equally bound-less FnTypes and accepts. The original program is
+        // refused, while the formatted one checks and runs (prints [1.5]). Fix: build
+        // the listing from every cell the signature reaches through positions and
+        // conjuncts, transitively (as FnType::collect_tvars does through
+        // for_each_part), filtered to the declared quantifiers. Also add a printer
+        // round-trip pin with a quantifier that appears only in a bound. probe:
+        // design/review-2026-10-12/repro/t-fntyp-01.sh (t-fntyp-01)
         for (_, tv) in self.sig_tvars().drain() {
             if keep(&tv) {
                 for tc in tv.cell_constraints() {
@@ -382,6 +396,12 @@ impl FnType {
 
     /// The declared quantifiers' conjuncts, as [`Self::constraint_pairs`]:
     /// the part of the constraints that is the signature's identity.
+    // CR claude for claude: [perf/low] With no declared quantifiers (every inferred
+    // signature) the view is always empty, but it still runs `sig_tvars` over the whole
+    // signature before discarding every cell. `PartialEq` and `Ord` for `FnType` call
+    // it twice whenever the shapes compare equal, which is the `union_identical` and
+    // set-sort path of the checker, and `Display` once. Return an empty view when
+    // `self.quantifiers` is empty. (t-fntyp-11)
     pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
         self.constraint_pairs(|tv| self.quantifiers.contains(&tv.name))
     }
@@ -603,7 +623,45 @@ impl FnType {
             f(vargs, false)
         }
         f(rtype, false);
+        // CR claude for claude: [perf/medium] The conjunct pass calls `sig_tvars`,
+        // which walks every child type again through `Type::collect_tvars`. For a
+        // nested `Type::Fn` that walk calls `for_each_part` on the inner signature,
+        // whose guard is a different address and so does not stop it. Each nesting
+        // level therefore walks its subtree twice. Parse, check and fmt of `type F =
+        // fn() -> fn() -> ... i64` double in time per level: 1.5 s at depth 20 and 5.3
+        // s at depth 22. The LSP re-checks on every edit, so a deep signature hangs it.
+        // Probe:
+        // design/review-2026-10-12/repro/tests-shell-compiler-fntype-exponential.gx.
+        // Fix: collect the signature's cells with a walk that does not run nested
+        // signatures' conjunct passes, or keep one visited set of FnType addresses for
+        // the whole top-level walk, so each signature's cells are visited once. Then
+        // add a `fn() -> ` shape to deep_nesting.rs `program()`.
+        // (tests-shell-compiler-01)
+        // CR claude for claude: [perf/medium] Visiting the conjuncts calls `sig_tvars`,
+        // which walks every position again through `collect_tvars`, and `collect_tvars`
+        // on a nested function type re-enters that type's `for_each_part`, which does
+        // the same. Each level of fn-type nesting doubles the work for every user of
+        // `for_each_part` (`collect_tvars`, `alias_tvars`, `inner_quantifiers`,
+        // `instantiate`, the settle walks): a parameter annotated with fn types 20 deep
+        // takes 5 s to `--check`, and each further level doubles it. Collect the
+        // signature's cells during the position walk itself (once, by identity) and
+        // visit their conjuncts from that, so no position is walked twice. probe:
+        // design/review-2026-10-12/repro/t-fntyp-02.gx (generator t-fntyp-02-gen.py).
+        // (t-fntyp-08)
         if let Some(_guard) = Walking::enter(&CONSTRAINING, self) {
+            // CR claude for claude: [perf/medium] sig_tvars walks every part with
+            // Type::collect_tvars. A nested fn type there runs FnType::collect_tvars,
+            // which is its own for_each_part and so its own sig_tvars. The part walk
+            // above then hands the same nested types to the callback, which enters them
+            // again. Each level of fn-type nesting doubles the work: `--check` of `|h:
+            // fn(x: fn(x: ... i64) -> i64) -> i64| 0` takes 0.4 s at depth 16 and 3.7 s
+            // at depth 20 (probe: design/review-2026-10-12/repro/t-tvar-05.gx). Every
+            // relation built on for_each_part pays it, including collect_tvars, the
+            // settles and the image codec. Collect the signature's cells in the same
+            // pass that visits the parts (a pooled map filled as the leaves go by,
+            // conjuncts visited after), or have sig_tvars use a leaf walk that does not
+            // list a nested signature's constraints. Also reported as (x-stack-02).
+            // (t-tvar-05)
             for (_, tv) in sorted_tvars(self.sig_tvars().drain()).drain(..) {
                 for tc in tv.cell_constraints() {
                     f(&tc, true);
@@ -729,6 +787,20 @@ impl FnType {
     /// Map each of the signature's own open quantifiers to a fresh cell
     /// in `known`, its conjuncts copied through `walk`: every call picks
     /// them anew, whatever gate owns them.
+    // CR claude for claude: [bug/medium] A signature's own quantifiers are found by
+    // name through collect_tvars, which keeps the first cell seen per name, nested fn
+    // types included. Type::alias_tvars, however, gives a rank-2 formal's `fn<'a: C>` a
+    // cell of its own even when the enclosing definition also declares 'a. So when the
+    // formal comes first, fresh_quantifiers freshens the inner cell and leaves the
+    // outer 'a shared: the check refuses a valid call ("the argument is not polymorphic
+    // in 'a"). In the other order the check passes, but the instance signature loses
+    // the formal's quantifier, InstanceTypes::new returns None and the build refuses
+    // the program, a check/build split. has_open_quantifier, open_quantifier_gates and
+    // constraint_pairs (`quantifiers.contains(&tv.name)`) share the name lookup. Fix:
+    // collect the quantifiers' cells with a walk that stops at a nested fn type
+    // redeclaring the name, the way alias_tvars and check_tvars_declared already scope
+    // it, and pin both parameter orders. probe:
+    // design/review-2026-10-12/repro/c-lambda-03.gx (c-lambda-03)
     fn fresh_quantifiers(
         &self,
         known: &mut AHashMap<usize, TVar>,
@@ -886,6 +958,20 @@ impl FnType {
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         self.for_each_part(&mut |t, constraint| {
             if constraint {
+                // CR claude for claude: [bug/high] Normalizing a conjunct that names
+                // its own quantifier gives a new FnType on every round once a call has
+                // bound a variable in one of its unions. The CONSTRAINING guard in
+                // for_each_part keys on the FnType's address, so it never sees the
+                // copy. The walk then cycles for_each_part -> normalize ->
+                // collect_tvars -> for_each_part until memory runs out. Example: `let f
+                // = 'a: fn(x: 'a) -> [string, 'b] |g: 'a| 0; f(|x| 0)` OOMs under
+                // --check, which makes it reachable from the language server, and under
+                // a run; site_bounds is the entry point. Fix: collect from the stored
+                // conjunct, as alias_tvars does, or key the guard on something a
+                // normalized copy keeps, such as the quantifier cells whose conjuncts
+                // are being visited. The other address-guarded walks over normalized
+                // conjuncts need the same check. probe:
+                // design/review-2026-10-12/repro/t-fntyp-02.sh (t-fntyp-02)
                 t.normalize().collect_tvars(known)
             } else {
                 t.collect_tvars(known)
@@ -971,6 +1057,21 @@ impl FnType {
         // A quantifier self has not picked stands for every type its bound
         // admits, since each call through the value picks it anew: t must
         // fit it held rigid, wherever the type stands.
+        // CR claude for claude: [bug/medium] Only self's open quantifiers are gated
+        // here. t's own open quantifiers stay as they stand, and inside a definition
+        // body a rank-2 formal's quantifier is rigid. So `fn<'b: Any>(x: 'b) -> 'b ⊇
+        // fn<'c: Any>(x: 'c) -> 'c` reaches the rigid-pair arm of `TVar` contains,
+        // which accepts only through a conjunct of t's variable, and is refused.
+        // Forwarding a rank-2 formal to another rank-2 formal is therefore refused
+        // (`app(g)`), and so is a `let` rebinding of it or storing it in a typedef
+        // field of the same rank-2 type. The same program passes when both sides name
+        // one typedef (one shared cell) or when written as `app(|x| g(x))`. t's value
+        // is polymorphic: instantiate its open quantifiers fresh (as
+        // `fresh_quantifiers` does for a call) before the comparison, so self's rigid
+        // 'b can bind them, subject to t's bounds being implied by self's. Pin it next
+        // to `rank2_formal_applied_at_a_number`. probe:
+        // design/review-2026-10-12/repro/x-typecheck-generics-05.gx
+        // (x-typecheck-generics-05)
         let _gates = self.open_quantifier_gates();
         let (pairs, ok) = self.align(t);
         if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
@@ -1092,6 +1193,16 @@ impl FnType {
             bail!("the signature's and the implementation's labeled arguments differ")
         }
         for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
+            // CR claude for claude: [readability/low] This message formats FnArgKind
+            // with Debug, so a user reads `signature has Labeled { name: "a",
+            // has_default: false }, implementation has Labeled { name: "a",
+            // has_default: true }`. Give FnArgKind a Display in Graphix syntax (`#a` vs
+            // `?#a`) and say what differs (the default, or positional vs labeled). A
+            // related problem: when a contains refusal's two sides print identically,
+            // as with two block-scoped typedefs both named P in
+            // design/review-2026-10-05/repro/t-typ-mod-06.gx ('Error<ErrChain<P<i64,
+            // string>>> does not contain Error<ErrChain<P<i64, string>>>'), the message
+            // should add each side's expansion or defining scope. (x-fix-types-14)
             if sig_arg.kind != impl_arg.kind {
                 bail!(
                     "argument {} kind mismatch: signature has {:?}, implementation has {:?}",
@@ -1133,6 +1244,21 @@ impl FnType {
         // is bound, and the cells its binding holds carry the conjuncts
         let impl_cells = {
             let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            // CR claude for claude: [bug/medium] impl_cells is collected over argument,
+            // return and throws positions only (for_each_type skips cell constraints,
+            // and so does position_cells). An implementation variable that appears only
+            // inside another variable's bound is never checked against the signature.
+            // Example: 'b in `'a: Array<'b>, 'b: Int`. A .gxi `val f: fn<'a:
+            // Array<'b>>(x: 'a) -> 'a` is accepted over that implementation, so
+            // `m::f([1.5])` passes --check and is then refused by the build ("an
+            // instance at fn(x: Array<f64>) ... of a definition typed ..."). The 'a
+            // conjunct comparison Array<'b_impl> vs Array<'b_sig> passes because both
+            // cells are open, and it records nothing in tvar_map. Fix: collect
+            // impl_cells transitively through conjuncts too (every cell
+            // FnType::collect_tvars reaches), and relate the paired conjuncts with
+            // sig_matches_int so that tvar_map maps 'b_impl to 'b_sig before the
+            // implied-bound loop runs. probe:
+            // design/review-2026-10-12/repro/t-fntyp-04.sh (t-fntyp-04)
             impl_fn.for_each_type(&mut |t| super::settle::position_cells(t, &mut cells));
             sorted_tvars(cells.drain().map(|(_, tv)| (tv.name.clone(), tv)))
         };
@@ -1143,6 +1269,19 @@ impl FnType {
             // same-named variable: either form of a bound (`'c: C`, `c: C`)
             // names its variable its own way
             let sig_addr = sig_tv.cell_addr();
+            // CR claude for eric: [bug/medium] Several impl cells can map to one
+            // signature variable (`|x: 'b, y: 'c|` implementing `(x: 'a, y: 'a)`). This
+            // `.find` checks the declared bound on the first of them in name order
+            // only, so renaming the impl's variables changes the verdict. `'c: Number
+            // |x: 'b, y: 'c|` is refused "missing constraint 'a: Number", while `'b:
+            // Number |x: 'c, y: 'b|` is accepted. The rule needs deciding once. If an
+            // implementation must carry the signature's bounds, check every cell mapped
+            // to the sig variable. If it may be more general than its interface
+            // (t-fntyp-08: `|x| x` under `fn<'a: Number>(x: 'a) -> 'a` is refused
+            // today), drop this loop and keep the impl-requires-only-what-sig-declares
+            // loop below, which is all call safety needs. CLAUDE.md states only the
+            // second direction. Pin the multi-cell shape either way. probe:
+            // design/review-2026-10-12/repro/t-fntyp-07.sh (t-fntyp-07)
             let matched = impl_cells
                 .iter()
                 .find(|(_, tv)| {
@@ -1187,6 +1326,32 @@ impl FnType {
                         let mut implied = false;
                         for s in sig_tcs.iter() {
                             if s == &impl_tc
+                                // CR claude for claude: [bug/high] A predicate conjunct
+                                // of the impl cell (Ordered, Discernible, Concrete,
+                                // ...) is taken as implied when it holds of the
+                                // signature bound read as a type, so a bound that holds
+                                // `Any` anywhere (`'a: Any`, `'a: Array<Any>`) implies
+                                // all of them: the type Any is ordered and concrete,
+                                // but a quantifier bounded by Any ranges over
+                                // references, functions and indiscernible unions. An
+                                // interface or trait that writes `fn<'a: Any>` over an
+                                // impl doing `x < y` (or calling `str::parse`) passes
+                                // the check, and a call with `&a` then fails at the
+                                // build with the internal "an instance at .. of a
+                                // definition typed fn<'a: Any + Ordered>" error;
+                                // without the `: Any` the module check refuses it. Fix:
+                                // decide a predicate conjunct by the signature
+                                // variable's meaning, not by the bound as a type: imply
+                                // it only by an equal predicate or by a bound that
+                                // holds it with every `Any` (and open cell) read as
+                                // unknown, and add pins for
+                                // Ordered/Discernible/Concrete under `'a: Any` and `'a:
+                                // Array<Any>` in lang/interfaces.rs and lang/traits.rs.
+                                // probe:
+                                // design/review-2026-10-12/repro/x-typecheck-generics-03.gx
+                                // (interface forms in
+                                // x-typecheck-generics-03a-sig-any-ordered/,
+                                // 03b-sig-any-concrete/). (x-typecheck-generics-03)
                                 || impl_tc.contains_with_flags(probe, env, s)?
                             {
                                 implied = true;
@@ -1201,6 +1366,25 @@ impl FnType {
                         }
                     }
                 }
+                // CR claude for claude: [bug/high] The bound check here is wrong when
+                // an implementation cell maps to a compound that holds a signature
+                // variable (Array<'a>, ['a, i64], {a: 'a}). It only asks whether the
+                // impl bound contains sig_type. While 'a is open that always holds, so
+                // the signature never has to declare the Discernible, Ordered or
+                // Singleton bound that the implementation needs on 'a. The result: `val
+                // eq: fn(x: Array<'a>, y: Array<'a>) -> bool` over `|x, y| x == y`
+                // passes --check. A call over Array<[(i64, i64), Array<i64>]> is then
+                // refused by the build with the node::lambda::Typing compiler-bug
+                // message. A dynamic module's call silently never produces. The
+                // trait-method path refuses the same shape with "the implementation
+                // requires 'a: Discernible", so module interfaces and traits disagree.
+                // Fix: in this arm, require the impl bound of sig_type with the
+                // signature's variables rigid, carrying only their declared bounds plus
+                // param_bounds. Or share the trait path, which annotates the lambda
+                // from the declared type before its check. Add run! pins for Array<'a>
+                // with == and with <. probe:
+                // design/review-2026-10-12/repro/tests-modules-image-01.sh
+                // (tests-modules-image-01)
                 Some(sig_type) => {
                     for impl_tc in tv.cell_constraints() {
                         let ok = impl_tc
@@ -1372,6 +1556,16 @@ impl PrettyDisplay for FnType {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let constraints = printed_quantifiers(self);
         if constraints.is_empty() {
+            // CR claude for claude: [readability/low] FnType::fmt_pretty_inner always
+            // breaks after `fn(`, even when there are no args or vargs. When a
+            // zero-argument fn type does not fit, it prints `fn(` and then `) -> T` on
+            // its own line with nothing between. At width 20, `val h: fn(x: &mut (fn()
+            // -> i64)) -> ..` gives `x: &mut fn(\n ) -> i64`. Each argument type also
+            // gets a second `buf.nested` inside the outer one, so a nested `fn<..>(`
+            // closes at a different column than it opens. Fix: with no args and no
+            // vargs, write `fn() -> ` (or `fn<..>() -> `) and lay out only the return
+            // type, and drop the inner nested around each argument's type.
+            // (x-formatter-04)
             writeln!(buf, "fn(")?;
         } else {
             writeln!(buf, "fn<")?;
@@ -1473,6 +1667,11 @@ mod tests {
     }
 }
 
+// CR claude for claude: [doc-drift/low] The `//` lines above `shape_len` describe a
+// constraints wire slot that decode re-seeds onto the cells;
+// `shape_encode`/`shape_decode` have no such slot and decode re-seeds nothing. Delete
+// those two lines and keep the `///` doc, which states what is true (the conjuncts
+// travel with their cells). (t-fntyp-13)
 impl FnType {
     // The constraints wire slot is a derived view of the cells: decode
     // re-seeds its entries onto the cells (`add_cell_constraint` dedups).

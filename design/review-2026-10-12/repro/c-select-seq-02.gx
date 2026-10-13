@@ -1,0 +1,22 @@
+// c-select-seq-02: a seq `let` read by a step entered in its own cycle is
+// re-fired into that same step one cycle later (TrackedFires::observe_except
+// re-records a `carried` id even when the evaluated step read it live, and
+// TrackedFires::deliver injects it on every evaluation, not only at entry).
+// `a` fires once (cycle step=3; S0..S2 all enter that cycle, `--expand`
+// shows `S0 -> S1 same, S1 -> S2 same`). The until reads it live there
+// (count 1), then gets a phantom FIRED `a` next cycle (count 2).
+// Run: graphix --no-cache c-select-seq-02.gx   (and with --no-fusion)
+// Expected: no output (count(a) stays 1, the until never completes).
+// Observed: (2, 3, 4) in both engines; with `>= 3` it stalls, so exactly
+// one phantom. Same with `until a ~ (step > 3)` in place of the count.
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let go = select step { 2 => step, _ => never() };
+let r = seq go {
+  let a = go;
+  let s0 = a ~ step;
+  until count(a) >= 2;
+  (a, s0, step)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, select step { 12 => 0, _ => never() }));
+r

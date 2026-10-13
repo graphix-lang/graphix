@@ -1,0 +1,12 @@
+type Cell<'a> = Abstract<&mut 'a>;
+let x: i64 = 41;
+let ci: Cell<i64> = Cell(&mut x);
+let u: [Cell<[i64, null]>, Cell<i64>] = ci;
+let r = select u {
+  Cell<[i64, null]> as b => { let p = b.0; *p <- null; "arm1" },
+  Cell<i64> as c => "arm2"
+};
+let y = x + 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("r=[r] x=[x] y=[y]");
+0

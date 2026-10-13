@@ -1,0 +1,17 @@
+// f-mod-lowering-04: with the JIT unavailable, `#[native]` fails with a wrong
+// "attribute position" error. check_and_fuse_inner skips fusion when
+// `ctx.fusion.available()` is false, so check_node_attributes never
+// dispatches the attribute, and compile_stmt's census check (gated only on
+// `fusion_on(flags)`) reports it as misplaced.
+//
+// command: GRAPHIX_JIT_ARENA=1000000000000000 graphix --no-cache design/review-2026-10-12/repro/f-mod-lowering-04.gx
+// expected: an error saying fusion is unavailable on this host (with the JIT
+//   build error), or the assertion waived; without the env var it prints 41.
+// observed (HEAD 7324207f, debug build): "attribute in a position the fusion
+//   pass cannot check — put the decorated expression in its own statement (or
+//   a select arm)", rc=1. Without `#[native]` the same program prints 41 on
+//   the node-walk under the same env var.
+let f = |x: i64| x * 2 + 1;
+let r = #[native] f(20);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

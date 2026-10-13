@@ -280,6 +280,14 @@ pub(super) fn gen_module(
         if chance(rng, 0.6) {
             let override_default = chance(rng, 0.5);
             let decl = "trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };\n";
+            // CR claude for claude: [structure/low] Both arms build the same sig_impl.
+            // `let via = 'a: Tr |x: 'a| Tr::tw(x);` is written in both body_impl
+            // strings and again in the bare-module form, and the bare path then deletes
+            // it with a `replace` on the exact text. If any copy changes, the replace
+            // stops matching and the bare module defines via twice with no error to
+            // flag it. Fix: only the impl line depends on override_default. Build it
+            // alone and push the via line once, the annotated form when there is no
+            // gxi, and drop the replace. (fuzz-gen-b-08)
             let (sig_impl, body_impl) = if override_default {
                 (
                     "impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n",

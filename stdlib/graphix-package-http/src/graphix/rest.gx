@@ -7,6 +7,16 @@ let send = |method: Method, bearer: [string, null], headers: Array<(string, stri
         string as b => [("authorization", "Bearer [b]")],
         null as _ => []
     };
+    // CR claude for claude: [bug/medium] The headers passed here are the JSON defaults
+    // (and the bearer header) followed by the caller's #headers. value_to_header_map
+    // appends every pair, so a caller's content-type, accept or authorization is sent
+    // in addition to the default and never replaces it. A post with #headers:
+    // [("content-type", "application/merge-patch+json")] reaches the server with two
+    // Content-Type headers. Servers reject that or take the first one, so a vendor or
+    // merge-patch media type cannot be sent through http::rest. Fix: leave out each
+    // default whose name, compared case-insensitively, appears among the caller's
+    // headers before concatenating. probe:
+    // design/review-2026-10-12/repro/gx-stdlib-04-rest.gx (gx-stdlib-04)
     request(
         #method: method,
         #headers: array::concat(json, auth, headers),

@@ -1,0 +1,8 @@
+// x-rerun-7-06 (residue of x-diff-types-06): under an unannotated let the
+// typedef bound refusal of never<T> carries no position.
+// command: graphix --check <this file>
+// expected: the refusal at line 7 (`let x = never<Num<string>>()`)
+// observed: "Caused by: type mismatch Number does not contain string", no position
+type Num<'a: Number> = 'a;
+let x = never<Num<string>>();
+x

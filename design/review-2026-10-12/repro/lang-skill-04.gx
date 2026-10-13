@@ -1,0 +1,12 @@
+// SKILL.md: sys::net effects are never paused by an arm. Here the publish
+// sits in an arm that goes unselected at 300ms; the subscriber then reads
+// error:["SubscribeError", "unsubscribed"]: the arm's sleep unpublished.
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+let on = true;
+on <- sys::time::timer(duration:300.ms, false) ~ false;
+let t = sys::time::timer(duration:50.ms, true);
+let n = count(t);
+select on { true => sys::net::publish("/local/review/x", n), false => never() };
+let s: [i64, Error<[`InvalidCast(string), `SubscribeError(string)]>] = sys::net::subscribe("/local/review/x");
+println("sub [s]");
+null

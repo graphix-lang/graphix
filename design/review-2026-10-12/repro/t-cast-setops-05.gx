@@ -1,0 +1,20 @@
+// t-cast-setops-05: a List cast with no source type decides array-vs-list by
+// shape, so json::read / str::parse of a two-element array whose second
+// element is [] reads it as a cons cell and drops that element.
+// run: timeout -s KILL 60 graphix --no-cache design/review-2026-10-12/repro/t-cast-setops-05.gx
+// expected: read back: [<[1, 2], []>]   parse: [<[1, 2], []>]
+// observed: read back: [<[1, 2]>]       parse: [<[1, 2]>]
+// (a three-element list round-trips: read back2 is correct)
+type E = Error<[`JsonErr(string), `InvalidCast(string)]>;
+let a: List<Array<i64>> = [<[1, 2], []>];
+let s = json::write_str(a)$;
+println("written: [s]");
+let b: [List<Array<i64>>, E] = json::read(s);
+println("read back: [b]");
+let a2: List<Array<i64>> = [<[1, 2], [3, 4], []>];
+let b2: [List<Array<i64>>, E] = json::read(json::write_str(a2)$);
+println("read back2: [b2]");
+let p: [List<Array<i64>>, Error<`ParseError(string)>] = str::parse(r"[[1,2],[]]");
+println("parse: [p]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

@@ -263,6 +263,13 @@ structural case: publisher dedup, the wire and the REPL's handle-side
 echo stay structural, the conservative answer for representation
 machinery.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says an entry is
+resolved-or-None STICKY and that an impl loaded later by a dynamic module is not picked
+up. That is no longer how it works. take_site resolves a slot per (trait, tag,
+instantiation) on first sight (SiteEntry::by_type). It compares the entry's
+impls_version on every dispatch and drops and rebuilds the entry when the trait's
+implementation list changes, so a later impl is consulted. Rewrite the sentence to say
+that. (c-module-traits-05) -->
 **The dispatch.** A per-context registry (`ExecCtx.core_hook_sites`,
 keyed `(trait, AbstractId)`) holds hook CALL SITES — a `genn::apply` of
 the impl's method binding over synthesized argument bindings, delivered

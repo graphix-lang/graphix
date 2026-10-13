@@ -1,0 +1,4 @@
+type A = X;
+use self::A as X;
+type D = A;
+let result = 0

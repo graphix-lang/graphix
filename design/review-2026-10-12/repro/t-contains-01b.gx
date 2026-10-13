@@ -1,0 +1,3 @@
+// expect: accepted; refused: the variant form of t-contains-01
+let f = |x: 'a, b: bool| -> [`A(i64, 'a), `A(string, 'a)] select b { false => `A("a", x), true => `A(1, x) };
+f(1, true)

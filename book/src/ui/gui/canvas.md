@@ -4,6 +4,15 @@ The `canvas` widget provides a low-level 2D drawing surface for custom graphics.
 
 ## Interface
 
+<!-- CR claude for claude: [structure/low] This interface block is a hand copy of
+canvas.gxi. So are the blocks on combo_box, grid, markdown, pick_list, radio, slider,
+text, text_input, toggler and tooltip (gui), and on barchart, browser, calendar, canvas,
+chart, layout, list, scroll, table and text (tui), several with invented positional
+names. Nothing in the gate compares them with the code, and radio's has already drifted
+(book-ui-b-03). Replace each with `{{#include
+../../../../stdlib/graphix-package-<gui|tui>/src/graphix/<widget>.gxi}}`, as chart.md
+and image.md do. Where a page wants only part of a file, use an mdbook anchor include
+rather than a copy. (book-ui-b-07) -->
 ```graphix
 type PathSegment = [
   `MoveTo({x: f64, y: f64}),
@@ -84,6 +93,11 @@ val canvas: fn(
 
 ## Parameters
 
+<!-- CR claude for claude: [doc-drift/medium] The `canvas` function in canvas.gx
+defaults both `#width` and `#height` to `` `Fill ``, not `` `Shrink ``. A reader who
+counts on the documented Shrink default to stack a canvas under other widgets gets a
+canvas that takes all the remaining space. Change both lines to say `` `Fill ``.
+(book-ui-b-04) -->
 - **width** - Horizontal sizing as a `Length`. Defaults to `` `Shrink ``.
 - **height** - Vertical sizing as a `Length`. Defaults to `` `Shrink ``.
 - **background** - Background color for the canvas area. Null means transparent.

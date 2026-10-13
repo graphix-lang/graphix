@@ -1,0 +1,6 @@
+// x-formatter-02: `graphix fmt --check --stdout` ignores --check and exits 0 on an unformatted file
+// command: graphix fmt --check --stdout x-formatter-02.gx; echo $?   then   graphix fmt --check x-formatter-02.gx; echo $?
+// expected: both exit 1 and list the file (it is not formatted: the spaces after `=` and the missing blank line)
+// observed: --check --stdout prints the formatted text and exits 0; --check alone exits 1
+let x =    1;
+x

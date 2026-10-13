@@ -1,0 +1,50 @@
+// x-rerun-4-02: tui browser publishes a row of the old listing on navigation
+// (stdlib/graphix-package-tui/src/graphix/browser.gx, `selected <- p ~ ..` vs
+// `net::list_table(path)`).
+//
+// On a path change the `selected` reset lands while `structure` still holds the
+// previous path's listing, so `row_path = visible_rows[selected.y]$` reads row 0
+// of the OLD listing and both outputs publish it. When the new listing is empty
+// nothing overwrites it. Timing-dependent (reset vs list_table reply): about 5
+// runs in 7 fail, in both engines.
+//
+// command: for k in 1 2 3 4 5; do env -u WAYLAND_DISPLAY -u DISPLAY timeout -s KILL 60 \
+//            graphix --no-cache design/review-2026-10-12/repro/x-rerun-4-02.gx \
+//            | grep -c 'rows=\[\] selected_row=/xr42/d/w'; done
+//          (also with --no-fusion)
+// expected: 0 every run; after t=4 enters /xr42/d/x (empty listing) the outputs
+//   never name /xr42/d/w, which the user did not select, and t=7 does not
+//   navigate there.
+// observed (HEAD 7324207f, debug build): 8 in most runs:
+//   B: t=4 path=/xr42/d/x rows=["/xr42/d/w", "/xr42/d/x"] selected_row=/xr42/d/x selected_path=/xr42/d/x
+//   B: t=4 path=/xr42/d/x rows=["/xr42/d/w", "/xr42/d/x"] selected_row=/xr42/d/w selected_path=/xr42/d/w
+//   B: t=4 path=/xr42/d/x rows=[] selected_row=/xr42/d/w selected_path=/xr42/d/w
+//   ...
+//   B: t=7 path=/xr42/d/w rows=[] selected_row=/xr42/d/w selected_path=/xr42/d/w
+use tui::{Tui, browser::{MoveCursor, browser}};
+let p1 = sys::net::publish("/xr42/d/w", 1);
+let p2 = sys::net::publish("/xr42/d/x", 2);
+let path = "/xr42/d";
+let sr: string = never();
+let sp: string = never();
+let cur: MoveCursor = never();
+let b2: Tui = browser(
+    #size: {width: 80, height: 24},
+    #cursor: cur,
+    #selected_row: &mut sr,
+    #selected_path: &mut sp,
+    path
+);
+let rows = sys::net::list_table(path)$.rows;
+let t = sys::time::timer(duration:400.ms, true);
+let i = 0;
+i <- t ~ i + 1;
+select i {
+    2 => cur <- `Down(1),
+    4 => path <- i ~ sr,
+    7 => path <- i ~ sr,
+    _ => never()
+};
+println("B: t=[i] path=[path] rows=[rows] selected_row=[sr] selected_path=[sp]");
+sys::exit(select i { 9 => i ~ 0, _ => never() });
+0

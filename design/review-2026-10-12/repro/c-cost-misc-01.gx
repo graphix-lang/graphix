@@ -1,0 +1,29 @@
+// c-cost-misc-01: collection slots stay forked after a dynamic callback
+// rebinds to one that makes ordered calls.
+// array::map decides its slots' independence once, at its first update
+// (SlotSite::decide_siblings via analysis::independent), reading the
+// callback bound then (g1: calls nothing ordered). From n = 3 the callback is
+// g2 and every slot calls the one ordered queuefn wrapper q, yet the stale
+// `Independent` keeps forking the slots, so q sees its calls out of order.
+// Run: GRAPHIX_PAR=off|force graphix --no-cache --no-fusion c-cost-misc-01.gx
+// Expected (GRAPHIX_PAR=off, deterministic):
+//   [303, 304, 305, 306, 307, 400, 401, 402, 403, 404]
+// Observed (GRAPHIX_PAR=force, also with fusion on, also GRAPHIX_PAR=auto
+// GRAPHIX_PAR_T=1): [301, 304, ...] or [302, 304, ...]
+// Control: `k < 0` in place of `k < 3` (g2 from the start) gives
+// [0, 1, 2, 3, 4, 5, 6, 7, 100, 101] in every mode.
+{
+    let clk = sys::time::timer(duration:1.ms, true);
+    let n = 0;
+    n <- clk ~ n + 1;
+    let got: Array<i64> = [];
+    let q = queuefn(#trigger: clk, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+    let g1 = |x: i64| -> i64 x;
+    let g2 = |x: i64| -> i64 q(x);
+    let f = select n { k if k < 3 => g1, _ => g2 };
+    let r = array::map(array::init(8, |j| j + 100 * n), f);
+    let out = select n { k if k > 12 => got[0..10], _ => never() };
+    let o = once(out);
+    sys::exit(sys::time::after_idle(duration:50.ms, o ~ 0));
+    o
+}

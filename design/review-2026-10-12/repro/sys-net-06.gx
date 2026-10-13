@@ -1,0 +1,9 @@
+// sys-net-06: list with a relative path lists [] instead of a ListError
+// command: graphix --no-cache design/review-2026-10-12/repro/sys-net-06.gx
+// expected: list error:["ListError", "invalid path ..."] (write, subscribe
+//   and rpc refuse a relative path)
+// observed: list []
+sys::net::publish("/local/foo", 42);
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+let l = sys::net::list(#update: never(), "local");
+println("list [l]")

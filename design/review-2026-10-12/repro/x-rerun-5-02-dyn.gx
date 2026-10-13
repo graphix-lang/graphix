@@ -1,0 +1,13 @@
+// x-rerun-5-02 (dynamic form): --check exits 0; `graphix --no-cache` prints nothing and exits 0;
+// RUST_LOG=error shows "binding the callee failed: a run-time bind ... did not elaborate"
+// on the graphix_compiler::node::callsite target, which the shell does not show.
+let a = [10, 20, 30];
+let f = |i| a[i]$;
+let g = |b, k| f(select b { true => 1, false => k });
+let h: fn(b: bool, k: string) -> i64 = g;
+let n = 0;
+n <- sys::time::timer(duration:50.ms, false) ~ 1;
+let fs = [h, h];
+let r = fs[n]$(false, "s");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r * 3

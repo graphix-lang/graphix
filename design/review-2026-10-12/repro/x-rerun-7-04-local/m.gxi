@@ -1,0 +1,3 @@
+use tui::{Line, Style};
+type B = {label: &[Line, null], style: &[Style, null], text_value: &[string, null], value: &i64, value_style: &[Style, null]};
+val mk: fn(?#label: &[Line, null], ?#style: &[Style, null], ?#text_value: &[string, null], ?#value_style: &[Style, null], value: &i64) -> B;

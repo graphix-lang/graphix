@@ -1,0 +1,13 @@
+// x-typecheck-patterns-08: the missing-cases slice hint blames arms that do not exist
+// command: graphix --check x-typecheck-patterns-08.gx
+// expected: a refusal naming the uncovered member, with no slice-arm hint (there
+// is no slice arm here)
+// observed: "missing match cases: no arm covers Array<[i64, string]> (the slice
+// arms cover finitely many lengths — an array or list scrutinee also needs a
+// rest pattern or a wildcard)"
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let f = |a: Array<[i64, string]>| select a {
+  Array<i64> as x => 1,
+  Array<string> as y => 2
+};
+f([1])

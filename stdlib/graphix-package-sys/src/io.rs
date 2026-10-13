@@ -42,6 +42,14 @@ impl EvalCachedAsync for IoReadEv {
                 None => return errf!("IOError", "stream unavailable"),
             };
             let mut buf: LPooled<Vec<u8>> = LPooled::take();
+            // CR claude for claude: [perf/low] resize writes zeros over min(n,
+            // MAX_READ) bytes on every read. A `read(s, 65536)` loop on a socket that
+            // returns a few bytes per read therefore pays a 64 KiB memset per message.
+            // Instead, reserve the capacity and read into the pooled Vec's spare
+            // capacity with `read_buf` over `(&mut *buf).limit(n)`, which does not
+            // zero-fill. Then keep the exact-size copy. Do not freeze a BytesMut of
+            // capacity n into the result: that would keep the whole capacity alive
+            // behind a few-byte value. (sys-io-10)
             buf.resize(n.min(MAX_READ) as usize, 0);
             match s.read(&mut buf).await {
                 Ok(n) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf[..n]))),
@@ -142,6 +150,20 @@ async fn line_reader(
         if batched && !lines.is_empty() {
             out.push((id, Value::Array(ValArray::from_iter_exact(lines.drain(..)))));
         }
+        // CR claude for claude: [bug/high] Unbatched line_reader has no backpressure.
+        // Each chunk's lines go out as one batch to a single BindId. The runtime's run
+        // loop drains every watch_var channel on every pass, and do_cycle then queues
+        // all but the first line in var_updates, which delivers one line per cycle. So
+        // the capacity-3 channel is always empty and the reader reads the whole input
+        // ahead, at about 90 bytes per pending line: a 20 MB file of short lines passes
+        // 1.1 GB, and a fast or hostile socket peer can exhaust memory. A stale backlog
+        // also keeps draining one per cycle after a stream switch. Fix: have the reader
+        // wait until the previous lines are consumed. For example, IoLines could own a
+        // bounded line queue that it hands out one per cycle and signal the reader (a
+        // Notify or semaphore) when the queue drains. Or the runtime could stop polling
+        // a watch_var receiver while its ids still have writes waiting. lines_batched
+        // does not have this problem. probe:
+        // design/review-2026-10-12/repro/sys-io-03.gx (sys-io-03)
         if !out.is_empty() && tx.send(out).await.is_err() {
             break;
         }
@@ -268,6 +290,20 @@ impl EvalCachedAsync for IoReadExactEv {
             };
             // the buffer grows as bytes arrive, not to n
             let mut buf = Vec::new();
+            // CR claude for claude: [bug/medium] This read is not cancel-safe. When the
+            // call's arm sleeps, CachedArgsAsync::sleep aborts the eval, and the bytes
+            // already moved into the local `buf` are dropped. The restart at the wake
+            // then reads from the stream's current position, so the program silently
+            // loses data. In the probe, read_exact(10) returns "0123456789" instead of
+            // "hello01234". IoReadAllEv's read_to_end has the same flaw. IoReadEv has a
+            // narrower version: a read that completed just before the sleep posts its
+            // reply under the released id, and the reply is dropped. Fix: give Halves'
+            // read slot a push-back buffer (BytesMut). read_exact/read_all accumulate
+            // into it in place and split off only on completion, so an aborted read
+            // leaves its bytes for the next read. A reply dropped by renew would also
+            // need its bytes pushed back. probe:
+            // design/review-2026-10-12/repro/sys-io-07.gx Also reported as
+            // (x-concurrency-03). (sys-io-07)
             match (&mut *s).take(n).read_to_end(&mut buf).await {
                 Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
                 Err(e) => errf!("IOError", "read_exact failed: {e}"),

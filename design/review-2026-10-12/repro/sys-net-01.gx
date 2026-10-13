@@ -1,0 +1,23 @@
+// sys-net-01: Second subscriber of a busy path sees values twice and out of order
+// (manual last-value replay + routes read at pump-drain time on the shared channel).
+// Run 6-8 times (timing dependent; roughly 1 run in 3 hits):
+//   timeout -s KILL 30 graphix --no-cache sys-net-01.gx | grep -E "b#|BAD"
+// Expected: b#1 < b#2 < b#3 and no BAD line.
+// Observed (debug build, HEAD 7324207f): "b#1=10473 b#2=10471 BAD b=10471 prev=10473"
+// (--no-fusion), and "b#1=10968 b#2=10968 BAD b=10968 prev=10968" (3 of 6 default runs).
+let x = 0;
+sys::net::publish("/test/burst", x)$;
+let a: i64 = sys::net::subscribe("/test/burst")$;
+let go = false;
+go <- once(a) ~ true;
+x <- select (go, x) { (true, n) if n < 30000 => n + 1, _ => never() };
+let late = sys::time::timer(duration:300.ms, false) ~ "/test/burst";
+let b: i64 = sys::net::subscribe(late)$;
+let prev = -1;
+prev <- b;
+let nb = count(b);
+select nb { n if n < 4 => println("b#[n]=[b]"), _ => null };
+let pair = b ~ (b, prev);
+select pair { (v, p) if v <= p => println("BAD b=[v] prev=[p]"), _ => null };
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0);
+0

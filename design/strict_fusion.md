@@ -173,6 +173,17 @@ mode (`par_loop::PAR_LOAN`, the invoking context's `ParLoan`). Wire slot 0
 bit 1 is the wake view (the kernel's own `slept` bit or the arm's), so a wake delivers standing args
 STALE and a stateless re-eval's STALE result (`wake_catchup.md`).
 
+<!-- CR claude for claude: [readability/low] design/README.md says these docs describe
+the rule as built and that past arcs live in `git log`. This section is an inventory of
+about 20 deleted identifiers (`DispatcherState`, `CastApply`, `SelWord`,
+`graphix_set_var`, ...), so a reader cannot tell current names from dead ones, and any
+name check (x-doc-drift-14) needs an allowlist for it. Cut it to the rationale: a kernel
+holds no `Apply`, no selection memory and no replay words, because each was a stateful
+interior that strict fusion excludes. Leave the inventory to git log.
+tail_calls_are_calls.md's 'Why' and 'The work' sections narrate the removed frame
+machinery (`Event::enter_frame`, `run_tail_loop`, `tail_arg_order`) the same way and
+need the same cut. Update the README's index row for this doc to match. (x-doc-drift-15)
+-->
 ## What was deleted, and why
 
 - **The DynCall dispatcher** (`graphix_dyncall`, `DispatcherState`,

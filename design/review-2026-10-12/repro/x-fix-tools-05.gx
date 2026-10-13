@@ -1,0 +1,13 @@
+// x-fix-tools-05: a labeled default that calls its own function omitting
+// that label makes the CHECK diverge: each omitting site compiles the
+// default, whose call is another omitting site. `--check` (and the LSP,
+// which runs the same check on every edit) grows memory without bound.
+// The run would recurse forever too, but the activation budget contains
+// that; nothing contains the checker. Supplying the label in the inner call
+// (`f(#a: 0, 1)`) checks and runs fine.
+//
+// command: timeout -s KILL 60 graphix --check design/review-2026-10-12/repro/x-fix-tools-05.gx
+// expected: a refusal (a default that reaches itself), or exit 0, promptly
+// observed: [probe] OOM-KILLED after ~12 s (6 GB cap)
+let rec f = |#a = f(1), b| b;
+f(1)

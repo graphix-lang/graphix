@@ -107,6 +107,16 @@ enum ShapeV {
 
 impl ShapeV {
     /// Whether the shape's coordinates are numbers ratatui can place.
+    // CR claude for claude: [bug/low] finite() checks only the raw coordinates.
+    // Ratatui's line clip computes x2 - x1 and y2 - y1, and those overflow to inf for
+    // finite coordinates near ±f64::MAX. The clipped endpoint then becomes NaN and gets
+    // painted on row 0. A line from (-1e308,-1e308) to (1e308,1e308) over [0,10]x[0,10]
+    // draws a full top row instead of the diagonal. Rectangle (x + width, y + height),
+    // Circle (x ± radius) and the consecutive points of a chart Line dataset
+    // (DatasetW::set_data) have the same problem. Fix: also require the derived
+    // quantities to be finite, so that such a shape is dropped the way a NaN shape
+    // already is, and add a panic_test.rs pin for the ±1e308 line. probe:
+    // design/review-2026-10-12/repro/tui-widgets-04.gx (tui-widgets-04)
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {

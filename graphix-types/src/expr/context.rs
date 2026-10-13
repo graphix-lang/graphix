@@ -51,6 +51,17 @@ impl fmt::Display for ErrorContext {
             }
         }
         let mut head = Head(LPooled::take(), false);
+        // CR claude for claude: [readability/low] The frame snippet is the printer's
+        // rendering of the frame's Expr, not what the user wrote. For lowered
+        // constructs the chain shows compiler internals: an `until 5` in a seq gives
+        // frames reading `{ let seqpc4611686018427393761: [`Idle..`, `machine seqpc.. {
+        // `S0..`, `let seqv.._0: bool = ..` and `any(seqpc.. ~! 5, 5)` before the real
+        // `type mismatch bool does not contain i64` (probe:
+        // design/review-2026-10-12/repro/x-errors-04-seq-frames.gx, `--check`). Where
+        // the expression has a written end and its Origin has text, print the source
+        // slice `ori.text[pos..end]` (truncated as now), and fall back to the printer
+        // otherwise. Alternatively, skip frames whose spec the seq lowering
+        // synthesized. (x-errors-04)
         let complete = write!(head, "{}", self.0).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {

@@ -376,6 +376,15 @@ fn fcvt_sat_narrow(
     }
 }
 
+// CR claude for claude: [dead/low] lowering::inline_cast, through always_fits, only
+// lets through integer widening, any number to a float, and float to float. So the
+// float->int arm ("Saturate like Rust `as`"), fcvt_sat_narrow, the ireduce arm and the
+// same-size integer arm are unreachable. They also encode the wrong semantics: an
+// integer cast either holds the value exactly or is an InvalidCast, so if always_fits
+// were ever widened, these arms would silently saturate or wrap where the node-walk
+// refuses. Fix: delete them, and have inline_cast return a pair type that only it can
+// build (e.g. `FittingCast`), which compile_cast takes, so a non-fitting pair cannot
+// reach emission. (f-nodes-scalar-04)
 pub(super) fn compile_cast(
     b: &mut FunctionBuilder,
     v: ClifValue,

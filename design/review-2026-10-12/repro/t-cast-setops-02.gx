@@ -1,0 +1,15 @@
+// t-cast-setops-02: rep_collision ignores reference mutability: a select
+// turns &T into &mut T and writes through it.
+// command: graphix --no-cache t-cast-setops-02.gx   (same with --no-fusion)
+// expected: the select is refused ("this pattern can't tell &mut i64 from
+//   &i64: both have the same runtime form"), as it is for [&i64, &mut string]
+// observed: it compiles and prints "wrote 1" then "wrote 5": x, reached only
+//   through a read-only &i64, is written through the `&mut i64 as m` arm
+let x = 1;
+let f = |r: &i64| {
+  let u: [&i64, &mut i64] = r;
+  select u { &mut i64 as m => { *m <- 5; "wrote" }, &i64 as s => "shared" }
+};
+println("[f(&x)] [x]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

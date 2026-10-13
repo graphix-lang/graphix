@@ -1,0 +1,4 @@
+// graphix fmt rewrites F to fn<'a: Array<'b>>(..), dropping 'b: Int: the original is refused, the formatted file runs and prints [1.5]
+type F = fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a;
+let f: F = |x| x;
+f([1.5])

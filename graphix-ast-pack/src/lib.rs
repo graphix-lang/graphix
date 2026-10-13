@@ -18,6 +18,16 @@ use walkdir::WalkDir;
 /// The package name as `defpackage!` computes it: the crate name with
 /// hyphens as underscores and the `graphix_package_` prefix stripped.
 /// Must match `graphix-derive`'s `PACKAGE_NAME`.
+// CR claude for claude: [doc-drift/low] This derives the package name from
+// CARGO_PKG_NAME, but `defpackage!` (`Crate::load` in graphix-derive) uses
+// CARGO_CRATE_NAME, the lib target's name. The two agree only when the crate has no
+// `[lib] name` override, and `check_invariants` allows one. With an override,
+// `register` names the package after the lib target while the VFS keys written here use
+// the package name. The doc comments also cite `PACKAGE_NAME` and a `graphix_files` key
+// scheme that no longer exist. Fix: refuse a `[lib] name` override in
+// `check_invariants`, since `package_crate_ident` also assumes lib name == package
+// name, or read CARGO_PKG_NAME in both places. Update both doc comments to match.
+// (shell-14)
 fn package_name() -> Result<String> {
     let crate_name =
         env::var("CARGO_PKG_NAME").context("CARGO_PKG_NAME not set")?.replace('-', "_");

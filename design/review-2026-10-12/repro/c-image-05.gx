@@ -1,0 +1,22 @@
+// c-image-05: a restored definition's BodyShare is empty, so a warm run-time
+// instance re-lowers its seq with fresh ids the DefTable has no rows for.
+// command: XDG_CACHE_HOME=<dir> GRAPHIX_PROFILE=1 GRAPHIX_PROFILE_INSTANCES=1 graphix c-image-05.gx
+// (run it twice: cold, then warm), and once with --no-cache, and once with
+// --no-cache GRAPHIX_NO_SUBST=1; compare the INSTANCE check_ns of f's
+// instances (the INSTANCE rows labeled at the `let f` lambda, signature=1).
+// expected: warm check_ns like the cold run's (about 70-100us here: substitution)
+// observed: warm about 200-350us, the same as the cold run under GRAPHIX_NO_SUBST
+// (about 300us): the lowered seq's nodes check instead of substituting.
+let step = 0;
+step <- select step {
+  s if s < 4 => s + 1,
+  _ => never()
+};
+let xs: Array<i64> = [];
+xs <- step ~ array::push(xs, step);
+let f = |x: i64| -> i64 seq {
+  let a = x + 1;
+  a * 2
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+array::map(xs, |x| f(x))

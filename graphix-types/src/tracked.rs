@@ -143,6 +143,16 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
 
     /// Write back what `fork` wrote. A map written nowhere since the
     /// fork takes the fork's whole.
+    // CR claude for claude: [test-gap/low] No test covers fork/join: not the fast path
+    // (the parent is unwritten since the fork, so it takes the fork's whole map), the
+    // slow path, a fork of a fork, a remove then join, or propagation of the parent's
+    // `touched`. In the slow path, a key that a sibling task or the parent wrote after
+    // the fork is overwritten by this fork's value without a word. `impls` (keyed by
+    // trait, a whole Vec) and `names` (keyed by scope) would then silently drop an
+    // earlier task's entry if a task ever registered one. Add unit tests for these
+    // cases. Keep the base map at fork (an O(1) persistent clone), and debug-assert in
+    // the slow path that the parent's entry for each touched key is still the base's,
+    // so a conflicting write is reported instead of lost. (t-misc-04) (t-misc-04)
     pub fn join(&mut self, fork: Self) {
         let Self { map, touched, generation, forked_at } = fork;
         if self.generation == forked_at {

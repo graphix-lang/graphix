@@ -136,6 +136,12 @@ const CATCH4: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] The fixture is about routing: the ArithError
+// goes to the second handler (err1), and the ArrayIndexError is rethrown from there to
+// the first (err0). The predicate accepts any `[Error(_), Error(_)]`, so a swapped or
+// broadcast routing passes. Make the program's value `((err0.0).error, (err1.0).error,
+// count(err0), count(err1))` and assert (`ArrayIndexError(..), `ArithError(..), 1, 1),
+// which both engines give today. (tests-lang-rest-a-10)
 run!(catch4, CATCH4, |v: Result<&Value>| match v
     .and_then(|v| v.clone().cast_to::<[Value; 2]>())
 {
@@ -572,6 +578,21 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
 // A bottom-typed arm whose handler-ful `?` derives from an input
 // fuses and delivers: it runs its body instead of a bare placeholder
 // (the constant-error twin node-walks: `findings/arm-entry-raise-sep2026`).
+// CR claude for claude: [doc-drift/medium] This fixture's name and comment say an
+// input-derived handler-ful `?` under an arm fuses. lowering::arm_raise_blocker refuses
+// every handler-ful `?` under a select arm, so this select always node-walks.
+// FuseExpect::Jit holds only because another region of the program fused, and a
+// regression in fused raise delivery would leave the test green. Put `#[native]` on the
+// select to see it: the build is refused (probe:
+// design/review-2026-10-12/repro/tests-lang-rest-a-arm-input-raise-native.gx). Rename
+// it and invert the claim: it should pin that the select node-walks, for example by
+// expecting the #[native] form to be refused under `build_only`. Drop the 'fused or
+// node-walked' wording in async_restart.rs reentry_raises_once, which is moot for the
+// same reason. The rule text is stale too. CLAUDE.md (Strict fusion) names
+// lowering::entry_raise_blocker, which no longer exists, and design/strict_fusion.md
+// says an input-derived raise fuses. Both should name arm_raise_blocker and state the
+// broader rule (same as f-mod-lowering-09). Regenerate AGENTS.md afterwards.
+// (tests-lang-rest-a-02)
 const ARM_INPUT_RAISE_FUSES: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);

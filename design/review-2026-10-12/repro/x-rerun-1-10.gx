@@ -1,0 +1,17 @@
+// x-rerun-1-10: a raise whose payload is a union of a chain and a plain
+// value types the catch as a union of two Error types, and `.0` on it is
+// refused (tuple_field_type has no arm for a union of Errors).
+//
+// command: graphix --check design/review-2026-10-12/repro/x-rerun-1-10.gx
+//
+// expected: accepted; e3 is Error<[ErrChain<`A>, ErrChain<`B>]> as two
+// separate raises of those payloads would give, and the handler prints the
+// error's tag.
+// observed: exit 1, "expected tuple not [Error<ErrChain<`B>>, Error<{ cause:
+// [null, ErrChain<`A>], error: `A, ori: Ori, pos: Pos }>]" at e3.0.
+type MyChain = ErrChain<`A>;
+let saved: Error<MyChain> = never();
+let r = { catch(e) saved <- e; error(`A)? };
+let n = count(sys::time::timer(duration:20.ms, true));
+let u = { catch(e3) println("[(e3.0).error]"); error(select n { 1 => `B, _ => n ~ (saved.0) })? };
+sys::exit(select n { 4 => n ~ 0, _ => never() })

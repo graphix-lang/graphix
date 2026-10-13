@@ -1,0 +1,19 @@
+// a banked `~` paid when v first arrives fires as a wake's own (WAKE_FIRED),
+// so a woken arm's `<-` target q keeps its last write 7; with `let p = v`
+// (same value, a real fire) q takes 42 at the wake. expected (4, 42).
+let clock = sys::time::timer(duration:100.ms, true);
+let k = 0;
+k <- clock ~ k + 1;
+let v = never<i64>();
+v <- select k { 3 => 42, _ => never() };
+let t = once(k);
+let p = t ~ v;
+let w = 0;
+let on = true;
+on <- select k { 2 => false, 4 => true, _ => never() };
+sys::exit(select k { 7 => 0, _ => never() });
+let r = select on {
+  true => { let q = any(p, w); q <- select k { 1 => 7, _ => never() }; q },
+  false => -1
+};
+(k ~ k, r)

@@ -1,0 +1,6 @@
+let app = |f: fn<'b: Number>(x: 'b, y: 'b) -> 'b| {
+  let u: [i64, f64] = 1;
+  f(u, u)
+};
+let add = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+app(add)

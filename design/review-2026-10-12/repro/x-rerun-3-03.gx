@@ -1,0 +1,17 @@
+// x-rerun-3-03: gui-core-07 still reproduces: a call returning an empty array
+// is claimed as a GUI.
+//
+// command: env -u WAYLAND_DISPLAY -u DISPLAY \
+//            graphix --no-cache design/review-2026-10-12/repro/x-rerun-3-03.gx
+//
+// expected: `[]` printed, as the bare literal `[]` and
+//   `let a: Array<i64> = []; let f = |n| a; f(1)` print it.
+// observed (HEAD 7324207f, debug build):
+//   Error: initializing custom display
+//   Caused by:
+//       creating the event loop: os error at .../winit-0.30.13/src/platform_impl/linux/mod.rs:765:
+//       neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.
+// The same for `array::map([], |x| x)` and `let f = |n| never(); [f(1)]`.
+// With a display the GUI starts with zero windows and the shell never ends.
+let f = |n| [];
+f(1)

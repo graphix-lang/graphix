@@ -1,0 +1,14 @@
+// An or-pattern inside an abstract payload leaves its shared name's type
+// free: `x` is [i64, string] at run time but checks as i64.
+// --no-fusion: `r: i64` prints "hello"; with fusion: a kernel panics
+// ("runtime String("hello") does not match the compiled Scalar(I64) slot").
+type T = Abstract<[`A(i64), `B(string)]>;
+let t: T = T(`B("hello"));
+let r: i64 = select t {
+  T(`A(x) | `B(x)) => x
+};
+let s = select t {
+  T(`A(x) | `B(x)) => x + 1
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

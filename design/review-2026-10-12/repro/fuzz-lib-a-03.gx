@@ -1,0 +1,6 @@
+let r = sys::fs::read_all("/nonexistent-review-path");
+// graphix-fuzz check: prints EXCLUDED, expected a FinalValues comparison (the
+// design keeps one-sided fs programs compared). oracle_tier's substring marker
+// "all(" matches `read_all(`, so no value of any read_all/write_all program is
+// ever compared.
+select r { error as _ => 0, _ => 1 }

@@ -276,6 +276,12 @@ run!(seq_busy_drops, SEQ_BUSY_DROPS, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
+// CR claude for claude: [test-gap/low] This fixture does not observe the abort its name
+// claims. It checks only that the outer catch saw the error, so a machine that raised
+// and still ran the next step and produced 99 would pass. seq_errors::final_output
+// already pins that a raised `?` ends the run with no value, under seq and seqq. Delete
+// this fixture as a duplicate, or make the seq's value observable (`let r = seq {
+// [0][1]?; 99 }`) and assert that `r` never fires. (tests-seq-06)
 const SEQ_QOP_ABORTS: &str = r#"
 {
   let caught = never();
@@ -550,6 +556,22 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
 // A block issues its statements at entry, so two calls in one block are
 // in flight together; at the seq level a call is opaque, so the second
 // waits for the write before it.
+// CR claude for claude: [test-gap/low] This fixture decides its answer by racing two 30
+// ms after_idle calls against a 50 ms one-shot `late` timer. The margin is 20 ms in the
+// block case and 10 ms in the sequential case, so a runtime stall that long on a loaded
+// box lands both events in one cycle and flips "done" to "late". That is the flake
+// class tests-lang-a-02 fixed in three other fixtures. Make the order part of the
+// program. One option is to assert on the cycle in which `a` and `b` land, by counting
+// the cycles between the seq's entry and each write. The other is to put the timeouts
+// far enough apart that a stall cannot reorder them. probe:
+// design/review-2026-10-12/repro/x-rerun-5-04.sh (x-rerun-5-06)
+// CR claude for claude: [doc-drift/low] The comment gives the wrong reason for 'late'.
+// A call to a static target is not opaque to the planner: `b <- f(2)` neither reads nor
+// writes `a`, and the plan is `S0 -> S1 same`. The second statement starts in the cycle
+// the first step completes, which is when `f(1)` produces, not a cycle after the write.
+// Reword to: 'A block issues its statements at entry, so two calls in one block are in
+// flight together; as separate steps the second starts only when the first completes.'
+// (tests-seq-04)
 async fn block_issues_together(mode: Mode) -> Result<()> {
     for (body, expected) in
         [("{ a <- f(1); b <- f(2) }", "done"), ("a <- f(1); b <- f(2)", "late")]
@@ -659,6 +681,15 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
             vec![1, 2, 3],
         ),
         // `until` on a level: false then flipped for run 1, present-true after
+        // CR claude for claude: [test-gap/low] This case's comment is wrong. The
+        // connect step completes only when the timer fires, and the plan puts `until`
+        // in the next cycle (GXDBG_SEQPLAN: `S1 -> S2 next`), so `flag` is already true
+        // when `until` is entered, in run 1 as well. Nothing in the seq tests pins the
+        // rule that `until` and `try` start a cycle after a write they read. A planner
+        // that made them same-cycle would pass every test. Fix the comment, and add
+        // pins to seq_steps.rs: `let flag = true; seq { flag <- false; until flag; 42
+        // }` must produce nothing, and `let x = 0; seq { x <- 7; let v = try { f(x)? }
+        // with(_) { -1 }; v }` must give 7. (tests-seq-03)
         (
             "until_present",
             "let flag = false; flag <- sys::time::timer(duration:20.ms, false) ~ true; until flag; request",

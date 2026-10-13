@@ -24,6 +24,11 @@ use std::{collections::VecDeque, fmt::Debug};
 
 /// An iterator that knows its length, so a result fills its array in
 /// place.
+// CR claude for claude: [structure/low] This Counted iterator is a verbatim copy of the
+// one in graphix-compiler's fusion emit_helpers: the same fields, Iterator and
+// ExactSizeIterator impls. Export one from graphix-compiler (or graphix-types beside
+// ValArray's users), together with an `array_of(len, it)` constructor, and delete this
+// copy. (x-dup-17)
 struct Counted<I> {
     it: I,
     left: usize,
@@ -296,6 +301,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
+    // CR claude for claude: [structure/low] Group encodes queue, buf and ready, state
+    // that exists only once a cycle has run. The image rule is that such state refuses
+    // the write with image::NOT_QUIESCENT, as the builtins in opt.rs and queuefn.rs do.
+    // As written, every group call site carries two empty collections and a bool in the
+    // image, and a mid-run encode would carry live grouping state into a warm start
+    // instead of failing. Refuse with NOT_QUIESCENT when the queue or buf is non-empty
+    // or ready is false. Encode only pred and the three ids, and have image_decode
+    // build an empty queue and buf with ready = true. (collections-str-08)
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.queue.encode(buf)?;
         self.buf.encode(buf)?;
@@ -345,6 +358,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 Some(v) => {
                     self.ready = true;
                     match v {
+                        // CR claude for claude: [bug/high] A `true` answer emits the
+                        // buffer and pops nothing from the queue. The `false` arm pops
+                        // the next element, but this arm does not. Elements that queued
+                        // while f was answering late (an async f, or one that reads
+                        // something with no value yet) wait for the next fire of `v`,
+                        // which takes only one of them. Without another fire they are
+                        // never grouped: iter([1..6]) with f = after_idle(20ms, n == 2)
+                        // emits [1, 2] and nothing more, where [3, 4] and [5, 6] were
+                        // expected. Fix: when the queue is non-empty after a `true`,
+                        // start the next element in this cycle. Pop it, push it to buf,
+                        // and write n/x so that f sees them in the next cycle, since f
+                        // has already run in this one (`ctx.rt.set_var` rather than
+                        // `event.variables`). Keep `ready = false` until f answers. Pin
+                        // it with an async-predicate fixture. probe:
+                        // design/review-2026-10-12/repro/collections-str-03.sh
+                        // (collections-str-03)
                         Value::Bool(true) => {
                             break Some(Value::Array(ValArray::from_iter_exact(
                                 self.buf.drain(..),

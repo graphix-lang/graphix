@@ -164,6 +164,17 @@ fn fork_on_body(spec: &Expr) -> Option<Expr> {
             spec.dec = None;
             spec
         }
+        // CR claude for claude: [bug/low] fork_on_body moves a fork-control attribute
+        // onto a lambda's body only when the spec is a bare Lambda. `#[parallel] (|x|
+        // ..)` is ExplicitParens, so it returns None and the lambda value is wrapped in
+        // a ForkControl instead. The build then refuses with '#[parallel] has nothing
+        // to run in parallel', where the same lambda without parens forks every
+        // instance's body. The check accepts both, so only the build refuses. The same
+        // path makes `#[native] let f = #[serial] (|x| ..)` fail annotated_lambda. Fix:
+        // match `ExprKind::Lambda(_) | ExprKind::ExplicitParens(_)` here.
+        // fork_on_lambda already sees through parens and returns None when they hold no
+        // lambda, so other parens still take the wrapper path. probe:
+        // design/review-2026-10-12/repro/c-data-map-02.gx (c-data-map-03)
         ExprKind::Lambda(_) => {
             let mut bare = spec.clone();
             bare.dec = None;
@@ -515,6 +526,15 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
+        // CR claude for claude: [perf/low] eta_dispatcher runs ctx.env.lookup_bind only
+        // to ask whether the binding is a trait method. On the usual None answer,
+        // Ref::compile runs the same lookup again, so every reference, in every
+        // instance compile too, pays for two scope walks. Fix: resolve once and hand
+        // the resolved Bind to both (or do the trait-method test inside Ref::compile
+        // after its lookup). Separately, eta_dispatcher builds its Expr with fresh
+        // ExprIds at every compile, so an instance's eta nodes find no DefTable row and
+        // check themselves. Caching the eta Expr per binding and scope keeps the ids
+        // stable. (c-data-map-07)
         ExprKind::Ref { name } => match eta_dispatcher(ctx, scope, &spec, name)? {
             Some(eta) => compile(ctx, flags, eta, scope, top_id),
             None => Ref::compile(ctx, spec.clone(), scope, top_id, name),
@@ -659,6 +679,19 @@ fn eta_dispatcher<R: Rt, E: UserEvent>(
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
     for (i, a) in ft.args.iter().enumerate() {
         let (kind, label, var) = match a.label() {
+            // CR claude for claude: [bug/medium] An optional labeled formal (`?#n`)
+            // becomes a required label in the eta lambda, because no default is given
+            // and the eta body has none to give: the default lives in each impl. So
+            // `let g = Show::show; g(4)` is refused with "missing required argument n",
+            // even though `Show::show(4)` compiles. And `array::map([1, 2],
+            // Show::show)` is refused as a type mismatch, while an ordinary `|#n = 1,
+            // i| ..` is accepted in the same position. Fix options: keep the
+            // optionality, so the eta takes the label as an internal "absent" default
+            // and its dispatcher call omits the label when it is absent. Or refuse an
+            // optional-labeled method as a value up front, like the variadic case in
+            // eta_dispatcher, with a message naming the label. Add a pin beside
+            // trait_method_value_flows. probe:
+            // design/review-2026-10-12/repro/c-data-map-02.sh (c-data-map-02)
             Some(l) => (ArgKind::Labeled, Some(l.clone()), l.clone()),
             None => (ArgKind::Positional, None, arcstr::format!("eta{i}")),
         };

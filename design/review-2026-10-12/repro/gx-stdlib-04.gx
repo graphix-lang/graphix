@@ -1,0 +1,16 @@
+// http.gxi says a request the handler "has no value for, is answered 500".
+// A handler instance that never fires holds the request (and a connection
+// permit) until the client gives up: here the client times out after 2s.
+// prints "status 200" for /ok and an HTTPError (timeout) for /none, never a 500.
+use http::{Request, Response};
+let srv = http::serve(#addr: "127.0.0.1:0", #handler: |req: Request| -> Response select req.path {
+    "/ok" => { body: "ok", headers: [], status: u16:200, url: "" },
+    _ => never()
+})$;
+let addr = http::server_addr(srv);
+let client = http::default_client(addr)$;
+let r = http::request(#timeout: duration:2.s, client, "http://[addr]/none");
+let good = http::request(#timeout: duration:2.s, client, "http://[addr]/ok");
+sys::exit(sys::time::timer(duration:4.s, false) ~ 0);
+dbg(select r { error as e => "error: [e]", v => "status [v.status]" });
+select good { error as e => "error: [e]", v => "status [v.status]" }

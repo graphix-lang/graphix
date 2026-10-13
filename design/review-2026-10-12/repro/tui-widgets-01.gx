@@ -1,0 +1,15 @@
+// tui-widgets-01: Tabs rebuilds every child widget whenever the tabs array refires, so a badge tick resets child view state
+// command: GRAPHIX=<debug graphix> sh tui-widgets-run.sh tui-widgets-01.gx 30 12
+// control: tui-widgets-03-control.gx (same program, the badge never changes)
+// expected: the list keeps its scroll offset when only a tab title changes: rows 'item 50'..'item 60', '>item 55' in the middle (what the control shows)
+// observed: the title change recompiles the list with a fresh ListState: rows 'item 45'..'>item 55', the selection at the bottom
+use tui::{line, tabs::tabs, list::list};
+
+let sel = 60;
+sel <- sys::time::timer(duration:400.ms, false) ~ 55;
+let badge = 0;
+badge <- sys::time::timer(duration:900.ms, false) ~ 1;
+tui::exit(sys::time::timer(duration:1500.ms, false));
+let items = array::init(100, |i| line("item [i]"));
+let lst = list(#highlight_symbol: &">", #selected: &sel, &items);
+tabs(&[(line("List ([badge])"), lst)])

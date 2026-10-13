@@ -1,0 +1,11 @@
+// tests-expr-01: a seq trigger ending in a lambda parses, but the printer
+// parenthesizes it, so `graphix fmt` refuses its own output.
+// command: graphix --check tests-expr-01.gx ; graphix fmt --stdout tests-expr-01.gx
+// expected: check exit 0; fmt prints the program unchanged, exit 0
+// observed: check exit 0; fmt prints "formatter bug: the formatted text says
+//   something else / was line: 2, column: 13: x ~ |y: i64| y /
+//   now line: 2, column: 13: (x ~ |y: i64| y)", exit 1.
+//   `seq let a = x ~ |y: i64| y { a }` is refused the same way.
+let x = 1;
+let s = seq x ~ |y: i64| y { 1 };
+s

@@ -1,0 +1,6 @@
+// x-security-13: graphix fmt writes through a predictable temp name that may be a planted symlink
+// command (in a scratch copy of this file named main.gx, with victim.txt at mode 600): sh -c 'ln -s $PWD/victim.txt main.gx.fmt.$$; exec graphix fmt main.gx'
+// expected: main.gx rewritten in place, victim.txt untouched
+// observed: victim.txt overwritten with the formatted program and chmodded 600 -> 644; main.gx is now a symlink to victim.txt
+let   x = 1;
+x

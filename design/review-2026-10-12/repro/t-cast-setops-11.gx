@@ -1,0 +1,16 @@
+// t-cast-setops-11: reference ids leak into strings through casts of
+// abstract values; the output differs by session.
+// command (run with a fresh XDG_CACHE_HOME, twice: cold image, then warm):
+//   graphix --no-cache t-cast-setops-11.gx
+//   XDG_CACHE_HOME=$d graphix t-cast-setops-11.gx   (run it twice)
+// expected: the same output in every session; a reference prints `&ref`
+//   (as `"[c]"` does: "Cell(&ref)"), never its session id.
+// observed: --no-cache:   "can't cast Cell(4611686018427392007) to u64: ..." and
+//   "abstract:KFoMMX6SS05huC1vE8mkfQicNDpQkVjQpQRDZWxsAARAAAAAAAAQBw=="
+//   warm image:           "can't cast Cell(4103) to u64: ..." and
+//   "abstract:KFoMMX6SS05huC1vE8mkfQicNDpQkVjQpQRDZWxsAAQAAAAAAAAQBw=="
+type Cell = Abstract<&i64>;
+let x: i64 = 41;
+let c = Cell(&x);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(cast<u64>(c), cast<string>(c), "[c]")

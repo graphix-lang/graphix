@@ -1,0 +1,2 @@
+type T = i64;
+let h = |x| x

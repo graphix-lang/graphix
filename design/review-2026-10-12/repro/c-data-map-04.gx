@@ -1,0 +1,6 @@
+// c-data-map-04: e.0 over an Error de-fuses: TupleRef::emit_clif treats it as a tuple (graphix-fuzz run).
+let f = |x: i64| -> i64 {
+  let e = error(`E(x));
+  select e.0 { `E(n) => n + 1 }
+};
+f(3)

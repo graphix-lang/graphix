@@ -1,0 +1,16 @@
+// db2-10: db::txn::tree creates the tree outside the transaction; a rollback leaves it without metadata
+// command: graphix --no-cache db2-10.gx  (point `path` at an empty scratch directory first)
+// expected: ([], null) -- a rolled-back transaction leaves no tree behind
+// observed: (["fresh"], null) -- tree_names lists "fresh" while get_type says it has no types
+let path = "/tmp/db2-10/d";
+let r = seq {
+  let db = db::open(path)?;
+  let txn = db::txn::begin(db)?;
+  let t: db::txn::TxnTree<string, i64> = db::txn::tree(txn, "fresh")?;
+  db::txn::rollback(t ~ txn)?;
+  let names = db::tree_names(db)?;
+  let ty = db::get_type(db, "fresh")?;
+  (names, ty)
+};
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+r

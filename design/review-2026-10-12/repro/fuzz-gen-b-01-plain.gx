@@ -1,0 +1,1 @@
+{ let cerr0: Error<Any> = never(); catch(e) cerr0 <- e; let ncerr0 = i64:0; ncerr0 <- cerr0 ~ (ncerr0 + i64:1); let v0 = (cast<i64>(u32:7)$ *? { let r: i64 = pack::read(pack::write_bytes(i64:-1)$)$; r })?; println("[ncerr0]"); println("[v0]"); f64:-1.0 }

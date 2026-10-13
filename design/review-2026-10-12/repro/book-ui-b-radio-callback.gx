@@ -1,0 +1,18 @@
+// gui::radio's wrapper (stdlib/graphix-package-gui/src/graphix/radio.gx:14)
+// builds its callback as `|v: Any| f(*value)`, which never reads `v`.
+// This is the same shape driven by a trigger standing in for clicks:
+// expected hits 0 until n reaches 3, then 3 more; observed hits 1 at
+// init and never again.
+let mk = |on_select: [fn(v: i64) -> Any, null], value: &i64| select on_select {
+  null as _ => null,
+  f => |v: Any| f(*value)
+};
+let hits = 0;
+let cb = mk(|v| hits <- v ~ hits + 1, &7);
+let clock = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let trig: Any = select n { x if x >= 3 && x < 6 => x, _ => never() };
+let r = select cb { null as _ => never(), f => f(trig) };
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+(n, hits)

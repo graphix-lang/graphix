@@ -1,0 +1,14 @@
+// x-engine-seq-errors-04b: the frozen-operand symptom of 04. observed [(1, 23)]: n=21 tracked, bad? frozen at its entry value 2;
+// the error bad takes at n=6 never raises. expected: the run aborts at n=6 (unhandled-error warning), or [(1, 42)] if errors are ignored.
+let n = 0;
+n <- select n { s if s < 30 => s + 1, _ => never() };
+let trig = select n { 1 => n, _ => never() };
+let big = n > 20;
+let bad: [i64, Error<`Bad>] = select n { 6 => error(`Bad), s => s };
+let r = seq let t = trig {
+  let w = select big { true => n, false => never() } + bad?;
+  (t, w)
+};
+let rs: Array<(i64, i64)> = [];
+rs <- r ~ array::push(rs, r);
+select n { 30 => rs, _ => never() }

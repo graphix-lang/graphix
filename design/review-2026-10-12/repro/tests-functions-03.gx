@@ -1,0 +1,12 @@
+let t = array::iter([0, 1]);
+let d = 5;
+let f = |#k = d, x: i64| k ~ x;
+// tests-functions-03: the labeled-default birth rule has no pin (proposed pin)
+// command: graphix-fuzz run tests-functions-03.gx
+// expected (CLAUDE.md, design/wake_catchup.md "The birth rule"): f's instance is
+//   born when the arm is first selected; its default `k` delivers FIRED at that
+//   first dispatch, so `k ~ x` yields 10: trace [0, 10]
+// observed today: [0, 10] on both engines. A regression to a stale default yields
+//   [0] on BOTH engines (the design doc's "metamorphic blind spot"), so the fuzzer
+//   cannot see it; only a pin can.
+select t { 0 => 0, _ => f(10) }

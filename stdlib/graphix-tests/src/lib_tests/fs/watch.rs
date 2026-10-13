@@ -67,6 +67,18 @@ macro_rules! watch_test {
                 $setup
             };
 
+            // CR claude for claude: [test-gap/low] The fixture returns
+            // `path(watch(..))`, which drops the event kind, so every test here only
+            // counts events. In test_watch_delete_then_recreate,
+            // test_watch_file_to_directory and test_watch_symlink_recreate, `count ==
+            // 2` means got_delete and `count == 3` means got_create.
+            // test_watch_parent_rename takes any event as the delete, although Create
+            // is in its interest set. A watcher that mislabels kinds, or that sends a
+            // duplicate Delete where a Create belongs, passes all of these. Fix: have
+            // the fixture return the kind (`let e = events(..)?; "[e.event]"`), assert
+            // the sequence of kinds (Established, Delete, Create), and end the loop
+            // once the expected sequence has arrived instead of waiting out the
+            // timeout. (tests-lib-b1-03)
             let code = format!(
                 r#"{{ use sys::fs::watch::{{self, *}}; let w = create(null)?; path(watch(#interest: {}, w, "{}")?) }}"#,
                 $interest, escape_path(watch_path.display())

@@ -1,0 +1,6 @@
+// book/src/stdlib/sys/process.md lines 25-26: the "track running state"
+// idiom is refused: `status is `Running and cannot hold `Exited(..)`.
+let child = sys::process::spawn(sys::process::options(#args: ["-c", "sleep 0.2"], "/bin/sh"))$;
+let status = `Running;
+status <- `Exited(sys::process::wait(child.proc)?);
+status

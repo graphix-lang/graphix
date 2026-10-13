@@ -1,0 +1,6 @@
+// typemorph stmt-permute: `z` is a let over bottom whose first reader decides
+// its type; `f` reads it, and the two lets read it only through `f`, so the
+// `open` guard (direct names only) lets them swap. typemorph-one:
+// FLIP stmt-permute#2 N: type mismatch iN does not contain [iN, string]
+// (false flip: the swapped program is refused by the first-use rule).
+{ let z = never(); let f = |x: i64| z; let b: i64 = f(2); let a: [i64, string] = f(1); (a, b) }

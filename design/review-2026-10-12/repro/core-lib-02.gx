@@ -1,0 +1,16 @@
+// core-lib-02: stateful raw builtins (take/skip/count/once/filter/filter_err/
+// throttle) re-surface their old value over a delivered bottom; only uniq
+// bottoms. design/activation_state.md Ruling 1 (bottom in, bottom out; only
+// hold rides), design/dense_delivery.md delta 13, CLAUDE.md "a bottom input
+// SETS a node's resident, never rides it".
+// run: graphix --no-cache core-lib-02.gx   (same with --no-fusion)
+// expect: (0, 0) (1, 1) (3, 3) (4, 4)   as uniq(x), any(x) and x + 0 print
+// got:    (0, 0) (1, 1) (2, 1) (3, 3) (4, 4)
+// same with skip(#n: 0, x), filter(x, |v| v >= 0), throttle(#rate: duration:0.s, x);
+// count(x) prints (2, 2), once(x) prints (2, 0)
+let c = 0;
+c <- select c { n if n < 4 => n + 1, _ => never() };
+let x = select c { 2 => never(), n => n };
+let r = take(#n: 5, x);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(c, r)

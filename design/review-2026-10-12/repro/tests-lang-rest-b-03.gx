@@ -1,0 +1,14 @@
+// tests-lang-rest-b-03: Collection's `find`/`find_map` default bodies never
+// fuse for a user collection: `let init: Option<'b> = null` in a trait
+// default is "let value of shape None". The same body in a plain generic
+// function, or with the annotation written `['b, null]`, fuses.
+// Run: graphix --no-cache tests-lang-rest-b-03.gx -> "#[native] expression
+// did not fully fuse ... let value of shape None"
+type Bag<'a> = Abstract<Array<'a>>;
+impl Collection for Bag<'_> {
+    let fold = |b, init, f| array::fold(b.0, init, f);
+    let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+    let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+};
+let b = Bag([1, 2, 3, 4]);
+#[native] Collection::find_map(b, |x| select x > 2 { true => x, false => null })

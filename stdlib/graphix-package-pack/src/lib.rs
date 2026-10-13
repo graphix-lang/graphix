@@ -27,6 +27,20 @@ impl ReadFormat for Packed {
     /// error value decoded from the bytes is data, never the reader's own.
     fn parse(b: Bytes) -> impl Future<Output = Value> + Send {
         async move {
+            // CR claude for claude: [bug/high] pack::read passes untrusted bytes to
+            // netidx-value's Value::decode. That decoder reserves each array or map
+            // header's claimed element count before any element arrives, and checks the
+            // claim against the remaining input one container at a time, ignoring
+            // frames already open. Nested headers therefore stack reservations. An 8.7
+            // MB file of 70000 nested array headers, or a 3 MB file of shrinking ones,
+            // aborts the whole runtime with "memory allocation of ... bytes failed"
+            // (SIGABRT) instead of returning a PackErr. A 500 KB file passes a GB
+            // resident before it fails. Fix it in Value::decode: reserve min(elts, a
+            // small bound) and let the Vec grow, or bound the sum of the open frames'
+            // outstanding lengths by buf.remaining(). The comment there that claims
+            // memory is bounded by the per-container checks is wrong. This is the same
+            // defect as small-pkgs-09. probe:
+            // design/review-2026-10-12/repro/x-rerun-5-02.py (x-rerun-5-02)
             match Value::decode(&mut b.as_ref()) {
                 Ok(v) => Value::Array(ValArray::from_iter([v])),
                 Err(e) => errf!(Self::TAG, "{e}"),

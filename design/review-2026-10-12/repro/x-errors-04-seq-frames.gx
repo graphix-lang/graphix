@@ -1,0 +1,6 @@
+let t = sys::time::timer(duration:10.ms, false);
+let r = seq t {
+  until 5;
+  1
+};
+r

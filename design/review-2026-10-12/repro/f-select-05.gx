@@ -1,0 +1,12 @@
+// f-select-05: never() is classified Async, so a recursive function with a never() arm is no tail loop
+// command: graphix --no-cache design/review-2026-10-12/repro/f-select-05.gx
+// expected: builds a native tail loop and prints 500500, as it does without the never() arm
+// observed: "#[tail_recursive]: this function's body is stateful or async ..."
+#[tail_recursive]
+let rec f = |n: i64, acc: i64| -> i64 select n {
+    0 => acc,
+    x if x < 0 => never(),
+    x => f(x - 1, acc + x)
+};
+sys::exit(sys::time::after_idle(duration: 100.ms, 0));
+f(1000, 0)

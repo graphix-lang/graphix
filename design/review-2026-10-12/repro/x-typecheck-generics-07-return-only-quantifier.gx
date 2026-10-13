@@ -1,0 +1,3 @@
+let f = 'b: Any |s: string| -> Array<'b> [];
+let r: Array<i64> = f("1");
+r

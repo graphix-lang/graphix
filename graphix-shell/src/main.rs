@@ -347,9 +347,29 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
         .enable_all()
         .build()
         .context("building tokio runtime")?;
+    // CR claude for claude: [bug/high] The runtime is dropped when tokio_main returns,
+    // and dropping a tokio Runtime waits for its blocking-pool tasks. sys_io_stdin's
+    // tokio::io::stdin read runs on that pool, so after the program's sys::exit fires
+    // (Shell::run returns Some(code)), the process does not reach process::exit until
+    // the pending stdin read gets a line or EOF. A blocked file operation stalls it the
+    // same way. A stdin command loop that exits on "quit" hangs at a terminal until the
+    // next Enter. Piped `{ echo quit; sleep 10; }`, it exits after 10 s instead of at
+    // once. Fix: end the runtime with `rt.shutdown_background()` (or a short
+    // `shutdown_timeout`) after block_on returns, on both the Ok and the Err path,
+    // instead of letting it drop. probe: design/review-2026-10-12/repro/sys-io-02.gx
+    // (sys-io-02)
     rt.block_on(async move {
         // a program's failures reach stderr with or without a log
         let _logger = match &p.log_dir {
+            // CR claude for claude: [bug/medium] With RUST_LOG unset,
+            // Logger::try_with_env is LogSpecification::off(), so the FAILURE_TARGET
+            // error records are dropped before Duplicate::Error sees them: under
+            // --log-dir a program's unhandled `?` and hot-operator failures reach
+            // neither stderr nor the log file, contrary to the comment above this match
+            // and CLAUDE.md. Build the spec as RUST_LOG (or "off" when unset) plus
+            // `{FAILURE_TARGET}=error`, e.g. by parsing that combined string or through
+            // LogSpecBuilder, and keep duplicate_to_stderr(Duplicate::Error). probe:
+            // design/review-2026-10-12/repro/shell-03.sh (shell-03)
             Some(dir) => Logger::try_with_env()
                 .context("initializing log")?
                 .log_to_file(
@@ -431,6 +451,16 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
                             netidx_core::path::Path::from(ArcStr::from(
                                 netidx_core::path::Path::dirname(path).unwrap_or("/"),
                             )),
+                            // CR claude for claude: [bug/low] The resolver for a
+                            // `netidx:` script is built with no timeout. It fetches the
+                            // script itself (`fetch_source`) and, through `for_source`,
+                            // every module beneath it, so `--resolve-timeout` is
+                            // ignored for all of them: against a registered but stalled
+                            // publisher, startup hangs forever, where the same flag
+                            // with `GRAPHIX_MODPATH=netidx:..` fails after the timeout.
+                            // Pass `p.resolve_timeout.map(Duration::from_secs)` here,
+                            // as the `netidx` factory above already does.
+                            // (x-security-11)
                             None,
                         ),
                     ]);

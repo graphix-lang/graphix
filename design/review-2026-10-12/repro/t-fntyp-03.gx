@@ -1,0 +1,9 @@
+// t-fntyp-03: a nested fn type's quantifier that shadows an outer variable name is conflated with it
+// command: graphix --check t-fntyp-03.gx
+// expected: refused, as it is with y written before g: the declared 'b is rigid, so `y + 1`
+//   ("cannot compute 'b: unbound within Number + i64") does not check
+// observed: rc 0; the outer 'b binds to i64 because collect_tvars keeps the first 'b seen, the
+//   inner fn<'b>'s, and DefGate holds that cell rigid instead of the outer one.
+//   `let h: string = f` prints f as fn<'b: Number>(g: fn<'b: Number>(x: 'b: unbound ..) -> .., y: 'b: i64) -> 'b: i64
+let f = 'b: Number |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| -> 'b y + 1;
+0

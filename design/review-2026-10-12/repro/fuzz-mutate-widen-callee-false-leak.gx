@@ -1,0 +1,14 @@
+// mustreject widen-consumer: a callee whose unannotated parameter shares a
+// cell with the environment widens instead of refusing, but the skip
+// (mustreject.rs `inferred`) only knows let-bound lambda names. Each body
+// below yields `FLIP widen-consumer#N LEAK: accepted at call`, a false
+// leak. Run (comments stripped, one body per file):
+//   grep -v '^//' f.gx | graphix-fuzz typemorph-one out.txt 5000
+// struct-field callee:
+//   { let z = never(); let s = {f: |y| z <- y}; let r = s.f(1); (r, z) }
+// lambda literal callee:
+//   { let z = never(); let r = (|y| z <- y)(1); (r, z) }
+// alias of a let-bound lambda:
+//   { let z = never(); let f = |y| z <- y; let g = f; let r = g(1); (r, z) }
+// lambda under a block:
+{ let z = never(); let f = { let k = 0; |y| z <- y }; let r = f(1); (r, z) }

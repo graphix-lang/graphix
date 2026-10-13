@@ -197,6 +197,14 @@ type MouseButton = [
 
 ## Creating Input Handlers
 
+<!-- CR claude for claude: [doc-drift/medium] The signature below gives the handler and
+the result `throws 'e`. The real `input_handler` in input_handler.gxi has no `throws`:
+the handler runs from the display outside any `catch`, so it may not raise, and a
+handler that uses `?` is refused with a type mismatch. Copy the signature from the gxi
+(the positional is `child`), say that the handler must handle its errors locally (`$`,
+or a `catch` in its body), and document `on_press`'s signature here, which does carry
+`throws 'e`. probe: design/review-2026-10-12/repro/book-ui-a-handler-throws.gx
+(book-ui-a-03) -->
 Use `tui::input_handler::input_handler` to wrap a widget with event handling:
 
 ```graphix
@@ -211,6 +219,19 @@ The handler function receives events and returns:
 - `Stop`: The event was handled; don't propagate to other handlers
 - `Continue`: Pass the event to the next handler
 
+<!-- CR claude for claude: [doc-drift/medium] None of the code blocks from here down
+compiles. The single-expression blocks `{ // comment `Stop }` (Basic, Conditional, Vim)
+are refused ('a block must contain at least 2 expressions'). `paragraph("[count]")` and
+`paragraph("Edit mode")` need `&".."`. The `/* handler A */` comments in Event
+Propagation and the `_ => ()` arm in The Raw Event Stream are parse errors. Every
+example also matches `` `Key({code: .., ..}) `` without checking the kind, which the Key
+Event Kind section says runs every key twice. The propagation handlers return a constant
+`` `Continue ``, which answers only the first event. Rewrite them in the
+overlay_modal.gx style: `|e: Event| on_press(e, |k| select k.code { .. })`, bare ``
+`Stop `` arms, `//` comments on their own line, `_ => never()`, and `e ~ `Continue`.
+Moving them into book/src/examples/tui/ would put them under examples_compile. probe:
+design/review-2026-10-12/repro/book-ui-a-input-basic-example.gx,
+book-ui-a-raw-event-unit.gx (book-ui-a-02) -->
 ### Basic Example
 
 ```graphix
@@ -245,6 +266,12 @@ rather than on every key. Both are useful, and the select chapter's
 
 ### Conditional Handling
 
+<!-- CR claude for claude: [doc-drift/low] A disabled `input_handler` drops each event:
+it neither calls the handler nor passes the event to its child, so the whole wrapped
+subtree stops receiving input. It works as a focus gate, not a pass-through. Say so here
+and in a `///` doc on `enabled` in input_handler.gxi. The example below can never leave
+its initial state: `editing` starts false and its only writer is inside the handler it
+disables. Give it an outer handler that sets `editing`. (book-ui-a-11) -->
 The `#enabled` parameter allows dynamically enabling/disabling a handler:
 
 ```graphix
@@ -327,6 +354,13 @@ tui::input_handler::input_handler(
 )
 ```
 
+<!-- CR claude for claude: [doc-drift/high] The Tab and BackTab arms write `focused <-
+(focused + 1) % num_widgets` without sampling the key. That is the self-loop this page
+warns about under the Basic Example: the arm re-fires on its own write, so a single Tab
+cycles `focused` forever at 100% CPU. Sample on the key, as overlay_modal.gx does (`` k@
+`Tab => { focused <- ((k ~ focused) + 1) % num_widgets; `Stop } ``), and write the
+handler with `on_press` (see book-ui-a-02). probe:
+design/review-2026-10-12/repro/book-ui-a-focus-selfloop.gx (book-ui-a-01) -->
 ### Focus Management
 
 ```graphix
@@ -349,6 +383,13 @@ tui::input_handler::input_handler(
 )
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] tui exports `line_edit` (a single-line
+editor: `state`, `handle(&st, e)`, `view`, with a masked mode) and `form` (a modal
+multi-field form with `on_submit`/`on_cancel`), and no page in the book mentions either.
+A reader who needs text entry will hand-write Backspace/Left/Right/paste handling. Add a
+'Text entry' section here, or a page per module, showing `line_edit::state`,
+`handle(&st, e)` and `view(#focused, &st)`, and a `form(..)` on an overlay layer. List
+both in SUMMARY.md and in the TUI overview's widget list. (book-ui-a-07) -->
 ## See Also
 
 - [style](style.md) - Styling text and widgets

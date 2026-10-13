@@ -38,6 +38,14 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `jit_startup.md` | full compiler startup profiles, early rejection, and block liveness costs |
 | `strict_fusion.md` | fusion is pure computation + fast fns only; what was deleted and why |
 | `unified_value_abi.md` | the (disc, payload) Value ABI across the JIT boundary |
+<!-- CR claude for claude: [doc-drift/low] This index row says the opposite of the doc
+it summarizes. helper_abi_portability.md and CLAUDE.md say no two-word value crosses the
+helper seam by value and fusion runs on every Cranelift host, Windows included; nothing
+in the fusion code is gated on Windows. Rewrite the row as: a pair goes in by pointer
+and comes back through an out-pointer, and fusion runs on every Cranelift host. The
+`program_image.md` row below calls it a 'proposal', but its Status says the registration
+and program images are built: summarize it as built. helper_abi_portability.md also
+needs the `Status:` line this README requires of every doc. (x-doc-drift-03) -->
 | `helper_abi_portability.md` | the helper seam passes a pair as two words (System V only); fusion is off on Windows until it is two scalars in and an out-pointer back |
 
 ## Types

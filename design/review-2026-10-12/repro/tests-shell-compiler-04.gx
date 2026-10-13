@@ -1,0 +1,6 @@
+// tests-shell-compiler-04: Ctrl-C on a script exits 0, unlike SIGTERM (143) and SIGHUP (129)
+// command: run `graphix --no-cache tests-shell-compiler-04.gx`, send SIGINT after a few seconds, read the exit status; repeat with SIGTERM
+// expected: SIGINT exits 130 (128 + 2), as SIGTERM exits 143
+// observed: SIGINT exits 0, SIGTERM exits 143
+let t = sys::time::timer(duration:1.s, true);
+t

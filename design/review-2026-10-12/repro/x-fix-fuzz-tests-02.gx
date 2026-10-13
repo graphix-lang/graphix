@@ -1,0 +1,10 @@
+// x-fix-fuzz-tests-02: `graphix-fuzz check|run|minimize <file>` on a pin or divergence file reports AGREE (reject)
+// This file is its own repro: these comment lines are the header every findings/ pin and every recorded divergence carries.
+// command: graphix-fuzz run design/review-2026-10-12/repro/x-fix-fuzz-tests-02.gx
+// expected: Interp/InLanguage: Trace([0:i64:42]) (as for the same program without these lines)
+// observed: CompileErr(... Unexpected `/` ... use super::*; let result = // x-fix-fuzz-tests-02 ...) in both engines
+// command: graphix-fuzz check design/review-2026-10-12/repro/x-fix-fuzz-tests-02.gx
+// observed: AGREE (reject) — every comparison the program owes holds
+// real pin: graphix-fuzz check graphix-fuzz/findings/deep-tail-activation-budget-oct2026/01_tail_loop_past_the_activation_budget.gx
+// observed AGREE (reject); with its `//` lines removed it is SLOW/UNSURE, as outcome.manifest records (unsure)
+{ let x = 20; x + 22 }

@@ -1,0 +1,41 @@
+// browser_commands.gx:69, second shape: Enter with no selection banks, the user
+// goes on (Down), the rows arrive, then ":b<Enter>" runs the command TWICE
+// (two RUN lines; a netidx write would be sent twice). Expected: one RUN.
+// x ~! on both arguments gives one.
+use tui::input_handler::{Event, KeyCode, on_press};
+
+let command_mode = false;
+let command = "";
+let selected_path: string = never();
+
+let run_command = |c: string, path: string| println("RUN [c] at [path]");
+
+let handle_normal_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
+    `Char(":") => { command <- ""; command_mode <- true; `Stop },
+    _ => `Continue
+};
+
+let handle_command_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
+    `Char(c) => { command <- c ~ "[command][c]"; `Stop },
+    x@ `Enter => {
+        command_mode <- false;
+        run_command(command, x ~ selected_path);
+        `Stop
+    },
+    _ => `Continue
+};
+
+let handle_event = |e: Event| on_press(e, |k| select k ~ command_mode {
+    true => handle_command_mode_key(k.code),
+    false => handle_normal_mode_key(k.code)
+});
+
+let keys: Array<KeyCode> = [`Char(":"), `Char("a"), `Enter, `Down, `Char(":"), `Char("b"), `Enter];
+let i = count(sys::time::timer(duration:30.ms, 7)) - 1;
+let ev: Event = `Key({code: keys[i]$, kind: `Press, modifiers: [], state: []});
+let r = handle_event(ev);
+println(i ~ "key [i] [keys[i]$]");
+selected_path <- select i { 3 => "/rows/first", _ => never() };
+println("selected_path=[selected_path]");
+sys::exit(sys::time::after_idle(duration:400.ms, i ~ 0));
+r

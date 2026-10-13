@@ -57,6 +57,14 @@ digest, and the files whose appearance would change a module's
 resolution (an interface beside a module, an `m.gx` beside the
 `m/mod.gx` it would win over). A load re-verifies the record and a
 mismatch is a miss; a program that read a netidx module gets no entry.
+<!-- CR claude for claude: [doc-drift/low] This sentence is stale. `sources_record`
+records, for each root module, its files in every directory searched ahead of its own as
+absent (`root_module_site`), and `a_program_entry_misses_when_a_module_is_shadowed` pins
+it. Rewrite it to say what is and is not recorded. In the Shared maps section, the
+sentence calling `encoded_len` an upper bound that the writer patches is also stale:
+`tree_len` goes through `image::object_len`, so every occurrence costs exactly its
+reference, as CLAUDE.md says, and a derived `Pack` may frame a shared map. (x-image-08)
+-->
 A file added in a search directory ahead of the one a module came from
 is not seen.
 

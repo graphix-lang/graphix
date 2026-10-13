@@ -1,0 +1,15 @@
+let k = 0;
+// f-call-flow-02: native tail loop runs newly reached depths without the activation's init view.
+// Command: graphix-fuzz check design/review-2026-10-12/repro/f-call-flow-02.gx
+// Expected (node-walk, every depth an activation): g's dbg(7) prints once per cycle,
+// at each newly reached leaf depth, epochs 0..5.
+// Observed: DIVERGENCE. interp prints dbg(7) at epochs 0..5; jit (f fused as a tail
+// loop, self_blocks=0) prints only at epoch 0. With a non-tail self-call
+// (`f(n - 1, a + n) + 0`) the engines AGREE.
+k <- select k < 5 { true => k + 1, false => never() };
+let g = |m: i64| -> i64 { dbg(7); m };
+let rec f = |n: i64, acc: i64| -> i64 select (n, acc) {
+  (0, a) => g(a),
+  (n, a) => f(n - 1, a + n)
+};
+f(k, 0)

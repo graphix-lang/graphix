@@ -1,0 +1,9 @@
+// Run in a pty: 2000 failures are held in an unbounded stderr temp file, dumped at exit (318 KB).
+use tui::text::text;
+let tick = sys::time::timer(duration:1.ms, true);
+let ticks = 0;
+ticks <- tick ~ ticks + 1;
+let f = |x: i64| -> Result<i64, `Boom(i64)> error(`Boom(x));
+let bad = f(ticks)?;
+tui::exit(select ticks { 2000 => null, _ => never() });
+text(&"ticks [ticks]")

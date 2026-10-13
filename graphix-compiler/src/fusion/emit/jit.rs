@@ -226,6 +226,15 @@ impl Names {
         self.func(sig, true)
     }
 
+    // CR claude for claude: [structure/low] A DataId is meaningful only inside the
+    // function that imports it. Each body and each chunk keeps its own EmitConst list,
+    // record_relocs resolves a namespace-1 relocation only against that list, and
+    // Generation::define_record re-declares every const under a new name. Yet the id
+    // comes from a counter that Names::over copies and Emission's join and thaw merge
+    // by max, and parallel tasks can mint the same ids. Mint
+    // `DataId::from_u32(consts.len())` in BodyCx::const_ptr, delete `data` here along
+    // with its over/join/thaw handling, and have record_relocs map the relocation index
+    // straight to RelocTarget::Const instead of searching consts. (f-jit-08)
     pub(super) fn data(&mut self) -> DataId {
         self.data += 1;
         DataId::from_u32(self.data - 1)
@@ -494,6 +503,17 @@ impl Generation {
         // One contiguous reservation: colocated (Linkage::Local) calls use a
         // ±2GiB PC-relative relocation and finalize panics if two functions
         // land further apart. `GRAPHIX_JIT_ARENA` (bytes) overrides the size.
+        // CR claude for eric: [risk/low] On Windows this reservation is a commit.
+        // ArenaMemoryProvider allocates through region::alloc, which there calls
+        // VirtualAlloc with MEM_COMMIT | MEM_RESERVE. Each fusing context (one Jit
+        // each, plus every retired generation still held by a kernel) therefore charges
+        // 256MB against the commit limit. On Linux it is only address space. A dozen
+        // parallel contexts (the run! test modes, an embedder with several runtimes)
+        // can exhaust the page file, so Jit::new fails and those contexts run silently
+        // unfused. Options: a smaller arena on Windows, a memory provider that reserves
+        // first and commits per segment, or one arena shared across a process's
+        // contexts. Separately, GRAPHIX_JIT_ARENA should be clamped to the 2GiB
+        // colocated-call range and a malformed value reported, not ignored. (f-jit-05)
         const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
         static ARENA_SIZE: LazyLock<usize> =
             LazyLock::new(|| match std::env::var("GRAPHIX_JIT_ARENA") {
@@ -1063,6 +1083,22 @@ impl Emission {
             };
             match self.caches.by_kernel(&key) {
                 Some(have) => {
+                    // CR claude for claude: [risk/low] The task's body is dropped for
+                    // the parent's without comparing their SiteLayouts. The task's
+                    // callers and its region parent sized their site and state blocks
+                    // from the task's own emission (the callee_layouts seeded in
+                    // compile_region_inner, then claim_callee_block), and they will
+                    // call the parent's body. Serially, a second instance at one
+                    // CacheKey is a cache hit whose callers use the cached layout, so a
+                    // key that fails to decide the body costs a wrong value there; here
+                    // it costs an out-of-bounds write in kernel state. No instance pair
+                    // with differing layouts is known, and a FUSE_SERIAL A/B with
+                    // forked tasks sharing a recursive kernel agreed. Compare the two
+                    // bodies' layouts here (words, anchor and self-block counts, or the
+                    // two sigs' site_block_words). At least debug_assert they agree, or
+                    // keep the task's body when they differ, so the key-determines-body
+                    // contract is checked where breaking it becomes unsafe. Verifier:
+                    // plausible, not shown by a run. (f-jit-03)
                     moved.insert(cached.func_id.as_u32(), have.func_id);
                 }
                 None => kept.push((key, cached)),
@@ -1188,6 +1224,18 @@ pub struct Jit {
     retired: usize,
     /// Every compiled kernel body's record, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
+    // CR claude for eric: [perf/low] Nothing ever removes entries from this map, from
+    // the root Emission's Caches (by_kernel, kernels, layout_ids) or from the current
+    // Generation's `loaded`, except on a failed region or a generation retirement. Each
+    // record holds machine code, consts (values, types with their pinned typedefs) and
+    // a KernelSig. A long-lived context that keeps compiling new definitions (each REPL
+    // input, an embedder's repeated GXHandle::compile, a dynamic module's recompile)
+    // therefore keeps every kernel it ever fused, even after the nodes that used it are
+    // deleted. A record can be dropped once no cache entry can hand out its FuncId as a
+    // callee. That means tying eviction to the death of the definition whose LambdaIds
+    // key the cache (for example from ctx.discard of a definition). Alternatively,
+    // decide that a context's fusion memory is unbounded by design and say so in
+    // design/final_jit_architecture.md. (f-jit-04)
     records: BTreeMap<FuncId, Arc<BodyRecord>>,
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
@@ -1481,6 +1529,18 @@ impl Jit {
         meets_abstract: bool,
     ) -> Result<WrappedKernel> {
         let entry = Arc::new(OnceLock::new());
+        // CR claude for claude: [perf/low] Only install_restored drains this queue, and
+        // a decode that fails after some kernels were decoded never reaches it. That
+        // happens on decode_registration's early returns, and in CallSite::materialize
+        // when GXLambda::image_decode errs. read_registration's Saved restore does not
+        // cover `fusion`, so the orphaned wrappers stay queued. The next successful
+        // install_restored (the registration entry after a failed program entry, or a
+        // later lazy materialize) compiles them into the arena, and Generation::loaded
+        // keeps them, though nothing can call them. So a failed read does not leave the
+        // session untouched. Fix: clear the queue on every decode-failure path (a
+        // Jit::drop_restored called from read_registration's Err arm and materialize's
+        // Err arm), or have the decode session own the list and hand it to
+        // install_restored. (f-jit-07)
         self.restored.push((wrapper.clone(), entry.clone()));
         Ok(WrappedKernel {
             entry,
@@ -1924,6 +1984,18 @@ fn emit_trampoline(
             .iter()
             .enumerate()
             .map(|(i, p)| {
+                // CR claude for eric: [risk/low] This loads a narrow scalar (bool,
+                // i8..i32, u8..u32, f32) from the first bytes of a slot the Rust packer
+                // wrote as a native u64, and the result loop below stores narrow
+                // results into u64 out slots the same way. Both are correct only on
+                // little-endian hosts. On a big-endian target Cranelift supports
+                // (s390x), a `true` input reads as false and 5i32 as 0, so the JIT
+                // diverges from the node-walk, against the claim that fusion runs on
+                // every host Cranelift supports. Two fixes: load an I64 and ireduce it
+                // (bitcast for f32), and uextend/sextend results to I64 before the
+                // store. Or make Jit::new refuse big-endian targets so they run
+                // unfused. The comment above this load should then state the real
+                // invariant. (f-jit-06)
                 b.ins().load(p.value_type, MemFlags::trusted(), args, (8 * i) as i32)
             })
             .collect();

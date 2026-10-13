@@ -1,0 +1,13 @@
+// x-rerun-8-11: an unannotated partial struct `let` completes against
+// the value only when the value's type is known at compile time
+// (Bind::compile); over a call's result, or a let bound to one, it is
+// refused, while `select g(1) { {y, ..} => y }` is accepted and runs.
+// command: graphix --check x-rerun-8-11.gx
+// expected: accepted; `graphix --no-cache` prints 2
+// observed: "non exhaustive struct matches require type annotations" at
+//   `let {y, ..} = v` (the same at `let {y, ..} = g(1)`)
+let g = |a: i64| {x: a, y: a + 1};
+let v = g(1);
+let {y, ..} = v;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+y

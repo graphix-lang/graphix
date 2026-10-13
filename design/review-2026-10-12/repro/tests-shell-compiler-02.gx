@@ -1,0 +1,9 @@
+// A timer cancelled by an arm sleep is logged at ERROR as "a runtime task
+// ended without replying: task N was cancelled" (graphix-rt/src/gx.rs:242).
+// Run: RUST_LOG=warn graphix --no-cache --no-fusion --log-dir /tmp/l this.gx
+let t = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- t ~ n + 1;
+let x = select n { 0 => sys::time::after_idle(duration:1.s, 1), _ => 2 };
+sys::exit(select n { 3 => 0, _ => never() });
+x

@@ -1,0 +1,15 @@
+// x-expr-walks-02: a dynamic module bound in a seq step is invisible
+// to the steps after it: the step's value is wrapped in a block by
+// seq.rs entry_fire, which scopes the module name. Refused with
+// "foo::x not defined"; the same body as a plain block prints 1.
+let t = 1;
+let r = seq t {
+  let s = mod foo dynamic {
+    sandbox unrestricted;
+    sig { val x: i64 };
+    source "let x = 1"
+  };
+  foo::x
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

@@ -1,0 +1,22 @@
+// x-expr-walks-01: the seq rewrite skips a dynamic module's `source`, so
+// the source does not see the seq's own names (seq.rs rewrite_with_inner
+// returns any ExprKind::Module unchanged).
+// Command: graphix --no-cache x-expr-walks-01.gx
+// Expected: error:["DynamicLoadError", ...] (the trigger's value `s` is
+// not Graphix), as the same module prints outside a seq.
+// Observed: refused at compile, "s not defined" at `source s`.
+// Add `let s = "let x = 2";` above and it runs and prints `null`: the
+// source reads the OUTER `s`, not the trigger's.
+// Same walk gap in fold_outside_lambdas: `source { catch(e) println(e);
+// "let x = 2" }` inside a seq passes --check, while the same block as a
+// plain step is refused "catch is not allowed inside a seq".
+let t = 1;
+let r = seq let s = (t ~ "this is not graphix") {
+  mod foo dynamic {
+    sandbox unrestricted;
+    sig { val x: i64 };
+    source s
+  }
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

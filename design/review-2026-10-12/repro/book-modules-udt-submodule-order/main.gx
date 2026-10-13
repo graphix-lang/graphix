@@ -1,0 +1,4 @@
+// interfaces.md: "a sub-module may import parent items declared after
+// it". Refused: public_helper not defined (in parent/child.gx).
+mod parent;
+parent::child::v

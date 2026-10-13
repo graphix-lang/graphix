@@ -1,0 +1,10 @@
+// uniq_wakes_bottom's fixture with v0 never going bottom: same trace [10, 5, -1].
+let ep = 0;
+ep <- select ep { n if n < 5 => n + 1, _ => never() };
+let in0 = 0;
+in0 <- select ep { 3 => 1, 5 => 0, _ => never() };
+let in1 = 1;
+in1 <- select ep { 2 => 2, _ => never() };
+let v0 = 10 / in1;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select in0 { 0 => uniq(v0), _ => -1 }

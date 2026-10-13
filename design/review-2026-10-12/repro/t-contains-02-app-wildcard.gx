@@ -1,0 +1,10 @@
+// t-contains-02: could_match's App arm uses ==, so even `_` over a 'c<..> scrutinee is a dead arm
+// command: graphix --check t-contains-02-app-wildcard.gx
+// expected: accepted (a wildcard, or a capture, matches any scrutinee)
+// observed: pattern Any will never match '#c: unbound within Collection<'_N: unbound>, unused match cases
+// the same refusal for `select c { x => Collection::len(x) }` ("pattern P will never match P",
+// both sides printing alike), for `select (c, b) { (x, true) => .., (_, false) => 0 }`, and for
+// `'c: Collection |c: 'c| select c { _ => 0 }`; `|c: 'a| select c { Array<i64> as a => 1, _ => 0 }`
+// (a plain type variable) is accepted
+let f = |c: Collection| select c { _ => 0 };
+f([1, 2])

@@ -1,0 +1,10 @@
+// A packed Graphix abstract value read back in a process that has not yet
+// minted one is refused ("not this abstract type"): the GxAbstract wrapper
+// registers lazily on the first `wrap` (graphix-types/src/abstract_value.rs:235),
+// so the decode yields an unknown Abstract. The bytes are exactly what this
+// program's own `pack::write_bytes(Box(5))` prints (first tuple element).
+// Add `let warm = Box(1);` and delay the read with a timer: it is accepted.
+type Box = Abstract<i64>;
+let r: Result<Box, [`PackErr(string), `InvalidCast(string)]> = pack::read(bytes:GydaDDF+kktOYbgtbxPJpH0IgVt4u3Lm5Q8DQm94AAYAAAAAAAAABQ==);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(pack::write_bytes(Box(5))$, select r { error as e => "refused: [e]", b => "accepted: [b.0]" })

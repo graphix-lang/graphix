@@ -1,0 +1,7 @@
+// Tuple element through a place reference; accepted by --check, prints
+// nothing. With the write moved before `let n` it is refused.
+let t = (|x| x, 1);
+let r = &mut t.0;
+let n = t.0(41);
+*r <- |x| "oops";
+n + 1

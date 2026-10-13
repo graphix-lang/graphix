@@ -1,0 +1,20 @@
+// x-rerun-5-03: t-contains-08 (inferred form) still open: a union argument
+// escapes an inferred Int conjunct. f's parameter carries the conjunct Int
+// (from `a[i]`); g passes `select b { true => 1, false => k }`, a union
+// [i64, 'k]. Int is a primitive set, neither a predicate nor `exact`, so
+// commit_cell_constraints never hands it to the open 'k: g checks as
+// fn(b: bool, k: '_: unbound) -> i64. The written bound `'a: Int |i: 'a|`
+// behaves the same; `f(1.5)`-style args through g (f64) are accepted too.
+// command: graphix --check design/review-2026-10-12/repro/x-rerun-5-03.gx
+//          GRAPHIX_ELAB_AUDIT=1 graphix --no-cache design/review-2026-10-12/repro/x-rerun-5-03.gx
+// expected: --check refuses g(false, "s") (Int does not contain string), as it
+//   refuses f("s") and `let g = |k| f(k); g("s")`.
+// observed (HEAD 7324207f, debug build): --check exits 0; the build refuses
+//   "an instance at fn(i: [i64, string]) -> i64 of a definition typed
+//   fn(i: '_7565) -> '_7566", and ELAB_AUDIT prints "ELAB-AUDIT typecheck0 ...
+//   `a[i]$`: an instance at ...". Dynamic form: x-rerun-5-02-dyn.gx passes
+//   --check, then never produces its value and exits 0 silently.
+let a = [10, 20, 30];
+let f = |i| a[i]$;
+let g = |b, k| f(select b { true => 1, false => k });
+g(false, "s")

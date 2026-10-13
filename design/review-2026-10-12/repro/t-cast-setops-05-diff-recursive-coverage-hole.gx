@@ -1,0 +1,10 @@
+type T = [`B, Array<T>];
+type U = [`A, Array<U>];
+let f = |x: [Error<T>, i64]| select x {
+  Error<U> as u => "U",
+  v => select v { i64 as n => "int", Error<`B> as e => "B-error" }
+};
+let r = f(error([`B]));
+println("r = [r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

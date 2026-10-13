@@ -1,0 +1,14 @@
+// c-lib-02: pending definition assertions are dropped by the session image.
+// Command (twice, same scratch cache):
+// XDG_CACHE_HOME=<scratch> graphix design/review-2026-10-12/repro/c-lib-02.gx
+// Expected (every run, as with --no-cache): 103, then the failure
+// "#[sync]: this function is async — its body reaches an async builtin or an
+// async callee" at line 10, then 3.
+// Observed: the cold run (writes the image) prints the failure; the warm runs
+// print 103 and 3 with no failure line.
+#[sync]
+let ap = |f: fn(x: i64) -> i64, x: i64| f(x);
+let h = |f: fn(x: i64) -> i64, x: i64| f(x) + 100;
+h <- sys::time::after_idle(duration:50.ms, ap);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+h(|x| sys::time::after_idle(duration:1.ms, x), 3)

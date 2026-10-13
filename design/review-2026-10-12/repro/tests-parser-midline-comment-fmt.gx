@@ -1,0 +1,22 @@
+let x = 1;
+let ready = true;
+let t = 1;
+let a = select
+// the scrutinee
+x { _ => 1 };
+let b = select x {
+    n if
+    // the guard
+    n > 0 => 1,
+    _ => 2
+};
+let c = seq t; abort(
+// the abort
+t) { 1 };
+let d = seq {
+    until
+    // the wait
+    ready;
+    1
+};
+a

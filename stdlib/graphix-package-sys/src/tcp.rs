@@ -115,6 +115,30 @@ impl EvalCachedAsync for TcpAcceptEv {
     type Args = Arc<TcpListener>;
 
     const NAME: &str = "sys_tcp_accept";
+    // CR claude for eric: [bug/medium] With `Calls::Latest`, a trigger that arrives
+    // while an accept's reply is completed but not yet delivered makes
+    // `CachedArgsAsync::renew` release the reply id. The reply is then dropped as
+    // stale, and the `TcpStream` it carries is closed: the client was accepted and then
+    // hung up on. `Calls` reserves Latest for an eval that loses nothing when dropped,
+    // and a completed accept loses a connection (an accept aborted while still pending
+    // is harmless, since the client stays in the backlog). With a 200us accept trigger,
+    // 1001 clients connect and the server holds only about 983 streams. Fix: either
+    // `Calls::Fifo`, so each trigger accepts one connection in order, which is what the
+    // tcp.gxi doc promises, or have a renewed site still deliver or bank a completed
+    // reply whose value owns a resource. CLAUDE.md lists `accept` under Latest, so the
+    // choice is a semantics decision. probe:
+    // design/review-2026-10-12/repro/x-builtin-effects-11.gx (x-builtin-effects-11)
+    // CR claude for claude: [bug/medium] Calls::Latest is wrong for accept because a
+    // completed accept is not "an eval that loses nothing when dropped". Suppose the
+    // trigger fires while an accept has already returned a stream but the runtime has
+    // not joined its reply yet. Then CachedArgsAsync::renew releases the reply id,
+    // GX::deliver drops the Via::Reply for the unreferenced id, and the TcpStream is
+    // closed without the program ever seeing it. With 200 clients and a 1 ms timer
+    // trigger, 3-4 connections are lost per run; with a busy trigger, 84-136 are lost.
+    // This also breaks the gxi's promise that each update performs an accept. Fix: use
+    // Calls::Fifo, one accept per fire, queued. If coalescing is wanted, a renew must
+    // not discard an accept that has already completed. probe:
+    // design/review-2026-10-12/repro/sys-io-08.gx (sys-io-08)
     const CALLS: Calls = Calls::Latest;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -165,6 +189,17 @@ impl EvalCachedAsync for TcpShutdownEv {
 pub(crate) type TcpShutdown = CachedArgsAsync<TcpShutdownEv>;
 
 #[derive(Debug, Default)]
+// CR claude for claude: [structure/low] `TcpPeerAddrEv`, `TcpLocalAddrEv`,
+// `TcpListenerAddrEv` and `ProcessPidEv` read their answer at once from the handle (the
+// cached `Halves::addrs`, `local_addr()`, the pid), yet each is an `EvalCachedAsync`.
+// Every call spawns a task and answers a cycle later, and the classification is Async.
+// So a caller is async (`#[sync]` refuses `|l| tcp::listener_addr(l)`), the call never
+// fuses, and a seq step waits an extra cycle. `HttpServerAddrEv` is the same kind of
+// accessor and is a synchronous `EvalCached`. Fix: make these `EvalCached` with a
+// `FastCall::Plain` fn that downcasts the abstract handle. Make the
+// `IoStdinEv`/`IoStdoutEv`/`IoStderrEv` constructors `Effect::Sync`, since each call
+// makes a new handle. Keep `EvalCachedAsync` for builtins that wait on I/O.
+// (x-builtin-effects-07)
 pub(crate) struct TcpPeerAddrEv;
 
 impl EvalCachedAsync for TcpPeerAddrEv {

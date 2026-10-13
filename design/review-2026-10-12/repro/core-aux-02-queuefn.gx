@@ -1,0 +1,21 @@
+// core-aux-02: queuefn: a release delivering some of a site's args merges
+// with a new call of the others in the same cycle, losing an invocation.
+// (The same program as core-aux-01.gx, kept under this finding's id.)
+// command: graphix --no-cache core-aux-02-queuefn.gx   (same with --no-fusion)
+// Expected [(0, 0), (1, 1), (2, 1), (2, 4)]: what the unqueued call emits,
+// and what this program emits with the third trigger at c=6 instead of 5.
+// Observed [(0, 0), (1, 1), (2, 4)]: the released (2, _) and the new
+// (_, 4) reach pred in one cycle and run as one invocation.
+let c = 0;
+c <- select c { n if n < 8 => n + 1, _ => never() };
+let trig: Any = select c { 3 => null, 4 => null, 5 => null, _ => never() };
+let a = 0;
+a <- select c { 0 => 1, 1 => 2, _ => never() };
+let b = 0;
+b <- select c { 0 => 1, 4 => 4, _ => never() };
+let q = queuefn(#trigger: trig, |x: i64, y: i64| -> (i64, i64) (x, y));
+let out = q(a, b);
+let log: Array<(i64, i64)> = [];
+log <- out ~ array::push(log, out);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select c { 8 => log, _ => never() }

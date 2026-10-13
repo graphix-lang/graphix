@@ -1,0 +1,16 @@
+let db = db::open("/tmp/gx-review-db-wake")$;
+let t: db::Tree<string, i64> = db::tree(db, null)?;
+let sub = db::subscription::new(t);
+let clock = sys::time::timer(duration:100.ms, true);
+let n = count(clock);
+let key = select n { 1 => "k[n]", _ => never() };
+let ins = db::insert(t, key, n)$;
+let on = uniq(select n { 4 | 5 => false, _ => true });
+let ev = select on {
+  true => db::subscription::on_insert(sub)$,
+  false => never()
+};
+let c = count(ev);
+println("n=[n] on=[on] fires=[c]");
+sys::exit(select n { 8 => 0, _ => never() });
+ev

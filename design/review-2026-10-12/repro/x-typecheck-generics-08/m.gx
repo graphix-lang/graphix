@@ -1,0 +1,1 @@
+let pick = |b, x, y| select b { true => x, false => y }

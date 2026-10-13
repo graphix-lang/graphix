@@ -1,0 +1,13 @@
+use gui::{window, chart, column::column};
+
+let a = [(0.0, 1000.0), (1.0, 2000.0)];
+let b = [(0.0, 1.0), (1.0, 2.0)];
+let tall = chart::chart(#title: &"tall", &[chart::line(&a)]);
+let short = chart::chart(#title: &"short", &[chart::line(&b)]);
+let drop_first = false;
+drop_first <- sys::time::timer(duration:2.s, false) ~ true;
+let kids = select drop_first {
+  true => [short],
+  false => [tall, short]
+};
+[&window(#title: &"stale", &column(&kids))]

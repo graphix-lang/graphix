@@ -1,0 +1,7 @@
+// t-contains-10: union-vs-union, an open rhs member meets only the leftover lhs members
+// run: graphix --no-cache --check t-contains-10.gx
+// expected: accepted ('a := i64 makes ['a, i64] = i64, inside [i64, Array<string>])
+// observed: type mismatch [i64, Array<string>] does not contain [i64, 'a: unbound within Number]
+let f = 'a: Number |x: 'a, y: bool| -> ['a, i64] select y { true => x, false => 1 };
+let g = |r: [i64, Array<string>]| r;
+g(f(never(), true))

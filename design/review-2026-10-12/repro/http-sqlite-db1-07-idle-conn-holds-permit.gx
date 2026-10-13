@@ -1,0 +1,12 @@
+let server = http::serve(
+    #addr: "127.0.0.1:38917",
+    #max_connections: 1,
+    #handler: |req| {body: "ok", headers: [], status: u16:200, url: ""}
+)$;
+let client = http::default_client(server)$;
+let go = sys::time::timer(duration:1.s, false);
+let resp = http::get(client, go ~ "http://127.0.0.1:38917/");
+println("resp=[resp]");
+let done = sys::time::timer(duration:4.s, false);
+sys::exit(done ~ 0);
+resp

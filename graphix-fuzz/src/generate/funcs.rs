@@ -392,6 +392,15 @@ pub(super) fn gen_error_arm_lambda(
     // call so the ok arm or the error arm is taken, then consume the union
     let arg = if rng.below(2) == 0 { "i64:0" } else { "i64:1" };
     let dflt = exprs::gen_typed(ctx, rng, &ret, 1);
+    // CR claude for claude: [structure/low] The same `$` / select-with-error-arm / `{
+    // catch(e) dflt; x? }` consumer is also written in exprs.rs, in gen_typed's
+    // checked-arithmetic arm and try_accessor's nullable arm. Those two copies check
+    // ctx.no_catch and this one does not, so reaching gen_error_arm_lambda from a seq
+    // body would emit a `catch` that the compiler refuses. Also, `dflt` is not a
+    // fallback: a catch handler's value goes nowhere, and the block's value is `x?`,
+    // which is bottom on error. Fix: one `consume_fallible` helper in exprs.rs that
+    // checks no_catch, called from all three sites. Its catch form should name the
+    // handler body for what it is, or give it an observable effect. (fuzz-gen-a-07)
     let consume = match rng.below(3) {
         0 => format!("{f}({arg})$"),
         1 => format!(
@@ -411,6 +420,16 @@ pub(super) fn gen_error_arm_lambda(
 /// write through it with a literal RHS (a self-reading RHS re-fires
 /// every cycle and never quiesces). Reads are organic vocabulary from
 /// the binding alone.
+// CR claude for claude: [test-gap/low] This is the only reference generator, and it is
+// reached only from gen_slots. Its targets are a let or a constant-path place, and its
+// only write is `*r <- literal` at statement level. Never generated: a moving reference
+// over a dynamic key (`&mut a[i]` with `i` later written), a `&mut T` parameter written
+// inside a called lambda or HOF callback, and an optional writable `[&mut T, null]`
+// argument. GenType::Ref also does not tell `&T` from `&mut T`. So patching the root at
+// delivery, moving references and write-through across a call have no generated
+// coverage. Fix: add a variable-index ref shape whose index is then written, add a
+// typed lambda taking `r: &mut T` that does `*r <- e`, called with a place, and give
+// `&mut` its own GenType kind. (fuzz-gen-a-06)
 pub(super) fn gen_ref_stmts(
     ctx: &mut GenCtx,
     rng: &mut Rng,

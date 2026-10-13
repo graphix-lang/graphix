@@ -225,6 +225,19 @@ impl<X: GXExt> GuiHandler<X> {
                 .rt
                 .block_on(self.gx.compile_ref(bid))
                 .context("compile_ref for window bind id")?;
+            // CR claude for claude: [bug/medium] The first window that fails to open
+            // (ResolvedWindow::compile refusing a property, create_window, gpu init,
+            // surface creation) returns from reconcile here. Every window after it in
+            // the root array stays unopened, and each later root fire repeats the same
+            // failure in the same order. The error reaches only `error!` under the gui
+            // package's target in user_event, and the shell's default logger turns that
+            // target off. So `[bad, good]` shows no window, prints nothing and never
+            // exits, while `[good, bad]` opens the good one. Fix: open every window and
+            // log each failure under FAILURE_TARGET. Do the same for the other GUI
+            // `error!` sites in user_event (open of a pending window, handle_update,
+            // set_deref). When no window can be shown, end the display with Stop's Err.
+            // probe: design/review-2026-10-12/repro/gui-core-05.gx (run it through
+            // gui-core-03.sh). (gui-core-05)
             self.open(event_loop, bid, wref)?;
         }
         Ok(())
@@ -316,6 +329,18 @@ impl<X: GXExt> GuiHandler<X> {
                         }
                     }
                 };
+                // CR claude for claude: [perf/high] A future RedrawRequest::At(t) sets
+                // needs_redraw here. about_to_wait then wakes at once for any window
+                // with needs_redraw, and render never checks t, so the deadline is
+                // never waited for. A focused text_input or text_editor asks for At(now
+                // + ~500 ms) to blink its cursor, so the loop draws every vsync for as
+                // long as the input has focus: 240 frames in 4 s where about 8 are
+                // expected (probe: design/review-2026-10-12/repro/gui-core-02.sh). Fix:
+                // keep the request apart from the dirty bit. Add a redraw_at:
+                // Option<Instant> to TrackedWindow, set from At and NextFrame. render
+                // draws when needs_redraw or now >= redraw_at. about_to_wait wakes now
+                // only for needs_redraw and otherwise waits until the earliest
+                // redraw_at. (gui-core-02)
                 tw.needs_redraw = next.is_some();
                 next
             }
@@ -454,6 +479,16 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                     return;
                 }
+                // CR claude for eric: [perf/low] Each ToGui::Update walks every widget
+                // of every window: each widget compares the id with each of its refs
+                // and recurses into its children, through Child::update and
+                // Children::update. A cycle costs updates x widgets x props comparisons
+                // and dynamic calls on the main thread. A 1000-widget UI that updates a
+                // few hundred values a cycle does on the order of a million of them
+                // before drawing. Options: an IntMap<ExprId, owner> filled when refs
+                // and children compile and cleared when they recompile, so an update
+                // goes to its owner only. Or keep the walk and accept the cost. The
+                // index has to track widget recompiles. (gui-core-08)
                 for tw in self.windows.values_mut() {
                     if let Err(e) = tw.handle_update(&self.rt, id, &v) {
                         error!("handle_update: {e:?}");

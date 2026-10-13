@@ -28,6 +28,15 @@ use netidx_value::{Typ, ValArray, Value};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// CR claude for claude: [structure/low] This module's `BinOp` has the same name as
+// `expr::BinOp`, the parser's operator table, and fusion/emit imports it as plain
+// `BinOp`, so readers have to check which one is meant. arith_rule takes
+// `crate::expr::BinOp::$name` and also a separate `checked` bool. The expr op already
+// says Add or CheckedAdd, so a call can pass a pair that disagrees, and the message
+// would then name a different operator from the one checked. Fix: rename this enum
+// `ArithOp`. Have arith_rule take only the expr op and derive `checked` from it, for
+// example through an `expr::BinOp::arith(self) -> Option<(ArithOp, bool)>` that
+// arith_op! also uses. (c-error-op-09)
 pub enum BinOp {
     Add,
     Sub,
@@ -701,6 +710,16 @@ fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
 
 /// `l op r` as both engines compute it. A failure is an error value, a
 /// checked op's the catchable `ArithError`.
+// CR claude for eric: [doc-drift/low] Only integers get a named cause here. int_arith
+// returns DIV_ZERO, MUL_OVERFLOW and so on, but every other type falls back to
+// netidx-value's checked_* ops. So `decimal:1.0 /? decimal:0.0`, `%?` by zero and a
+// `*?` overflow all give the one message 'decimal arithmetic error', and f64 `/? 0.0`
+// is inf and `%? 0.0` is NaN with no error at all. CLAUDE.md says checked arith yields
+// an ArithError 'naming its cause'. Decide whether checked float ops should raise or
+// follow IEEE. Then give decimal its own arm beside int_arith (a zero divisor maps to
+// DIV_ZERO/REM_ZERO, overflow to the matching *_OVERFLOW) and state the float rule in
+// CLAUDE.md and book/src/core/fundamental_types.md. probe:
+// design/review-2026-10-12/repro/c-error-op-08.gx (c-error-op-08)
 pub(crate) fn arith(op: BinOp, checked: bool, l: Value, r: Value) -> Value {
     let v = match int_arith(op, checked, &l, &r) {
         Some(v) => v,
@@ -710,6 +729,16 @@ pub(crate) fn arith(op: BinOp, checked: bool, l: Value, r: Value) -> Value {
             (BinOp::Mul, false) => l * r,
             (BinOp::Div, false) => l / r,
             (BinOp::Mod, false) => l % r,
+            // CR claude for claude: [bug/low] Decimal operands reach netidx-value's
+            // checked_add/sub/mul/div/rem here. Those return one 'decimal arithmetic
+            // error' for overflow, a zero divisor and a zero remainder alike, so a
+            // handler of a checked decimal op cannot tell overflow from division by
+            // zero. The integer path in int_arith names each cause, and CLAUDE.md
+            // promises an ArithError naming its cause. Fix: a decimal arm beside
+            // int_arith that tests a zero divisor first (DIV_ZERO / REM_ZERO) and maps
+            // rust_decimal's checked_* None to ADD/SUB/MUL_OVERFLOW. probe:
+            // design/review-2026-10-12/repro/x-engine-collections-06.gx
+            // (x-engine-collections-06)
             (BinOp::Add, true) => l.checked_add(r),
             (BinOp::Sub, true) => l.checked_sub(r),
             (BinOp::Mul, true) => l.checked_mul(r),

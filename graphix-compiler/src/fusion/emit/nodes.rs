@@ -100,6 +100,16 @@ pub(crate) fn emit_const_node(
 /// A `{k => v, ...}` map literal. Fuses only when every key and value
 /// is a compile-time constant: the `CMap` is built here and emitted as
 /// an interned Value constant. A dynamic entry de-fuses.
+// CR claude for claude: [perf/medium] A map literal fuses only when lowering::const_map
+// folds every key and value to a constant. One dynamic entry (`{"a" => x}` in a pure
+// function of x) fails the whole region with 'map literal with non-constant entries',
+// so a function that builds a map from its arguments node-walks. This is an
+// unpredictable de-fuse on an ordinary construct. Fix: emit the keys and values into a
+// value buf as emit_struct_new_node does, and finalize with a new helper that inserts
+// in written order (the last duplicate wins, as Map::update does) under the kernel's
+// loaned core-trait hooks. Fold the discs as the struct path does, keep const_map as
+// the constant fast path, and pin it with a FuseExpect::Jit fixture. probe
+// (graphix-fuzz run): design/review-2026-10-12/repro/c-data-map-03.gx (c-data-map-04)
 pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     keys: &[Node<R, E>],
@@ -487,11 +497,37 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
 }
 
 /// `-x`. A non-register-scalar operand (`decimal`) Errs and de-fuses.
+// CR claude for claude: [perf/low] emit_neg_node accepts only a register scalar, so
+// `-x` on decimal, z32 or z64 fails emission and de-fuses the whole region.
+// emit_arith_node sends the same operand kinds through the Value helpers
+// (emit_value_arith_node), so `a + b` over decimal fuses and `-a` does not. That breaks
+// predictable fusion. Fix: move Neg::update's value match into a shared `pub(crate) fn
+// neg(&Value) -> Option<Value>` beside `arith`, add a `graphix_value_neg` helper that
+// calls it, and route AbiKind::Value operands here through that helper, as
+// emit_value_arith_node does. probe: design/review-2026-10-12/repro/c-error-op-05.gx
+// (c-error-op-05)
+// CR claude for claude: [bug/high] emit_neg_node returns the operand's register scalar
+// as is and never sees the Neg node's own type: `Neg::emit_clif` passes only the
+// operand. A Neg cell that a union parameter widens, as filter_err's Result<'a, 'b>
+// does, freezes to a Value shape. Its consumers then declare a two-word slot and get an
+// f64 or i32, and the JIT link panics with "Verifier errors" and takes the runtime
+// down. --no-fusion runs the same program fine. Fix: pass the Neg node's type and
+// return through widen_to_declared_repr as emit_arith_node does. Better, give every
+// scalar-producing emitter one shared exit that applies the declared-shape widening.
+// Pin the f64 and i32 forms beside findings/arith-widened-cell-aug2026. probe:
+// design/review-2026-10-12/repro/f-nodes-scalar-01.gx (f-nodes-scalar-01)
 pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
+    // CR claude for claude: [perf/low] A decimal operand fails here, so `|d: decimal|
+    // -> decimal -d` de-fuses its whole region, while `a - b` over decimals fuses
+    // through emit_value_arith_node's graphix_value_* helpers. Neg::update is a pure
+    // value match. Fix: move it into one `neg(Value) -> Option<Value>`, call it from
+    // Neg::update and from a borrowing `graphix_value_neg` helper, and take that helper
+    // here when cx.node_kind(inner.typ()) is Value, as emit_arith_node does.
+    // (f-nodes-scalar-05)
     let prim = freeze_node_typ(cx.ctx, inner.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t))
@@ -568,6 +604,17 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
                 part_discs.push(cv.disc);
                 cx.call_helper(string_buf_push_helper(p), &[buf, cv.payload])?;
             }
+            // CR claude for claude: [perf/medium] Any part that is not a String or a
+            // register scalar (a `[T, null]`, a variant, a decimal, an array, a struct)
+            // makes the whole interpolation and the region around it run on the
+            // node-walk. `|x: [i64, null], y: i64| -> string "v=[x] w=[y * 2]"` fuses
+            // nothing. StringInterpolate::update renders such parts with `TVal { env,
+            // typ, v }` under the display hooks, and a kernel already has KERNEL_ENV
+            // and the core-trait hooks on loan. Fix: add a borrowing
+            // `graphix_string_buf_push_value(buf, tv, typ)` helper that renders exactly
+            // as the node-walk does, with the part's type passed as a
+            // BodyCx::interned_type constant, and route every other ABI kind through
+            // it. (f-nodes-scalar-03)
             other => {
                 return Err(anyhow!(
                     "emit_clif: string-interpolate part of shape {other:?} \
@@ -874,6 +921,17 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
                 })?;
                 field_discs.push(disc);
             }
+            // CR claude for claude: [perf/medium] For a field the update leaves alone,
+            // this builds a whole new `[name, value]` pair: a 2-slot buf, an
+            // interned-name clone, a field read and a new ValArray. A `{s with f: v}`
+            // on an n-field struct therefore allocates n+1 arrays per evaluation, while
+            // the node-walk's StructWith::update only bumps each kept pair's refcount.
+            // In a 300k-step fold of `{acc with a: acc.a + i}`, a 16-field struct takes
+            // 1.69 s fused against 0.27 s for 2 fields. Fix: read the whole pair out of
+            // the source (compile_element_read with ElementRead::ArrayIndex at the
+            // pair's Array type, a refcount bump) and push it with
+            // graphix_value_buf_push_array. Then only replaced fields build a new pair.
+            // (f-nodes-scalar-02)
             None => {
                 push_struct_pair(cx, outer, name, |cx, pair| {
                     // Guarded: a tainted source's placeholder has no fields.

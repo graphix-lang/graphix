@@ -1,0 +1,20 @@
+// c-pattern-02: fresh_ids frees or-names and captures inside an Abstract
+// payload; leaves never re-binds them.
+// Command: graphix --no-cache --no-fusion design/review-2026-10-12/repro/c-pattern-02.gx
+//     (the same with fusion on)
+// Expected: refused, as the non-abstract twin is (`let t: [`A(i64), `B(string)]`,
+// arm `A(x) | `B(x) => x`): "type mismatch string does not contain [i64, string]".
+// Observed: the check accepts it and `r: string` prints 42 (both engines).
+// With an arithmetic arm body and fusion the kernel panics instead
+// ("kernel param `x`: runtime String("hello") does not match the compiled
+// Scalar(I64) slot", "runtime did not respond"):
+// c-pattern-01-abstract-or-unbound.gx. The capture symptom (`v@ `A(_)` typed
+// as the whole rep union, refused "no arm covers `B(string)"):
+// c-pattern-02-abstract-capture-widened.gx.
+type T = Abstract<[`A(i64), `B(string)]>;
+let t: T = T(`A(42));
+let r: string = select t {
+  T(`A(x) | `B(x)) => x
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

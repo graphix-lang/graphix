@@ -1,0 +1,18 @@
+// x-rerun-6-02: every select whose scrutinee holds a constructor-trait
+// application ('c<..> under 'c: Collection, or a `c: Collection`
+// parameter) is refused: Type::could_match answers `self == t` for any
+// pair with an App on either side (graphix-types/src/typ/matches.rs:99),
+// so the dead-arm check of select.rs Reach::arm (could_match against
+// what reaches the arm, since fe898ea9) calls even `_` dead.
+// command: graphix --check x-rerun-6-02.gx
+// expected: the three definitions check (each select has one live arm per
+//   member of its scrutinee)
+// observed (HEAD 7324207f): "pattern Any will never match 'c: unbound
+//   within Collection<i64>, unused match cases" at the first select; with
+//   it removed, "pattern 'c .. & Collection<i64> will never match 'c ..
+//   & Collection<i64>" at the second, and the null arm's `_` likewise.
+//   Removing the `_` gives "missing match cases: no arm covers 'c ..".
+let anyarm = 'c: Collection |xs: 'c<i64>| select xs { _ => 1 };
+let len = |xs: Collection| select xs { v => Collection::len(v) };
+let opt = 'c: Collection |xs: ['c<i64>, null]| select xs { null as _ => 0, _ => 2 };
+(anyarm([1]), len([1, 2, 3]), opt(null))

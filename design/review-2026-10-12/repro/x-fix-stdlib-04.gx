@@ -1,0 +1,11 @@
+// x-fix-stdlib-04: typed json/toml writers serialize a reference as its raw session BindId
+// run: graphix --no-cache x-fix-stdlib-04.gx   (and --no-fusion; and twice without --no-cache, XDG_CACHE_HOME set)
+// expected: each writer refuses the reference (JsonErr/TomlErr), as it refuses a function value
+// observed: the reference's internal id, differing per mode:
+//   --no-cache:   ["4611686018427392007", "{\"a\":4611686018427392007}", "a = 4611686018427392007\n", "&ref"]
+//   --no-fusion:  ["4611686018427391999", ...]
+//   warm image:   ["4103", "{\"a\":4103}", "a = 4103\n", "&ref"]
+let x = 42;
+let r = &x;
+sys::exit(sys::time::after_idle(duration: 100.ms, 0));
+[json::write_str(r)$, json::write_str({a: r})$, toml::write_str({a: r})$, "[r]"]

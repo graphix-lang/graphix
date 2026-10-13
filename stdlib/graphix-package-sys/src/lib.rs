@@ -224,6 +224,53 @@ impl Halves {
     }
 
     /// The whole stream, taken out; `None` if it is closed.
+    // CR claude for claude: [bug/medium] take leaves both halves None until the
+    // caller's put, and the evals of fstat, seek and truncate (FileFstatEv, FileSeekEv,
+    // FileTruncateEv) await I/O in between. CachedArgsAsync aborts a call in flight by
+    // dropping its future on sleep, on delete and on a seq abort. When that drop lands
+    // at the metadata/seek/set_len await, or inside put's lock awaits, the File is
+    // dropped and every later operation on the handle fails with "stream unavailable",
+    // even though nothing closed it. Probe:
+    // design/review-2026-10-12/repro/x-builtin-effects-02.gx, where an fstat in an arm
+    // that sleeps one cycle loses the file in about 1 run in 4. Fix: have take return a
+    // guard that owns the StreamKind and splits it back into the halves on Drop, so a
+    // dropped future restores the stream, and add a pin that aborts each of the three
+    // calls mid-flight and then reads the file. (x-builtin-effects-02)
+    // CR claude for claude: [bug/medium] take waits on the read lock, and a Lines
+    // reader (line_reader) holds that lock across every pending read until EOF. On a
+    // socket whose peer is silent until the ClientHello arrives (STARTTLS),
+    // tls::connect/tls::accept never get the stream, and the wait sits outside the
+    // TLS_HANDSHAKE_TIMEOUT timeout, so the call never answers. If take did win, the
+    // bytes the line reader had buffered would be lost to the upgraded stream. Fix:
+    // have take cancel a running line reader before it locks, have the line reader hand
+    // back its unconsumed bytes (a push-back buffer in the read slot that the upgrade
+    // or the next read drains), and put the take under the handshake timeout. probe:
+    // design/review-2026-10-12/repro/sys-io-06.gx (sys-io-06)
+    // CR claude for claude: [bug/high] take() releases both locks while the halves are
+    // empty. Until put() runs, every other user of the stream sees the "closed" state.
+    // A read, write or flush beside a sys::fs seek, fstat or truncate returns IOError
+    // "stream unavailable". A running lines/lines_batched reader breaks out of
+    // line_reader and ends without any error, so a tail-style program that also polls
+    // fstat silently stops getting lines. The fix: hold both guards for the whole
+    // operation, for example a take that returns a guard owning both MutexGuards, which
+    // re-splits and restores the halves in its Drop. Concurrent readers then wait
+    // rather than see None, and an aborted eval cannot lose the stream either (see
+    // x-builtin-effects-02). probe:
+    // design/review-2026-10-12/repro/x-builtin-effects-01.gx (and
+    // x-builtin-effects-01-fstat-read-race.gx) (x-builtin-effects-01)
+    // CR claude for claude: [bug/high] take() moves both halves out and releases both
+    // locks, so for the length of the op its callers await (FileSeekEv, FileFstatEv,
+    // FileTruncateEv, the TLS upgrade) the Halves reads as closed. A concurrent
+    // seek/fstat/truncate fails with "stream unavailable" and read/write see a closed
+    // half. A close() in that window returns Ok, and then put() re-installs the stream,
+    // so the handle is open again. Also, CachedArgsAsync drops an aborted eval (sleep,
+    // delete, Latest), and the StreamKind it holds goes with it, so the handle is empty
+    // for good. Fix: never let the stream leave the locks. Hold both guards (read half
+    // first) for the whole unsplit/op/re-split, e.g. a Halves::with_whole that takes a
+    // closure, and run the op in a spawned task the eval only awaits, so an abort
+    // cannot drop the stream. The TLS upgrade, which consumes the stream, must take it
+    // under the held guards and leave the Halves marked closed in the same critical
+    // section. probe: design/review-2026-10-12/repro/sys-io-01.gx (sys-io-01)
     pub(crate) async fn take(&self) -> Option<StreamKind> {
         let mut r = self.r.lock().await;
         let mut w = self.w.lock().await;
@@ -253,6 +300,18 @@ impl Halves {
             Some(mut w) => w.shutdown().await,
             None => Ok(()),
         };
+        // CR claude for claude: [bug/medium] When a read holds the read lock, close
+        // leaves the read half to a spawned task and returns Ok. Lines::lines always
+        // holds that lock while it waits on the socket, and so does a pending read,
+        // read_exact or read_all. The split halves share one stream, so the fd stays
+        // open until the peer sends or closes, even though Close::close promises to
+        // release the resource. A server that closes idle connections it reads lines
+        // from keeps all of them open, and a peer that ignores the FIN pins the fd
+        // forever. The fix: give Halves a cancellation signal (a Notify or a token)
+        // that every read path selects against (line_reader, IoReadEv, IoReadExactEv,
+        // IoReadAllEv). close, and take (see sys-io-06), fire it, then wait for the
+        // read lock and drop the half before returning. probe:
+        // design/review-2026-10-12/repro/sys-io-05.gx (sys-io-05)
         match self.r.try_lock() {
             Ok(mut r) => drop(r.take()),
             Err(_) => {
@@ -295,6 +354,28 @@ impl<K: StreamMark> PartialOrd for Stream<K> {
     }
 }
 
+// CR claude for eric: [risk/low] Stream orders and hashes by Arc address, as do
+// ProcValue, TcpListenerValue, WatcherValue and every type built by core's
+// impl_abstract_arc!. `a < b`, sort, min/max and map key order over two handles
+// therefore change from run to run. A program over handles is nondeterministic, and a
+// fuzzer run comparing two processes can diverge on it. Either refuse `Ordered` for
+// abstract handle types in the checker, as for references and functions, or give each
+// handle a creation ordinal (an atomic_id!) to order and hash by. Either way, the four
+// hand-written impls in sys should become impl_abstract_arc!. probe:
+// design/review-2026-10-12/repro/sys-io-09-handle-order-nondeterministic.gx (sys-io-09)
+// CR claude for eric: [bug/medium] Stream handles order and hash by `Arc::as_ptr`.
+// Because `Ordered` admits them as map keys and sort elements, `map::fold` over a Map
+// keyed by handles and `array::sort` of handles give a different order on each run.
+// With the same program, stdout/stderr/stdin keys folded to [3, 2, 1], [2, 3, 1] and
+// [3, 1, 2] on different runs (probe: design/review-2026-10-12/repro/sys-net-05.gx).
+// Other code repeats the same address identity: `TcpListenerValue` and `WatcherValue`
+// in this crate, core's `impl_abstract_arc!(@identity)` (used by the db, sqlite and
+// http handles), and netidx-admin's `Staged`. Two fixes are possible. The first: refuse
+// Rust-backed handle types under `Ordered`, keep `==` by identity, and treat them like
+// references and functions. The second: order and hash them by a creation id minted in
+// `impl_abstract_arc` and used by every hand-rolled copy. Under parallel eval such an
+// id still depends on scheduling (see the "Ids" table in design/parallel_eval.md).
+// Choosing between them is a language rule. (sys-net-05)
 impl<K: StreamMark> Ord for Stream<K> {
     fn cmp(&self, other: &Self) -> Ordering {
         Arc::as_ptr(&self.inner).cmp(&Arc::as_ptr(&other.inner))

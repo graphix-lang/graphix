@@ -1,0 +1,4 @@
+let xs: Array<[i64, null]> = [1, null, 3];
+let a = array::map(xs, |x| opt::map(x, |v| v * 2));
+let b = array::map(xs, |x| select x { null as _ => null, v => v * 2 });
+(a, b)

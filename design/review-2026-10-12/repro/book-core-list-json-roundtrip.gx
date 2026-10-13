@@ -1,0 +1,14 @@
+// A List written by json/toml (flattened by its type) reads back as a
+// cons chain when the flat array happens to be chain-shaped: an element
+// is lost. Expected (tb and jb): {xs: [<[1], []>]}; got {xs: [<[1]>]}.
+// pack round-trips (it writes the chain).
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+type T = { xs: List<Array<i64>> };
+let orig: T = { xs: [<[1], []>] };
+let t = toml::write_str(orig)$;
+let tb: T = toml::read(t)$;
+let p = pack::write_bytes(orig)$;
+let pb: T = pack::read(p)$;
+let j = json::write_str(orig)$;
+let jb: T = json::read(j)$;
+(t, tb, pb, j, jb)

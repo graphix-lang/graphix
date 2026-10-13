@@ -444,6 +444,14 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                     font: iced_core::Font::DEFAULT,
                     align_x: alignment::Horizontal::Center.into(),
                     align_y: alignment::Vertical::Center,
+                    // CR claude for claude: [bug/low] The bar's labels are drawn with
+                    // Shaping::Basic, but layout sized them with measure_text, which
+                    // shapes with Shaping::Advanced, and the dropdown overlay draws its
+                    // items with Advanced. A label that needs complex shaping (Arabic,
+                    // Devanagari, ligatures, emoji sequences) is drawn at a width other
+                    // than its measured box, so it is clipped or off-center, and it is
+                    // shaped differently from the dropdown's items. Fix: use
+                    // Shaping::Advanced here. (gui-widgets-b-08)
                     shaping: iced_core::text::Shaping::Basic,
                     wrapping: iced_core::text::Wrapping::None,
                 },

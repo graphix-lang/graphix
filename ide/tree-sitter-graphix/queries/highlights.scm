@@ -85,6 +85,18 @@
 ["#" "@" "`"] @operator
 
 ; -- Types ----------------------------------------------------------
+; CR claude for claude: [bug/low] This capture never fires for a scalar primitive other
+; than `null`. The grammar's ref_type/type_path accepts _binding_name, so `i64`,
+; `string`, `f64` and the rest parse as (ref_type (type_path ...)) in every type
+; position. In both tree-sitter and Helix, `let a: i64`, `|n: i64| -> string` and
+; `Map<string, i64>` show the primitives uncoloured. The anonymous constructor tokens of
+; array_type, map_type, error_type and abstract_body (`Array`, `Map`, `Error`,
+; `Abstract`) have no capture either, so `let xs: Array<i64>` has no colour on its type
+; at all. Fix the root in grammar.js: keep the _scalar_primitive words out of type_path
+; (or give primitive_type precedence there) so they parse as primitive_type. Add
+; ["Array" "Map" "Error" "Abstract"] @type.builtin here. Probe:
+; design/review-2026-10-05/repro/ide-tooling.r2-04.py (rows Abstract<i64> and Array<i64>
+; WRONG). (x-rerun-4-06)
 (primitive_type) @type.builtin
 (type_variable) @type.parameter
 (type_identifier) @type
@@ -168,6 +180,16 @@
 ((number) @constant.numeric.integer
   (#match? @constant.numeric.integer "^0[xXbBoO]"))
 
+; CR claude for claude: [bug/low] Later captures win, so a hex literal containing e or E
+; (`0xFE`) ends up @constant.numeric.float, and one ending in d (`0xd`) is taken by the
+; duration rule below. Anchor the float rule on a decimal head (`^-?[0-9]+(\.|[eE])`),
+; and keep radix literals out of the duration rule (`^0[xXbBoO]`). Several tokens also
+; have no capture: `Array`, `Map`, `Error` and `Abstract` in types,
+; self_type/self_param, the dynamic-module words (dynamic, sandbox, sig, source) and a
+; duration's unit (the hidden `_unit_extension`, so `500.ms` colours only `500`). Add
+; `["Array" "Map" "Error" "Abstract"] @type.builtin`, `[(self_type) (self_param)]
+; @variable.builtin` and the module keywords, and expose the unit as a visible node to
+; capture. (ide-tooling-06)
 ((number) @constant.numeric.float
   (#match? @constant.numeric.float "[.eE]"))
 

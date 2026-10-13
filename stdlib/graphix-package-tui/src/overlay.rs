@@ -64,6 +64,16 @@ impl<X: GXExt> OverlayW<X> {
         }
         let Fields { base, layers } = v.cast_to().context("overlay fields")?;
         let base = compile(gx.clone(), base).await.context("compiling overlay base")?;
+        // CR claude for claude: [structure/low] This reads the layers bind id by
+        // deriving a one-off FromValue struct with a u64 field, casting the whole value
+        // and calling compile_ref. GXHandle::compile_field already does that lookup
+        // (graphix_rt::field_id), and ChildW, SizeReport and the props use it.
+        // CalendarW::compile, BarChartW::compile, CanvasW::compile, ChartW::compile and
+        // DatasetW::compile repeat the same hand-rolled pattern, so there are two ways
+        // to read a field's bind id. Fix: call gx.compile_field(&v, "layers") here and
+        // at the other sites, and delete the Fields structs that exist only for this.
+        // LayerW's child and OverlayW's base could use the same one-field lookup.
+        // (tui-core-11)
         let layers_ref = gx.compile_ref(layers).await.context("compiling layers ref")?;
         let mut t = Self { gx, base, layers: vec![], layers_ref };
         if let Some(v) = t.layers_ref.last.take() {

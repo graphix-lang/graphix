@@ -1,0 +1,13 @@
+// t-parser-b-03: partial struct pattern completed against the whole
+// scrutinee, not what reaches the arm.
+// Command: graphix --no-cache t-parser-b-03.gx   (or --check)
+// Expected: 12 (arm 1 `{x, y}` takes every value of the first member, so
+// only `{x: i64, z: f64}` reaches `s@ {x, ..}`).
+// Observed: refused, "the pattern s@ { x, .. } matches more than one member
+// of [{ x: i64, y: string }, { x: i64, z: f64 }]; annotate the member you mean".
+// Nested form, same refusal, and no annotation can be written there:
+//   select v { `A({x, y}) => x, `A({x, ..}) => x + 10 }
+//   over v: [`A({x: i64, y: string}), `A({x: i64, z: f64})]
+let v: [{x: i64, y: string}, {x: i64, z: f64}] = {x: 2, z: 1.5};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select v { {x, y} => x, s@ {x, ..} => x + 10 }

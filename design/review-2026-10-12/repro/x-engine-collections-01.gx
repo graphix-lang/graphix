@@ -1,0 +1,18 @@
+// x-engine-collections-01: a cast or typed read into [int, null|bool|string]
+// whose integer member refuses the value falls through to netidx's lossy
+// conversion of a sibling member instead of InvalidCast.
+// Command: graphix --no-cache design/review-2026-10-12/repro/x-engine-collections-01.gx
+//   (same output with --no-fusion)
+// Expected (CLAUDE.md: "holds the value exactly or is an InvalidCast ... a union
+// target takes the first member that holds it"): q and r both InvalidCast, t and
+// u ParseError, the three union casts InvalidCast errors.
+// Observed:
+//   (error:["InvalidCast", "can't cast 300 to u8: no primitive conversion"],
+//    {a: null, b: null, c: true}, null, "i64:300", null, true, "i64:300", "i64:5", "5")
+// {a: u8} refuses 300, but {a: [u8, null]} reads it as null (absent).
+let q: Result<{a: u8}, [`JsonErr(string), `InvalidCast(string)]> = json::read("{\"a\": 300}");
+let r: Result<{a: [u8, null], b: [u8, null], c: [bool, null]}, [`JsonErr(string), `InvalidCast(string)]> = json::read("{\"a\": 300, \"b\": -1, \"c\": 5}");
+let t: Result<[i8, null], `ParseError(string)> = str::parse("300");
+let u: Result<[i8, string], `ParseError(string)> = str::parse("300");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(q, r, t, u, cast<[i8, null]>(300), cast<[i8, bool]>(300), cast<[i8, string]>(300), cast<string>(5), "[5]")

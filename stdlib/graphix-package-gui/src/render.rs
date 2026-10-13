@@ -34,6 +34,21 @@ impl GpuState {
             .await
             .context("no suitable GPU adapter found")?;
         let (device, queue) = adapter
+            // CR claude for claude: [bug/high] The device is requested with
+            // Limits::default(), so max_texture_dimension_2d is 8192 whatever the
+            // adapter supports. WindowSurface::new and WindowSurface::resize configure
+            // the surface at the window's physical size with only a lower bound. Past
+            // 8192 wgpu raises a validation error, and since no on_uncaptured_error
+            // handler is installed, the process panics. A `#size` of 9000 wide, 4200
+            // logical px at scale 2, or maximizing across several monitors all kill
+            // graphix at once (probe: design/review-2026-10-12/repro/gui-core-04.sh;
+            // 8000 wide opens). Stock iced has the same cap, so its compositor is no
+            // model here. Fix: request
+            // `Limits::downlevel_defaults().using_resolution(adapter.limits())` (with a
+            // downlevel fallback, since Limits::default can exceed a GL adapter and
+            // then no window opens), keep the device's max_texture_dimension_2d in
+            // GpuState, and clamp config.width/height to it in WindowSurface::new and
+            // resize. (gui-core-03)
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .context("failed to create GPU device")?;
@@ -51,6 +66,14 @@ impl GpuState {
 
     /// Create an iced Engine + Renderer pair for a window.
     pub fn create_renderer(&self) -> iced_wgpu::Renderer {
+        // CR claude for claude: [perf/low] Every window builds a new iced_wgpu::Engine,
+        // so each one compiles its own quad, text, triangle and image pipelines and
+        // keeps its own glyph atlas. Opening a window pays pipeline creation again, and
+        // a multi-window program holds one copy per window. Engine is Clone
+        // (Arc-shared), and iced's own compositor builds one and clones it per window.
+        // Fix: build the Engine once in GpuState::new, store it, and have
+        // create_renderer pass engine.clone() to Renderer::new. Image caches stay per
+        // Renderer either way. (gui-core-07)
         let engine = iced_wgpu::Engine::new(
             &self.adapter,
             self.device.clone(),

@@ -1,0 +1,23 @@
+let cert = sys::fs::read_all_bin("stdlib/graphix-tests/certs/server.pem")$;
+let key = sys::fs::read_all_bin("stdlib/graphix-tests/certs/server.key")$;
+let ca = sys::fs::read_all_bin("stdlib/graphix-tests/certs/ca.pem")$;
+let listener = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(listener)$;
+let client_tcp = sys::tcp::connect(addr)$;
+let server_tcp = sys::tcp::accept(listener, client_tcp)$;
+let tick = count(sys::time::timer(server_tcp ~ duration:100.ms, 3)$);
+let active = true;
+active <- select tick { 1 => false, 2 => true, _ => never() };
+let server = select active {
+    true => sys::tls::accept(#cert: cert, #key: key, server_tcp),
+    false => never()
+};
+let go = select tick { 2 => client_tcp, _ => never() };
+let client = sys::tls::connect(#ca_cert: ca, "127.0.0.1", go);
+let s = select server { error as e => "server error [e]", _ => "server ok" };
+let c = select client { error as e => "client error [e]", _ => "client ok" };
+sys::exit(sys::time::after_idle(duration:1.s, tick ~ 0));
+let out: string = never();
+out <- s;
+out <- c;
+out

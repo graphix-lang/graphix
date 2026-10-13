@@ -110,6 +110,16 @@ fn pad_range_by(min: f64, max: f64, unit: f64) -> (f64, f64) {
     }
     let (lo, hi) = if min == max { (min - unit, max + unit) } else { (min, max) };
     let pad = (hi / 2.0 - lo / 2.0) / 10.0;
+    // CR claude for claude: [bug/low] The doc says the result is always a
+    // checked_range, but it is not when all the data lies on one side beyond LIMIT. For
+    // (1e308, 1e308), hi is clamped to LIMIT while lo stays near 1e308, and the
+    // fallback below widens both ends without restoring the order. The result is
+    // (9.99e307, 4.49e307). The chart then draws nothing, the axes are reversed, and
+    // checked_range rejects every pan and zoom. Clamp min and max to [-LIMIT, LIMIT]
+    // before padding, so the min == max branch covers a one-sided overflow. probe:
+    // design/review-2026-10-12/repro/gui-chart-01.rs
+    // (pad_range_beyond_the_limit_is_checked); move it in as a unit test.
+    // (gui-chart-06)
     let (lo, hi) = ((lo - pad).max(-LIMIT), (hi + pad).min(LIMIT));
     if lo < hi {
         (lo, hi)

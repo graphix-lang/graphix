@@ -1,0 +1,19 @@
+// x-engine-seq-errors-04: `&mut *r` is not a place: writes through it are
+// silently lost. Place::of (graphix-compiler/src/node/bind.rs) returns None for
+// an empty accessor path, so `&mut *r` mints a fresh cell seeded with `*r`; the
+// check accepts it as `&mut i64` and the callee's write lands in that cell.
+// (x-engine-seq-errors-04.gx is another finding's repro; the reviewer's own
+// probe of the direct case is x-engine-seq-errors-05.gx.)
+// command: graphix --no-cache x-engine-seq-errors-04-reborrow.gx
+//          (also --no-fusion; graphix-fuzz check: AGREE, both engines lose it)
+// observed: (1, 7)   -- the reborrow `set(&mut *r)` never writes s
+// expected: (7, 7)   (or a refusal of `&mut *r`)
+let s = 1;
+let u = 1;
+let set = |x: &mut i64| *x <- 7;
+let fwd = |r: &mut i64| set(&mut *r);
+let fwd2 = |r: &mut i64| set(r);
+fwd(&mut s);
+fwd2(&mut u);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(s, u)

@@ -153,6 +153,13 @@ crashes surface, and divergences never record. The Excluded list is empirical an
 `selfcheck` polices it: a missing marker shows up as a finals-strength
 flake.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph's exception names only a
+node-walk StackBudget, and it ends by saying a one-sided ActivationBudget stays a
+divergence. Oracle::settle now treats a node-walk Timeout(StackBudget |
+ActivationBudget) beside a JIT trace as CONTAINED (the deep tail-loop pin). Name both
+budgets in the node-walk exception, and keep the divergence rule only for an
+ActivationBudget on the JIT side (and the Par exemption's StackBudget-only rule as it
+is). (fuzz-lib-a-09) -->
 **`Timeout` narrowly means a wedged evaluator** — or a runaway the
 stack or activation budget aborted: any failed request to a runtime
 whose `Control` reports `budget_aborted()` is `Timeout(ActivationBudget)`

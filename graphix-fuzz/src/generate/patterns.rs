@@ -282,6 +282,13 @@ pub(super) fn maybe_select(
         }
     }
     // list ladder mode: `[<>]` + `[<h, t..>]` cover every length, no wildcard
+    // CR claude for claude: [test-gap/low] Only lists get a ladder mode. An Array
+    // scrutinee gets at most one slice arm followed by an irrefutable final arm, so the
+    // checker rule that slice-pattern length ladders over an array count as coverage is
+    // never exercised. A Reach regression that stopped counting `[] , [h, t..]` (or
+    // `[], [a], [a, b, rest..]`, or the suffix form `[init.., last]`) as exhaustive
+    // would refuse valid programs and no generated subject would notice. Fix: add an
+    // array ladder mode beside this one, with no final arm. (fuzz-gen-b-07)
     if let GenType::List(e) = &scrut_ty {
         if rng.below(2) == 0 {
             for _ in 0..rng.below(2) {
@@ -384,6 +391,18 @@ fn general_select(
     // a bound or-alternation over an equal-typed integer pair: both
     // alternatives bind the same name at the same type; structurally
     // distinct and refutable
+    // CR claude for claude: [test-gap/medium] This is the generator's only or-pattern
+    // whose alternatives bind names. It needs a scrutinee that is a 2-tuple of one
+    // integer type, which random_type almost never draws: it occurred 0 times in `gen
+    // 20000 7`. Shared-name or-pattern binds therefore get no generated coverage. The
+    // module doc's premise is also false: the refutable arm drawn next can be `(l0, _)`
+    // or `(_, l1)`, and Reach refuses it as an unreachable arm because the or-arm
+    // already matches those values. Fix: give the or-arm its own scrutinee (`select
+    // (e0, e1) {..}` with e0 and e1 at one integer type) or use any tuple with two
+    // equal integer positions. Draw the following refutable arm so it avoids l0 in
+    // position 0 and l1 in position 1, or skip it after an or-arm. Correct the module
+    // doc, and add variant binding or-arms (`` `A(x) | `B(x) ``) where payload types
+    // allow. probe: design/review-2026-10-12/repro/fuzz-gen-b-02.gx (fuzz-gen-b-03)
     if let GenType::Tuple(es) = &scrut_ty {
         if es.len() == 2
             && es[0].render() == es[1].render()

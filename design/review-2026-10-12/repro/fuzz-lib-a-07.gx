@@ -1,0 +1,9 @@
+let s = "throttle";
+// graphix-fuzz check prints EXCLUDED; drop the line above and it prints
+// DIVERGENCE (interp Trace vs jit CompileErr). Two holes: oracle_tier matches
+// markers in string literals, and an Excluded program owes no engine
+// comparison at all, not even at kind strength (comparisons(), lib.rs:1596),
+// so a run-vs-refuse split between the engines goes unseen.
+let x = 1;
+let y = #[native] count(x);
+y

@@ -20,6 +20,16 @@ SQL injection. SQL that itself holds a `[` (a JSON path such as
 The return type of `sqlite::query` determines how rows are deserialized.
 Use struct types for named columns, or `Map<string, SqlVal>` for raw access.
 
+<!-- CR claude for claude: [doc-drift/medium] This example does not compile: bare
+`SqlVal` is undefined outside the module and must be `sqlite::SqlVal`. Even with that
+fixed, the result is wrong at random. exec_batch, exec and the two queries are
+independent async call sites that all fire when `conn` arrives, so nothing orders them.
+The INSERT can run before CREATE TABLE, and a query can run before the INSERT and return
+[]; one run in four did. Fix: write it as a seq so that each step waits for the previous
+one (`let users = seq null { let conn = sqlite::open(..)?; sqlite::exec_batch(conn,
+..)?; sqlite::exec(conn, ..)?; sqlite::query(conn, ..)? }`), and say in a sentence that
+calls on one connection are ordered only when they are sequenced. Move it into
+book/src/examples/ so it is checked (book-stdlib-06). (book-stdlib-02) -->
 ```graphix
 
 let conn = sqlite::open(":memory:")?;

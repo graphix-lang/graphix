@@ -1,0 +1,17 @@
+// x-expr-walks-04: references under an abstract are compared by cell id and ordered.
+// compared_ref / map_refs stop at Abstract, so `==` compares the raw cell ids;
+// rep_ambiguity never looks under Abstract, so Ordered (`<`, sort, map keys) accepts it.
+// Command: graphix --no-cache x-expr-walks-04.gx   (same with --no-fusion)
+// Expected: R(&x) == R(&x) is true as &x == &x and {a: &x} == {a: &x} are, and `<`
+//   and the map literal are refused as they are for a bare &i64 ("references have no order").
+// Observed: (false, true, true, true, false, false, 2) -- every line is accepted.
+type R = Abstract<&i64>;
+type B<'a> = Abstract<'a>;
+let x = 1;
+let y = 2;
+let a = R(&x);
+let b = R(&x);
+let c = R(&y);
+let m = {R(&x) => 1, R(&y) => 2};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(a == b, &x == &x, {f: &x} == {f: &x}, a < c, c < a, B(&x) == B(&x), map::len(m))

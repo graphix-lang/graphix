@@ -1,0 +1,9 @@
+// errors.rs ARM_INPUT_RAISE_FUSES with #[native] on the select: refused, the select node-walks.
+let result = {
+  let x = array::iter([1, 2, 3, 4]);
+  let n = 0;
+  let v = { catch(e) n <- e ~ n + 1; #[native] select x { 2 => error(`E(x))?, _ => x } };
+  select count(x) { 4 => n, _ => never() }
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+result

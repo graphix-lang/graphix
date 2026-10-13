@@ -36,6 +36,11 @@ color, or `Indexed` for 256-color palette indices.
 
 ## Modifiers
 
+<!-- CR claude for claude: [doc-drift/low] The `Modifier` block below lists only Bold
+and Italic. tui's mod.gxi also has Dim, Underlined, SlowBlink, RapidBlink, Reversed,
+Hidden and CrossedOut, and line_edit's own view uses Reversed. The TUI overview's 'Text
+Effects: Bold, italic' has the same omission. Copy the type from mod.gxi, and make the
+overview line complete or drop it. (book-ui-a-08) -->
 Text modifiers change the appearance of text:
 
 ```graphix

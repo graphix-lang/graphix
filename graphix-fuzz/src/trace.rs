@@ -38,6 +38,29 @@ pub struct Epoch {
 /// so traces of two compiles of one program compare equal; a
 /// `LambdaDef`'s own equality is its minted id. Iterative because value
 /// nesting depth is program-controlled.
+// CR claude for claude: [perf/low] normalize rebuilds every Array, Map and Error it
+// visits with new allocations, plus a temporary `pairs` Vec per map and unpooled
+// `work`/`out` stacks. It does this even when the value holds no `LambdaDef`, which is
+// the only thing it rewrites. It runs on every traced event of every session of every
+// subject, so a large collection result is copied element by element up to MAX_EVENTS
+// times per session. Fix: first scan read-only for an `Abstract` downcasting to
+// `LambdaDef` and return `v.clone()` (a refcount bump) when there is none, and rebuild
+// only the spine leading to one. Use pooled stacks for the walk. (fuzz-main-aux-12)
+// CR claude for claude: [bug/medium] Two value shapes here differ on every run of the
+// same program, so Oracle::settle's rerun of the reference disagrees with itself and
+// drops every comparison as nondeterminism. A program that traces one is never
+// compared: a real divergence in any other component of its value is dropped too, and
+// the program ends UNSURE. The first shape is a reference: it reaches the trace as
+// Value::U64 of its BindId, which keeps counting across the in-process runs, and a warm
+// start relocates it. The second is a lambda inside a nominal abstract: normalize does
+// not descend into a GxAbstract payload, so the lambda compares by its minted id.
+// `same` also stops at an Abstract and uses the payload's `==`, so -0.0 and 0.0 inside
+// an abstract compare equal. Fix: canonicalize references to their first-seen ordinal,
+// guided by the result type (Type::holds_ref / map_refs say where references sit), so
+// aliasing stays visible. In both normalize and same, downcast GxAbstract and recurse
+// into its payload. Pin both shapes in trace.rs tests. probe:
+// design/review-2026-10-12/repro/fuzz-lib-a-02.gx and fuzz-lib-a-01.gx (both UNSURE;
+// expected AGREE). (fuzz-lib-a-02)
 fn normalize(v: &Value) -> Value {
     enum Task<'a> {
         Visit(&'a Value),
@@ -228,6 +251,14 @@ impl Trace {
     /// (`OracleTier::FinalValues`): per-epoch settled values must agree;
     /// intra-epoch pacing may differ. Any cap on either side falls back
     /// to exact agreement, since a capped epoch never settled.
+    // CR claude for claude: [test-gap/low] Every dispatch-route pair (EngineDispatch,
+    // Route, Cold/Warm on Route::Dispatch) compares at Strength::Final, and this
+    // function ignores stdout unless an epoch is capped. drive_inner still captures the
+    // dispatch route's prints for Exact-tier programs, but nothing reads them, so a JIT
+    // dispatch instance that drops or duplicates a handler's print is never seen. When
+    // both traces captured output, also compare each epoch's printed texts as a
+    // multiset, ignoring offsets (they are not contractual on that route).
+    // (fuzz-lib-a-11)
     pub fn agrees_final(&self, other: &Trace) -> bool {
         if self.epochs.iter().chain(other.epochs.iter()).any(|e| e.capped) {
             return self.agrees_with(other);

@@ -1,0 +1,9 @@
+// array.rs:210 claims `x ~ null` lowers inside a kernel; #[native] shows
+// the callback node-walks. Run: graphix --no-cache <file>
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let a = [1, 2, 3, 4, 5, 6, 7, 8];
+#[native]
+array::filter_map(a, |x: i64| -> [i64, null] select x > 5 {
+  true => x + 1,
+  false => x ~ null
+})

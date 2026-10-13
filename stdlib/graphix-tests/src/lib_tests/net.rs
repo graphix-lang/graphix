@@ -60,6 +60,11 @@ run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
     // the i64 write reaches the callback cast to its string type
     match v {
         Ok(Value::Array(a)) => match &a[..] {
+            // CR claude for claude: [test-gap/low] The predicate takes either rendering
+            // of the written i64 cast to the callback's string type. Nothing compares
+            // the modes, so one engine switching between "i64:43" and "43" passes. Both
+            // engines give "i64:43" today (cast<string>(43) prints i64:43), so pin `*n
+            // == 6` alone. Also reported as (tests-lib-b2-10). (sys-net-11)
             [Value::I64(42), Value::I64(n)] => *n == "i64:43".len() as i64 || *n == 2,
             _ => false,
         },
@@ -253,6 +258,15 @@ run!(net_publish_arm_rewake, NET_PUB_REWAKE, |v: Result<&Value>| {
                     _ => None,
                 })
                 .collect();
+            // CR claude for claude: [test-gap/low] This predicate accepts any later
+            // value larger than the first, which an arm that never paused also
+            // produces: the publish would just keep publishing the rising x. The
+            // unpublish window the comment names is never observed, because `$` drops
+            // the subscriber's error. Publish::sleep's unpublish is pinned nowhere.
+            // Fix: observe the window as net_publisher_gone_and_back does. Subscribe
+            // with a Result type instead of `$`, and require an
+            // `error:["SubscribeError", ...]` between two values, or pin the stream
+            // outright. (tests-lib-b2-07)
             vals.first().is_some_and(|f| vals.iter().any(|v| v > f))
         }
         _ => false,
@@ -416,6 +430,13 @@ const NET_RESUBSCRIBE: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/medium] net_resubscribe cannot fail when the
+// subscription ignores path changes. A subscribe that keeps its first Dval delivers "a"
+// once at init. after_idle then fires 300 ms later, when path is back at
+// /local/resub/a, and the result is the same [path, "a"]. Nothing checks that "b" was
+// ever seen. Fix: end NET_RESUBSCRIBE with `array::group(v, |n, _| n == 3)` and pin
+// ["a", "b", "a"]. A probe gives exactly that with the moving path, and nothing with
+// the path fixed. (tests-lib-b2-05)
 run!(net_resubscribe, NET_RESUBSCRIBE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -466,6 +487,14 @@ async fn net_no_stale_value() -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let wrong = next_update(&mut rx, res.exprs[0].id, deadline).await?;
         ctx.shutdown().await;
+        // CR claude for claude: [test-gap/low] This assertion is also satisfied by a
+        // subscription that delivers nothing. `wrong` only grows on a stale value, so a
+        // Subscribe that drops every update after a path change (answering under an id
+        // nothing reads, say) leaves it at 0, and the test passes while the moving
+        // subscription is dead. Fix: count good deliveries too (a `good` counter bumped
+        // by the matching arm), return (wrong, good), and assert wrong == 0 with good
+        // above a floor, for example 20 over the 100 moves. Also run Mode::Par and
+        // Mode::JitPar, not only Interp and Jit. (tests-lib-b2-06)
         assert_eq!(wrong, Value::I64(0), "values of the path left, {mode:?}");
     }
     Ok(())

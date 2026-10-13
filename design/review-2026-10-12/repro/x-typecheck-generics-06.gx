@@ -1,0 +1,10 @@
+// x-typecheck-generics-06: an array literal, a map literal or any() of open functions is a
+//   union of fn types no call accepts; a select of the same functions is callable
+// command: graphix --check design/review-2026-10-12/repro/x-typecheck-generics-06.gx
+// expected: accepted, as `let f = select b { true => |x| x, false => |x| x + 1 }; f(1)` is
+//   (select joins its arms with Type::union_of_alternatives; run, it prints 1)
+// observed: refused at f(1): "expected fn not [fn(x: '_: unbound) -> '_: unbound, fn(x: i64) -> i64]";
+//   `let m = {"a" => |x| x, "b" => |x| x + 1}; let f = m{"a"}$; f(1)` and
+//   `let f = any(|x| x, |x| x + 1); f(1)` are refused with the same message
+let fs = [|x| x, |x| x + 1];
+array::map(fs, |f| f(1))

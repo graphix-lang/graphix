@@ -1,0 +1,10 @@
+// expect: accepted (each Json member implements Show); got: OOM, unbounded recursion
+// trait_contains(Json) -> find_impl(Array<Json>) -> contains with a fresh ContainsHist ->
+// trait_contains(Json) ... (the traits_in_progress guard does not cross find_impl)
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |x| "i" };
+impl Show for string { let show = |x| x };
+impl<'a: Show> Show for Array<'a> { let show = |a| "arr" };
+type Json = [i64, string, Array<Json>];
+let j: Json = 1;
+Show::show(j)

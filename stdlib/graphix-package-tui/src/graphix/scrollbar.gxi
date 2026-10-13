@@ -24,6 +24,29 @@ type Scrollbar = {
   viewport_length: &[i64, null]
 };
 
+// CR claude for claude: [bug/high] TUI #size outputs are read-only &[Size, null] refs
+// that Rust writes: type-unsound. block (block.gxi), layout's child (layout.gxi),
+// tabs (tabs.gxi), overlay (overlay.gxi) and scrollbar (scrollbar.gxi) declare
+// `?#size: &[Size, null]`, a read-only reference, which is covariant. The Rust side
+// writes through it anyway: `SizeReport::report` calls `self.r.set_deref(size)`
+// (graphix-package-tui/src/lib.rs). book/src/ui/tui/scroll.md documents it as an
+// output. Covariance lets `&n` with `n: null` stand where `&[Size, null]` is
+// expected, so the widget stores a `{height, width}` struct in a variable whose
+// static type is `null`. design/place_references.md ('Why') names this exact class:
+// covariance combined with writes is the reason `&T` and `&mut T` were split, and it
+// panicked the JIT before. The GUI's analogous output, `window(#size: &mut Size)`, is
+// declared correctly. Failure: `let n: null = null; let k = select n { null => "is
+// null" }; block(#size: &n, &text(&"hi"))`. The check accepts it. At run time n holds
+// `[["height", 24], ["width", 80]]`. Logged, it reads `null` first and then the
+// struct. With GRAPHIX_ABORT_ON_NO_MATCH=1 the exhaustive select matches no arm and
+// the process aborts (core dumped). Even with matching types, a program that passes
+// `&dims` for a value it meant as an input has that value silently overwritten, which
+// `&` promises cannot happen. Fix: Declare every size output as an optional writable
+// argument, `?#size: [&mut Size, null]` with default `null` (the CLAUDE.md /
+// place_references rule for optional writable args), in all five .gxi/.gx pairs.
+// Update the examples to pass `&mut size`. Consider having `Ref::set_deref` refuse a
+// reference that was not minted by `&mut`, so a Rust package cannot reopen the hole.
+// Unverified: the reviewer's report, not checked by a verifier. (book-ui-b-01)
 val scrollbar: fn(
   ?#begin_style: &[Style, null],
   ?#begin_symbol: &[string, null],

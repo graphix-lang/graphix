@@ -1,0 +1,5 @@
+let g = |z| {
+  let f = |x, x| x;
+  f(z, z)
+};
+g(1)

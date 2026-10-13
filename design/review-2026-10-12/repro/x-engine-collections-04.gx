@@ -1,0 +1,15 @@
+// x-engine-collections-04: the shell drops the last value when sys::exit
+// is requested in the same cycle as (or before) that value's output batch.
+// command (run it ~10 times):
+//   graphix --no-cache design/review-2026-10-12/repro/x-engine-collections-04.gx
+// expected: every run prints 42 and exits 0.
+// observed: exit 0 every run, 42 printed in only 3 of 10 runs.
+// Exit::update sends the exit request mid-cycle (inside update_nodes);
+// the runtime sends the cycle's GXEvent::Updated batch only after the
+// cycle ends, and Shell::run's unbiased select! takes the exit without
+// draining from_gx. A slow first cycle with a timer exit loses the value
+// too: `sys::exit(sys::time::after_idle(duration:100.ms, 0))` before
+// `s(30000)` with a recursive sum, under --no-fusion: 2 of 6 runs printed.
+let r = 42;
+sys::exit(r ~ 0);
+r

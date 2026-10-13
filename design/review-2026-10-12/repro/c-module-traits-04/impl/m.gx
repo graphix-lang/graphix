@@ -1,0 +1,3 @@
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |x| "int [x]" };
+impl<'a> Show for Array<'a> { let show = |xs| "arr" }

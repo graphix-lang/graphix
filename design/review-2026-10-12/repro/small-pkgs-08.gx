@@ -1,0 +1,9 @@
+// small-pkgs-08: f32 values are written as their widened f64 digits
+// command: graphix --no-cache design/review-2026-10-12/repro/small-pkgs-08.gx
+// expected: "{\"c\":0.1} c = 0.1\n" (the f32 written as Graphix prints it)
+// observed: "{\"c\":0.10000000149011612} c = 0.10000000149011612\n"
+let v = {c: f32:0.1};
+let s = json::write_str(v)$;
+let t = toml::write_str(v)$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+"[s] [t]"

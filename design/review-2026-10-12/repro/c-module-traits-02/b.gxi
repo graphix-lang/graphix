@@ -1,0 +1,4 @@
+use super::a::Show;
+type T;
+val mk: fn(x: i64) -> T;
+impl Show for T;

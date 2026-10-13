@@ -1,0 +1,13 @@
+// x-rerun-8-06 (x-typecheck-patterns-05, still reproduces): a typedef whose
+// self-reference passes through an alias defined AFTER it hangs the check
+// when a binding is annotated with it before the deferred contractivity
+// refusal runs.
+// command: timeout -s KILL 30 graphix --check x-rerun-8-06.gx
+// expected: "recursive type T refers back to itself through unions and
+//   aliases alone ...", as without the `let` (0.06 s) or with G first
+// observed: no answer; killed by the timeout (exit 137). The LSP shares the
+//   check path.
+type T = G<T>;
+type G<'a> = 'a;
+let x: T = 1;
+x

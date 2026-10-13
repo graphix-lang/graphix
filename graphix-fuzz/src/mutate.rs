@@ -100,6 +100,16 @@ fn try_swap_binop(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
 }
 
 /// If `e` is a numeric/bool constant, return an edge-value perturbation.
+// CR claude for claude: [test-gap/low] The parser refuses a non-finite float literal,
+// and a constant prints as `f64:NaN`, `f64:inf` or `f32:inf`. Duration::MAX prints as a
+// seconds count the duration parser refuses. So every pick of f64
+// INFINITY/NEG_INFINITY/NAN, f32 INFINITY/NAN or Duration::MAX fails `mutate_program`'s
+// reparse and only uses up a try. No mutated program ever holds these edge values. Emit
+// them as expressions that print back, such as `(0.0 / 0.0)` and `(1.0 / 0.0)`, with a
+// cast for f32. Replace Duration::MAX with the largest duration that prints exactly.
+// `try_swap_binop` and this function can also pick the current op or value, and that
+// no-op counts as an applied mutation, so leave the current one out of the pick.
+// (fuzz-mutate-11)
 fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     let v = match &e.kind {
         ExprKind::Constant(v) => v,

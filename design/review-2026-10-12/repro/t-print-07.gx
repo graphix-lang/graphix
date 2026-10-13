@@ -1,0 +1,11 @@
+// t-print-07: a select scrutinee or seq trigger that breaks continues at the column of
+// the `let` holding it, so its second line reads as a new statement.
+// command: graphix fmt --stdout t-print-07.gx
+// expected: the `bbb.. {` continuation indented one step past `let r =` / `let s =`;
+// observed: it starts at the `let`'s column.
+let f = |x| {
+  let r = select aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa + bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb { 0 => 1, _ => 2 };
+  let s = seq aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ~ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb { r };
+  s
+};
+f

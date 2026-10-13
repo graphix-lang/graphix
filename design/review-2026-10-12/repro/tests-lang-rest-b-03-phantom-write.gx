@@ -1,0 +1,27 @@
+// tests-lang-rest-b-03: a write through a moving reference that fires
+// while the reference has no address is held (ConnectDeref::pending) and
+// lands later, with no event, on whatever place the reference names next,
+// but only if the right side still has a value then.
+// Run: graphix --no-cache tests-lang-rest-b-03-phantom-write.gx
+// (same with --no-fusion)
+// Observed: [["alpha", "beta", "key while unselected"], ["alpha", "beta", "gamma"]]
+// a: row 0 is selected, then nothing (step 3); a key fires at step 5;
+// row 2 is selected at step 10 and the step-5 key overwrites it.
+// b: the same write, its right side an event that is bottom again by
+// step 10: nothing lands.
+// Expected per design/place_references.md ("a write into a place that does
+// not exist is dropped and logged") and CLAUDE.md ("a connect writes when
+// its RHS fires"): both rows unchanged, or a stated rule covering both.
+let step = 0;
+step <- select step { s if s < 20 => s + 1, _ => never() };
+let a = ["alpha", "beta", "gamma"];
+let b = ["alpha", "beta", "gamma"];
+let sel: [i64, null] = 0;
+let ra = &mut a[sel$];
+let rb = &mut b[sel$];
+sel <- select step { 3 => null, 10 => 2, _ => never() };
+let key = select step { 5 => null, _ => never() };
+*ra <- key ~ "key while unselected";
+*rb <- select step { 5 => "key while unselected", _ => never() };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select step { 15 => [a, b], _ => never() }

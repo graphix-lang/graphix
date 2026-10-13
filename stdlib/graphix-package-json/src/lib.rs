@@ -67,12 +67,27 @@ pub fn value_to_json(
     to_json(env, typ, value, 0)
 }
 
+// CR claude for claude: [perf/low] to_json builds a full serde_json::Value tree before
+// encode serializes it. That costs a Map per object, a Vec per sequence, and an owned
+// String for every key and every string leaf, all thrown away at once on every
+// json::write_str/write_bytes fire. toml's to_toml has the same shape. Fix: give a
+// `(env, Option<&Type>, &Value)` view a serde::Serialize impl that walks `shape`
+// directly, applying the same depth limit and leaf rules. Then serialize that view
+// straight into the pooled buffer. hbs's value_to_json caller can pass the same view to
+// Handlebars::render. (small-pkgs-12)
 fn to_json(
     env: &Env,
     typ: Option<&Type>,
     value: &Value,
     depth: usize,
 ) -> Result<serde_json::Value, String> {
+    // CR claude for claude: [bug/low] to_json counts depth from 0 and refuses only past
+    // MAX_DEPTH, so a value with 128 nested containers is written. serde_json's
+    // recursion limit refuses that same text on read. The comment on MAX_DEPTH says the
+    // limit matches what json::read reads, but json::write_str emits text that
+    // json::read rejects. Fix: refuse at `depth >= MAX_DEPTH`, which counts containers
+    // rather than levels, and add a pin that writes the deepest allowed value and reads
+    // it back. probe: design/review-2026-10-12/repro/small-pkgs-07.gx (small-pkgs-07)
     if depth > MAX_DEPTH {
         return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
     }
@@ -80,6 +95,15 @@ fn to_json(
         Shape::Object(mut entries) => {
             let mut map = serde_json::Map::with_capacity(entries.len());
             for (k, v, t) in entries.drain(..) {
+                // CR claude for claude: [bug/medium] This drops the old value that
+                // insert returns. Two map keys whose text from `map_key` is the same
+                // (i64 1 and "1" in a Map<[i64, string], _>, or i64 1 and f64 1.0 in a
+                // Map<[i64, f64], _>) become one object key, and the last value
+                // silently replaces the first, so the output has fewer entries than the
+                // map. `to_toml`'s `table.insert` has the same problem, and hbs gets it
+                // through `value_to_json`. Return an Err naming the duplicate key when
+                // insert returns Some, both here and in `to_toml`. probe:
+                // design/review-2026-10-12/repro/small-pkgs-05.gx (small-pkgs-05)
                 map.insert(k.to_string(), to_json(env, t.as_ref(), &v, depth + 1)?);
             }
             Ok(serde_json::Value::Object(map))
@@ -112,6 +136,15 @@ fn leaf_to_json(value: &Value) -> Result<serde_json::Value, String> {
         Value::Z32(n) => Ok(serde_json::Value::from(*n)),
         Value::Z64(n) => Ok(serde_json::Value::from(*n)),
         Value::F32(n) => {
+            // CR claude for claude: [bug/low] `*n as f64` widens the f32 exactly, so
+            // the writer prints the shortest f64 form of the widened value.
+            // json::write_str({c: f32:0.1}) gives 0.10000000149011612, and toml's
+            // leaf_to_toml F32 arm does the same. Graphix reads the value back
+            // unchanged, but every other consumer sees a different number from the one
+            // the program holds. Fix: widen through the f32's shortest decimal,
+            // `format_compact!("{n}").parse::<f64>()`, which stays inline and reads
+            // back to the same f32. Use it in both writers. probe:
+            // design/review-2026-10-12/repro/small-pkgs-08.gx (small-pkgs-08)
             let f = *n as f64;
             if f.is_finite() {
                 Ok(serde_json::Value::from(f))

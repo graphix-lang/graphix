@@ -279,6 +279,14 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
         let passed = FURTHEST_OK.with(|p| p.get());
         let refused = REFUSED.with(|r| r.get());
         if refused.is_some_and(|r| passed.is_none_or(|p| key(r) >= key(p))) {
+            // CR claude for claude: [readability/low] When the nesting limit stopped
+            // the parse, this branch reports `err_pos`, the outermost combine error,
+            // and no snippet. The refusal's own position, `refused`, is read just above
+            // and dropped. A file of 400 nested `{a: ` reports the first `{` at column
+            // 10, far from where the limit was hit, with no line or caret. Report
+            // `refused`'s position and append `snippet(text, pos)` as the general
+            // branch below does. Probe:
+            // design/review-2026-10-12/repro/t-parser-a-10.gx. (t-parser-a-10)
             return ParseFailure {
                 pos: err_pos,
                 msg: format!(
@@ -289,6 +297,19 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
             };
         }
         let pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
+        // CR claude for claude: [readability/low] When the furthest point is combine's
+        // error position, the message is combine's merged error printed verbatim, and
+        // it has three problems. It lists Unexpected entries for tokens that are not at
+        // the caret: 'Unexpected `s`' for `select x { }`, and 'Unexpected `[`' for `[1;
+        // 2; 3]`. Inside a bracket it ends with statement-only expectations ('mod, pub,
+        // use, catch, try, type, trait, impl, let'). Refusals raised with
+        // `unexpected_any(reason)` read 'Unexpected can't use keyword as a function or
+        // variable name' and 'Unexpected a block must contain at least 2 expressions'.
+        // Also, an unclosed `{` is reported only at end of input, with no pointer to
+        // the opener. To fix: keep only the Unexpected entry at the reported position,
+        // drop statement expectations inside a bracket, raise reason-style refusals
+        // with `message` instead of `unexpected_any`, and for an end-of-input failure
+        // note the innermost unclosed opener's position. (x-errors-06)
         let mut msg = if pos == err_pos {
             format!("{e}")
         } else {

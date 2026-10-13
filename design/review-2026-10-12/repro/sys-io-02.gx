@@ -1,0 +1,12 @@
+// sys-io-02: sys::exit does not exit while a stdin read is pending: Runtime drop waits on it
+// run: bash -c '{ echo hello; echo quit; echo after; sleep 10; } | { s=$(date +%s%N); graphix --no-cache sys-io-02.gx; echo rc=$? ms=$(( ($(date +%s%N)-s)/1000000 )); }'
+// expected: prints "hello", exits when "quit" arrives (rc=0, well under 1 s)
+// observed: prints "hello" (and sometimes "quit", never "after": the shell loop has stopped), then rc=0 ms=10010,
+// the process lingers until stdin reaches EOF; at a terminal, until the next Enter.
+// graphix-shell/src/main.rs tokio_main drops its Runtime, which waits for tokio::io::stdin's
+// blocking read before main can call process::exit
+use sys::io::Lines;
+let l = Lines::lines(sys::io::stdin(null));
+let line = l$;
+sys::exit(select line { "quit" => line ~ 0, _ => never() });
+line

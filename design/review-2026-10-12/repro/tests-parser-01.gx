@@ -1,0 +1,15 @@
+// tests-parser-01: the pretty printer writes a decorated mid-line
+// expression's comment mid-line, so graphix fmt refuses a valid program.
+// command: graphix --check tests-parser-01.gx; graphix fmt --stdout tests-parser-01.gx
+// expected: --check exits 0 and fmt prints the program with the comment
+// on its own line above `x`.
+// observed: --check exits 0 (a run prints 1), but fmt fails with
+// "formatter bug: the formatted text does not parse: at line: 13, column: 16"
+// on `let a = select // the scrutinee`. A comment above a guard
+// (`n if` / comment / `n > 0 => 1`), an abort(..) or flush(..) argument,
+// or an `until` condition fails the same way when formatted on its own.
+let x = 1;
+let a = select
+// the scrutinee
+x { _ => 1 };
+a

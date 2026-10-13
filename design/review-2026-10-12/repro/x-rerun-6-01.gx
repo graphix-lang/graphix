@@ -1,0 +1,17 @@
+// x-rerun-6-01: any select over a constructor-trait type is refused, even `_`.
+// Type::could_match_inner answers `self == t` for every pair with a
+// Type::App on either side, before its Any and TVar arms, so select.rs
+// Reach::arm calls a wildcard (and a binding arm over `c: Collection`) dead.
+// command: graphix --check x-rerun-6-01.gx
+// expected: checks (each select has one live arm per scrutinee member), and
+//   running it prints (1, 3, 0)
+// observed (HEAD 7324207f): "pattern Any will never match 'c: unbound
+//   within Collection<i64>, unused match cases" at the first select; with it
+//   removed, "pattern '#xs: unbound within Collection & Collection<'_N> will
+//   never match '#xs: unbound within Collection & Collection<'_N>" at the
+//   second; the third alone fails like the first. Control: `'a: Number
+//   |x: 'a| select x { _ => 1 }` checks.
+let anyarm = 'c: Collection |xs: 'c<i64>| select xs { _ => 1 };
+let len = |xs: Collection| select xs { v => Collection::len(v) };
+let opt = 'c: Collection |xs: ['c<i64>, null]| select xs { null as _ => 0, _ => 2 };
+(anyarm([1]), len([1, 2, 3]), opt(null))

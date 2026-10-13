@@ -488,6 +488,16 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) callee_ids: &'a BTreeMap<KernelKey, FuncId>,
     /// The spill thunk a self-call takes when the remaining stack is
     /// inside the red zone.
+    // CR claude for claude: [structure/low] `self_thunk`, `self_thunk_id` and
+    // `self_call` are one fact: `jit::emit_kernel_body` declares the thunk exactly when
+    // `spec.self_call()` is Some. Yet `LowerCtx`, `Callees` and the outlined chunk's
+    // params each carry them as independent Options. Because the types allow a
+    // self-call without a thunk, `emit_self_dispatch` keeps an error path for an
+    // impossible state ("self-call in a kernel with no spill thunk"). Hold one
+    // `Option<SelfCall<'a>>`, where `struct SelfCall { bind: BindId, info:
+    // &LambdaCallInfo, thunk: FuncRef, thunk_id: FuncId }`. Build it in
+    // `emit_kernel_body` where the thunk is declared and re-import `thunk` from
+    // `thunk_id` in the outliner. Then delete the error. (x-invalid-states-06)
     pub(super) self_thunk: Option<FuncRef>,
     pub(super) self_thunk_id: Option<FuncId>,
     pub(super) helper_ids: &'a HelperFuncIds,
@@ -603,6 +613,31 @@ impl<'a> HelperRefs<'a> {
     ) -> Result<SmallVec<[ClifValue; 2]>> {
         let f = self.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))?;
         let shape = self.shape(name).expect("a registered helper has a shape");
+        // CR claude for claude: [perf/low] Every Pair parameter and every Pair return
+        // of every helper call creates a new 16-byte explicit stack slot. Cranelift
+        // never shares them, so a body's frame grows with each value-shaped helper call
+        // even though each slot is dead once its call returns. A recursive kernel pays
+        // this in every activation: probe
+        // design/review-2026-10-12/repro/f-scaffold-body-pair-slots.gx shows 38
+        // explicit slots in `f`, so the stack budget is reached sooner. Keep a
+        // per-function set of pair slots in `HelperRefs`, as many as the widest
+        // helper's pair params plus one for the return, and reuse them at every call.
+        // (f-scaffold-body-04)
+        // CR claude for claude: [bug/medium] Every pair argument and every pair return
+        // gets a fresh 16-byte ExplicitSlot at every call site. Cranelift never shares
+        // these slots, so a kernel's frame grows by about 64 bytes per decimal `+`, and
+        // a pure region has no size limit. isa_with does not set enable_probestack, and
+        // graphix_stack_check runs only at self-calls, so nothing checks the frame
+        // against the stack that is left. A 40000-op decimal body gets a frame of about
+        // 2.5 MB, larger than the 2 MB worker stack, and dies with "tokio-rt-worker has
+        // overflowed its stack" inside the JIT code under FusedKernel::update. The
+        // node-walk prints 80001.0. A larger frame can jump past the guard page without
+        // faulting on it. Fix: allocate one spill area per function body, sized to the
+        // largest pair-word count of any single call, and reuse it at every call, since
+        // the words are dead once the call returns. Also turn on stack probes
+        // (enable_probestack=true, probestack_strategy=inline) so that any frame that
+        // is still large faults on the guard page. probe:
+        // design/review-2026-10-12/repro/x-fix-fusion-02.sh (x-fix-fusion-02)
         let slot = |b: &mut FunctionBuilder| {
             b.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,

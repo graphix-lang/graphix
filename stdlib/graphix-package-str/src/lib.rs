@@ -193,6 +193,11 @@ fn fc_join(args: &[Value]) -> Option<Value> {
     if parts.is_empty() {
         return None;
     }
+    // CR claude for claude: [dead/low] str::join declares #sep: string, so the arm that
+    // casts a non-string separator can never run. It suggests separators of other types
+    // are supported, and it makes the normal path clone the separator. Match
+    // [Value::String(sep), parts @ ..] in the slice pattern, borrow sep, and return
+    // None otherwise. (collections-str-10)
     let sep = match sep {
         Value::String(c) => c.clone(),
         sep => sep.clone().cast_to::<ArcStr>().ok()?,
@@ -290,6 +295,21 @@ fn with_escape(esc: &Value, f: impl FnOnce(&Escape) -> Value) -> Value {
     })
 }
 
+// CR claude for claude: [structure/low] escape_fn! writes out the EvalCached impl, the
+// CachedArgs alias and unit_image_state! that fast_builtin! already generates, naming
+// its fc twice. time_fn! in sys::time and BytesToStringLossy in core's buffer.rs do the
+// same. Have escape_fn! and time_fn! define only the fast fn and invoke fast_builtin!,
+// and declare BytesToStringLossy with fast_builtin! like its neighbours. split_fn!
+// below only forwards to fast_builtin!, so delete it and call fast_builtin! from its
+// two sites. abstract_arg is defined twice, in db's tree.rs and http's lib.rs; one copy
+// as a CachedVals method in core would serve both. (x-fix-stdlib-08)
+// CR claude for claude: [structure/low] escape_fn! writes out by hand what
+// graphix_package_core::fast_builtin! expands to: the unit struct, unit_image_state!,
+// the Stateless(Plain) EvalCached impl over fast_eval, and the CachedArgs alias. A
+// change to fast_builtin! would silently miss str_escape and str_unescape. split_fn!
+// below is fast_builtin! under another name. Keep escape_fn! for the fc body only and
+// invoke fast_builtin! for the builtin, delete split_fn!, and call fast_builtin!
+// directly from string_split! and string_splitn!. (collections-str-05)
 macro_rules! escape_fn {
     ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $escape:ident) => {
         fn $fc(args: &[Value]) -> Option<Value> {
@@ -382,6 +402,14 @@ fn one_char(v: &Value) -> Option<char> {
     }
 }
 
+// CR claude for claude: [bug/low] fc_split_escaped and fc_splitn_escaped check that esc
+// and sep are each one char but not that they differ. split_escaped tests the escape
+// before the separator, so with esc == sep every separator is read as an escape and the
+// whole string comes back as one field, with no SplitEscError: str::split_escaped(#esc:
+// ",", #sep: ",", "a,b") is ["a,b"] (probe:
+// design/review-2026-10-12/repro/collections-str-09.gx). Return the declared error
+// ("escape and separator must differ") in both builtins, and state the rule in the .gxi
+// docs. (collections-str-09)
 fn fc_split_escaped(args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("SplitEscError");
     let esc = match &args[0] {
@@ -524,7 +552,28 @@ graphix_package_core::fast_builtin!(
 fn fc_sprintf(args: &[Value]) -> Option<Value> {
     match args {
         [Value::String(fmt), rest @ ..] => {
+            // CR claude for claude: [perf/low] fc_sprintf builds into a fresh String
+            // and then copies it into an ArcStr, so every call costs two allocations.
+            // fc_sub does the same, and it also walks every char of `s`, even past the
+            // end of the requested range. Inside a map callback that is two allocations
+            // per element. Fix: use an LPooled<String> scratch buffer, as fc_join and
+            // fc_concat do. For fc_sub, find the byte bounds with char_indices,
+            // stopping at the end, and build the ArcStr straight from the `&s[a..b]`
+            // slice, with no scratch buffer at all. (x-alloc-09)
             let mut buf = String::new();
+            // CR claude for claude: [bug/high] A `%s` with a precision that ends inside
+            // a multibyte char panics in fish-printf. Its `s` conversion slices
+            // `&s[..p]` by bytes. The panic unwinds out of this fast fn and kills the
+            // runtime: `str::sprintf("%.3s|", "💖💖💖💖")` makes the shell exit 1 with
+            // "runtime did not respond", under the node-walk and the JIT alike. Called
+            // from a fused kernel, the unwind aborts the process. Fix it at the root:
+            // netidx_value::printf should pass each string argument's precision cut
+            // back to a char boundary, or fish-printf should be patched to cut at
+            // `floor_char_boundary(p)`. Either way the result must be a value or the
+            // declared `FormatError`, never a panic. Add sprintf pins to the str tests:
+            // precision over non-ASCII, a missing argument, a wrong argument type.
+            // probe: design/review-2026-10-12/repro/collections-str-02.sh
+            // (collections-str-02)
             match netidx_value::printf(&mut buf, fmt, rest) {
                 Ok(_) => Some(Value::String(ArcStr::from(&buf))),
                 Err(e) => Some(errf!(literal!("FormatError"), "{e}")),
@@ -554,6 +603,13 @@ fn str_char_len(args: &[Value]) -> Option<Value> {
     }
 }
 
+// CR claude for claude: [perf/low] fc_sub enumerates every char of s, including those
+// after the end of the range, pushes the selected ones one at a time into a fresh
+// String, then copies that into an ArcStr: O(len(s)) plus a per-char push even for a
+// short prefix. Find the byte bounds with char_indices (stop once the end is found),
+// return ArcStr::from(&s[a..b]), and return s.clone() when the range covers the whole
+// string. fc_sprintf's scratch buffer is a plain String: make it an LPooled<String>.
+// (collections-str-06)
 fn fc_sub(args: &[Value]) -> Option<Value> {
     match args {
         [Value::I64(start), Value::I64(len), Value::String(s)]

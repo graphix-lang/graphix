@@ -181,6 +181,13 @@ each was obvious in hindsight and invisible in advance.
    recursion deadlocks the process the moment compiles run
    concurrently.
 
+<!-- CR claude for claude: [doc-drift/low] The sentence "Composite producers abort on
+bottom elements (arrays have no validity channel)" is stale. emit_push_field_node, which
+the tuple, struct and variant producers share, pushes a tainted field's placeholder, and
+the composite comes out tainted for its consumer to gate. Nothing aborts. Rewrite the
+sentence to say that, and give the real reason block_live drops dead statements, or drop
+that claim. As written, it tells someone adding a producer to add a kernel abort that
+would bottom kernels whose taken path never reads the composite. (f-nodes-scalar-07) -->
 6. **Dead bottoms must not poison kernels; a missing input must not
    abort.** Composite producers abort on bottom elements (arrays have
    no validity channel), so dead statements are eliminated before

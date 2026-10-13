@@ -63,6 +63,15 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
+// CR claude for claude: [bug/low] `digest` passes its parts to `make_sha3_token`, which
+// hashes them back to back with no framing. The program key ends with two
+// variable-length parts, the program id and GRAPHIX_MODPATH. So (`p/prog`, MODPATH
+// `.gx`) and (`p/prog.gx`, no MODPATH) produce the same key. The record then checks
+// only the first program's sources, which are unchanged, and the wrong program is
+// restored. The registration key's root is followed by the program key's fixed-size
+// flags, so it can collide the same way in principle. Fix: hash each part's length (as
+// u64 little-endian) before its bytes. probe:
+// design/review-2026-10-12/repro/shell-06-key-unframed.sh (shell-06)
 fn digest(parts: &[&[u8]]) -> String {
     hex(&make_sha3_token(parts.iter().copied())[..16])
 }
@@ -70,6 +79,13 @@ fn digest(parts: &[&[u8]]) -> String {
 /// The running executable's per-build id: the GNU build id note an ELF
 /// linker stamps, a Mach-O `LC_UUID`, or a PE link stamp and size.
 fn build_id() -> Option<String> {
+    // CR claude for claude: [risk/low] `current_exe()` returns a path, so if the binary
+    // is replaced between that call and the open (cargo relinking it, a package
+    // upgrade), this process reads the new binary's build id. It then files its images
+    // under that id, and the new binary later restores images written by different
+    // code. The checksum and ISA checks do not catch that. On Linux, open
+    // "/proc/self/exe" directly: it is the running inode even after the path is
+    // replaced. Keep `current_exe` elsewhere. (shell-05)
     let file = fs::File::open(std::env::current_exe().ok()?).ok()?;
     // Mapped, so only the pages the walk touches are read: the headers
     // and the note, not the executable.
@@ -184,6 +200,18 @@ fn elf_build_id(file: &[u8]) -> Option<String> {
 /// a module, a `m.gx` beside the `m/mod.gx` it would win over, a root
 /// module's files in each directory `search` lists ahead of its own).
 /// `None` when it read a source no file vouches for on the next start.
+// CR claude for claude: [structure/medium] `sources_record` and `root_module_site`
+// rebuild, from the finished program's origins, which files module resolution read and
+// which it checked for. That covers the interface beside a module, mod.gx versus m.gx,
+// and the root directory then the search path. `resolve_from_files` and the resolver
+// chain already make those decisions. The copy has drifted: x-image-03 (interfaces) and
+// x-image-04 (layout conflicts). Any new resolver rule will silently produce stale or
+// never-hitting entries, and the fuzzer's session axis bypasses this file. Fix: have
+// the resolver (and `RootFile::load`) push each path it read, with its text, and each
+// path it found absent into a sink returned with the program image. This function then
+// writes that list verbatim, and `root_module_site` and the `absent` heuristics go
+// away. Pin it at shell level by running a temp-dir program twice across the edit,
+// add-interface, layout-conflict and script-interface cases. (x-image-05)
 fn sources_record(
     sources: &[triomphe::Arc<Origin>],
     search: &[PathBuf],
@@ -213,6 +241,19 @@ fn sources_record(
         if p.extension().is_some_and(|e| e == "gxi") {
             continue;
         }
+        // CR claude for claude: [bug/medium] The record misses files whose appearance
+        // makes the cold compile refuse the program. resolve_from_files reads both
+        // MODULE_LAYOUTS and breaks the module when both implementations exist or when
+        // the unused layout has an interface. Here, a read m.gx records only m.gxi as
+        // absent, not m/mod.gx or m/mod.gxi, and a read m/mod.gx does not record m.gxi.
+        // So after one of those files appears, `--no-cache` fails ("both define module
+        // m" / "is no interface"), but a cached start still verifies the entry and runs
+        // the old program. Fix the root cause: resolve_from_files should report every
+        // path it probed, read or found absent, and ProgramImage.sources should carry
+        // that set. sources_record then writes `+`/`-` lines from it and stops
+        // re-deriving the resolver's layout and search rules (root_module_site goes
+        // away). Probe: design/review-2026-10-12/repro/shell-01.sh. Also reported as
+        // (x-image-04). (shell-01)
         absent(p.with_extension("gxi"), &mut record);
         if o.parent.is_some()
             && p.file_name().is_some_and(|n| n == "mod.gx")
@@ -220,6 +261,21 @@ fn sources_record(
         {
             absent(dir.with_extension("gx"), &mut record);
         }
+        // CR claude for claude: [bug/medium] x-image-01 variant: a warm start masks the
+        // m.gx / m/mod.gx conflict a cold compile refuses. sources_record records a
+        // module file's absent alternatives only through root_module_site. For a module
+        // beside the root that resolved to `m.gx`, it does not record `m/mod.gx` as
+        // absent (cache.rs; the root_module_site loop breaks at once). Creating
+        // `m/mod.gx` later leaves the program entry valid. A warm start then runs the
+        // old module, while --no-cache refuses the program because both files define
+        // module m. Shadowing through GRAPHIX_MODPATH, which I also probed, is handled
+        // correctly. Failure: The cold run prints "file". After `m/mod.gx` is created,
+        // the warm run still prints "file", but --no-cache fails with '.../m.gx and
+        // .../m/mod.gx both define module m'. Fix: For every module resolved from a
+        // directory, record each candidate path the resolver would also have probed
+        // (`m.gx`, `m/mod.gx`, `m.gxi`, `m/mod.gxi`) as present-or-absent in the
+        // entry's sources, not only those reached through root_module_site. Unverified:
+        // the reviewer's report, not checked by a verifier. (x-rerun-8-07)
         if let Some((base, name)) = root_module_site(o, p) {
             let root_dir = o.parent.as_ref().and_then(|r| match &r.source {
                 Source::File(r) => r.parent(),
@@ -293,6 +349,19 @@ impl RegistrationCache {
                 Source::Netidx(_) | Source::Vfs(_) | Source::Unspecified => return None,
             };
             // the search path decides which file a module name reaches
+            // CR claude for claude: [bug/medium] The program key hashes only
+            // GRAPHIX_MODPATH, but root modules are also searched in
+            // dirs::data_dir()/graphix (graphix_rt::search_path). sources_record
+            // records absences only for directories searched before the one a module
+            // came from. So after XDG_DATA_HOME (or HOME) changes, the old module file
+            // still exists and still matches its digest. The entry hits, and the warm
+            // run executes the module from the previous data dir, while a cold run
+            // resolves the new one. Fix: hash the whole search path into the key,
+            // meaning the GRAPHIX_MODPATH entries plus each directory
+            // graphix_rt::search_dirs returns, so a different data dir is a different
+            // entry. probe: design/review-2026-10-12/repro/x-image-02-datadir-stale.sh
+            // (prints 1 1 1 2; the third run, under the new data dir, is the stale 1).
+            // (x-image-02)
             let modpath = std::env::var_os("GRAPHIX_MODPATH").unwrap_or_default();
             let modpath = modpath.as_encoded_bytes();
             Some(digest(&[
@@ -326,11 +395,33 @@ impl RegistrationCache {
         Some(self.dir().join(format!("{}.img", self.key(entry)?)))
     }
 
+    // CR claude for claude: [doc-drift/low] The comment says only the pages a restore
+    // touches are read. But `decode_registration` checks `image::sealed`, which runs a
+    // CRC over the whole image, so every page is read at load. Rewrite it to say what
+    // is true: the mapping saves a copy, the whole image is checksummed at restore, and
+    // the mapping stays valid because an entry is never rewritten in place. (shell-09)
     /// The entry mapped into memory, with its path: only the pages a
     /// restore touches are read, and an instance decoded later reads its
     /// own. An entry is never rewritten in place (written to a temporary
     /// file and renamed), so the mapping stays valid. A program entry
     /// whose sources changed is a miss.
+    // CR claude for claude: [doc-drift/low] The doc above says only the pages a restore
+    // touches are read and that an instance decoded later reads its own. That stopped
+    // being true when decode_registration began checking image::sealed: it hashes every
+    // byte after the header, the instance heap included. So every warm start reads the
+    // whole entry first, and the I/O scales with the image size, not with what is
+    // decoded. design/program_image.md makes the same claim. Correct both to say the
+    // entry is read once in full for the checksum. If lazy reads matter for large
+    // images, a crc per instance-heap record, checked at its lazy decode, with the
+    // eager part sealed at load, would bring them back. (x-fix-fusion-06)
+    // CR claude for claude: [doc-drift/low] The doc above says only the pages a restore
+    // touches are read, and that an instance decoded later reads its own.
+    // design/program_image.md says the same. But decode_registration calls
+    // image::sealed before decoding, and sealed runs crc32 over everything after the
+    // header. Every page of the entry is therefore read on every warm start, and lazy
+    // instance decode saves decode work but no I/O. Fix both texts to say the checksum
+    // reads the whole entry. If the I/O matters, the alternative is a checksum per
+    // region that is verified when the region is first decoded. (t-image-06)
     pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = match fs::File::open(&path) {
@@ -384,6 +475,12 @@ impl RegistrationCache {
     /// Write the program entry, unless its compile read a source the
     /// next start cannot verify.
     pub(crate) fn store_program(&self, program: &ProgramImage) -> Result<()> {
+        // CR claude for claude: [bug/low] When the compile read a module from netidx,
+        // there is no record and this returns `Ok(())`, so a `--warm` run succeeds
+        // without writing the program entry. `CacheMode::Warm` promises that an entry
+        // it cannot write fails the run. Return an error here (e.g. "the program reads
+        // a netidx module and cannot be cached"). `Shell::stored` already logs that as
+        // a warning under `CacheMode::On` and fails a warm run. (shell-07)
         let Some(record) = sources_record(&program.sources, &graphix_rt::search_dirs())
         else {
             return Ok(());
@@ -401,6 +498,15 @@ impl RegistrationCache {
     fn store(&self, entry: Entry, parts: &[&[u8]]) -> Result<()> {
         let path = self.path(entry).ok_or_else(|| anyhow!("no {entry:?} entry"))?;
         let dir = self.dir();
+        // CR claude for claude: [risk/low] The cache directories are created at the
+        // umask default (755), and the entries are created by `fs::File::create` (644).
+        // A program entry holds the compiled program, string literals included, and the
+        // paths of the sources it read. A script kept at mode 600 because it embeds a
+        // credential therefore leaves a copy readable by every local user wherever the
+        // home directory is not 0700. On Unix, create the cache root with mode 0700
+        // (`DirBuilderExt::mode`) and the temporary entry with mode 0600
+        // (`OpenOptionsExt::mode`). probe:
+        // design/review-2026-10-12/repro/x-security-10.gx (x-security-10)
         fs::create_dir_all(&dir)
             .with_context(|| format!("creating {}", dir.display()))?;
         let tmp = dir.join(format!(
@@ -454,6 +560,12 @@ impl RegistrationCache {
                 let _ = fs::remove_file(path);
             }
         }
+        // CR claude for claude: [risk/low] This removes every empty build directory,
+        // including this build's own `self.dir()`. Another process of the same build
+        // may have just run `create_dir_all` for it in `store` and not yet created its
+        // temporary file. Its `File::create` then fails with NotFound and the entry is
+        // lost; under `--warm` the run fails. Skip `self.dir()` here: it is about to
+        // hold an entry anyway. (shell-08)
         for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
             // only an empty directory is removed
             let _ = fs::remove_dir(build.path());

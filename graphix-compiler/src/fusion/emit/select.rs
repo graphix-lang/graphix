@@ -156,6 +156,13 @@ fn elem_index(cx: &mut BodyCx, idx: ElemIdx) -> (ElementRead, ClifValue) {
 
 /// A pattern binding installed in the arm's matched region under the
 /// pattern's `BindId`.
+// CR claude for claude: [structure/low] ValueScalar/ValueOwned, Payload/PayloadValue
+// and Elem/ElemValue are each one bind source split by whether the result is scalar.
+// ListHead already carries a LocalKind and handles both in one variant.
+// install_arm_binds therefore has three pairs of near-duplicate arms, and each new
+// source, such as the variant leaf in f-select-04, needs two variants and two arms.
+// Give each source one variant with a LocalKind, as ListHead does, and pick the scalar
+// read or the owned read once by kind in install_arm_binds. (f-select-08)
 enum SelectArmBind {
     /// `n => ...` — bind the scalar scrutinee itself.
     Scrut(BindId),
@@ -393,6 +400,13 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 /// bind lowers as a subslice and a non-scalar leaf as an element value;
 /// a tuple or struct `@` and a nested variant, or- or abstract leaf
 /// refuse (the select de-fuses).
+// CR claude for claude: [doc-drift/low] The doc above says a tuple or struct `@`
+// refuses and the select de-fuses. The code lowers both as a whole-composite Subslice
+// bind, and they agree with the node-walk. Only a nested variant, or- or abstract leaf
+// refuses here (see f-select-04 on the variant leaf). The never-arm comment in
+// emit_select_value_arm has the same problem: it says such an arm fires only with the
+// scrutinee, but its STALE fold also takes the consulted guards' fires (guards_stale),
+// as the node-walk does. Fix both comments to match the code. (f-select-07)
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -741,6 +755,29 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let gmark = cx.env.mark();
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
         let pcond = emit_arm_condition(cx, pat, scrut, scrut_typ, None, &mut binds)?;
+        // CR claude for claude: [perf/low] For a guard that reads its arm's binds, this
+        // prologue clones every owned bind (strings, Values, a slice's rest as a fresh
+        // subslice) under the mask, evaluates the guard and drops them. The chain later
+        // calls install_arm_binds again for the same bind specs, so a taken arm clones
+        // its owned binds twice per invocation, and the bind code is emitted twice.
+        // Keep the prologue's masked locals alive and have the chain's matched block
+        // reuse them. Drop them once at the select's exits: the arm exit, guard-false,
+        // undecided and no-match. The mask already makes them drop-safe on every path.
+        // (f-select-06)
+        // CR claude for claude: [bug/high] The prologue runs every impure guard before
+        // the chain decides anything, but pcond leaves out the arm's inferred predicate
+        // (emit_arm_cond tests only a written one). A plain bind whose arm narrows the
+        // scrutinee is therefore installed unmasked. The node-walk feeds a guard its
+        // binds only when PatternNode::shape_matches holds, inferred predicate
+        // included, so a JIT guard computes over a value an earlier arm claimed.
+        // Example: after `null as _`, the guard `x if (100 /? x)? > 1` reads null's
+        // payload as 0, and its `?` raises an ArithError that the node-walk never
+        // raises (the same holds for `$` logs and kernel firing memory). Fix: in the
+        // prologue, AND pcond with a lowering of the arm's shallow discriminant, the
+        // same test the node-walk's delivery uses, or refuse to fuse an impure guard on
+        // an arm whose inferred predicate narrows the scrutinee. Then make
+        // emit_arm_cond's comment say the prologue needs that test. probe:
+        // design/review-2026-10-12/repro/f-select-01.gx (f-select-01)
         install_arm_binds(cx, &binds, scrut, pcond)?;
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
@@ -807,6 +844,16 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         }
         cx.b.switch_to_block(matched);
         cx.b.seal_block(matched);
+        // CR claude for eric: [perf/low] An arm with an impure guard reuses the
+        // prologue's condition here but installs its owned binds a second time. The
+        // prologue already cloned the payload for the guard and dropped it. The arm
+        // therefore pays two payload clones per invocation, even when its body never
+        // reads the bind. In the kernel for `A(xs) if array::len(xs) > lim => 1`, the
+        // clone helper runs in the prologue, again in arm 1's matched block, and again
+        // in arm 2. The control without the guard runs it twice. Fix: keep the
+        // prologue's installed binds alive into the chain for a non-or arm and drop
+        // them on the guard-false and undetermined exits, or never clone a bind the arm
+        // body does not read. This is the remaining half of f-select-13. (x-rerun-3-04)
         install_arm_binds(cx, &binds, scrut, None)?;
         if let (Some(g), Some(fail)) = (&pat.guard, fail) {
             let eff = match guard_vals[i] {
@@ -915,6 +962,16 @@ fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
         | NodeView::And(_)
         | NodeView::Or(_)
         | NodeView::Not(_)
+        // CR claude for claude: [bug/medium] These arms accept +, -, * and neg on any
+        // operand type as "never bottom", but decimal arithmetic logs and bottoms on
+        // overflow. A guard this accepts is emitted lazily in the chain, where `eff =
+        // payload & valid` has no undecidable branch, so the bottom reads as false and
+        // the kernel takes the next arm. The node-walk makes the selection undecidable
+        // (the consulted-guard rule) and the select is bottom. Fix: accept these ops
+        // only when the node's type is an integer or float scalar
+        // (kernel_abi::scalar_prim on n.typ()), or send any guard holding an op that
+        // can bottom to the prologue. probe:
+        // design/review-2026-10-12/repro/f-select-03.gx (f-select-03)
         | NodeView::Neg(_)
         | NodeView::Add(_)
         | NodeView::Sub(_)
@@ -1581,6 +1638,21 @@ fn emit_structure_cond(
             }
         },
         StructPatternNode::Literal(v) => {
+            // CR claude for claude: [perf/medium] Three common select shapes make the
+            // select and its lambda node-walk, so a #[native] over any of them refuses.
+            // (a) A `null` literal arm is refused here as non-scalar, although the
+            // `null as _` predicate in emit_arm_cond already lowers as a clean-disc
+            // compare with value_disc::NULL. Lower Value::Null the same way over an
+            // option or Value scrutinee, refusing a result union as that path does. (b)
+            // emit_arm_cond freezes a written predicate with freeze_for_abi, which
+            // leaves core set refs (`Int`, `Number`) unresolved, so `Int as n` is
+            // refused. Resolve the refs first (resolve_node_typ, or the normalized
+            // freeze). (c) emit_composite_pattern_cond refuses a variant leaf, so the
+            // usual state-machine shape `select (mode, ev) { (`Idle, 0) => .. }`
+            // de-fuses. emit_variant_cond already takes a borrowed (disc, payload)
+            // through `on`: read the element borrowed and call it with the leaf's
+            // static type. probe: design/review-2026-10-12/repro/f-select-04.gx
+            // (f-select-04)
             let lit_prim = kernel_abi::scalar_prim_of_value(v)
                 .ok_or_else(|| anyhow!("emit_clif: non-scalar literal pattern {v:?}"))?;
             match scrut {
@@ -1734,6 +1806,23 @@ fn emit_variant_cond(
             StructPatternNode::Literal(lit) => {
                 // The typed payload read is total: only the static type
                 // proves it faithful.
+                // CR claude for claude: [bug/high] The static-type guard proves nothing
+                // here. `elt` comes from `pred`, the arm's inferred predicate, and for
+                // a literal payload that is the literal's own type, so
+                // `scalar_prim(elt) == Some(prim)` always holds. The typed read from
+                // variant_payload_helper is total: a null, string or other-typed
+                // payload reads as 0/false and matches a `0`/`false` literal. So
+                // `Count(null) over `Count([i64, null]) takes a `Count(0) arm in the
+                // JIT, while the node-walk correctly takes `Count(_). This is a wrong
+                // answer from fusion on ordinary option-payload code. Fix: check `prim`
+                // against the payload's static type taken from the scrutinee's member
+                // for this tag, as the composite path does with `leaf.typ`, and de-fuse
+                // when it is not exactly `prim`. Alternatively, read the payload
+                // borrowed (graphix_variant_payload_borrowed) and AND a tag test
+                // against Typ::get(lit) with the compare, as the top-level
+                // Value-literal path does. The nested `Variant` case passes the same
+                // pred-derived `elt` down, so it needs the same treatment. probe:
+                // design/review-2026-10-12/repro/f-select-02.gx (f-select-02)
                 let prim = kernel_abi::scalar_prim_of_value(lit)
                     .filter(|p| kernel_abi::scalar_prim(elt) == Some(*p))
                     .ok_or_else(|| {

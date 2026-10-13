@@ -233,6 +233,19 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if let Some(Some(s)) = &p.style.t {
             chart = chart.style(s.0);
         }
+        // CR claude for claude: [bug/medium] The axes go to ratatui with every label
+        // the program gave them. ratatui's Chart::render_y_labels computes `i as u16 *
+        // (graph_area.height - 1) / (labels_len - 1)` in u16. Once (labels - 1) *
+        // (height - 1) passes 65535 (about 1400 labels on a 50-row chart), a debug,
+        // test or soak build panics with "attempt to multiply with overflow" and the
+        // display fails. A release build wraps the product and draws labels on the
+        // wrong rows. render_x_labels has the same flaw: past 65535 labels its
+        // `labels.len() as u16` count truncates and its tick product overflows. Fix:
+        // before passing each axis to the chart, sample its labels down to what the
+        // rect can hold (at most rect.height for y and rect.width for x), keeping the
+        // first and last labels. This keeps every product below u16::MAX, the same way
+        // barchart.rs bounds its bars against the rect. Probe:
+        // design/review-2026-10-12/repro/tui-widgets-02.gx. (tui-widgets-02)
         if let Some(Some(a)) = &p.x_axis.t {
             chart = chart.x_axis(a.0.clone());
         }
