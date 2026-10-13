@@ -575,16 +575,9 @@ run!(cast_reads_the_tag, CAST_READS_THE_TAG, |v: Result<&Value>| {
 
 // A cast to an integer type holds the value exactly or refuses it,
 // whatever the source: a narrower integer, a float (its fraction
-// dropped) or a string; a union target takes the first member that
-// holds it.
-// CR claude for claude: [doc-drift/low] "A union target takes the first member that
-// holds it" means the first member in canonical order: Type::cast_int tries a primitive
-// set in bit order. cast<[i64, u8]>("3")$ is u8:3 whichever order the union is written
-// in. This comment and the cast rule in CLAUDE.md both read as written order, and this
-// fixture writes [u8, i64], which is already canonical, so it cannot tell the two
-// readings apart. Fix: say "first in canonical order (narrowest integer first)" in both
-// places, and add a row written out of canonical order, cast<[i64, u8]>("3")$ giving
-// u8:3. (tests-types-07)
+// dropped) or a string; a union target takes the first member in
+// canonical order (narrowest integer first) that holds it, however the
+// union is written.
 const CAST_TO_AN_INTEGER_IS_EXACT: &str = r#"
 {
   let big = 300;
@@ -603,6 +596,7 @@ const CAST_TO_AN_INTEGER_IS_EXACT: &str = r#"
     cast<i16>(f64:-3.9)$,
     cast<u64>("18446744073709551615")$,
     cast<[u8, i64]>("300")$,
+    cast<[i64, u8]>("3")$,
     cast<f64>(i8:-5)$
   )
 }
@@ -610,7 +604,7 @@ const CAST_TO_AN_INTEGER_IS_EXACT: &str = r#"
 
 run!(cast_to_an_integer_is_exact, CAST_TO_AN_INTEGER_IS_EXACT, |v: Result<&Value>| {
     format!("{}", v.unwrap())
-        == "[true, true, true, true, true, true, u8:200, i16:-3, u64:18446744073709551615, i64:300, f64:-5.]"
+        == "[true, true, true, true, true, true, u8:200, i16:-3, u64:18446744073709551615, i64:300, u8:3, f64:-5.]"
 });
 
 // A rec def whose base arm returns a param: the elem union is honestly
