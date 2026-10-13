@@ -46,6 +46,8 @@ pub struct Client {
     /// knows each by its own spelling until it is cleared.
     opened: HashSet<String>,
     diagnostics: HashMap<String, Vec<Diagnostic>>,
+    /// How many times each file's diagnostics were published.
+    publishes: HashMap<String, usize>,
 }
 
 impl Client {
@@ -80,6 +82,7 @@ impl Client {
             versions: HashMap::new(),
             buffers: HashMap::new(),
             opened: HashSet::new(),
+            publishes: HashMap::new(),
             diagnostics: HashMap::new(),
         };
         let root = client_uri(&t.root);
@@ -172,6 +175,7 @@ impl Client {
                             "published under another spelling"
                         );
                     }
+                    *self.publishes.entry(file.clone()).or_default() += 1;
                     self.diagnostics.insert(file, p.diagnostics);
                 }
                 _ => (),
@@ -313,6 +317,12 @@ impl Client {
                 text[offset(&text, d.range.start)..offset(&text, d.range.end)].to_string()
             })
             .collect()
+    }
+
+    /// How many times `file`'s diagnostics were published.
+    pub fn publishes(&mut self, file: &str) -> usize {
+        self.sync();
+        self.publishes.get(file).copied().unwrap_or(0)
     }
 
     /// Every file with a standing error.

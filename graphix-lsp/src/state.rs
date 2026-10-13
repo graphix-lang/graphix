@@ -192,20 +192,40 @@ impl ServerState {
         self.retire()
     }
 
-    /// Disk changed: the project graph may have, and every edited root
-    /// may read the file. A root that stopped being one is retired.
+    /// Disk changed: the project graph may have, and a root reads what
+    /// changed unless the file is open (a check reads its buffer). A root
+    /// whose project gained or lost a file, or holds a file changed on
+    /// disk, is checked again; one in no project reads what the scan does
+    /// not see, so it always is. A root that stopped being one is retired.
     pub fn saved(&mut self) -> Diagnostics {
-        self.workspace = scan(&self.workspace_roots, &self.workspace);
-        // CR claude for claude: [perf/low] Every didSave and didChangeWatchedFiles
-        // marks every live root dirty, so each save, a format-on-save included,
-        // re-checks every open root at the next idle. An open file's save changes
-        // nothing a check reads, because the check already reads its buffer through
-        // BufferOverrides. On netidx-admin each check takes about 1.5 s, and queries
-        // wait behind them. Fix: have `scan` report the files it re-read (mtime
-        // changed) and whether the project graph changed. Then dirty only the live
-        // roots whose project gained or lost a file, or contains a changed file that is
-        // not open. (lsp-03)
-        self.dirty.extend(self.live());
+        let workspace = scan(&self.workspace_roots, &self.workspace);
+        let old = std::mem::replace(&mut self.workspace, workspace);
+        let new = &self.workspace;
+        let changed = |p: &PathBuf| {
+            !self.documents.contains_key(p)
+                && match (old.files.get(p), new.files.get(p)) {
+                    (Some(a), Some(b)) => a.modified != b.modified,
+                    (a, b) => a.is_some() != b.is_some(),
+                }
+        };
+        fn files<'w>(
+            w: &'w WorkspaceModel,
+            root: &Path,
+        ) -> Option<&'w AHashSet<PathBuf>> {
+            w.projects.iter().find(|p| p.root == root).map(|p| &p.files)
+        }
+        let stale: Vec<PathBuf> = self
+            .live()
+            .into_iter()
+            .filter(|root| {
+                let (before, after) = (files(&old, root), files(new, root));
+                !self.roots.contains_key(root)
+                    || after.is_none()
+                    || before != after
+                    || after.into_iter().flatten().any(&changed)
+            })
+            .collect();
+        self.dirty.extend(stale);
         self.retire()
     }
 

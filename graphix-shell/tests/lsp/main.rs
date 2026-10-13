@@ -556,6 +556,31 @@ fn a_save_redraws_the_project_graph() {
     assert_eq!(c.files_with_diagnostics(), ["main.gx"]);
 }
 
+/// Saving an open file re-checks only what reads it from disk: not
+/// another project, and not its own (which reads the buffer).
+#[test]
+fn a_save_rechecks_only_what_it_changes() {
+    let mut c = Client::start(&[
+        ("a.gx", "let a: string = 1;\na\n"),
+        ("b.gx", "let b: string = 1;\nb\n"),
+    ]);
+    c.open("a.gx");
+    c.open("b.gx");
+    let (a, b) = (c.publishes("a.gx"), c.publishes("b.gx"));
+    assert!(a > 0 && b > 0);
+    c.save("b.gx");
+    assert_eq!((c.publishes("a.gx"), c.publishes("b.gx")), (a, b));
+    // a module no one has open is read again from disk
+    let mut c = Client::start(&[
+        ("main.gx", "mod util;\nlet x: string = util::v;\nx\n"),
+        ("util.gx", "let v = 1;\n"),
+    ]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), ["main.gx"]);
+    c.disk_changed("util.gx", "let v = \"one\";\n");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+}
+
 #[test]
 fn closing_a_file_clears_its_diagnostics() {
     let mut c = Client::start(&[("a.gx", "let a = 1"), ("b.gx", "let b = 1")]);
