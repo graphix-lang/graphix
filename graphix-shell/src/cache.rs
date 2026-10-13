@@ -343,28 +343,20 @@ impl RegistrationCache {
                 Source::Netidx(_) | Source::Vfs(_) | Source::Unspecified => return None,
             };
             // the search path decides which file a module name reaches
-            // CR claude for claude: [bug/medium] The program key hashes only
-            // GRAPHIX_MODPATH, but root modules are also searched in
-            // dirs::data_dir()/graphix (graphix_rt::search_path). sources_record
-            // records absences only for directories searched before the one a module
-            // came from. So after XDG_DATA_HOME (or HOME) changes, the old module file
-            // still exists and still matches its digest. The entry hits, and the warm
-            // run executes the module from the previous data dir, while a cold run
-            // resolves the new one. Fix: hash the whole search path into the key,
-            // meaning the GRAPHIX_MODPATH entries plus each directory
-            // graphix_rt::search_dirs returns, so a different data dir is a different
-            // entry. probe: design/review-2026-10-12/repro/x-image-02-datadir-stale.sh
-            // (prints 1 1 1 2; the third run, under the new data dir, is the stale 1).
-            // (x-image-02)
-            let modpath = std::env::var_os("GRAPHIX_MODPATH").unwrap_or_default();
-            let modpath = modpath.as_encoded_bytes();
+            // the whole module search path, the data dir's included
+            let mut search = Vec::new();
+            for dir in graphix_rt::search_dirs() {
+                let dir = dir.into_os_string();
+                search.extend_from_slice(&(dir.len() as u64).to_le_bytes());
+                search.extend_from_slice(dir.as_encoded_bytes());
+            }
             Some(digest(&[
                 &format,
                 root.as_bytes(),
                 &flags,
                 &[p.is_file() as u8],
                 &id,
-                modpath,
+                &search,
             ]))
         });
         Ok(RegistrationCache { root: root_dir, build, registration, program })
