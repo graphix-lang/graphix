@@ -178,6 +178,18 @@ async fn assert_stream(code: &str, expected: &[i64]) -> Result<()> {
     Ok(())
 }
 
+/// In every mode the stream starts with values that print as `expected`.
+async fn assert_values(code: &str, expected: &[&str]) -> Result<()> {
+    for mode in Mode::ALL {
+        let got = collect_n(code, mode, expected.len()).await?;
+        let got: Vec<String> = got.iter().map(|v| v.to_string()).collect();
+        if got != expected {
+            bail!("{mode:?} stream {got:?} != expected {expected:?}");
+        }
+    }
+    Ok(())
+}
+
 /// In every mode the i64 stream is exactly `expected`, and then the
 /// program quiesces.
 async fn assert_settles(code: &str, expected: &[i64]) -> Result<()> {
@@ -422,26 +434,25 @@ async fn struct_accumulator_grows() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn array_window_accumulator_agrees() -> Result<()> {
-    // A bounded sliding window: grow to 3, then push+shift (`[1..]` is
-    // only taken once the array is full, so the slice is in bounds).
-    // CR claude for claude: [test-gap/low] array_window_accumulator_agrees cannot
-    // detect a broken window. It observes array::len(data), which is 3 forever once the
-    // window fills. Any full arm that keeps three elements gives the same 0,1,2,3,3,3
-    // stream: one that keeps the head instead of dropping it, or one that returns data
-    // unchanged. assert_agree also pins no value (see tests-lib-b2-03). Fix: push a
-    // counter that moves and observe the array itself, pinned exactly in every mode: `{
-    // let i = 0; i <- i + 1; let data: Array<i64> = []; data <- select array::len(data)
-    // { 3 => (array::push(data, i))[1..]$, _ => array::push(data, i) }; data }` gives
-    // [], [0], [0,1], [0,1,2], [1,2,3], [2,3,4], ... (tests-lib-b2-02)
-    assert_agree(
-        "{ let data: Array<i64> = []; \
+async fn array_window_accumulator_slides() -> Result<()> {
+    // A bounded sliding window over a moving counter: grow to 3, then
+    // push and drop the head (`[1..]` is only taken once the array is
+    // full, so the slice is in bounds).
+    assert_values(
+        "{ let i = 0; i <- i + 1; let data: Array<i64> = []; \
            data <- select array::len(data) { \
-             3 => (array::push(data, array::len(data)))[1..]$, \
-             _ => array::push(data, array::len(data)) \
+             3 => (array::push(data, i))[1..]$, \
+             _ => array::push(data, i) \
            }; \
-           array::len(data) }",
-        6,
+           data }",
+        &[
+            "[]",
+            "[i64:0]",
+            "[i64:0, i64:1]",
+            "[i64:0, i64:1, i64:2]",
+            "[i64:1, i64:2, i64:3]",
+            "[i64:2, i64:3, i64:4]",
+        ],
     )
     .await
 }
