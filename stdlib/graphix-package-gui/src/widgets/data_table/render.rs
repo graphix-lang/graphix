@@ -6,8 +6,8 @@ use super::{
     MIN_COL_WIDTH, Message, RESIZE_HANDLE_WIDTH, ROW_NAME_HEADER_LABEL, ROW_NAME_KEY,
     Renderer, TableMsg, VALUE_COL_KEY, VALUE_HEADER_LABEL,
     types::{
-        ColumnType, SortDirection, age_sparkline, cell_path, col_header_width,
-        col_min_width, is_cell_path, row_basename, truncate_to_width,
+        ColumnType, SortDirection, ViewportMetrics, age_sparkline, cell_path,
+        col_header_width, col_min_width, is_cell_path, row_basename, truncate_to_width,
     },
 };
 use crate::{
@@ -160,31 +160,14 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(super) fn render_with_size(&self, size: iced_core::Size) -> IcedElement<'_> {
         {
-            let row_h = self.row_height();
-            let body_h = (size.height - HEADER_HEIGHT).max(0.0);
-            let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
-            let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
-            let cols_in_view = ((size.width / MIN_COL_WIDTH).ceil() as usize)
-                .saturating_sub(name_cols)
-                .max(1);
-            let mut m = self.viewport_metrics.lock();
-            let changed = m.viewport_width != size.width
-                || m.viewport_height != size.height
-                || m.rows_in_view != rows_in_view
-                || m.cols_in_view != cols_in_view;
-            if changed {
-                *m = super::types::ViewportMetrics {
-                    viewport_width: size.width,
-                    viewport_height: size.height,
-                    rows_in_view,
-                    cols_in_view,
-                    needs_subscription_reconcile: m.needs_subscription_reconcile
-                        || m.rows_in_view != rows_in_view,
-                };
-            }
+            let mut next = ViewportMetrics::new(size, self.row_height());
+            let mut metrics = self.viewport_metrics.lock();
+            next.needs_subscription_reconcile = metrics.needs_subscription_reconcile
+                || metrics.rows_in_view != next.rows_in_view;
+            *metrics = next;
         }
         let num_rows = self.row_paths.len();
-        let show_row_name = self.show_row_name.t.unwrap_or(true);
+        let show_row_name = self.show_row_name();
         let on_header_click = self.on_header_click.id();
         let bold = iced_core::Font {
             weight: iced_core::font::Weight::Bold,
@@ -212,22 +195,15 @@ impl<X: GXExt> DataTableW<X> {
                         DisplayMode::Table => self
                             .columns
                             .iter()
-                            .map(|(cn, _)| {
-                                let key = (row_path.clone(), cn.clone());
-                                let id = inner.cells.get(&key).copied();
-                                id.and_then(|id| inner.formatted_for(id)).unwrap_or_else(
-                                    || self.default_for(cn, row_basename(row_path)),
-                                )
-                            })
+                            .map(|(cn, _)| self.cell_text(&mut inner, row_path, cn))
                             .collect(),
                         DisplayMode::Value => {
-                            let key = (row_path.clone(), VALUE_COL_KEY);
-                            let id = inner.cells.get(&key).copied();
-                            let v = id
-                                .and_then(|id| inner.formatted_for(id))
-                                .unwrap_or_default();
                             let mut res: LPooled<Vec<ArcStr>> = LPooled::take();
-                            res.push(v);
+                            res.push(self.cell_text(
+                                &mut inner,
+                                row_path,
+                                &VALUE_COL_KEY,
+                            ));
                             res
                         }
                     },

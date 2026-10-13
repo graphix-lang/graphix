@@ -71,8 +71,20 @@ pub(super) struct ViewportMetrics {
     pub(super) viewport_width: f32,
     pub(super) viewport_height: f32,
     pub(super) rows_in_view: usize,
-    pub(super) cols_in_view: usize,
     pub(super) needs_subscription_reconcile: bool,
+}
+
+impl ViewportMetrics {
+    pub(super) fn new(size: iced_core::Size, row_height: f32) -> Self {
+        Self {
+            viewport_width: size.width,
+            viewport_height: size.height,
+            rows_in_view: (((size.height - super::HEADER_HEIGHT).max(0.0) / row_height)
+                .ceil() as usize)
+                .max(1),
+            needs_subscription_reconcile: false,
+        }
+    }
 }
 
 impl Default for ViewportMetrics {
@@ -81,7 +93,6 @@ impl Default for ViewportMetrics {
             viewport_width: 1024.0,
             viewport_height: 0.0,
             rows_in_view: super::DEFAULT_VISIBLE_ROWS,
-            cols_in_view: super::DEFAULT_VISIBLE_COLS,
             needs_subscription_reconcile: false,
         }
     }

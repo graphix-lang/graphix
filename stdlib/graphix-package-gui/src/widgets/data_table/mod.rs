@@ -58,7 +58,6 @@ const ROW_BUFFER: usize = 50;
 const MIN_COL_WIDTH: f32 = 80.0;
 const DEFAULT_MAX_COL_WIDTH: f32 = 300.0;
 const DEFAULT_VISIBLE_ROWS: usize = 30;
-const DEFAULT_VISIBLE_COLS: usize = 20;
 /// Max points kept per sparkline; `decimate_sparkline` halves the
 /// count when exceeded.
 pub(crate) const MAX_SPARKLINE_POINTS: usize = 512;
@@ -151,6 +150,10 @@ pub(crate) struct DataTableW<X: GXExt> {
 }
 
 impl<X: GXExt> DataTableW<X> {
+    fn show_row_name(&self) -> bool {
+        self.show_row_name.t.unwrap_or(true)
+    }
+
     /// Subscribe what the sort reads, sort, then subscribe the window the
     /// sorted rows show.
     fn reconcile(&mut self) {
@@ -399,7 +402,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         Ok(changed)
     }
 
-    // CR claude for claude: [structure/medium] The rule for a cell's text is written
+    // XCR claude for claude: [structure/medium] The rule for a cell's text is written
     // out five times: `data_table_snapshot` here, the grid rows in render,
     // `auto_fit_all_columns`, `handle_cell_edit` and `sort_value_for`. The rule is: the
     // live formatted value, else `default_for` in Table mode, and the row's
@@ -407,6 +410,9 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
     // reads this copy, not render's. A change to what render shows, or to this copy
     // alone, passes every grid test. Add one `cell_text(&inner, row, col)` that covers
     // both modes and call it from all five sites. (tests-gui-a-04)
+    // 2026-10-13 codex: Rendering, editing, auto-fit and snapshots now call cell_text.
+    // default_value_uniform, default_value_per_row and value_mode cover the rule;
+    // resolver sockets prevent reaching their assertions here.
     #[cfg(test)]
     fn data_table_snapshot(&self) -> Option<super::DataTableSnapshot> {
         let mut sel: Vec<String> = self.selection.iter().map(|s| s.to_string()).collect();
@@ -420,14 +426,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                     self.columns
                         .iter()
                         .map(|(cn, _)| {
-                            let key = (row_path.clone(), cn.clone());
-                            let id = inner.cells.get(&key).copied();
-                            id.and_then(|id| inner.formatted_for(id))
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| {
-                                    self.default_for(cn, types::row_basename(row_path))
-                                        .to_string()
-                                })
+                            self.cell_text(&mut inner, row_path, cn).to_string()
                         })
                         .collect()
                 })
@@ -436,13 +435,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 .row_paths
                 .iter()
                 .map(|row_path| {
-                    let key = (row_path.clone(), VALUE_COL_KEY);
-                    let id = inner.cells.get(&key).copied();
-                    let v = id
-                        .and_then(|id| inner.formatted_for(id))
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    vec![v]
+                    vec![self.cell_text(&mut inner, row_path, &VALUE_COL_KEY).to_string()]
                 })
                 .collect(),
         };

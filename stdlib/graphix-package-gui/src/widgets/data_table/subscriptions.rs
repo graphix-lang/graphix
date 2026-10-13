@@ -690,9 +690,7 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    /// Sort key text for `(row_path, sort_col)`: the live subscription
-    /// value, else the column's default.
-    // CR claude for claude: [structure/low] The cell text rule ('the live value
+    // XCR claude for claude: [structure/low] The cell text rule ('the live value
     // formatted, else the column's fallback') is written out again in render_with_size,
     // auto_fit_all_columns, handle_cell_edit and data_table_snapshot. This helper takes
     // the lock itself, so those callers copied the rule instead of calling it. Replace
@@ -703,17 +701,10 @@ impl<X: GXExt> DataTableW<X> {
     // `show_row_name.t.unwrap_or(true)`. ViewportMetrics::cols_in_view decides nothing
     // (only dt_viewport_metrics reads it, and viewport_width already covers its change
     // test): delete it and DEFAULT_VISIBLE_COLS. (gui-datatable-12)
-    pub(super) fn sort_value_for(&self, row_path: &Path, sort_col: &ArcStr) -> ArcStr {
-        {
-            let mut inner = self.cells.inner.lock();
-            let id = inner.cells.get(&(row_path.clone(), sort_col.clone())).copied();
-            if let Some(s) = id.and_then(|id| inner.formatted_for(id)) {
-                return s;
-            }
-        }
-        self.default_for(sort_col, row_basename(row_path))
-    }
-
+    // 2026-10-13 codex: cell_text now owns the displayed-value rule; raw values own sorting.
+    // ViewportMetrics::new is shared by layout and scroll; unused cols_in_view
+    // is gone. Existing default/value-mode, edit, auto-fit and resize tests need
+    // resolver sockets, so their runtime assertions remain unverified.
     /// The rows in display order: the table's own order sorted, stably,
     /// by the sort columns, or the table's order when there are none.
     pub(super) fn sort_rows(&mut self) {

@@ -31,7 +31,7 @@ impl<X: GXExt> DataTableW<X> {
         let mut cols: LPooled<Vec<ArcStr>> = LPooled::take();
         match self.mode {
             DisplayMode::Table => {
-                if self.show_row_name.t.unwrap_or(true) {
+                if self.show_row_name() {
                     cols.push(ROW_NAME_KEY);
                 }
                 cols.extend(self.columns.keys().cloned());
@@ -162,13 +162,7 @@ impl<X: GXExt> DataTableW<X> {
             return false;
         }
         let Some(row_path) = self.row_paths.get(row).cloned() else { return false };
-        let text = {
-            let mut inner = self.cells.inner.lock();
-            let id = inner.cells.get(&(row_path.clone(), col.clone())).copied();
-            id.and_then(|id| inner.formatted_for(id)).unwrap_or_else(|| {
-                self.default_for(&col, super::types::row_basename(&row_path))
-            })
-        };
+        let text = self.cell_text(&mut self.cells.inner.lock(), &row_path, &col);
         self.edit_buffer = text.as_str().into();
         self.editing = Some((row_path, col));
         self.focus_editor = true;
@@ -223,25 +217,11 @@ impl<X: GXExt> DataTableW<X> {
         vp_h: f32,
     ) -> bool {
         let row_h = self.row_height();
-        let rows_in_view =
-            (((vp_h - HEADER_HEIGHT).max(0.0) / row_h).ceil() as usize).max(1);
-        let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
-        let cols_in_view =
-            ((vp_w / MIN_COL_WIDTH).ceil() as usize).saturating_sub(name_cols).max(1);
-        let prev = *self.viewport_metrics.lock();
-        let metrics_changed = prev.viewport_width != vp_w
-            || prev.viewport_height != vp_h
-            || prev.rows_in_view != rows_in_view
-            || prev.cols_in_view != cols_in_view;
-        if metrics_changed {
-            *self.viewport_metrics.lock() = ViewportMetrics {
-                viewport_width: vp_w,
-                viewport_height: vp_h,
-                rows_in_view,
-                cols_in_view,
-                needs_subscription_reconcile: false,
-            };
-        }
+        let next = ViewportMetrics::new(iced_core::Size::new(vp_w, vp_h), row_h);
+        let prev = std::mem::replace(&mut *self.viewport_metrics.lock(), next);
+        let metrics_changed = prev.viewport_width != next.viewport_width
+            || prev.viewport_height != next.viewport_height
+            || prev.rows_in_view != next.rows_in_view;
         let n_rows = self.row_paths.len();
         let n_cols = self.total_data_cols();
         let max_oy = (n_rows as f32 * row_h + HEADER_HEIGHT - vp_h).max(0.0);
@@ -259,8 +239,9 @@ impl<X: GXExt> DataTableW<X> {
         } else {
             snap_col
         };
-        let row_changed =
-            self.first_row != new_first_row || prev.rows_in_view != rows_in_view;
+        let row_changed = self.first_row != new_first_row
+            || prev.rows_in_view != next.rows_in_view
+            || prev.needs_subscription_reconcile;
         let pos_changed = row_changed || self.first_col != new_first_col;
         self.first_row = new_first_row;
         self.first_col = new_first_col;
@@ -283,7 +264,7 @@ impl<X: GXExt> DataTableW<X> {
             self.auto_fit_all_columns();
             return true;
         }
-        let show_name = self.show_row_name.t.unwrap_or(true);
+        let show_name = self.show_row_name();
         let name: ArcStr = match (show_name, col_meta_idx) {
             (true, 0) => ROW_NAME_KEY,
             (_, i) => {

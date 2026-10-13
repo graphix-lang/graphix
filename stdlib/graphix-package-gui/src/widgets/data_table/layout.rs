@@ -5,6 +5,7 @@ use super::{
     DataTableW, DisplayMode, HEADER_HEIGHT, MIN_COL_WIDTH, ROW_BUFFER,
     ROW_HEIGHT_CONTROLS, ROW_HEIGHT_ESTIMATE, ROW_NAME_HEADER_LABEL, ROW_NAME_KEY,
     VALUE_COL_KEY, VALUE_HEADER_LABEL,
+    subscriptions::SharedCellsInner,
     types::{
         ColumnType, col_header_width, col_text_width, format_value, is_cell_path,
         row_basename, value_to_f64,
@@ -89,7 +90,7 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Pixel width of the synthesized row-name column (0 when hidden).
     pub(super) fn name_col_width(&self) -> f32 {
-        if !self.show_row_name.t.unwrap_or(true) {
+        if !self.show_row_name() {
             return 0.0;
         }
         self.column_canonical_width(&ROW_NAME_KEY)
@@ -115,17 +116,31 @@ impl<X: GXExt> DataTableW<X> {
         (0..ci).map(|i| self.data_col_width(i)).sum()
     }
 
-    /// String shown for a cell with no live subscription value.
-    pub(super) fn default_for(&self, col_name: &str, row_name: &str) -> ArcStr {
-        self.columns
-            .get(col_name)
-            .and_then(|c| c.source.as_ref())
-            .and_then(|e| e.parsed.lookup(row_name))
-            .map(format_value)
-            .unwrap_or_default()
+    /// The displayed cell text, using a held subscription lock.
+    pub(super) fn cell_text(
+        &self,
+        inner: &mut SharedCellsInner,
+        row: &Path,
+        col: &ArcStr,
+    ) -> ArcStr {
+        let col = if self.mode == DisplayMode::Value { &VALUE_COL_KEY } else { col };
+        let id = inner.cells.get(&(row.clone(), col.clone())).copied();
+        if let Some(text) = id.and_then(|id| inner.formatted_for(id)) {
+            return text;
+        }
+        match self.mode {
+            DisplayMode::Value => ArcStr::new(),
+            DisplayMode::Table => self
+                .columns
+                .get(col)
+                .and_then(|c| c.source.as_ref())
+                .and_then(|e| e.parsed.lookup(row_basename(row)))
+                .map(format_value)
+                .unwrap_or_default(),
+        }
     }
 
-    /// `default_for` as an `f64`, converted from the raw value.
+    /// The column fallback as an `f64`, converted from its raw value.
     pub(super) fn default_value_f64_for(
         &self,
         col_name: &str,
@@ -289,15 +304,13 @@ impl<X: GXExt> DataTableW<X> {
                     let text = if col == &ROW_NAME_KEY {
                         ArcStr::from(row_basename(rp))
                     } else {
-                        let id = inner.cells.get(&(rp.clone(), col.clone())).copied();
-                        id.and_then(|id| inner.formatted_for(id))
-                            .unwrap_or_else(|| self.default_for(col, row_basename(rp)))
+                        self.cell_text(&mut inner, rp, col)
                     };
                     w = w.max(col_text_width(&text));
                 }
                 w
             };
-            if self.show_row_name.t.unwrap_or(true) {
+            if self.show_row_name() {
                 fits.push((ROW_NAME_KEY, widest(ROW_NAME_HEADER_LABEL, &ROW_NAME_KEY)));
             }
             match self.mode {

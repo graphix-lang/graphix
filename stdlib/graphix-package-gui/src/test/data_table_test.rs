@@ -1557,21 +1557,19 @@ let result = data_table(#table: &tbl)
         h.drain().await?;
     }
     let _ = h.view();
-    let (w0, h0, rows0, cols0) = h.inner.dt().dt_viewport_metrics();
+    let (w0, h0, rows0) = h.inner.dt().dt_viewport_metrics();
     assert!((w0 - 800.0).abs() < 0.5, "initial viewport_width ~800, got {w0}");
     assert!((h0 - 400.0).abs() < 0.5, "initial viewport_height ~400, got {h0}");
     assert!(rows0 > 1, "rows_in_view > 1 at 400px tall, got {rows0}");
-    assert!(cols0 > 1, "cols_in_view > 1 at 800px wide, got {cols0}");
 
     h.resize(Size::new(200.0, 80.0));
-    let (w1, h1, rows1, cols1) = h.inner.dt().dt_viewport_metrics();
+    let (w1, h1, rows1) = h.inner.dt().dt_viewport_metrics();
     assert!((w1 - 200.0).abs() < 0.5, "post-shrink viewport_width ~200, got {w1}");
     assert!((h1 - 80.0).abs() < 0.5, "post-shrink viewport_height ~80, got {h1}");
     assert!(rows1 < rows0, "rows_in_view shrank: before {rows0}, after {rows1}");
-    assert!(cols1 < cols0, "cols_in_view shrank: before {cols0}, after {cols1}");
 
     h.resize(Size::new(1200.0, 600.0));
-    let (w2, h2, _rows2, _cols2) = h.inner.dt().dt_viewport_metrics();
+    let (w2, h2, _rows2) = h.inner.dt().dt_viewport_metrics();
     assert!((w2 - 1200.0).abs() < 0.5, "post-grow viewport_width ~1200, got {w2}");
     assert!((h2 - 600.0).abs() < 0.5, "post-grow viewport_height ~600, got {h2}");
     Ok(())

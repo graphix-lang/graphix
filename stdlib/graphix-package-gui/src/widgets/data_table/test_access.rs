@@ -17,9 +17,9 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     /// The viewport metrics from the most recent layout.
-    pub fn dt_viewport_metrics(&self) -> (f32, f32, usize, usize) {
+    pub fn dt_viewport_metrics(&self) -> (f32, f32, usize) {
         let m = self.viewport_metrics.lock();
-        (m.viewport_width, m.viewport_height, m.rows_in_view, m.cols_in_view)
+        (m.viewport_width, m.viewport_height, m.rows_in_view)
     }
 
     /// Points retained in the sparkline history at (row_basename, col);
@@ -72,7 +72,7 @@ impl<X: GXExt> DataTableW<X> {
     /// Index of `col` in the visible column metadata, as
     /// `handle_column_resize_start` expects; `None` when not visible.
     pub fn dt_meta_col_idx(&self, col: &str) -> Option<usize> {
-        let show_name = self.show_row_name.t.unwrap_or(true);
+        let show_name = self.show_row_name();
         if col == ROW_NAME_KEY {
             return if show_name { Some(0) } else { None };
         }
@@ -97,7 +97,7 @@ impl<X: GXExt> DataTableW<X> {
         if cache.is_empty() {
             return None;
         }
-        let show_name = self.show_row_name.t.unwrap_or(true);
+        let show_name = self.show_row_name();
         let mut x = 0.0_f32;
         let w;
         if col == ROW_NAME_KEY && show_name {
