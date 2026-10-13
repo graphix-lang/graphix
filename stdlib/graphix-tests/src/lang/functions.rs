@@ -2495,13 +2495,8 @@ run!(
     "#
 ; FuseExpect::None);
 
-// A function value prints as its source, the same cold and warm.
-// CR claude for claude: [test-gap/low] The comment promises 'the same cold and warm',
-// but run! never restores a session image, and no image test prints a function value.
-// An image codec change that rewrote or dropped a lambda's spec would pass this and
-// every other gate. Add a twin in lang/image.rs over cold_and_warm that compares the
-// printed string, or drop 'the same cold and warm' from the comment.
-// (tests-functions-06)
+// A function value prints as its source (cold and warm alike:
+// lang::image::a_restored_function_prints_its_source).
 const FN_PRINTS_ITS_SOURCE: &str = r#"
 {
   let f = |acc, x| str::len(x) + acc;
