@@ -10,6 +10,7 @@ use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::io::Cursor;
+use tokio::task;
 use triomphe::Arc as TArc;
 
 fn data_to_value(cell: &Data) -> Value {
@@ -155,7 +156,11 @@ impl EvalCachedAsync for XlsSheetsEv {
     }
 
     fn eval(input: Self::Args) -> impl Future<Output = Value> + Send {
-        async move { parse_sheets(Cursor::new(input)) }
+        async move {
+            task::spawn_blocking(move || parse_sheets(Cursor::new(input)))
+                .await
+                .unwrap_or_else(|e| errf!("XlsErr", "{e}"))
+        }
     }
 }
 
@@ -174,13 +179,12 @@ impl EvalCachedAsync for XlsReadEv {
     }
 
     fn eval((input, sheet): Self::Args) -> impl Future<Output = Value> + Send {
-        // CR claude for claude: [perf/low] parse_sheet runs inside the async block, on
-        // whichever tokio worker the JoinSet task lands on. Inflating and parsing a
-        // multi-MB workbook holds that worker for the whole parse, stalling the netidx
-        // IO and timers queued there. Fix: run it under `tokio::task::spawn_blocking`
-        // and turn a JoinError into an XlsErr, as graphix-package-sqlite does. Do the
-        // same for parse_sheets in XlsSheetsEv::eval. (small-pkgs-13)
-        async move { parse_sheet(Cursor::new(input), &sheet) }
+        // a parse holds its thread for its whole length: not a runtime worker's
+        async move {
+            task::spawn_blocking(move || parse_sheet(Cursor::new(input), &sheet))
+                .await
+                .unwrap_or_else(|e| errf!("XlsErr", "{e}"))
+        }
     }
 }
 
