@@ -9,6 +9,20 @@ use netidx::subscriber::Value;
 use poolshark::global::GPooled;
 use tokio::{fs, sync::mpsc, time::Duration};
 
+/// Whether `kinds` holds `classes` in order, each kind matched by its
+/// class's prefix (`Delete` matches `DeleteFile`).
+fn saw(kinds: &[String], classes: &[&str]) -> bool {
+    let mut want = classes.iter().peekable();
+    for k in kinds {
+        if let Some(c) = want.peek()
+            && k.starts_with(**c)
+        {
+            want.next();
+        }
+    }
+    want.peek().is_none()
+}
+
 /// Build an fs::watch test: a single action after establishment with a
 /// boolean expectation, or a multi-event sequence with state tracking.
 macro_rules! watch_test {
@@ -27,7 +41,7 @@ macro_rules! watch_test {
             state: {
                 _event_count: usize = 0,
             },
-            on_event: |count, temp_dir, _event_count| {
+            on_event: |count, _kind, temp_dir, _event_count| {
                 *_event_count = count;
                 if count == 1 {
                     // Let the FSEvents debouncer flush the Established
@@ -38,6 +52,7 @@ macro_rules! watch_test {
                     $action
                 }
             },
+            until: false,
             verify: {
                 assert!(_event_count >= 1, "the watch never established");
                 let got_event = _event_count > 1;
@@ -53,7 +68,8 @@ macro_rules! watch_test {
         timeout_secs: $timeout:expr,
         setup: |$setup_dir:ident| $setup:block,
         state: { $($state_name:ident: $state_type:ty = $state_init:expr),* $(,)? },
-        on_event: |$event_count:ident, $event_dir:ident, $($state_param:ident),*| $on_event:block,
+        on_event: |$event_count:ident, $kind:ident, $event_dir:ident, $($state_param:ident),*| $on_event:block,
+        until: $until:expr,
         verify: { $($verify:stmt);* $(;)? }
     ) => {
         #[tokio::test(flavor = "current_thread")]
@@ -67,20 +83,8 @@ macro_rules! watch_test {
                 $setup
             };
 
-            // CR claude for claude: [test-gap/low] The fixture returns
-            // `path(watch(..))`, which drops the event kind, so every test here only
-            // counts events. In test_watch_delete_then_recreate,
-            // test_watch_file_to_directory and test_watch_symlink_recreate, `count ==
-            // 2` means got_delete and `count == 3` means got_create.
-            // test_watch_parent_rename takes any event as the delete, although Create
-            // is in its interest set. A watcher that mislabels kinds, or that sends a
-            // duplicate Delete where a Create belongs, passes all of these. Fix: have
-            // the fixture return the kind (`let e = events(..)?; "[e.event]"`), assert
-            // the sequence of kinds (Established, Delete, Create), and end the loop
-            // once the expected sequence has arrived instead of waiting out the
-            // timeout. (tests-lib-b1-03)
             let code = format!(
-                r#"{{ use sys::fs::watch::{{self, *}}; let w = create(null)?; path(watch(#interest: {}, w, "{}")?) }}"#,
+                r#"{{ use sys::fs::watch::{{self, *}}; let w = create(null)?; let e = events(watch(#interest: {}, w, "{}")?)?; "[e.event]" }}"#,
                 $interest, escape_path(watch_path.display())
             );
 
@@ -92,20 +96,25 @@ macro_rules! watch_test {
             let mut event_count = 0;
             $(let mut $state_name: $state_type = $state_init;)*
 
-            loop {
+            'events: loop {
                 tokio::select! {
                     _ = &mut timeout => break,
                     Some(mut batch) = rx.recv() => {
                         for event in batch.drain(..) {
-                            if let GXEvent::Updated(id, v) = event {
-                                if id == eid && matches!(v, Value::String(_)) {
-                                    event_count += 1;
-                                    eprintln!("Event #{event_count}: {v}");
-
+                            if let GXEvent::Updated(id, Value::String(kind)) = event
+                                && id == eid
+                            {
+                                event_count += 1;
+                                eprintln!("Event #{event_count}: {kind}");
+                                {
                                     let $event_count = event_count;
+                                    let $kind: &str = kind.as_str();
                                     let $event_dir = &temp_dir;
                                     $(let $state_param = &mut $state_param;)*
                                     $on_event
+                                }
+                                if $until {
+                                    break 'events;
                                 }
                             }
                         }
@@ -214,7 +223,7 @@ watch_test! {
         file_created: bool = false,
         got_create: bool = false,
     },
-    on_event: |count, temp_dir, file_created, got_create| {
+    on_event: |count, _kind, temp_dir, file_created, got_create| {
         let test_file = temp_dir.path().join("nonexistent.txt");
         if count == 1 && !*file_created {
             eprintln!("Creating file");
@@ -224,6 +233,7 @@ watch_test! {
             *got_create = true;
         }
     },
+    until: false,
     verify: {
         assert!(got_create, "Did not receive create event for non-existent file");
     }
@@ -240,26 +250,23 @@ watch_test! {
         test_file
     },
     state: {
-        got_delete: bool = false,
-        got_create: bool = false,
+        kinds: Vec<String> = Vec::new(),
     },
-    on_event: |count, temp_dir, got_delete, got_create| {
+    on_event: |count, kind, temp_dir, kinds| {
         let test_file = temp_dir.path().join("delete_recreate.txt");
+        kinds.push(kind.to_string());
         if count == 1 {
             eprintln!("Deleting file");
             fs::remove_file(&test_file).await?;
-        } else if count == 2 {
-            *got_delete = true;
+        } else if kind.starts_with("Delete") && !test_file.exists() {
             eprintln!("Recreating file");
             tokio::time::sleep(Duration::from_millis(100)).await;
             fs::write(&test_file, b"recreated").await?;
-        } else if count == 3 {
-            *got_create = true;
         }
     },
+    until: saw(&kinds, &["Established", "Delete", "Create"]),
     verify: {
-        assert!(got_delete, "Did not receive delete event");
-        assert!(got_create, "Did not receive create event after recreation");
+        assert!(saw(&kinds, &["Established", "Delete", "Create"]), "{kinds:?}");
     }
 }
 
@@ -276,20 +283,20 @@ watch_test! {
         test_file
     },
     state: {
-        got_delete: bool = false,
+        kinds: Vec<String> = Vec::new(),
     },
-    on_event: |count, temp_dir, got_delete| {
+    on_event: |count, kind, temp_dir, kinds| {
+        kinds.push(kind.to_string());
         if count == 1 {
             let parent_dir = temp_dir.path().join("parent");
             let new_parent = temp_dir.path().join("parent_renamed");
             eprintln!("Renaming parent directory");
             fs::rename(&parent_dir, &new_parent).await?;
-        } else {
-            *got_delete = true;
         }
     },
+    until: saw(&kinds, &["Established", "Delete"]),
     verify: {
-        assert!(got_delete, "Did not receive delete event after parent rename");
+        assert!(saw(&kinds, &["Established", "Delete"]), "{kinds:?}");
     }
 }
 
@@ -306,7 +313,7 @@ watch_test! {
     state: {
         got_create: bool = false,
     },
-    on_event: |count, temp_dir, got_create| {
+    on_event: |count, _kind, temp_dir, got_create| {
         let deep_file = temp_dir.path().join("a").join("b").join("c").join("file.txt");
         if count == 1 {
             eprintln!("Creating /a");
@@ -327,6 +334,7 @@ watch_test! {
             *got_create = true;
         }
     },
+    until: false,
     verify: {
         assert!(got_create, "Did not receive create event for deep file");
     }
@@ -349,7 +357,7 @@ watch_test! {
     state: {
         got_delete: bool = false,
     },
-    on_event: |count, temp_dir, got_delete| {
+    on_event: |count, _kind, temp_dir, got_delete| {
         if count == 1 {
             let a = temp_dir.path().join("a");
             let b = a.join("b");
@@ -361,6 +369,7 @@ watch_test! {
             *got_delete = true;
         }
     },
+    until: false,
     verify: {
         assert!(got_delete, "Did not receive delete event after deep parent rename");
     }
@@ -381,7 +390,7 @@ watch_test! {
     state: {
         got_delete: bool = false,
     },
-    on_event: |count, temp_dir, got_delete| {
+    on_event: |count, _kind, temp_dir, got_delete| {
         if count == 1 {
             let a = temp_dir.path().join("a");
             eprintln!("Deleting entire /a directory tree");
@@ -390,6 +399,7 @@ watch_test! {
             *got_delete = true;
         }
     },
+    until: false,
     verify: {
         assert!(got_delete, "Did not receive delete event after parent tree deletion");
     }
@@ -521,30 +531,24 @@ watch_test! {
         test_file
     },
     state: {
-        got_established: bool = false,
-        got_delete: bool = false,
-        got_create: bool = false,
+        kinds: Vec<String> = Vec::new(),
     },
-    on_event: |count, temp_dir, got_established, got_delete, got_create| {
+    on_event: |count, kind, temp_dir, kinds| {
         let subdir = temp_dir.path().join("subdir");
+        kinds.push(kind.to_string());
         if count == 1 {
-            *got_established = true;
             eprintln!("Deleting parent directory");
             fs::remove_dir_all(&subdir).await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
-        } else if count == 2 {
+        } else if kind.starts_with("Delete") && !subdir.exists() {
             eprintln!("Parent directory deleted, recreating");
-            *got_delete = true;
             fs::create_dir(&subdir).await?;
             fs::write(&subdir.join("file.txt"), b"content").await?
-        } else {
-            *got_create = true;
         }
     },
+    until: saw(&kinds, &["Established", "Delete", "Create"]),
     verify: {
-        assert!(got_established, "Did not receive Established event");
-        assert!(got_delete, "Did not receive Delete event after parent deletion");
-        assert!(got_create, "Did not receive Create event after recreation");
+        assert!(saw(&kinds, &["Established", "Delete", "Create"]), "{kinds:?}");
     }
 }
 
@@ -561,25 +565,21 @@ watch_test! {
         path
     },
     state: {
-        got_delete: bool = false,
-        got_create: bool = false,
+        kinds: Vec<String> = Vec::new(),
     },
-    on_event: |count, temp_dir, got_delete, got_create| {
+    on_event: |count, kind, temp_dir, kinds| {
         let path = temp_dir.path().join("transform");
+        kinds.push(kind.to_string());
         if count == 1 {
             eprintln!("Deleting file and creating directory");
             fs::remove_file(&path).await?;
             tokio::time::sleep(Duration::from_millis(500)).await;
             fs::create_dir(&path).await?;
-        } else if count == 2 {
-            *got_delete = true;
-        } else if count == 3 {
-            *got_create = true;
         }
     },
+    until: saw(&kinds, &["Established", "Delete", "Create"]),
     verify: {
-        assert!(got_delete, "Did not receive delete event");
-        assert!(got_create, "Did not receive create event for directory");
+        assert!(saw(&kinds, &["Established", "Delete", "Create"]), "{kinds:?}");
     }
 }
 
@@ -599,7 +599,7 @@ watch_test! {
     state: {
         got_event: bool = false,
     },
-    on_event: |count, temp_dir, got_event| {
+    on_event: |count, _kind, temp_dir, got_event| {
         let target = temp_dir.path().join("target.txt");
         if count == 1 {
             eprintln!("Creating symlink target");
@@ -608,6 +608,7 @@ watch_test! {
             *got_event = true;
         }
     },
+    until: false,
     verify: {
         assert!(got_event, "Did not receive event when symlink target was created");
     }
@@ -629,26 +630,22 @@ watch_test! {
         link
     },
     state: {
-        got_delete: bool = false,
-        got_create: bool = false,
+        kinds: Vec<String> = Vec::new(),
     },
-    on_event: |count, temp_dir, got_delete, got_create| {
+    on_event: |count, kind, temp_dir, kinds| {
         let target = temp_dir.path().join("target.txt");
+        kinds.push(kind.to_string());
         if count == 1 {
             eprintln!("Deleting target");
             fs::remove_file(&target).await?;
             tokio::time::sleep(Duration::from_millis(500)).await;
             eprintln!("Recreating target");
             fs::write(&target, b"content").await?;
-        } else if count == 2 {
-            *got_delete = true;
-        } else if count == 3 {
-            *got_create = true;
         }
     },
+    until: saw(&kinds, &["Established", "Delete", "Create"]),
     verify: {
-        assert!(got_delete, "Did not receive delete event for target");
-        assert!(got_create, "Did not receive create event for target");
+        assert!(saw(&kinds, &["Established", "Delete", "Create"]), "{kinds:?}");
     }
 }
 
