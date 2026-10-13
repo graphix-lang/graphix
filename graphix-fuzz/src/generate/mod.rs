@@ -711,7 +711,7 @@ mod test {
         let mut rng = Rng::new(0x1abe);
         let cfg = GenCfg::default();
         let (mut labeled, mut hof, mut defined) = (0usize, 0usize, 0usize);
-        const N: usize = 300;
+        const N: usize = 1000;
         for _ in 0..N {
             let (p, stats) = gen_program_stats(&cfg, &mut rng);
             labeled += stats.labeled_fn as usize;
