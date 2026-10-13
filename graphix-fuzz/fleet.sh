@@ -322,14 +322,6 @@ verify_host() {
     local name=$1 camp=$2 want=$3 out gate n bad a b
     # the remote waits LAUNCH_WAIT for the launch, then up to 600s for
     # the counters
-    # CR claude for claude: [doc-drift/low] The remote script's comment says a counter
-    # line lands per completed batch. `run_aggregator` actually prints a source's line
-    # only when its run count crosses a multiple of 1000 (`stats[si].run % 1000 <
-    # count`, batches of 64). The two 300 s waits here therefore need at least 1000
-    # fuzz-source subjects per 5 minutes, about 3.3/s. A slower healthy host, such as a
-    # small or ASan or high-timeout-scale box, reports NO SUBJECTS CHECKED or COUNTERS
-    # NOT ADVANCING. Fix: have the aggregator also print each source's line on a timer
-    # (for example every 30 s), and correct the comment. (fuzz-main-aux-08)
     out=$(timeout $((LAUNCH_WAIT + 720)) ssh "$name" bash -s "$camp" "$LAUNCH_WAIT" <<'EOF' || echo "FLEET_UNREACHABLE"
 camp=$1; budget=$2
 log=~/tmp/fleet-$camp-launch.log
@@ -356,8 +348,9 @@ echo "=== PROC ==="
 pgrep -f "fuzz/$camp/graphix-fuzz" | wc -l | tr -d ' '
 # Sample ONE source's counter twice: the log interleaves sources, so
 # "the last line" can name a different source each time and appear to
-# go backwards. A counter line lands per completed batch, a while after
-# the gate and minutes apart right after launch (a fresh JIT, six
+# go backwards. A source's counter line lands every 1000 subjects and at
+# least every 30 s of batches completing, a while after the gate and
+# minutes apart right after launch (a fresh JIT, six
 # sessions per subject), so the first sample waits for a line and the
 # second waits for a DIFFERENT one; only five quiet minutes is a stall.
 sample() { grep -aoE "^  fuzz…[0-9]+ run" "$dir/soak.log" 2>/dev/null | tail -1 || true; }

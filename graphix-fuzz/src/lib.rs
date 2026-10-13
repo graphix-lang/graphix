@@ -4809,6 +4809,9 @@ pub async fn run_aggregator(
     let mut orders: JoinSet<(usize, usize, OrderResult)> = JoinSet::new();
     let mut derive: JoinSet<(usize, bool, Duration)> = JoinSet::new();
     let mut breakage = BreakageWindow::new();
+    // a source's counter line: every 1000 subjects, and at least this often
+    const LINE_EVERY: Duration = Duration::from_secs(30);
+    let mut last_line = [std::time::Instant::now(); SOURCES];
     let wsum = weights.iter().map(|w| w.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
     loop {
@@ -4913,7 +4916,8 @@ pub async fn run_aggregator(
                 for _ in 0..r.agreed {
                     breakage_note(&mut breakage, false);
                 }
-                if stats[si].run % 1000 < count {
+                if stats[si].run % 1000 < count || last_line[si].elapsed() >= LINE_EVERY {
+                    last_line[si] = std::time::Instant::now();
                     stats[si].divergences = found[si].divergences.load(Relaxed);
                     stats[si].crashes = found[si].crashes.load(Relaxed);
                     let tot: f64 = cpu.iter().map(|c| c.as_secs_f64()).sum();
