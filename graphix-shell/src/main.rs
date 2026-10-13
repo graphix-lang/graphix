@@ -451,17 +451,7 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
                             netidx_core::path::Path::from(ArcStr::from(
                                 netidx_core::path::Path::dirname(path).unwrap_or("/"),
                             )),
-                            // CR claude for claude: [bug/low] The resolver for a
-                            // `netidx:` script is built with no timeout. It fetches the
-                            // script itself (`fetch_source`) and, through `for_source`,
-                            // every module beneath it, so `--resolve-timeout` is
-                            // ignored for all of them: against a registered but stalled
-                            // publisher, startup hangs forever, where the same flag
-                            // with `GRAPHIX_MODPATH=netidx:..` fails after the timeout.
-                            // Pass `p.resolve_timeout.map(Duration::from_secs)` here,
-                            // as the `netidx` factory above already does.
-                            // (x-security-11)
-                            None,
+                            p.resolve_timeout.map(Duration::from_secs),
                         ),
                     ]);
                     Source::Netidx(Path::from(ArcStr::from(path)))
