@@ -43,18 +43,6 @@ let hosts = ["washu-chan", "katana", "aieka", "ryouko"];
 //
 // The last counter line of each source is republished every few seconds.
 // That reduction belongs here, next to the log, not in the dashboard.
-// CR claude for claude: [bug/medium] The awk in this script picks `$3 $5 $7 $10 $13`
-// from the soak's progress line. Those positions date from before the campaign loop's
-// eprintln! gained the "({} known)" token. The word count is unchanged, so the LANE
-// select arm still matches, but every column after div is shifted: crash gets "(N",
-// corp gets the crash count, novel gets "in" and cpu gets "novel". The result is that
-// every lane row is red (`f.crash != "0"` always holds), the cpu column always reads
-// "novel", and box_corpus shows the crash count, so the host row's corpus column and
-// its yellow/green colour no longer track the corpus. The fix is to pick `$3 $7 $9 $12
-// $15`. A sturdier fix is to have the soak print a key=value counter line so the
-// dashboard no longer depends on where words fall in the prose (soak.sh's `% cpu` grep
-// reads the same line). probe: design/review-2026-10-12/repro/fuzz-main-aux-04.sh
-// (fuzz-main-aux-04)
 let remote = r#"
 while :; do
   # Re-resolve the campaign EVERY cycle. Binding it once at connect time
@@ -74,7 +62,7 @@ while :; do
   age=$(( $(date +%s) - born ))
   echo "LIVE $c $live $age"
   tail -n 400 "$d/soak.log" 2>/dev/null | awk -v c="$c" '
-    / run, / { split($1, a, "…"); last[a[1]] = a[2] " " $3 " " $5 " " $7 " " $10 " " $13 }
+    / run, / { split($1, a, "…"); last[a[1]] = a[2] " " $3 " " $7 " " $9 " " $12 " " $15 }
     END { for (k in last) print "LANE " c " " k " " last[k] }'
   sleep 5
 done
