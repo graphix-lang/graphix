@@ -931,7 +931,7 @@ async fn sliders_are_f64_and_continuous() -> Result<()> {
         value_at("slider(#min: &0.0, #max: &1.0, #on_change: |v| null, &0.0)", 150.0)
             .await?;
     assert!(free > 0.05 && free < 0.95, "{free}");
-    let h = harness("progress_bar(#min: &1.0, #max: &0.0, &0.5)").await?;
+    let mut h = harness("progress_bar(#min: &1.0, #max: &0.0, &0.5)").await?;
     h.inner.render().await
 }
 

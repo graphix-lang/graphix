@@ -315,23 +315,17 @@ impl<X: GXExt> GuiHandler<X> {
             tw.push_event(iced_core::Event::Window(window::Event::Resized(size)));
         }
         let theme = tw.iced_theme();
-        tw.content.w.before_view();
-        let mut ops = Vec::new();
-        tw.content.w.take_ops(&mut ops);
-        let state = crate::theme::with_view_theme(&theme, || {
-            frame(
-                tw.content.w.view(),
-                tw.surface.logical_size(),
-                &mut tw.cache,
-                &mut tw.surface.renderer,
-                &mut ops,
-                &tw.pending_events,
-                tw.cursor,
-                &mut self.clipboard,
-                &mut self.messages,
-                &theme,
-            )
-        });
+        let state = frame(
+            &mut tw.content.w,
+            tw.surface.logical_size(),
+            &mut tw.cache,
+            &mut tw.surface.renderer,
+            &tw.pending_events,
+            tw.cursor,
+            &mut self.clipboard,
+            &mut self.messages,
+            &theme,
+        );
         tw.pending_events.clear();
         if let user_interface::State::Updated { input_method, .. } = &state {
             match input_method {

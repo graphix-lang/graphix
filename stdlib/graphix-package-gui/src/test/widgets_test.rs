@@ -73,71 +73,74 @@ macro_rules! view {
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_renders() -> Result<()> {
-    let h = harness(r#"text(&"hello world")"#).await?;
+    let mut h = harness(r#"text(&"hello world")"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_with_styling() -> Result<()> {
-    let h = harness(r#"text(#size: &24.0, #width: &`Fill, &"styled")"#).await?;
+    let mut h = harness(r#"text(#size: &24.0, #width: &`Fill, &"styled")"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn button_renders() -> Result<()> {
-    let h = harness(r#"button(#on_press: |_| null, &text(&"Click me"))"#).await?;
+    let mut h = harness(r#"button(#on_press: |_| null, &text(&"Click me"))"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn checkbox_renders() -> Result<()> {
-    let h = harness(r#"checkbox(#label: &"Accept", &false)"#).await?;
+    let mut h = harness(r#"checkbox(#label: &"Accept", &false)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn toggler_renders() -> Result<()> {
-    let h = harness(r#"toggler(#label: &"Dark mode", &true)"#).await?;
+    let mut h = harness(r#"toggler(#label: &"Dark mode", &true)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_input_renders() -> Result<()> {
-    let h = harness(r#"text_input(#placeholder: &"Type here...", &"initial")"#).await?;
+    let mut h =
+        harness(r#"text_input(#placeholder: &"Type here...", &"initial")"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn slider_renders() -> Result<()> {
-    let h = harness(r#"slider(#min: &0.0, #max: &100.0, &50.0)"#).await?;
+    let mut h = harness(r#"slider(#min: &0.0, #max: &100.0, &50.0)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn slider_with_step() -> Result<()> {
-    let h = harness(r#"slider(#min: &0.0, #max: &100.0, #step: &5.0, &25.0)"#).await?;
+    let mut h =
+        harness(r#"slider(#min: &0.0, #max: &100.0, #step: &5.0, &25.0)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn radio_renders() -> Result<()> {
-    let h = harness(r#"radio(#label: &"Option A", #selected: &"option_a", &"option_a")"#)
-        .await?;
+    let mut h =
+        harness(r#"radio(#label: &"Option A", #selected: &"option_a", &"option_a")"#)
+            .await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn pick_list_renders() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "pick_list(\
             #selected: &\"Red\",\
             #placeholder: &\"Choose...\",\
@@ -150,28 +153,30 @@ async fn pick_list_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn progress_bar_renders() -> Result<()> {
-    let h = harness(r#"progress_bar(#min: &0.0, #max: &1.0, &0.5)"#).await?;
+    let mut h = harness(r#"progress_bar(#min: &0.0, #max: &1.0, &0.5)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_editor_renders() -> Result<()> {
-    let h = harness(r#"text_editor(#placeholder: &"Edit...", &"Hello\nWorld")"#).await?;
+    let mut h =
+        harness(r#"text_editor(#placeholder: &"Edit...", &"Hello\nWorld")"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn row_with_children() -> Result<()> {
-    let h = harness("row(#spacing: &10.0, &[text(&\"Left\"), text(&\"Right\")])").await?;
+    let mut h =
+        harness("row(#spacing: &10.0, &[text(&\"Left\"), text(&\"Right\")])").await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn column_with_children() -> Result<()> {
-    let h =
+    let mut h =
         harness("column(#spacing: &10.0, &[text(&\"Top\"), text(&\"Bottom\")])").await?;
     view!(h);
     Ok(())
@@ -179,7 +184,7 @@ async fn column_with_children() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn container_renders() -> Result<()> {
-    let h =
+    let mut h =
         harness("container(#halign: &`Center, #valign: &`Center, &text(&\"Centered\"))")
             .await?;
     view!(h);
@@ -188,42 +193,42 @@ async fn container_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn scrollable_renders() -> Result<()> {
-    let h = harness(r#"scrollable(&text(&"Scrollable content"))"#).await?;
+    let mut h = harness(r#"scrollable(&text(&"Scrollable content"))"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn space_renders() -> Result<()> {
-    let h = harness(r#"space(#width: &`Fill, #height: &`Fixed(20.0))"#).await?;
+    let mut h = harness(r#"space(#width: &`Fill, #height: &`Fixed(20.0))"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn horizontal_rule_renders() -> Result<()> {
-    let h = harness(r#"horizontal_rule(#height: &2.0)"#).await?;
+    let mut h = harness(r#"horizontal_rule(#height: &2.0)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn vertical_rule_renders() -> Result<()> {
-    let h = harness(r#"vertical_rule(#width: &2.0)"#).await?;
+    let mut h = harness(r#"vertical_rule(#width: &2.0)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn stack_renders() -> Result<()> {
-    let h = harness("stack(&[text(&\"Background\"), text(&\"Foreground\")])").await?;
+    let mut h = harness("stack(&[text(&\"Background\"), text(&\"Foreground\")])").await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn tooltip_renders() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "tooltip(#tip: &text(&\"Tooltip text\"), #position: &`Top, &text(&\"Hover me\"))",
     )
     .await?;
@@ -233,14 +238,14 @@ async fn tooltip_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn vertical_slider_renders() -> Result<()> {
-    let h = harness(r#"vertical_slider(#min: &0.0, #max: &100.0, &50.0)"#).await?;
+    let mut h = harness(r#"vertical_slider(#min: &0.0, #max: &100.0, &50.0)"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn combo_box_renders() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "combo_box(\
             #selected: &\"Alpha\",\
             #placeholder: &\"Pick one\",\
@@ -253,7 +258,8 @@ async fn combo_box_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_renders() -> Result<()> {
-    let h = harness("mouse_area(#on_press: |_| null, &text(&\"Click zone\"))").await?;
+    let mut h =
+        harness("mouse_area(#on_press: |_| null, &text(&\"Click zone\"))").await?;
     view!(h);
     Ok(())
 }
@@ -343,28 +349,29 @@ let items = select n { 1 => [text(&"one")], _ => [text(&"one"), text(&"two")] }"
 
 #[tokio::test(flavor = "current_thread")]
 async fn image_renders() -> Result<()> {
-    let h = harness(r#"image(&"/dev/null")"#).await?;
+    let mut h = harness(r#"image(&"/dev/null")"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn svg_renders() -> Result<()> {
-    let h = harness(r#"image(&`Svg("<svg></svg>"))"#).await?;
+    let mut h = harness(r#"image(&`Svg("<svg></svg>"))"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn grid_renders() -> Result<()> {
-    let h = harness(r#"grid(#columns: &`Fixed(2), &[text(&"A"), text(&"B")])"#).await?;
+    let mut h =
+        harness(r#"grid(#columns: &`Fixed(2), &[text(&"A"), text(&"B")])"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn grid_with_params() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "grid(\
             #columns: &`Fluid(100.0),\
             #spacing: &10.0,\
@@ -379,28 +386,28 @@ async fn grid_with_params() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn qr_code_renders() -> Result<()> {
-    let h = harness(r#"qr_code(&"hello")"#).await?;
+    let mut h = harness(r#"qr_code(&"hello")"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn qr_code_with_cell_size() -> Result<()> {
-    let h = harness(r#"qr_code(#cell_size: &4.0, &"test data")"#).await?;
+    let mut h = harness(r#"qr_code(#cell_size: &4.0, &"test data")"#).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn markdown_renders() -> Result<()> {
-    let h = harness(r##"markdown(&"# Hello\n**bold**")"##).await?;
+    let mut h = harness(r##"markdown(&"# Hello\n**bold**")"##).await?;
     view!(h);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn markdown_with_params() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "markdown(\
             #on_link: |url| println(url),\
             #text_size: &18.0,\
@@ -414,7 +421,7 @@ async fn markdown_with_params() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn table_renders() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "table(\
             &[table_column(&text(&\"Name\")), table_column(&text(&\"Value\"))],\
             &[[text(&\"a\"), text(&\"1\")]])",
@@ -426,7 +433,7 @@ async fn table_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn table_with_params() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "table(\
             #padding: &8.0,\
             #separator: &1.0,\
@@ -440,7 +447,7 @@ async fn table_with_params() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn menu_bar_renders() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "menu::bar(&[\
             menu::menu(&\"File\", &[\
                 menu::action(#on_click: |_| null, &\"New\"),\
@@ -456,7 +463,7 @@ async fn menu_bar_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn context_menu_renders() -> Result<()> {
-    let h = harness(
+    let mut h = harness(
         "menu::context_menu(\
             &[menu::action(#on_click: |_| null, &\"Copy\"), menu::divider()],\
             &text(&\"Right-click me\"))",

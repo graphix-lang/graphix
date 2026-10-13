@@ -37,13 +37,11 @@ fn draw(
 ) -> [u8; 3] {
     let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
     let mut messages = Vec::new();
-    h.widget.before_view();
     frame(
-        h.widget.view(),
+        &mut h.widget,
         Size::new(W as f32, H as f32),
         cache,
         r,
-        &mut Vec::new(),
         events,
         mouse::Cursor::Available(at),
         &mut clipboard::Null,
@@ -118,4 +116,56 @@ fn touch_phases_reach_the_widgets_at_logical_positions() {
         let events = crate::convert::window_event(&event, 2.0, ModifiersState::empty());
         assert_eq!(&events[..], &[Event::Touch(expected)], "{phase:?}");
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deferred_focus_applies_before_keyboard_input() -> Result<()> {
+    use super::InteractionHarness;
+    use crate::widgets::{GuiWidget, IcedElement, Message, WidgetOp};
+    use graphix_compiler::expr::ExprId;
+    use graphix_rt::NoExt;
+    use iced_core::widget::Id;
+    use netidx::publisher::Value;
+
+    struct FocusInput {
+        id: Id,
+        prepared: bool,
+    }
+
+    impl GuiWidget<NoExt> for FocusInput {
+        fn handle_update(
+            &mut self,
+            _: &tokio::runtime::Handle,
+            _: ExprId,
+            _: &Value,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn before_view(&mut self) -> bool {
+            self.prepared = true;
+            true
+        }
+
+        fn take_ops(&mut self, out: &mut Vec<WidgetOp>) {
+            if std::mem::take(&mut self.prepared) {
+                out.push(WidgetOp::Focus(self.id.clone()));
+            }
+        }
+
+        fn view(&self) -> IcedElement<'_> {
+            iced_widget::text_input("", "")
+                .id(self.id.clone())
+                .on_input(|_| Message::Nop)
+                .into()
+        }
+    }
+
+    let mut h = InteractionHarness::new(
+        r#"use gui::text::text; let result = text(&"placeholder")"#,
+    )
+    .await?;
+    h.inner.widget = Box::new(FocusInput { id: Id::unique(), prepared: false });
+    assert!(matches!(h.type_text("a").as_slice(), [Message::Nop]));
+    Ok(())
 }

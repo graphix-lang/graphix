@@ -163,16 +163,16 @@ impl GuiTestHarness {
 
     /// Build, lay out and draw the widget tree once, as a window frame
     /// does, on a headless renderer.
-    async fn render(&self) -> Result<()> {
-        let mut renderer = self.renderer().await.borrow_mut();
+    async fn render(&mut self) -> Result<()> {
+        self.renderer().await;
+        let mut renderer = self.renderer.get().unwrap().borrow_mut();
         let theme =
             crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
         crate::frame::frame(
-            self.widget.view(),
+            &mut self.widget,
             Size::new(800.0, 600.0),
             &mut user_interface::Cache::default(),
             &mut renderer,
-            &mut Vec::new(),
             &[],
             mouse::Cursor::Unavailable,
             &mut TestClipboard::default(),
@@ -383,34 +383,18 @@ impl InteractionHarness {
 
     /// Build a UserInterface, feed events, and return the messages the
     /// widgets produced.
-    // CR claude for claude: [structure/medium] The event loop's frame
-    // (GuiHandler::render) runs before_view, then take_ops, then frame inside
-    // with_view_theme. The test harness has three copies of that sequence, and each one
-    // differs. This one never calls before_view, so a data table's subscription
-    // reconcile and dirty-sort flush never run between interaction frames.
-    // GuiTestHarness::render calls neither before_view nor take_ops, so queued
-    // Focus/ScrollTo ops are dropped. frame_test::draw skips take_ops. None of the
-    // three sets the view theme. Move the whole sequence into one function in frame.rs
-    // that takes the widget and does before_view, take_ops and
-    // with_view_theme(frame(..)), and call it from GuiHandler::render and from all
-    // three harness sites. A departure from production then shows up in the tests, as
-    // frame.rs's module doc says it should. (tests-gui-b-01)
     fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
-        // the event loop's own frame, the draw included
         let mut messages = Vec::new();
         let theme =
             crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
         for ev in events {
             crate::window::track_cursor(&mut self.cursor, ev);
         }
-        let mut ops = Vec::new();
-        self.inner.widget.take_ops(&mut ops);
         crate::frame::frame(
-            self.inner.widget.view(),
+            &mut self.inner.widget,
             self.viewport,
             &mut self.cache,
             &mut self.renderer,
-            &mut ops,
             events,
             self.cursor,
             &mut self.clipboard,

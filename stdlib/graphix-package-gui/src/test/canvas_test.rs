@@ -22,7 +22,7 @@ async fn canvas_harness(
 
 #[tokio::test(flavor = "current_thread")]
 async fn line_renders() -> Result<()> {
-    let h = canvas_harness(
+    let mut h = canvas_harness(
         1,
         concat!(
             "`Line({from: {x: 0.0, y: 0.0}, to: {x: 100.0, y: 50.0}, ",
@@ -36,7 +36,7 @@ async fn line_renders() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_fill_only() -> Result<()> {
-    let h = canvas_harness(
+    let mut h = canvas_harness(
         1,
         concat!(
             "`Circle({center: {x: 10.0, y: 20.0}, radius: 25.0, ",
@@ -50,7 +50,7 @@ async fn circle_with_fill_only() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_stroke_only() -> Result<()> {
-    let h = canvas_harness(1, concat!(
+    let mut h = canvas_harness(1, concat!(
         "`Circle({center: {x: 0.0, y: 0.0}, radius: 10.0, ",
         "fill: null, stroke: {color: color(#r: 0.0, #g: 0.0, #b: 1.0, #a: 1.0)$, width: 3.0}})",
     ))
@@ -61,7 +61,7 @@ async fn circle_with_stroke_only() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_both() -> Result<()> {
-    let h = canvas_harness(
+    let mut h = canvas_harness(
         1,
         concat!(
             "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, ",
@@ -76,7 +76,7 @@ async fn circle_with_both() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_neither() -> Result<()> {
-    let h = canvas_harness(
+    let mut h = canvas_harness(
         1,
         "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, fill: null, stroke: null})",
     )
@@ -87,7 +87,7 @@ async fn circle_with_neither() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rect_with_fill() -> Result<()> {
-    let h = canvas_harness(
+    let mut h = canvas_harness(
         1,
         concat!(
             "`Rect({top_left: {x: 10.0, y: 20.0}, ",
@@ -102,7 +102,7 @@ async fn rect_with_fill() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rect_with_stroke() -> Result<()> {
-    let h = canvas_harness(1, concat!(
+    let mut h = canvas_harness(1, concat!(
         "`Rect({top_left: {x: 0.0, y: 0.0}, ",
         "size: {width: 10.0, height: 10.0}, ",
         "fill: null, stroke: {color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.0}})",
@@ -114,7 +114,7 @@ async fn rect_with_stroke() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_renders() -> Result<()> {
-    let h = canvas_harness(
+    let mut h = canvas_harness(
         1,
         concat!(
             r#"`Text({content: "hello", position: {x: 5.0, y: 10.0}, "#,
@@ -141,7 +141,7 @@ fn malformed_line_errors() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn path_and_curves_render() -> Result<()> {
-    let h = canvas_harness(6, concat!(
+    let mut h = canvas_harness(6, concat!(
         "`Path({segments: [`MoveTo({x: 0.0, y: 0.0}), `LineTo({x: 10.0, y: 0.0}), ",
         "`BezierTo({control_a: {x: 1.0, y: 2.0}, control_b: {x: 3.0, y: 4.0}, to: {x: 5.0, y: 6.0}}), ",
         "`QuadraticTo({control: {x: 1.0, y: 1.0}, to: {x: 2.0, y: 2.0}}), ",

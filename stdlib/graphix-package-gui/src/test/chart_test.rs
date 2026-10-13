@@ -37,15 +37,15 @@ async fn draw(h: &GuiTestHarness) -> Option<PlotInfo> {
     draw_in(h, &ChartState::default(), Size::new(400.0, 300.0)).await
 }
 
-async fn screenshot(h: &GuiTestHarness) -> Vec<u8> {
-    let mut renderer = h.renderer().await.borrow_mut();
+async fn screenshot(h: &mut GuiTestHarness) -> Vec<u8> {
+    h.renderer().await;
+    let mut renderer = h.renderer.get().unwrap().borrow_mut();
     let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
     crate::frame::frame(
-        h.widget.view(),
+        &mut h.widget,
         Size::new(400.0, 200.0),
         &mut Cache::default(),
         &mut renderer,
-        &mut Vec::new(),
         &[],
         mouse::Cursor::Unavailable,
         &mut clipboard::Null,
@@ -158,20 +158,20 @@ async fn series_style_stroke_width() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn background_color() -> Result<()> {
-    let h = chart_harness(
+    let mut h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
          #style: &chart_style(#background: color(#r: 1.0, #g: 0.0, #b: 1.0, #a: 1.0)$), \
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    assert!(color_pixels(&screenshot(&h).await, [255, 0, 255]) > 40_000);
+    assert!(color_pixels(&screenshot(&mut h).await, [255, 0, 255]) > 40_000);
     assert!(draw(&h).await.is_some());
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn mesh_style() -> Result<()> {
-    let h = chart_harness(
+    let mut h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
          #style: &chart_style(#mesh: {show_x_grid: true, show_y_grid: false, \
                    grid_color: null, bold_line_color: color(#r: 0.0, #g: 1.0, #b: 0.0)$, \
@@ -183,7 +183,7 @@ async fn mesh_style() -> Result<()> {
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    assert!(color_pixels(&screenshot(&h).await, [0, 255, 0]) > 100);
+    assert!(color_pixels(&screenshot(&mut h).await, [0, 255, 0]) > 100);
     assert!(draw(&h).await.is_some());
     Ok(())
 }
@@ -235,7 +235,7 @@ async fn shared_style_with_update() -> Result<()> {
          let result = gui::column::column(&[\
            chart(#title: &\"a\", #style: &deck, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])]),\
            chart(#title: &\"b\", #style: &big, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])])])";
-    let h = GuiTestHarness::new(code).await?;
+    let mut h = GuiTestHarness::new(code).await?;
     h.render().await?;
     Ok(())
 }
