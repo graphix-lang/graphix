@@ -444,18 +444,14 @@ impl RegistrationCache {
         self.store(Entry::Registration, &[image])
     }
 
-    /// Write the program entry, unless its compile read a source the
-    /// next start cannot verify.
+    /// Write the program entry; a compile that read a source the next
+    /// start cannot verify has none, which the caller reports.
     pub(crate) fn store_program(&self, program: &ProgramImage) -> Result<()> {
-        // CR claude for claude: [bug/low] When the compile read a module from netidx,
-        // there is no record and this returns `Ok(())`, so a `--warm` run succeeds
-        // without writing the program entry. `CacheMode::Warm` promises that an entry
-        // it cannot write fails the run. Return an error here (e.g. "the program reads
-        // a netidx module and cannot be cached"). `Shell::stored` already logs that as
-        // a warning under `CacheMode::On` and fails a warm run. (shell-07)
         let Some(record) = sources_record(&program.sources, &graphix_rt::search_dirs())
         else {
-            return Ok(());
+            bail!(
+                "the program reads a source the next start cannot verify (a netidx module)"
+            )
         };
         let mut head =
             Vec::with_capacity((16 + record.len()).next_multiple_of(IMAGE_ALIGN));
