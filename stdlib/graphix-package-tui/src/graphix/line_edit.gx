@@ -22,19 +22,9 @@ let types = |mods: Array<input_handler::KeyModifier>| -> bool {
             && only(|m| select m { `Shift | `Control | `Alt => true, _ => false }))
 };
 
-// CR claude for claude: [bug/medium] State is a public struct, so a caller can build a
-// cursor past str::char_len(value). One way is clearing value with `{ s with value: ""
-// }`. Another is netidx-admin tui/remote.gx, which sets `cursor: str::len(server)`, a
-// byte length. With such a cursor, insert and the Backspace arm call str::sub with an
-// out-of-range start, `$` bottoms, and step produces nothing. Typed characters, pastes
-// and Backspace are then dropped silently (handle answers nothing) until Left, Right,
-// Home or End brings the cursor back into range. view clamps the cursor; step does not.
-// Fix: make the bad state unrepresentable (State = Abstract<{value, cursor}> with
-// accessors, built only by state and step), or at least clamp once at the top of step
-// and use the clamped value everywhere. Also change remote.gx to use
-// line_edit::state(c.server). probe: design/review-2026-10-12/repro/gx-ui-02.gx
-// (gx-ui-02)
-let step = |st: State, e: input_handler::Event| -> [State, null] select e {
+let step = |st: State, e: input_handler::Event| -> [State, null] {
+    let st = { st with cursor: max(0, min(st.cursor, str::char_len(st.value))) };
+    select e {
     // CR claude for claude: [bug/medium] Only "\n" becomes a space here. Terminals send
     // line breaks in a bracketed paste as CR, and Windows clipboards send CRLF.
     // crossterm passes those bytes through unchanged, so the single-line editor's value
@@ -76,6 +66,7 @@ let step = |st: State, e: input_handler::Event| -> [State, null] select e {
         _ => null
     },
     _ => null
+    }
 };
 
 let handle = |st: &mut State, e: input_handler::Event| -> [`Stop, `Continue]
@@ -119,7 +110,7 @@ let view = |
             // make the mask a single character so the bad case cannot be written.
             // probe: design/review-2026-10-12/repro/gx-ui-07-line-edit-mask-cursor.gx
             // (gx-ui-07)
-            let cur = min(s.cursor, n);
+            let cur = max(0, min(s.cursor, n));
             let before = str::sub(#start: 0, #len: cur, shown)$;
             let at = select cur {
                 c if c < n => str::sub(#start: c, #len: 1, shown)$,

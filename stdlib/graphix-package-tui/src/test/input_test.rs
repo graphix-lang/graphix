@@ -393,3 +393,34 @@ let result = input_handler(#handle: &handle, &f.view)
     assert_eq!(h.get_watched("test::continued"), Some(&Value::I64(2)));
     Ok(())
 }
+
+#[tokio::test]
+async fn line_edit_clamps_external_cursors() -> Result<()> {
+    use compact_str::format_compact;
+    for (cursor, event, want, pos) in [
+        (-1, ch('x'), "xé", 1),
+        (i64::MAX, ch('x'), "éx", 2),
+        (-1, Event::Paste("x".into()), "xé", 1),
+        (i64::MAX, Event::Paste("x".into()), "éx", 2),
+        (-1, key(KeyCode::Backspace), "é", 0),
+        (i64::MAX, key(KeyCode::Backspace), "", 0),
+    ] {
+        let code = format_compact!(
+            r#"
+use tui::{{line_edit, input_handler::{{Event, input_handler}}, text::text}};
+let ed: line_edit::State = {{value: "é", cursor: {cursor}}};
+let value = ed.value;
+let cursor = ed.cursor;
+let handle = |e: Event| line_edit::handle(&mut ed, e);
+let result = input_handler(#handle: &handle, &text(&[line_edit::view(&ed)]))
+"#
+        );
+        let mut h = TuiTestHarness::new(&code).await?;
+        h.watch("test::value").await?;
+        h.watch("test::cursor").await?;
+        h.dispatch_event(event).await?;
+        assert_eq!(h.get_watched("test::value"), Some(&Value::from(want)));
+        assert_eq!(h.get_watched("test::cursor"), Some(&Value::I64(pos)));
+    }
+    Ok(())
+}
