@@ -346,16 +346,6 @@ const LABELED_CALLBACK_OUTER_SHADOW: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap/low] A collection callback with a labeled-default
-// parameter never fuses. `#[native] array::map([10, 20, 30], |#foo: i64 = 42, x| foo +
-// x)` is refused with "lambda call site ... not discovered", with no cause given, while
-// the same call without the label fuses (probe:
-// design/review-2026-10-12/repro/tests-lang-rest-b-04.gx). This fixture and
-// labeled_callback_default_used assert FuseExpect::Jit, which the outer `array::fold`
-// satisfies, so the callback's de-fuse is invisible to them. Put #[native] on the
-// labeled-callback call in both: expect the refusal until fusion fills the labeled
-// default as the constant it is. Also make the refusal name the labeled formal.
-// (tests-lang-rest-b-06)
 run!(labeled_callback_outer_shadow, LABELED_CALLBACK_OUTER_SHADOW,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
     FuseExpect::Jit);
@@ -375,6 +365,18 @@ const LABELED_CALLBACK_DEFAULT_USED: &str = r#"
 run!(labeled_callback_default_used, LABELED_CALLBACK_DEFAULT_USED,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(186)));
     FuseExpect::Jit);
+
+// A callback with a labeled parameter has no fused loop: the collection
+// interprets it, and #[native] names the parameter.
+run!(labeled_callback_map_node_walks,
+    "#[native] array::map([10, 20, 30], |#foo: i64 = 42, x| foo + x)",
+    refused("a collection callback with a labeled parameter (`#foo`) has no fused loop");
+    FuseExpect::None; jit_only);
+
+run!(labeled_callback_fold_node_walks,
+    "#[native] array::fold([1, 2], 0, |#foo: i64 = 42, a, x| a + x + foo)",
+    refused("a collection callback with a labeled parameter (`#foo`) has no fused loop");
+    FuseExpect::None; jit_only);
 
 // A HOF nested under its own callback is a nested loop, not recursion:
 // instantiation keys on identity, so the shape fuses.

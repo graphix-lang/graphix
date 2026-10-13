@@ -4,12 +4,17 @@
 use super::{self as emit, BodyCx, CompiledExpr, CompositeSource, scaffold};
 use crate::{
     BindId, Node, Rt, UserEvent,
-    fusion::kernel_abi::{self, AbiKind, PrimType},
+    expr::Expr,
+    fusion::{
+        self,
+        kernel_abi::{self, AbiKind, PrimType},
+    },
     node::{collection::Flavor, lambda::GXLambda},
     typ::{FnArgKind, Type},
 };
 use anyhow::Result;
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use cranelift_codegen::ir::Value as ClifValue;
 use netidx_value::Typ;
 
@@ -31,31 +36,37 @@ impl CallbackParam {
     }
 }
 
-/// The callback's `index`-th positional parameter; `None` for a
-/// callback with labeled parameters, which the collection interprets.
+/// The callback's `index`-th positional parameter. A callback with
+/// labeled parameters, which the collection interprets, is a blocker
+/// naming the first.
 pub(crate) fn callback_param<R: Rt, E: UserEvent>(
     callback: &GXLambda<R, E>,
     index: usize,
     fallback: ArcStr,
-) -> Option<CallbackParam> {
-    if callback.typ().first_positional() > 0 {
-        return None;
+    spec: &Expr,
+) -> Result<Option<CallbackParam>> {
+    if let Some(FnArgKind::Labeled { name, .. }) =
+        callback.typ().args.first().map(|a| &a.kind)
+    {
+        return Err(fusion::blocker(
+            spec,
+            format_compact!(
+                "a collection callback with a labeled parameter (`#{name}`) has no fused loop"
+            ),
+        ));
     }
-    match callback.args().get(index)?.tuple_leaves() {
+    let Some(arg) = callback.args().get(index) else { return Ok(None) };
+    Ok(match arg.tuple_leaves() {
         Some(binds) => Some(CallbackParam { name: fallback, id: None, binds }),
-        None => {
-            let name = match &callback.typ().args.get(index)?.kind {
-                FnArgKind::Positional { name: Some(name) }
-                | FnArgKind::Labeled { name, .. } => name.clone(),
-                _ => return None,
-            };
-            Some(CallbackParam {
-                name,
-                id: callback.args()[index].single_bind_id(),
+        None => match &callback.typ().args.get(index).map(|a| &a.kind) {
+            Some(FnArgKind::Positional { name: Some(name) }) => Some(CallbackParam {
+                name: name.clone(),
+                id: arg.single_bind_id(),
                 binds: Vec::new(),
-            })
-        }
-    }
+            }),
+            _ => None,
+        },
+    })
 }
 
 fn bindable_array_element(

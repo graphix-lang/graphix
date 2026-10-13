@@ -701,17 +701,22 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
             return Ok(None);
         };
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = self.emit(source, cx);
+        let r = self.emit(source, &callsite.spec, cx);
         cx.swap_collection_site(prev);
         r
     }
 
-    fn emit(&self, source: &Node<R, E>, cx: &mut BodyCx) -> Result<Option<CompiledExpr>> {
+    fn emit(
+        &self,
+        source: &Node<R, E>,
+        spec: &Expr,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
         if emit::node_is_bottom(source) {
             return Ok(None);
         }
         let Some(callback) = callback(&self.prototype) else { return Ok(None) };
-        let Some(param) = callback_param(callback, 0, literal!("__elem")) else {
+        let Some(param) = callback_param(callback, 0, literal!("__elem"), spec)? else {
             return Ok(None);
         };
         let (body, et, flavor) = (callback.body(), &self.element_type, self.flavor);
@@ -1250,7 +1255,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         self.base
-            .emit(&self.base.source, cx)?
+            .emit(&self.base.source, &self.base.spec, cx)?
             .ok_or_else(|| anyhow!("collection operation does not emit CLIF"))
     }
 }
@@ -1316,7 +1321,7 @@ impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
             return Ok(None);
         };
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = self.emit(source, init, cx);
+        let r = self.emit(source, init, &callsite.spec, cx);
         cx.swap_collection_site(prev);
         r
     }
@@ -1325,16 +1330,17 @@ impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
         &self,
         source: &Node<R, E>,
         init: &Node<R, E>,
+        spec: &Expr,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         if emit::node_is_bottom(source) || emit::node_is_bottom(init) {
             return Ok(None);
         }
         let Some(callback) = callback(&self.prototype) else { return Ok(None) };
-        let Some(acc) = callback_param(callback, 0, literal!("__acc")) else {
+        let Some(acc) = callback_param(callback, 0, literal!("__acc"), spec)? else {
             return Ok(None);
         };
-        let Some(element) = callback_param(callback, 1, literal!("__elem")) else {
+        let Some(element) = callback_param(callback, 1, literal!("__elem"), spec)? else {
             return Ok(None);
         };
         let fold =
@@ -1686,7 +1692,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         self.base
-            .emit(&self.base.source, &self.base.init, cx)?
+            .emit(&self.base.source, &self.base.init, &self.base.spec, cx)?
             .ok_or_else(|| anyhow!("collection fold does not emit CLIF"))
     }
 }
