@@ -408,7 +408,7 @@ used utilities.
 Example `~/.local/share/graphix/init.gx`:
 ```graphix
 let debug = |x| { println("DEBUG: [x]"); x };
-let twice = |f, x| f(f(x));
+let twice = |f: fn(x: 'a) -> 'a, x: 'a| f(f(x));
 ```
 
 The shell loads this as the module `init`, so in any REPL session the
