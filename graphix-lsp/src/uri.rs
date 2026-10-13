@@ -12,7 +12,7 @@ use std::{
 
 /// Characters percent-encoded inside a URI path segment: the WHATWG
 /// path percent-encode set plus `%`, what the URI type refuses in a path
-/// (`[ ] ^ | \`), and what VS Code encodes besides (`( ) ! $ & ' + , ; = @`),
+/// (`[ ] ^ | \`), and what VS Code encodes besides (`( ) ! $ & ' + , ; = @ : *`),
 /// with `/` left readable.
 const PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -40,7 +40,9 @@ const PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b',')
     .add(b';')
     .add(b'=')
-    .add(b'@');
+    .add(b'@')
+    .add(b':')
+    .add(b'*');
 
 /// Convert a `file://` URI to a filesystem path. Returns `None` for
 /// non-`file` schemes and, on Unix, remote hosts (anything other than
@@ -80,7 +82,7 @@ pub fn path_to_uri(path: &Path) -> Option<Uri> {
     Uri::from_str(&uri_str).ok()
 }
 
-/// The Windows spelling: a drive path is `file:///C:/x/a%20b.gx` for
+/// The Windows spelling: a drive path is `file:///C%3A/x/a%20b.gx` for
 /// `C:\x\a b.gx`, and a host names a UNC share, `file://server/share/a.gx`
 /// for `\\server\share\a.gx`.
 #[cfg(any(not(unix), test))]
@@ -194,7 +196,7 @@ mod tests {
     #[test]
     fn windows_paths_roundtrip() {
         for (path, uri) in [
-            (r"C:\x\a b.gx", "file:///C:/x/a%20b.gx"),
+            (r"C:\x\a b.gx", "file:///C%3A/x/a%20b.gx"),
             (r"\\server\share\a.gx", "file://server/share/a.gx"),
         ] {
             assert_eq!(windows::uri_of(path).as_deref(), Some(uri));

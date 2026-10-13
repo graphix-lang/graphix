@@ -7,7 +7,7 @@
 use crate::{
     state::{Checked, ServerState},
     text::{covers, ident_at, zero_based},
-    uri::{path_to_uri, uri_to_path},
+    uri::uri_to_path,
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
@@ -102,7 +102,7 @@ impl<'a> Query<'a> {
             start: self.state.encode(&ori.text, at),
             end: self.state.encode(&ori.text, end),
         };
-        Some(Location { uri: path_to_uri(path)?, range })
+        Some(Location { uri: self.state.uri_of(path)?, range })
     }
 
     /// Each segment of the path `name` written at `pos`: where it stands,

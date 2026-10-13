@@ -20,7 +20,7 @@ use lsp_types::{
     request as req, *,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     str::FromStr,
@@ -42,6 +42,9 @@ pub struct Client {
     next_id: i32,
     versions: HashMap<String, i32>,
     buffers: HashMap<String, String>,
+    /// Every file the client opened, closed ones included: the client
+    /// knows each by its own spelling until it is cleared.
+    opened: HashSet<String>,
     diagnostics: HashMap<String, Vec<Diagnostic>>,
 }
 
@@ -49,7 +52,7 @@ impl Client {
     /// Write `files` under a fresh root and start a server on it.
     pub fn start(files: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("proj [x] (copy) a:b");
+        let root = dir.path().join("proj [x] (copy) a:b*");
         for (name, text) in files {
             let path = root.join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -76,6 +79,7 @@ impl Client {
             next_id: 0,
             versions: HashMap::new(),
             buffers: HashMap::new(),
+            opened: HashSet::new(),
             diagnostics: HashMap::new(),
         };
         let root = client_uri(&t.root);
@@ -161,7 +165,7 @@ impl Client {
                     let p: PublishDiagnosticsParams =
                         serde_json::from_value(n.params).unwrap();
                     let file = self.file_of(&p.uri);
-                    if self.buffers.contains_key(&file) {
+                    if self.opened.contains(&file) {
                         assert_eq!(
                             p.uri,
                             self.uri(&file),
@@ -196,6 +200,7 @@ impl Client {
         let text = self.text(file);
         self.versions.insert(file.to_string(), 1);
         self.buffers.insert(file.to_string(), text.clone());
+        self.opened.insert(file.to_string());
         self.notify::<notif::DidOpenTextDocument>(DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: self.uri(file),

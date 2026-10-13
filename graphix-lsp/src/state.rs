@@ -98,8 +98,9 @@ pub struct ServerState {
     pub(crate) workspace: WorkspaceModel,
     /// Every root an open document is checked under.
     roots: AHashMap<PathBuf, Root>,
-    /// The files whose published list is not empty.
-    published: AHashSet<PathBuf>,
+    /// The files whose published list is not empty, and the URI it went
+    /// out under, which its clear must use.
+    published: AHashMap<PathBuf, Uri>,
     dirty: AHashSet<PathBuf>,
     /// `workspace/symbol` searches this document's project.
     pub(crate) last_active: Option<Uri>,
@@ -121,11 +122,20 @@ impl ServerState {
             workspace: scan(&workspace_roots, &WorkspaceModel::default()),
             workspace_roots,
             roots: AHashMap::default(),
-            published: AHashSet::default(),
+            published: AHashMap::default(),
             dirty: AHashSet::default(),
             last_active: None,
             snippet_support,
             position_encoding,
+        }
+    }
+
+    /// The URI the client knows `path` by: its document's, else the one
+    /// its diagnostics went out under, else its own spelling.
+    pub(crate) fn uri_of(&self, path: &Path) -> Option<Uri> {
+        match self.documents.get(path) {
+            Some(doc) => Some(doc.uri.clone()),
+            None => self.published.get(path).cloned().or_else(|| path_to_uri(path)),
         }
     }
 
@@ -171,17 +181,6 @@ impl ServerState {
     /// when nothing open needs them, retired.
     pub fn close_document(&mut self, uri: &Uri) -> Diagnostics {
         let Some(path) = uri_to_path(uri) else { return vec![] };
-        // CR claude for claude: [bug/low] The Document is removed before `retire`
-        // publishes the clear, so `publish_files` falls back to `path_to_uri`. A file
-        // the client opened as .../a%3Ab/b.gx gets its error under that URI and its
-        // clear under .../a:b/b.gx, and a client that keys diagnostics by URI string
-        // keeps the stale error. `Query::location` has the same problem for an open
-        // file. Fix: remember the URI each path was opened or last published under,
-        // keep it until the clear goes out, and use it in `publish_files` and
-        // `Query::location`. Also add ':' and '*' to `PATH_ENCODE`, since uri.rs claims
-        // VS Code's spelling. The harness only checks spelling while a buffer is open,
-        // so the close case is untested. probe:
-        // design/review-2026-10-12/repro/lsp-05.gx (lsp-05)
         self.documents.remove(&path);
         self.backend.buffer_overrides().lock().remove(&path);
         let live = self.live();
@@ -299,12 +298,10 @@ impl ServerState {
                     }
                 }
             }
-            if diagnostics.is_empty() && !self.published.contains(&file) {
+            if diagnostics.is_empty() && !self.published.contains_key(&file) {
                 continue;
             }
-            let doc = self.documents.get(&file);
-            let Some(uri) = doc.map(|d| d.uri.clone()).or_else(|| path_to_uri(&file))
-            else {
+            let Some(uri) = self.uri_of(&file) else {
                 log::info!(
                     "no URI for {}: its diagnostics are not published",
                     file.display()
@@ -313,9 +310,10 @@ impl ServerState {
             };
             match diagnostics.is_empty() {
                 true => self.published.remove(&file),
-                false => self.published.insert(file.clone()),
+                false => self.published.insert(file.clone(), uri.clone()),
             };
-            out.push(Publish { uri, version: doc.map(|d| d.version), diagnostics });
+            let version = self.documents.get(&file).map(|d| d.version);
+            out.push(Publish { uri, version, diagnostics });
         }
         out
     }
