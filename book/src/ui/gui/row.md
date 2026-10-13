@@ -5,14 +5,7 @@ The `row` widget arranges child widgets horizontally from left to right. It is o
 ## Interface
 
 ```graphix
-val row: fn(
-  ?#spacing: &f64,
-  ?#padding: &Padding,
-  ?#width: &Length,
-  ?#height: &Length,
-  ?#valign: &VAlign,
-  a: &Array<Widget>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/row.gxi}}
 ```
 
 ## Parameters

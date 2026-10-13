@@ -5,17 +5,7 @@ A multi-line text editing area for longer-form content. Unlike `text_input`, whi
 ## Interface
 
 ```graphix
-val text_editor: fn(
-  ?#placeholder: &string,
-  ?#on_edit: [fn(s: string) -> Any, null],
-  ?#width: &[f64, null],
-  ?#height: &[f64, null],
-  ?#padding: &Padding,
-  ?#font: &[Font, null],
-  ?#size: &[f64, null],
-  ?#disabled: &bool,
-  s: &string
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/text_editor.gxi}}
 ```
 
 ## Parameters

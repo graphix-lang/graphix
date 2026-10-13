@@ -11,14 +11,7 @@ by deriving the layers array from your state with `select`.
 ## Interface
 
 ```graphix
-val layer: fn(
-  ?#width: &Constraint,
-  ?#height: &Constraint,
-  ?#size: &[Size, null],
-  child: Tui
-) -> Layer;
-
-val overlay: fn(#layers: &Array<Layer>, base: Tui) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/overlay.gxi}}
 ```
 
 ## Parameters

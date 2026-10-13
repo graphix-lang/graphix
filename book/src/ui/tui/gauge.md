@@ -5,21 +5,16 @@ The `gauge` widget displays a single value as a filled progress indicator, perfe
 ## Interface
 
 ```graphix
-val gauge: fn(
-  ?#gauge_style: &[Style, null],
-  ?#label: &[Span, null],
-  ?#style: &[Style, null],
-  ?#use_unicode: &[bool, null],
-  x: &f64
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/gauge.gxi}}
 ```
 
 ## Parameters
 
 - **gauge_style** - Style for the filled portion
-- **label** - Line or span displayed in the center
+- **label** - A `Span` displayed in the center
 - **use_unicode** - Use Unicode block characters for smoother rendering
 - **style** - Style for the unfilled portion
+- **ratio** (positional) - The filled fraction, from 0.0 to 1.0; a value outside that range is clamped, with a logged warning
 
 ## Examples
 

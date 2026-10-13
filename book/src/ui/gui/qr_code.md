@@ -5,10 +5,7 @@ Encodes a string as a QR code image. The QR code updates reactively when the inp
 ## Interface
 
 ```graphix
-val qr_code: fn(
-  ?#cell_size: &[f64, null],
-  s: &string
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/qr_code.gxi}}
 ```
 
 ## Parameters

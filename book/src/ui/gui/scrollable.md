@@ -5,13 +5,7 @@ The `scrollable` widget wraps content that may exceed the available space, provi
 ## Interface
 
 ```graphix
-val scrollable: fn(
-  ?#direction: &ScrollDirection,
-  ?#on_scroll: [fn(a: {x: f64, y: f64}) -> Any, null],
-  ?#width: &Length,
-  ?#height: &Length,
-  a: &Widget
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/scrollable.gxi}}
 ```
 
 ## Parameters

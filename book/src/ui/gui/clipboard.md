@@ -5,18 +5,7 @@ The `clipboard` module provides functions for reading from and writing to the sy
 ## Interface
 
 ```graphix
-type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
-type HtmlContent = { alt_text: string, html: string };
-
-val read_text:   fn(v: Any) -> Result<string, `ClipboardError(string)>;
-val write_text:  fn(s: string) -> Result<null, `ClipboardError(string)>;
-val read_image:  fn(v: Any) -> Result<ClipboardImage, `ClipboardError(string)>;
-val write_image: fn(a: ClipboardImage) -> Result<null, `ClipboardError(string)>;
-val read_html:   fn(v: Any) -> Result<string, `ClipboardError(string)>;
-val write_html:  fn(a: HtmlContent) -> Result<null, `ClipboardError(string)>;
-val read_files:  fn(v: Any) -> Result<Array<string>, `ClipboardError(string)>;
-val write_files: fn(a: Array<string>) -> Result<null, `ClipboardError(string)>;
-val clear:       fn(v: Any) -> Result<null, `ClipboardError(string)>;
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/clipboard.gxi}}
 ```
 
 ## Functions

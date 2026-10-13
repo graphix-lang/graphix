@@ -5,16 +5,7 @@ The `tabs` widget creates a tabbed interface for organizing content into multipl
 ## Interface
 
 ```graphix
-val tabs: fn(
-  ?#divider: &[Span, null],
-  ?#highlight_style: &[Style, null],
-  ?#padding_left: &[Line, null],
-  ?#padding_right: &[Line, null],
-  ?#selected: &[i64, null],
-  ?#size: &[Size, null],
-  ?#style: &[Style, null],
-  a: &Array<(Line, Tui)>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/tabs.gxi}}
 ```
 
 ## Parameters
@@ -22,7 +13,7 @@ val tabs: fn(
 - **selected** - Index of the currently selected tab (0-indexed)
 - **highlight_style** - Style for the selected tab title
 - **style** - Base style for unselected tab titles
-- **divider** - String or span separating tab titles
+- **divider** - A `Span` separating tab titles
 
 ## Examples
 

@@ -11,7 +11,7 @@ The `canvas` widget provides a low-level drawing surface for custom graphics. Yo
 ## Parameters
 
 - **background_color** - Background color for the canvas
-- **marker** - Marker type: `Dot`, `Braille` (default), or `Block`
+- **marker** - Marker type, one of `Dot`, `Block`, `Bar`, `Braille`, `HalfBlock`, `Quadrant`, `Sextant`, `Octant`; `Braille` by default
 - **x_bounds** - X-axis range with `min` and `max` fields (required)
 - **y_bounds** - Y-axis range with `min` and `max` fields (required)
 

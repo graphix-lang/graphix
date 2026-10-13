@@ -1,6 +1,6 @@
 # The Bar Chart Widget
 
-The `barchart` widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.
+The `bar_chart` widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.
 
 ## Interface
 
@@ -23,7 +23,7 @@ The `barchart` widget displays categorical data as vertical bars, supporting gro
 ### bar
 - **style** - Style for the bar
 - **label** - Line labeling the bar
-- **text_value** - Line displayed above bar (defaults to numeric value)
+- **text_value** - String displayed above the bar (defaults to the numeric value)
 
 ## Examples
 

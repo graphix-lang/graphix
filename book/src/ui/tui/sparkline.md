@@ -2,41 +2,10 @@
 
 The `sparkline` widget renders compact inline charts perfect for dashboards and status displays. It shows data trends in minimal space, with support for color-coded bars based on thresholds.
 
-<!-- CR claude for claude: [doc-drift/low] The interface blocks on the tui widget pages
-are hand copies that have drifted from the .gxi files. Positional parameters are named
-`a`, `v` or `n` where the module says `data`, `value`, `child`, `bars`, `bounds`,
-`lines` or `shapes` (sparkline, chart, barchart, scroll, block, paragraph, canvas).
-canvas.md and chart.md list three markers, but Marker has eight (Bar, HalfBlock,
-Quadrant, Sextant and Octant are missing). scroll.md does not say that begin_symbol,
-end_symbol and track_symbol default to null and that null removes the arrow or track,
-while a null thumb_symbol keeps ratatui's default. Copy each block from its .gxi, list
-every marker, and document the scrollbar symbol semantics. (tui-widgets-07) -->
 ## Interface
 
 ```graphix
-type RenderDirection = [
-  `LeftToRight,
-  `RightToLeft
-];
-
-type SparklineBar = {
-  style: [Style, null],
-  value: [f64, null]
-};
-
-val sparkline_bar: fn(
-  ?#style: [Style, null],
-  v: [f64, null]
-) -> SparklineBar;
-
-val sparkline: fn(
-  ?#absent_value_style: &[Style, null],
-  ?#absent_value_symbol: &[string, null],
-  ?#direction: &[RenderDirection, null],
-  ?#max: &[f64, null],
-  ?#style: &[Style, null],
-  a: &Array<[SparklineBar, f64, null]>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/sparkline.gxi}}
 ```
 
 ## Parameters

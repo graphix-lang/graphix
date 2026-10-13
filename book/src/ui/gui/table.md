@@ -5,27 +5,7 @@ Displays data in rows and columns with configurable headers, alignment, and sepa
 ## Interface
 
 ```graphix
-type TableColumn = {
-  header: &Widget,
-  width: &Length,
-  halign: &HAlign,
-  valign: &VAlign
-};
-
-val table_column: fn(
-  ?#width: &Length,
-  ?#halign: &HAlign,
-  ?#valign: &VAlign,
-  a: &Widget
-) -> TableColumn;
-
-val table: fn(
-  ?#width: &Length,
-  ?#padding: &[f64, null],
-  ?#separator: &[f64, null],
-  a: &Array<TableColumn>,
-  a2: &Array<Array<Widget>>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/table.gxi}}
 ```
 
 ## `table_column` Parameters

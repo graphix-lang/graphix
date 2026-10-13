@@ -5,11 +5,7 @@ The `stack` widget layers children on top of each other. The first child is draw
 ## Interface
 
 ```graphix
-val stack: fn(
-  ?#width: &Length,
-  ?#height: &Length,
-  a: &Array<Widget>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/stack.gxi}}
 ```
 
 ## Parameters

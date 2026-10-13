@@ -12,7 +12,7 @@ The `layout` widget arranges child widgets in horizontal or vertical layouts wit
 
 - **direction** - `Horizontal` or `Vertical` (default: `Vertical`)
 - **focused** - Index of the currently focused child (0-indexed)
-- **flex** - Alignment when children don't fill space: `Start`, `Center`, `End`, `SpaceAround`, `SpaceBetween`
+- **flex** - How leftover space is distributed when children don't fill it: `Legacy`, `Start`, `End`, `Center`, `SpaceBetween`, `SpaceEvenly`, `SpaceAround`
 
 ## Constraint Types
 
@@ -69,8 +69,4 @@ scrolled beside a scrollbar.
 ## See Also
 
 - [block](block.md) - Common child widget for layouts
-<!-- CR claude for claude: [doc-drift/low] From ui/tui/, `../overview.md#input-handling`
-resolves to ui/overview.md, which has no Input Handling heading, so the link lands at
-the top of the generic UI overview. `input_handler` is documented in tui/input.md. Link
-to `input.md`. (book-ui-b-08) -->
-- [input_handler](../overview.md#input-handling) - For handling focus changes
+- [input_handler](input.md) - For handling focus changes

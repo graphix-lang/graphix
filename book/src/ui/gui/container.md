@@ -5,14 +5,7 @@ The `container` widget wraps a single child widget, providing padding and alignm
 ## Interface
 
 ```graphix
-val container: fn(
-  ?#padding: &Padding,
-  ?#width: &Length,
-  ?#height: &Length,
-  ?#halign: &HAlign,
-  ?#valign: &VAlign,
-  a: &Widget
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/container.gxi}}
 ```
 
 ## Parameters

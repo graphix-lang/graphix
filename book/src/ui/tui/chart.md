@@ -12,17 +12,8 @@ The `chart` widget renders line charts with multiple datasets, custom axes, labe
 
 ### chart
 - **style** - Background style for the chart area
-<!-- CR claude for claude: [doc-drift/low] chart.gxi declares `#x_axis` and `#y_axis`
-optional. Without them the chart has empty bounds and draws nothing, so say that instead
-of '(required)'. Several other parameter lists here and on nearby pages also lag the
-gxi: - `graph_type` below omits `Bar`. - The marker lists here and in tui/canvas.md give
-3 of Marker's 8 variants. - tui/layout.md's `flex` line omits `Legacy` and
-`SpaceEvenly`. - tui/text.md's Text Modifiers lists 2 of Modifier's 9. - tui/barchart.md
-calls `#text_value` a Line, but its type is `string`, and it names the widget
-`barchart`, but the function is `bar_chart`. Enumerate the variants from mod.gxi or link
-to the style page, and fix the Line/string and widget-name errors. (book-ui-b-09) -->
-- **x_axis** - X-axis configuration (required)
-- **y_axis** - Y-axis configuration (required)
+- **x_axis** - X-axis configuration. Optional, but without it the chart has empty bounds and draws nothing
+- **y_axis** - Y-axis configuration, the same
 
 ### axis
 - **title** - Line for axis title
@@ -31,8 +22,8 @@ to the style page, and fix the Line/string and widget-name errors. (book-ui-b-09
 
 ### dataset
 - **style** - Style for the dataset (line and markers)
-- **graph_type** - `Line` or `Scatter`
-- **marker** - `Dot`, `Braille`, or `Block`
+- **graph_type** - `Line`, `Scatter`, or `Bar`
+- **marker** - One of `Dot`, `Block`, `Bar`, `Braille`, `HalfBlock`, `Quadrant`, `Sextant`, `Octant`
 - **name** - Line naming the dataset (for legends)
 
 ## Examples

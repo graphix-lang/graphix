@@ -5,14 +5,7 @@ The `column` widget arranges child widgets vertically from top to bottom. It is 
 ## Interface
 
 ```graphix
-val column: fn(
-  ?#spacing: &f64,
-  ?#padding: &Padding,
-  ?#width: &Length,
-  ?#height: &Length,
-  ?#halign: &HAlign,
-  a: &Array<Widget>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/column.gxi}}
 ```
 
 ## Parameters

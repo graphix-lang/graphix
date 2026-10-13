@@ -9,10 +9,7 @@ The `space` widget creates empty space with configurable dimensions. Use it to p
 ### Interface
 
 ```graphix
-val space: fn(
-  ?#width: &Length,
-  ?#height: &Length
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/space.gxi}}
 ```
 
 ### Parameters
@@ -37,8 +34,7 @@ Rules draw horizontal or vertical lines to visually separate content.
 ### Interface
 
 ```graphix
-val horizontal_rule: fn(?#height: &f64) -> Widget;
-val vertical_rule: fn(?#width: &f64) -> Widget;
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/rule.gxi}}
 ```
 
 ### Parameters

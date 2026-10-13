@@ -5,14 +5,7 @@ A clickable button that wraps a child widget (typically text). Buttons trigger a
 ## Interface
 
 ```graphix
-val button: fn(
-  ?#on_press: [fn(a: null) -> Any, null],
-  ?#width: &Length,
-  ?#height: &Length,
-  ?#padding: &Padding,
-  ?#disabled: &bool,
-  a: &Widget
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/button.gxi}}
 ```
 
 ## Parameters

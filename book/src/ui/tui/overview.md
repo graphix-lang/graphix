@@ -52,7 +52,7 @@ This creates a bordered block with a counter that increments every second. The k
 Graphix TUIs support rich styling with:
 
 - **Colors**: Named colors (`Red`, `Green`, `Blue`), indexed colors (`Indexed(202)`), and RGB (`Rgb({r: 255, g: 100, b: 50})`)
-- **Text Effects**: Bold, italic
+- **Text Effects**: Bold, dim, italic, underlined, reversed, crossed out, and the other modifiers on the [style](style.md) page
 - **Background Colors**: Set background colors for any component
 - **Conditional Styling**: Use `select` expressions to change styles based on state
 

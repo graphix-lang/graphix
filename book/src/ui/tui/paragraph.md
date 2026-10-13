@@ -5,14 +5,7 @@ The `paragraph` widget displays multi-line text with automatic word wrapping and
 ## Interface
 
 ```graphix
-val paragraph: fn(
-  ?#style: &Style,
-  ?#alignment: &[Alignment, null],
-  ?#scroll: &{x: i64, y: i64},
-  ?#wrap: &bool,
-  ?#trim: &bool,
-  v: &[Array<Line>, string]
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/paragraph.gxi}}
 ```
 
 ## Parameters
