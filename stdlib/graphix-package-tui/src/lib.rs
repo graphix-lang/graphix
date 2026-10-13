@@ -1084,7 +1084,7 @@ impl Live {
         // later raw-mode owner after Live drops. Review the recovery path.
         HOOK.call_once(|| {
             let prev = std::panic::take_hook();
-            // CR claude for claude: [risk/low] This hook gives back the terminal but
+            // XCR claude for claude: [risk/low] This hook gives back the terminal but
             // leaves fd 2 on StderrHeld's unlinked tempfile, so `prev(info)` writes the
             // panic message there. A panic that then aborts, such as any assert in an
             // extern "C" JIT helper (graphix_value_drop's sentinel check, the
@@ -1093,7 +1093,7 @@ impl Live {
             // it. Fix: have the hook restore fd 2 from the saved descriptor (kept where
             // the hook can reach it, for example a static set by StderrHeld::hold) and
             // copy out what the file held so far, before calling `prev`. (x-unsafe-07)
-            // CR claude for claude: [risk/low] While a display is live, fd 2 is
+            // XCR claude for claude: [risk/low] While a display is live, fd 2 is
             // StderrHeld's unlinked temp file, so prev(info) writes the panic message
             // into that file. The message reaches the terminal only when
             // StderrHeld::drop runs, either at the display's end or while unwinding. If
@@ -1104,9 +1104,15 @@ impl Live {
             // StderrHeld::hold and cleared by its drop. The hook then dup2s it back
             // onto fd 2 and copies the held file out before calling prev(info).
             // (tui-core-06)
+            // 2026-10-13 codex: The hook restores and replays the bounded capture
+            // before invoking the previous hook. aborting_panics_replay_stderr_and_the_diagnostic
+            // pins both held bytes and a nounwind panic's diagnostic in a PTY child.
+            // Review the process-wide capture ownership and panic-time shutdown.
             std::panic::set_hook(Box::new(move |info| {
                 if TERMINAL_ACTIVE.load(Ordering::Acquire) {
                     give_back_terminal();
+                    #[cfg(unix)]
+                    stderr::restore_for_panic();
                     TERMINAL_INTERRUPTED.store(true, Ordering::Release);
                 }
                 prev(info)

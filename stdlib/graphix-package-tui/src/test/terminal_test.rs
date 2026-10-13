@@ -140,3 +140,28 @@ async fn caught_panics_do_not_leave_the_display_cooked() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn aborting_panics_replay_stderr_and_the_diagnostic() -> anyhow::Result<()> {
+    extern "C" fn aborting() {
+        panic!("TUI_ABORT_DIAGNOSTIC");
+    }
+    if let Some(output) =
+        in_child("aborting_panics_replay_stderr_and_the_diagnostic", true, || {
+            use std::io::Write;
+            let _live = crate::Live::take(false)?;
+            std::io::stderr().write_all(b"TUI_BEFORE_PANIC\n")?;
+            aborting();
+            Ok(())
+        })
+        .await?
+    {
+        assert!(!output.status.success());
+        let stderr = std::str::from_utf8(&output.stderr)?;
+        assert!(stderr.contains("TUI_BEFORE_PANIC"), "{stderr}");
+        assert!(stderr.contains("TUI_ABORT_DIAGNOSTIC"), "{stderr}");
+        assert!(std::str::from_utf8(&output.stdout)?.contains("\x1b[?1049l"));
+    }
+    Ok(())
+}

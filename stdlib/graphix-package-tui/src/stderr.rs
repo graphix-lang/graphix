@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
 use std::{
     io::{self, PipeReader, PipeWriter, Read, Write},
@@ -100,10 +101,33 @@ fn collect(mut input: PipeReader, stop: PipeReader) -> Result<HeldOutput> {
     }
 }
 
-pub(super) struct StderrHeld {
+struct Capture {
     saved: OwnedFd,
     stop: Option<PipeWriter>,
     reader: Option<JoinHandle<Result<HeldOutput>>>,
+}
+
+enum CaptureState {
+    Vacant,
+    Held(Capture),
+    Restored,
+}
+
+static CAPTURE: Mutex<CaptureState> = Mutex::new(CaptureState::Vacant);
+
+pub(super) struct StderrHeld;
+
+pub(super) fn restore_for_panic() {
+    let capture = CAPTURE.try_lock().and_then(|mut state| {
+        match std::mem::replace(&mut *state, CaptureState::Restored) {
+            CaptureState::Held(capture) => Some(capture),
+            previous => {
+                *state = previous;
+                None
+            }
+        }
+    });
+    drop(capture);
 }
 
 impl StderrHeld {
@@ -132,6 +156,10 @@ impl StderrHeld {
         // held_stderr_keeps_a_bounded_head_and_tail pins replay size, endpoints
         // and the dropped-byte notice; short_output_is_replayed_exactly pins
         // lossless output below the cap. Review the reader shutdown as well.
+        let mut state = CAPTURE.lock();
+        if !matches!(*state, CaptureState::Vacant) {
+            bail!("stderr is already held");
+        }
         // The process owns its standard error descriptor.
         let saved = unsafe { BorrowedFd::borrow_raw(2) }.try_clone_to_owned()?;
         let (input, output) = io::pipe()?;
@@ -140,25 +168,34 @@ impl StderrHeld {
             .name("tui-stderr".into())
             .spawn(move || collect(input, stop_rx))
             .context("capture stderr")?;
-        let held = Self { saved, stop: Some(stop_tx), reader: Some(reader) };
+        let held = Capture { saved, stop: Some(stop_tx), reader: Some(reader) };
         // output owns the source descriptor, and fd 2 is the process's stderr.
         if unsafe { libc::dup2(output.as_raw_fd(), 2) } < 0 {
             return Err(io::Error::last_os_error().into());
         }
-        Ok(held)
+        *state = CaptureState::Held(held);
+        Ok(Self)
     }
 }
 
-impl Drop for StderrHeld {
+impl Drop for Capture {
     fn drop(&mut self) {
         // saved owns the descriptor that hold cloned from stderr.
         unsafe { libc::dup2(self.saved.as_raw_fd(), 2) };
         drop(self.stop.take());
         if let Some(reader) = self.reader.take()
+            && reader.thread().id() != thread::current().id()
             && let Ok(Ok(output)) = reader.join()
         {
             let _ = output.replay(&mut io::stderr().lock());
         }
+    }
+}
+
+impl Drop for StderrHeld {
+    fn drop(&mut self) {
+        let previous = std::mem::replace(&mut *CAPTURE.lock(), CaptureState::Vacant);
+        drop(previous);
     }
 }
 
