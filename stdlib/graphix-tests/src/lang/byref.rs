@@ -114,18 +114,10 @@ run!(deref_from_tuple_field, DEREF_FROM_TUPLE_FIELD, |v: Result<&Value>| matches
 
 // Reads and writes through every accessor kind; the root value is
 // rebuilt along the path.
-// CR claude for claude: [risk/low] place_read_write, place_move_siblings_bad,
-// place_missing_key and place_through_param still order their phases with one-shot
-// `sys::time::timer`s. The run loop puts every finished task into one cycle. So if the
-// runtime thread does not run between two timers, the final sample reads the root
-// before the earlier phase's `<-` lands, and the test fails without pointing at any
-// bug. This is the same hazard tests-lang-d-08 described; its fix converted only the
-// six fixtures it named, and place_missing_key was added afterwards with timers. Fix:
-// drive these four by cycles with the `step <- select step { s if s < 20 => s + 1, _ =>
-// never() }` counter that place_bottom_key uses, and write any new place fixture that
-// way. (x-fix-fuzz-tests-04)
 const PLACE_READ_WRITE: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let a = [10, 20, 30];
   let s = { x: 5, tags: ["p", "q"] };
   let t = (7, 8);
@@ -136,13 +128,13 @@ const PLACE_READ_WRITE: &str = r#"
   let rt = &mut t.1;
   let rm = &mut m{"k"};
   let before = once((*ra, *rs, *rn, *rt, *rm));
-  let t1 = sys::time::timer(duration:0.05s, false);
+  let t1 = select step { 2 => null, _ => never() };
   *ra <- t1 ~ 21;
   *rs <- t1 ~ 6;
   *rn <- t1 ~ "P";
   *rt <- t1 ~ 88;
   *rm <- t1 ~ 99;
-  let t2 = sys::time::timer(duration:0.2s, false);
+  let t2 = select step { 5 => null, _ => never() };
   t2 ~ (before, a, s, t, m{"k"}$, (*ra, *rs, *rn, *rt, *rm))
 }
 "#;
@@ -165,6 +157,8 @@ run!(place_read_write, PLACE_READ_WRITE, |v: Result<&Value>| {
 // between the retarget and t4 and pin [99, 20]. (tests-lang-rest-b-07)
 const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let a = [1, 2, 3];
   let i = 0;
   let r = &mut a[i];
@@ -172,15 +166,15 @@ const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
   let r2 = &mut a[2];
   let bad = &mut a[7];
   let first = once(*r);
-  let t1 = sys::time::timer(duration:0.05s, false);
+  let t1 = select step { 2 => null, _ => never() };
   i <- t1 ~ 2;
-  let t2 = sys::time::timer(duration:0.12s, false);
+  let t2 = select step { 5 => null, _ => never() };
   *r <- t2 ~ 30;
-  let t3 = sys::time::timer(duration:0.2s, false);
+  let t3 = select step { 8 => null, _ => never() };
   *r0 <- t3 ~ 100;
   *r2 <- t3 ~ 300;
   *bad <- t3 ~ 9;
-  let t4 = sys::time::timer(duration:0.3s, false);
+  let t4 = select step { 11 => null, _ => never() };
   t4 ~ (first, a, *r)
 }
 "#;
@@ -193,13 +187,15 @@ run!(place_move_siblings_bad, PLACE_MOVE_SIBLINGS_BAD, |v: Result<&Value>| {
 // below a missing key has no entry to patch and is dropped.
 const PLACE_MISSING_KEY: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let m = {"a" => {x: 1, y: 2}};
   let ins = &mut m{"b"};
   let below = &mut m{"c"}.x;
-  let t1 = sys::time::timer(duration:0.05s, false);
+  let t1 = select step { 2 => null, _ => never() };
   *ins <- t1 ~ {x: 3, y: 4};
   *below <- t1 ~ 5;
-  let t2 = sys::time::timer(duration:0.2s, false);
+  let t2 = select step { 5 => null, _ => never() };
   t2 ~ m
 }
 "#;
@@ -212,6 +208,8 @@ run!(place_missing_key, PLACE_MISSING_KEY, |v: Result<&Value>| {
 // place reference passed as its argument.
 const PLACE_THROUGH_PARAM: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   type State = { value: string, cursor: i64 };
   let vals: Array<State> = [{ value: "a", cursor: 1 }, { value: "b", cursor: 1 }];
   let bump = |st: &mut State, t: Any| -> null {
@@ -219,10 +217,10 @@ const PLACE_THROUGH_PARAM: &str = r#"
     *st <- { value: "[s.value]!", cursor: s.cursor + 1 };
     null
   };
-  let t1 = sys::time::timer(duration:0.05s, false);
+  let t1 = select step { 2 => null, _ => never() };
   let go = t1 ~ 1;
   bump(&mut vals[go], go);
-  let t2 = sys::time::timer(duration:0.2s, false);
+  let t2 = select step { 5 => null, _ => never() };
   t2 ~ vals
 }
 "#;
