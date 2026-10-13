@@ -103,6 +103,28 @@ async fn let_fire_reaches_a_later_cycle(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// `until` starts a cycle after a write it reads: it sees `false`, and
+// the run waits.
+async fn until_sees_the_write_before_it(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let flag = true;
+        seq { flag <- false; until flag; 42 }
+    }"#;
+    assert_eq!(run(code, mode).await?, [] as [i64; 0]);
+    Ok(())
+}
+
+// So does `try`: its body reads the 7.
+async fn try_sees_the_write_before_it(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let f = |x: i64| -> Result<i64, `E> select x { 0 => error(`E), n => n };
+        let x = 0;
+        seq { x <- 7; let v = try { f(x)? } with(_) { -1 }; v }
+    }"#;
+    assert_eq!(run(code, mode).await?, [7]);
+    Ok(())
+}
+
 modes!(
     closure_write_is_seen,
     ref_write_through_a_variable_is_seen,
@@ -111,4 +133,6 @@ modes!(
     entry_reraises_an_earlier_fire,
     until_true_at_entry,
     let_fire_reaches_a_later_cycle,
+    until_sees_the_write_before_it,
+    try_sees_the_write_before_it,
 );

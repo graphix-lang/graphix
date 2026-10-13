@@ -645,16 +645,8 @@ async fn reentry_fired_only(mode: Mode) -> Result<()> {
             "let a = request; let b = request + 10; { let c = b; a }",
             vec![1, 2, 3],
         ),
-        // `until` on a level: false then flipped for run 1, present-true after
-        // CR claude for claude: [test-gap/low] This case's comment is wrong. The
-        // connect step completes only when the timer fires, and the plan puts `until`
-        // in the next cycle (GXDBG_SEQPLAN: `S1 -> S2 next`), so `flag` is already true
-        // when `until` is entered, in run 1 as well. Nothing in the seq tests pins the
-        // rule that `until` and `try` start a cycle after a write they read. A planner
-        // that made them same-cycle would pass every test. Fix the comment, and add
-        // pins to seq_steps.rs: `let flag = true; seq { flag <- false; until flag; 42
-        // }` must produce nothing, and `let x = 0; seq { x <- 7; let v = try { f(x)? }
-        // with(_) { -1 }; v }` must give 7. (tests-seq-03)
+        // `until` on a level the step before it writes: entered a cycle after
+        // the write, it reads `flag` true in every run
         (
             "until_present",
             "let flag = false; flag <- sys::time::timer(duration:20.ms, false) ~ true; until flag; request",
