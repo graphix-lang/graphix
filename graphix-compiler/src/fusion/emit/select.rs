@@ -227,10 +227,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     }
     let result_typ =
         kernel_abi::freeze_for_abi_normalized(sel.typ()).ok_or_else(|| {
-            anyhow!(
-                "emit_clif: select result type {:?} doesn't freeze concrete",
-                sel.typ()
-            )
+            anyhow!("emit_clif: select result type {} doesn't freeze concrete", sel.typ())
         })?;
     let merge_shape = match kernel_abi::abi_kind(&result_typ) {
         Some(AbiKind::Scalar(p)) => SelectMerge::Scalar(p),
@@ -329,7 +326,7 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     let scrut_typ = kernel_abi::freeze_for_abi_normalized(sel.arg.node.typ())
         .ok_or_else(|| {
             anyhow!(
-                "emit_clif: select scrutinee type {:?} doesn't freeze \
+                "emit_clif: select scrutinee type {} doesn't freeze \
                  concrete",
                 sel.arg.node.typ()
             )
@@ -455,7 +452,7 @@ fn emit_composite_pattern_cond_inner(
                         }
                         t => Err(anyhow!(
                             "emit_clif: tuple pattern over non-tuple \
-                             scrutinee {t:?}"
+                             scrutinee {t}"
                         )),
                     }
                 } else {
@@ -463,7 +460,7 @@ fn emit_composite_pattern_cond_inner(
                         Type::Array(t) => Ok((**t).clone()),
                         t => Err(anyhow!(
                             "emit_clif: slice pattern over non-array \
-                             scrutinee {t:?}"
+                             scrutinee {t}"
                         )),
                     }
                 }
@@ -497,7 +494,7 @@ fn emit_composite_pattern_cond_inner(
                 Type::Array(t) => (**t).clone(),
                 t => {
                     return Err(anyhow!(
-                        "emit_clif: slice pattern over non-array scrutinee {t:?}"
+                        "emit_clif: slice pattern over non-array scrutinee {t}"
                     ));
                 }
             };
@@ -529,7 +526,7 @@ fn emit_composite_pattern_cond_inner(
                 Type::Array(t) => (**t).clone(),
                 t => {
                     return Err(anyhow!(
-                        "emit_clif: slice pattern over non-array scrutinee {t:?}"
+                        "emit_clif: slice pattern over non-array scrutinee {t}"
                     ));
                 }
             };
@@ -558,7 +555,7 @@ fn emit_composite_pattern_cond_inner(
                 Type::Struct(flds) => flds,
                 t => {
                     return Err(anyhow!(
-                        "emit_clif: struct pattern over non-struct scrutinee {t:?}"
+                        "emit_clif: struct pattern over non-struct scrutinee {t}"
                     ));
                 }
             };
@@ -1031,7 +1028,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                         t => match PrimType::from_typ(t) {
                             Some(prim) => scalar_disc(cx.b, prim),
                             None => bail!(
-                                "emit_clif: type predicate member {t:?} over a \
+                                "emit_clif: type predicate member {t} over a \
                                  primitive union not lowerable"
                             ),
                         },
@@ -1054,7 +1051,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                         if kernel_abi::nullable_error_marked(&scrut_typ) != Some(false) {
                             return Err(anyhow!(
                                 "emit_clif: null predicate over a \
-                                     result union {scrut_typ:?}"
+                                     result union {scrut_typ}"
                             ));
                         }
                         let cd = clean_disc(cx.b, disc);
@@ -1063,7 +1060,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     _ => {
                         return Err(anyhow!(
                             "emit_clif: null predicate over non-\
-                                 Nullable scrutinee {scrut_typ:?}"
+                                 Nullable scrutinee {scrut_typ}"
                         ));
                     }
                 }
@@ -1108,27 +1105,27 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                             (Some(_), _, None) => {
                                 return Err(anyhow!(
                                     "emit_clif: non-register type predicate \
-                                     {pred:?} over {scrut_typ:?} not lowerable"
+                                     {pred} over {scrut_typ} not lowerable"
                                 ));
                             }
                             (None, ..) => {
                                 return Err(anyhow!(
                                     "emit_clif: Nullable scrutinee \
-                                     {scrut_typ:?} has no marker shape"
+                                     {scrut_typ} has no marker shape"
                                 ));
                             }
                         }
                     }
                     _ => {
                         return Err(anyhow!(
-                            "emit_clif: type predicate {pred:?} over \
-                                 scrutinee {scrut_typ:?} not lowerable"
+                            "emit_clif: type predicate {pred} over \
+                                 scrutinee {scrut_typ} not lowerable"
                         ));
                     }
                 }
             }
             _ => {
-                return Err(anyhow!("emit_clif: type predicate {pred:?} not lowerable"));
+                return Err(anyhow!("emit_clif: type predicate {pred} not lowerable"));
             }
         }
     };
@@ -1179,7 +1176,7 @@ fn emit_list_pattern_cond(
         _ => {
             return Err(anyhow!(
                 "emit_clif: list pattern over a non-value scrutinee \
-                     {scrut_typ:?}"
+                     {scrut_typ}"
             ));
         }
     };
@@ -1189,7 +1186,7 @@ fn emit_list_pattern_cond(
             _ => None,
         })
         .ok_or_else(|| {
-            anyhow!("emit_clif: list pattern over non-list scrutinee {scrut_typ:?}")
+            anyhow!("emit_clif: list pattern over non-list scrutinee {scrut_typ}")
         })?;
     let (elems, k, exact, tail) = match pat {
         StructPatternNode::Slice { kind: SliceKind::List, all, binds: pb } => {
@@ -1423,7 +1420,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let body_frozen =
         kernel_abi::freeze_for_abi_normalized(body.typ()).ok_or_else(|| {
-            anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
+            anyhow!("emit_clif: select arm type {} doesn't freeze concrete", body.typ())
         })?;
     // A `never(args..)` arm is a standing bottom: it fires only with the
     // scrutinee, through the STALE fold below, whatever its args do; the
@@ -1633,7 +1630,7 @@ fn emit_structure_cond(
             }
             _ => {
                 return Err(anyhow!(
-                    "emit_clif: a string literal pattern over {scrut_typ:?}"
+                    "emit_clif: a string literal pattern over {scrut_typ}"
                 ));
             }
         },
@@ -1678,7 +1675,7 @@ fn emit_structure_cond(
                 _ => {
                     return Err(anyhow!(
                         "emit_clif: literal pattern prim {lit_prim:?} \
-                             doesn't match scrutinee {scrut_typ:?}"
+                             doesn't match scrutinee {scrut_typ}"
                     ));
                 }
             }
@@ -1694,7 +1691,7 @@ fn emit_structure_cond(
                 _ => {
                     return Err(anyhow!(
                         "emit_clif: variant pattern over non-variant \
-                             scrutinee {scrut_typ:?}"
+                             scrutinee {scrut_typ}"
                     ));
                 }
             };
@@ -1765,7 +1762,7 @@ fn emit_variant_cond(
         .map(|(_, e)| e)
         .ok_or_else(|| {
             anyhow!(
-                "emit_clif: variant pattern `{tag}` doesn't match its predicate {pred:?}"
+                "emit_clif: variant pattern `{tag}` doesn't match its predicate {pred}"
             )
         })?;
     let tag_ptr = cx.interned_str(tag)?;

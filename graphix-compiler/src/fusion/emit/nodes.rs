@@ -225,7 +225,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t))
         .ok_or_else(|| {
-            anyhow!("emit_clif: arith operand of non-scalar type {:?}", lhs.typ())
+            anyhow!("emit_clif: arith operand of non-scalar type {}", lhs.typ())
         })?;
     let base = scalar_disc(cx.b, prim);
     // Cranelift has no `frem`: a float `%` is Rust's, the node-walk's.
@@ -431,7 +431,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     for t in [lhs.typ(), rhs.typ()] {
         if matches!(cx.node_kind(t), Some(AbiKind::Unit | AbiKind::Null) | None) {
             return Err(anyhow!(
-                "emit_clif: operand of type {t:?} has no comparable runtime form"
+                "emit_clif: operand of type {t} has no comparable runtime form"
             ));
         }
     }
@@ -531,9 +531,7 @@ pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     let prim = freeze_node_typ(cx.ctx, inner.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t))
-        .ok_or_else(|| {
-            anyhow!("emit_neg: operand of non-scalar type {:?}", inner.typ())
-        })?;
+        .ok_or_else(|| anyhow!("emit_neg: operand of non-scalar type {}", inner.typ()))?;
     let value = if prim.is_integer() {
         cx.b.ins().ineg(cv.payload)
     } else {
@@ -1182,7 +1180,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let idx_prim = kernel_abi::scalar_prim(idx.typ())
         .filter(|p| p.is_integer())
-        .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
+        .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {}", idx.typ()))?;
     if cx.node_kind(source.typ()) == Some(AbiKind::Array) {
         // Unforced: the helper is bounds-checked (safe on a placeholder)
         // and the source's taint folds into the result below.
@@ -1218,7 +1216,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         return Ok(CompiledExpr::new(disc, rpay));
     }
     Err(anyhow!(
-        "emit_clif: index source of type {:?} isn't an array or bytes",
+        "emit_clif: index source of type {} isn't an array or bytes",
         source.typ()
     ))
 }
@@ -1232,7 +1230,7 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     if !lowering::is_map(source.typ()) {
         return Err(anyhow!(
-            "emit_clif: map-ref source of type {:?} isn't a Map",
+            "emit_clif: map-ref source of type {} isn't a Map",
             source.typ()
         ));
     }
@@ -1262,7 +1260,7 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         || lowering::is_bytes(source.typ()))
     {
         return Err(anyhow!(
-            "emit_clif: slice source of type {:?} isn't an array or bytes",
+            "emit_clif: slice source of type {} isn't an array or bytes",
             source.typ()
         ));
     }
@@ -1281,7 +1279,7 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
                 let Some(p) = kernel_abi::scalar_prim(n.typ()).filter(|p| p.is_integer())
                 else {
                     return Err(anyhow!(
-                        "emit_clif: slice bound of non-integer type {:?}",
+                        "emit_clif: slice bound of non-integer type {}",
                         n.typ()
                     ));
                 };

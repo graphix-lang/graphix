@@ -81,7 +81,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         // `AbiKind` needs to agree, not the exact `Type`.
         let Some(frozen) = kernel_abi::freeze_for_abi_normalized(arg_node.typ()) else {
             return Err(anyhow!(
-                "emit_clif: call arg type {:?} doesn't freeze concrete",
+                "emit_clif: call arg type {} doesn't freeze concrete",
                 arg_node.typ()
             ));
         };
@@ -89,7 +89,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         if kernel_abi::abi_kind(&frozen) != kind {
             return Err(anyhow!(
                 "emit_clif: call arg shape {frozen:?} disagrees with the \
-                 discovered arg type {t:?}"
+                 discovered arg type {t}"
             ));
         }
         let cv = arg_node.emit_clif(cx)?;
@@ -711,7 +711,7 @@ fn call_slots<'a, R: Rt, E: UserEvent>(
             Some(AbiKind::Unit | AbiKind::Null) | None
         ) {
             return Err(anyhow!(
-                "lambda call `{fn_name}`: arg/capture type {:?} not \
+                "lambda call `{fn_name}`: arg/capture type {} not \
                  lowered on the calling side — subtree node-walks",
                 s.typ()
             ));

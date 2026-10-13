@@ -514,7 +514,7 @@ impl fmt::Debug for TVar {
                 .field(&format_args!("'{}: …", self.name))
                 .finish();
         }
-        let r = f.debug_tuple("TVar").field(&**self.0).finish();
+        let r = ensure_sufficient(|| f.debug_tuple("TVar").field(&**self.0).finish());
         DEBUGGING.with_borrow_mut(|s| s.remove(&addr));
         r
     }

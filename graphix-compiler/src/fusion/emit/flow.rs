@@ -139,7 +139,7 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
             tail_cv
         }
         None => bail!(
-            "emit_clif: block tail type {:?} doesn't classify — can't make the \
+            "emit_clif: block tail type {} doesn't classify — can't make the \
              result outlive the scope drops",
             tail.typ()
         ),
@@ -475,7 +475,7 @@ pub(super) fn emit_discard_result<R: Rt, E: UserEvent>(
             None => Ok(()),
         },
         None if source == CompositeSource::Owned => bail!(
-            "emit_clif: discarded result of type {:?} doesn't classify — can't \
+            "emit_clif: discarded result of type {} doesn't classify — can't \
              drop it",
             node.typ()
         ),
@@ -646,7 +646,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // Normalized, in lockstep with the discovery-side freeze.
     let Some(inner_typ) = kernel_abi::freeze_for_abi_normalized(inner.typ()) else {
         return Err(anyhow!(
-            "emit_clif: `?` inner type {:?} doesn't freeze concrete",
+            "emit_clif: `?` inner type {} doesn't freeze concrete",
             inner.typ()
         ));
     };
@@ -659,7 +659,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         }
         if !type_always(&inner_typ, marker) {
             return Err(anyhow!(
-                "emit_clif: `?`/`$` inner type {inner_typ:?} can be {marker:?} \
+                "emit_clif: `?`/`$` inner type {inner_typ} can be {marker:?} \
                  but is not a two member union — node-walk handles it"
             ));
         }
@@ -801,7 +801,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             Ok(CompiledExpr::new(params[0], params[1]))
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
-            Err(anyhow!("emit_clif: `?` with unsupported success type {:?}", success_typ))
+            Err(anyhow!("emit_clif: `?` with unsupported success type {}", success_typ))
         }
     }
 }

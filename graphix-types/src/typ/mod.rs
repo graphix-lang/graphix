@@ -959,23 +959,9 @@ impl Ord for TypeRef {
 
 /// Type depth is not bounded by source nesting (`let x1 = [x0]; let x2
 /// = [x1]; ..` builds a type as deep as the program is long), so every
-/// recursive walk, `Eq`, `Ord` and `Hash` included, runs under
+/// recursive walk, `Eq`, `Ord`, `Hash` and `Debug` included, runs under
 /// [`ensure_sufficient`].
-// CR claude for claude: [bug/medium] Debug is derived here, so it recurses through Type
-// -> TVar -> TVarInner -> TVarLink -> TCell -> Option<Type> with no ensure_sufficient.
-// TVar's hand-written Debug guards against cycles but not against depth. The doc
-// comment above says every walk is guarded, and this one is not. Fusion formats operand
-// types with `{:?}` in about 40 error messages built eagerly with anyhow!,
-// emit_cmp_node's "has no comparable runtime form" among them. A 6000-deep flat let
-// chain of arrays followed by `x6000 == x6000` therefore overflows the stack, and the
-// process aborts during check_and_fuse. The same program prints `true` under
-// --no-fusion and passes --check. Fix: implement Debug for Type by hand with its body
-// under ensure_sufficient, as Expr's Debug does, and wrap TVar's Debug body the same
-// way. Then switch the fusion messages to Display, which is already guarded and prints
-// the type rather than raw TCell internals. Add a deep_nesting shape that compares the
-// deep value, since the existing `flattype` shape never reaches fusion's error path.
-// probe: design/review-2026-10-12/repro/x-stack-01.py (x-stack-01)
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Type {
     Bottom,
     Any,
@@ -1049,6 +1035,45 @@ pub enum Type {
     /// of the type order, hash and compare by value alone. Legal only as
     /// a constraint.
     Ordered,
+}
+
+impl Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        ensure_sufficient(|| match self {
+            Self::Bottom => f.write_str("Bottom"),
+            Self::Any => f.write_str("Any"),
+            Self::Hole => f.write_str("Hole"),
+            Self::Concrete => f.write_str("Concrete"),
+            Self::Function => f.write_str("Function"),
+            Self::Singleton => f.write_str("Singleton"),
+            Self::OneNumber => f.write_str("OneNumber"),
+            Self::Discernible => f.write_str("Discernible"),
+            Self::Ordered => f.write_str("Ordered"),
+            Self::Primitive(p) => f.debug_tuple("Primitive").field(p).finish(),
+            Self::Ref(r) => f.debug_tuple("Ref").field(r).finish(),
+            Self::Fn(t) => f.debug_tuple("Fn").field(t).finish(),
+            Self::Set(ts) => f.debug_tuple("Set").field(ts).finish(),
+            Self::TVar(tv) => f.debug_tuple("TVar").field(tv).finish(),
+            Self::Error(t) => f.debug_tuple("Error").field(t).finish(),
+            Self::Array(t) => f.debug_tuple("Array").field(t).finish(),
+            Self::List(t) => f.debug_tuple("List").field(t).finish(),
+            Self::ByRef(m, t) => f.debug_tuple("ByRef").field(m).field(t).finish(),
+            Self::Tuple(ts) => f.debug_tuple("Tuple").field(ts).finish(),
+            Self::Struct(fs) => f.debug_tuple("Struct").field(fs).finish(),
+            Self::Variant(tag, ts, at) => {
+                f.debug_tuple("Variant").field(tag).field(ts).field(at).finish()
+            }
+            Self::Map { key, value } => {
+                f.debug_struct("Map").field("key", key).field("value", value).finish()
+            }
+            Self::Abstract { id, params } => f
+                .debug_struct("Abstract")
+                .field("id", id)
+                .field("params", params)
+                .finish(),
+            Self::App(c, a) => f.debug_tuple("App").field(c).field(a).finish(),
+        })
+    }
 }
 
 /// Whether a reference may be written through: `&T` reads, `&mut T`
