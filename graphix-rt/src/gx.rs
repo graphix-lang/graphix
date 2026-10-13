@@ -477,9 +477,10 @@ impl<X: GXExt> GX<X> {
         }
         let mut answering: LPooled<Vec<(ExprId, ExprId)>> = LPooled::take();
         self.calls_made(&mut answering);
-        let mut due: Vec<(BindId, Box<dyn CustomBuiltinType>, Via)> = Vec::new();
+        let mut due: LPooled<Vec<(BindId, Box<dyn CustomBuiltinType>, Via)>> =
+            LPooled::take();
         self.ctx.rt.custom_updates.take(&mut due);
-        for (id, u, via) in due {
+        for (id, u, via) in due.drain(..) {
             self.deliver_custom(id, u, via);
         }
         for (id, u) in custom_tasks.drain(..) {

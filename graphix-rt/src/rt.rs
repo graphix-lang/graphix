@@ -48,7 +48,8 @@ pub(super) enum Via {
 /// FIFO.
 #[derive(Debug)]
 pub(super) struct Waiting<T> {
-    by_id: IntMap<BindId, VecDeque<(T, Via)>>,
+    /// Each variable's writes, oldest first; nearly always one, inline.
+    by_id: IntMap<BindId, SmallVec<[(T, Via); 1]>>,
     /// The variables with writes waiting, in the order they began to.
     ids: VecDeque<BindId>,
     taken: IntSet<BindId>,
@@ -62,26 +63,17 @@ impl<T> Default for Waiting<T> {
 
 impl<T> Waiting<T> {
     pub(super) fn push(&mut self, id: BindId, t: T, via: Via) {
-        // CR claude for claude: [perf/low] Every program write (`<-`, set_var,
-        // patch_var) lands here. The first push_back allocates the VecDeque's buffer,
-        // and pop removes the map entry once the queue empties, which frees it. So
-        // nearly every write costs a malloc/free pair plus an IntMap insert/remove,
-        // though almost every queue only ever holds one write. Fix: hold `SmallVec<[(T,
-        // Via); 1]>` per variable so the single-write case stays inline. Alternatively,
-        // keep emptied queues in place and have `has`/`is_empty` read whether the queue
-        // holds anything. While here, do_cycle's custom-update `due` vector can be
-        // LPooled like the variable one beside it. (x-alloc-05)
         let q = self.by_id.entry(id).or_default();
         if q.is_empty() {
             self.ids.push_back(id);
         }
-        q.push_back((t, via));
+        q.push((t, via));
     }
 
     /// Push a level's write, replacing the variable's last waiting write
     /// when that is a level's too.
     pub(super) fn push_level(&mut self, id: BindId, t: T) {
-        match self.by_id.get_mut(&id).and_then(|q| q.back_mut()) {
+        match self.by_id.get_mut(&id).and_then(|q| q.last_mut()) {
             Some((last, Via::Level)) => *last = t,
             _ => self.push(id, t, Via::Level),
         }
@@ -103,7 +95,7 @@ impl<T> Waiting<T> {
 
     fn pop(&mut self, id: &BindId) -> (T, Via) {
         let q = self.by_id.get_mut(id).expect("a waiting variable");
-        let r = q.pop_front().expect("a waiting write");
+        let r = q.remove(0);
         if q.is_empty() {
             self.by_id.remove(id);
         }
@@ -115,7 +107,7 @@ impl<T> Waiting<T> {
     pub(super) fn take(&mut self, out: &mut Vec<(BindId, T, Via)>) {
         for _ in 0..self.ids.len() {
             let id = self.ids.pop_front().expect("a waiting variable");
-            let Some((_, via)) = self.by_id.get(&id).and_then(|q| q.front()) else {
+            let Some((_, via)) = self.by_id.get(&id).and_then(|q| q.first()) else {
                 continue;
             };
             if !self.taken.contains(&id) {
@@ -125,7 +117,7 @@ impl<T> Waiting<T> {
                         // a member whose writes were forgotten is not waited for
                         let first = |m: &BindId| {
                             !self.taken.contains(m)
-                                && self.by_id.get(m).and_then(|q| q.front()).is_none_or(
+                                && self.by_id.get(m).and_then(|q| q.first()).is_none_or(
                                     |(_, v)| matches!(v, Via::Set(s) if Arc::ptr_eq(s, &members)),
                                 )
                         };
