@@ -20,6 +20,7 @@ use graphix_compiler::{
 use graphix_rt::ProgramImage;
 use log::{info, warn};
 use netidx_core::utils::make_sha3_token;
+use poolshark::local::LPooled;
 use std::{
     ffi::OsStr,
     fmt::Write,
@@ -63,17 +64,13 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-// CR claude for claude: [bug/low] `digest` passes its parts to `make_sha3_token`, which
-// hashes them back to back with no framing. The program key ends with two
-// variable-length parts, the program id and GRAPHIX_MODPATH. So (`p/prog`, MODPATH
-// `.gx`) and (`p/prog.gx`, no MODPATH) produce the same key. The record then checks
-// only the first program's sources, which are unchanged, and the wrong program is
-// restored. The registration key's root is followed by the program key's fixed-size
-// flags, so it can collide the same way in principle. Fix: hash each part's length (as
-// u64 little-endian) before its bytes. probe:
-// design/review-2026-10-12/repro/shell-06-key-unframed.sh (shell-06)
+/// The parts' hash, each framed by its length, so no two lists of parts
+/// read alike.
 fn digest(parts: &[&[u8]]) -> String {
-    hex(&make_sha3_token(parts.iter().copied())[..16])
+    let lens: LPooled<Vec<[u8; 8]>> =
+        parts.iter().map(|p| (p.len() as u64).to_le_bytes()).collect();
+    let framed = lens.iter().zip(parts).flat_map(|(len, p)| [&len[..], *p]);
+    hex(&make_sha3_token(framed)[..16])
 }
 
 /// The running executable's per-build id: the GNU build id note an ELF
