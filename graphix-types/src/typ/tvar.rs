@@ -1461,6 +1461,12 @@ impl Type {
         }
     }
 
+    /// Whether `self` is concrete now: no open cell, and `Concrete ⊇ self`
+    /// holds. The type a run-time read may cast to.
+    pub fn is_concrete(&self) -> bool {
+        !self.has_unbound() && self.concrete_holds()
+    }
+
     /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ and no
     /// reference anywhere (a value read from data can't be one), bound
     /// cells judged by their bindings, open cells admitted (a bind hands

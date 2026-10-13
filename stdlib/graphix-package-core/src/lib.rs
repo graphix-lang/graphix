@@ -101,50 +101,9 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     cast_target(&resolved_typ?.rtype).filter(castable)
 }
 
-/// Whether a read can cast to `t`: no unbound cell and no ⊥ (which has no
-/// surface syntax, so a ⊥ anywhere in it is an unconstrained cell).
-// CR claude for claude: [structure/low] This is a second copy of the checker's Concrete
-// rule (`Type::concrete_holds` plus `has_unbound` in graphix-types), and it differs
-// from it. It does not walk List, Fn or Abstract parameters, it accepts a ByRef target
-// that the checker refuses, and past depth 64 it reports "no bottom" instead of
-// looking. extract_cast_type and sys::net's publish decide the run-time cast target
-// with it, so a change to the checker's rule leaves this one deciding differently.
-// Export one `Type::is_concrete()` (no unbound cell, concrete_holds) from graphix-types
-// and call it here and in sys::net, then delete this walk. (x-dup-08)
+/// Whether a read can cast to `t`: the checker's Concrete rule.
 pub fn castable(t: &Type) -> bool {
-    // CR claude for claude: [structure/low] This is a second, weaker copy of the
-    // Concrete rule. It reports a ⊥ deeper than 64 as absent, does not descend into
-    // List, Ref, Abstract or Fn, and clones the type at every Ref. Type::concrete_holds
-    // already refuses ⊥ (and references) with a guarded full walk. Expose it from
-    // graphix-types and make castable `!t.has_unbound() && t.concrete_holds()`. The
-    // reads already carry `'b: Concrete`. The one caller with no bound is sys::net's
-    // extract_publish_cast_type for on_write's argument type, and it gets the full rule
-    // too. When castable says no, CastTarget holds None and the value passes through
-    // uncast, so a missed ⊥ and a refused target both deliver an unchecked value.
-    // (x-stack-07)
-    fn contains_bottom(t: &Type, depth: u32) -> bool {
-        if depth > 64 {
-            return false;
-        }
-        let t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
-        match &t {
-            Type::Bottom => true,
-            Type::Set(els) | Type::Tuple(els) | Type::Variant(_, els, _) => {
-                els.iter().any(|e| contains_bottom(e, depth + 1))
-            }
-            Type::Array(e) | Type::Error(e) | Type::ByRef(_, e) => {
-                contains_bottom(e, depth + 1)
-            }
-            Type::Struct(fields) => {
-                fields.iter().any(|(_, e, _)| contains_bottom(e, depth + 1))
-            }
-            Type::Map { key, value } => {
-                contains_bottom(key, depth + 1) || contains_bottom(value, depth + 1)
-            }
-            _ => false,
-        }
-    }
-    !t.has_unbound() && !contains_bottom(t, 0)
+    t.is_concrete()
 }
 
 /// A type-directed builtin's target: the success type of its resolved
