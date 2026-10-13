@@ -466,17 +466,12 @@ impl RegistrationCache {
     fn store(&self, entry: Entry, parts: &[&[u8]]) -> Result<()> {
         let path = self.path(entry).ok_or_else(|| anyhow!("no {entry:?} entry"))?;
         let dir = self.dir();
-        // CR claude for claude: [risk/low] The cache directories are created at the
-        // umask default (755), and the entries are created by `fs::File::create` (644).
-        // A program entry holds the compiled program, string literals included, and the
-        // paths of the sources it read. A script kept at mode 600 because it embeds a
-        // credential therefore leaves a copy readable by every local user wherever the
-        // home directory is not 0700. On Unix, create the cache root with mode 0700
-        // (`DirBuilderExt::mode`) and the temporary entry with mode 0600
-        // (`OpenOptionsExt::mode`). probe:
-        // design/review-2026-10-12/repro/x-security-10.gx (x-security-10)
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
+        // an entry holds the program, its literals included: the user's alone
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let tmp = dir.join(format!(
             "{}.img.{}.{}",
             self.key(entry).unwrap_or_default(),
@@ -485,7 +480,11 @@ impl RegistrationCache {
         ));
         let written = (|| {
             use std::io::Write;
-            let mut f = fs::File::create(&tmp)?;
+            let mut open = fs::OpenOptions::new();
+            open.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+            let mut f = open.open(&tmp)?;
             for part in parts {
                 f.write_all(part)?;
             }
