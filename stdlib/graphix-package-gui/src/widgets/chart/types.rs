@@ -115,6 +115,12 @@ pub struct OHLCPoint {
     pub close: f64,
 }
 
+impl OHLCPoint {
+    pub fn is_finite(&self) -> bool {
+        [self.x, self.open, self.high, self.low, self.close].iter().all(|v| v.is_finite())
+    }
+}
+
 /// One error bar; x is in ms since the epoch in a time series.
 #[derive(Clone, Copy, Debug)]
 pub struct EBPoint {
@@ -122,6 +128,12 @@ pub struct EBPoint {
     pub min: f64,
     pub avg: f64,
     pub max: f64,
+}
+
+impl EBPoint {
+    pub fn is_finite(&self) -> bool {
+        [self.x, self.min, self.avg, self.max].iter().all(|v| v.is_finite())
+    }
 }
 
 /// Points whose x is a number or, in a time series, a datetime.

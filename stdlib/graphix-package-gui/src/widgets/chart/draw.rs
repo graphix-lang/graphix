@@ -424,28 +424,22 @@ fn draw_xy<'a, DB, C, X>(
                 );
                 let bw = style.bar_width.unwrap_or(5.0) as u32;
                 let y = |v: f64| view.clamp_y(v);
-                let candles = d
-                    .pts
-                    .iter()
-                    .filter(|p| {
-                        view.contains_x(p.x)
-                            && [p.open, p.high, p.low, p.close]
-                                .iter()
-                                .all(|y| y.is_finite())
-                    })
-                    .map(|p| {
-                        let color = if p.open < p.close { gain } else { loss };
-                        CandleStick::new(
-                            to_x(p.x),
-                            y(p.open),
-                            y(p.high),
-                            y(p.low),
-                            y(p.close),
-                            color,
-                            color,
-                            bw,
-                        )
-                    });
+                let candles =
+                    d.pts.iter().filter(|p| view.contains_x(p.x) && p.is_finite()).map(
+                        |p| {
+                            let color = if p.open < p.close { gain } else { loss };
+                            CandleStick::new(
+                                to_x(p.x),
+                                y(p.open),
+                                y(p.high),
+                                y(p.low),
+                                y(p.close),
+                                color,
+                                color,
+                                bw,
+                            )
+                        },
+                    );
                 annotate(
                     chart.draw_series(candles),
                     style.label.as_deref(),
@@ -459,23 +453,19 @@ fn draw_xy<'a, DB, C, X>(
                     .stroke_width(stroke(style));
                 let caps = style.point_size.map_or(stroke(style), |p| p as u32);
                 let y = |v: f64| view.clamp_y(v);
-                let bars = d
-                    .pts
-                    .iter()
-                    .filter(|p| {
-                        view.contains_x(p.x)
-                            && [p.min, p.avg, p.max].iter().all(|y| y.is_finite())
-                    })
-                    .map(|p| {
-                        ErrorBar::new_vertical(
-                            to_x(p.x),
-                            y(p.min),
-                            y(p.avg),
-                            y(p.max),
-                            line,
-                            caps,
-                        )
-                    });
+                let bars =
+                    d.pts.iter().filter(|p| view.contains_x(p.x) && p.is_finite()).map(
+                        |p| {
+                            ErrorBar::new_vertical(
+                                to_x(p.x),
+                                y(p.min),
+                                y(p.avg),
+                                y(p.max),
+                                line,
+                                caps,
+                            )
+                        },
+                    );
                 annotate(
                     chart.draw_series(bars),
                     style.label.as_deref(),

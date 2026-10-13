@@ -1,5 +1,6 @@
 use super::{
     ChartW,
+    clip::View,
     dataset::{ChartMode, DatasetEntry, first_pie, pie_slices, pie_start_angle},
     ranges::checked_range,
     types::*,
@@ -366,7 +367,11 @@ fn find_nearest_point<X: GXExt>(
             best = Some(hit)
         }
     };
+    let view = View { x: info.x_range, y: info.y_range };
     let mut near = |ds: usize, at: usize, x: f64, y: f64| {
+        if !view.contains((x, y)) {
+            return;
+        }
         let pixel = data_to_pixel(x, y, info);
         let dist = pixel.distance(cursor);
         if dist < SNAP_THRESHOLD {
@@ -395,31 +400,26 @@ fn find_nearest_point<X: GXExt>(
             }
             DatasetEntry::Candlestick { data, .. } => {
                 for (j, p) in data.t.iter().flat_map(|d| d.pts.iter()).enumerate() {
-                    near(i, j, p.x, p.close)
+                    if p.is_finite() {
+                        near(i, j, p.x, p.close);
+                    }
                 }
             }
             DatasetEntry::ErrorBar { data, .. } => {
                 for (j, p) in data.t.iter().flat_map(|d| d.pts.iter()).enumerate() {
-                    near(i, j, p.x, p.avg)
+                    if p.is_finite() {
+                        near(i, j, p.x, p.avg);
+                    }
                 }
             }
             DatasetEntry::Bar { .. } => {
                 // The whole vertical strip of a slot is a hit; the anchor is
                 // the top-center of this series' bar there.
                 let Some(at) = slot else { continue };
-                let Some(v) = chart.bars.value(i, at) else {
+                let Some(v) = chart.bars.value(i, at).filter(|v| v.is_finite()) else {
                     continue;
                 };
-                // CR claude for claude: [bug/low] The hit test reads raw data where the
-                // draw shows clipped data. The bar anchor uses the unclamped value, so
-                // a bar taller than a zoomed view anchors far above the canvas, and
-                // draw_tooltip's fallback leaves the tooltip off-screen. A bar whose
-                // sum is NaN, which the draw skips, still gets a hit at NaN
-                // coordinates. near() above offers XY, candle and error-bar points just
-                // outside the view that clip_polyline did not draw. Skip non-finite bar
-                // values, clamp the anchor's y with the same View::clamp_y the draw
-                // uses, and offer only points inside the view. (gui-chart-08)
-                let pixel = data_to_pixel(at as f64 + 0.5, v, info);
+                let pixel = data_to_pixel(at as f64 + 0.5, view.clamp_y(v), info);
                 let dist = (cursor.x - pixel.x).abs();
                 if bar.is_none_or(|b| dist < b.dist) {
                     bar = Some(Hit { dist, pixel, ds: i, at })

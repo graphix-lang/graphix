@@ -924,3 +924,69 @@ async fn chart_drag_uses_translated_cursor_outside_bounds() -> Result<()> {
 async fn centered_point_chart() -> Result<GuiTestHarness> {
     chart_harness("#x_range: &{min: 0.0, max: 10.0}, #y_range: &{min: 0.0, max: 10.0}, &[line(&[(5.0, 5.0)])]").await
 }
+
+async fn hover_at_fraction(
+    args: &str,
+    x: f32,
+    y: f32,
+) -> Result<(PlotInfo, Option<crate::widgets::chart::SnapPoint>)> {
+    let h = chart_harness(args).await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let info = draw_in(&h, &state, size).await.unwrap();
+    let p =
+        Point::new(info.rect.x + x * info.rect.width, info.rect.y + y * info.rect.height);
+    state.handle_event(
+        chart(&h),
+        &iced_core::Event::Mouse(mouse::Event::CursorMoved { position: p }),
+        Rectangle::with_size(size),
+        mouse::Cursor::Available(p),
+    );
+    Ok((info, state.snap_point))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bar_hover_anchors_the_visible_value() -> Result<()> {
+    let (info, snap) = hover_at_fraction(
+        r#"#y_range: &{min: 0.0, max: 1.0}, &[bar(&[("a", 1000.0)])]"#,
+        0.5,
+        0.5,
+    )
+    .await?;
+    let snap = snap.unwrap();
+    assert_eq!(snap.pixel.y, info.rect.y);
+    assert_eq!(snap.value, "a: 1000.00");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nonfinite_bars_have_no_tooltip() -> Result<()> {
+    let (_, snap) =
+        hover_at_fraction(r#"&[bar(&[("a", 0.0 / 0.0), ("b", 1.0)])]"#, 0.25, 0.5)
+            .await?;
+    assert!(snap.is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chart_hover_ignores_points_not_drawn() -> Result<()> {
+    for (data, y) in [
+        ("scatter(&[(5.0, 10.01)])", 0.001),
+        (
+            "candlestick(&[{x: 5.0, open: 11.0, high: 12.0, low: 10.01, close: 10.01}])",
+            0.001,
+        ),
+        ("error_bar(&[{x: 5.0, min: 10.01, avg: 10.01, max: 11.0}])", 0.001),
+        (
+            "candlestick(&[{x: 5.0, open: 4.0, high: 6.0, low: 0.0 / 0.0, close: 5.0}])",
+            0.5,
+        ),
+        ("error_bar(&[{x: 5.0, min: 0.0 / 0.0, avg: 5.0, max: 6.0}])", 0.5),
+    ] {
+        let (_, snap) = hover_at_fraction(&format_compact!(
+            "#x_range: &{{min: 0.0, max: 10.0}}, #y_range: &{{min: 0.0, max: 10.0}}, &[{data}]"
+        ), 0.5, y).await?;
+        assert!(snap.is_none(), "{data}");
+    }
+    Ok(())
+}
