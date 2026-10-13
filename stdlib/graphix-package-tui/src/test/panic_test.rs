@@ -616,3 +616,23 @@ let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
     h.assert_lines(&[])?;
     Ok(())
 }
+
+#[tokio::test]
+async fn chart_samples_labels_to_fit() -> Result<()> {
+    for height in [50, 400] {
+        let mut h = TuiTestHarness::with_viewport(
+            r#"
+use tui::{line, chart::{axis, chart}};
+let labels = array::init(2000, |i| line("[i]"));
+let result = chart(#y_axis: &axis(#labels: labels, {min: 0.0, max: 1.0}), &[])
+"#,
+            40,
+            height,
+        )
+        .await?;
+        let lines = h.render_lines()?;
+        assert!(lines.first().unwrap().starts_with("1999"));
+        assert!(lines.last().unwrap().starts_with("0"), "{:?}", lines.last());
+    }
+    Ok(())
+}

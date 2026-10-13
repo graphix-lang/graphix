@@ -51,7 +51,10 @@ impl FromValue for LegendPositionV {
 }
 
 #[derive(Clone)]
-struct AxisV(Axis<'static>);
+struct AxisV {
+    axis: Axis<'static>,
+    labels: Vec<LineV>,
+}
 
 impl FromValue for AxisV {
     fn from_value(v: Value) -> Result<Self> {
@@ -65,10 +68,6 @@ impl FromValue for AxisV {
         }
         let Fields { bounds, labels, labels_alignment, style, title } = v.cast_to()?;
         let mut axis = Axis::default().bounds([bounds.min, bounds.max]);
-        if let Some(lbls) = labels {
-            let lbls = lbls.into_iter().map(|l| l.0).collect::<Vec<_>>();
-            axis = axis.labels(lbls);
-        }
         if let Some(al) = labels_alignment {
             axis = axis.labels_alignment(al.0);
         }
@@ -78,7 +77,21 @@ impl FromValue for AxisV {
         if let Some(LineV(t)) = title {
             axis = axis.title(t);
         }
-        Ok(Self(axis))
+        Ok(Self { axis, labels: labels.unwrap_or_default() })
+    }
+}
+
+impl AxisV {
+    fn build(&self, room: u16) -> Axis<'_> {
+        let count = self.labels.len().min(room as usize);
+        let labels = (0..count)
+            .map(|i| {
+                let index =
+                    if count < 2 { 0 } else { i * (self.labels.len() - 1) / (count - 1) };
+                into_borrowed_line(&self.labels[index].0)
+            })
+            .collect::<Vec<_>>();
+        self.axis.clone().labels(labels)
     }
 }
 
@@ -237,26 +250,36 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         if let Some(Some(s)) = &p.style.t {
             chart = chart.style(s.0);
         }
-        // CR claude for claude: [bug/medium] The axes go to ratatui with every label
-        // the program gave them. ratatui's Chart::render_y_labels computes `i as u16 *
-        // (graph_area.height - 1) / (labels_len - 1)` in u16. Once (labels - 1) *
-        // (height - 1) passes 65535 (about 1400 labels on a 50-row chart), a debug,
-        // test or soak build panics with "attempt to multiply with overflow" and the
-        // display fails. A release build wraps the product and draws labels on the
-        // wrong rows. render_x_labels has the same flaw: past 65535 labels its
-        // `labels.len() as u16` count truncates and its tick product overflows. Fix:
-        // before passing each axis to the chart, sample its labels down to what the
-        // rect can hold (at most rect.height for y and rect.width for x), keeping the
-        // first and last labels. This keeps every product below u16::MAX, the same way
-        // barchart.rs bounds its bars against the rect. Probe:
-        // design/review-2026-10-12/repro/tui-widgets-02.gx. (tui-widgets-02)
         if let Some(Some(a)) = &p.x_axis.t {
-            chart = chart.x_axis(a.0.clone());
+            chart = chart.x_axis(a.build(rect.width));
         }
         if let Some(Some(a)) = &p.y_axis.t {
-            chart = chart.y_axis(a.0.clone());
+            chart =
+                chart.y_axis(a.build((rect.height as u32).min(
+                    u16::MAX as u32 / rect.height.saturating_sub(1).max(1) as u32 + 1,
+                ) as u16));
         }
         frame.render_widget(chart, rect);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{buffer::Buffer, text::Line, widgets::Widget};
+
+    #[test]
+    fn x_labels_do_not_truncate_their_count() {
+        let mut labels = vec![LineV(Line::from("m")); 65_538];
+        labels[0] = LineV(Line::from("f"));
+        labels[65_537] = LineV(Line::from("z"));
+        let axis = AxisV { axis: Axis::default().bounds([0.0, 1.0]), labels };
+        let rect = Rect::new(0, 0, 80, 10);
+        let mut buffer = Buffer::empty(rect);
+        Chart::default().x_axis(axis.build(rect.width)).render(rect, &mut buffer);
+        assert_eq!(buffer[(0, 9)].symbol(), "f");
+        Chart::default().x_axis(axis.build(2)).render(rect, &mut buffer);
+        assert_eq!(buffer[(79, 9)].symbol(), "z");
     }
 }
