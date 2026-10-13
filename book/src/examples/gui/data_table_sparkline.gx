@@ -14,24 +14,10 @@ mod icon;
 let tick = time::timer(duration:1.s, true);
 let t = cast<f64>(count(tick))$;
 
-// CR claude for claude: [readability/low] Each cpu_N is state with a dummy 0.0 initial
-// value plus a writer that is a pure function of t. The 0.0 is published at init and
-// becomes every row's first sparkline point, and the column's shared auto-scaled y-axis
-// spans 0..90 until those points age out of the 30 s history. Derive each value
-// instead, e.g. `let cpu_1 = 50.0 + 40.0 * math::sin(t / 4.0);`, which fires on every
-// tick through t. That drops the four `let cpu_N = 0.0` / `<-` pairs and the bogus
-// first point. (examples-gui-04)
-let cpu_1 = 0.0;
-cpu_1 <- tick ~ 50.0 + 40.0 * math::sin(t / 4.0);
-
-let cpu_2 = 0.0;
-cpu_2 <- tick ~ 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
-
-let cpu_3 = 0.0;
-cpu_3 <- tick ~ 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
-
-let cpu_4 = 0.0;
-cpu_4 <- tick ~ 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
+let cpu_1 = 50.0 + 40.0 * math::sin(t / 4.0);
+let cpu_2 = 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
+let cpu_3 = 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
+let cpu_4 = 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
 
 sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
 sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
