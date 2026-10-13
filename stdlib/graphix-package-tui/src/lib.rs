@@ -726,6 +726,15 @@ impl EvalCachedAsync for SuspendEv {
             // race it. Mark the control as display-pending when the display is created
             // and clear the mark when `run` returns the receiver. Add a non-harness
             // test. probe: design/review-2026-10-12/repro/tui-core-03.gx (tui-core-03)
+            // 2026-10-13 codex: A direct SuspendEv::eval on default TuiControl
+            // timed out after 100 ms (no_display_suspend_probe). A correct refusal
+            // needs display discovery to complete before deciding no display:
+            // graphix-shell/src/lib.rs::load_env calls Output::from_expr only after
+            // gx.program/get_env, while graphix-rt can already run the first cycle.
+            // Coordinate that lifecycle in shell/runtime so initial TUI suspends
+            // wait for a pending display and text-only programs are refused. Merely
+            // setting a flag in Tui::start still races that first cycle. Those
+            // changes are outside scope; the CR remains unresolved.
             if control.0.headless.load(std::sync::atomic::Ordering::Relaxed) {
                 return errf!("TerminalError", "no terminal display is running");
             }
