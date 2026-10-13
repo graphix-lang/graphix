@@ -505,24 +505,15 @@ pub(super) fn age_sparkline(
 
 /// Record a point at `now`, age the window and keep the history at most
 /// `MAX_SPARKLINE_POINTS` long.
-// CR claude for claude: [bug/medium] A non-finite sample is stored as is. value_to_f64
-// passes F64 NaN and ±inf through, and both feeds reach this function: a subscription
-// update and push_defaults_to_sparklines, whose default can come from the program's own
-// column source. compute_sparkline_bounds never lets a NaN win, but
-// SparklineCanvas::draw computes y = NaN for a NaN sample. An inf sample makes the
-// bounds infinite, so its y is inf/inf = NaN as well. That point reaches lyon_path's
-// builder, whose nan_check debug_asserts finite points, so a dev build's GUI thread
-// panics during the canvas draw. A release build strokes a path with NaN coordinates.
-// Fix: drop samples where `!v.is_finite()` here, and skip non-finite points in
-// SparklineCanvas::draw as a backstop. probe:
-// design/review-2026-10-12/repro/gui-datatable-01.rs (gui-datatable-01)
 pub(super) fn push_sparkline_point(
     history: &mut VecDeque<(Instant, f64)>,
     now: Instant,
     v: f64,
     history_seconds: f64,
 ) {
-    history.push_back((now, v));
+    if v.is_finite() {
+        history.push_back((now, v));
+    }
     age_sparkline(history, now, history_seconds);
     if history.len() > MAX_SPARKLINE_POINTS {
         decimate_sparkline(history);
@@ -544,6 +535,16 @@ pub(super) fn value_to_f64(v: &Value) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparkline_history_rejects_nonfinite_samples() {
+        let mut history = VecDeque::new();
+        let now = Instant::now();
+        for v in [1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 2.0] {
+            push_sparkline_point(&mut history, now, v, 60.0);
+        }
+        assert!(history.iter().map(|(_, v)| *v).eq([1.0, 2.0]));
+    }
 
     #[test]
     fn sparkline_nonfinite_negative_and_zero_windows() {

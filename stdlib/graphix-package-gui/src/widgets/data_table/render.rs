@@ -57,6 +57,47 @@ struct SparklineCanvas {
     bounds: SparkBounds,
 }
 
+impl SparklineCanvas {
+    fn path(&self, size: iced_core::Size) -> widget::canvas::Path {
+        use widget::canvas::Path;
+        let (mut min_v, mut max_v) = (self.bounds.min, self.bounds.max);
+        let finite = |(t, v): &&(f64, f64)| t.is_finite() && v.is_finite();
+        let Some(&(min_t, _)) = self.points.iter().find(finite) else {
+            return Path::new(|_| {});
+        };
+        let max_t = self.points.iter().rfind(finite).unwrap().0;
+        if (max_v - min_v).abs() < 1e-12 {
+            min_v -= 1.0;
+            max_v += 1.0;
+        }
+        let t_range = (max_t - min_t).max(1e-12);
+        let v_range = max_v - min_v;
+        let w = size.width;
+        let h = size.height;
+        Path::new(|builder| {
+            let mut first = true;
+            for &(t, v) in self.points.iter() {
+                if !t.is_finite() || !v.is_finite() {
+                    first = true;
+                    continue;
+                }
+                let x = ((t - min_t) / t_range) as f32 * w;
+                let y = h - ((v - min_v) / v_range) as f32 * h;
+                if !x.is_finite() || !y.is_finite() {
+                    first = true;
+                    continue;
+                }
+                if first {
+                    builder.move_to(iced_core::Point::new(x, y));
+                    first = false;
+                } else {
+                    builder.line_to(iced_core::Point::new(x, y));
+                }
+            }
+        })
+    }
+}
+
 impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
     for SparklineCanvas
 {
@@ -70,35 +111,12 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
         bounds: iced_core::Rectangle,
         _cursor: iced_core::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry<Renderer>> {
-        use widget::canvas::{Frame, Path, Stroke};
+        use widget::canvas::{Frame, Stroke};
         let mut frame = Frame::new(renderer, bounds.size());
         if self.points.len() < 2 {
             return vec![frame.into_geometry()];
         }
-        let (mut min_v, mut max_v) = (self.bounds.min, self.bounds.max);
-        let (min_t, max_t) =
-            (self.points.first().unwrap().0, self.points.last().unwrap().0);
-        if (max_v - min_v).abs() < 1e-12 {
-            min_v -= 1.0;
-            max_v += 1.0;
-        }
-        let t_range = (max_t - min_t).max(1e-12);
-        let v_range = max_v - min_v;
-        let w = bounds.width;
-        let h = bounds.height;
-        let path = Path::new(|builder| {
-            let mut first = true;
-            for &(t, v) in self.points.iter() {
-                let x = ((t - min_t) / t_range) as f32 * w;
-                let y = h - ((v - min_v) / v_range) as f32 * h;
-                if first {
-                    builder.move_to(iced_core::Point::new(x, y));
-                    first = false;
-                } else {
-                    builder.line_to(iced_core::Point::new(x, y));
-                }
-            }
-        });
+        let path = self.path(bounds.size());
         frame.stroke(
             &path,
             Stroke::default()
@@ -575,7 +593,7 @@ impl<X: GXExt> DataTableW<X> {
                     age_sparkline(history, now, *history_seconds);
                 }
                 let entry = ranges.entry(col.clone()).or_insert((f64::MAX, f64::MIN));
-                for (_t, v) in history.iter() {
+                for (_t, v) in history.iter().filter(|(_, v)| v.is_finite()) {
                     if *v < entry.0 {
                         entry.0 = *v;
                     }
@@ -826,5 +844,42 @@ impl<X: GXExt> DataTableW<X> {
             }
         };
         self.wrap_cell(inner, col_name, row_idx, w, row_h, is_selected)
+    }
+}
+
+#[cfg(test)]
+mod sparkline_tests {
+    use super::*;
+    use widget::canvas::path::lyon_path::Event;
+
+    #[test]
+    fn sparkline_paths_skip_nonfinite_samples() {
+        let canvas = SparklineCanvas {
+            points: vec![
+                (f64::NAN, 0.0),
+                (0.0, 0.0),
+                (1.0, 1.0),
+                (2.0, f64::NAN),
+                (3.0, 0.0),
+                (4.0, 1.0),
+                (5.0, f64::INFINITY),
+            ],
+            bounds: SparkBounds { min: 0.0, max: 1.0 },
+        };
+        let path = canvas.path(iced_core::Size::new(100.0, 20.0));
+        let mut lines = 0;
+        for event in path.raw().iter() {
+            match event {
+                Event::Begin { at } => assert!(at.x.is_finite() && at.y.is_finite()),
+                Event::Line { from, to } => {
+                    assert!(from.x.is_finite() && from.y.is_finite());
+                    assert!(to.x.is_finite() && to.y.is_finite());
+                    lines += 1;
+                }
+                Event::End { .. } => (),
+                _ => panic!("unexpected sparkline segment"),
+            }
+        }
+        assert_eq!(lines, 2);
     }
 }
