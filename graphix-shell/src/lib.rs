@@ -605,9 +605,17 @@ impl<X: GXExt> Shell<X> {
         let mut output = if script { Output::EmptyScript } else { Output::None };
         let mut newenv = None;
         let mut exprs = vec![];
-        let mut env = self
-            .load_env(&gx, &mut newenv, &mut output, &mut exprs, &run_on_main)
-            .await?;
+        // a program whose first cycle does not end holds the env load, so a
+        // termination signal must be heard there too
+        let mut env = tokio::select! {
+            env = self.load_env(&gx, &mut newenv, &mut output, &mut exprs, &run_on_main) => env?,
+            code = terminated.recv() => {
+                gx.interrupt();
+                gx.abort();
+                sigint.abort();
+                return Ok(code)
+            }
+        };
         if !script {
             println!("Welcome to the graphix shell");
             println!("Press ctrl-c to cancel, ctrl-d to exit, and tab for help")

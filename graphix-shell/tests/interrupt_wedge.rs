@@ -1,8 +1,8 @@
 //! Ctrl-C must always get the user their process back: a program may
 //! spin forever inside one cycle, and the cooperative interrupt
 //! (`GXHandle::interrupt`) is what stops it. These tests spawn the real
-//! binary on wedging programs, in both engines, and assert SIGINT
-//! still exits the shell.
+//! binary on wedging programs, in both engines, and assert SIGINT (and
+//! SIGTERM, which asks the process to end) still exits the shell.
 #![cfg(unix)]
 
 use std::{
@@ -23,8 +23,8 @@ const LATER_CYCLE_WEDGE: &str = "{ let x = i64:0; \
      let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n + i64:1) }; \
      f(x) }";
 
-fn sigint(child: &Child) {
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+fn signal(child: &Child, sig: libc::c_int) {
+    unsafe { libc::kill(child.id() as libc::pid_t, sig) };
 }
 
 /// True iff `child` exited within `budget`.
@@ -56,12 +56,14 @@ fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
 }
 
 /// Run `program` until `wedged_after`, check it is alive and printing
-/// nothing more, then SIGINT it and require it to exit.
-fn interrupt_frees_process(
+/// nothing more, then send `sig` and require it to exit: twice for
+/// SIGINT (cancel, then exit, as a user would), once for SIGTERM.
+fn signal_frees_process(
     program: &str,
     no_fusion: bool,
     label: &str,
     wedged_after: Duration,
+    sig: libc::c_int,
 ) {
     let dir =
         std::env::temp_dir().join(format!("gx-wedge-{}-{}", std::process::id(), label));
@@ -84,11 +86,12 @@ fn interrupt_frees_process(
         printed,
         "{label}: the program is still printing, so it is not wedged"
     );
-    // Two signals, as a user would: cancel, then exit.
-    sigint(&child);
-    thread::sleep(Duration::from_millis(750));
-    if child.try_wait().expect("try_wait").is_none() {
-        sigint(&child);
+    signal(&child, sig);
+    if sig == libc::SIGINT {
+        thread::sleep(Duration::from_millis(750));
+        if child.try_wait().expect("try_wait").is_none() {
+            signal(&child, sig);
+        }
     }
     let freed = exited_within(&mut child, Duration::from_secs(30));
     if !freed {
@@ -96,45 +99,82 @@ fn interrupt_frees_process(
         let _ = child.wait();
     }
     let _ = fs::remove_dir_all(&dir);
-    assert!(freed, "{label}: wedged shell survived SIGINT — only SIGKILL frees it");
+    assert!(freed, "{label}: wedged shell survived signal {sig}: only SIGKILL frees it");
 }
 
 #[test]
 fn interrupt_frees_first_cycle_wedge_jit() {
-    interrupt_frees_process(
+    signal_frees_process(
         FIRST_CYCLE_WEDGE,
         false,
         "first-cycle/jit",
         Duration::from_secs(6),
+        libc::SIGINT,
     );
 }
 
 #[test]
 fn interrupt_frees_first_cycle_wedge_interp() {
-    interrupt_frees_process(
+    signal_frees_process(
         FIRST_CYCLE_WEDGE,
         true,
         "first-cycle/interp",
         Duration::from_secs(6),
+        libc::SIGINT,
     );
 }
 
 #[test]
 fn interrupt_frees_later_cycle_wedge_jit() {
-    interrupt_frees_process(
+    signal_frees_process(
         LATER_CYCLE_WEDGE,
         false,
         "later-cycle/jit",
         Duration::from_secs(2),
+        libc::SIGINT,
     );
 }
 
 #[test]
 fn interrupt_frees_later_cycle_wedge_interp() {
-    interrupt_frees_process(
+    signal_frees_process(
         LATER_CYCLE_WEDGE,
         true,
         "later-cycle/interp",
         Duration::from_secs(2),
+        libc::SIGINT,
+    );
+}
+
+#[test]
+fn terminate_frees_first_cycle_wedge_jit() {
+    signal_frees_process(
+        FIRST_CYCLE_WEDGE,
+        false,
+        "first-cycle-term/jit",
+        Duration::from_secs(6),
+        libc::SIGTERM,
+    );
+}
+
+#[test]
+fn terminate_frees_first_cycle_wedge_interp() {
+    signal_frees_process(
+        FIRST_CYCLE_WEDGE,
+        true,
+        "first-cycle-term/interp",
+        Duration::from_secs(6),
+        libc::SIGTERM,
+    );
+}
+
+#[test]
+fn terminate_frees_later_cycle_wedge_interp() {
+    signal_frees_process(
+        LATER_CYCLE_WEDGE,
+        true,
+        "later-cycle-term/interp",
+        Duration::from_secs(2),
+        libc::SIGTERM,
     );
 }
