@@ -4205,6 +4205,9 @@ fn child_command() -> tokio::process::Command {
     if std::env::var_os("GRAPHIX_EVAL_THREADS").is_none() {
         cmd.env("GRAPHIX_EVAL_THREADS", CHILD_COMPILE_THREADS);
     }
+    if let Some(o) = std::env::var_os("GRAPHIX_FUZZ_CHILD_ASAN_OPTIONS") {
+        cmd.env("ASAN_OPTIONS", o);
+    }
     cmd
 }
 

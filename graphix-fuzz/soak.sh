@@ -281,20 +281,7 @@ start() {
             --manifest-path "$repo/Cargo.toml"
         binary="$build/$triple/soak/graphix-fuzz"
         export GRAPHIX_FUZZ_MEM_LIMIT=0
-        # CR claude for claude: [bug/medium] This export reaches every ASan process
-        # start() runs, not only the soak's children. That includes the `"$binary"
-        # regress` gate below and the launched soak leader, which re-runs the gate
-        # in-process. One in-process check_verdict on the corpus pin
-        # tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx already
-        # peaks near 1.9-2.0 GB RSS without ASan. regress runs at least two of these at
-        # once, and ASan's shadow, redzones and quarantine come on top. The gate
-        # therefore hits "hard rss limit exhausted", and a FLEET_ASAN launch fails. Fix:
-        # give the cap to the children only, for example a variable that child_command
-        # copies into ASAN_OPTIONS (the same way apply_mem_limit is children-only), and
-        # leave the gate and leader uncapped or capped at a size based on
-        # regress_parallelism. Probe: design/review-2026-10-12/repro/fuzz-main-aux-06.sh
-        # (fuzz-main-aux-06)
-        export ASAN_OPTIONS="hard_rss_limit_mb=${SOAK_ASAN_RSS_MB:-2048}"
+        export GRAPHIX_FUZZ_CHILD_ASAN_OPTIONS="hard_rss_limit_mb=${SOAK_ASAN_RSS_MB:-2048}"
     else
         cargo build --profile soak -p graphix-fuzz --manifest-path "$repo/Cargo.toml"
         binary="$build/soak/graphix-fuzz"
