@@ -26,7 +26,7 @@ use triomphe::Arc;
 /// in-process netidx and the full stdlib loaded, and run the LSP
 /// server until it shuts down.
 pub fn run() -> Result<()> {
-    let (connection, io_threads) = Connection::stdio();
+    let (connection, io_threads) = graphix_lsp::stdio::stdio()?;
     serve(connection)?;
     io_threads.join()?;
     Ok(())

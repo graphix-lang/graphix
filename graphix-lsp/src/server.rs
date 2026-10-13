@@ -73,7 +73,7 @@ pub fn workspace_roots(init: &InitializeParams) -> Vec<PathBuf> {
 }
 
 /// Run the LSP server over `connection` until the client requests
-/// shutdown (`Connection::stdio()` in the shell, `Connection::memory()`
+/// shutdown (`stdio::stdio()` in the shell, `Connection::memory()`
 /// in tests). `make_backend` runs once the `initialize` handshake has
 /// named the workspace.
 pub fn serve<F>(connection: Connection, make_backend: F) -> Result<()>
@@ -107,22 +107,6 @@ where
         // Checking waits for a quiet moment, so a burst of edits costs
         // one check; a request the client is waiting on alone sees the
         // text as it stands.
-        // CR claude for claude: [perf/high] Over stdio this is always true.
-        // lsp-server's Connection::stdio hands messages over a bounded(0) crossbeam
-        // channel, and a zero-capacity channel's is_empty always returns true. So
-        // state.flush checks every dirty root after every notification and before every
-        // request. A burst of edits costs one check per message, not one per burst: 40
-        // queued didChanges publish 39 times, and restoring 36 open netidx-admin tabs
-        // runs 36 checks before the first hover is answered. Only Connection::memory
-        // (unbounded), which the graphix-shell/tests/lsp harness uses, coalesces, so no
-        // test sees this. Fix: after recv, drain whatever try_recv yields into a local
-        // queue and treat the server as idle only when that comes back empty.
-        // Alternatively, read stdio with our own framing thread feeding an unbounded
-        // channel; that thread could also answer a malformed payload with -32700
-        // instead of ending the server, which lsp-server's reader does today. Add an
-        // e2e case that runs `graphix lsp` over real pipes and counts publishes for a
-        // burst. probe: design/review-2026-10-12/repro/x-lsp-probe.py coalesce
-        // (x-lsp-probe-01)
         let idle = connection.receiver.is_empty();
         match msg {
             Message::Request(req) => {

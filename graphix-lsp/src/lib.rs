@@ -10,6 +10,7 @@ pub mod position;
 mod query;
 mod server;
 mod state;
+pub mod stdio;
 mod symbols;
 pub mod text;
 pub mod uri;
