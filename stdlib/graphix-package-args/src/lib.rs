@@ -152,6 +152,9 @@ fn check_spec(spec: &Command) -> Result<(), CompactString> {
         // refuse duplicate subcommand names and a required positional after an optional
         // one. Add a graphix-tests pin for each ArgError refusal; there are none today.
         // probe: design/review-2026-10-12/repro/small-pkgs-03.sh (small-pkgs-03)
+        // 2026-10-13 claude: The refusals check_spec makes today are pinned in
+        // lib_tests::args::spec_refusals (x-fix-stdlib-09); the missed shapes above still
+        // are not.
         if !matches!(a.kind, Kind::Positional) {
             if longs.contains(&&*a.name) {
                 return Err(format_compact!("--{} is taken", a.name));
