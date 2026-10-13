@@ -50,6 +50,18 @@ impl FromValue for Index {
     }
 }
 
+/// Counts whose product with a u16 track, plus half the sum of two
+/// counts for rounding, fits in usize.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScrollCount(pub usize);
+
+impl FromValue for ScrollCount {
+    fn from_value(v: Value) -> Result<Self> {
+        let cap = (u32::MAX as usize).min(usize::MAX / (u16::MAX as usize + 1));
+        Ok(Self(clamped("scroll count", v.cast_to::<i64>()?, 0, cap as i64) as usize))
+    }
+}
+
 /// A percentage: `0..=100`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Percent(pub u16);

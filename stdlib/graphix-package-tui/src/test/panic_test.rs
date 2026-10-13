@@ -200,34 +200,35 @@ let result = sparkline(#max: &-100.0, &data)
 }
 
 #[tokio::test]
-async fn scrollbar_position_negative_does_not_panic() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        r#"
-use tui::*;
-use tui::scrollbar::{self, *};
-use tui::paragraph::{self, *};
-let inner = paragraph(&"body");
-let result = scrollbar(#position: &-5, &inner)
-"#,
-    )
-    .await?;
-    h.assert_lines(&["body"])?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn scrollbar_content_length_negative_does_not_panic() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        r#"
-use tui::*;
-use tui::scrollbar::{self, *};
-use tui::paragraph::{self, *};
-let inner = paragraph(&"body");
-let result = scrollbar(#position: &0, #content_length: &-10, &inner)
-"#,
-    )
-    .await?;
-    h.assert_lines(&["body"])?;
+async fn scrollbar_counts_keep_the_thumb_on_track() -> Result<()> {
+    use compact_str::format_compact;
+    for (length, position, viewport, expected) in [
+        (10, -5, 1, "^#.....v"),
+        (-10, 0, 1, "        "),
+        (i64::MAX, i64::MAX, 1, "^.....#v"),
+        (10, 0, i64::MAX, "^######v"),
+        (i64::MAX, i64::MAX, i64::MAX, "^...###v"),
+    ] {
+        let source = format_compact!(
+            r##"
+use tui::scrollbar::scrollbar;
+use tui::text::text;
+let result = scrollbar(
+  #position: &{position}, #content_length: &{length}, #viewport_length: &{viewport},
+  #begin_symbol: &"^", #end_symbol: &"v", #thumb_symbol: &"#", #track_symbol: &".",
+  &text(&""))
+"##
+        );
+        let mut h = TuiTestHarness::with_viewport(&source, 1, 8).await?;
+        let buffer = h.render()?;
+        for y in 0..expected.len() {
+            assert_eq!(
+                buffer[(0, y as u16)].symbol(),
+                &expected[y..y + 1],
+                "length={length}, position={position}, viewport={viewport}, row={y}"
+            );
+        }
+    }
     Ok(())
 }
 
