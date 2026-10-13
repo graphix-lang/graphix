@@ -9,7 +9,7 @@ use futures::{StreamExt, channel::mpsc};
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent, branch::RtView,
 };
-use graphix_package_core::{NetConfig, NetTimeouts};
+use graphix_package_core::{Inbox, NetConfig, NetTimeouts};
 use netidx::{
     path::Path,
     publisher::{
@@ -49,12 +49,11 @@ pub(crate) struct NetWrite(pub(crate) WriteRequest);
 
 impl CustomBuiltinType for NetWrite {}
 
-/// An incoming rpc-server call, delivered to the publish_rpc builtin
-/// as a custom event (carries the reply channel).
+/// Calls are waiting in a publish_rpc builtin's inbox.
 #[derive(Debug)]
-pub(crate) struct NetRpcCall(pub(crate) Option<netidx_protocols::rpc::server::RpcCall>);
+pub(crate) struct NetRpcWake;
 
-impl CustomBuiltinType for NetRpcCall {}
+impl CustomBuiltinType for NetRpcWake {}
 
 static VBATCH: LazyLock<Pool<Vec<(BindId, Value)>>> =
     LazyLock::new(|| Pool::new(32, 16384));
@@ -244,7 +243,7 @@ struct Inner {
     routes: Arc<Mutex<Routes>>,
     netidx_updates_tx: mpsc::Sender<GPooled<Vec<(SubId, NEvent)>>>,
     writes_tx: mpsc::Sender<GPooled<Vec<WriteRequest>>>,
-    rpcs_tx: mpsc::Sender<(BindId, netidx_protocols::rpc::server::RpcCall)>,
+    rpcs_tx: mpsc::Sender<BindId>,
     /// The flusher's too: it holds this and not the Inner, so dropping
     /// the NetState closes `flush_tx` and the tasks end.
     pending_publish_batch: Arc<Mutex<Option<UpdateBatch>>>,
@@ -371,15 +370,14 @@ impl NetState {
                         },
                         call = rpcs_rx.next() => match call {
                             None => break,
-                            Some((id, call)) => {
+                            Some(id) => {
                                 if rpc_dbg() {
-                                    eprintln!("RPCDBG pump: call for {id:?}");
+                                    eprintln!("RPCDBG pump: calls for {id:?}");
                                 }
                                 let mut out = CBATCH.take();
                                 out.push((
                                     id,
-                                    Box::new(NetRpcCall(Some(call)))
-                                        as Box<dyn CustomBuiltinType>,
+                                    Box::new(NetRpcWake) as Box<dyn CustomBuiltinType>,
                                 ));
                                 use futures::SinkExt;
                                 if custom_tx.send(out).await.is_err() {
@@ -696,6 +694,7 @@ impl NetState {
         doc: Value,
         spec: Vec<netidx_protocols::rpc::server::ArgSpec>,
         id: BindId,
+        inbox: Arc<Inbox<netidx_protocols::rpc::server::RpcCall>>,
     ) -> Result<netidx_protocols::rpc::server::Proc> {
         use netidx_protocols::rpc::server::Proc;
         if rpc_dbg() {
@@ -708,7 +707,7 @@ impl NetState {
             path,
             doc,
             spec,
-            move |c| Some((id, c)),
+            move |c| inbox.post(c).then_some(id),
             Some(rpcs_tx),
         )?;
         Ok(proc)

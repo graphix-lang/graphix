@@ -1,4 +1,4 @@
-use crate::netstate::{NetRpcCall, NetState, NetWrite};
+use crate::netstate::{NetRpcWake, NetState, NetWrite};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
@@ -12,7 +12,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CastTarget, Handler, Reply, castable, seam_arg};
+use graphix_package_core::{CastTarget, Handler, Inbox, Reply, castable, seam_arg};
 use netidx::{
     path::Path,
     publisher::Val,
@@ -974,6 +974,8 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     id: BindId,
     top_id: ExprId,
     handler: Handler<R, E, RpcReply>,
+    /// Calls posted under `id`, taken at each wake.
+    inbox: std::sync::Arc<Inbox<server::RpcCall>>,
     current: Option<(Path, server::Proc)>,
     /// The handler's argument type, which a call's arguments are cast to.
     cast_typ: Option<Type>,
@@ -1033,6 +1035,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
             doc.clone(),
             spec,
             self.id,
+            self.inbox.clone(),
         )?;
         self.current = Some((path, proc));
         Ok(())
@@ -1061,6 +1064,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
             id,
             top_id,
             handler,
+            inbox: Default::default(),
             current: None,
             cast_typ: resolved.and_then(Self::handler_arg),
             defaults: Vec::new(),
@@ -1084,6 +1088,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
             id,
             top_id,
             handler,
+            inbox: Default::default(),
             current: None,
             cast_typ,
             defaults: Vec::new(),
@@ -1146,13 +1151,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 failed = Some(errf!(literal!("PublishRpcError"), "{e:#}"));
             }
         }
-        if let Some(mut cbt) = ctx.event.take_custom(&self.id)
-            && let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>()
-            && let Some(c) = c.0.take()
+        if let Some(cbt) = ctx.event.take_custom(&self.id)
+            && (&*cbt as &dyn Any).is::<NetRpcWake>()
         {
-            match self.arg(ctx, &c) {
-                e @ Value::Error(_) => RpcReply(c).reply(e),
-                arg => self.handler.push(arg, RpcReply(c)),
+            let mut calls: LPooled<Vec<server::RpcCall>> = LPooled::take();
+            self.inbox.take(&mut *calls);
+            for c in calls.drain(..) {
+                match self.arg(ctx, &c) {
+                    e @ Value::Error(_) => RpcReply(c).reply(e),
+                    arg => self.handler.push(arg, RpcReply(c)),
+                }
             }
         }
         self.handler.update(ctx);
@@ -1196,6 +1204,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
+        self.inbox = Default::default();
         self.current = None;
         self.handler.sleep(ctx);
     }

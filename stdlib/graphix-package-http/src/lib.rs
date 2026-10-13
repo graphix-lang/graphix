@@ -17,7 +17,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, Handler,
-    ImageState, seam_arg,
+    ImageState, Inbox, seam_arg,
 };
 use graphix_rt::GXRt;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
@@ -26,7 +26,7 @@ use netidx_core::pack::{Pack, PackError};
 use netidx_derive::{FromValue, IntoValue};
 use netidx_value::{FromValue, ValArray, Value};
 use parking_lot::Mutex;
-use poolshark::global::GPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use std::{
     any::Any,
     fmt,
@@ -413,23 +413,25 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
 pub(crate) type HttpRequest = CachedArgsAsync<HttpRequestEv<ArcStr>>;
 pub(crate) type HttpRequestBin = CachedArgsAsync<HttpRequestEv<Bytes>>;
 
-struct HttpReqEvent {
-    request: Value,
-    reply: Option<oneshot::Sender<Value>>,
-}
+/// A request and where its answer goes.
+type Asked = (Value, oneshot::Sender<Value>);
 
-impl fmt::Debug for HttpReqEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpReqEvent")
-            .field("request", &self.request)
-            .field("reply", &self.reply.is_some())
-            .finish()
-    }
-}
+/// Requests are waiting in the server's inbox.
+#[derive(Debug)]
+struct HttpWake;
 
-impl CustomBuiltinType for HttpReqEvent {}
+impl CustomBuiltinType for HttpWake {}
 
 type Batches = mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>;
+
+/// Where a connection posts its requests: the server's inbox, and the
+/// event that wakes it under its id.
+#[derive(Clone)]
+struct Post {
+    tx: Batches,
+    id: BindId,
+    inbox: Arc<Inbox<Asked>>,
+}
 
 fn text_response(
     status: StatusCode,
@@ -518,8 +520,7 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
 /// arrive whole is 400, neither dispatched.
 async fn handle_http_request(
     req: hyper::Request<hyper::body::Incoming>,
-    mut tx: Batches,
-    id: BindId,
+    mut post: Post,
     max_body: usize,
 ) -> hyper::Response<Full<Bytes>> {
     let (parts, body) = req.into_parts();
@@ -572,14 +573,12 @@ async fn handle_http_request(
     }
     .into();
     let (reply_tx, reply_rx) = oneshot::channel();
-    let mut batch = CBATCH_POOL.take();
-    batch.push((
-        id,
-        Box::new(HttpReqEvent { request, reply: Some(reply_tx) })
-            as Box<dyn CustomBuiltinType>,
-    ));
-    if tx.send(batch).await.is_err() {
-        return text_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable");
+    if post.inbox.post((request, reply_tx)) {
+        let mut batch = CBATCH_POOL.take();
+        batch.push((post.id, Box::new(HttpWake) as Box<dyn CustomBuiltinType>));
+        if post.tx.send(batch).await.is_err() {
+            return text_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable");
+        }
     }
     match reply_rx.await {
         Ok(resp_value) => build_hyper_response(&resp_value),
@@ -661,8 +660,7 @@ impl AsyncWrite for MaybeTls {
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     tls: Option<tokio_rustls::TlsAcceptor>,
-    tx: Batches,
-    id: BindId,
+    post: Post,
     max_body: usize,
 ) {
     let io = match tls {
@@ -681,7 +679,7 @@ async fn serve_connection(
         }
     };
     let service = hyper::service::service_fn(|req| {
-        let resp = handle_http_request(req, tx.clone(), id, max_body);
+        let resp = handle_http_request(req, post.clone(), max_body);
         async move { Ok::<_, std::convert::Infallible>(resp.await) }
     });
     // CR claude for eric: [bug/high] This connection builder has no timer, so hyper
@@ -724,8 +722,7 @@ async fn serve_loop(
     listener: tokio::net::TcpListener,
     conns: Conns,
     tls: Option<tokio_rustls::TlsAcceptor>,
-    tx: Batches,
-    id: BindId,
+    post: Post,
     max_connections: Arc<Semaphore>,
     max_body: usize,
 ) {
@@ -739,10 +736,10 @@ async fn serve_loop(
                 continue;
             }
         };
-        let (tls, tx) = (tls.clone(), tx.clone());
+        let (tls, post) = (tls.clone(), post.clone());
         conns.0.lock().spawn(async move {
             let _permit = permit;
-            serve_connection(stream, tls, tx, id, max_body).await
+            serve_connection(stream, tls, post, max_body).await
         });
     }
 }
@@ -823,6 +820,8 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
     id: BindId,
     top_id: ExprId,
     handler: Handler<R, E, oneshot::Sender<Value>>,
+    /// Requests posted under `id`, taken at each wake.
+    inbox: Arc<Inbox<Asked>>,
     listening: Option<Listening>,
     abort: Option<tokio::task::AbortHandle>,
     /// Set by `sleep`, taken by the next update as a restart.
@@ -850,6 +849,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
             id,
             top_id,
             handler,
+            inbox: Arc::default(),
             listening: None,
             abort: None,
             slept: false,
@@ -870,6 +870,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
             id,
             top_id,
             handler,
+            inbox: Arc::default(),
             listening: None,
             abort: None,
             slept: false,
@@ -919,8 +920,8 @@ impl<R: Rt, E: UserEvent> HttpServe<R, E> {
         let (tx, rx) = mpsc::channel(100);
         ctx.rt.watch(rx);
         let semaphore = Arc::new(Semaphore::new(s.max_connections));
-        let serve =
-            serve_loop(listener, conns, s.tls, tx, self.id, semaphore, s.max_body);
+        let post = Post { tx, id: self.id, inbox: self.inbox.clone() };
+        let serve = serve_loop(listener, conns, s.tls, post, semaphore, s.max_body);
         let abort = tokio::spawn(serve).abort_handle();
         self.abort = Some(abort.clone());
         Ok(SERVER_WRAPPER
@@ -976,7 +977,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 _ => None,
             });
         }
-        // CR claude for claude: [perf/medium] Each connection sends its own
+        // XCR claude for claude: [perf/medium] Each connection sends its own
         // HttpReqEvent under the server's one BindId, and the runtime delivers one
         // custom event per id per cycle, queuing the rest. N simultaneous requests
         // therefore start over N cycles. A sync handler answers in the cycle it starts,
@@ -987,11 +988,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         // event, or the event carries every waiting request, so Handler::push gets the
         // whole batch in one cycle. sys::net's rpc server (its take_custom then
         // handler.push) needs the same change. (http-sqlite-db1-09)
-        if let Some(mut cbt) = ctx.event.take_custom(&self.id)
-            && let Some(req) = (&mut *cbt as &mut dyn Any).downcast_mut::<HttpReqEvent>()
-            && let Some(reply) = req.reply.take()
-        {
-            self.handler.push(req.request.clone(), reply);
+        // 2026-10-13 claude: connections post into the server's core::Inbox and send
+        // a wake only when none is on its way; a wake takes every request posted, and
+        // publish_rpc does the same. Delivery is pinned by http_concurrent_requests_pair
+        // and the net rpc tests; the batching itself depends on arrival timing and has
+        // no deterministic pin.
+        if ctx.event.take_custom(&self.id).is_some() {
+            let mut asked: LPooled<Vec<Asked>> = LPooled::take();
+            self.inbox.take(&mut *asked);
+            for (request, reply) in asked.drain(..) {
+                self.handler.push(request, reply);
+            }
         }
         self.handler.update(ctx);
         match started {
@@ -1032,6 +1039,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         }
         self.slept = true;
         self.out = TagValue::phantom();
+        self.inbox = Arc::default();
         self.handler.sleep(ctx);
     }
 }

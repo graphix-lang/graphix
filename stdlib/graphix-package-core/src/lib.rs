@@ -438,7 +438,7 @@ pub mod handler;
 pub mod memo;
 pub mod testing;
 
-pub use handler::{Handler, Reply};
+pub use handler::{Handler, Inbox, Reply};
 pub use memo::FastMemo;
 
 /// A map key as a text format (JSON, TOML, a template's data) writes it:
