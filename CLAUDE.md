@@ -710,7 +710,9 @@ cycle, across workers; the compiler never pins threads.
   definition assertions). `FuseExpect::{Jit, None}` asserts
   WHETHER anything fuses, bidirectionally; `#[native]` asserts that an
   expression does.
-  `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit.
+  `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
+  and in the forced modes a `PARAUDIT-NOFORK` line for each fixture that
+  forked nothing (a finding where the fixture has fork points).
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
   per-cycle trace oracle, each engine also no-cache vs cold-image vs
   warm-image (`GRAPHIX_FUZZ_SESSIONS`) and forked against the serial

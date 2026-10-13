@@ -880,6 +880,8 @@ macro_rules! run {
                 } else {
                     ::std::option::Option::None
                 };
+                // the stdlib root's own cycles fork too: count the fixture's
+                let forks_before = ctx.rt.control().forks();
                 let built = $crate::testing::compile_result(&ctx).await;
                 if let ::std::option::Option::Some(checked) = checked {
                     $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?;
@@ -922,6 +924,17 @@ macro_rules! run {
                         }
                     }
                 }
+                // a forced mode that forked nothing: a finding when the
+                // fixture has fork points
+                if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
+                    && matches!(
+                        mode,
+                        $crate::testing::Mode::Par | $crate::testing::Mode::JitPar
+                    )
+                    && ctx.rt.control().forks() == forks_before
+                {
+                    eprintln!("PARAUDIT-NOFORK\t{}\t{mode:?}", module_path!());
+                }
                 ctx.shutdown().await;
                 Ok(invocations)
             }
@@ -934,16 +947,6 @@ macro_rules! run {
 
             #[$interp]
             #[::tokio::test(flavor = "current_thread")]
-            // CR claude for claude: [test-gap/low] The par and jit_par tests run under
-            // ParMode::Force but assert only the predicate; nothing reads
-            // Control::forks(). If a construct stopped forking (a planner or analysis
-            // change that makes it opaque), these tests would quietly become copies of
-            // interp and jit and still pass. Only a few hand pins in par_attrs and
-            // image check fork counts. Have run_mode return the fork count in the Par
-            // and JitPar modes, and either report it under an env-gated audit like
-            // GRAPHIX_FUSE_AUDIT (a fixture with fork points that forked nothing is a
-            // finding) or add an optional `; forks` expectation that fails when Force
-            // forked nothing. (core-aux-10)
             async fn par() -> ::anyhow::Result<()> {
                 run_mode($crate::testing::Mode::Par, false, false, false).await.map(|_| ())
             }
