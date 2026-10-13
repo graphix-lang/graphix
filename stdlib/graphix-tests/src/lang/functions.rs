@@ -320,7 +320,7 @@ run!(tail_stateless_collapses, TAIL_STATELESS_COLLAPSES, |v: Result<&Value>| mat
 const RECURSIVE_LAMBDA0: &str = r#"
 {
     let rec f = |x: i64| select x { x if x < 10 => f(x + 1), x => x };
-    f(0)
+    #[native] f(0)
 }
 "#;
 
@@ -468,7 +468,7 @@ const KIR_LAZY_THREE_LEVEL: &str = r#"
     let inner = |x| x * x + 1;
     let middle = |x| inner(x) + inner(x + 1);
     let outer = |x| middle(x) - middle(x - 1);
-    outer(5)
+    #[native] outer(5)
 }
 "#;
 
@@ -527,7 +527,7 @@ const TRANSITIVE_CHAIN: &str = r#"
     let g3 = |n: i64| -> i64 n + 1;
     let g2 = |n: i64| -> i64 g3(n) * 2;
     let g1 = |n: i64| -> i64 g2(n) - 1;
-    g1(10)
+    #[native] g1(10)
 }
 "#;
 
@@ -784,7 +784,7 @@ const FOLD_CALLBACK_NAME_COLLISION: &str = r#"
     let e = s + 1;
     pair(e + 1) + e
   };
-  array::fold(array::init(1, |i| i), 0, |acc, i| acc + run_one(i))
+  #[native] array::fold(array::init(1, |i| i), 0, |acc, i| acc + run_one(i))
 }
 "#;
 
@@ -1749,18 +1749,6 @@ run!(open_return_callee_in_callback, OPEN_RETURN_CALLEE_IN_CALLBACK, |v: Result<
 // A formal every self-call passes through unchanged is never rebound,
 // so an fn-typed invariant formal does not gate the tail loop.
 
-// CR claude for claude: [test-gap/medium] FuseExpect::Jit holds when any kernel ran
-// (check_fuse_expectation), and here the callback `|a, x| a + x` is a kernel of its
-// own. If `fold_go`'s tail loop lost its kernel (the 'fn-typed formal is not forwarded
-// unchanged' gate misfiring on an invariant formal), this test would stay green, and so
-// would its siblings FN_FORMAL_TWO_CALLBACKS, FN_FORMAL_CAPTURE_COLLIDES_BOUND/ACC, the
-// carried-formal loops, RECURSIVE_LAMBDA0, KIR_LAZY_THREE_LEVEL, TRANSITIVE_CHAIN and
-// FOLD_CALLBACK_NAME_COLLISION, whose comments all claim a particular loop or chain
-// fuses. FN_FORMAL_REBOUND shows it: `g` has no kernel, yet the fixture is annotated
-// Jit and passes. Put `#[native]` on the call each fixture is about (`#[native]
-// fold_go(|a, x| a + x, 10, 0)` fuses today), and change FN_FORMAL_REBOUND's comment to
-// say the callbacks fuse and `g` does not. Probe:
-// design/review-2026-10-12/repro/tests-functions-02.gx. (tests-functions-02)
 const FN_INVARIANT_TAIL_LOOP: &str = r#"
 {
   let rec fold_go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
@@ -1768,7 +1756,7 @@ const FN_INVARIANT_TAIL_LOOP: &str = r#"
       0 => acc,
       _ => fold_go(f, i - 1, f(acc, i))
     };
-  fold_go(|a, x| a + x, 10, 0)
+  #[native] fold_go(|a, x| a + x, 10, 0)
 }
 "#;
 
@@ -1785,7 +1773,7 @@ const STRING_INVARIANT_TAIL_LOOP: &str = r#"
       0 => "[tag]:[acc]",
       _ => label(tag, n - 1, acc + n)
     };
-  label("sum", 10, 0)
+  #[native] label("sum", 10, 0)
 }
 "#;
 
@@ -1804,7 +1792,7 @@ const FN_FORMAL_TWO_CALLBACKS: &str = r#"
       0 => acc,
       _ => ap(f, n - 1, f(acc))
     };
-  ap(|x| x + 1, 3, 0) * 1000 + ap(|x| x * 2, 3, 1)
+  #[native] ap(|x| x + 1, 3, 0) * 1000 + ap(|x| x * 2, 3, 1)
 }
 "#;
 
@@ -1813,8 +1801,8 @@ run!(fn_formal_two_callbacks, FN_FORMAL_TWO_CALLBACKS, |v: Result<&Value>| match
     Ok(Value::I64(3008))
 ); FuseExpect::Jit);
 
-// A non-invariant fn formal (rebound by a self-call) does not fuse;
-// the engines agree.
+// A non-invariant fn formal (rebound by a self-call): the callbacks
+// fuse, `g` does not.
 const FN_FORMAL_REBOUND: &str = r#"
 {
   let rec g = |f: fn(x: i64) -> i64, n: i64| -> i64
@@ -1837,7 +1825,7 @@ const FN_FORMAL_FORWARDED: &str = r#"
 {
   let call1 = |f: fn(x: i64) -> i64, x: i64| -> i64 f(x);
   let call2 = |f: fn(x: i64) -> i64, x: i64| -> i64 call1(f, x) + 100;
-  call2(|x| x + 1, 1) * 1000 + call2(|x| x * 10, 1)
+  #[native] call2(|x| x + 1, 1) * 1000 + call2(|x| x * 10, 1)
 }
 "#;
 
@@ -1853,7 +1841,7 @@ const FN_FORMAL_CAPTURE_COLLIDES_BOUND: &str = r#"
   let n = 10;
   let rec ap = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
     select n { 0 => acc, _ => ap(f, n - 1, f(acc)) };
-  ap(|x| n + 1, 3, 0)
+  #[native] ap(|x| n + 1, 3, 0)
 }
 "#;
 
@@ -1867,7 +1855,7 @@ const FN_FORMAL_CAPTURE_COLLIDES_ACC: &str = r#"
   let acc = 5;
   let rec fold_go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
     select i { 0 => acc, _ => fold_go(f, i - 1, f(acc, i)) };
-  fold_go(|a, x| a + acc + 1, 3, 0)
+  #[native] fold_go(|a, x| a + acc + 1, 3, 0)
 }
 "#;
 
@@ -1914,7 +1902,7 @@ const STRING_CARRIED_TAIL_LOOP: &str = r#"
 {
   let rec go = |n: i64, acc: string| -> string
     select n { 0 => acc, _ => go(n - 1, "[acc].") };
-  go(5, "x")
+  #[native] go(5, "x")
 }
 "#;
 
@@ -1927,7 +1915,7 @@ const VALUE_CARRIED_TAIL_LOOP: &str = r#"
 {
   let rec go = |n: i64, m: Map<string, i64>| -> Map<string, i64>
     select n { 0 => m, _ => go(n - 1, map::insert(m, "k[n]", n)) };
-  map::len(go(3, {}))
+  #[native] map::len(go(3, {}))
 }
 "#;
 
@@ -1943,7 +1931,7 @@ const LIST_CARRIED_FOLD: &str = r#"
   type L<'a> = [`C('a, L<'a>), `N];
   let rec fold_l = |l: L<i64>, acc: i64| -> i64
     select l { `N => acc, `C(x, rest) => fold_l(rest, acc + x) };
-  fold_l(`C(1, `C(2, `C(3, `N))), 0)
+  #[native] fold_l(`C(1, `C(2, `C(3, `N))), 0)
 }
 "#;
 
