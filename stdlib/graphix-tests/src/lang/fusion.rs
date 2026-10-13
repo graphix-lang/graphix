@@ -841,26 +841,20 @@ async fn deleted_sample_releases_store() -> Result<()> {
 // impure callback that captures the outer `k`: each slot must resolve
 // the capture without contaminating a sibling slot.
 
-/// A catch handler that fires and captures both the element `x` and
-/// the outer `k`, driving `res <- x + k`: `[4,5,6,7]`.
+/// A catch handler that fires for the even elements only and captures
+/// both the element `x` and the outer `k`, driving `res <- x + k`; an odd
+/// element writes itself: `[1,5,3,7]`.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] This test cannot see whether the catch fires.
-// The handler `res <- (x + k)` does not read `e`, so it writes `x + k` at init and the
-// pinned [4,5,6,7] comes out even with no raise, or with a raise that never reaches the
-// slot's handler. Probe: design/review-2026-10-12/repro/tests-fusion-traits-03.gx has
-// no `?` and gives the same array in both engines. Fix: make the write wait for the
-// error, `catch(e) res <- e ~ (x + k)`. Better still, raise for only some elements and
-// pin a different result for those slots. (tests-fusion-traits-02)
 async fn impure_trycatch_catch_capture() -> Result<()> {
     assert_i64s(
         &impure_map(
             "let res = never(); \
-             catch(e) res <- (x + k); \
-             (0 /? 0)?; \
+             catch(e) res <- e ~ (x + k); \
+             res <- (k /? (x % 2))? ~ x; \
              res",
         )
         .await?,
-        &[4, 5, 6, 7],
+        &[1, 5, 3, 7],
     )
 }
 
