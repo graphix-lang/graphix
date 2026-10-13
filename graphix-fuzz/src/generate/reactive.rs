@@ -120,19 +120,7 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     }
     // `fires_per_injection` collects the i64 results that fire on every injection of
     // their input; the tail is biased through one so injections stay
-    // observable. Runaways are forced into the tail: an unobserved one
-    // spins in cycles that never emit, so the active-cycle budget never
-    // trips.
-    // CR claude for claude: [doc-drift/low] The comment above says runaways are forced
-    // into the tail, and the comment on the tail says 'force every runaway in'. Neither
-    // is true: runaways return early through gen_runaway_burst, and this function makes
-    // none. Delete both runaway sentences. In design/graphix_fuzz.md, the
-    // reactive-generation paragraph's list of ceremony body steps omits Write (a call
-    // to a callee that writes acc, then a read) and Deref, which STEP_KINDS draws; add
-    // them. That paragraph also says a body that can stall stays out of the
-    // always-firing tail set, but a step reading a take/skip/filter/once binding can
-    // stall and is still marked reliable. Either mark such a ceremony unreliable or
-    // qualify the sentence. (fuzz-gen-b-10)
+    // observable.
     let mut fires_per_injection: Vec<String> = Vec::new();
     let mut ndyn = 0usize;
     let n_templates = 1 + rng.below(3);
@@ -204,7 +192,7 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
         );
     }
     // tail: start from an input-driven result, mix in other visible
-    // scalars, force every runaway in
+    // scalars
     // CR claude for claude: [test-gap/medium] The reactive lane never calls observe(),
     // which the plain lane uses so that a wrong value in a statement the tail never
     // reads diverges on stdout. The tail reads one fires_per_injection result plus at
