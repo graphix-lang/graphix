@@ -119,14 +119,6 @@ async fn seq_io(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// CR claude for claude: [test-gap/low] after_idle(30ms) answers long before the next
-// 100ms tick, so nothing is in flight when this arm sleeps. The rule that sleep aborts
-// every call in flight (CLAUDE.md, Builtins) has no pin for an async call under a
-// select arm, and a regression that delivered a slept arm's late reply would pass this
-// test. Add a variant whose call outlives the arm: ticks every 100ms for 6 ticks, with
-// arm `1 | 6 => select sys::time::after_idle(duration:150.ms, tick) { reply => issued
-// <- reply }`. It yields [6] in both engines today, and a non-aborting implementation
-// would yield [1, 6]. (tests-lang-rest-a-07)
 async fn select_restarts_timer(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 4)?);
@@ -141,6 +133,25 @@ async fn select_restarts_timer(mode: Mode) -> Result<()> {
     }"#;
     let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [1, 3]);
+    Ok(())
+}
+
+// A slept arm's call in flight is aborted: tick 2 deselects the arm 150ms
+// before tick 1's reply is due, so only tick 4's reply lands.
+async fn select_aborts_slept_call(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let tick = count(sys::time::timer(duration:100.ms, 4)?);
+        let issued = never<i64>();
+        select tick {
+            1 | 4 => select sys::time::after_idle(duration:250.ms, tick) {
+                reply => issued <- reply
+            },
+            _ => never()
+        };
+        issued
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [4]);
     Ok(())
 }
 
@@ -209,6 +220,7 @@ modes!(seq_timers);
 modes!(seq_iterators);
 modes!(seq_io);
 modes!(select_restarts_timer);
+modes!(select_aborts_slept_call);
 modes!(seq_network);
 modes!(live_timer_keeps_value);
 #[cfg(unix)]
