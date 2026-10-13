@@ -148,6 +148,15 @@ async fn watch(
             // Probe: design/review-2026-10-12/repro/db2-01.gx (stops at 1025 answered
             // inserts and hangs; without the subscription it runs to about 15000 and
             // exits). (db2-01)
+            // 2026-10-13 codex: Reproduced: the probe stalls at 1026 inserts and needs SIGKILL.
+            // The proposed next_timeout also wedges: sled 0.34.7 saves the dropped
+            // OneShot back into Subscriber::existing on Disconnected, so one no-op
+            // followed by a real insert returns Disconnected on every call.
+            // Iterator drains fillers but has no cancellable wait for sleep/delete.
+            // Fix sled::Subscribers::reserve / ReservedBroadcast drop to wake the
+            // registered subscriber on cancellation, and Subscriber::next_timeout
+            // to consume cancelled reservations. That dependency is outside this
+            // worktree scope; retain the db2-01.gx probe for the dependency fix.
             match (&mut subscriber).await {
                 Some(ev) => push_event(key_typ, ev, &mut events),
                 None => break,
