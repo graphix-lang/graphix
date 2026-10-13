@@ -88,7 +88,9 @@ pub fn shows_as<X: GXExt>(
         typ::{Type, TypeRef},
     };
     let Some(typ) = e.typ.with_deref(|t| t.cloned()) else { return false };
-    if typ.all_bottom() || typ == Type::Any || typ.has_unbound() {
+    // ⊥ fits any position, so a type holding one anywhere (`Array<⊥>`
+    // from an empty array) would be contained by every display
+    if typ.has_bottom() || typ == Type::Any || typ.has_unbound() {
         return false;
     }
     let display = wrap(Type::Ref(triomphe::Arc::new(TypeRef::synthetic(
@@ -96,17 +98,6 @@ pub fn shows_as<X: GXExt>(
         ModPath::from_iter(path.iter().copied()),
         triomphe::Arc::from_iter([]),
     ))));
-    // CR claude for claude: [bug/medium] This containment is one-way, and ⊥ fits any
-    // position. So a value whose type merely holds ⊥ where the display type has a real
-    // type is claimed as a display. Examples: `let f = |n| []; f(1)` is Array<⊥>, and
-    // so are `array::map([], |x| x)` and `let f = |n| never(); [f(1)]`. The gui package
-    // claims all three as Array<&gui::Window>. Without a display the program fails with
-    // "initializing custom display ... neither WAYLAND_DISPLAY nor ... DISPLAY is set"
-    // instead of printing []. With a display, a GUI starts with zero windows and the
-    // shell never ends. Claim the display only when the type equals it: also require
-    // `typ` to contain `display`, or refuse a type holding ⊥ or Any at any position.
-    // This covers both the gui and the tui callers. probe:
-    // design/review-2026-10-12/repro/x-rerun-3-03.gx (x-rerun-3-03)
     display.contains_with_flags(enumflags2::BitFlags::empty(), env, &typ).unwrap_or(false)
 }
 
