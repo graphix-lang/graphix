@@ -53,19 +53,19 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
             .update(rt, &self.gx, id, v)
             .context("mouse_area child recompile")?;
         self.on_press
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("mouse_area on_press recompile")?;
         self.on_release
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("mouse_area on_release recompile")?;
         self.on_enter
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("mouse_area on_enter recompile")?;
         self.on_exit
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("mouse_area on_exit recompile")?;
         self.on_move
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("mouse_area on_move recompile")?;
         Ok(changed)
     }

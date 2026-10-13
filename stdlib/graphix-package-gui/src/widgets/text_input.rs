@@ -51,17 +51,17 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let changed = self.p.update(id, v).context("text_input")?;
+        let mut changed = self.p.update(id, v).context("text_input")?;
         if id == self.p.value.r.id
             && let Some(value) = &self.p.value.t
         {
             self.echoes.delivered(value);
         }
         self.on_input
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("text_input on_input recompile")?;
         self.on_submit
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("text_input on_submit recompile")?;
         Ok(changed)
     }

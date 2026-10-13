@@ -319,10 +319,17 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             changed = true;
         }
         changed |= self.show_row_name.update(id, v).context("show_row_name")?.is_some();
-        self.on_activate.update(rt, &self.gx, id, v).context("on_activate")?;
-        self.on_select.update(rt, &self.gx, id, v).context("on_select")?;
-        self.on_header_click.update(rt, &self.gx, id, v).context("on_header_click")?;
-        let retired = self.on_update.update(rt, &self.gx, id, v).context("on_update")?;
+        self.on_activate
+            .update(rt, &self.gx, id, v, &mut changed)
+            .context("on_activate")?;
+        self.on_select.update(rt, &self.gx, id, v, &mut changed).context("on_select")?;
+        self.on_header_click
+            .update(rt, &self.gx, id, v, &mut changed)
+            .context("on_header_click")?;
+        let retired = self
+            .on_update
+            .update(rt, &self.gx, id, v, &mut changed)
+            .context("on_update")?;
         if retired.is_some() || id == self.on_update.r.id {
             self.cells.inner.lock().on_update = self.on_update.id();
         }

@@ -51,7 +51,9 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("button")?;
-        self.on_press.update(rt, &self.gx, id, v).context("button on_press")?;
+        self.on_press
+            .update(rt, &self.gx, id, v, &mut changed)
+            .context("button on_press")?;
         changed |= self.child.update(rt, &self.gx, id, v).context("button child")?;
         Ok(changed)
     }

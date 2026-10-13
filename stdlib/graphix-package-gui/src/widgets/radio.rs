@@ -44,9 +44,9 @@ impl<X: GXExt> GuiWidget<X> for RadioW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let changed = self.p.update(id, v).context("radio")?;
+        let mut changed = self.p.update(id, v).context("radio")?;
         self.on_select
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("radio on_select recompile")?;
         Ok(changed)
     }

@@ -54,7 +54,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let changed = self.p.update(id, v).context("text_editor")?;
+        let mut changed = self.p.update(id, v).context("text_editor")?;
         if id == self.p.content.r.id
             && let Some(text) = &self.p.content.t
         {
@@ -96,7 +96,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
             }
         }
         self.on_edit
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("text_editor on_edit recompile")?;
         Ok(changed)
     }

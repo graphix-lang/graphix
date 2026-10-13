@@ -57,8 +57,9 @@ impl<X: GXExt> MenuItemKind<X> {
         let Self::Action { p, on_click } = self else {
             return Ok(false);
         };
-        on_click.update(rt, gx, id, v).context("menu item on_click")?;
-        p.update(id, v).context("menu item")
+        let mut changed = p.update(id, v).context("menu item")?;
+        on_click.update(rt, gx, id, v, &mut changed).context("menu item on_click")?;
+        Ok(changed)
     }
 
     fn desc(&self) -> MenuItemDesc<'_> {

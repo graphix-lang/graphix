@@ -55,7 +55,7 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
             .update(rt, &self.gx, id, v)
             .context("scrollable child recompile")?;
         self.on_scroll
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("scrollable on_scroll recompile")?;
         Ok(changed)
     }

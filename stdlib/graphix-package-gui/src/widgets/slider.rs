@@ -74,12 +74,12 @@ macro_rules! slider_widget {
                 id: ExprId,
                 v: &Value,
             ) -> Result<bool> {
-                let changed = self.p.update(id, v).context($label)?;
+                let mut changed = self.p.update(id, v).context($label)?;
                 self.on_change
-                    .update(rt, &self.gx, id, v)
+                    .update(rt, &self.gx, id, v, &mut changed)
                     .context(concat!($label, " on_change"))?;
                 self.on_release
-                    .update(rt, &self.gx, id, v)
+                    .update(rt, &self.gx, id, v, &mut changed)
                     .context(concat!($label, " on_release"))?;
                 Ok(changed)
             }

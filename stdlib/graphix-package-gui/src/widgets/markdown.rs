@@ -56,11 +56,13 @@ impl<X: GXExt> super::GuiWidget<X> for MarkdownW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let changed = self.p.update(id, v).context("markdown")?;
+        let mut changed = self.p.update(id, v).context("markdown")?;
         if id == self.p.content.r.id {
             self.items = Self::parse(&self.p);
         }
-        self.on_link.update(rt, &self.gx, id, v).context("markdown on_link recompile")?;
+        self.on_link
+            .update(rt, &self.gx, id, v, &mut changed)
+            .context("markdown on_link recompile")?;
         Ok(changed)
     }
 

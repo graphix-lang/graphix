@@ -52,7 +52,7 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let changed = self.p.update(id, v).context("combo_box")?;
+        let mut changed = self.p.update(id, v).context("combo_box")?;
         if id == self.p.options.r.id
             && let Some(opts) = &self.p.options.t
             && self.state.options() != opts.0.as_slice()
@@ -60,7 +60,7 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
             self.state = Self::state(&self.p);
         }
         self.on_select
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("combo_box on_select recompile")?;
         Ok(changed)
     }

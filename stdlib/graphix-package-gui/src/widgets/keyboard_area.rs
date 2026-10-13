@@ -82,10 +82,10 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
             .update(rt, &self.gx, id, v)
             .context("keyboard_area child recompile")?;
         self.on_key_press
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("keyboard_area on_key_press recompile")?;
         self.on_key_release
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("keyboard_area on_key_release recompile")?;
         Ok(changed)
     }

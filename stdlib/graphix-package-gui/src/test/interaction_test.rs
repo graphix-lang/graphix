@@ -1194,3 +1194,27 @@ async fn mouse_button_names_use_static_storage() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn handler_presence_changes_request_a_frame() -> Result<()> {
+    use netidx::protocol::valarray::ValArray;
+    for widget in [
+        "button(#on_press: handler, &text(&\"go\"))",
+        "text_input(#on_input: handler, &\"\")",
+        "checkbox(#on_toggle: handler, &false)",
+        "toggler(#on_toggle: handler, &false)",
+        "menu::context_menu(&[menu::action(#on_click: handler, &\"go\")], &text(&\"menu\"))",
+    ] {
+        let code = format_compact!(
+            "{IMPORTS}; let enabled = false; let handler = select enabled {{ true => |v: Any| null, false => null }}; let change = |v: bool| enabled <- v; let result = {widget}"
+        );
+        let mut h = InteractionHarness::new(&code).await?;
+        let change = h.inner.compile_named_callable("test::change").await?;
+        h.inner.drain().await?;
+        for enabled in [true, false] {
+            h.inner.gx.call(change, ValArray::from_iter([Value::Bool(enabled)]))?;
+            assert!(h.inner.drain().await?, "{widget}: enabled={enabled}");
+        }
+    }
+    Ok(())
+}

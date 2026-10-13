@@ -68,7 +68,7 @@ macro_rules! toggle_widget {
                     changed = true;
                 }
                 self.on_toggle
-                    .update(rt, &self.gx, id, v)
+                    .update(rt, &self.gx, id, v, &mut changed)
                     .context(concat!($label, " on_toggle"))?;
                 Ok(changed)
             }

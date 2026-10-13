@@ -43,9 +43,9 @@ impl<X: GXExt> GuiWidget<X> for PickListW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let changed = self.p.update(id, v).context("pick_list")?;
+        let mut changed = self.p.update(id, v).context("pick_list")?;
         self.on_select
-            .update(rt, &self.gx, id, v)
+            .update(rt, &self.gx, id, v, &mut changed)
             .context("pick_list on_select recompile")?;
         Ok(changed)
     }

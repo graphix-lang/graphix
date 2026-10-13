@@ -603,45 +603,24 @@ impl<X: GXExt> Handler<X> {
         Ok(Self { r, f })
     }
 
-    /// Take `v` when it is this handler's ref's. Returns the callable it
-    /// replaced, for a caller that must outlive its id's last use.
-    // CR claude for claude: [bug/low] Handler::update does not report whether the
-    // handler changed, and no widget counts a handler update in the `changed` it
-    // returns, so TrackedWindow never sets needs_redraw for one. iced draws a
-    // text_input without on_input, and a button, checkbox or toggler without its
-    // handler, as disabled. When only the handler goes between null and a function
-    // (`#on_input: select locked { true => null, false => |v| x <- v }`), the control
-    // keeps its old enabled or disabled look until some unrelated input event forces a
-    // frame. Fix: have handler updates feed `changed`, either by returning whether this
-    // ref took the value (keeping the retired callable for data_table's on_update) or
-    // by callers OR-ing in `id == handler.r.id`. Do it in every widget that holds a
-    // Handler. (gui-widgets-b-07)
-    // CR claude for claude: [bug/medium] A handler update never asks for a redraw. This
-    // returns the callable it replaced, and no caller turns the result into `changed`;
-    // data_table only uses it to refresh its cells' on_update id. Yet a widget's view
-    // depends on whether a handler is present: an iced Button or TextInput with no
-    // on_press/on_input draws disabled, and checkboxes and menu actions behave the same
-    // way. So when a handler goes from null to a function or back,
-    // `GuiWindow::handle_update` leaves `needs_redraw` false, and the window keeps the
-    // old look until some unrelated event renders a frame. Fix: return whether the
-    // handler's presence or id changed, keep any callable that must outlive a pending
-    // message inside Handler (data_table's on_update), and make each caller write
-    // `changed |= self.on_x.update(..)?`. probe:
-    // design/review-2026-10-12/repro/gui-widgets-a-06.rs (on_press null -> fn: the
-    // click goes from 0 calls to 1, but handle_update returns false).
-    // (gui-widgets-a-06)
+    /// Mark a changed handler and return the callable it replaced, for a
+    /// caller that must keep it alive until its shared callback id is updated.
     pub(crate) fn update(
         &mut self,
         rt: &tokio::runtime::Handle,
         gx: &GXHandle<X>,
         id: ExprId,
         v: &Value,
+        changed: &mut bool,
     ) -> Result<Option<Callable<X>>> {
         if id != self.r.id {
             return Ok(None);
         }
+        let previous = self.id();
+        let retired = update_callable_blocking(rt, gx, &mut self.f, v)?;
         self.r.last = Some(v.clone());
-        update_callable_blocking(rt, gx, &mut self.f, v)
+        *changed |= previous != self.id();
+        Ok(retired)
     }
 
     pub(crate) fn id(&self) -> Option<CallableId> {
