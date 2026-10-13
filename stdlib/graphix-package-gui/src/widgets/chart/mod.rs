@@ -114,6 +114,11 @@ impl<X: GXExt> ChartW<X> {
     }
 
     #[cfg(test)]
+    pub(crate) fn datasets_ref(&self) -> &Ref<X> {
+        &self.datasets_ref
+    }
+
+    #[cfg(test)]
     pub(crate) fn datasets(&self) -> &[DatasetEntry<X>] {
         &self.datasets
     }
@@ -155,18 +160,11 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        // CR claude for claude: [perf/low] This recompiles every dataset whenever the
-        // datasets array fires, even with an equal value: one blocking compile_ref per
-        // dataset on the GUI thread, then a full replot. A style input that re-fires an
-        // unchanged value (a #color driven by a timer, say) pays this every time. Guard
-        // with self.datasets_ref.last.as_ref() != Some(v), as the other widget refs do.
-        // Better, reconcile like Children (keep_equal) so one changed label recompiles
-        // one dataset. (gui-chart-10)
-        if id == self.datasets_ref.id {
-            self.datasets_ref.last = Some(v.clone());
+        if id == self.datasets_ref.id && self.datasets_ref.last.as_ref() != Some(v) {
             self.datasets = rt
                 .block_on(compile_datasets(&self.gx, v.clone()))
                 .context("chart datasets recompile")?;
+            self.datasets_ref.last = Some(v.clone());
             self.cache.clear();
             changed = true;
         }

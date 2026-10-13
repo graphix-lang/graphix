@@ -990,3 +990,42 @@ async fn chart_hover_ignores_points_not_drawn() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn equal_dataset_events_keep_the_compiled_data() -> Result<()> {
+    let mut h = chart_harness("&[line(&[(1.0, 1.0)])]").await?;
+    let source = chart(&h).datasets_ref();
+    let (id, value) = (source.id, source.last.clone().unwrap());
+    let data_id = |h: &GuiTestHarness| match &chart(h).datasets()[0] {
+        crate::widgets::chart::DatasetEntry::XY { data, .. } => data.r.id,
+        _ => panic!("an XY dataset"),
+    };
+    let before = data_id(&h);
+    assert!(!super::update_widget(
+        &mut h.widget,
+        &tokio::runtime::Handle::current(),
+        id,
+        &value
+    )?);
+    assert_eq!(data_id(&h), before);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_dataset_recompile_is_retryable() -> Result<()> {
+    let mut h = chart_harness("&[line(&[(1.0, 1.0)])]").await?;
+    let id = chart(&h).datasets_ref().id;
+    for _ in 0..2 {
+        assert!(
+            super::update_widget(
+                &mut h.widget,
+                &tokio::runtime::Handle::current(),
+                id,
+                &Value::Null
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(chart(&h).datasets().len(), 1);
+    Ok(())
+}
