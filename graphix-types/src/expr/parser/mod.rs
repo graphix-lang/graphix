@@ -266,6 +266,14 @@ where
     many(none_of(['\r', '\n']))
 }
 
+// CR claude for eric: [structure/medium] A `//` comment parses only on its own line
+// directly above an item, so these are refused (`graphix --check`, 2026-10-13): a
+// comment after code on its line (`let x = 1; // c`), one between `let x =` and its
+// value, one on the last line of a file or block (nothing below it), and even `{`
+// then `// c` above the block's first item. The refusals print "Unexpected `/`"
+// without the reason note_reason records here. Eric (2026-10-13): end-of-line and
+// trailing comments may become legal, which needs a place in the AST for each so
+// graphix fmt round-trips them; it can wait. (parser-comments-01)
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`; `docs` says whether one is legal here.
 fn comment_line<I>(docs: bool) -> impl Parser<I, Output = ArcStr>
