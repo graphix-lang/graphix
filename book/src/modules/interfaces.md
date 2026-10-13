@@ -203,23 +203,14 @@ mod parser;
 
 ## Sub-module Visibility
 
-<!-- CR claude for claude: [doc-drift/medium] This says the position of `mod` carries no
-meaning and a sub-module may import parent items declared after it. Values are not
-pre-registered, though (design/module_system.md). A child that does `use
-super::public_helper` while `mod child;` stands above `let public_helper` is refused
-with 'public_helper not defined' (probe:
-design/review-2026-10-12/repro/book-modules-udt-submodule-order/). Only module and type
-names are order-free. Similarly, a `mod` declared only in the .gxi is spliced into the
-body after the item the interface lists before it (`add_interface_modules`), so a body
-statement above that point cannot read `child::v`. Fix: state the as-built rule, say
-where a gxi-only mod lands, and recommend placing `mod` after the values the child
-imports. The example below happens to work only because its `mod child;` is last.
-(book-modules-udt-07) -->
 A sub-module sees nothing of its parent implicitly — it imports what it
-needs with `use super::...`. Because visibility is order-independent,
-the position of the `mod` statement carries no meaning: declare it
-wherever reads best, and a sub-module may import parent items declared
-after it.
+needs with `use super::...`. Module and type names are visible whatever
+their order, but values are not: a module's body runs where its `mod`
+statement stands, so a value it imports from its parent must be bound
+above that `mod`. Place `mod` after the values the child imports, as the
+example below does. A `mod` declared only in the `.gxi` stands in the
+body right after the item the interface lists before it, so a body
+statement above that point cannot read the child's values.
 
 Privacy follows Rust's rule: a private item is visible to its defining
 module and that module's descendants. So a sub-module may

@@ -128,10 +128,10 @@ Caused by:
 ```
 
 Unlike declarations, imports carry no ordering constraint within a
-module: a `use` may name an item that is declared later in the file,
-and `mod` statements may appear anywhere. Visibility is
-order-independent; only *execution* of a module's body follows
-declaration order.
+module: `use self::sub::x` may stand above `mod sub;`. Module and type
+names are visible whatever their order; a value is not, because a
+module's body runs where its `mod` statement stands, so a sub-module
+that imports a parent's value must be declared below that value.
 
 ## Shadowing and collisions
 
