@@ -9,18 +9,7 @@ Traditional UI frameworks require you to manually manage state changes, update D
 - **Data flows automatically**: When underlying data changes, dependent UI components update automatically
 - **State is declarative**: You describe what the UI should look like, not how to update it
 - **Composition is natural**: Complex UIs are built by composing simple, reusable components
-<!-- CR claude for claude: [doc-drift/low] ui/overview.md: 'only components that depend
-on changed data re-render' is not what either backend does. The dataflow graph
-recomputes only changed nodes, but rendering is whole-tree in both backends. The TUI
-redraws the entire widget tree on every dirty cycle (graphix-package-tui/src/lib.rs,
-`terminal.draw` over the root; ratatui then diffs cells). The GUI rebuilds iced's view
-for the whole window. A reader who sizes a large UI on this promise will be surprised.
-Failure: A user builds a TUI whose one widget is a 10k-row table and a clock, expecting
-the clock tick to touch only the clock. Every tick redraws the table. Fix: Say what is
-true: 'only the computations that depend on changed data are re-run; the view is then
-redrawn from the current widget values'. Unverified: the reviewer's report, not checked
-by a verifier. (book-ui-b-11) -->
-- **Performance is built-in**: Only components that depend on changed data will re-render
+- **Performance is built-in**: Only the computations that depend on changed data re-run; the view is then redrawn from the current widget values
 
 ## UI Backends
 
