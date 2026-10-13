@@ -229,9 +229,9 @@ run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
     }
 }; FuseExpect::Jit);
 
-// The publish twin: a re-woken arm republishes from the present
-// path/value; the observer subscription rides netidx's durable
-// resubscribe across the unpublish window.
+// The publish twin: a sleeping arm unpublishes and a re-woken one
+// republishes from the present value; the observer sees each window as
+// an error between the values.
 const NET_PUB_REWAKE: &str = r#"
 {
   let x = i64:0;
@@ -240,34 +240,15 @@ const NET_PUB_REWAKE: &str = r#"
   x <- t ~ x + i64:1;
   let flip = select x % i64:2 { i64:0 => `On, _ => `Off };
   select flip { `On => sys::net::publish(p, x), `Off => null };
-  let s: i64 = sys::net::subscribe(p)$;
-  array::group(s, |n, _| n >= i64:3)
+  let s: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> =
+    sys::net::subscribe(p);
+  array::group(s, |n, _| n >= i64:4)
 }
 "#;
 
 run!(net_publish_arm_rewake, NET_PUB_REWAKE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            let vals: Vec<i64> = a
-                .iter()
-                .filter_map(|v| match v {
-                    Value::I64(n) => Some(*n),
-                    _ => None,
-                })
-                .collect();
-            // CR claude for claude: [test-gap/low] This predicate accepts any later
-            // value larger than the first, which an arm that never paused also
-            // produces: the publish would just keep publishing the rising x. The
-            // unpublish window the comment names is never observed, because `$` drops
-            // the subscriber's error. Publish::sleep's unpublish is pinned nowhere.
-            // Fix: observe the window as net_publisher_gone_and_back does. Subscribe
-            // with a Result type instead of `$`, and require an
-            // `error:["SubscribeError", ...]` between two values, or pin the stream
-            // outright. (tests-lib-b2-07)
-            vals.first().is_some_and(|f| vals.iter().any(|v| v > f))
-        }
-        _ => false,
-    }
+    let gone = r#"error:["SubscribeError", "unsubscribed"]"#;
+    matches!(v, Ok(v) if v.to_string() == format!("[i64:0, {gone}, i64:2, {gone}]"))
 }; FuseExpect::Jit);
 
 // A written value the on_write callback cannot take answers the writer and
