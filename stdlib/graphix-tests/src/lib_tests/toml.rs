@@ -96,6 +96,14 @@ run!(toml_null_err, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
 
+// A map's null value is data TOML cannot hold: refused, never dropped.
+run!(toml_map_null_err, r#"{
+    let w: Map<string, [i64, null]> = {"k0" => null, "k1" => i64:1};
+    "[toml::write_str({a: w})]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("cannot represent null in TOML"))
+}; FuseExpect::Jit);
+
 // An optional field goes through TOML both ways: a null field is a key left
 // out, and a key the document leaves out reads as null.
 run!(toml_optional_field_round_trips, r#"{

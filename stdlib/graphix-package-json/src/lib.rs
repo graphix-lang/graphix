@@ -92,7 +92,7 @@ fn to_json(
         return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
     }
     match shape(env, typ, value) {
-        Shape::Object(mut entries) => {
+        Shape::Object(mut entries, _) => {
             let mut map = serde_json::Map::with_capacity(entries.len());
             for (k, v, t) in entries.drain(..) {
                 // CR claude for claude: [bug/medium] This drops the old value that

@@ -489,9 +489,17 @@ pub fn is_struct(arr: &ValArray) -> bool {
 /// How a writer serializes a value: an object's entries or a sequence's
 /// elements, each with the type that directs it, or a leaf.
 pub enum Shape {
-    Object(LPooled<Vec<(ArcStr, Value, Option<Type>)>>),
+    Object(LPooled<Vec<(ArcStr, Value, Option<Type>)>>, Keys),
     Seq(LPooled<Vec<(Value, Option<Type>)>>),
     Leaf,
+}
+
+/// Whose keys an object's are: a struct's fields, which a cast reads
+/// back as null when one is left out, or a map's, which are data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keys {
+    Fields,
+    Data,
 }
 
 /// `v`'s shape under `t`, the type its call site gave it: a struct or a
@@ -535,7 +543,7 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
                     entries.push((k.clone(), v.clone(), Some(t.clone())));
                 }
             }
-            Shape::Object(entries)
+            Shape::Object(entries, Keys::Fields)
         }
         (Some(Type::Map { value, .. }), Value::Map(m)) => Shape::Object(
             m.into_iter()
@@ -543,6 +551,7 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
                     (ArcStr::from(map_key(k)), v.clone(), Some(Type::clone(value)))
                 })
                 .collect(),
+            Keys::Data,
         ),
         (Some(Type::Array(e)), Value::Array(a)) => {
             Shape::Seq(a.iter().map(|x| (x.clone(), Some(Type::clone(e)))).collect())
@@ -589,12 +598,14 @@ fn untyped_shape(v: &Value) -> Shape {
                     _ => None,
                 })
                 .collect(),
+            Keys::Fields,
         ),
         Value::Array(a) => Shape::Seq(a.iter().map(|x| (x.clone(), None)).collect()),
         Value::Map(m) => Shape::Object(
             m.into_iter()
                 .map(|(k, v)| (ArcStr::from(map_key(k)), v.clone(), None))
                 .collect(),
+            Keys::Data,
         ),
         _ => Shape::Leaf,
     }

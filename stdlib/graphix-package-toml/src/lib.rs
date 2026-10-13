@@ -12,7 +12,7 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, Shape, TypedRead, shape,
+    CachedArgsAsync, CachedVals, Keys, ReadFormat, ReadInput, Shape, TypedRead, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -78,21 +78,12 @@ fn to_toml(
         return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
     }
     match shape(env, typ, value) {
-        Shape::Object(mut entries) => {
+        Shape::Object(mut entries, keys) => {
             let mut table = toml::map::Map::new();
-            // TOML has no null: a null field is a key left out
-            // CR claude for claude: [bug/medium] Dropping a null entry here is only
-            // lossless for a struct field, because a struct cast reads an omitted field
-            // back as null. `shape` also returns `Shape::Object` for a `Map`, so a
-            // `Map<string, [T, null]>` silently loses every key whose value is null,
-            // and `toml::read` returns a smaller map with no error. A top-level `{"k0"
-            // => null}` writes as the empty string. A null array element, tuple element
-            // or payload is refused with "cannot represent null in TOML". Fix: keep the
-            // drop for struct fields only, for example by having `Shape::Object` say
-            // whether its keys are declared, and refuse a null Map value with the same
-            // TomlErr. Add a pin to the toml package tests. Probe:
-            // design/review-2026-10-12/repro/fuzz-gen-a-03.gx. (fuzz-gen-a-03)
-            for (k, v, t) in entries.drain(..).filter(|(_, v, _)| *v != Value::Null) {
+            // TOML has no null: a null field is a key left out, which a
+            // cast reads back as null; a map's null value is refused
+            let field_null = |v: &Value| keys == Keys::Fields && *v == Value::Null;
+            for (k, v, t) in entries.drain(..).filter(|(_, v, _)| !field_null(v)) {
                 table.insert(k.to_string(), to_toml(env, t.as_ref(), &v, depth + 1)?);
             }
             Ok(toml::Value::Table(table))

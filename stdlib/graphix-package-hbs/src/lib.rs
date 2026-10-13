@@ -25,7 +25,7 @@ fn register_partials(
 ) -> std::result::Result<(), String> {
     match shape(env, typ, partials) {
         _ if *partials == Value::Null => Ok(()),
-        Shape::Object(entries) => {
+        Shape::Object(entries, _) => {
             for (name, tmpl, _) in entries.iter() {
                 let Value::String(tmpl) = tmpl else {
                     return Err(format!("partial values must be strings, got {tmpl}"));
@@ -73,7 +73,7 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
             // call value_to_json once and refuse unless the result is a
             // serde_json::Value::Object. to_json returns Object exactly when shape is
             // Object, so the error case is unchanged. (small-pkgs-11)
-            if !matches!(shape(env, data_type, data), Shape::Object(_)) {
+            if !matches!(shape(env, data_type, data), Shape::Object(..)) {
                 return Some(errf!(
                     "HbsErr",
                     "the data must be a struct or a map, not {data}"
