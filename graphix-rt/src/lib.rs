@@ -223,14 +223,6 @@ pub fn field_id(v: &Value, name: &str) -> Result<u64> {
 /// props! { pub(crate) struct GaugeProps { label: Option<SpanV>, ratio: f64 } }
 /// ```
 #[macro_export]
-// CR claude for claude: [structure/low] This exported macro names
-// netidx::publisher::Value, futures::future::try_join_all, anyhow::Context and
-// graphix_compiler::expr::ExprId as bare paths, so they resolve in the calling crate.
-// Every user must depend on netidx (a networking crate graphix-rt itself does not use),
-// futures, anyhow and graphix-compiler under exactly those names. A package with only
-// netidx-value cannot use the macro, and renaming a dependency breaks every expansion.
-// Use $crate:: paths throughout, re-exporting Value (from netidx_value), ExprId,
-// try_join_all and anyhow from a #[doc(hidden)] module in graphix-rt. (rt-10)
 macro_rules! props {
     ($vis:vis struct $name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
         $vis struct $name<X: $crate::GXExt> {
@@ -240,11 +232,11 @@ macro_rules! props {
         impl<X: $crate::GXExt> $name<X> {
             pub async fn compile(
                 gx: &$crate::GXHandle<X>,
-                v: &netidx::publisher::Value,
-            ) -> anyhow::Result<Self> {
-                use anyhow::Context as _;
+                v: &$crate::__private::Value,
+            ) -> $crate::__private::anyhow::Result<Self> {
+                use $crate::__private::anyhow::Context as _;
                 let names = [$(stringify!($field)),*];
-                let refs = futures::future::try_join_all(
+                let refs = $crate::__private::try_join_all(
                     names.into_iter().map(|name| gx.compile_field(v, name)),
                 )
                 .await?;
@@ -258,16 +250,25 @@ macro_rules! props {
             #[allow(unused)]
             pub fn update(
                 &mut self,
-                id: graphix_compiler::expr::ExprId,
-                v: &netidx::publisher::Value,
-            ) -> anyhow::Result<bool> {
-                use anyhow::Context as _;
+                id: $crate::__private::ExprId,
+                v: &$crate::__private::Value,
+            ) -> $crate::__private::anyhow::Result<bool> {
+                use $crate::__private::anyhow::Context as _;
                 let mut changed = false;
                 $(changed |= self.$field.update(id, v).context(stringify!($field))?.is_some();)*
                 Ok(changed)
             }
         }
     };
+}
+
+/// What `props!` expands to names, so a caller needs none of it.
+#[doc(hidden)]
+pub mod __private {
+    pub use anyhow;
+    pub use futures::future::try_join_all;
+    pub use graphix_compiler::expr::ExprId;
+    pub use netidx_value::Value;
 }
 
 pub struct TRef<X: GXExt, T: FromValue> {
@@ -632,18 +633,21 @@ impl<X: GXExt> GXHandle<X> {
         Ok(rx.await?)
     }
 
-    /// Abort in-flight loops in the runtime to bottom this cycle; the
-    /// runtime keeps running. This is the only containment for a program
-    /// that spins forever inside one cycle, which the language permits.
-    /// Nothing arms it but a human or an embedder: the shell arms it on
-    /// Ctrl-C, and an embedder that wants a watchdog builds one:
+    /// Abort in-flight loops in the runtime; each value keeps its last
+    /// result, and the runtime keeps running. This is the only
+    /// containment for a program that spins forever inside one cycle,
+    /// which the language permits. Nothing arms it but a human or an
+    /// embedder: the shell arms it on Ctrl-C, and an embedder that wants
+    /// a watchdog builds one:
     ///
     /// ```ignore
     /// let gx = handle.clone();
     /// tokio::spawn(async move {
     ///     loop {
     ///         tokio::time::sleep(Duration::from_secs(5)).await;
-    ///         if gx.get_env().now_or_never().is_none() {
+    ///         // a round trip the runtime cannot answer within the budget
+    ///         let budget = Duration::from_secs(5);
+    ///         if tokio::time::timeout(budget, gx.get_env()).await.is_err() {
     ///             log::error!("graphix program exceeded its budget; interrupting");
     ///             gx.interrupt();
     ///         }
@@ -655,15 +659,6 @@ impl<X: GXExt> GXHandle<X> {
     /// last result and recomputes only when an input fires again, so a
     /// result an interrupted event would have produced is lost. Set a
     /// watchdog's budget well above the longest legitimate cycle.
-    // CR claude for claude: [doc-drift/medium] The watchdog example in this doc
-    // interrupts on every tick. `gx.get_env().now_or_never()` is always None: get_env
-    // sends GetEnv and then waits on a oneshot that the runtime task has not answered
-    // by the first poll. An embedder who copies the example interrupts whatever cycle
-    // is running every 5 s, and by this same doc that cycle's results are lost. Have
-    // the example time a real round trip instead: `tokio::time::timeout(budget,
-    // gx.get_env()).await.is_err()`. Also reword the first sentence. 'to bottom this
-    // cycle' contradicts the later 'each value keeps its last result'; say 'abort
-    // in-flight loops; each value keeps its last result'. (rt-07)
     pub fn interrupt(&self) {
         self.0.control.interrupt()
     }
