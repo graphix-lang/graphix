@@ -20,6 +20,7 @@ mod clipboard_test;
 mod data_table_test;
 mod frame_test;
 mod interaction_test;
+mod reconcile_test;
 mod theme_test;
 mod widgets_test;
 

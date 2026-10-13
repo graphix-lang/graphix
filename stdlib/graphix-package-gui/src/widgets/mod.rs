@@ -6,7 +6,6 @@ use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
 use serde_derive::{Deserialize, Serialize};
-use smallvec::SmallVec;
 use std::{future::Future, pin::Pin};
 
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
@@ -266,8 +265,8 @@ impl<X: GXExt> Child<X> {
     ) -> Result<bool> {
         let mut changed = false;
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
-            self.r.last = Some(v.clone());
             self.w = rt.block_on(compile(gx.clone(), v.clone()))?;
+            self.r.last = Some(v.clone());
             changed = true;
         }
         Ok(self.w.handle_update(rt, id, v)? || changed)
@@ -278,8 +277,7 @@ impl<X: GXExt> Child<X> {
 /// compiled from, so a new list keeps the children it still holds.
 pub struct Children<X: GXExt> {
     pub(crate) r: Ref<X>,
-    pub(crate) ws: Vec<GuiW<X>>,
-    vals: Vec<Value>,
+    pub(crate) ws: Vec<(Value, GuiW<X>)>,
 }
 
 impl<X: GXExt> Children<X> {
@@ -291,12 +289,12 @@ impl<X: GXExt> Children<X> {
 
     pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
         let vals = match r.last.as_ref() {
-            None => vec![],
-            Some(v) => v.clone().cast_to::<Vec<Value>>()?,
+            None => LPooled::take(),
+            Some(v) => v.clone().cast_to::<LPooled<Vec<Value>>>()?,
         };
-        let futs = vals.iter().map(|v| compile(gx.clone(), v.clone()));
-        let ws = futures::future::try_join_all(futs).await?;
-        Ok(Self { r, ws, vals })
+        let mut ws = Vec::new();
+        reconcile(&mut ws, vals, |v| compile(gx.clone(), v)).await?;
+        Ok(Self { r, ws })
     }
 
     /// Take an update for the ref or for a descendant. A new list keeps
@@ -312,8 +310,7 @@ impl<X: GXExt> Children<X> {
     ) -> Result<bool> {
         let mut changed = false;
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
-            self.r.last = Some(v.clone());
-            let vals = v.clone().cast_to::<Vec<Value>>()?;
+            let vals = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
             // CR claude for claude: [structure/low] `Children::update` is `reconcile`
             // written out again: keep_equal, compile the fresh values, interleave. It
             // differs only in keeping the widgets and values in two parallel vectors.
@@ -326,37 +323,16 @@ impl<X: GXExt> Children<X> {
             // `block_on`, and `GXHandle::update_callable` is a third copy of the same
             // keep-if-`is_for` rule. Keep one, which handles null and returns the
             // callable it replaced (Handler::update needs it). (gui-widgets-a-09)
-            // CR claude for claude: [bug/high] This drains every existing child into
-            // the local `kept` before the fresh children compile. When one fresh child
-            // fails (for example a text whose size `TextSizeV` refuses, such as 0.0),
-            // the `?` on `try_join_all` returns, `kept` is dropped and `ws`/`vals` stay
-            // empty. `r.last` was already set to the new list, so the same list never
-            // retries, and a later valid prop has no widget to reach. Result: one bad
-            // child blanks the whole column for good. The same bad prop at update time
-            // is only logged and the old value kept. Fix: compile before touching
-            // state, and set `r.last` only after success. Better, give each child its
-            // own failure: a child that fails becomes a placeholder that logs the
-            // error, so its siblings survive and a later fire can retry. The same shape
-            // is in the `reconcile` callers (`TableW` columns and rows, the menu_bar
-            // items and menus) and in `Child::update`, which sets `r.last` before it
-            // compiles. probe: design/review-2026-10-12/repro/gui-widgets-a-02.rs
-            // (gui-widgets-a-02)
-            let mut kept = keep_equal(self.vals.drain(..).zip(self.ws.drain(..)), &vals);
-            let fresh = vals
-                .iter()
-                .zip(kept.iter())
-                .filter(|(_, w)| w.is_none())
-                .map(|(val, _)| compile(gx.clone(), val.clone()))
-                .collect::<Vec<_>>();
-            let mut fresh = match fresh.is_empty() {
-                true => vec![].into_iter(),
-                false => rt.block_on(futures::future::try_join_all(fresh))?.into_iter(),
-            };
-            self.ws.extend(kept.drain(..).filter_map(|w| w.or_else(|| fresh.next())));
-            self.vals = vals;
+            // 2026-10-13 codex: children_survive_a_failed_recompile_and_retry and
+            // reconciliation_compiles_fresh_entries_concurrently pin the shared
+            // collection path. The callable rule still needs graphix-rt/src/lib.rs's
+            // GXHandle::update_callable to handle null and return the replaced
+            // Callable. That API change is outside this worktree's scope.
+            rt.block_on(reconcile(&mut self.ws, vals, |v| compile(gx.clone(), v)))?;
+            self.r.last = Some(v.clone());
             changed = true;
         }
-        for w in &mut self.ws {
+        for (_, w) in &mut self.ws {
             changed |= w.handle_update(rt, id, v)?;
         }
         Ok(changed)
@@ -369,8 +345,8 @@ impl<X: GXExt> Children<X> {
 pub(crate) fn keep_equal<T>(
     old: impl IntoIterator<Item = (Value, T)>,
     new: &[Value],
-) -> Vec<Option<T>> {
-    let mut old: Vec<Option<(Value, T)>> = old.into_iter().map(Some).collect();
+) -> LPooled<Vec<Option<T>>> {
+    let mut old: LPooled<Vec<Option<(Value, T)>>> = old.into_iter().map(Some).collect();
     new.iter()
         .enumerate()
         .map(|(i, val)| {
@@ -394,25 +370,31 @@ pub(crate) fn keep_equal<T>(
         .collect()
 }
 
-/// Compile `items` into those of `old` made from equal values, and the
-/// rest all at once.
+/// Old entries stay intact until every fresh item compiles. Fresh items
+/// compile concurrently; equal values keep their existing item.
 pub(crate) async fn reconcile<T, F: Future<Output = Result<T>>>(
-    old: impl IntoIterator<Item = (Value, T)>,
-    items: Vec<Value>,
+    old: &mut Vec<(Value, T)>,
+    mut items: LPooled<Vec<Value>>,
     compile: impl Fn(Value) -> F,
-) -> Result<Vec<(Value, T)>> {
-    let kept = keep_equal(old, &items);
+) -> Result<()> {
+    let mut kept =
+        keep_equal(old.iter().enumerate().map(|(i, (v, _))| (v.clone(), i)), &items);
     let fresh = items
         .iter()
         .zip(kept.iter())
         .filter(|(_, t)| t.is_none())
         .map(|(v, _)| compile(v.clone()));
     let mut fresh = futures::future::try_join_all(fresh).await?.into_iter();
-    Ok(items
-        .into_iter()
-        .zip(kept)
-        .filter_map(|(v, t)| Some((v, t.or_else(|| fresh.next())?)))
-        .collect())
+    let mut slots: LPooled<Vec<Option<T>>> =
+        old.drain(..).map(|(_, t)| Some(t)).collect();
+    old.extend(items.drain(..).zip(kept.drain(..)).map(|(v, at)| {
+        let t = match at {
+            Some(i) => slots[i].take().expect("each kept item is used once"),
+            None => fresh.next().expect("each fresh item has a result"),
+        };
+        (v, t)
+    }));
+    Ok(())
 }
 
 /// The width `text` lays out to at `size` in `font`, unwrapped. Widths
@@ -668,11 +650,11 @@ macro_rules! flex_widget {
 
         impl<X: GXExt> GuiWidget<X> for $name<X> {
             fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-                self.children.ws.iter_mut().for_each(f)
+                self.children.ws.iter_mut().for_each(|(_, w)| f(w))
             }
 
             fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-                self.children.ws.iter().for_each(f)
+                self.children.ws.iter().for_each(|(_, w)| f(w))
             }
 
             fn handle_update(
@@ -706,7 +688,7 @@ macro_rules! flex_widget {
                 if let Some(a) = self.p.$align.t.as_ref() {
                     w = w.$align_set(a.0);
                 }
-                for child in &self.children.ws {
+                for (_, child) in &self.children.ws {
                     w = w.push(child.view());
                 }
                 w.into()
@@ -768,7 +750,8 @@ pub async fn compile_children<X: GXExt>(
     gx: GXHandle<X>,
     v: Value,
 ) -> Result<Vec<GuiW<X>>> {
-    let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
-    let futs: Vec<_> = items.into_iter().map(|item| compile(gx.clone(), item)).collect();
-    futures::future::try_join_all(futs).await
+    let items = v.cast_to::<LPooled<Vec<Value>>>()?;
+    let mut pairs: LPooled<Vec<(Value, GuiW<X>)>> = LPooled::take();
+    reconcile(&mut pairs, items, |item| compile(gx.clone(), item)).await?;
+    Ok(pairs.drain(..).map(|(_, w)| w).collect())
 }

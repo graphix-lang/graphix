@@ -6,6 +6,7 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use poolshark::local::LPooled;
 
 graphix_rt::props! {
     struct ColumnProps {
@@ -58,13 +59,15 @@ impl<X: GXExt> TableW<X> {
         )
         .context("table")?;
         let items = |r: &Ref<X>| match r.last.as_ref() {
-            None => Ok(vec![]),
-            Some(v) => v.clone().cast_to::<Vec<Value>>(),
+            None => Ok(LPooled::take()),
+            Some(v) => v.clone().cast_to::<LPooled<Vec<Value>>>(),
         };
-        let columns = reconcile([], items(&columns_ref)?, |c| compile_column(&gx, c))
+        let mut columns = Vec::new();
+        reconcile(&mut columns, items(&columns_ref)?, |c| compile_column(&gx, c))
             .await
             .context("table columns")?;
-        let cells = reconcile([], items(&rows_ref)?, |r| compile_children(gx.clone(), r))
+        let mut cells = Vec::new();
+        reconcile(&mut cells, items(&rows_ref)?, |r| compile_children(gx.clone(), r))
             .await
             .context("table rows")?;
         Ok(Box::new(Self { gx: gx.clone(), columns_ref, columns, rows_ref, cells, p }))
@@ -80,12 +83,11 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("table")?;
         if id == self.columns_ref.id && self.columns_ref.last.as_ref() != Some(v) {
-            self.columns_ref.last = Some(v.clone());
-            let items = v.clone().cast_to::<Vec<Value>>()?;
-            let (gx, old) = (&self.gx, self.columns.drain(..));
-            self.columns = rt
-                .block_on(reconcile(old, items, |c| compile_column(gx, c)))
+            let items = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
+            let gx = &self.gx;
+            rt.block_on(reconcile(&mut self.columns, items, |c| compile_column(gx, c)))
                 .context("table columns")?;
+            self.columns_ref.last = Some(v.clone());
             changed = true;
         }
         for (_, col) in &mut self.columns {
@@ -94,12 +96,13 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
             changed |= col.p.update(id, v).context("table column")?;
         }
         if id == self.rows_ref.id && self.rows_ref.last.as_ref() != Some(v) {
+            let items = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
+            let gx = &self.gx;
+            rt.block_on(reconcile(&mut self.cells, items, |r| {
+                compile_children(gx.clone(), r)
+            }))
+            .context("table rows")?;
             self.rows_ref.last = Some(v.clone());
-            let items = v.clone().cast_to::<Vec<Value>>()?;
-            let (gx, old) = (&self.gx, self.cells.drain(..));
-            self.cells = rt
-                .block_on(reconcile(old, items, |r| compile_children(gx.clone(), r)))
-                .context("table rows")?;
             changed = true;
         }
         for (_, row) in &mut self.cells {

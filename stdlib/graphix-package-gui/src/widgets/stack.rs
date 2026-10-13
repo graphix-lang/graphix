@@ -33,11 +33,11 @@ impl<X: GXExt> StackW<X> {
 
 impl<X: GXExt> GuiWidget<X> for StackW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        self.children.ws.iter_mut().for_each(f)
+        self.children.ws.iter_mut().for_each(|(_, w)| f(w))
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        self.children.ws.iter().for_each(f)
+        self.children.ws.iter().for_each(|(_, w)| f(w))
     }
 
     fn handle_update(
@@ -59,7 +59,7 @@ impl<X: GXExt> GuiWidget<X> for StackW<X> {
         if let Some(h) = self.p.height.t.as_ref() {
             s = s.height(h.0);
         }
-        for child in &self.children.ws {
+        for (_, child) in &self.children.ws {
             s = s.push(child.view());
         }
         s.into()

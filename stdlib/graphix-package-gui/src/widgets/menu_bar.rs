@@ -12,6 +12,7 @@ use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::Length;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
+use poolshark::local::LPooled;
 
 graphix_rt::props! {
     pub(crate) struct ActionProps {
@@ -83,11 +84,12 @@ pub(crate) struct MenuItems<X: GXExt> {
 impl<X: GXExt> MenuItems<X> {
     pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
         let items = match r.last.as_ref() {
-            None => vec![],
-            Some(v) => v.clone().cast_to::<Vec<Value>>()?,
+            None => LPooled::take(),
+            Some(v) => v.clone().cast_to::<LPooled<Vec<Value>>>()?,
         };
-        let items = reconcile([], items, |i| MenuItemKind::compile(gx, i)).await?;
-        Ok(Self { r, items })
+        let mut compiled = Vec::new();
+        reconcile(&mut compiled, items, |i| MenuItemKind::compile(gx, i)).await?;
+        Ok(Self { r, items: compiled })
     }
 
     pub(crate) fn update(
@@ -99,11 +101,11 @@ impl<X: GXExt> MenuItems<X> {
     ) -> Result<bool> {
         let mut changed = false;
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
+            let items = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
+            rt.block_on(reconcile(&mut self.items, items, |i| {
+                MenuItemKind::compile(gx, i)
+            }))?;
             self.r.last = Some(v.clone());
-            let items = v.clone().cast_to::<Vec<Value>>()?;
-            let old = self.items.drain(..);
-            self.items =
-                rt.block_on(reconcile(old, items, |i| MenuItemKind::compile(gx, i)))?;
             changed = true;
         }
         for (_, item) in &mut self.items {
@@ -150,16 +152,17 @@ impl<X: GXExt> MenuBarW<X> {
         )
         .context("menu_bar")?;
         let menus = match menus_ref.last.as_ref() {
-            None => vec![],
-            Some(v) => v.clone().cast_to::<Vec<Value>>()?,
+            None => LPooled::take(),
+            Some(v) => v.clone().cast_to::<LPooled<Vec<Value>>>()?,
         };
-        let menus = reconcile([], menus, |g| CompiledMenuGroup::compile(&gx, g))
+        let mut compiled = Vec::new();
+        reconcile(&mut compiled, menus, |g| CompiledMenuGroup::compile(&gx, g))
             .await
             .context("menu_bar menus")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             menus_ref,
-            menus,
+            menus: compiled,
             width: TRef::new(width).context("menu_bar tref width")?,
         }))
     }
@@ -175,12 +178,13 @@ impl<X: GXExt> super::GuiWidget<X> for MenuBarW<X> {
         let mut changed = false;
         changed |= self.width.update(id, v).context("menu_bar update width")?.is_some();
         if id == self.menus_ref.id && self.menus_ref.last.as_ref() != Some(v) {
+            let menus = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
+            let gx = &self.gx;
+            rt.block_on(reconcile(&mut self.menus, menus, |g| {
+                CompiledMenuGroup::compile(gx, g)
+            }))
+            .context("menu_bar menus")?;
             self.menus_ref.last = Some(v.clone());
-            let menus = v.clone().cast_to::<Vec<Value>>()?;
-            let (gx, old) = (&self.gx, self.menus.drain(..));
-            self.menus = rt
-                .block_on(reconcile(old, menus, |g| CompiledMenuGroup::compile(gx, g)))
-                .context("menu_bar menus")?;
             changed = true;
         }
         for (_, group) in &mut self.menus {
