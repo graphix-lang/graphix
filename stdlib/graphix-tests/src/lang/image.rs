@@ -7,7 +7,7 @@ use anyhow::Result;
 use arcstr::literal;
 use bytes::Bytes;
 use graphix_compiler::{
-    CFlag, PrintFlag,
+    CFlag, ParMode, PrintFlag,
     env::Env,
     expr::{Source, VfsEntry, VfsResolver},
     format_with_flags,
@@ -310,6 +310,7 @@ async fn program_image_restores_kernels() -> Result<()> {
 async fn session(
     program: &str,
     image: Option<Bytes>,
+    par: ParMode,
 ) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
     let (tx, mut rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
@@ -324,7 +325,18 @@ async fn session(
             (RegistrationImage::load(image), None)
         }
     };
-    let ctx = init_with_session(tx, TEST_REGISTER, flags, reg, src, prog_tx).await?;
+    let ctx = init_session_with_setup(
+        tx,
+        TEST_REGISTER,
+        vec![],
+        flags,
+        reg,
+        src,
+        prog_tx,
+        None,
+        move |ctx| ctx.control.set_par_mode(par),
+    )
+    .await?;
     let written = match prog_rx.await {
         Ok(image) => Some(image?.image),
         Err(_) => None,
@@ -342,10 +354,11 @@ async fn session(
 async fn cold_and_warm(
     program: &str,
 ) -> Result<((CompRes<NoExt>, Vec<Value>), (CompRes<NoExt>, Vec<Value>))> {
-    let (cold_program, cold_values, image, _, _) = session(program, None).await?;
+    let (cold_program, cold_values, image, _, _) =
+        session(program, None, ParMode::from_env()).await?;
     let image = image.expect("the cold run wrote its image");
     let (warm_program, warm_values, _, restored, _) =
-        session(program, Some(image)).await?;
+        session(program, Some(image), ParMode::from_env()).await?;
     assert!(restored, "the warm runtime compiled cold");
     Ok(((cold_program, cold_values), (warm_program, warm_values)))
 }
@@ -454,17 +467,6 @@ async fn a_restored_interface_keeps_its_positions() -> Result<()> {
 /// `#[parallel]` and `#[serial]` restore with the program, on an
 /// expression, a `let` and a definition alike.
 #[tokio::test]
-// CR claude for claude: [test-gap/medium] This test claims #[parallel] and #[serial]
-// restore with the program, but it asserts only values. A forked cycle computes what
-// the serial one does, so a ForkControl codec that loses or swaps the kind (for
-// example, image_decode reading None as ForkKind::Parallel) still passes. A warm start
-// would then fork a #[serial] block's effects out of order.
-// program_image_restores_nested_fork_control below runs under the env-default ParMode:
-// Force satisfies it without the attribute, and Off fails it outright. Give `session` a
-// ParMode parameter (Control::set_par_mode) instead of the env default. Then assert
-// cold forks == warm forks, add a #[serial] case under Force that asserts zero forks
-// both cold and warm, and run the nested test under Auto so only the attribute can
-// fork. (tests-modules-image-02)
 async fn program_image_restores_fork_control() -> Result<()> {
     let program = r#"
         let double = |xs: Array<i64>| #[parallel] array::map(xs, |x| x * 2);
@@ -474,12 +476,43 @@ async fn program_image_restores_fork_control() -> Result<()> {
         let s = array::fold(double([1, 2, 3]), 0, |a, b| a + b);
         #[parallel] (double([s]), triple([4, 5]))
     "#;
-    let ((cold_program, cold_values), (warm_program, warm_values)) =
-        cold_and_warm(program).await?;
+    let (cold_program, cold_values, image, _, cold_forks) =
+        session(program, None, ParMode::Auto).await?;
+    let image = image.expect("the cold run wrote its image");
+    let (warm_program, warm_values, _, restored, warm_forks) =
+        session(program, Some(image), ParMode::Auto).await?;
+    assert!(restored, "the warm runtime compiled cold");
     let last = cold_values.last().expect("the program produced its tuple");
     assert_eq!(format!("{last}"), "[[i64:24], [i64:12, i64:15]]");
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
     assert_eq!(cold_values, warm_values);
+    // Auto forks none of this program without its attributes
+    assert!(cold_forks > 0, "the cold run forked nothing");
+    assert!(warm_forks > 0, "the warm run lost the attributes");
+    Ok(())
+}
+
+/// `#[serial]` restores with the program: under `Force`, which forks at
+/// every fork point, the program forks less with it than without it,
+/// cold and warm alike.
+#[tokio::test]
+async fn program_image_restores_serial() -> Result<()> {
+    let body = "(array::map([1, 2, 3], |x| x * 2), array::map([4, 5], |x| x + 1))";
+    let mut forks = Vec::new();
+    for program in [format!("#[serial]\n{body}"), body.to_string()] {
+        let (_, cold_values, image, _, cold) =
+            session(&program, None, ParMode::Force).await?;
+        let image = image.expect("the cold run wrote its image");
+        let (_, warm_values, _, restored, warm) =
+            session(&program, Some(image), ParMode::Force).await?;
+        assert!(restored, "the warm runtime compiled cold");
+        assert_eq!(cold_values, warm_values);
+        forks.push((cold, warm));
+    }
+    let ((serial_cold, serial_warm), (plain_cold, plain_warm)) = (forks[0], forks[1]);
+    assert!(serial_cold < plain_cold, "{forks:?}");
+    assert!(serial_warm < plain_warm, "{forks:?}");
+    assert_eq!(serial_cold, serial_warm, "{forks:?}");
     Ok(())
 }
 
@@ -498,9 +531,11 @@ async fn program_image_restores_nested_fork_control() -> Result<()> {
         };
         f(array::init(n * 20, |i| i))
     "#;
-    let (_, cold_values, image, _, cold_forks) = session(program, None).await?;
+    let (_, cold_values, image, _, cold_forks) =
+        session(program, None, ParMode::Auto).await?;
     let image = image.expect("the cold run wrote its image");
-    let (_, warm_values, _, restored, warm_forks) = session(program, Some(image)).await?;
+    let (_, warm_values, _, restored, warm_forks) =
+        session(program, Some(image), ParMode::Auto).await?;
     assert!(restored, "the warm runtime compiled cold");
     assert_eq!(cold_values, warm_values);
     assert!(cold_forks > 0, "the cold run forked nothing");
@@ -512,11 +547,13 @@ async fn program_image_restores_nested_fork_control() -> Result<()> {
 /// it is read, so the session runs cold rather than fail a first call.
 #[tokio::test]
 async fn an_instance_outside_the_heap_is_refused() -> Result<()> {
-    let (_, cold_values, image, _, _) = session(PROGRAM, None).await?;
+    let (_, cold_values, image, _, _) =
+        session(PROGRAM, None, ParMode::from_env()).await?;
     let image = image.expect("the cold run wrote its image");
     let past_the_end = image.len() as u64 + 1000;
     let bad = with_first_instance_at(&image, past_the_end);
-    let (_, values, _, restored, _) = session(PROGRAM, Some(bad)).await?;
+    let (_, values, _, restored, _) =
+        session(PROGRAM, Some(bad), ParMode::from_env()).await?;
     assert!(!restored, "an image with an instance past its end restored");
     assert_eq!(cold_values, values);
     Ok(())
