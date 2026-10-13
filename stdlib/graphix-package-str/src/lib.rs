@@ -402,27 +402,22 @@ fn one_char(v: &Value) -> Option<char> {
     }
 }
 
-// CR claude for claude: [bug/low] fc_split_escaped and fc_splitn_escaped check that esc
-// and sep are each one char but not that they differ. split_escaped tests the escape
-// before the separator, so with esc == sep every separator is read as an escape and the
-// whole string comes back as one field, with no SplitEscError: str::split_escaped(#esc:
-// ",", #sep: ",", "a,b") is ["a,b"] (probe:
-// design/review-2026-10-12/repro/collections-str-09.gx). Return the declared error
-// ("escape and separator must differ") in both builtins, and state the rule in the .gxi
-// docs. (collections-str-09)
+/// The escape and separator chars of a split, each one char and not the
+/// other: an escape that is the separator would escape every separator.
+fn esc_sep(tag: &ArcStr, esc: &Value, sep: &Value) -> Result<(char, char), Value> {
+    let esc = one_char(esc).ok_or_else(|| err!(tag, "invalid escape char"))?;
+    let sep = one_char(sep).ok_or_else(|| err!(tag, "invalid separator"))?;
+    match esc == sep {
+        true => Err(err!(tag, "escape and separator must differ")),
+        false => Ok((esc, sep)),
+    }
+}
+
 fn fc_split_escaped(args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("SplitEscError");
-    let esc = match &args[0] {
-        v => match one_char(v) {
-            Some(c) => c,
-            None => return Some(err!(TAG, "invalid escape char")),
-        },
-    };
-    let sep = match &args[1] {
-        v => match one_char(v) {
-            Some(c) => c,
-            None => return Some(err!(TAG, "invalid separator")),
-        },
+    let (esc, sep) = match esc_sep(&TAG, &args[0], &args[1]) {
+        Ok(es) => es,
+        Err(e) => return Some(e),
     };
     match &args[2] {
         Value::String(s) => Some(Value::Array(ValArray::from_iter(
@@ -446,17 +441,9 @@ fn fc_splitn_escaped(args: &[Value]) -> Option<Value> {
         Value::I64(n) if *n > 0 => *n as usize,
         v => return Some(errf!(TAG, "splitn_escaped: invalid n {v}")),
     };
-    let esc = match &args[1] {
-        v => match one_char(v) {
-            Some(c) => c,
-            None => return Some(err!(TAG, "invalid escape char")),
-        },
-    };
-    let sep = match &args[2] {
-        v => match one_char(v) {
-            Some(c) => c,
-            None => return Some(err!(TAG, "invalid separator")),
-        },
+    let (esc, sep) = match esc_sep(&TAG, &args[1], &args[2]) {
+        Ok(es) => es,
+        Err(e) => return Some(e),
     };
     match &args[3] {
         Value::String(s) => Some(Value::Array(ValArray::from_iter(

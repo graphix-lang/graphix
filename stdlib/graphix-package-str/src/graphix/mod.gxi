@@ -71,11 +71,13 @@ val splitn: fn(#pat:string, #n:i64, s: string) -> Result<Array<string>, `StringS
 val rsplitn: fn(#pat:string, #n:i64, s: string) -> Result<Array<string>, `StringSplitError(string)>;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
-/// of parts delimited by it's non escaped separator characters.
+/// of parts delimited by it's non escaped separator characters. #esc and #sep are one
+/// character each, and must differ.
 val split_escaped: fn(#esc:string, #sep:string, s: string) -> Result<Array<string>, `SplitEscError(string)>;
 
 /// give an escape character #esc, and a #sep character, split the string s into an array
-/// of at most #n parts delimited by it's non escaped separator characters.
+/// of at most #n parts delimited by it's non escaped separator characters. #esc and #sep
+/// are one character each, and must differ.
 val splitn_escaped: fn(#n:i64, #esc:string, #sep:string, s: string) -> Result<Array<string>, `SplitNEscError(string)>;
 
 /// split the string once from the beginning by #pat and return a

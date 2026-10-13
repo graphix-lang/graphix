@@ -531,3 +531,16 @@ run!(str_parse_struct_native, STR_PARSE_STRUCT_NATIVE, |v: Result<&Value>| {
         _ => false,
     }
 });
+
+// An escape that is the separator would escape every separator: refused.
+run!(
+    str_split_escaped_same_char_refused,
+    r#"{
+  let a = str::split_escaped(#esc: ",", #sep: ",", "a,b");
+  let b = str::splitn_escaped(#n: 2, #esc: ",", #sep: ",", "a,b");
+  "[a] [b]"
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::String(s)) if s.matches("escape and separator must differ").count() == 2)
+    }
+);
