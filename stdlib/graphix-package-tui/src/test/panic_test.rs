@@ -416,21 +416,12 @@ let result = chart(
 }
 
 #[tokio::test]
-// CR claude for claude: [test-gap/low] The points here and the line in
-// canvas_bounds_equal_does_not_panic lie outside the 5..5 bounds. ratatui drops them in
-// `Painter::get_point`'s range check and the line clip before any width or height math
-// runs. So neither test reaches the zero-width case the comment calls a divide-by-zero
-// candidate. Both would pass however degenerate bounds were handled. Put the points and
-// the line on the degenerate value (e.g. (5.0, 5.0)), so the zero-width guard is what
-// yields the empty screen, and delete the comment. (tests-tui-05)
 async fn chart_axis_bounds_equal_does_not_panic() -> Result<()> {
-    // min == max is a degenerate axis — internal divide-by-zero
-    // candidate when computing point positions.
     let mut h = TuiTestHarness::new(
         r#"
 use tui::*;
 use tui::chart::{self, *};
-let pts: Array<(f64, f64)> = [(0.0, 0.0), (1.0, 1.0)];
+let pts: Array<(f64, f64)> = [(5.0, 5.0)];
 let ds = dataset(&pts);
 let result = chart(
     #x_axis: &axis({min: 5.0, max: 5.0}),
@@ -469,7 +460,7 @@ async fn canvas_bounds_equal_does_not_panic() -> Result<()> {
         r#"
 use tui::*;
 use tui::canvas::{self, *};
-let l = `Line({color: `Red, x1: 0.0, y1: 0.0, x2: 1.0, y2: 1.0});
+let l = `Line({color: `Red, x1: 5.0, y1: 5.0, x2: 5.0, y2: 5.0});
 let result = canvas(
     #x_bounds: &{min: 5.0, max: 5.0},
     #y_bounds: &{min: 5.0, max: 5.0},
