@@ -5068,7 +5068,7 @@ async fn derive_suspect(
 ) -> (bool, Duration) {
     use std::sync::atomic::Ordering::Relaxed;
     if kind == SourceKind::Typemorph {
-        let (confirmed, cpu) = confirm_typeflip(corpus, prog, timeout).await;
+        let (confirmed, cpu) = confirm_typeflip(corpus, tally, prog, timeout).await;
         if confirmed {
             tally.divergences.fetch_add(1, Relaxed);
         }
@@ -5121,10 +5121,12 @@ async fn derive_suspect(
 
 /// Re-probe a subject that flipped in a batch child in a fresh process
 /// and record each flip class it shows there; a flip the fresh process
-/// does not reproduce is an acceptance flap, its own class. True when
-/// the fresh process flipped too.
+/// does not reproduce is an acceptance flap, its own class. A fresh
+/// process that died or wedged is a crash, recorded per program. True
+/// when the fresh process flipped too.
 async fn confirm_typeflip(
     corpus: &Corpus,
+    tally: &Tally,
     prog: &str,
     timeout: Duration,
 ) -> (bool, Duration) {
@@ -5138,22 +5140,14 @@ async fn confirm_typeflip(
             f => (f, true),
         },
         // a confirm that measured nothing confirms nothing
-        // CR claude for claude: [bug/medium] An `Err` from `typemorph_child` means the
-        // confirm child was killed at its deadline (a wedged checker) or died without a
-        // verdict (SIGSEGV, abort, OOM kill). It is not an acceptance flap. Filing it
-        // as `unconfirmed` gives every such event one fixed class,
-        // `TYPEFLIP:unconfirmed: child deadline` or `.. no verdict (signal: N ..)`.
-        // `Corpus::load` reloads that class, so only the first wedge or crash of each
-        // signal kind is ever written, in any campaign. Every later one is dropped
-        // without a print. Because confirmed=false, it also never reaches
-        // `Tally::crashes` or the breakage window. The other lanes record a dead child
-        // through `record_crash` (keyed per program) and count it. Spawn failures
-        // already exit FATAL in `spawn_child`, so the reason for this arm is gone. Fix:
-        // on `Err(e)`, call `corpus.record_crash(prog, &e)`, print `CRASH` when it
-        // returns true, bump `tally.crashes` (pass the tally in, or return a crash bit
-        // to `derive_suspect`), and report it as a finding. Keep `unconfirmed` for a
-        // fresh child that ran to a verdict and showed no flip. (fuzz-lib-b-04)
-        Err(e) => (vec![Flip::harness("unconfirmed", e)], false),
+        Err(e) => {
+            tally.crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if corpus.record_crash(prog, &e) {
+                println!("CRASH — typemorph child {e}");
+                println!("    program: {}", prog.replace('\n', "\\n"));
+            }
+            return (true, cpu);
+        }
     };
     for Flip { id, head, mutant } in flips {
         if corpus.record_typeflip(prog, &id, &head, mutant.as_deref()) {
