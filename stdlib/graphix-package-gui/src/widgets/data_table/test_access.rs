@@ -168,7 +168,7 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     /// Restamp every sparkline point at `t`, as if recorded then.
-    pub fn dt_age_out_after(&self, t: Instant) {
+    pub fn dt_restamp_sparklines(&self, t: Instant) {
         for h in self.cells.inner.lock().sparklines.values_mut() {
             h.iter_mut().for_each(|p| p.0 = t);
         }

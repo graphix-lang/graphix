@@ -553,6 +553,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sparkline_nonfinite_negative_and_zero_windows() {
+        let base = Instant::now();
+        for (seconds, expected) in [
+            (-1.0, &[1.0, 2.0, 3.0][..]),
+            (f64::NAN, &[1.0, 2.0, 3.0][..]),
+            (0.0, &[3.0][..]),
+        ] {
+            let mut history: LPooled<VecDeque<(Instant, f64)>> = LPooled::take();
+            for i in 1..=3 {
+                push_sparkline_point(
+                    &mut history,
+                    base + Duration::from_secs(i),
+                    i as f64,
+                    seconds,
+                );
+            }
+            assert!(
+                history.iter().map(|(_, v)| *v).eq(expected.iter().copied()),
+                "{seconds}"
+            );
+        }
+    }
+
+    #[test]
     fn sparkline_bursts_retain_a_bounded_history() {
         let mut history: LPooled<VecDeque<(Instant, f64)>> = LPooled::take();
         let base = Instant::now();

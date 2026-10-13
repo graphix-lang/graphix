@@ -1607,18 +1607,9 @@ let result = data_table(
     assert_eq!(w.col_at_offset_for_test(161.0), 2, "ox=161 lands on col c");
     Ok(())
 }
-/// A non-finite or non-positive sparkline `history_seconds` does not
-/// panic on a live update.
+/// A negative sparkline window accepts live updates.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [readability/low] Nothing here rejects anything. A negative
-// `history_seconds` makes `sparkline_cutoff` return None, so the window keeps every
-// point. The test only checks that a value lands without a panic, and the doc names
-// non-finite and zero windows that are never tried. Either refuse such windows when the
-// column is parsed (then this name is true and the test checks the refusal), or rename
-// the test after what happens (a negative window keeps every point), assert the kept
-// history, and add NaN and 0.0 cases. Likewise, `dt_age_out_after` only restamps
-// points, so call it `dt_restamp_sparklines`. (tests-gui-a-09)
-async fn sparkline_history_seconds_rejects_negative() -> Result<()> {
+async fn sparkline_negative_history_accepts_updates() -> Result<()> {
     let code = r#"
 
 let c = 0;
@@ -2088,7 +2079,7 @@ let result = data_table(#table: &tbl)
     let live = h.inner.dt().dt_sparkline_values("live", "load").unwrap_or_default();
     assert!(!live.contains(&5.0), "no fallback in a live row: {live:?}");
     let old = std::time::Instant::now() - std::time::Duration::from_secs(120);
-    h.inner.dt().dt_age_out_after(old);
+    h.inner.dt().dt_restamp_sparklines(old);
     let _ = h.view();
     assert_eq!(h.inner.dt().dt_sparkline_len("live", "load"), Some(0));
     Ok(())
