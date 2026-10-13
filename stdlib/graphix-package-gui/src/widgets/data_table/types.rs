@@ -1,14 +1,15 @@
 //! Pure data types, parsers, and small helpers for the data table.
 
 use super::{
-    CELL_H_PADDING, MAX_SPARKLINE_POINTS, MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH,
-    ROW_NAME_KEY, VALUE_COL_KEY,
+    AIndexMap, CELL_H_PADDING, DisplayMode, MAX_SPARKLINE_POINTS, MIN_COL_WIDTH,
+    RESIZE_HANDLE_WIDTH, ROW_NAME_KEY, VALUE_COL_KEY,
 };
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::BindId;
 use graphix_rt::{Callable, GXExt, Ref};
+use indexmap::IndexSet;
 use log::warn;
 use netidx::{path::Path, publisher::Value};
 use netidx_derive::FromValue;
@@ -158,18 +159,64 @@ pub(super) fn parse_sort_by(v: &Value) -> LPooled<Vec<SortBy>> {
     v.clone().cast_to().unwrap_or_default()
 }
 
-pub(super) fn parse_selection(v: &Value) -> LPooled<AHashSet<ArcStr>> {
-    let items = match v.clone().cast_to::<Vec<Value>>() {
-        Ok(items) => items,
-        Err(_) => return LPooled::take(),
-    };
-    items
-        .into_iter()
-        .filter_map(|v| match v {
-            Value::String(s) => Some(s),
+#[derive(Default)]
+pub(super) struct Selection {
+    paths: LPooled<IndexSet<ArcStr, ahash::RandomState>>,
+    cells: LPooled<AIndexMap<(Path, ArcStr), usize>>,
+}
+
+impl Selection {
+    pub(super) fn iter(&self) -> impl Iterator<Item = &ArcStr> {
+        self.paths.iter()
+    }
+
+    pub(super) fn cells(&self) -> impl Iterator<Item = (usize, &ArcStr)> {
+        self.cells.iter().map(|((_, col), row)| (*row, col))
+    }
+
+    pub(super) fn contains(&self, row: &Path, col: &ArcStr) -> bool {
+        self.cells.contains_key(&(row.clone(), col.clone()))
+    }
+
+    pub(super) fn reindex<T>(
+        &mut self,
+        rows: &AHashMap<Path, usize>,
+        mode: DisplayMode,
+        columns: &AIndexMap<ArcStr, T>,
+    ) {
+        self.cells.clear();
+        for path in self.paths.iter() {
+            if let Some((row, ri)) = rows.get_key_value(path.as_str()) {
+                let col = match mode {
+                    DisplayMode::Table => ROW_NAME_KEY,
+                    DisplayMode::Value => VALUE_COL_KEY,
+                };
+                self.cells.insert((row.clone(), col), *ri);
+            }
+            if mode == DisplayMode::Table {
+                let parent =
+                    Path::dirname(path).or_else(|| path.starts_with('/').then_some("/"));
+                if let Some((row, ri)) = parent.and_then(|p| rows.get_key_value(p)) {
+                    if let Some((col, _)) =
+                        Path::basename(path).and_then(|c| columns.get_key_value(c))
+                    {
+                        self.cells.insert((row.clone(), col.clone()), *ri);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn parse_selection(v: &Value) -> Selection {
+    let mut selection = Selection::default();
+    if let Value::Array(items) = v {
+        selection.paths.extend(items.iter().filter_map(|v| match v {
+            Value::String(s) => Some(s.clone()),
             _ => None,
-        })
-        .collect()
+        }));
+    }
+    selection
 }
 
 fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
@@ -458,6 +505,7 @@ pub(super) fn cell_path(row: &Path, col: &ArcStr) -> ArcStr {
 }
 
 /// Whether `sel` is `cell_path(row, col)`, without allocating.
+#[cfg(test)]
 pub(super) fn is_cell_path(sel: &str, row: &str, col: &ArcStr) -> bool {
     if col == &ROW_NAME_KEY || col == &VALUE_COL_KEY {
         return sel == row;
@@ -625,5 +673,60 @@ mod tests {
                     .contains(&history.len())
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn selection_indexes_exact_cells() {
+        let mut rows: AHashMap<Path, usize> = [
+            (Path::from("r1"), 1),
+            (Path::from("r10"), 10),
+            (Path::from("/"), 20),
+            (Path::from("/nested/r"), 30),
+        ]
+        .into_iter()
+        .collect();
+        let columns: AIndexMap<ArcStr, ()> =
+            [(ArcStr::from("c"), ()), (ArcStr::from(r"c\/d"), ())].into_iter().collect();
+        let paths = [
+            "r10/c",
+            "r1/c",
+            "r10/c",
+            "/c",
+            r"/nested/r/c\/d",
+            "missing/c",
+            "r1/no",
+            "r1",
+        ];
+        let value = Value::Array(paths.into_iter().map(Value::from).collect());
+        let mut selection = parse_selection(&value);
+        selection.reindex(&rows, DisplayMode::Table, &columns);
+        assert_eq!(
+            selection.cells().map(|(r, _)| r).collect::<Vec<_>>(),
+            [10, 1, 20, 30, 1]
+        );
+        assert!(selection.contains(&Path::from("r1"), &ROW_NAME_KEY));
+        assert!(selection.contains(&Path::from("/nested/r"), &ArcStr::from(r"c\/d")));
+        assert!(!selection.contains(&Path::from("r1"), &ArcStr::from("no")));
+        rows.insert(Path::from("r10"), 0);
+        selection.reindex(&rows, DisplayMode::Table, &columns);
+        assert_eq!(selection.cells().next().unwrap().0, 0);
+        selection.reindex(&rows, DisplayMode::Value, &columns);
+        assert_eq!(selection.cells().collect::<Vec<_>>(), [(1, &VALUE_COL_KEY)]);
+    }
+
+    #[test]
+    fn selection_keeps_program_order() {
+        let paths: LPooled<Vec<ArcStr>> = (0..128)
+            .rev()
+            .map(|n| ArcStr::from(format_compact!("r{n}/c").as_str()))
+            .collect();
+        let value = Value::Array(paths.iter().cloned().map(Value::String).collect());
+        let selection = parse_selection(&value);
+        assert!(selection.iter().eq(paths.iter()));
     }
 }

@@ -7,7 +7,7 @@ use super::{
     Renderer, TableMsg, VALUE_COL_KEY, VALUE_HEADER_LABEL,
     types::{
         ColumnType, SortDirection, ViewportMetrics, age_sparkline, cell_path,
-        col_header_width, col_min_width, is_cell_path, row_basename, truncate_to_width,
+        col_header_width, col_min_width, row_basename, truncate_to_width,
     },
 };
 use crate::{
@@ -504,9 +504,7 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Whether the cell at `(row_idx, col)` is selected.
     fn is_selected(&self, row_idx: usize, col: &ArcStr) -> bool {
-        self.row_paths
-            .get(row_idx)
-            .is_some_and(|rp| self.selection.iter().any(|sel| is_cell_path(sel, rp, col)))
+        self.row_paths.get(row_idx).is_some_and(|rp| self.selection.contains(rp, col))
     }
 
     /// Wrap a cell's content in a bordered, click-to-select container.

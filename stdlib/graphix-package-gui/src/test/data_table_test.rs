@@ -2,6 +2,7 @@
 //! (non-absolute paths, no subscriptions) via `DataTableSnapshot`.
 
 use super::*;
+use crate::widgets::TableKeyAction;
 use anyhow::Result;
 use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
@@ -2526,5 +2527,34 @@ async fn clicking_another_cell_cancels_text_edit() -> Result<()> {
     assert_eq!(h.inner.dt().dt_editing(), None);
     h.live(&[named_key(Named::ArrowDown)]).await?;
     assert_eq!(h.inner.dt_snapshot().selection, ["r1/b"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn multiple_selections_use_program_order() -> Result<()> {
+    let rows: LPooled<Vec<CompactString>> =
+        (0..100).map(|i| format_compact!("\"r{i}\"")).collect();
+    let code = format_compact!(
+        r#"
+let sel: Array<string> = [];
+let tbl = {{ rows: [{}], columns: [text_column(#name: "c", #source: &"x")] }};
+let result = data_table(#table: &tbl, #selection: &sel,
+    #on_select: |#path: string| sel <- [path])
+"#,
+        rows.join(", ")
+    );
+    let mut h = dt(&code).await?;
+    set_var(
+        &h,
+        "test::sel",
+        Value::Array(ValArray::from_iter([Value::from("r90/c"), Value::from("r70/c")])),
+    )
+    .await?;
+    settle(&mut h, "first selection in view", |h| h.dt().dt_first_cell().0 == 61).await?;
+    h.dt_mut().handle_table_key(&TableKeyAction::Down);
+    settle(&mut h, "navigation from first selection", |h| {
+        h.dt_snapshot().selection == ["r91/c"]
+    })
+    .await?;
     Ok(())
 }

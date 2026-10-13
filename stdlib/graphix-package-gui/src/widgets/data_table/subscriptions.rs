@@ -707,10 +707,19 @@ impl<X: GXExt> DataTableW<X> {
     // resolver sockets, so their runtime assertions remain unverified.
     /// The rows in display order: the table's own order sorted, stably,
     /// by the sort columns, or the table's order when there are none.
+    fn index_rows(&mut self) {
+        self.row_indices.clear();
+        for (i, row) in self.row_paths.iter().enumerate() {
+            self.row_indices.entry(row.clone()).or_insert(i);
+        }
+        self.selection.reindex(&self.row_indices, self.mode, &self.columns);
+    }
+
     pub(super) fn sort_rows(&mut self) {
         self.row_paths.clear();
         if self.sort_by.is_empty() {
             self.row_paths.extend(self.table_rows.iter().cloned());
+            self.index_rows();
             self.cells.dirty.store(true, Ordering::Relaxed);
             return;
         }
@@ -755,6 +764,7 @@ impl<X: GXExt> DataTableW<X> {
             CmpOrdering::Equal
         });
         self.row_paths.extend(order.iter().map(|&i| self.table_rows[i].clone()));
+        self.index_rows();
         self.cells.dirty.store(true, Ordering::Relaxed);
     }
 }

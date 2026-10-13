@@ -8,7 +8,7 @@
 use super::{
     GuiW, GuiWidget, Handler, IcedElement, Message, Renderer, TableId, TableMsg, WidgetOp,
 };
-use ahash::{AHashMap, AHashSet, AHasher};
+use ahash::{AHashMap, AHasher};
 use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
 use compact_str::CompactString;
@@ -41,7 +41,7 @@ mod types;
 mod test_access;
 
 use subscriptions::{SharedCells, spawn_dispatch_task};
-use types::{ColumnState, ResizeDrag, SortBy, parse_selection, parse_sort_by};
+use types::{ColumnState, ResizeDrag, Selection, SortBy, parse_selection, parse_sort_by};
 
 #[cfg(test)]
 pub(crate) use types::{decimate_sparkline, truncate_to_width};
@@ -97,7 +97,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     sort_by: LPooled<Vec<SortBy>>,
     /// Set of selected cell paths (`row_path` for the row-name column,
     /// `row_path/col_name` otherwise), controlled by graphix.
-    // CR claude for claude: [bug/medium] The selection is an AHashSet, and ahash seeds
+    // XCR claude for claude: [bug/medium] The selection is an AHashSet, and ahash seeds
     // its RandomState from getrandom, so the iteration order changes from one process
     // to the next and from one parse to the next. With several cells selected,
     // `ensure_selection_visible` scrolls to the first off-screen cell in hash order.
@@ -108,7 +108,9 @@ pub(crate) struct DataTableW<X: GXExt> {
     // parsed Vec beside a set used for membership). Both sites then take the first
     // selected cell in that order. Add a pin with two off-screen selections and a key
     // press over a multi-cell selection. (tests-gui-a-01)
-    selection: LPooled<AHashSet<ArcStr>>,
+    // 2026-10-13 codex: selection_keeps_program_order fails before and passes after; selection_indexes_exact_cells pins lookup and reindexing.
+    // multiple_selections_use_program_order compiles but needs resolver sockets for scroll/key assertions.
+    selection: Selection,
     on_activate: Handler<X>,
     on_select: Handler<X>,
     on_header_click: Handler<X>,
@@ -127,6 +129,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     table_rows: Vec<Path>,
     /// The rows in display order: `table_rows` sorted by `sort_by`.
     row_paths: Vec<Path>,
+    row_indices: AHashMap<Path, usize>,
     cells: Arc<SharedCells<X>>,
     first_row: usize,
     first_col: usize,
@@ -246,6 +249,7 @@ impl<X: GXExt> DataTableW<X> {
             mode: DisplayMode::Table,
             table_rows: vec![],
             row_paths: vec![],
+            row_indices: AHashMap::default(),
             cells,
             first_row: 0,
             first_col: 0,
@@ -318,6 +322,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if id == self.selection_ref.id {
             self.selection_ref.last = Some(v.clone());
             self.selection = parse_selection(v);
+            self.selection.reindex(&self.row_indices, self.mode, &self.columns);
             self.ensure_selection_visible();
             changed = true;
         }

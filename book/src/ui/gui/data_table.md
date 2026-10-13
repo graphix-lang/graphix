@@ -293,3 +293,7 @@ the rows that enter that window and drops the ones that leave it.
 - [Chart](chart.md) -- larger-scale line / area / scatter plots.
 - [`sys::net`](../../stdlib/sys/net.md) -- the `Table` record and
   `list_table` helper consumed by `#table`.
+
+With multiple selected cells, keyboard navigation starts at the first valid
+cell in the program's selection array. If none of the selected cells is fully
+visible, the table scrolls to that first cell.

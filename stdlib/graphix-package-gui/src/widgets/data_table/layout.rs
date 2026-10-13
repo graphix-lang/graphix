@@ -7,8 +7,8 @@ use super::{
     VALUE_COL_KEY, VALUE_HEADER_LABEL,
     subscriptions::SharedCellsInner,
     types::{
-        ColumnType, col_header_width, col_text_width, format_value, is_cell_path,
-        row_basename, value_to_f64,
+        ColumnType, col_header_width, col_text_width, format_value, row_basename,
+        value_to_f64,
     },
 };
 use arcstr::ArcStr;
@@ -241,7 +241,7 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     /// Scroll to a selected cell unless one is already drawn whole.
-    // CR claude for claude: [perf/low] This scans every row for every selected path on
+    // XCR claude for claude: [perf/low] This scans every row for every selected path on
     // each selection update. is_selected scans the whole selection for every drawn cell
     // on every frame, and handle_table_key scans selection × rows on every key. A
     // select-all over a 20k-row table makes each update about 4e8 checks and each frame
@@ -251,44 +251,25 @@ impl<X: GXExt> DataTableW<X> {
     // → selected columns) in parse_selection, find rows through a path → index map
     // built in sort_rows, and choose the lowest (row, column) deterministically.
     // (gui-datatable-10)
+    // 2026-10-13 codex: selection_indexes_exact_cells pins indexed membership and row reordering; selection_keeps_program_order pins the chosen order.
+    // Program order follows tests-gui-a-01 rather than lowest display index. The
+    // multiple_selections_use_program_order live pin needs resolver sockets.
     pub(super) fn ensure_selection_visible(&mut self) {
-        if self.selection.is_empty() {
-            return;
-        }
-        let cols = self.navigable_columns_with_name();
         let rows = self.first_row..self.first_row + self.whole_rows_in_view();
         let mut target: Option<(usize, ArcStr)> = None;
-        for sel in self.selection.iter() {
-            for (ri, rp) in self.row_paths.iter().enumerate() {
-                if !sel.starts_with(&**rp) {
-                    continue;
-                }
-                for c in cols.iter().filter(|c| is_cell_path(sel, rp, c)) {
-                    let col_visible = match self.columns.get_index_of(c.as_str()) {
-                        Some(ci) => self.col_fully_visible(ci),
-                        None => true,
-                    };
-                    if rows.contains(&ri) && col_visible {
-                        return;
-                    }
-                    target.get_or_insert_with(|| (ri, c.clone()));
-                }
+        for (ri, col) in self.selection.cells() {
+            let col_visible = match self.columns.get_index_of(col.as_str()) {
+                Some(ci) => self.col_fully_visible(ci),
+                None => true,
+            };
+            if rows.contains(&ri) && col_visible {
+                return;
             }
+            target.get_or_insert_with(|| (ri, col.clone()));
         }
         if let Some((ri, col)) = target {
             self.scroll_to_cell(ri, &col);
         }
-    }
-
-    /// Every column a selection can name, the row-name column included.
-    fn navigable_columns_with_name(&self) -> LPooled<Vec<ArcStr>> {
-        let mut cols: LPooled<Vec<ArcStr>> = LPooled::take();
-        cols.push(ROW_NAME_KEY);
-        match self.mode {
-            DisplayMode::Table => cols.extend(self.columns.keys().cloned()),
-            DisplayMode::Value => cols.push(VALUE_COL_KEY),
-        }
-        cols
     }
 
     /// Auto-fit every column to its widest content over all rows. A

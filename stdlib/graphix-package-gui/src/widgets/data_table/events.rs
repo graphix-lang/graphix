@@ -3,9 +3,7 @@
 
 use super::{
     DataTableW, DisplayMode, HEADER_HEIGHT, MIN_COL_WIDTH, ROW_NAME_KEY, VALUE_COL_KEY,
-    types::{
-        ColumnType, ResizeDrag, ViewportMetrics, cell_path, is_cell_path, parse_or_quote,
-    },
+    types::{ColumnType, ResizeDrag, ViewportMetrics, cell_path, parse_or_quote},
 };
 use crate::widgets::TableKeyAction;
 use arcstr::ArcStr;
@@ -53,13 +51,8 @@ impl<X: GXExt> DataTableW<X> {
         };
         let (cur_row, cur_col) = self
             .selection
-            .iter()
-            .find_map(|sel| {
-                self.row_paths.iter().enumerate().find_map(|(ri, rp)| {
-                    let ci = cols.iter().position(|c| is_cell_path(sel, rp, c))?;
-                    Some((ri, ci))
-                })
-            })
+            .cells()
+            .find_map(|(row, col)| cols.iter().position(|c| c == col).map(|ci| (row, ci)))
             .unwrap_or((0, first_data_col));
         match action {
             TableKeyAction::Up
