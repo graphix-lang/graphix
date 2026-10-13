@@ -276,25 +276,6 @@ run!(seq_busy_drops, SEQ_BUSY_DROPS, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
-// CR claude for claude: [test-gap/low] This fixture does not observe the abort its name
-// claims. It checks only that the outer catch saw the error, so a machine that raised
-// and still ran the next step and produced 99 would pass. seq_errors::final_output
-// already pins that a raised `?` ends the run with no value, under seq and seqq. Delete
-// this fixture as a duplicate, or make the seq's value observable (`let r = seq {
-// [0][1]?; 99 }`) and assert that `r` never fires. (tests-seq-06)
-const SEQ_QOP_ABORTS: &str = r#"
-{
-  let caught = never();
-  catch(e) caught <- e ~ 1;
-  seq { [0][1]?; 99 };
-  caught
-}
-"#;
-
-run!(seq_qop_aborts, SEQ_QOP_ABORTS, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(1)))
-}; FuseExpect::Jit);
-
 const SEQ_BLOCK_RERUNS: &str = r#"
 {
   let step = 0;
