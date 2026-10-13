@@ -144,15 +144,13 @@ earlier independent one and reorder their writes.
   are out of every sibling's scope.
 - A summary reads through a fused kernel's feeders and records the
   reference a `*r <- v` reads.
-<!-- CR claude for claude: [doc-drift/low] Stale. `plan_blocks` plans every block the
-analysis reaches, using the holder-aware summaries, and `Block::image_encode` writes the
-plan into the image. Only a block no analysis reached is planned at its first update.
-Rewrite the bullet to say this. Also say that the sibling decisions of the other fork
-sites (`ForkSite`, `SlotSite`) are made at first update and are not imaged, which is why
-a warm start loses them (c-analysis-branch-03). (c-analysis-branch-07) -->
-- The plan is made at a block's first update that may fork and kept in
-  the node, not imaged: a runtime that never forks pays nothing for it.
-  A callee bound later than the plan stays opaque in it (conservative).
+- `plan_blocks` plans every block the analysis reaches, with the
+  holder-aware summaries, and `Block::image_encode` writes the plan into
+  the image; only a block no analysis reached is planned at its first
+  update. A callee bound later than the plan stays opaque in it
+  (conservative). The other fork sites (`ForkSite`, `SlotSite`) decide
+  their siblings at their first update and are not imaged, so a warm
+  start decides them again.
 
 Top-level roots are not planned: a script compiles as one block, which
 is.
