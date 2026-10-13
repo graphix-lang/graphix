@@ -61,12 +61,8 @@ run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
     // the i64 write reaches the callback cast to its string type
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            // CR claude for claude: [test-gap/low] The predicate takes either rendering
-            // of the written i64 cast to the callback's string type. Nothing compares
-            // the modes, so one engine switching between "i64:43" and "43" passes. Both
-            // engines give "i64:43" today (cast<string>(43) prints i64:43), so pin `*n
-            // == 6` alone. Also reported as (tests-lib-b2-10). (sys-net-11)
-            [Value::I64(42), Value::I64(n)] => *n == "i64:43".len() as i64 || *n == 2,
+            // the written i64 casts to "i64:43"
+            [Value::I64(42), Value::I64(6)] => true,
             _ => false,
         },
         _ => false,
