@@ -372,3 +372,24 @@ let result = b
     assert_eq!(h.get_watched("test::answer"), Some(&Value::I64(1)));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_form_without_cancel_continues_escape() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::{form::form, input_handler::{Event, input_handler}};
+let continued = 0;
+let f = form(#title: "form", #on_submit: |_| null, []);
+let handle = |e: Event| select f.handle(e) {
+    r@ `Continue => { continued <- (r ~ continued) + 1; r },
+    r => r
+};
+let result = input_handler(#handle: &handle, &f.view)
+"#,
+    )
+    .await?;
+    h.watch("test::continued").await?;
+    h.dispatch_events([key(KeyCode::Esc), key(KeyCode::Esc)]).await?;
+    assert_eq!(h.get_watched("test::continued"), Some(&Value::I64(2)));
+    Ok(())
+}

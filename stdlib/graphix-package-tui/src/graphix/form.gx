@@ -26,18 +26,9 @@ let form = |
       on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
       `Stop
     },
-    // CR claude for claude: [bug/low] When #on_cancel is null, Esc still answers `Stop:
-    // the key is consumed, nothing happens, and an enclosing handler never sees it. The
-    // default #hint legend nevertheless advertises 'Esc cancel', so a form on an
-    // overlay layer built without on_cancel cannot be dismissed with Esc. Answer
-    // `Continue for Esc when on_cancel is null, so the caller's handler can close the
-    // layer, or make #on_cancel required. (gx-ui-08)
-    kk@ `Esc => {
-      select kk ~ on_cancel {
-        null as _ => never(),
-        f => f(kk)
-      };
-      `Stop
+    kk@ `Esc => select kk ~ on_cancel {
+      null as _ => `Continue,
+      f => { f(kk); `Stop }
     },
     _ => {
       let i = k ~ focus;
