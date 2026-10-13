@@ -148,7 +148,15 @@ impl<X: GXExt> DatasetW<X> {
 
     fn build(&self) -> Dataset<'_> {
         let p = &self.p;
-        let mut ds = Dataset::default().data(&self.data);
+        let connected =
+            matches!(p.graph_type.t.flatten(), Some(GraphTypeV(GraphType::Line)));
+        let overflow = connected
+            && self.data.windows(2).any(|pair| {
+                !(pair[1].0 - pair[0].0).is_finite()
+                    || !(pair[1].1 - pair[0].1).is_finite()
+            });
+        let data = if overflow { &[][..] } else { &self.data };
+        let mut ds = Dataset::default().data(data);
         if let Some(Some(LineV(l))) = &p.name.t {
             ds = ds.name(into_borrowed_line(l));
         }

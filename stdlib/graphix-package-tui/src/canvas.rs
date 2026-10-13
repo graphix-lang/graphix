@@ -105,22 +105,25 @@ enum ShapeV {
 
 impl ShapeV {
     /// Whether the shape's coordinates are numbers ratatui can place.
-    // CR claude for claude: [bug/low] finite() checks only the raw coordinates.
-    // Ratatui's line clip computes x2 - x1 and y2 - y1, and those overflow to inf for
-    // finite coordinates near ±f64::MAX. The clipped endpoint then becomes NaN and gets
-    // painted on row 0. A line from (-1e308,-1e308) to (1e308,1e308) over [0,10]x[0,10]
-    // draws a full top row instead of the diagonal. Rectangle (x + width, y + height),
-    // Circle (x ± radius) and the consecutive points of a chart Line dataset
-    // (DatasetW::set_data) have the same problem. Fix: also require the derived
-    // quantities to be finite, so that such a shape is dropped the way a NaN shape
-    // already is, and add a panic_test.rs pin for the ±1e308 line. probe:
-    // design/review-2026-10-12/repro/tui-widgets-04.gx (tui-widgets-04)
     fn finite(&self) -> bool {
         let all = |cs: &[f64]| cs.iter().all(|c| c.is_finite());
         match self {
-            ShapeV::Line(CanvasLineV(l)) => all(&[l.x1, l.y1, l.x2, l.y2]),
-            ShapeV::Circle(CanvasCircleV(c)) => all(&[c.x, c.y, c.radius]),
-            ShapeV::Rectangle(CanvasRectangleV(r)) => all(&[r.x, r.y, r.width, r.height]),
+            ShapeV::Line(CanvasLineV(l)) => {
+                all(&[l.x1, l.y1, l.x2, l.y2, l.x2 - l.x1, l.y2 - l.y1])
+            }
+            ShapeV::Circle(CanvasCircleV(c)) => all(&[
+                c.x,
+                c.y,
+                c.radius,
+                c.x - c.radius,
+                c.x + c.radius,
+                c.y - c.radius,
+                c.y + c.radius,
+                2.0 * c.radius,
+            ]),
+            ShapeV::Rectangle(CanvasRectangleV(r)) => {
+                all(&[r.x, r.y, r.width, r.height, r.x + r.width, r.y + r.height])
+            }
             ShapeV::Label(l) => all(&[l.x, l.y]),
             ShapeV::Points(_) => true,
         }
@@ -217,5 +220,32 @@ impl<X: GXExt> TuiWidget for CanvasW<X> {
         });
         frame.render_widget(canvas, rect);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    #[test]
+    fn finite_shapes_require_finite_extents() {
+        let circle = |x, radius| {
+            ShapeV::Circle(CanvasCircleV(Circle { x, y: 0.0, radius, color: Color::Red }))
+        };
+        let rectangle = |x, width| {
+            ShapeV::Rectangle(CanvasRectangleV(Rectangle {
+                x,
+                y: 0.0,
+                width,
+                height: 1.0,
+                color: Color::Red,
+            }))
+        };
+        assert!(circle(0.0, 1.0).finite());
+        assert!(!circle(1e308, 1e308).finite());
+        assert!(!circle(-1e308, 1e308).finite());
+        assert!(rectangle(0.0, 1.0).finite());
+        assert!(!rectangle(1e308, 1e308).finite());
     }
 }

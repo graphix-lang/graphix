@@ -586,3 +586,33 @@ async fn calendar_negative_year_does_not_panic() -> Result<()> {
     ])?;
     Ok(())
 }
+
+#[tokio::test]
+async fn overflowing_canvas_geometry_is_empty() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::canvas::canvas;
+let shape = `Line({color: `Red, x1: -1e308, y1: -1e308, x2: 1e308, y2: 1e308});
+let result = canvas(#x_bounds: &{min: 0.0, max: 10.0},
+    #y_bounds: &{min: 0.0, max: 10.0}, &[&shape])
+"#,
+    )
+    .await?;
+    h.assert_lines(&[])?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn overflowing_chart_line_is_empty() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::chart::{axis, chart, dataset};
+let result = chart(#x_axis: &axis({min: 0.0, max: 10.0}),
+    #y_axis: &axis({min: 0.0, max: 10.0}),
+    &[dataset(#graph_type: &`Line, &[(-1e308, -1e308), (1e308, 1e308)])])
+"#,
+    )
+    .await?;
+    h.assert_lines(&[])?;
+    Ok(())
+}
