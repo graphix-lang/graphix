@@ -61,6 +61,43 @@ impl Family {
     ];
 }
 
+impl Family {
+    /// Whether `head`, a refusal's message, is one this family's rule
+    /// gives: a refusal at the right site for another reason (a dead arm
+    /// the mutation added) would hide the rule's regression.
+    pub fn refuses_with(self, head: &str) -> bool {
+        let says: &[&str] = match self {
+            Family::MonoReuse => &["does not contain fn("],
+            Family::RigidVar => &["unbound"],
+            Family::SharedVar | Family::AbstractWiden => &["does not contain"],
+            Family::LabelUnknown => &["unknown labeled argument"],
+            Family::LabelMissing => &["missing required argument"],
+            Family::LabelDefault => {
+                &["missing required argument", "does not contain fn("]
+            }
+            Family::WidenConsumer => &[
+                "does not contain",
+                "cannot compute",
+                "cannot compare",
+                "expected struct not",
+            ],
+            Family::VariantWiden => &["missing match cases"],
+            Family::Retype => &[
+                "cannot hold",
+                "cannot compute",
+                "cannot compare",
+                "does not contain",
+                "will never match",
+            ],
+            Family::FunctionBound => &["within Function does not contain"],
+            Family::RefWrite => &["read-only reference"],
+            Family::RefWiden => &["does not contain &mut"],
+            Family::SameForm => &["the same runtime form"],
+        };
+        says.iter().any(|s| head.contains(s))
+    }
+}
+
 impl std::fmt::Display for Family {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -255,7 +292,7 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     retype(&root, &pre, types, cap, &mut out);
     function_bound(&root, &pre, types, cap, &mut out);
     references(&root, types, cap, &mut out);
-    same_form(&root, &pre, cap, &mut out);
+    same_form(&root, &pre, types, cap, &mut out);
     abstract_widen(&root, &pre, types, cap, &mut out);
     // at most `cap` of each family's, each id its own
     let mut kept: Vec<RejectProbe> = Vec::with_capacity(out.len());
@@ -273,51 +310,36 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
 /// widened by `` `TmSame `` (and a final `_ => never()` arm when it has
 /// none, so the select stays exhaustive): a bare variant and a string have
 /// one runtime form, so no arm may tell them apart. Right site: the select.
-fn same_form(root: &Expr, pre: &[Expr], cap: usize, out: &mut Vec<RejectProbe>) {
+fn same_form(
+    root: &Expr,
+    pre: &[Expr],
+    types: &TypeMap,
+    cap: usize,
+    out: &mut Vec<RejectProbe>,
+) {
     let mut taken = 0usize;
     for i in spread(pre.len()) {
         if taken >= cap {
             break;
         }
         let e = &pre[i];
-        // CR claude for claude: [bug/low] same_form never reads the type map, so it
-        // also mutates a select whose scrutinee's type holds Any. Type::rep_collision
-        // finds no rep head for Any and passes, so the widened `[Any, `TmSame]` against
-        // a `string as x` arm is rightly accepted, and the lane reports a false `LEAK:
-        // accepted at select`. design/must_reject.md says a site whose type holds Any,
-        // an open cell or an abstract type is skipped. Pass `types` to same_form and
-        // skip the select unless the map's type for its scrutinee is `concrete` and
-        // holds no Any or abstract type, as the other families gate. probe:
-        // design/review-2026-10-12/repro/fuzz-mutate-02.sh (fuzz-mutate-02)
         let ExprKind::Select(se) = &e.kind else { continue };
         let tests_string = se.arms.iter().any(|(p, _)| {
             matches!(&p.type_predicate, Some(Type::Primitive(t)) if t.contains(Typ::String))
         });
-        if !tests_string || binds_outward(&se.arg) {
+        // `Any` has no runtime form to collide with
+        let known = types.of(&se.arg).first().is_some_and(|t| concrete(t) && !opaque(t));
+        if !tests_string || !known || binds_outward(&se.arg) {
             continue;
         }
         let tag =
             ExprKind::Variant { tag: ArcStr::from("TmSame"), args: Arc::from_iter([]) }
                 .to_expr_nopos();
         let mut arms = se.arms.to_vec();
-        // CR claude for claude: [bug/medium] Only a final `_` counts as a catch-all
-        // here. A select whose last unguarded arm is a bind (`y => ..`) gets `_ =>
-        // never()` appended anyway. That arm is dead and refused on its own
-        // ("unreachable arm") inside the select's span, so must_reject reports the
-        // mutant ok even if the one-runtime-form rule stops refusing. Probe:
-        // design/review-2026-10-12/repro/fuzz-mutate-03.sh. There, `REJECT same-form#4
-        // ok`, and the mutant with a non-colliding widening is still refused at the
-        // select. Fix: treat any final unguarded, untyped arm whose structure catches
-        // everything (bind, ignore, an or-pattern holding one, as catches_any in
-        // variant_widen does) as wild. Separately, must_reject checks only the error's
-        // position, so any family whose mutant has a second unrelated error at the
-        // expected site has the same blind spot. Giving each Family the error head its
-        // rule produces, and classing a right-site refusal with another head as its own
-        // verdict, would close it. (fuzz-mutate-03)
         let wild = arms.last().is_some_and(|(p, _)| {
             p.guard.is_none()
                 && p.type_predicate.is_none()
-                && matches!(p.structure_predicate, StructurePattern::Ignore)
+                && catches_any(&p.structure_predicate)
         });
         if !wild {
             let ignore = Pattern {
@@ -532,6 +554,33 @@ fn disjoint_literal(t: &Type) -> Option<Expr> {
 /// argument.
 fn concrete(t: &Type) -> bool {
     t.resolve_tvars().tvar_free()
+}
+
+/// Whether `t` holds `Any`, an abstract type or a type name anywhere: a
+/// part whose runtime form the map does not show.
+fn opaque(t: &Type) -> bool {
+    t.with_deref(|d| match d {
+        None => false,
+        Some(Type::Any | Type::Abstract { .. } | Type::Ref(_)) => true,
+        Some(Type::Set(ts) | Type::Tuple(ts)) => ts.iter().any(opaque),
+        Some(Type::Struct(fs)) => fs.iter().any(|(_, t, _)| opaque(t)),
+        Some(Type::Variant(_, ts, _)) => ts.iter().any(opaque),
+        Some(Type::Array(t) | Type::List(t) | Type::Error(t) | Type::ByRef(_, t)) => {
+            opaque(t)
+        }
+        Some(Type::Map { key, value }) => opaque(key) || opaque(value),
+        Some(_) => false,
+    })
+}
+
+/// A structure that matches any value: a bind, `_`, or an or-pattern
+/// holding one.
+fn catches_any(p: &StructurePattern) -> bool {
+    match p {
+        StructurePattern::Bind(_) | StructurePattern::Ignore => true,
+        StructurePattern::Or(alts) => alts.iter().any(catches_any),
+        _ => false,
+    }
 }
 
 fn literal(e: &Expr) -> bool {
@@ -1331,13 +1380,6 @@ fn variant_widen(
         }
         let e = &pre[i];
         let ExprKind::Select(SelectExpr { arg, arms }) = &e.kind else { continue };
-        fn catches_any(p: &StructurePattern) -> bool {
-            match p {
-                StructurePattern::Bind(_) | StructurePattern::Ignore => true,
-                StructurePattern::Or(alts) => alts.iter().any(catches_any),
-                _ => false,
-            }
-        }
         let covers_all = arms.iter().any(|(p, _)| {
             p.type_predicate.is_some() || catches_any(&p.structure_predicate)
         });

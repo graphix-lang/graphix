@@ -3117,19 +3117,6 @@ async fn must_reject(
     };
     let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test");
     for p in mustreject::probes(body, &types, cap) {
-        // CR claude for claude: [test-gap/low] A mutant is classified only by where it
-        // is refused. Any refusal inside the expected spans (the whole select for
-        // same-form and variant-widen, the whole call for widen-consumer) counts as the
-        // family's rule holding, even when a different refusal caused it.
-        // design/review-2026-10-12/repro/fuzz-mutate-same-form-dead-arm-mask.gx shows
-        // one: an added dead arm is refused at the same site, so a regression of the
-        // one-runtime-form rule still reads ok. Record an expected error-head fragment
-        // per `mustreject::Family` and report a right-site refusal with another head as
-        // a verdict of its own. Also bring
-        // `must_reject_families_are_refused_where_their_rules_say` up to what
-        // design/must_reject.md's Tests section asks: sites each family must skip (the
-        // false-LEAK repros from this review are natural cases) and the mutant's text.
-        // (fuzz-mutate-09)
         let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
             TmCheck::Unparsed(_) => continue,
             TmCheck::Hung => break,
@@ -3140,11 +3127,11 @@ async fn must_reject(
                     mustreject::in_module(&x.ori, "test")
                         && p.right_site(mustreject::to_body(x.pos))
                 });
+                let head = tm_error_head(&format!("{e:?}"));
                 match right {
-                    true => None,
-                    false => {
-                        Some(format!("MISPLACED: {}", tm_error_head(&format!("{e:?}"))))
-                    }
+                    true if p.family.refuses_with(&head) => None,
+                    true => Some(format!("WRONG REFUSAL: {head}")),
+                    false => Some(format!("MISPLACED: {head}")),
                 }
             }
         };
@@ -5226,6 +5213,37 @@ mod tests {
                 "{prog}: {:?}",
                 rep.rejects
             );
+        }
+    }
+
+    /// Where a family's rule does not apply it makes no mutant there, or
+    /// its mutant is refused for the rule's reason: a site the rule cannot
+    /// refuse would read as a leak, and a refusal for another reason
+    /// would hide the rule's regression.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn must_reject_families_skip_what_their_rules_allow() {
+        let per = Duration::from_secs(60);
+        for (prog, family) in [
+            // `Any` has no runtime form to collide with
+            (
+                "{ let s: Any = \"a\"; select s { string as x => 1, _ => 2 } }",
+                "same-form#",
+            ),
+            // a bind catches all: no dead `_ => never()` arm to refuse
+            (
+                "{ let s: [string, i64] = \"a\"; let r = select s { string as x => 1, y => 2 }; r }",
+                "same-form#",
+            ),
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            assert!(rep.base == TmVerdict::Accept, "{prog}");
+            let bad: Vec<_> = rep
+                .rejects
+                .iter()
+                .filter(|p| p.id.starts_with(family) && p.verdict.is_some())
+                .map(|p| (&p.id, &p.mutant, &p.verdict))
+                .collect();
+            assert!(bad.is_empty(), "{prog}: {bad:?}");
         }
     }
 
