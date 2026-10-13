@@ -67,6 +67,7 @@ krb5_iov = [
 slow-tests = []
 
 [dependencies]
+tempfile = { workspace = true }
 bytes = { workspace = true }
 dirs = { workspace = true }
 memmap2 = "0.9"
