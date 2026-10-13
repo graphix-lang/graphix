@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use graphix_compiler::expr::{ExprId, VfsResolver};
 use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CallableId, CompRes, GXEvent, NoExt, Ref};
-use iced_core::{Event, Point, Size, clipboard, mouse};
+use iced_core::{Event, Point, Size, clipboard, mouse, window};
 use iced_runtime::user_interface;
 use iced_wgpu::{graphics::Shell, wgpu};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -412,19 +412,7 @@ impl InteractionHarness {
     /// responsive-wrapped widgets see the new size immediately.
     fn resize(&mut self, viewport: Size) {
         self.viewport = viewport;
-        // CR claude for claude: [test-gap/low] Resetting the cache throws away the
-        // whole iced widget tree: scroll offsets, focus, text-input and editor state.
-        // The event loop's `render` keeps `tw.cache` across a resize and sends a
-        // `window::Event::Resized` with the new size. `UserInterface::build` lays out
-        // again at the new bounds on every frame, and iced's `responsive` calls its
-        // view at every layout, so the reset is not needed for the new size to show. So
-        // a test that scrolls or focuses and then resizes would see state that
-        // production keeps come back reset, and no widget's `Resized` handling can be
-        // tested through this harness. Fix: keep the cache and run
-        // `self.process_events(&[Event::Window(window::Event::Resized(viewport))])`.
-        // (tests-gui-b-02)
-        self.cache = user_interface::Cache::default();
-        let _ = self.process_events(&[]);
+        let _ = self.process_events(&[Event::Window(window::Event::Resized(viewport))]);
     }
 
     fn view(&mut self) -> crate::widgets::IcedElement<'_> {

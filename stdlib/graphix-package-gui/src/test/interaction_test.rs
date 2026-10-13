@@ -1014,3 +1014,25 @@ let valid = |k: string| select menu::shortcut(#ctrl: true, k) { error as e => fa
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn text_input_keeps_focus_across_resize() -> Result<()> {
+    let mut h = InteractionHarness::new(
+        r#"
+        use gui::text_input::text_input;
+        let value = "";
+        let result = text_input(#on_input: |v| value <- v, &value)
+    "#,
+    )
+    .await?;
+    h.watch("test::value").await?;
+    h.click(WIDGET_HIT);
+    let msgs = h.type_text("a");
+    h.dispatch_calls(&msgs).await?;
+    h.resize(Size::new(400.0, 80.0));
+    let msgs = h.type_text("b");
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("ab")));
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::value"), Some(&Value::from("ab")));
+    Ok(())
+}
