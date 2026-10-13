@@ -1652,9 +1652,40 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     /// calls spawned under `id` and not answered yet
     inflight: usize,
     abort: Option<Abort>,
+    /// the error tag a panicking eval answers under, from the call's
+    /// declared return type; none when it declares no such error
+    panic_tag: Option<ArcStr>,
     out: TagValue,
     t: T,
 }
+
+/// The tag a caught panic answers under: the first variant with one
+/// string payload in an error `t` declares.
+fn panic_tag(env: &Env, t: &Type) -> Option<ArcStr> {
+    fn error_tag(env: &Env, t: &Type) -> Option<ArcStr> {
+        match &constructor(env, t)? {
+            Type::Set(ts) => ts.iter().find_map(|t| error_tag(env, t)),
+            Type::Variant(tag, ps, _) => match &ps[..] {
+                [Type::Primitive(p)] if p.exactly_one() == Some(Typ::String) => {
+                    Some(tag.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    match &constructor(env, t)? {
+        Type::Set(ts) => ts.iter().find_map(|t| panic_tag(env, t)),
+        Type::Error(e) => error_tag(env, e),
+        _ => None,
+    }
+}
+
+/// The reply of an eval that panicked where the call declares no error
+/// to answer with: the call answers nothing.
+static PANICKED: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    errf!(arcstr::literal!("Panicked"), "an async builtin panicked")
+});
 
 impl<T: EvalCachedAsync> CachedArgsAsync<T> {
     /// Abort the calls in flight, drop those queued and release the reply
@@ -1688,6 +1719,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.record_ref(id, top_id);
+        let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
         let t = CachedArgsAsync::<T> {
             slept: false,
             id,
@@ -1696,6 +1728,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             queued: VecDeque::new(),
             inflight: 0,
             abort: None,
+            panic_tag,
             out: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
@@ -1711,6 +1744,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         let cached = CachedVals::image_decode(buf)?;
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
+        let panic_tag = Pack::decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
         ctx.record_ref(id, top_id);
         Ok(Box::new(Self {
@@ -1721,6 +1755,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             queued: VecDeque::new(),
             inflight: 0,
             abort: None,
+            panic_tag,
             out: TagValue::phantom(),
             t,
         }))
@@ -1738,6 +1773,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.image_encode(buf)?;
         self.id.encode(buf)?;
         self.top_id.encode(buf)?;
+        self.panic_tag.encode(buf)?;
         self.t.image_encode(buf)
     }
 
@@ -1789,7 +1825,10 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         };
         let res = ctx.event.variables.remove(&self.id).and_then(|tv| {
             self.inflight -= 1;
-            self.t.map_value(ctx, tv.value())
+            match tv.value() {
+                v if self.panic_tag.is_none() && v == *PANICKED => None,
+                v => self.t.map_value(ctx, v),
+            }
         });
         if start && let Some(args) = self.t.prepare_args(&self.cached) {
             if T::CALLS == Calls::Latest && self.inflight > 0 {
@@ -1801,7 +1840,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             && let Some(args) = self.queued.pop_front()
         {
             self.inflight += 1;
-            let id = self.id;
+            let (id, panic_tag) = (self.id, self.panic_tag.clone());
             let aborted = self.abort.get_or_insert_with(Abort::new).rx.clone();
             let eval = std::panic::AssertUnwindSafe(T::eval(args)).catch_unwind();
             ctx.rt.spawn_var(async move {
@@ -1809,7 +1848,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                     future::Either::Left((Ok(v), _)) => v,
                     // a panicking eval still answers, so the site runs its next call
                     future::Either::Left((Err(_), _)) => {
-                        // CR claude for claude: [bug/medium] x-panics-05 fixed at the
+                        // XCR claude for claude: [bug/medium] x-panics-05 fixed at the
                         // symptom: a caught panic replies an error outside the declared
                         // type. The fix catches the async builtin's panic and replies
                         // `errf!("Panicked", ..)` (lib.rs). The root cause,
@@ -1831,7 +1870,18 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                         // every async builtin's error type, so the static types stay
                         // honest. Unverified: the reviewer's report, not checked by a
                         // verifier. (x-rerun-8-08)
-                        errf!(arcstr::literal!("Panicked"), "{} panicked", T::NAME)
+                        // 2026-10-13 claude: netidx-core's Duration::decode refuses
+                        // the overflow (netidx dc8540eb), pinned by
+                        // lib_tests::pack::pack_read_oversize_duration_nanos. A caught
+                        // panic now answers the first string-payload variant of the
+                        // error the call declares (panic_tag), or nothing, logged as a
+                        // failure, when it declares none. No program reaches that path
+                        // now, so it has no pin.
+                        log::error!(target: graphix_compiler::FAILURE_TARGET, "{} panicked", T::NAME);
+                        match &panic_tag {
+                            Some(tag) => errf!(tag.clone(), "{} panicked", T::NAME),
+                            None => PANICKED.clone(),
+                        }
                     }
                     // an aborted eval's id was released, which drops this reply
                     future::Either::Right(_) => Value::Null,

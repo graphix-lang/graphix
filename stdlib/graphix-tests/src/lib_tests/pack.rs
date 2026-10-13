@@ -127,3 +127,13 @@ reader_error!(
     r#"let v: {x: i64} = pack::read(buffer::from_array([u8:255, u8:255, u8:255]))?"#,
     "PackErr"
 );
+
+// A duration whose nanoseconds carry past u64 seconds is a PackErr, the
+// read's declared error, and no panic.
+run!(pack_read_oversize_duration_nanos, r#"{
+    let b = buffer::encode([`U8(u8:11), `U64(u64:18446744073709551615), `U32(u32:1000000000)]);
+    let d: Result<duration, [`PackErr(string), `InvalidCast(string)]> = pack::read(b);
+    select d { error as e => "[e]", d => "[d]" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:["PackErr", "InvalidFormat"]"#)
+}; FuseExpect::Jit);
