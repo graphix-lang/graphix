@@ -1,7 +1,7 @@
-//! Connect lift: a let-bound counter / accumulator that is a `<-`
-//! target fuses as a kernel input. The `run!` fixtures assert fusion
-//! and the first value; the `assert_stream` tests drive several
-//! self-feeding cycles and compare the value stream across engines.
+//! A `<-` target is read as an ordinary kernel input: a computation over
+//! a self-feeding counter or accumulator is `#[native]`. The `run!`
+//! fixtures check the first value; the `assert_stream` tests drive
+//! several self-feeding cycles and pin the stream in every mode.
 
 use anyhow::{Result, anyhow, bail};
 use graphix_package_core::{
@@ -184,14 +184,14 @@ async fn assert_settles(code: &str, expected: &[i64]) -> Result<()> {
 }
 
 run!(
-    counter_lifts_and_fuses,
-    "{ let x = 0; x <- x + 1; x }",
+    counter_target_is_a_kernel_input,
+    "{ let x = 0; let next = #[native] (x + 1); x <- next; x }",
     |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
     FuseExpect::Jit
 );
 
 run!(
-    connect_const_lifts,
+    connect_const_first_value,
     "{ let x = 0; x <- 5; x }",
     |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
     FuseExpect::Jit
@@ -199,14 +199,14 @@ run!(
 
 run!(
     counter_with_extra_input,
-    "{ let x = 0; x <- x + 1; x * 2 }",
+    "{ let x = 0; x <- x + 1; #[native] (x * 2) }",
     |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
     FuseExpect::Jit
 );
 
 run!(
     two_independent_counters,
-    "{ let a = 0; let b = 0; a <- a + 1; b <- b + 2; a + b }",
+    "{ let a = 0; let b = 0; a <- a + 1; b <- b + 2; #[native] (a + b) }",
     |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
     FuseExpect::Jit
 );
@@ -251,10 +251,10 @@ async fn two_counters_summed() -> Result<()> {
     .await
 }
 
-// Each lifted counter is a kernel input; a region with more than 64
-// inputs fuses.
+// Each counter is a kernel input; a region with more than 64 inputs
+// fuses.
 
-/// `{ let a0=0; …; let a{n-1}=0; a0<-a0+1; …; a0 + a1 + … + a{n-1} }`.
+/// `{ let a0=0; …; let a{n-1}=0; a0<-a0+1; …; #[native] (a0 + … + a{n-1}) }`.
 /// First published value is the sum of the `n` seeds = 0.
 fn many_counters(n: usize) -> String {
     let mut s = String::from("{ ");
@@ -264,27 +264,17 @@ fn many_counters(n: usize) -> String {
     for i in 0..n {
         s.push_str(&format!("a{i} <- a{i} + 1; "));
     }
+    s.push_str("#[native] (");
     for i in 0..n {
         if i > 0 {
             s.push_str(" + ");
         }
         s.push_str(&format!("a{i}"));
     }
-    s.push_str(" }");
+    s.push_str(") }");
     s
 }
 
-// CR claude for claude: [test-gap/medium] region_over_64_inputs_fuses does not pin what
-// its name says. FuseExpect::Jit only checks that some kernel ran, and
-// many_counters(70) has 70 other fusable regions, one per `a{i} <- a{i} + 1` right-hand
-// side (graphix-fuzz run: fused=71). If the 70-input sum stopped fusing, for example
-// because a 64-input ABI cap came back, this test would stay green.
-// counter_lifts_and_fuses and connect_const_lifts have the same problem: the connect
-// node-walks, so only the trivial `x + 1` fuses. Fix: have many_counters wrap the sum
-// in `#[native] (...)` so a de-fused sum is a compile error. Also rewrite the module
-// doc and the test names, because no 'connect lift' mechanism exists any more. What
-// these tests check is that a `<-` target is read as an ordinary kernel input.
-// (tests-lib-b2-01)
 run!(
     region_over_64_inputs_fuses,
     many_counters(70),
@@ -370,13 +360,13 @@ async fn region_over_64_inputs_agrees() -> Result<()> {
     assert_stream(&many_counters(70), &[0, 70, 140, 210, 280]).await
 }
 
-// Composite / string lifted accumulators: the reactive sliding-window
-// idiom.
+// Composite / string accumulators: the reactive sliding-window idiom.
 
 run!(
-    array_accumulator_lifts_and_fuses,
+    array_accumulator_is_a_kernel_input,
     "{ let data: Array<i64> = []; \
-       data <- array::push(data, array::len(data)); array::len(data) }",
+       let next = #[native] array::push(data, array::len(data)); \
+       data <- next; array::len(data) }",
     |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
     FuseExpect::Jit
 );
