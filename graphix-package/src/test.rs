@@ -333,7 +333,7 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex] args=[a]\")
         .expect("copy vendored graphix-shell");
     write_vendor_config(&source_dir, ws);
     // Surface a build_standalone error directly rather than as "binary not found".
-    let pm = super::GraphixPM::new().await.unwrap();
+    let pm = super::GraphixPM::new(env!("CARGO_PKG_VERSION")).await.unwrap();
     pm.build_standalone(&pkg_dir, Some(&source_dir)).await.expect("build_standalone");
     // Run the binary
     let bin_name = format!("testpkg{}", std::env::consts::EXE_SUFFIX);

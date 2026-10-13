@@ -40,17 +40,10 @@ use std::{
     io::IsTerminal,
     path::{Path, PathBuf},
     pin::Pin,
-    process::Stdio,
     sync::mpsc as smpsc,
     time::Duration,
 };
-use tokio::{
-    fs,
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
-    sync::oneshot,
-    task,
-};
+use tokio::{fs, process::Command, sync::oneshot, task};
 use toml_edit::DocumentMut;
 use walkdir::WalkDir;
 
@@ -766,29 +759,6 @@ fn version_gt(a: &str, b: &str) -> bool {
     }
 }
 
-/// The version of the `graphix` on the PATH
-// CR claude for claude: [risk/low] graphix_version, the backup in install_from_source
-// and cleanup_old_binaries all act on the `graphix` that PATH resolves, but `cargo
-// install` writes to $CARGO_HOME/bin (or install.root). Suppose another graphix comes
-// first on PATH, such as a distro copy in /usr/local/bin or a workspace target/release
-// binary. Then the source version is that binary's, the backup is of a file that is
-// never replaced, and the new build lands in ~/.cargo/bin, shadowed by the old one. The
-// command still says 'Restart graphix to use the updated packages'. Fix: have the shell
-// pass its own version (CARGO_PKG_VERSION) and std::env::current_exe() into GraphixPM.
-// Then either install with --root at that executable's prefix, or refuse with a clear
-// message when the running executable is not where cargo will install. (package-06)
-async fn graphix_version() -> Result<CompactString> {
-    let graphix = which::which("graphix").context("can't find the graphix command")?;
-    let c = Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
-    let line = BufReader::new(c.stdout.unwrap())
-        .lines()
-        .next_line()
-        .await?
-        .ok_or_else(|| anyhow!("graphix did not return a version"))?;
-    // version output may be "graphix 0.3.2" or just "0.3.2"
-    Ok(line.split_whitespace().last().unwrap_or(&line).to_compact_string())
-}
-
 // fetch our source from the local cargo cache (preferred method)
 async fn extract_local_source(cargo: &Path, version: &str) -> Result<PathBuf> {
     let graphix_build_dir = graphix_data_dir()?.join("build");
@@ -1328,17 +1298,37 @@ async fn edit_selection(items: &[Item]) -> Result<Outcome> {
 pub struct GraphixPM {
     cratesio: AsyncClient,
     cargo: PathBuf,
+    /// The running shell's version, the source a rebuild starts from.
+    version: CompactString,
+    /// The running shell's executable, which a rebuild replaces.
+    exe: PathBuf,
 }
 
 impl GraphixPM {
-    /// Create a new package manager
-    pub async fn new() -> Result<Self> {
+    /// A package manager for the running shell, of version `version`.
+    pub async fn new(version: &str) -> Result<Self> {
         let cargo = which::which("cargo").context("can't find the cargo command")?;
         let cratesio = AsyncClient::new(
             "Graphix Package Manager <eestokes@pm.me>",
             Duration::from_secs(1),
         )?;
-        Ok(Self { cratesio, cargo })
+        let exe = std::env::current_exe().context("locating the running graphix")?;
+        Ok(Self { cratesio, cargo, version: version.into(), exe })
+    }
+
+    /// The root `cargo install` must write to for the new binary to
+    /// replace the running one: the directory above its `bin`.
+    fn install_root(&self) -> Result<&Path> {
+        match self.exe.parent() {
+            Some(bin) if bin.file_name().is_some_and(|n| n == "bin") => {
+                Ok(bin.parent().unwrap_or(bin))
+            }
+            _ => bail!(
+                "{} is not in a cargo install root's bin directory, so a rebuild \
+                 cannot replace it; run the graphix that cargo install installed",
+                self.exe.display()
+            ),
+        }
     }
 
     /// Open the lock file for the graphix data directory.
@@ -1421,28 +1411,28 @@ impl GraphixPM {
         source_dir: &Path,
         packages: &mut Packages,
     ) -> Result<()> {
+        let root = self.install_root()?;
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
         let plan = packages.build_plan();
         println!("Updating Cargo.toml...");
         rewrite_manifest(source_dir, &plan.external).await?;
         // Save previous binary
-        if let Ok(graphix_path) = which::which("graphix") {
-            let date = Local::now().format("%Y%m%d-%H%M%S");
-            let backup_name = format!(
-                "graphix-previous-{date}{}",
-                graphix_path
-                    .extension()
-                    .map(|e| format!(".{}", e.to_string_lossy()))
-                    .unwrap_or_default()
-            );
-            let backup_path = graphix_path.with_file_name(&backup_name);
-            let _ = fs::copy(&graphix_path, &backup_path).await;
-        }
+        let date = Local::now().format("%Y%m%d-%H%M%S");
+        let backup_name = format!(
+            "graphix-previous-{date}{}",
+            self.exe
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default()
+        );
+        let _ = fs::copy(&self.exe, self.exe.with_file_name(&backup_name)).await;
         // Stdlib packages are selected by Cargo feature; `core` is always compiled.
         println!("Building graphix with updated packages (this may take a while)...");
         let mut cmd = Command::new(&self.cargo);
         cmd.arg("install")
+            .arg("--root")
+            .arg(root)
             .arg("--path")
             .arg(source_dir)
             .arg("--force")
@@ -1468,8 +1458,7 @@ impl GraphixPM {
 
     /// Clean up graphix-previous-* binaries older than 1 week
     async fn cleanup_old_binaries(&self) {
-        let Ok(graphix_path) = which::which("graphix") else { return };
-        let Some(bin_dir) = graphix_path.parent() else { return };
+        let Some(bin_dir) = self.exe.parent() else { return };
         let Ok(mut entries) = fs::read_dir(bin_dir).await else { return };
         let week_ago = std::time::SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -1595,8 +1584,7 @@ impl GraphixPM {
             changed = true;
         }
         if changed {
-            let version = graphix_version().await?;
-            self.rebuild(&mut installed, &version).await?;
+            self.rebuild(&mut installed, &self.version).await?;
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -1616,7 +1604,7 @@ impl GraphixPM {
         let mut lock = Self::lock_file()?;
         let _guard = Self::hold(&mut lock)?;
         let mut installed = read_packages().await?;
-        let version = graphix_version().await?;
+        let version = &self.version;
         // A stdlib removal needs the shell's feature graph; unpack the source
         // once and reuse it for the build.
         let needs_edges =
@@ -1718,8 +1706,7 @@ impl GraphixPM {
         let mut lock = Self::lock_file()?;
         let _guard = Self::hold(&mut lock)?;
         let mut packages = read_packages().await?;
-        let version = graphix_version().await?;
-        self.rebuild(&mut packages, &version).await?;
+        self.rebuild(&mut packages, &self.version).await?;
         write_packages(&packages).await
     }
 
@@ -1787,7 +1774,7 @@ impl GraphixPM {
             Some(dir) => dir
                 .canonicalize()
                 .with_context(|| format!("resolving {}", dir.display()))?,
-            None => self.prepare_source(&graphix_version().await?).await?,
+            None => self.prepare_source(&self.version).await?,
         };
         // The embedded package is registered as an external path package, and
         // the stdlib packages it depends on, as the shell ships them, are
@@ -1887,7 +1874,7 @@ impl GraphixPM {
     pub async fn update(&self, assume_yes: bool) -> Result<()> {
         let mut lock = Self::lock_file()?;
         let _guard = Self::hold(&mut lock)?;
-        let current = graphix_version().await?;
+        let current = &self.version;
         let latest = self
             .latest_version("graphix-shell")
             .await

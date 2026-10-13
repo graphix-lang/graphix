@@ -287,11 +287,16 @@ fn parse_package_arg(s: &str) -> PackageId {
     }
 }
 
+/// The package manager for this shell.
+async fn pm() -> Result<GraphixPM> {
+    GraphixPM::new(env!("CARGO_PKG_VERSION")).await
+}
+
 #[tokio::main]
 async fn handle_package(action: PackageAction) -> Result<()> {
     match action {
         PackageAction::Add { packages, skip_crates_io_check, path } => {
-            let pm = GraphixPM::new().await?;
+            let pm = pm().await?;
             let ids: Vec<_> = if let Some(ref path) = path {
                 packages
                     .iter()
@@ -306,20 +311,20 @@ async fn handle_package(action: PackageAction) -> Result<()> {
             pm.add_packages(&ids, skip_crates_io_check).await
         }
         PackageAction::Remove { packages, yes } => {
-            let pm = GraphixPM::new().await?;
+            let pm = pm().await?;
             let ids: Vec<_> = packages.iter().map(|s| PackageId::new(s, None)).collect();
             pm.remove_packages(&ids, yes).await
         }
         PackageAction::Search { query } => {
-            let pm = GraphixPM::new().await?;
+            let pm = pm().await?;
             pm.search(&query).await
         }
         PackageAction::List => {
-            let pm = GraphixPM::new().await?;
+            let pm = pm().await?;
             pm.list().await
         }
         PackageAction::Rebuild => {
-            let pm = GraphixPM::new().await?;
+            let pm = pm().await?;
             pm.do_rebuild().await
         }
         PackageAction::Create { name, dir } => {
@@ -331,11 +336,11 @@ async fn handle_package(action: PackageAction) -> Result<()> {
             graphix_package::create_package(&dir, &full_name).await
         }
         PackageAction::Update { yes } => {
-            let pm = GraphixPM::new().await?;
+            let pm = pm().await?;
             pm.update(yes).await
         }
         PackageAction::BuildStandalone { source_override } => {
-            let pm = GraphixPM::new().await?;
+            let pm = pm().await?;
             let cwd = std::env::current_dir().context("getting current directory")?;
             pm.build_standalone(&cwd, source_override.as_deref()).await
         }
