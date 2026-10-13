@@ -110,7 +110,7 @@ pub fn activation_born() -> Option<usize> {
              (raise via GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget)",
             c.activation_budget()
         );
-        c.abort_budget();
+        c.abort_budget(Budget::Activations);
     }
     Some(p as usize)
 }
@@ -298,15 +298,16 @@ pub enum CtlFlag {
     Interrupt = 1,
     Abort = 2,
     /// Set beside `Abort` when the stack budget stopped the runtime.
-    // CR claude for claude: [doc-drift/low] `Budget` is set by both budgets:
-    // `activation_born` aborts through `Control::abort_budget` too. Yet this doc,
-    // `Control::abort_budget`, `Control::budget_aborted` and graphix-rt's
-    // `GXHandle::budget_aborted` all say "the stack budget". An embedder reading
-    // `budget_aborted` would report the wrong cause. Say "a budget (stack or
-    // activations)" in those docs, or rename the flag to cover both. Also, `CURRENT`'s
-    // doc cites `InterruptScope`, which no longer exists; point it at `with_control`.
-    // (t-misc-05) (t-misc-05)
-    Budget = 4,
+    StackBudget = 4,
+    /// Set beside `Abort` when the activation budget stopped the runtime.
+    ActivationBudget = 8,
+}
+
+/// Which budget stopped a runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Budget {
+    Stack,
+    Activations,
 }
 
 /// Lock-free [`CtlFlag`] set. A loop polls [`Control::interrupted`];
@@ -483,15 +484,35 @@ impl Control {
         self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
     }
 
-    /// [`Self::abort`], marked as the stack budget's doing.
-    pub fn abort_budget(&self) {
-        self.flags
-            .fetch_or(CtlFlag::Abort as u32 | CtlFlag::Budget as u32, Ordering::Release);
+    /// [`Self::abort`], marked as `budget`'s doing unless a budget already
+    /// stopped the runtime.
+    pub fn abort_budget(&self, budget: Budget) {
+        const CAUSES: u32 =
+            CtlFlag::StackBudget as u32 | CtlFlag::ActivationBudget as u32;
+        let cause = match budget {
+            Budget::Stack => CtlFlag::StackBudget as u32,
+            Budget::Activations => CtlFlag::ActivationBudget as u32,
+        };
+        let _ = self.flags.fetch_update(Ordering::Release, Ordering::Acquire, |f| {
+            Some(f | CtlFlag::Abort as u32 | if f & CAUSES == 0 { cause } else { 0 })
+        });
     }
 
-    /// True if the stack budget aborted this runtime.
+    /// The budget that aborted this runtime, if one did.
+    pub fn aborted_by(&self) -> Option<Budget> {
+        let f = self.flags.load(Ordering::Acquire);
+        if f & CtlFlag::StackBudget as u32 != 0 {
+            Some(Budget::Stack)
+        } else if f & CtlFlag::ActivationBudget as u32 != 0 {
+            Some(Budget::Activations)
+        } else {
+            None
+        }
+    }
+
+    /// True if a budget, stack or activations, aborted this runtime.
     pub fn budget_aborted(&self) -> bool {
-        self.flags.load(Ordering::Acquire) & (CtlFlag::Budget as u32) != 0
+        self.aborted_by().is_some()
     }
 
     /// True if any control flag is set: a loop should abort.
@@ -512,7 +533,7 @@ impl Control {
 
 thread_local! {
     /// The [`Control`] of the runtime whose cycle is running on this
-    /// thread ([`InterruptScope`]); null outside a cycle.
+    /// thread ([`with_control`]); null outside a cycle.
     static CURRENT: Cell<*const Control> = const { Cell::new(std::ptr::null()) };
 }
 
@@ -559,7 +580,7 @@ pub(crate) fn abort_current_control_budget() {
         let p = c.get();
         if !p.is_null() {
             // SAFETY: see `graphix_interrupted`.
-            unsafe { (*p).abort_budget() }
+            unsafe { (*p).abort_budget(Budget::Stack) }
         }
     });
 }

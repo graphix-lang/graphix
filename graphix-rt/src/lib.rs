@@ -672,8 +672,9 @@ impl<X: GXExt> GXHandle<X> {
         &self.0.control
     }
 
-    /// True if the stack budget (`graphix_compiler::set_stack_budget`)
-    /// aborted this runtime.
+    /// True if a budget, the stack's (`graphix_compiler::set_stack_budget`)
+    /// or the activations' (`Control::set_activation_budget`), aborted this
+    /// runtime; `Control::aborted_by` says which.
     pub fn budget_aborted(&self) -> bool {
         self.0.control.budget_aborted()
     }

@@ -635,26 +635,10 @@ async fn drive(
         && ctx.rt.budget_aborted()
     {
         let control = ctx.rt.control();
-        return Outcome::Timeout(
-            // CR claude for claude: [structure/low] drive() guesses which budget
-            // stopped the runtime by comparing live_activations with activation_budget
-            // after the stop. activation_born and the stack guard both call
-            // Control::abort_budget, which sets one CtlFlag::Budget bit, so the cause
-            // is never recorded. The guess fails if an activation is deleted after the
-            // abort, which brings live back down to the budget, or if more are born
-            // after a stack abort, which pushes live past it. settle's Par exemption
-            // drops only StackBudget, so a misread changes what is recorded. Fix:
-            // record the cause at the abort (a separate flag, or a
-            // Control::abort_reason enum set by activation_born and
-            // abort_current_control_budget) and read that here. Also correct the docs
-            // on CtlFlag::Budget, Control::abort_budget, Control::budget_aborted and
-            // GXHandle::budget_aborted, which all say only the stack budget sets it.
-            // (x-fix-fuzz-tests-06)
-            match control.live_activations() > control.activation_budget() {
-                true => Containment::ActivationBudget,
-                false => Containment::StackBudget,
-            },
-        );
+        return Outcome::Timeout(match control.aborted_by() {
+            Some(graphix_compiler::Budget::Activations) => Containment::ActivationBudget,
+            _ => Containment::StackBudget,
+        });
     }
     outcome
 }

@@ -28,7 +28,7 @@ pub mod node_shape;
 pub(crate) mod perfdbg;
 
 pub use node::module::check_script_sig;
-pub use stack::{Control, CtlFlag, ParMode, with_control};
+pub use stack::{Budget, Control, CtlFlag, ParMode, with_control};
 pub use stack::{set_activation_budget, set_stack_budget};
 pub mod tval;
 
