@@ -5,10 +5,8 @@
 //! `emit/jit.rs` registers each symbol by pointer from [`all_helpers`]
 //! and `emit/lower.rs` declares its signature.
 //!
-//! `Value` is `#[repr(u64)]`, two 8-byte words `(disc, payload)`. A
-//! [`TagValue`] crosses the seam by value, as two integer registers:
-//! true under System V x86_64 and AAPCS64, false under Win64, where
-//! fusion is off (`design/helper_abi_portability.md`).
+//! Two-word values cross the helper seam through pointers on every host
+//! (`design/helper_abi_portability.md`).
 //! `improper_ctypes_definitions` is suppressed because the outer layout
 //! is stable even where a payload is not `repr(C)`.
 //!
@@ -25,17 +23,6 @@
 // the function-local copies. graphix_list_to_valarray also builds `ValArray::from([])`
 // where every other placeholder uses EMPTY_ARR.clone(); use EMPTY_ARR there too.
 // (f-helpers-07)
-// CR claude for claude: [doc-drift/low] The module doc above says a TagValue crosses
-// the helper seam by value in two integer registers, and that fusion is off under
-// Win64. Neither is true. impl_pair_arg passes a pointer to the caller's two words, a
-// pair return goes through jit_helper_fn's trailing out-pointer, and
-// design/helper_abi_portability.md states that nothing two words wide crosses by value
-// and that fusion runs on every host. The plain comment above variant_payload_read
-// repeats the same two-register claim, and the AbiTy doc says `emit.rs` applies the u/s
-// flags, but that happens in emit/lower.rs (helper_abi_param). Replace the header
-// paragraph with one sentence that points to the design doc, cut the
-// variant_payload_read comment down to the borrow/consume convention, and fix the file
-// name in the AbiTy doc. (f-helpers-03)
 use crate::{
     fusion::kernel_abi::{ActivationLayout, SiteLeaf},
     node::{
@@ -74,7 +61,7 @@ const _: () = {
 pub use crate::tval::TagValue;
 
 /// One register slot of a helper's wire signature. The C ABI has the
-/// CALLER extend sub-register integers, so `emit.rs` applies the u/s
+/// CALLER extend sub-register integers, so `emit/lower.rs` applies the u/s
 /// flags to parameters only; returns are read at their narrow type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AbiTy {
@@ -846,20 +833,8 @@ unsafe fn fast_dispatch(
     tv
 }
 
-// Value-shaped helpers take and return `Value` by value in two registers:
-// a helper that borrows a value takes `ManuallyDrop<TagValue>`, one that
-// consumes it a `TagValue`.
-
 /// Borrowed read of payload `payload_idx` (slot 0 is the tag). A
 /// placeholder or short array reads as the default.
-// CR claude for claude: [doc-drift/low] The `//` block just above this function's doc
-// says value-shaped helpers take and return `Value` by value in two registers. They do
-// not. impl_pair_arg passes every TagValue/ChildBlock argument as a pointer to the call
-// site's two words, and a pair result returns through an out-pointer
-// (HelperRefs::call). That is the rule that keeps two-word values off the helper seam
-// on every host. A helper author who believes the comment and writes a raw two-register
-// extern fn breaks Windows. The types already say borrow (ManuallyDrop<TagValue>)
-// versus consume (TagValue), so delete the comment. (x-fix-fusion-07)
 fn variant_payload_read<T: Default>(
     v: &TagValue,
     payload_idx: usize,
