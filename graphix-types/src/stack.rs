@@ -131,19 +131,13 @@ pub fn activation_died(charged: Option<usize>) {
 /// the one exit for both the node-walk and the kernel stack check.
 #[doc(hidden)]
 pub fn budget_abort() {
-    log::error!(
-        "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
-         (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",
-        current_stack_budget()
-    );
-    abort_current_control_budget();
-}
-
-thread_local! {
-    /// Bytes of grown segments live on this thread outside any runtime's
-    /// cycle; a cycle's are counted on its [`Control`], whatever thread
-    /// of its evaluation they grow on.
-    static GROWN: Cell<usize> = const { Cell::new(0) };
+    if abort_current_control_budget() {
+        log::error!(
+            "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
+             (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",
+            current_stack_budget()
+        );
+    }
 }
 
 /// Run `f` with a guarantee of [`RED_ZONE`] stack, moving onto a fresh
@@ -156,7 +150,8 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Whether one more segment would put the runtime running on this
-/// thread over its budget.
+/// thread over its budget; outside a cycle there is none to exceed. The
+/// budget is counted in whole segments.
 #[doc(hidden)]
 pub fn grow_exceeds_budget() -> bool {
     match current_control() {
@@ -164,7 +159,7 @@ pub fn grow_exceeds_budget() -> bool {
         Some(c) => unsafe {
             (*c).grown.load(Ordering::Relaxed) + SEGMENT > (*c).stack_budget()
         },
-        None => GROWN.with(|g| g.get() + SEGMENT > default_budget()),
+        None => false,
     }
 }
 
@@ -211,30 +206,20 @@ struct Grown(Option<*const Control>);
 impl Grown {
     fn enter() -> Self {
         let control = current_control();
-        match control {
+        if let Some(c) = control {
             // SAFETY: see `current_control`.
-            Some(c) => unsafe { (*c).grown.fetch_add(SEGMENT, Ordering::Relaxed) },
-            None => GROWN.with(|g| {
-                let n = g.get();
-                g.set(n + SEGMENT);
-                n
-            }),
-        };
+            unsafe { (*c).grown.fetch_add(SEGMENT, Ordering::Relaxed) };
+        }
         Grown(control)
     }
 }
 
 impl Drop for Grown {
     fn drop(&mut self) {
-        match self.0 {
+        if let Some(c) = self.0 {
             // SAFETY: see `current_control`.
-            Some(c) => unsafe { (*c).grown.fetch_sub(SEGMENT, Ordering::Relaxed) },
-            None => GROWN.with(|g| {
-                let n = g.get();
-                g.set(n - SEGMENT);
-                n
-            }),
-        };
+            unsafe { (*c).grown.fetch_sub(SEGMENT, Ordering::Relaxed) };
+        }
     }
 }
 
@@ -243,15 +228,6 @@ impl Drop for Grown {
 /// unwind at its next interrupt poll instead of overflowing here.
 #[doc(hidden)]
 pub fn grow<R>(f: impl FnOnce() -> R) -> R {
-    // CR claude for claude: [risk/low] Every segment grown past the budget calls
-    // `budget_abort`, which logs "aborting the runtime" each time. `activation_born`
-    // logs only when `!budget_aborted()`. Outside a cycle (compile, image decode),
-    // `grow_exceeds_budget` checks the thread-local GROWN against the default budget,
-    // but `abort_current_control_budget` does nothing there: the log claims an abort
-    // that never happens, once per 32 MB segment. Log only on the transition. Either
-    // drop the out-of-cycle budget check (GROWN then has no use) or make it do
-    // something real. Note in the budget docs that the budget is counted in whole
-    // segments. (t-misc-06) (t-misc-06)
     if grow_exceeds_budget() {
         budget_abort();
     }
@@ -547,14 +523,19 @@ pub(crate) fn current_stack_budget() -> usize {
 
 /// Abort the runtime this thread is running under (the stack budget's
 /// containment); a no-op with no runtime on this thread.
-pub(crate) fn abort_current_control_budget() {
+/// Abort the running cycle's runtime by its stack budget; whether this
+/// call stopped it (a cycle runs, and nothing had aborted it yet).
+pub(crate) fn abort_current_control_budget() -> bool {
     CURRENT.with(|c| {
         let p = c.get();
-        if !p.is_null() {
-            // SAFETY: see `graphix_interrupted`.
-            unsafe { (*p).abort_budget(Budget::Stack) }
-        }
-    });
+        // SAFETY: see `graphix_interrupted`.
+        !p.is_null()
+            && unsafe {
+                let first = !(*p).budget_aborted();
+                (*p).abort_budget(Budget::Stack);
+                first
+            }
+    })
 }
 
 #[cfg(test)]
