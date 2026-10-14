@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, Refs, Rt, Saved, Scope, Tag,
-    TagValue, Update, UserEvent, View,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, PrintFlag, Refs, Rt, Saved,
+    Scope, Tag, TagValue, Update, UserEvent, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -9,6 +9,7 @@ use crate::{
         Sandbox, Sig, SigItem, SigKind, Source, TypeDefBody, TypeDefExpr, UseItem,
         WrittenAt, add_interface_modules, parser,
     },
+    format_with_flags,
     ide::{ModuleRefSite, SigImplLink},
     image::{
         self, ImageBuf,
@@ -467,15 +468,9 @@ fn check_sig<R: Rt, E: UserEvent>(
                     let typ = if single.is_some() { bind.typ() } else { &inner.typ };
                     proxy_bind.typ.unbind_tvars();
                     if let Err(e) = proxy_bind.typ.sig_matches(&ctx.env, typ) {
-                        // CR claude for claude: [readability/low] The implemented type
-                        // prints with plain Display, so the user sees inferred cell ids
-                        // instead of the inferred type. A gxi `val add: fn(x: i64) ->
-                        // i64` over `let add = |x| x + 1.` reports "implemented fn(x:
-                        // '_7517) -> '_7518", and the ids change from run to run.
-                        // check_script_sig's matching anyhow! has the same problem.
-                        // Build both messages under
-                        // format_with_flags(PrintFlag::DerefTVars, ..), as the other
-                        // type-error sites in node/ do. (tests-modules-image-04)
+                        let typ = format_with_flags(PrintFlag::DerefTVars, || {
+                            format_compact!("{typ}")
+                        });
                         bail!(
                             "val {name} is declared {} but implemented {typ}: {e:#}",
                             proxy_bind.typ
@@ -802,9 +797,11 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                     ft.generalize(0)
                 }
                 if let Err(e) = declared.sig_matches(&ctx.env, &bind.typ) {
+                    let typ = format_with_flags(PrintFlag::DerefTVars, || {
+                        format_compact!("{}", bind.typ)
+                    });
                     return Err(anyhow!(
-                        "val {name} is declared {declared} but implemented {}: {e:#}",
-                        bind.typ
+                        "val {name} is declared {declared} but implemented {typ}: {e:#}"
                     )
                     .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos }));
                 }

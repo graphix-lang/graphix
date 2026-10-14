@@ -1272,3 +1272,57 @@ run!(
     "/test/m.gxi" => "val parse: fn<'b: Any>(s: string, d: 'b) -> Result<'b, `ParseError(string)>;",
     "/test/m.gx" => "let parse = 'b: Any |s: string, d: 'b| -> Result<'b, `ParseError(string)> str::parse(s)"
 ; FuseExpect::None);
+
+// A ground union matches its signature as a set, whatever normal form
+// either side holds: primitives folded into one, or a binding never
+// normalized ([i64, i64]).
+run!(
+    ground_union_matches_a_folded_primitive_union,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s"),
+    "/test.gx" => "mod m; let result = m::g(\"s\")",
+    "/test/m.gxi" => "type T = [i64, string];\nval g: fn(x: T) -> [T, null]",
+    "/test/m.gx" => "let g = |x: [string, i64]| -> [null, i64, string] x"
+);
+
+run!(
+    ground_union_matches_an_unnormalized_binding,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        let b = false;
+        let y = never();
+        let x = select b { true => y, false => 1 };
+        y <- 2;
+        mod m;
+        let result = m::z
+    "#,
+    "/test/m.gxi" => "val z: i64;",
+    "/test/m.gx" => "let z = super::x"
+);
+
+// An implementation more general than its signature: each parameter's
+// cell maps to the signature's 'a, so their union is 'a.
+run!(
+    union_of_open_cells_implements_a_variable,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => "mod m; let result = m::pick(true, 1, 2)",
+    "/test/m.gxi" => "val pick: fn<'a: Any>(b: bool, x: 'a, y: 'a) -> 'a;",
+    "/test/m.gx" => "let pick = |b, x, y| select b { true => x, false => y }"
+);
+
+// ... but not when the cells map to two variables.
+run!(
+    union_of_open_cells_does_not_implement_one_of_two,
+    refused("type variable usage mismatch"),
+    "/test.gx" => "mod m; let result = m::pick(true, 1, 2)",
+    "/test/m.gxi" => "val pick: fn(b: bool, x: 'a, y: 'b) -> 'a;",
+    "/test/m.gx" => "let pick = |b, x, y| select b { true => x, false => y }"
+; FuseExpect::None);
+
+// A mismatch names the implemented type, not its cells.
+run!(
+    implemented_type_prints_resolved,
+    refused("but implemented fn(x: f64) -> f64"),
+    "/test.gx" => "mod m; let result = m::add(1)",
+    "/test/m.gxi" => "val add: fn(x: i64) -> i64;",
+    "/test/m.gx" => "let add = |x| x + 1."
+; FuseExpect::None);

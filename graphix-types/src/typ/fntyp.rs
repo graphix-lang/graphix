@@ -1254,7 +1254,8 @@ impl FnType {
         };
         let probe = BitFlags::empty();
         for (sig_tv, sig_tc) in self.constraint_view().iter() {
-            let mut found = false;
+            // a bound of Any constrains nothing
+            let mut found = *sig_tc == Type::Any;
             // the impl cell the signature's was matched with, else the
             // same-named variable: either form of a bound (`'c: C`, `c: C`)
             // names its variable its own way

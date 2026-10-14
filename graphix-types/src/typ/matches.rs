@@ -323,31 +323,10 @@ impl Type {
                 Ok(())
             }
             // one member set has several normal forms (a merge takes the
-            // members in arrival order), so ground unions match as sets
-            // CR claude for claude: [bug/low] This ground-union arm runs only when both
-            // sides are Type::Set. A union of primitives normalizes to one multi-bit
-            // Type::Primitive, so a signature `[T, null]` (with `type T = [i64,
-            // string]`) against an implementation that wrote `[null, i64, string]`
-            // falls through to the final 'type mismatch' arm. The same happens the
-            // other way round, and a correct implementation is refused. Take the
-            // mutual-containment branch whenever either side is a Set or a multi-bit
-            // Primitive (or simply any pair of ground types) and neither has unbound
-            // cells. probe: design/review-2026-10-12/repro/x-fix-types-13.sh
-            // (x-fix-types-09)
-            // CR claude for claude: [bug/medium] Ground unions match as sets only when
-            // both sides are a Set. An implementation's binding can be a Set that is
-            // not normalized, such as [i64, i64] from `select b { true => y, false => 1
-            // }` with y written i64 later. That binding is never normalized, because
-            // TVar::normalize_int leaves a cell an earlier task owns unchanged. So `val
-            // z: i64` against `let z = super::x` falls through to the last arm and is
-            // refused with "signature has i64, implementation has [i64, i64]". The same
-            // program checks without the interface. Normalizing at the call site in
-            // Module::check_sig would not help, since normalizing a TVar returns the
-            // TVar. Fix: apply the mutual-containment comparison whenever either side
-            // is a Set and neither side has unbound cells, or compare the normalized
-            // form of a dereferenced copy of the binding. Pin it with t-tvar-09 case 7.
-            // Probe: design/review-2026-10-12/repro/x-rerun-7-03.sh. (x-rerun-7-03)
-            (Self::Set(_), Self::Set(_))
+            // members in arrival order, primitives fold into one), so ground
+            // unions match as sets
+            (Self::Set(_) | Self::Primitive(_), _)
+            | (_, Self::Set(_) | Self::Primitive(_))
                 if !self.has_unbound() && !impl_type.has_unbound() =>
             {
                 let f = BitFlags::empty();
@@ -473,21 +452,18 @@ impl Type {
                     }
                 }
             }
-            // CR claude for claude: [bug/low] A signature variable that meets a union
-            // of unbound implementation cells is refused here, even when mapping each
-            // cell to that variable would make the union collapse to it. As a result,
-            // `let pick = |b, x, y| select b { true => x, false => y }` fails against
-            // `val pick: fn<'a: Any>(b: bool, x: 'a, y: 'a) -> 'a`, although the
-            // implementation is strictly more general. The same happens for any
-            // arm-union or array-literal return over two parameters. Fix: when every
-            // member of the impl union is an unbound impl tvar, map each one to the
-            // signature variable through tvar_map, refusing as the TVar arm does when a
-            // member is already mapped to something else. Also print the 'val .. is
-            // declared .. but implemented ..' messages in node::module under
-            // PrintFlag::DerefTVars, so the implemented type shows its structure
-            // instead of bare '_N cells. probe:
-            // design/review-2026-10-12/repro/x-typecheck-generics-08/main.gx
-            // (x-typecheck-generics-08)
+            // a union of open implementation cells is the variable when
+            // each cell is
+            (Self::TVar(_), Self::Set(members))
+                if members
+                    .iter()
+                    .all(|m| matches!(m, Self::TVar(tv) if tv.binding().is_none())) =>
+            {
+                for m in members.iter() {
+                    self.sig_matches_int(env, m, tvar_map, hist)?;
+                }
+                Ok(())
+            }
             (Self::TVar(sig_tv), impl_type) => {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(
