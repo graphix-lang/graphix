@@ -10,7 +10,7 @@ use crate::{
         kernel_abi::{self, AbiKind},
     },
     node::{callsite::CallSite, select::Select},
-    typ::Type,
+    typ::{FnArgKind, Type},
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -311,20 +311,13 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         ExprKind::Apply(a) => a,
         _ => bail!("emit_clif: self tail-call spec isn't an Apply"),
     };
-    // Labeled args would need default materialization in source order;
-    // de-fuse.
-    // CR claude for claude: [dead/low] This bail cannot fire. A loop head exists only
-    // for a lambda that lowering::structural_tail_loop admitted, and that gate refuses
-    // any non-positional formal, so a self tail-call carries no labels. The loop below
-    // pairs arg_positional(i) with formal i, and that is correct only because of that
-    // gate. Testing spec labels would not catch the case where the pairing breaks,
-    // which is an omitted defaulted labeled formal. Replace the check and its comment
-    // with a debug_assert that every formal of the self-call's function type is
-    // FnArgKind::Positional, naming structural_tail_loop as the gate that guarantees
-    // it. (f-call-flow-08)
-    if spec_apply.args.iter().any(|(label, _)| label.is_some()) {
-        bail!("emit_clif: labeled args on a self tail-call");
-    }
+    debug_assert!(
+        cs.ftype().is_some_and(|t| t
+            .args
+            .iter()
+            .all(|a| matches!(a.kind, FnArgKind::Positional { .. }))),
+        "structural_tail_loop admits only positional formals"
+    );
     let Some((_, info)) = cx.ctx.self_call else {
         bail!("emit_clif: a self tail-call outside a self-recursive body");
     };
