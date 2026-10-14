@@ -356,7 +356,7 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 }
 
 /// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
-/// operands are owned Values; `graphix_value_checked_<op>` shares the
+/// operands are borrowed Values; `graphix_value_checked_<op>` shares the
 /// node-walk's `Value::checked_*` core. The result is a Value: the
 /// scalar, or the catchable `ArithError` (Nullable wire shape) — never
 /// bottom.
