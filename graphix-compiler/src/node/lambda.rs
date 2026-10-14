@@ -1805,7 +1805,6 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
             faux_id,
             Arc::new(Bind {
                 doc: None,
-                export: false,
                 id: faux_id,
                 name: "faux".into(),
                 scope: def.scope.lexical.clone(),

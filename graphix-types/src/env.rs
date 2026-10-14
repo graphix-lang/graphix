@@ -41,14 +41,6 @@ pub type Set<K> = imhm::Set<K, Hasher>;
 #[derive(Clone)]
 pub struct Bind {
     pub id: BindId,
-    // CR claude for claude: [dead/low] Nothing reads export. Env::bind_variable always
-    // sets true and DefGate's faux bind sets false, but no code branches on it. Its
-    // only uses are Bind's Debug impl, the Pack impl in image/env.rs and the assertion
-    // in graphix-tests lang/image.rs. It looks like a visibility flag but decides
-    // nothing, since visibility comes from interfaces and the names map, and every
-    // image stores it. Delete the field, its Debug output, its codec entry (bump the
-    // image format) and the test comparison. (t-env-05)
-    pub export: bool,
     pub typ: Type,
     pub doc: Option<ArcStr>,
     pub scope: ModPath,
@@ -77,7 +69,7 @@ pub enum Facet {
 
 impl fmt::Debug for Bind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Bind {{ id: {:?}, export: {} }}", self.id, self.export,)
+        write!(f, "Bind {{ id: {:?} }}", self.id)
     }
 }
 
@@ -2007,7 +1999,6 @@ impl Env {
             .get_or_default_cow(scope.clone())
             .insert_cow(CompactString::from(name), id);
         let bind = Bind {
-            export: true,
             id,
             scope: scope.clone(),
             doc: None,

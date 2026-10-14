@@ -76,7 +76,6 @@ async fn environment_round_trips() -> Result<()> {
                 continue;
             };
             let r = restored.by_id.get(rid).unwrap_or_else(|| panic!("{scope}::{name}"));
-            assert_eq!(b.export, r.export);
             assert_eq!(b.name, r.name);
             assert_eq!(b.scope, r.scope);
 

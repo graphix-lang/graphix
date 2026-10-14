@@ -20,9 +20,8 @@ use triomphe::Arc;
 
 impl Pack for Bind {
     fn encoded_len(&self) -> usize {
-        let Bind { id, export, typ, doc, scope, name, pos, ori, facet } = self;
+        let Bind { id, typ, doc, scope, name, pos, ori, facet } = self;
         id.encoded_len()
-            + export.encoded_len()
             + typ.encoded_len()
             + doc.encoded_len()
             + scope.encoded_len()
@@ -33,9 +32,8 @@ impl Pack for Bind {
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let Bind { id, export, typ, doc, scope, name, pos, ori, facet } = self;
+        let Bind { id, typ, doc, scope, name, pos, ori, facet } = self;
         id.encode(buf)?;
-        export.encode(buf)?;
         typ.encode(buf)?;
         doc.encode(buf)?;
         scope.encode(buf)?;
@@ -48,7 +46,6 @@ impl Pack for Bind {
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         Ok(Bind {
             id: Pack::decode(buf)?,
-            export: Pack::decode(buf)?,
             typ: Pack::decode(buf)?,
             doc: Pack::decode(buf)?,
             scope: Pack::decode(buf)?,
