@@ -489,6 +489,9 @@ impl Type {
                 // `json::read` and `str::parse` into `[i8, null]`. Probe:
                 // design/review-2026-10-12/repro/x-engine-collections-01.gx
                 // (x-engine-collections-01)
+                // 2026-10-13 claude: the null part is done: convert takes nothing to
+                // null or to an error (x-security-02), so `cast<[i8, null]>(300)` is an
+                // InvalidCast. The bool and string parts stand.
                 match s.iter().find_map(|t| convert(v.clone(), t)) {
                     Some(v) => Ok(Some(v)),
                     None => Err(self.cast_fail("no primitive conversion", v)),
@@ -508,28 +511,8 @@ impl Type {
                     Value::Error(inner) => Ok(e
                         .cast_int(env, cx, src, inner)?
                         .map(|c| Value::Error(c.into()))),
-                    // CR claude for claude: [bug/medium] This arm turns any value that
-                    // is not an error into Value::Error of its payload cast. So an
-                    // error member below the top of a cast target reads plain data as
-                    // an error. Examples: cast<[i64, Error<string>]>("hello") is
-                    // error:"hello", and json::read of {"a": "oops"} into {a: [i64,
-                    // Error<string>]} gives {a: error:"oops"}. Outside data can then
-                    // forge an error that a select's error arm or a `?` acts on. That
-                    // breaks the rule that data is never read into an error.
-                    // cast_target's without_errors enforces that rule only for the top
-                    // of a typed read's success type. The fix is to refuse a value that
-                    // is not an error here ("not an error"), mirroring the Primitive
-                    // arm's "an error is not data". The Primitive arm also needs to
-                    // stop converting a non-error into Typ::Error, because `{a: [i64,
-                    // error]}` wraps the same way through convert and netidx
-                    // Value::cast. Once both are fixed, without_errors may be
-                    // redundant. probe:
-                    // design/review-2026-10-12/repro/t-cast-setops-10.gx
-                    // (t-cast-setops-10)
-                    v => {
-                        let c = e.cast_int(env, cx, src, v)?;
-                        Ok(Some(Value::Error(c.unwrap_or_else(|| v.clone()).into())))
-                    }
+                    // data is never read into an error
+                    v => Err(self.cast_fail("not an error", v)),
                 }
             }
             // An array and a list share `Value::Array`: the source's
@@ -1863,35 +1846,33 @@ fn carries_tag(env: &Env, t: &Type, v: &Value) -> bool {
 /// `v` as the primitive `t`. An integer target holds the value exactly
 /// or refuses it, whatever the source: a number, a float (its fraction
 /// dropped) or a string; every other conversion is netidx's.
-// CR claude for claude: [bug/high] `convert` passes array sources and null targets to
-// netidx's `Value::cast`. For an array and any primitive target other than
-// Array/Bytes/Map, that cast keeps the first element and drops the rest. It also turns
-// every number into null for `Typ::Null`. So cast<i64>([7, 8, 9]) is 7,
-// json::read<i64>("[[7, 8], 9]") is 7, toml::read<{port: i64}>("port = [8080, 1]") is
-// {port: 8080}, json::read<null>("42") is null, cast<bool>([7, 0]) is true, and a union
-// target with null takes any number as null: cast<[null, Array<string>]>([5, "a"]) is
-// null. This breaks the rule that a cast holds the value exactly or is an InvalidCast,
-// and these reads are how external data gets its type. Both engines agree, so the
-// fuzzer cannot see it. Fix: refuse before delegating. An Array source converts only to
-// Bytes (the documented array-of-numbers case); a String source whose parse yields an
-// array is refused the same way; `Typ::Null` accepts only null. Add lang cast pins for
-// each case. Probe: design/review-2026-10-12/repro/x-security-02.gx. Related:
-// t-cast-setops-04, t-cast-setops-14. (x-security-02)
+/// `v` as the primitive `t`, exactly or not at all. Nothing converts to
+/// null or to an error, and an array or a map converts only to bytes (an
+/// array of numbers, as json carries them), a map or an array, or its
+/// printed string.
 fn convert(v: Value, t: Typ) -> Option<Value> {
+    match (&v, t) {
+        (_, Typ::Null | Typ::Error) => return None,
+        (Value::Array(a), Typ::Bytes) => {
+            let mut bytes: LPooled<Vec<u8>> = LPooled::take();
+            for el in a.iter() {
+                match convert(el.clone(), Typ::U8)? {
+                    Value::U8(b) => bytes.push(b),
+                    _ => return None,
+                }
+            }
+            return Some(Value::Bytes(bytes::Bytes::copy_from_slice(&bytes).into()));
+        }
+        (Value::Array(_) | Value::Map(_), Typ::Map | Typ::Array | Typ::String) => {
+            return v.cast(t);
+        }
+        (Value::Array(_) | Value::Map(_), _) => return None,
+        (Value::String(s), t) if t != Typ::String && parses_to_collection(s) => {
+            return None;
+        }
+        _ => (),
+    }
     if !is_integer(t) {
-        // CR claude for claude: [bug/high] This hands an Array (or Map) source to
-        // netidx_value::Value::cast. That function's Array arm recurses through first
-        // elements with no stack guard, and the `_ => return v.cast(t)` arm below does
-        // the same for integer targets. The ensure_sufficient guard around
-        // Type::cast_inner does not cover this recursion, so data nested a few hundred
-        // levels deep aborts the process with a stack overflow. In the debug build,
-        // about 1 KB of pack bytes read as `type T = [null, Array<T>]` is enough, and
-        // the bytes can come from a file or the network. Fix: convert should return
-        // None for Array and Map sources and never call netidx's cast on them, which
-        // also removes the first-element cast that finding x-security-02's sibling
-        // reports. netidx-value's Value::cast Array arm should also become
-        // non-recursive or guarded, because other callers pass it wire data too. probe:
-        // design/review-2026-10-12/repro/x-security-03.sh (x-security-03)
         return v.cast(t);
     }
     let n = match &v {
@@ -1912,16 +1893,10 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
                 Ok(parsed) => return convert(parsed, t),
             },
         },
-        // CR claude for claude: [bug/low] This fallback hands every non-number,
-        // non-string source to netidx's Value::cast, which unwraps a one-element array
-        // and converts its element with Rust `as`. So `cast<u16>([u64:70000])` is 4464
-        // and `cast<u8>([300])` is 44, not the InvalidCast the integer-cast rule
-        // promises. Match Value::Array here: either recurse `convert` on a lone element
-        // (keeping netidx's unwrapping, but exact) or refuse it with None. Name the
-        // remaining sources (bool, decimal, duration) explicitly instead of the
-        // catch-all, so a new netidx conversion cannot wrap silently. probe:
-        // design/review-2026-10-12/repro/x-fix-types-12.gx (x-fix-types-11)
-        _ => return v.cast(t),
+        Value::Bool(_) | Value::Decimal(_) | Value::DateTime(_) | Value::Duration(_) => {
+            return v.cast(t);
+        }
+        _ => return None,
     };
     match t {
         Typ::I8 => i8::try_from(n).ok().map(Value::I8),
@@ -1938,6 +1913,13 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
         Typ::V64 => u64::try_from(n).ok().map(Value::V64),
         _ => unreachable!("an integer type"),
     }
+}
+
+/// Whether `s` reads as an array or a map, which no primitive but a
+/// string holds.
+fn parses_to_collection(s: &str) -> bool {
+    matches!(s.trim_start().as_bytes().first(), Some(b'[' | b'{'))
+        && matches!(s.parse::<Value>(), Ok(Value::Array(_) | Value::Map(_)))
 }
 
 fn is_integer(t: Typ) -> bool {

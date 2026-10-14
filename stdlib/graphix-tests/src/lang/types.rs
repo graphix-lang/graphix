@@ -2661,3 +2661,48 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 2 && a[1] == Value::I64(42))
 );
+
+// A primitive cast holds the value exactly or refuses it: an array takes
+// no primitive but bytes, a map or a string, nothing converts to null or
+// to an error, and a string that reads as an array is no number.
+run!(
+    primitive_cast_exact_or_refused,
+    r#"{
+    let x: Any = i64:5;
+    let y: Any = [i64:5, "a"];
+    let s: Any = "hello";
+    let refused = |r: Any| select r { error as _ => true, _ => false };
+    let all = [
+        refused(cast<i64>([i64:7, 8, 9])),
+        refused(cast<u16>([u64:70000])),
+        refused(cast<u8>("[-1]")),
+        refused(cast<null>(x)),
+        refused(cast<bool>([i64:7, 0])),
+        refused(cast<[i64, Error<string>]>(s)),
+        refused(cast<[i64, error]>(s))
+    ];
+    (all, cast<[null, Array<string>]>(y)$, cast<bytes>([1, 2])$)
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(v) if v.to_string()
+        == r#"[[true, true, true, true, true, true, true], ["i64:5", "a"], bytes:AQI=]"#)
+    }
+);
+
+// A read is a cast: json and toml data never takes a primitive from an
+// array's first element, a number is never null, and a string is never
+// an error.
+run!(typed_reads_exact_or_refused, r##"{
+    let refused = |r: Any| select r { error as _ => true, _ => false };
+    let b: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read(r"[[7, 8], 9]");
+    let c: Result<{port: i64}, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read(r"port = [8080, 1]");
+    let d: Result<null, [`JsonErr(string), `InvalidCast(string)]> = json::read("42");
+    let e: Result<{x: [null, i64]}, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(r#"{"x": [1, 2]}"#);
+    let f: Result<{a: [i64, Error<string>]}, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(r#"{"a": "oops"}"#);
+    [refused(b), refused(c), refused(d), refused(e), refused(f)]
+}"##, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[true, true, true, true, true]")
+}; FuseExpect::None);
