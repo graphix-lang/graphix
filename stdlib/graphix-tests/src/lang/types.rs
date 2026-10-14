@@ -2868,3 +2868,10 @@ run!(self_naming_bound_refused, r#"{
     let f = 'a: fn(x: 'a) -> [string, 'b] |g: 'a| 0;
     f(|x| 0)
 }"#, refused("does not contain fn(x:"); FuseExpect::None);
+
+// `_` in a typedef's parameter gets the same hint as in Array<_>.
+run!(
+    bottom_param_in_a_type_test_hints_any,
+    refused("`_` in a type is bottom"),
+    "/test.gx" => "type Box<'a> = Abstract<'a>; let x: [Box<i64>, string] = Box(1); let result = select x { Box<_> as b => 1, string as s => 2 }"
+; FuseExpect::None);

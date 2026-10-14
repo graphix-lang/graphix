@@ -846,8 +846,6 @@ impl TypeRef {
             || env.trait_of_ref(self).is_some()
     }
 
-    /// What this ref's name means in `env`; never reads or writes the
-    /// cell.
     /// The filled cell's definition, else the name's in its scope now;
     /// fills nothing.
     pub(crate) fn resolve_peek(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
@@ -1706,14 +1704,7 @@ impl Drop for Type {
             | Type::Ordered
             | Type::Primitive(_)
             | Type::TVar(_) => false,
-            // CR claude for claude: [readability/low] This tests the wrong Arcs. A Ref
-            // drops deep content only when the outer Arc<TypeRef> is unique AND its
-            // params are unique, and `resolved` holds only a Weak, so its uniqueness
-            // never matters. As written, every drop of a shared Ref whose params are
-            // unique takes the guarded mem::take plus stacker path for nothing, and the
-            // condition misstates the invariant the guard relies on. Write
-            // `tr.is_unique() && tr.params.is_unique()`. (t-typ-mod-08)
-            Type::Ref(tr) => tr.params.is_unique() || tr.resolved.is_unique(),
+            Type::Ref(tr) => tr.is_unique() && tr.params.is_unique(),
             Type::Fn(f) => f.is_unique(),
             Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.is_unique(),
             Type::Abstract { params, .. } => params.is_unique(),
@@ -2638,28 +2629,17 @@ impl Type {
     /// A `Bottom` anywhere in the type's own structure (fn signatures
     /// and references are leaves): the diagnostic for `_` written in
     /// type position where a wildcard was meant.
-    // CR claude for claude: [structure/low] has_bottom hand-lists the structural
-    // children and misses Type::Ref, Type::Abstract and Type::App params. A type test
-    // written `Box<_>` therefore gets only the bare "will never match" refusal in
-    // SelectNode's check, while `Array<_>` also gets the hint that `_` in a type is
-    // bottom and should be spelled Any. Fix: inside with_deref, answer Bottom as true
-    // and Fn as a leaf (false), and walk everything else with try_for_each_child, which
-    // already lists every child. That deletes the duplicate list. probe:
-    // design/review-2026-10-12/repro/x-expr-walks-06.gx (run with --check)
-    // (x-expr-walks-06)
     pub fn has_bottom(&self) -> bool {
         ensure_sufficient(|| {
             self.with_deref(|t| match t {
                 Some(Type::Bottom) => true,
-                Some(
-                    Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t),
-                ) => t.has_bottom(),
-                Some(Type::Map { key, value }) => key.has_bottom() || value.has_bottom(),
-                Some(Type::Tuple(ts) | Type::Variant(_, ts, _) | Type::Set(ts)) => {
-                    ts.iter().any(|t| t.has_bottom())
-                }
-                Some(Type::Struct(fs)) => fs.iter().any(|(_, t, _)| t.has_bottom()),
-                _ => false,
+                None | Some(Type::Fn(_)) => false,
+                Some(t) => t
+                    .try_for_each_child(&mut |c| match c.has_bottom() {
+                        true => ControlFlow::Break(()),
+                        false => ControlFlow::Continue(()),
+                    })
+                    .is_break(),
             })
         })
     }
@@ -2709,18 +2689,8 @@ impl Type {
         }
     }
 
-    /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
-    /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
-    /// trait anywhere else is an error. Returns the rewritten type.
     /// A predicate conjunct: a bound a type passes or fails, never a type
     /// a cell binds to. Exhaustive, so a new variant is decided here.
-    // CR claude for claude: [readability/low] The first three doc lines here ('A trait
-    // named as a parameter's type ... Returns the rewritten type.') describe
-    // rewrite_trait_args, not is_predicate: move them onto rewrite_trait_args. The same
-    // problem is in TypeRef::resolve_peek: its first doc paragraph says it never reads
-    // or writes the cell, but the body reads it. Delete that paragraph and keep 'The
-    // filled cell's definition, else the name's in its scope now; fills nothing.'
-    // (t-typ-mod-07)
     pub fn is_predicate(&self) -> bool {
         match self {
             Type::Concrete
@@ -2761,6 +2731,9 @@ impl Type {
         }
     }
 
+    /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
+    /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
+    /// trait anywhere else is an error. Returns the rewritten type.
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
         if self.holes() > 0 {
             bail!(
