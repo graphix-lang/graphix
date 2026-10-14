@@ -1318,24 +1318,23 @@ impl Env {
     #[doc(hidden)]
     pub fn impls_of(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
         let list = self.impls.get(&trait_id)?;
-        // CR claude for claude: [structure/low] This closure repeats scope_is_under: a
-        // prefix test plus a '/' boundary. Use scope_is_under(&im.scope.0, &m.0)
-        // instead. Also, find_impl only iterates, so it can walk
-        // self.impls.get(&trait_id) and skip hidden entries with the same predicate.
-        // Then the filtered Arc<Vec> is built only for the callers that keep a list
-        // (trait_refusal, coretraits::impls_on, Type's dispatch-head walk). (t-env-04)
-        let hidden = |im: &ImplDef| {
-            !im.declared
-                && self.hidden_impls.iter().any(|m| {
-                    let (s, m) = (&*im.scope.0, &*m.0);
-                    s.starts_with(m)
-                        && s.as_bytes().get(m.len()).is_none_or(|b| *b == b'/')
-                })
-        };
-        if !list.iter().any(|im| hidden(im)) {
+        if !list.iter().any(|im| self.impl_hidden(im)) {
             return Some(list.clone());
         }
-        Some(Arc::new(list.iter().filter(|im| !hidden(im)).cloned().collect()))
+        Some(Arc::new(list.iter().filter(|im| !self.impl_hidden(im)).cloned().collect()))
+    }
+
+    /// Every impl of `trait_id`, hidden ones included (see
+    /// [`Self::impl_hidden`]).
+    pub(crate) fn impls_all(&self, trait_id: TraitId) -> Option<&Arc<Vec<Arc<ImplDef>>>> {
+        self.impls.get(&trait_id)
+    }
+
+    /// An impl a sibling module's body added undeclared, hidden from the
+    /// other siblings' checks.
+    pub(crate) fn impl_hidden(&self, im: &ImplDef) -> bool {
+        !im.declared
+            && self.hidden_impls.iter().any(|m| scope_is_under(&im.scope.0, &m.0))
     }
 
     /// The registered impl whose head names the same types as

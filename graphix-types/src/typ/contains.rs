@@ -2459,12 +2459,12 @@ pub(super) fn find_impl_with(
     t: &Type,
     hist: &mut ContainsHist,
 ) -> Result<Option<Arc<ImplDef>>> {
-    let Some(list) = env.impls_of(trait_id) else { return Ok(None) };
+    let Some(list) = env.impls_all(trait_id) else { return Ok(None) };
     // An open cell inside `t` could still become anything.
     if t.has_unbound() {
         return Ok(None);
     }
-    for im in list.iter() {
+    for im in list.iter().filter(|im| !env.impl_hidden(im)) {
         if let (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) =
             (&im.target, t)
             && a != b
