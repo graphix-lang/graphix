@@ -2,7 +2,7 @@ use crate::{
     AbstractTypeRegistry, CAST_ERR_TAG, PrintFlag,
     env::Env,
     errf,
-    expr::WrittenAt,
+    expr::{ModPath, WrittenAt},
     format_with_flags, list,
     stack::ensure_sufficient,
     typ::{Type, TypeRef, params_size, setops::union_identical, tval::NakedPrefix},
@@ -1418,46 +1418,125 @@ impl ArrView {
     }
 }
 
-/// Pairs already on the walk; a finite witness never revisits one.
-type RepSeen = AHashSet<(Type, Type)>;
+/// The applications a walk has expanded, each once, and the path of
+/// applications it is inside, each with its parameters' size.
+struct Expanded<K: std::hash::Hash + Eq + 'static> {
+    seen: LPooled<AHashSet<K>>,
+    path: LPooled<Vec<((usize, usize), usize)>>,
+}
 
-fn revisits(seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
-    (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_)))
-        && !seen.insert((a.clone(), b.clone()))
+impl<K: std::hash::Hash + Eq + 'static> Default for Expanded<K> {
+    fn default() -> Self {
+        Self { seen: LPooled::take(), path: LPooled::take() }
+    }
+}
+
+/// An application a walk is about to expand: its key, its definition (or
+/// pair of definitions) and its parameters' size.
+type At<K> = (K, (usize, usize), usize);
+
+fn def_of(t: &Type) -> usize {
+    match t {
+        Type::Ref(tr) => tr.def_key().unwrap_or(0),
+        _ => usize::MAX,
+    }
+}
+
+fn size_of(t: &Type) -> usize {
+    match t {
+        Type::Ref(tr) => params_size(&tr.params),
+        _ => 0,
+    }
+}
+
+/// How many applications of one definition with smaller parameters a
+/// path may hold before the walk takes them for growing at every level:
+/// a finite type may grow a few times (`type A<'a> = [null, A<Array<i64>>]`
+/// from `A<i64>`), one that grows at every level never stops.
+const MAX_GROWTH: usize = 4;
+
+/// `body` inside the application `at`: `again` when the walk expanded it
+/// already, `grows` when the path holds [`MAX_GROWTH`] applications of
+/// its definition with smaller parameters, as one whose parameters grow
+/// at every level does (`type N<'a> = [null, ('a, N<Array<'a>>)]`), which
+/// no walk finishes. Parameters that stop growing on a path come from
+/// finitely many types, so a walk ends.
+fn walk<K: std::hash::Hash + Eq + 'static, R>(
+    seen: &mut Expanded<K>,
+    at: Option<At<K>>,
+    again: R,
+    grows: impl FnOnce() -> R,
+    body: impl FnOnce(&mut Expanded<K>) -> R,
+) -> R {
+    let Some((k, def, size)) = at else { return body(seen) };
+    if !seen.seen.insert(k) {
+        return again;
+    }
+    if seen.path.iter().filter(|(d, s)| *d == def && *s < size).count() >= MAX_GROWTH {
+        return grows();
+    }
+    seen.path.push((def, size));
+    let r = body(seen);
+    seen.path.pop();
+    r
+}
+
+/// Pairs already on the walk; a finite witness never revisits one.
+type RepSeen = Expanded<(Type, Type)>;
+
+fn pair_at(a: &Type, b: &Type) -> Option<At<(Type, Type)>> {
+    (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_))).then(|| {
+        ((a.clone(), b.clone()), (def_of(a), def_of(b)), size_of(a) + size_of(b))
+    })
+}
+
+fn ref_at(t: &Type) -> Option<At<Type>> {
+    matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
 }
 
 fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
     ensure_sufficient(|| {
-        if revisits(seen, a, b) {
-            return false;
-        }
-        let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
-            return true;
-        };
-        let (a, b) = (&*a, &*b);
-        match (a, b) {
-            (Type::Bottom, _) | (_, Type::Bottom) => false,
-            (Type::Set(ts), _) => ts.iter().any(|t| rep_overlaps(env, seen, t, &b)),
-            (_, Type::Set(ts)) => ts.iter().any(|t| rep_overlaps(env, seen, &a, t)),
-            (Type::Primitive(p), Type::Primitive(q)) => p.intersects(*q),
-            (Type::Primitive(p), t) | (t, Type::Primitive(p)) => {
-                p.intersects(rep_prims(t))
-            }
-            (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
-                if xa.is_empty() && ya.is_empty() =>
-            {
-                x == y
-            }
-            (Type::ByRef(..), Type::ByRef(..))
-            | (Type::Fn(_), Type::Fn(_))
-            | (Type::Map { .. }, Type::Map { .. }) => true,
-            (Type::Error(x), Type::Error(y)) => rep_overlaps(env, seen, x, y),
-            (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) => x == y,
-            (a, b) => match (ArrView::of(a), ArrView::of(b)) {
-                (Some(x), Some(y)) => arr_overlaps(env, seen, x, y),
-                _ => false,
+        walk(
+            seen,
+            pair_at(a, b),
+            false,
+            || true,
+            |seen| {
+                let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
+                    return true;
+                };
+                let (a, b) = (&*a, &*b);
+                match (a, b) {
+                    (Type::Bottom, _) | (_, Type::Bottom) => false,
+                    (Type::Set(ts), _) => {
+                        ts.iter().any(|t| rep_overlaps(env, seen, t, &b))
+                    }
+                    (_, Type::Set(ts)) => {
+                        ts.iter().any(|t| rep_overlaps(env, seen, &a, t))
+                    }
+                    (Type::Primitive(p), Type::Primitive(q)) => p.intersects(*q),
+                    (Type::Primitive(p), t) | (t, Type::Primitive(p)) => {
+                        p.intersects(rep_prims(t))
+                    }
+                    (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
+                        if xa.is_empty() && ya.is_empty() =>
+                    {
+                        x == y
+                    }
+                    (Type::ByRef(..), Type::ByRef(..))
+                    | (Type::Fn(_), Type::Fn(_))
+                    | (Type::Map { .. }, Type::Map { .. }) => true,
+                    (Type::Error(x), Type::Error(y)) => rep_overlaps(env, seen, x, y),
+                    (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) => {
+                        x == y
+                    }
+                    (a, b) => match (ArrView::of(a), ArrView::of(b)) {
+                        (Some(x), Some(y)) => arr_overlaps(env, seen, x, y),
+                        _ => false,
+                    },
+                }
             },
-        }
+        )
     })
 }
 
@@ -1490,68 +1569,79 @@ fn rep_collision(
     b: &Type,
 ) -> Option<(Type, Type)> {
     ensure_sufficient(|| {
-        if revisits(seen, a, b) {
-            return None;
-        }
-        let (Some(ha), Some(hb)) = (rep_head(env, a), rep_head(env, b)) else {
-            return match open {
-                Open::Benign => None,
-                Open::Unknown => open_collision(env, a, b),
-            };
-        };
-        let (a, b) = (&*ha, &*hb);
-        let mut pairs = |xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
-            xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
-                .find(Option::is_some)
-                .flatten()
-        };
-        match (a, b) {
-            (Type::Bottom, _) | (_, Type::Bottom) => None,
-            (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
-            (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
-            (Type::Primitive(_), Type::Primitive(_)) => None,
-            (Type::Array(x), Type::Array(y))
-            | (Type::List(x), Type::List(y))
-            | (Type::Error(x), Type::Error(y)) => {
-                pairs(&mut std::iter::once((&**x, &**y)))
-            }
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter())
-            }
-            (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
-                pairs(&mut x.iter().zip(y.iter()))
-            }
-            (Type::Struct(x), Type::Struct(y))
-                if x.len() == y.len()
-                    && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
-            {
-                pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
-            }
-            (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
-                if x == y && xa.len() == ya.len() =>
-            {
-                pairs(&mut xa.iter().zip(ya.iter()))
-            }
-            // the tag tells them apart
-            (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
-            // a Graphix-minted value carries its params and the test compares
-            // them; a Rust-backed one carries only its id, so two of its
-            // instantiations share one runtime form
-            (
-                a @ Type::Abstract { id: x, params: px },
-                b @ Type::Abstract { id: y, params: py },
-            ) if x == y => {
-                let rust_backed = env.abstract_reps.get(x).is_none();
-                let same = px.len() == py.len()
-                    && px.iter().zip(py.iter()).all(|(p, q)| union_identical(p, q));
-                (rust_backed && !same).then(|| (a.clone(), b.clone()))
-            }
-            // a runtime test can't tell a reference's mutability
-            (Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y => None,
-            (Type::Fn(x), Type::Fn(y)) if x == y => None,
-            (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
-                .then(|| (a.clone(), b.clone())),
-        }
+        walk(
+            seen,
+            pair_at(a, b),
+            None,
+            || Some((a.clone(), b.clone())),
+            |seen| {
+                let (Some(ha), Some(hb)) = (rep_head(env, a), rep_head(env, b)) else {
+                    return match open {
+                        Open::Benign => None,
+                        Open::Unknown => open_collision(env, a, b),
+                    };
+                };
+                let (a, b) = (&*ha, &*hb);
+                let mut pairs = |xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
+                    xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
+                        .find(Option::is_some)
+                        .flatten()
+                };
+                match (a, b) {
+                    (Type::Bottom, _) | (_, Type::Bottom) => None,
+                    (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
+                    (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
+                    (Type::Primitive(_), Type::Primitive(_)) => None,
+                    (Type::Array(x), Type::Array(y))
+                    | (Type::List(x), Type::List(y))
+                    | (Type::Error(x), Type::Error(y)) => {
+                        pairs(&mut std::iter::once((&**x, &**y)))
+                    }
+                    (
+                        Type::Map { key: k0, value: v0 },
+                        Type::Map { key: k1, value: v1 },
+                    ) => pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter()),
+                    (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
+                        pairs(&mut x.iter().zip(y.iter()))
+                    }
+                    (Type::Struct(x), Type::Struct(y))
+                        if x.len() == y.len()
+                            && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
+                    {
+                        pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
+                    }
+                    (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
+                        if x == y && xa.len() == ya.len() =>
+                    {
+                        pairs(&mut xa.iter().zip(ya.iter()))
+                    }
+                    // the tag tells them apart
+                    (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
+                    // a Graphix-minted value carries its params and the test compares
+                    // them; a Rust-backed one carries only its id, so two of its
+                    // instantiations share one runtime form
+                    (
+                        a @ Type::Abstract { id: x, params: px },
+                        b @ Type::Abstract { id: y, params: py },
+                    ) if x == y => {
+                        let rust_backed = env.abstract_reps.get(x).is_none();
+                        let same = px.len() == py.len()
+                            && px
+                                .iter()
+                                .zip(py.iter())
+                                .all(|(p, q)| union_identical(p, q));
+                        (rust_backed && !same).then(|| (a.clone(), b.clone()))
+                    }
+                    // a runtime test can't tell a reference's mutability
+                    (Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y => {
+                        None
+                    }
+                    (Type::Fn(x), Type::Fn(y)) if x == y => None,
+                    (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
+                        .then(|| (a.clone(), b.clone())),
+                }
+            },
+        )
     })
 }
 
@@ -1573,6 +1663,9 @@ pub enum Indiscernible {
     Pair(Type, Type),
     /// A reference or a function, under `Ordered`: neither has an order.
     Unordered(Type),
+    /// The name of a definition whose parameters grow as it recurses, so
+    /// no walk decides it.
+    Grows(ModPath),
 }
 
 impl Indiscernible {
@@ -1614,81 +1707,70 @@ impl Indiscernible {
 // design/review-2026-10-12/repro/x-expr-walks-03.gx (x-expr-walks-03)
 fn rep_ambiguity(
     env: &Env,
-    seen: &mut AHashSet<Type>,
+    seen: &mut Expanded<Type>,
     open: Open,
     keys_only: bool,
     refs: bool,
     t: &Type,
 ) -> Option<Indiscernible> {
     ensure_sufficient(|| {
-        // CR claude for claude: [bug/high] rep_ambiguity/rep_collision never terminate
-        // on non-regular recursive types: --check hangs. rep_ambiguity and compared_ref
-        // stop recursion with a `seen: AHashSet<Type>` keyed by the whole Ref.
-        // rep_collision and rep_overlaps use RepSeen pairs of whole types. For a
-        // contractive typedef whose params grow as it recurses, such as `type N<'a> =
-        // [null, ('a, N<Array<'a>>)]`, every expansion is a new key, so the walk never
-        // ends. cast.rs cites exactly this type as one holds/check_cast must handle;
-        // their ShapeKey memo does. These walks run in the checker for every
-        // comparison, map key, Ordered/Discernible bound and select arm, and map_refs
-        // runs at run time. Failure: type N<'a> = [null, ('a, N<Array<'a>>)]; let x:
-        // N<i64> = null; let y: N<i64> = (1, null); x == y. `graphix --check` runs
-        // until killed (60 s). A Map<N<i64>, i64> or a select over [N<i64>, N<string>]
-        // with type-test arms hangs the same way. The language server would hang on the
-        // same buffer. Fix: Key these walks the way holds/check_cast already do: by
-        // definition plus an abstraction of the params (for example ShapeKey, or the
-        // definition with params erased to their heads), with the same decide_once
-        // discipline. Or bound the depth and treat a cut-off as 'collides'
-        // (conservative). Unverified: the reviewer's report, not checked by a verifier.
-        // (t-cast-setops-08)
-        if matches!(t, Type::Ref(_)) && !seen.insert(t.clone()) {
-            return None;
-        }
-        let t = rep_head(env, t)?;
-        let t = &*t;
-        let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
-            ts.map(|t| rep_ambiguity(env, seen, open, keys_only, refs, t))
-                .find(Option::is_some)
-                .flatten()
+        let grows = || match t {
+            Type::Ref(tr) => Some(Indiscernible::Grows(tr.name.clone())),
+            _ => unreachable!("only a reference expands"),
         };
-        match &t {
-            Type::Set(ts) => {
-                if !keys_only {
-                    for (i, a) in ts.iter().enumerate() {
-                        for b in &ts[i + 1..] {
-                            let c =
-                                rep_collision(env, &mut RepSeen::default(), open, a, b);
-                            if let Some((a, b)) = c {
-                                return Some(Indiscernible::Pair(a, b));
+        walk(seen, ref_at(t), None, grows, |seen| {
+            let t = rep_head(env, t)?;
+            let t = &*t;
+            let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
+                ts.map(|t| rep_ambiguity(env, seen, open, keys_only, refs, t))
+                    .find(Option::is_some)
+                    .flatten()
+            };
+            match &t {
+                Type::Set(ts) => {
+                    if !keys_only {
+                        for (i, a) in ts.iter().enumerate() {
+                            for b in &ts[i + 1..] {
+                                let c = rep_collision(
+                                    env,
+                                    &mut RepSeen::default(),
+                                    open,
+                                    a,
+                                    b,
+                                );
+                                if let Some((a, b)) = c {
+                                    return Some(Indiscernible::Pair(a, b));
+                                }
                             }
                         }
                     }
+                    parts(&mut ts.iter())
                 }
-                parts(&mut ts.iter())
+                Type::Map { key, value } => {
+                    let keys = match keys_only {
+                        true => rep_ambiguity(
+                            env,
+                            &mut Expanded::default(),
+                            open,
+                            false,
+                            true,
+                            key,
+                        ),
+                        false => None,
+                    };
+                    keys.or_else(|| parts(&mut [&**key, &**value].into_iter()))
+                }
+                Type::Array(e) | Type::List(e) | Type::Error(e) => {
+                    parts(&mut std::iter::once(&**e))
+                }
+                Type::Tuple(ts) | Type::Variant(_, ts, _) => parts(&mut ts.iter()),
+                Type::Struct(fs) => parts(&mut fs.iter().map(|(_, t, _)| t)),
+                Type::ByRef(..) | Type::Fn(_) if refs && !keys_only => {
+                    Some(Indiscernible::Unordered(t.clone()))
+                }
+                _ => None,
             }
-            Type::Map { key, value } => {
-                let keys = match keys_only {
-                    true => rep_ambiguity(
-                        env,
-                        &mut AHashSet::default(),
-                        open,
-                        false,
-                        true,
-                        key,
-                    ),
-                    false => None,
-                };
-                keys.or_else(|| parts(&mut [&**key, &**value].into_iter()))
-            }
-            Type::Array(e) | Type::List(e) | Type::Error(e) => {
-                parts(&mut std::iter::once(&**e))
-            }
-            Type::Tuple(ts) | Type::Variant(_, ts, _) => parts(&mut ts.iter()),
-            Type::Struct(fs) => parts(&mut fs.iter().map(|(_, t, _)| t)),
-            Type::ByRef(..) | Type::Fn(_) if refs && !keys_only => {
-                Some(Indiscernible::Unordered(t.clone()))
-            }
-            _ => None,
-        }
+        })
     })
 }
 
@@ -1704,12 +1786,12 @@ impl Type {
         open: Open,
         ordered: bool,
     ) -> Option<Indiscernible> {
-        rep_ambiguity(env, &mut AHashSet::default(), open, false, ordered, self)
+        rep_ambiguity(env, &mut Expanded::default(), open, false, ordered, self)
     }
 
     /// Why a map key type this type holds is not `Ordered`.
     pub fn map_key_failure(&self, env: &Env, open: Open) -> Option<Indiscernible> {
-        rep_ambiguity(env, &mut AHashSet::default(), open, true, false, self)
+        rep_ambiguity(env, &mut Expanded::default(), open, true, false, self)
     }
 
     /// The refusal of `self` as a binding of `'name: bound` (`Discernible`
@@ -1732,6 +1814,10 @@ impl Type {
                      them in distinct variants",
                     a.resolve_tvars(),
                     b.resolve_tvars()
+                ),
+                Indiscernible::Grows(name) => anyhow::anyhow!(
+                    "{what} holds {name}, whose parameters grow as it recurses, so \
+                     whether its members have distinct runtime forms can't be decided"
                 ),
                 Indiscernible::Unordered(r) => {
                     let (kind, how) = Indiscernible::unordered_kind(r);
@@ -1779,28 +1865,33 @@ impl Type {
 // outside the defining module, and whether tvar_constraints.md's rule that the checks
 // do not look under an abstract still holds. probe:
 // design/review-2026-10-12/repro/x-expr-walks-04.gx (x-expr-walks-04)
-fn compared_ref(env: &Env, seen: &mut AHashSet<Type>, t: &Type) -> bool {
+fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
     ensure_sufficient(|| {
-        if matches!(t, Type::Ref(_)) && !seen.insert(t.clone()) {
-            return false;
-        }
-        let Some(t) = rep_head(env, t) else { return false };
-        let t = &*t;
-        let mut any = |ts: &mut dyn Iterator<Item = &Type>| {
-            Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t))
-        };
-        match t {
-            Type::ByRef(..) => true,
-            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
-                any(&mut ts.iter())
-            }
-            Type::Array(e) | Type::List(e) | Type::Error(e) => {
-                any(&mut std::iter::once(&**e))
-            }
-            Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
-            Type::Map { key, value } => any(&mut [&**key, &**value].into_iter()),
-            _ => false,
-        }
+        walk(
+            seen,
+            ref_at(t),
+            false,
+            || true,
+            |seen| {
+                let Some(t) = rep_head(env, t) else { return false };
+                let t = &*t;
+                let mut any = |ts: &mut dyn Iterator<Item = &Type>| {
+                    Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t))
+                };
+                match t {
+                    Type::ByRef(..) => true,
+                    Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
+                        any(&mut ts.iter())
+                    }
+                    Type::Array(e) | Type::List(e) | Type::Error(e) => {
+                        any(&mut std::iter::once(&**e))
+                    }
+                    Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
+                    Type::Map { key, value } => any(&mut [&**key, &**value].into_iter()),
+                    _ => false,
+                }
+            },
+        )
     })
 }
 
@@ -1924,7 +2015,7 @@ fn float_int(f: f64) -> Option<i128> {
 
 fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) -> Value {
     ensure_sufficient(|| {
-        if !compared_ref(env, &mut AHashSet::default(), t) {
+        if !compared_ref(env, &mut Expanded::default(), t) {
             return v.clone();
         }
         let Some(t) = rep_head(env, t) else { return v.clone() };
@@ -2006,7 +2097,7 @@ impl Type {
     /// Whether comparing values of this type meets a reference: `==`
     /// compares such values by [`Self::map_refs`].
     pub fn compares_refs(&self, env: &Env) -> bool {
-        compared_ref(env, &mut AHashSet::default(), self)
+        compared_ref(env, &mut Expanded::default(), self)
     }
 
     /// `v`, a value of this type, with each reference a comparison meets

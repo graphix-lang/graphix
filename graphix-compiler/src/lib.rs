@@ -2226,6 +2226,16 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
                     r.resolve_tvars()
                 )
             }
+            (Discerned::Compared { .. }, Indiscernible::Grows(name)) => bail!(
+                "can't compare values of {typ}: {name} grows its parameters as it \
+                 recurses, so whether its members have distinct runtime forms can't be \
+                 decided"
+            ),
+            (_, Indiscernible::Grows(name)) => bail!(
+                "a map key type can't hold {name}: it grows its parameters as it \
+                 recurses, so whether its members have distinct runtime forms can't be \
+                 decided"
+            ),
             (_, Indiscernible::Pair(a, b)) => bail!(
                 "{} and {} can't share a map key type: they have the same runtime \
                  form; wrap them in distinct variants",

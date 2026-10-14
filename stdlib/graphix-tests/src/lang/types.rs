@@ -2706,3 +2706,36 @@ run!(typed_reads_exact_or_refused, r##"{
 }"##, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[true, true, true, true, true]")
 }; FuseExpect::None);
+
+// A typedef whose parameters grow as it recurses has no finite walk: the
+// checks over runtime forms give up and refuse, never hang.
+run!(growing_typedef_compare_refused, r#"{
+    type N<'a> = [null, ('a, N<Array<'a>>)];
+    let x: N<i64> = null;
+    let y: N<i64> = (1, null);
+    x == y
+}"#, refused("N grows its parameters as it recurses"); FuseExpect::None);
+
+run!(growing_typedef_map_key_refused, r#"{
+    type N<'a> = [null, ('a, N<Array<'a>>)];
+    let m: Map<N<i64>, i64> = {};
+    m
+}"#, refused("a map key type can't hold N"); FuseExpect::None);
+
+run!(growing_typedef_select_refused, r#"{
+    type N<'a> = [null, ('a, N<Array<'a>>)];
+    let f = |u: [N<i64>, N<string>]| select u { N<i64> as a => 1, N<string> as b => 2 };
+    f(null)
+}"#, refused("this pattern can't tell"); FuseExpect::None);
+
+// A finite type whose parameters grow a few times is decided as usual.
+run!(
+    finitely_growing_typedef_compares,
+    r#"{
+    type A<'a> = [null, ('a, A<Array<i64>>)];
+    let x: A<string> = null;
+    let y: A<string> = ("a", null);
+    x == y
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)))
+);
