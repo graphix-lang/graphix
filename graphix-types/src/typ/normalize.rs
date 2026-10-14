@@ -128,20 +128,6 @@ struct Kept {
 
 impl Kept {
     /// Take out the earliest kept member `t` merges with, and the merge.
-    // CR claude for claude: [bug/low] The normal form depends on member order.
-    // merge_with merges an incoming member into the earliest kept member that accepts
-    // it, and product merges are not confluent. So `[(i64, string), (f64, string),
-    // (i64, bool)]` normalizes to `[(i64, bool), ([i64, f64], string)]`, but the same
-    // set written as `[(i64, string), (i64, bool), (f64, string)]` normalizes to
-    // `[(i64, [bool, string]), (f64, string)]`. merge_inner's Fn arm and flat_eq
-    // compare by union_identical, which compares Set members position by position. Two
-    // functions of one parameter type, written in different orders, then stay a union
-    // of fn types, and a call on that union is refused: "expected fn not [fn(..),
-    // fn(..)]". Fix: make the normal form canonical, for example by sorting the
-    // flattened members before saturating and iterating to a fixpoint, or by making the
-    // product merge order-independent. Then sig_matches' mutual-containment special
-    // case for ground unions can go. probe:
-    // design/review-2026-10-12/repro/t-fntyp-06.gx (t-fntyp-06)
     fn merge_with(&mut self, t: &Type) -> Option<Type> {
         let key = MergeKey::of(t);
         let keyed: &[usize] = match &key {
@@ -199,39 +185,28 @@ impl Type {
     /// relative to a `Type::Set` of the input members in input order.
     /// Conservative: `true` may be reported for an identical result.
     fn flatten_set_tracked(set: impl IntoIterator<Item = Self>) -> (Self, bool) {
+        let mut leaves: LPooled<Vec<Self>> = LPooled::take();
         let mut nested: LPooled<Vec<(Arc<[Self]>, usize)>> = LPooled::take();
-        let mut acc = Kept::default();
         let mut saw_bottom = false;
         let mut changed = false;
-        let mut absorb =
-            |t: Self, nested: &mut Vec<(Arc<[Self]>, usize)>, acc: &mut Kept| {
-                match t {
-                    Type::Set(ref s) => {
-                        changed = true;
-                        nested.push((s.clone(), 0));
-                    }
-                    Type::Any => return false,
-                    // ⊥ ∪ X = X; an all-⊥ set is ⊥ (the exit match).
-                    Type::Bottom => {
-                        changed = true;
-                        saw_bottom = true
-                    }
-                    t => {
-                        // `acc` is merge-saturated, so only the incoming
-                        // element (or its merge result) can enable a new
-                        // merge.
-                        let mut incoming = t;
-                        while let Some(m) = acc.merge_with(&incoming) {
-                            changed = true;
-                            incoming = m;
-                        }
-                        acc.push(incoming);
-                    }
+        let mut absorb = |t: Self, nested: &mut Vec<(Arc<[Self]>, usize)>| {
+            match t {
+                Type::Set(ref s) => {
+                    changed = true;
+                    nested.push((s.clone(), 0));
                 }
-                true
-            };
+                Type::Any => return false,
+                // ⊥ ∪ X = X; an all-⊥ set is ⊥ (the exit match).
+                Type::Bottom => {
+                    changed = true;
+                    saw_bottom = true
+                }
+                t => leaves.push(t),
+            }
+            true
+        };
         for t in set {
-            if !absorb(t, &mut nested, &mut acc) {
+            if !absorb(t, &mut nested) {
                 return (Type::Any, true);
             }
             while let Some((members, i)) = nested.last_mut() {
@@ -242,12 +217,29 @@ impl Type {
                     Some(t) => {
                         *i += 1;
                         let t = t.clone();
-                        if !absorb(t, &mut nested, &mut acc) {
+                        if !absorb(t, &mut nested) {
                             return (Type::Any, true);
                         }
                     }
                 }
             }
+        }
+        // merges are not confluent: saturating in sorted order makes the
+        // result a function of the leaves, not of the order they were written
+        if !leaves.is_sorted() {
+            changed = true;
+            leaves.sort();
+        }
+        let mut acc = Kept::default();
+        for t in leaves.drain(..) {
+            // `acc` is merge-saturated, so only the incoming element (or
+            // its merge result) can enable a new merge.
+            let mut incoming = t;
+            while let Some(m) = acc.merge_with(&incoming) {
+                changed = true;
+                incoming = m;
+            }
+            acc.push(incoming);
         }
         let mut acc = acc.into_members();
         if !acc.is_sorted() {

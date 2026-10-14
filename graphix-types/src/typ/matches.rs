@@ -322,9 +322,9 @@ impl Type {
                 f0.lambda_ids.link(&f1.lambda_ids);
                 Ok(())
             }
-            // one member set has several normal forms (a merge takes the
-            // members in arrival order, primitives fold into one), so ground
-            // unions match as sets
+            // one member set has several normal forms (products merged as
+            // written, primitives folded into one), so ground unions match
+            // as sets
             (Self::Set(_) | Self::Primitive(_), _)
             | (_, Self::Set(_) | Self::Primitive(_))
                 if !self.has_unbound() && !impl_type.has_unbound() =>

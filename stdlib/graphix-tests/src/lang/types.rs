@@ -3039,3 +3039,16 @@ run!(
         let result = f(null)
     "#
 ; FuseExpect::None);
+
+// A union's normal form does not depend on the order its members are
+// written in: f and g take one type, so [f, g] is an array of one fn type.
+run!(
+    union_member_order_is_not_the_type,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        let f = |x: [(i64, string), (f64, string), (i64, bool)]| 0;
+        let g = |x: [(i64, string), (i64, bool), (f64, string)]| 1;
+        let fs = [f, g];
+        let result = array::fold(array::map(fs, |h| h((i64:1, true))), 0, |a, b| a + b)
+    "#
+);
