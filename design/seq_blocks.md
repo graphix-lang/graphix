@@ -391,7 +391,9 @@ cycle as a `let` publishes; otherwise `pc` is written and the step
 enters the next cycle. A machine not yet planned, or planned
 conservatively, uses the next cycle everywhere. The last step writes
 `pc` idle. A block (`lower_block`) hoists each statement into a `let`
-under the step, connects `pc ~ value`, and joins the statements with a
+under the step, connects `once(value)` (an answer on every run, a level
+as it stands at entry; `once` restarts when the step sleeps), and joins
+the statements with a
 select over the tuple of their values, present once every statement
 has produced. `until` is refused where its value would be used: the
 last statement of a seq, or of a try or with body whose value is used,

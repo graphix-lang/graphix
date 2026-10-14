@@ -564,6 +564,35 @@ async fn block_issues_together(mode: Mode) -> Result<()> {
 
 modes!(block_issues_together);
 
+// A block's connect writes its call's answer on every run, and a level
+// as it stands at entry, once.
+async fn block_connect_every_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let t = sys::time::timer(duration:150.ms, 3) ~ 1;
+        let n = 0;
+        n <- t ~ n + 1;
+        let a = 0;
+        let l = 0;
+        let lw = 0;
+        lw <- l ~ lw + 1;
+        let r = seq t {
+            { a <- sys::time::after_idle(duration:30.ms, n); l <- n; 0 };
+            n
+        };
+        let out = sys::time::after_idle(duration:100.ms, r) ~ (r, a, l, lw);
+        array::group(out, |c, _| c == 3)
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(values.len(), 1, "{values:?}");
+    assert_eq!(
+        values[0].to_string(),
+        "[[i64:1, i64:1, i64:1, i64:2], [i64:2, i64:2, i64:2, i64:3], [i64:3, i64:3, i64:3, i64:4]]"
+    );
+    Ok(())
+}
+
+modes!(block_connect_every_run);
+
 async fn block_trailing_semicolon(mode: Mode) -> Result<()> {
     use arcstr::format;
 

@@ -1025,23 +1025,9 @@ impl Machine<'_> {
                         s.pos,
                         rewrite_target(name, *deref, &vis),
                         *deref,
-                        // CR claude for claude: [bug/high] A block connect writes `pc ~
-                        // v`, and that loses an async answer on every run after the
-                        // first. On a later run `v` holds a standing bottom at the
-                        // block's entry rather than being absent, so `~` banks nothing,
-                        // and when the call answers `pc` does not fire again. The block
-                        // still completes, because its tuple join reads `v` directly,
-                        // but the variable keeps the first run's value. Example: `seq t
-                        // { { a <- after_idle(30.ms, n); 0 }; n }` leaves `a` at 1 for
-                        // every run; the same connect at seq level writes 1, 2, 3. This
-                        // breaks the canonical `{ a <- fetch(cfg); b <- probe(cfg) }`
-                        // form from design/seq_blocks.md. Fix: write on the value's own
-                        // first fire after entry, as a seq-level connect's `writes`
-                        // does (e.g. `name <- core::once(v)`; once resets when the step
-                        // sleeps). Add a pin to block_issues_together, or beside it,
-                        // that runs a block holding an async connect at least twice.
-                        // probe: design/review-2026-10-12/repro/t-seq-06.gx (t-seq-01)
-                        sample(s.pos, r#ref(s.pos, self.pc), r#ref(s.pos, &v)),
+                        // the value's first fire after entry: an answer, or the
+                        // level as it stands at entry
+                        apply_core(s.pos, "once", [(None, r#ref(s.pos, &v))]),
                     ));
                 }
                 _ if is_declaration(s) => {
