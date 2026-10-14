@@ -707,3 +707,25 @@ async fn watch_hears_after_a_wake() -> Result<()> {
     );
     Ok(())
 }
+
+run!(watch_rebuilds_after_wake, r#"{
+    use sys::fs::watch;
+    let dir = sys::fs::tempdir::create(null)?;
+    let path = sys::fs::tempdir::path(dir);
+    let watcher = watch::create(null)?;
+    let interest = [`Established];
+    let on = true;
+    on <- sys::time::after_idle(duration:100.ms, false);
+    on <- sys::time::after_idle(duration:200.ms, true);
+    let event = select on {
+        true => watch::events(watch::watch(#interest:interest, watcher, path)?)?,
+        false => never()
+    };
+    let established = select event.event {
+        `Established => true,
+        _ => never()
+    };
+    array::group(established, |n, _| n == 2)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
+}, timeout: 3; FuseExpect::Jit);

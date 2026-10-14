@@ -359,6 +359,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
 
 #[derive(Debug)]
 pub(crate) struct WatchApply {
+    slept: bool,
     interest: Option<BitFlags<Interest>>,
     path: Option<ArcStr>,
     watcher_val: Option<Value>,
@@ -378,6 +379,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(WatchApply {
+            slept: false,
             interest: None,
             path: None,
             watcher_val: None,
@@ -393,6 +395,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
         let interest = Pack::decode(buf)?;
         let path = Pack::decode(buf)?;
         Ok(Box::new(WatchApply {
+            slept: false,
             interest,
             path,
             watcher_val: None,
@@ -416,36 +419,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for claude: [bug/high] WatchApply never rebuilds its watch after a
-        // wake. sleep clears interest, path and watcher_val, and update reads every
-        // argument through seam_tick, which sees only Fired deliveries. A reselected
-        // arm delivers a watcher and a path bound outside it as Stale, so nothing is
-        // re-read, no watch is added, and the output (and every events/path reader
-        // downstream) stays bottom for good. design/async_sleep_outputs.md says this
-        // builtin rebuilds the watch. Fix: keep a `slept` bit as WatchStream, timer and
-        // after_idle do. Read the arguments with seam_value, and rebuild when an
-        // argument fired or on the first update after a wake. Add a pin in
-        // lang/async_restart.rs. probe: design/review-2026-10-12/repro/sys-io-04.gx
-        // (sys-io-04)
-        let mut up = false;
-        if let Some(Ok(mut int)) = seam_tick(from[0].update(ctx))
-            .map(|v| v.value_cloned().cast_to::<LPooled<Vec<WInterest>>>())
+        let woke = std::mem::take(&mut self.slept);
+        let (interest, interest_fired) = seam_arg(ctx, &mut from[0]);
+        let (watcher, watcher_fired) = seam_arg(ctx, &mut from[1]);
+        let (path, path_fired) = seam_arg(ctx, &mut from[2]);
+        let up = woke || interest_fired || watcher_fired || path_fired;
+        if let Some(Ok(mut int)) =
+            interest.map(|v| v.cast_to::<LPooled<Vec<WInterest>>>())
         {
             let int = int.drain(..).fold(BitFlags::empty(), |mut acc, fl| {
                 acc.insert(fl.0);
                 acc
             });
-            up = true;
             self.interest = Some(int);
         }
-        if let Some(watcher_val) = seam_tick(from[1].update(ctx)) {
-            up = true;
-            self.watcher_val = Some(watcher_val.value_cloned());
+        if let Some(watcher_val) = watcher {
+            self.watcher_val = Some(watcher_val);
         }
-        if let Some(Ok(path)) =
-            seam_tick(from[2].update(ctx)).map(|tv| tv.value_cloned().cast_to::<ArcStr>())
-        {
-            up = true;
+        if let Some(Ok(path)) = path.map(|v| v.cast_to::<ArcStr>()) {
             self.path = Some(path);
         }
         if up
@@ -476,6 +467,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        self.slept = true;
         self.interest = None;
         self.path = None;
         self.watcher_val = None;
