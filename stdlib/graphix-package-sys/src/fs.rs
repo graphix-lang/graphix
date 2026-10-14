@@ -74,6 +74,13 @@ impl EvalCachedAsync for FileSeekEv {
             let Some(mut kind) = stream.take().await else {
                 return errf!("IOError", "stream unavailable");
             };
+            let pos = match pos {
+                SeekFrom::Current(n) => match n.checked_sub(kind.buffered_len() as i64) {
+                    Some(n) => SeekFrom::Current(n),
+                    None => return errf!("IOError", "seek offset is out of range"),
+                },
+                pos => pos,
+            };
             match &mut *kind {
                 StreamKind::File(f) => match f.seek(pos).await {
                     Ok(n) => Value::U64(n),
@@ -354,5 +361,21 @@ mod test {
     #[test]
     fn aborted_truncate_preserves_file() {
         abort_file_op(|stream| FileTruncateEv::eval((stream, 5)));
+    }
+
+    #[tokio::test]
+    async fn relative_seek_accounts_for_buffered_bytes() {
+        use std::io::Write;
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"hello").unwrap();
+        let stream =
+            Arc::new(Halves::new(StreamKind::File(tokio::fs::File::from_std(file))));
+        stream.reader().await.as_mut().unwrap().pending.extend_from_slice(b"hello");
+        assert_eq!(
+            FileSeekEv::eval((stream.clone(), SeekFrom::Current(0))).await,
+            Value::U64(0)
+        );
+        assert!(matches!(crate::io::IoReadEv::eval((stream, 5)).await,
+            Value::Bytes(ref bytes) if &bytes[..] == b"hello"));
     }
 }

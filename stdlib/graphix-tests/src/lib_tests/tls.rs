@@ -133,3 +133,17 @@ async fn tls_accept_times_out() -> Result<()> {
     }
     Ok(())
 }
+
+run!(tls_upgrade_after_lines, r#"{
+    use sys::io::{Read, Write, Lines, Close};
+    let listener = sys::tcp::listen("127.0.0.1:0")?;
+    let address = sys::tcp::listener_addr(listener)?;
+    let client = sys::tcp::connect(address)?;
+    let server = sys::tcp::accept(listener, client)?;
+    let greeted = Write::write_exact(server, buffer::from_string("STARTTLS\n"))?;
+    let line = Lines::lines(client)?;
+    let upgrade = sys::tls::connect(#ca_cert:null, "localhost", line ~ client);
+    let hello = Read::read(greeted ~ server, u64:4096)?;
+    Close::close(hello ~ server)?;
+    upgrade ~ (is_err(upgrade) && buffer::len(hello) > u64:0)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);

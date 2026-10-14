@@ -19,7 +19,7 @@ use graphix_package_core::{
 use graphix_rt::GXRt;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
-use poolshark::local::LPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use std::{
     cell::RefCell,
     cmp::Ordering,
@@ -30,7 +30,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, OnceLock,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
     task::{Context, Poll},
@@ -38,7 +38,7 @@ use std::{
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf},
-    sync::{Mutex, MutexGuard, Notify},
+    sync::{Mutex, MutexGuard, Notify, watch as tokio_watch},
 };
 
 pub(crate) mod dir;
@@ -55,10 +55,86 @@ pub(crate) mod time;
 pub(crate) mod tls;
 pub(crate) mod watch;
 
+/// A stream with bytes retained by an interrupted line reader.
+#[derive(Debug)]
+pub struct BufferedRead<S> {
+    stream: S,
+    pending: GPooled<Vec<u8>>,
+    consumed: usize,
+}
+
+impl<S> BufferedRead<S> {
+    fn new(stream: S, pending: GPooled<Vec<u8>>) -> Self {
+        Self { stream, pending, consumed: 0 }
+    }
+
+    fn compact(&mut self) {
+        self.pending.drain(..self.consumed);
+        self.consumed = 0;
+    }
+
+    fn into_parts(mut self) -> (S, GPooled<Vec<u8>>) {
+        self.compact();
+        (self.stream, self.pending)
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for BufferedRead<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IoResult<()>> {
+        let this = self.get_mut();
+        if this.consumed < this.pending.len() {
+            let n = buf.remaining().min(this.pending.len() - this.consumed);
+            buf.put_slice(&this.pending[this.consumed..this.consumed + n]);
+            this.consumed += n;
+            if this.consumed == this.pending.len() {
+                this.pending.clear();
+                this.consumed = 0;
+            }
+            Poll::Ready(Ok(()))
+        } else {
+            Pin::new(&mut this.stream).poll_read(cx, buf)
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for BufferedRead<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<IoResult<usize>> {
+        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<IoResult<usize>> {
+        Pin::new(&mut self.get_mut().stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+}
+
 pub enum StreamKind {
     File(tokio::fs::File),
     Tcp(tokio::net::TcpStream),
-    Tls(tokio_rustls::TlsStream<tokio::net::TcpStream>),
+    Tls(tokio_rustls::TlsStream<BufferedRead<tokio::net::TcpStream>>),
     Stdin(tokio::io::Stdin),
     Stdout(tokio::io::Stdout),
     Stderr(tokio::io::Stderr),
@@ -89,7 +165,7 @@ impl StreamKind {
             StreamKind::Tcp(s) => Some(s),
             StreamKind::Tls(s) => {
                 let (tcp, _) = s.get_ref();
-                Some(tcp)
+                Some(&tcp.stream)
             }
             _ => None,
         }
@@ -197,7 +273,8 @@ pub trait StreamMark: 'static + Send + Sync {
 pub struct Halves {
     closing: AtomicBool,
     closed: Notify,
-    r: Mutex<Option<ReadHalf<StreamKind>>>,
+    r: Mutex<Option<BufferedRead<ReadHalf<StreamKind>>>>,
+    stop_lines: OnceLock<tokio_watch::Sender<()>>,
     w: Mutex<Option<WriteHalf<StreamKind>>>,
     /// A socket's (peer, local) addresses, read when it was made.
     addrs: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
@@ -211,15 +288,19 @@ impl std::fmt::Debug for Halves {
 
 /// Holds both halves while an operation borrows the whole stream.
 pub(crate) struct Whole<'a> {
-    r: MutexGuard<'a, Option<ReadHalf<StreamKind>>>,
+    r: MutexGuard<'a, Option<BufferedRead<ReadHalf<StreamKind>>>>,
     w: MutexGuard<'a, Option<WriteHalf<StreamKind>>>,
-    kind: Option<StreamKind>,
+    kind: Option<(StreamKind, GPooled<Vec<u8>>)>,
 }
 
 impl Whole<'_> {
-    pub(crate) fn into_tcp(mut self) -> Option<tokio::net::TcpStream> {
+    pub(crate) fn buffered_len(&self) -> usize {
+        self.kind.as_ref().unwrap().1.len()
+    }
+
+    pub(crate) fn into_tcp(mut self) -> Option<BufferedRead<tokio::net::TcpStream>> {
         match self.kind.take()? {
-            StreamKind::Tcp(tcp) => Some(tcp),
+            (StreamKind::Tcp(tcp), pending) => Some(BufferedRead::new(tcp, pending)),
             other => {
                 self.kind = Some(other);
                 None
@@ -232,22 +313,25 @@ impl Deref for Whole<'_> {
     type Target = StreamKind;
 
     fn deref(&self) -> &Self::Target {
-        self.kind.as_ref().unwrap()
+        &self.kind.as_ref().unwrap().0
     }
 }
 
 impl DerefMut for Whole<'_> {
+    /// Mutable whole-stream access invalidates bytes read ahead.
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.kind.as_mut().unwrap()
+        let (kind, pending) = self.kind.as_mut().unwrap();
+        pending.clear();
+        kind
     }
 }
 
 impl Drop for Whole<'_> {
     /// Put back what [Halves::take] took, unless the stream was consumed.
     fn drop(&mut self) {
-        if let Some(kind) = self.kind.take() {
+        if let Some((kind, pending)) = self.kind.take() {
             let (r, w) = tokio::io::split(kind);
-            *self.r = Some(r);
+            *self.r = Some(BufferedRead::new(r, pending));
             *self.w = Some(w);
         }
     }
@@ -262,7 +346,8 @@ impl Halves {
         Self {
             closing: AtomicBool::new(false),
             closed: Notify::new(),
-            r: Mutex::new(Some(r)),
+            r: Mutex::new(Some(BufferedRead::new(r, GPooled::take()))),
+            stop_lines: OnceLock::new(),
             w: Mutex::new(Some(w)),
             addrs,
         }
@@ -285,7 +370,9 @@ impl Halves {
         }
     }
 
-    pub(crate) async fn reader(&self) -> MutexGuard<'_, Option<ReadHalf<StreamKind>>> {
+    pub(crate) async fn reader(
+        &self,
+    ) -> MutexGuard<'_, Option<BufferedRead<ReadHalf<StreamKind>>>> {
         self.r.lock().await
     }
 
@@ -297,8 +384,12 @@ impl Halves {
         self.addrs
     }
 
+    pub(crate) fn lines_stopped(&self) -> tokio_watch::Receiver<()> {
+        self.stop_lines.get_or_init(|| tokio_watch::channel(()).0).subscribe()
+    }
+
     /// Borrow the whole stream under both locks; `None` if it is closed.
-    // CR claude for claude: [bug/medium] take waits on the read lock, and a Lines
+    // XCR claude for claude: [bug/medium] take waits on the read lock, and a Lines
     // reader (line_reader) holds that lock across every pending read until EOF. On a
     // socket whose peer is silent until the ClientHello arrives (STARTTLS),
     // tls::connect/tls::accept never get the stream, and the wait sits outside the
@@ -308,6 +399,13 @@ impl Halves {
     // back its unconsumed bytes (a push-back buffer in the read slot that the upgrade
     // or the next read drains), and put the take under the handshake timeout. probe:
     // design/review-2026-10-12/repro/sys-io-06.gx (sys-io-06)
+    // 2026-10-13 codex: whole_take_stops_lines_and_preserves_partial_bytes pins cancellation and
+    // retained bytes; handshake_deadline_includes_stream_lock pins the deadline.
+    // Both fail without the fix. buffered_stream_reads_prefix_and_forwards_writes
+    // and relative_seek_accounts_for_buffered_bytes cover the shared buffer.
+    // tls_upgrade_after_lines compiles; its socket execution is unverified here.
+    // Review the transport handoff. The ownership description in
+    // design/async_sleep_outputs.md needs an update outside this scope.
     // XCR claude for claude: [bug/high] take() moves both halves out and releases both
     // locks, so for the length of the op its callers await (FileSeekEv, FileFstatEv,
     // FileTruncateEv, the TLS upgrade) the Halves reads as closed. A concurrent
@@ -327,10 +425,16 @@ impl Halves {
     // pins refusal without consuming a handle. TLS socket tests cannot run here;
     // review the configuration-before-consumption change in tls.rs.
     pub(crate) async fn take(&self) -> Option<Whole<'_>> {
+        if let Some(stop) = self.stop_lines.get() {
+            stop.send_replace(());
+        }
         let mut r = self.r.lock().await;
         let mut w = self.w.lock().await;
         match (r.take(), w.take()) {
-            (Some(rh), Some(wh)) => Some(Whole { r, w, kind: Some(rh.unsplit(wh)) }),
+            (Some(rh), Some(wh)) => {
+                let (rh, pending) = rh.into_parts();
+                Some(Whole { r, w, kind: Some((rh.unsplit(wh), pending)) })
+            }
             (rh, wh) => {
                 *r = rh;
                 *w = wh;
@@ -897,5 +1001,23 @@ mod test {
         stream.close().await.unwrap();
         let error = stream.until_closed(std::future::ready(Ok(()))).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
+    async fn buffered_stream_reads_prefix_and_forwards_writes() {
+        use tokio::io::AsyncReadExt;
+
+        let (inner, mut peer) = tokio::io::duplex(16);
+        let mut pending: GPooled<Vec<u8>> = GPooled::take();
+        pending.extend_from_slice(b"head");
+        let mut stream = BufferedRead::new(inner, pending);
+        peer.write_all(b"tail").await.unwrap();
+        let mut read = [0; 8];
+        stream.read_exact(&mut read).await.unwrap();
+        assert_eq!(&read, b"headtail");
+        stream.write_all(b"reply").await.unwrap();
+        let mut written = [0; 5];
+        peer.read_exact(&mut written).await.unwrap();
+        assert_eq!(&written, b"reply");
     }
 }

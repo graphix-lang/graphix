@@ -1,4 +1,4 @@
-use crate::{Halves, StreamKind, get_stream, wrap_tls};
+use crate::{BufferedRead, Halves, StreamKind, get_stream, wrap_tls};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
@@ -14,11 +14,13 @@ use netidx_value::Value;
 use std::{
     ptr,
     sync::{Arc, Weak},
+    time::Duration,
 };
 use tokio::{net::TcpStream, time::timeout};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-async fn take_tcp(stream: &Halves) -> Result<TcpStream, Value> {
+/// A successful take empties the old handle; the returned stream owns its bytes.
+async fn take_tcp(stream: &Halves) -> Result<BufferedRead<TcpStream>, Value> {
     match stream.take().await {
         Some(whole) => whole
             .into_tcp()
@@ -27,7 +29,22 @@ async fn take_tcp(stream: &Halves) -> Result<TcpStream, Value> {
     }
 }
 
-/// A handshake past `TLS_HANDSHAKE_TIMEOUT`: the stream is dropped.
+async fn handshake<T, F: Future<Output = Result<T, Value>>>(
+    stream: &Halves,
+    limit: Duration,
+    exchange: impl FnOnce(BufferedRead<TcpStream>) -> F,
+) -> Result<T, Value> {
+    match timeout(limit, async {
+        let tcp = take_tcp(stream).await?;
+        exchange(tcp).await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(timed_out()),
+    }
+}
+
 fn timed_out() -> Value {
     errf!(
         "TLSError",
@@ -153,21 +170,18 @@ impl EvalCachedAsync for TlsConnectEv {
                     return errf!("TLSError", "invalid hostname: {e}");
                 }
             };
-            let tcp = match take_tcp(&sv).await {
-                Ok(tcp) => tcp,
-                Err(e) => return e,
-            };
-            match timeout(TLS_HANDSHAKE_TIMEOUT, connector.connect(server_name, tcp))
-                .await
+            match handshake(&sv, TLS_HANDSHAKE_TIMEOUT, |tcp| async move {
+                connector
+                    .connect(server_name, tcp)
+                    .await
+                    .map_err(|e| errf!("TLSError", "TLS handshake failed: {e}"))
+            })
+            .await
             {
-                // The upgrade CONSUMES the TCP handle: the session moves into its
-                // own handle and the caller's `TcpStream` is left empty, so a stray
-                // plaintext read errors. A failed handshake spends the socket.
-                Ok(Ok(tls_stream)) => {
+                Ok(tls_stream) => {
                     wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Client(tls_stream)))
                 }
-                Ok(Err(e)) => errf!("TLSError", "TLS handshake failed: {e}"),
-                Err(_) => timed_out(),
+                Err(error) => error,
             }
         }
     }
@@ -210,17 +224,18 @@ impl EvalCachedAsync for TlsAcceptEv {
                 Err(e) => return errf!("TLSError", "TLS config error: {e}"),
             };
             let acceptor = TlsAcceptor::from(Arc::new(config));
-            let tcp = match take_tcp(&sv).await {
-                Ok(tcp) => tcp,
-                Err(e) => return e,
-            };
-            match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
-                // consumes the TCP handle, as `connect` does
-                Ok(Ok(tls_stream)) => {
+            match handshake(&sv, TLS_HANDSHAKE_TIMEOUT, |tcp| async move {
+                acceptor
+                    .accept(tcp)
+                    .await
+                    .map_err(|e| errf!("TLSError", "TLS accept failed: {e}"))
+            })
+            .await
+            {
+                Ok(tls_stream) => {
                     wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Server(tls_stream)))
                 }
-                Ok(Err(e)) => errf!("TLSError", "TLS accept failed: {e}"),
-                Err(_) => timed_out(),
+                Err(error) => error,
             }
         }
     }
@@ -264,5 +279,19 @@ mod test {
             cached.0[0] = Some(Value::Null);
             assert!(connect.prepare_args(&cached).is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn handshake_deadline_includes_stream_lock() {
+        let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let stream = Halves::new(StreamKind::File(file));
+        let _reader = stream.reader().await;
+        let result = timeout(
+            Duration::from_millis(100),
+            handshake(&stream, Duration::from_millis(5), |_| std::future::ready(Ok(()))),
+        )
+        .await
+        .expect("stream acquisition exceeded the handshake deadline");
+        assert_eq!(result.unwrap_err(), timed_out());
     }
 }

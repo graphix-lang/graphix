@@ -136,78 +136,14 @@ async fn send_lines(
 ///
 /// Without a queue, send one array per read. With a queue, wait for the
 /// graph to consume every line before reading another chunk.
-async fn line_reader(
+fn line_reader(
     stream: Arc<Halves>,
     id: BindId,
     queue: Option<Arc<LineQueue>>,
     mut tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
-) {
-    let batched = queue.is_none();
-    let mut held: LPooled<Vec<u8>> = LPooled::take();
-    let mut chunk: LPooled<Vec<u8>> = LPooled::take();
-    chunk.resize(65536, 0);
-    loop {
-        let read = {
-            let mut guard = stream.reader().await;
-            let Some(s) = guard.as_mut() else { break };
-            stream.until_closed(s.read(&mut chunk)).await
-        };
-        let n = match read {
-            Ok(0) => {
-                // the end: an unterminated last line is still a line
-                if !held.is_empty() {
-                    let line =
-                        Value::String(String::from_utf8_lossy(&held).as_ref().into());
-                    let mut b = LBATCH.take();
-                    let line = match batched {
-                        true => Value::Array(ValArray::from([line])),
-                        false => line,
-                    };
-                    b.push((id, line));
-                    let _ = send_lines(&mut tx, id, b, queue.as_deref()).await;
-                }
-                break;
-            }
-            Ok(n) => n,
-            Err(e) => {
-                let mut b = LBATCH.take();
-                b.push((id, errf!("IOError", "read failed: {e}")));
-                let _ = send_lines(&mut tx, id, b, queue.as_deref()).await;
-                break;
-            }
-        };
-        let scanned = held.len();
-        held.extend_from_slice(&chunk[..n]);
-        let mut out = LBATCH.take();
-        let mut lines: LPooled<Vec<Value>> = LPooled::take();
-        let mut start = 0;
-        let mut from = scanned;
-        while let Some(off) = held[from..].iter().position(|b| *b == b'\n') {
-            let end = from + off;
-            // Tolerate CRLF so a line framed on one platform reads the
-            // same on the other.
-            let line = match held[start..end].last() {
-                Some(b'\r') => &held[start..end - 1],
-                _ => &held[start..end],
-            };
-            let line = Value::String(String::from_utf8_lossy(line).as_ref().into());
-            if batched {
-                lines.push(line);
-            } else {
-                out.push((id, line));
-            }
-            start = end + 1;
-            from = start;
-        }
-        held.drain(..start);
-        if held.len() > MAX_LINE {
-            out.push((id, errf!("IOError", "a line is longer than {MAX_LINE} bytes")));
-            let _ = send_lines(&mut tx, id, out, queue.as_deref()).await;
-            break;
-        }
-        if batched && !lines.is_empty() {
-            out.push((id, Value::Array(ValArray::from_iter_exact(lines.drain(..)))));
-        }
+) -> impl Future<Output = ()> + Send {
+    let mut stopped = stream.lines_stopped();
+    async move {
         // XCR claude for claude: [bug/high] Unbatched line_reader has no backpressure.
         // Each chunk's lines go out as one batch to a single BindId. The runtime's run
         // loop drains every watch_var channel on every pass, and do_cycle then queues
@@ -226,8 +162,91 @@ async fn line_reader(
         // with one wake event and a wait for consumption. Removing the wait fails.
         // Review queue ownership across sleep and stream replacement; pipe framing
         // is checked by process::io_lines and process::io_lines_batched.
-        if !send_lines(&mut tx, id, out, queue.as_deref()).await {
-            break;
+        let read = async {
+            let batched = queue.is_none();
+            loop {
+                let mut guard = stream.reader().await;
+                let Some(s) = guard.as_mut() else { break };
+                s.compact();
+                let scanned = s.pending.len();
+                s.pending.reserve(65536);
+                let read = stream
+                    .until_closed(s.stream.read_buf(&mut (&mut *s.pending).limit(65536)))
+                    .await;
+                let mut out = LBATCH.take();
+                let done = match read {
+                    Err(e) => {
+                        out.push((id, errf!("IOError", "read failed: {e}")));
+                        true
+                    }
+                    Ok(n) => {
+                        let held = &mut s.pending;
+                        let mut lines: LPooled<Vec<Value>> = LPooled::take();
+                        let mut start = 0;
+                        let mut from = scanned;
+                        while let Some(off) =
+                            held[from..].iter().position(|b| *b == b'\n')
+                        {
+                            let end = from + off;
+                            let line = match held[start..end].last() {
+                                Some(b'\r') => &held[start..end - 1],
+                                _ => &held[start..end],
+                            };
+                            let line = Value::String(
+                                String::from_utf8_lossy(line).as_ref().into(),
+                            );
+                            if batched {
+                                lines.push(line);
+                            } else {
+                                out.push((id, line));
+                            }
+                            start = end + 1;
+                            from = start;
+                        }
+                        held.drain(..start);
+                        if held.len() > MAX_LINE {
+                            out.push((
+                                id,
+                                errf!(
+                                    "IOError",
+                                    "a line is longer than {MAX_LINE} bytes"
+                                ),
+                            ));
+                            true
+                        } else {
+                            if n == 0 && !held.is_empty() {
+                                let line = Value::String(
+                                    String::from_utf8_lossy(held).as_ref().into(),
+                                );
+                                if batched {
+                                    lines.push(line);
+                                } else {
+                                    out.push((id, line));
+                                }
+                                held.clear();
+                            }
+                            if batched && !lines.is_empty() {
+                                out.push((
+                                    id,
+                                    Value::Array(ValArray::from_iter_exact(
+                                        lines.drain(..),
+                                    )),
+                                ));
+                            }
+                            n == 0
+                        }
+                    }
+                };
+                drop(guard);
+                if !send_lines(&mut tx, id, out, queue.as_deref()).await || done {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = stopped.changed() => (),
+            () = read => (),
         }
     }
 }
@@ -699,5 +718,42 @@ mod test {
     async fn close_cancels_lines() {
         let (tx, _rx) = mpsc::channel(3);
         close_pending_read(|stream| line_reader(stream, BindId::new(), None, tx)).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn whole_take_stops_lines_and_preserves_partial_bytes() {
+        use futures::StreamExt;
+        use std::{process::Stdio, time::Duration};
+        use tokio::{process::Command, time::timeout};
+
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "printf 'ready\\npartial'; exec sleep 30"])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stream =
+            Arc::new(Halves::new(StreamKind::ChildStdout(child.stdout.take().unwrap())));
+        let (tx, mut rx) = mpsc::channel(3);
+        let reader = tokio::spawn(line_reader(stream.clone(), BindId::new(), None, tx));
+        let batch = timeout(Duration::from_secs(1), rx.next()).await.unwrap().unwrap();
+        assert!(matches!(&batch[0].1, Value::Array(lines)
+            if matches!(&lines[..], [Value::String(s)] if s == "ready")));
+        let whole = timeout(Duration::from_secs(1), stream.take())
+            .await
+            .expect("take stayed behind the line reader")
+            .unwrap();
+        drop(whole);
+        let value = timeout(Duration::from_secs(1), IoReadEv::eval((stream.clone(), 2)))
+            .await
+            .expect("the line reader lost its partial bytes");
+        assert!(matches!(value, Value::Bytes(ref b) if &b[..] == b"pa"));
+        drop(stream.take().await.unwrap());
+        let value =
+            timeout(Duration::from_secs(1), IoReadEv::eval((stream, 5))).await.unwrap();
+        assert!(matches!(value, Value::Bytes(ref b) if &b[..] == b"rtial"));
+        timeout(Duration::from_secs(1), reader).await.unwrap().unwrap();
+        child.kill().await.unwrap();
     }
 }
