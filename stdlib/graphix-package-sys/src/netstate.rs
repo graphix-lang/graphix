@@ -6,7 +6,11 @@
 use anyhow::{Error, Result, anyhow};
 use arcstr::literal;
 use compact_str::format_compact;
-use futures::{StreamExt, channel::mpsc};
+use futures::{
+    StreamExt,
+    channel::mpsc,
+    future::{AbortHandle, Abortable},
+};
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent, branch::RtView,
 };
@@ -246,6 +250,14 @@ struct Route {
     streamed: bool,
 }
 
+struct PendingRequest(AbortHandle);
+
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 struct Inner {
     handles: NetHandles,
     routes: Arc<Mutex<Routes>>,
@@ -258,8 +270,10 @@ struct Inner {
     flusher: task::JoinHandle<()>,
     // rpc client procs, GC'd on use
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
-    // per-list-builtin resolver change trackers
-    change_trackers: Mutex<IntMap<BindId, Arc<tokio::sync::Mutex<ChangeTracker>>>>,
+    requests: Mutex<IntMap<BindId, PendingRequest>>,
+    /// A tracker is retained only after its listing completes successfully.
+    change_trackers:
+        Mutex<IntMap<BindId, Arc<tokio::sync::Mutex<Option<ChangeTracker>>>>>,
 }
 
 impl Drop for Inner {
@@ -336,6 +350,7 @@ impl NetState {
             flush,
             flusher,
             rpc_clients: Mutex::new(Vec::new()),
+            requests: Mutex::new(IntMap::default()),
             change_trackers: Mutex::new(IntMap::default()),
         }));
         // PUMP: netidx events -> graph events. Subscription updates route
@@ -627,7 +642,24 @@ impl NetState {
         drop(val)
     }
 
-    // CR claude for claude: [risk/low] call_rpc and list spawn their futures with
+    fn spawn_request<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        id: BindId,
+        future: impl Future<Output = Value> + Send + 'static,
+    ) {
+        let (abort, registration) = AbortHandle::new_pair();
+        self.0.requests.lock().insert(id, PendingRequest(abort));
+        ctx.rt.spawn_var(async move {
+            (id, Abortable::new(future, registration).await.unwrap_or(Value::Null))
+        });
+    }
+
+    pub(crate) fn stop_request(&self, id: BindId) {
+        self.0.requests.lock().remove(&id);
+    }
+
+    // XCR claude for claude: [risk/low] call_rpc and list spawn their futures with
     // spawn_var and keep no abort handle. remint, sleep and delete only stop listening
     // to the id. netidx's rpc Proc::call waits for its reply with no timeout, so every
     // call to a procedure that never answers stays in the runtime's task set for the
@@ -638,6 +670,12 @@ impl NetState {
     // and return Null, which the builtin ignores. Fix: keep an abort handle per
     // in-flight call and list, as CachedArgsAsync does, and drop it at remint, sleep
     // and delete; remint the list id on a path change. (x-concurrency-11)
+    // 2026-10-13 codex: obsolete_requests_release_their_futures exercises replacement and
+    // explicit cancellation on the real runtime task set without sockets, and
+    // fails when abort-on-drop is removed. RPC remint/delete and list stop now
+    // cancel; list path changes also remint the delivery id. Cancelled or failed
+    // listings leave no advanced change tracker to suppress the next refresh.
+    // Live RPC/list races and resolver behavior remain unverified in this sandbox.
     pub(crate) fn call_rpc<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
@@ -699,7 +737,7 @@ impl NetState {
                 if rpc_dbg() {
                     eprintln!("RPCDBG client: calling {dbg_path} for {id:?}");
                 }
-                ctx.rt.spawn_var(async move {
+                self.spawn_request(ctx, id, async move {
                     let r = match proc.call(args).await {
                         Ok(v) => v,
                         Err(e) => {
@@ -730,7 +768,7 @@ impl NetState {
                     if rpc_dbg() {
                         eprintln!("RPCDBG client: reply from {dbg_path} for {id:?}: {r}");
                     }
-                    (id, r)
+                    r
                 });
             }
         }
@@ -781,30 +819,29 @@ impl NetState {
         };
         let ct = {
             let mut cts = self.0.change_trackers.lock();
-            let ct = cts.entry(id).or_insert_with(|| {
-                Arc::new(tokio::sync::Mutex::new(ChangeTracker::new(path.clone())))
-            });
+            let ct =
+                cts.entry(id).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)));
             Arc::clone(ct)
         };
-        ctx.rt.spawn_var(async move {
+        self.spawn_request(ctx, id, async move {
             publisher.flushed().await;
             let resolver = subscriber.resolver();
-            {
-                let mut ct = ct.lock().await;
-                if ct.path() != &path {
-                    *ct = ChangeTracker::new(path.clone());
+            let mut saved = ct.lock().await;
+            let mut tracker = saved
+                .take()
+                .filter(|t| t.path() == &path)
+                .unwrap_or_else(|| ChangeTracker::new(path.clone()));
+            match resolver.check_changed(&mut tracker).await {
+                Err(e) => return error_value(e),
+                Ok(false) => {
+                    *saved = Some(tracker);
+                    return Value::Null;
                 }
-                match resolver.check_changed(&mut *ct).await {
-                    Err(e) => {
-                        return (id, error_value(e));
-                    }
-                    Ok(false) => return (id, Value::Null),
-                    Ok(true) => (),
-                }
+                Ok(true) => (),
             }
-            if table {
+            let result = if table {
                 match resolver.table(path).await {
-                    Err(e) => (id, error_value(e)),
+                    Err(e) => error_value(e),
                     Ok(mut tbl) => {
                         use netidx::protocol::valarray::ValArray;
                         let cols = tbl
@@ -820,23 +857,28 @@ impl NetState {
                             columns: Value,
                             rows: Value,
                         }
-                        (id, Table { columns: cols, rows }.into())
+                        Table { columns: cols, rows }.into()
                     }
                 }
             } else {
                 match resolver.list(path).await {
-                    Err(e) => (id, error_value(e)),
+                    Err(e) => error_value(e),
                     Ok(mut paths) => {
                         use netidx::protocol::valarray::ValArray;
                         let paths = paths.drain(..).map(|p| Value::String(p.into()));
-                        (id, Value::Array(ValArray::from_iter_exact(paths)))
+                        Value::Array(ValArray::from_iter_exact(paths))
                     }
                 }
+            };
+            if !matches!(result, Value::Error(_)) {
+                *saved = Some(tracker);
             }
+            result
         });
     }
 
     pub(crate) fn stop_list(&self, id: BindId) {
+        self.stop_request(id);
         self.0.change_trackers.lock().remove(&id);
     }
 
@@ -875,5 +917,32 @@ mod test {
         })
         .await
         .expect("the flusher outlived its NetState");
+    }
+
+    #[tokio::test]
+    async fn obsolete_requests_release_their_futures() {
+        for replace in [false, true] {
+            let mut ctx = GXRt::<NoExt>::new_state().unwrap();
+            let state = NetState::get(&mut ctx.view());
+            let id = BindId::new();
+            let resource = Arc::new(());
+            let held = Arc::downgrade(&resource);
+            state.spawn_request(&mut ctx.view(), id, async move {
+                let _resource = resource;
+                std::future::pending::<Value>().await
+            });
+            if replace {
+                state.spawn_request(&mut ctx.view(), id, std::future::ready(Value::Null));
+            } else {
+                state.stop_request(id);
+            }
+            time::timeout(Duration::from_secs(1), async {
+                while held.upgrade().is_some() {
+                    task::yield_now().await;
+                }
+            })
+            .await
+            .expect("obsolete request retained its resource");
+        }
     }
 }

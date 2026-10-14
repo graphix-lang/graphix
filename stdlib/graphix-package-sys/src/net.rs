@@ -483,16 +483,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         if (woke || path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {
+            self.remint(ctx);
             match parse_args(path, args) {
                 Err(e) => {
                     return self
                         .out
                         .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
                 }
-                Ok((path, args)) => {
-                    self.remint(ctx);
-                    NetState::get(ctx).call_rpc(ctx, path, args, self.id)
-                }
+                Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
             }
         }
         let res = ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
@@ -524,7 +522,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id)
+        self.release(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -535,9 +533,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 }
 
 impl RpcCall {
+    fn release<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Some(net) = ctx.libstate.get::<NetState>() {
+            net.stop_request(self.id);
+        }
+        ctx.release_var(self.id, self.top_id);
+    }
+
     /// A fresh delivery id: a reply to an earlier call lands nowhere.
     fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
+        self.release(ctx);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
@@ -637,6 +642,9 @@ macro_rules! list {
                         )));
                     };
                     if trigger_fired || self.current.as_ref() != Some(&path) {
+                        if self.current.as_ref() != Some(&path) {
+                            self.remint(ctx);
+                        }
                         self.current = Some(path.clone());
                         NetState::get(ctx).list(ctx, self.id, path, $table);
                     }
