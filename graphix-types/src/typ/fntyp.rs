@@ -1353,6 +1353,14 @@ impl FnType {
                 // with == and with <. probe:
                 // design/review-2026-10-12/repro/tests-modules-image-01.sh
                 // (tests-modules-image-01)
+                // 2026-10-14 claude: verified (the probe's --check passes and the build
+                // refuses). Opening rigid gates on the signature's variables and probing
+                // with RigidCheck does not refuse it: a predicate's containment treats a
+                // rigid open variable as satisfiable. The rule has to push each predicate
+                // through the compound the way the predicate composes (Discernible of
+                // Array<'a> needs 'a's, Singleton of Array<'a> needs nothing) and then
+                // ask the signature's declared bounds, as the trait path effectively
+                // does by checking the lambda against the declared type.
                 Some(sig_type) => {
                     for impl_tc in tv.cell_constraints() {
                         let ok = impl_tc
