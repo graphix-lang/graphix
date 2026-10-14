@@ -117,7 +117,9 @@ pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     match (kind, seq.trigger) {
         (SeqKind::Queued { .. }, Some(SeqTrigger::Bind(b))) => desugar_let(&seq, b),
         (SeqKind::Queued { .. }, _) => desugar_queued(&seq, env, scope),
-        (SeqKind::Plain, _) => desugar_plain(&seq, None, &fn_names(body, env, scope)),
+        (SeqKind::Plain, _) => {
+            desugar_plain(&seq, None, &fn_names(body, seq.trigger, env, scope))
+        }
     }
 }
 
@@ -431,29 +433,23 @@ fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
 
 /// The names a seq body passes to a call that are functions: a `let` of
 /// the body bound to a lambda literal, or a function binding outside it
-/// the body does not rebind to something else.
-fn fn_names(body: &[Expr], env: &Env, scope: &ModPath) -> AHashSet<ArcStr> {
+/// that neither the body nor the trigger binds to something else.
+fn fn_names(
+    body: &[Expr],
+    trigger: Option<&SeqTrigger>,
+    env: &Env,
+    scope: &ModPath,
+) -> AHashSet<ArcStr> {
     let mut lambdas: AHashSet<ArcStr> = AHashSet::new();
     let mut values: AHashSet<ArcStr> = AHashSet::new();
     let mut args: AHashSet<ArcStr> = AHashSet::new();
+    if let Some(SeqTrigger::Bind(b)) = trigger {
+        b.pattern.with_names(&mut |n| {
+            values.insert(n.clone());
+        });
+    }
     for s in body {
         s.fold((), &mut |(), e| match &e.kind {
-            // CR claude for claude: [bug/medium] fn_names treats only `let` patterns as
-            // rebinding a name. A select arm's binds (plain, `name@` and or-pattern
-            // binds) never reach `values`, so an arm bind that shadows an outer
-            // function, as in `select v { g => after_idle(d, g) }` under `let g = |x|
-            // x`, is still taken for the function. issue_call then leaves that argument
-            // live at the call site instead of reading it from the entry snapshot. The
-            // call is re-issued every time the value moves, which breaks the rule that
-            // a seq call is issued once per entry over an argument snapshot. The
-            // program prints 5 with the bind named `g` and 0 with it named `h`. Lambda
-            // parameters, try/with binds and trigger binds are also missing from
-            // `values`. Fix: decide "is a function" in issue_call from the name's
-            // binding in the rewrite's own scope map, which already tracks shadowing,
-            // rather than from this body-wide fold plus an env lookup. A stopgap is to
-            // add every binder's names (arm patterns via `with_names`, lambda args,
-            // try/with and trigger binds) to `values`. probe:
-            // design/review-2026-10-12/repro/x-expr-walks-02.sh (x-expr-walks-02)
             ExprKind::Bind(b) => match &b.pattern {
                 StructurePattern::Bind(n) if inline_lambda(&b.value) => {
                     lambdas.insert(n.name.clone());
@@ -464,6 +460,22 @@ fn fn_names(body: &[Expr], env: &Env, scope: &ModPath) -> AHashSet<ArcStr> {
             },
             ExprKind::Apply(a) => {
                 args.extend(a.args.iter().filter_map(|(_, a)| simple_ref_name(a)))
+            }
+            ExprKind::Select(se) => se.arms.iter().for_each(|(p, _)| {
+                p.structure_predicate.with_names(&mut |n| {
+                    values.insert(n.clone());
+                })
+            }),
+            ExprKind::Lambda(l) => l.args.iter().for_each(|a| {
+                a.pattern.with_names(&mut |n| {
+                    values.insert(n.clone());
+                })
+            }),
+            ExprKind::TryWith(t) => {
+                values.insert(t.bind.name.clone());
+            }
+            ExprKind::Catch(c) => {
+                values.insert(c.bind.name.clone());
             }
             _ => (),
         })
@@ -1277,7 +1289,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         flush: flush_reads_request.then_some(flushed.as_str()),
         lets: qlets,
     };
-    let fns = fn_names(&body, env, scope);
+    let fns = fn_names(&body, trigger, env, scope);
     prelude.push(let_bind(
         pos,
         &result,

@@ -851,3 +851,18 @@ run!(seq_dynamic_source_reads_trigger, r#"{
         f(1)
     }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
+
+// A select arm's bind that shadows a function is a value: the call reads
+// it from the entry snapshot and is issued once.
+run!(
+    seq_arm_bind_shadowing_function_is_snapshot,
+    r#"{
+    let g = |x| x;
+    let v = 0;
+    v <- sys::time::timer(duration:20.ms, 5)$ ~ v + 1;
+    let t = 1;
+    let r = seq t { select v { g => sys::time::after_idle(duration:150.ms, g) } };
+    sys::time::after_idle(duration:300.ms, r)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
+);
