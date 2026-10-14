@@ -2323,3 +2323,17 @@ fn a_comment_stands_on_a_line_of_its_own() {
         assert!(msg.contains(&format!("column: {col}")), "{src}: {msg}");
     }
 }
+
+/// The nesting limit is reported where it was hit, with the line and a
+/// caret, not at the outermost bracket.
+#[test]
+fn the_nesting_limit_is_reported_where_hit() {
+    let src = format!(
+        "let x = {}1{}",
+        "{a: ".repeat(max_nesting() + 10),
+        "}".repeat(max_nesting() + 10)
+    );
+    let msg = format!("{:#}", parse_one(&src).unwrap_err());
+    assert!(msg.contains("nesting too deep") && msg.contains('^'), "{msg}");
+    assert!(!msg.contains("column: 9\n"), "{msg}");
+}

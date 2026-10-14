@@ -281,21 +281,22 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
         // a refusal is the failure only when no branch parsed past it
         let passed = FURTHEST_OK.with(|p| p.get());
         let refused = REFUSED.with(|r| r.get());
-        if refused.is_some_and(|r| passed.is_none_or(|p| key(r) >= key(p))) {
-            // CR claude for claude: [readability/low] When the nesting limit stopped
-            // the parse, this branch reports `err_pos`, the outermost combine error,
-            // and no snippet. The refusal's own position, `refused`, is read just above
-            // and dropped. A file of 400 nested `{a: ` reports the first `{` at column
-            // 10, far from where the limit was hit, with no line or caret. Report
-            // `refused`'s position and append `snippet(text, pos)` as the general
-            // branch below does. Probe:
-            // design/review-2026-10-12/repro/t-parser-a-10.gx. (t-parser-a-10)
-            let msg = format!(
+        if let Some(at) = refused.filter(|r| passed.is_none_or(|p| key(*r) >= key(p))) {
+            let summary = format!(
                 "expression nesting too deep (limit {}, see \
                  graphix_compiler::expr::parser::set_max_nesting)",
                 max_nesting()
             );
-            return ParseFailure { pos: err_pos, summary: msg.clone(), msg };
+            let mut msg = format!(
+                "Parse error at line: {}, column: {}\n{summary}",
+                at.line, at.column
+            );
+            let snippet = snippet(text, at);
+            if !snippet.is_empty() {
+                msg.push('\n');
+                msg.push_str(&snippet);
+            }
+            return ParseFailure { pos: at, summary, msg };
         }
         let pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
         // CR claude for claude: [readability/low] When the furthest point is combine's
