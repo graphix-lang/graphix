@@ -5,6 +5,7 @@
 //! [`NetConfig`] (absent: a process-internal netidx on a dedicated side thread).
 use anyhow::{Error, Result, anyhow};
 use arcstr::literal;
+use compact_str::format_compact;
 use futures::{StreamExt, channel::mpsc};
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent, branch::RtView,
@@ -32,6 +33,10 @@ use std::{
 use tokio::{sync::oneshot, task, time};
 
 graphix_compiler::dbg_flag!(rpc_dbg, "GXDBG_RPC");
+
+fn error_value(error: Error) -> Value {
+    Value::error(format_compact!("{error:#}").as_str())
+}
 
 /// A subscription update routed to a builtin's BindId. Unsubscribed
 /// is delivered as an error value.
@@ -188,7 +193,7 @@ impl NetHandles {
                             }
                         })
                     })
-                    .map_err(|e| anyhow!("spawning the netidx thread: {e:?}"))?;
+                    .map_err(|e| anyhow!("spawning the netidx thread: {e:#}"))?;
                 let (publisher, subscriber) =
                     rx.recv().map_err(|_| anyhow!("netidx thread died"))??;
                 Handles {
@@ -610,8 +615,7 @@ impl NetState {
             let subscriber = match self.handles(ctx) {
                 Ok(h) => h.subscriber.clone(),
                 Err(e) => {
-                    let e = compact_str::format_compact!("{e:?}");
-                    ctx.rt.set_var(id, Value::error(e.as_str()));
+                    ctx.rt.set_var(id, error_value(e));
                     return;
                 }
             };
@@ -636,7 +640,7 @@ impl NetState {
         };
         match proc {
             Err(e) => {
-                // CR claude for claude: [bug/low] Every anyhow error sys::net turns
+                // XCR claude for claude: [bug/low] Every anyhow error sys::net turns
                 // into a program-visible Value is formatted with {e:?}: here, the other
                 // rpc and list sites in this file,
                 // WriteError/SubscribeError/PublishError in net.rs, and the watcher
@@ -648,8 +652,12 @@ impl NetState {
                 // the string; route it through remote_err as subscribe and rpc do.
                 // probe: design/review-2026-10-12/repro/x-fix-stdlib-06.gx
                 // (x-fix-stdlib-06)
-                let e = compact_str::format_compact!("{e:?}");
-                ctx.rt.set_var(id, Value::error(e.as_str()));
+                // 2026-10-13 codex: error_values_have_stable_context_text and
+                // list_error_preserves_remote_message pin the error conversions and
+                // fail when reverted, including with RUST_BACKTRACE=1. RPC/list and
+                // watcher formatting uses Display; the socket probe cannot run here.
+
+                ctx.rt.set_var(id, error_value(e));
             }
             Ok(proc) => {
                 if rpc_dbg() {
@@ -674,8 +682,13 @@ impl NetState {
                             // the same way. probe:
                             // design/review-2026-10-12/repro/x-rerun-5-03.sh
                             // (x-rerun-5-05)
-                            let e = compact_str::format_compact!("{e:?}");
-                            Value::error(e.as_str())
+                            // 2026-10-13 codex: NetState and watcher formatting is fixed;
+                            // error_values_have_stable_context_text fails with Debug
+                            // and passes with Display under RUST_BACKTRACE=1. The
+                            // fc_mean cast error in graphix-package-core/src/lib.rs
+                            // remains outside this scope. Network probe unverified.
+
+                            error_value(e)
                         }
                     };
                     if rpc_dbg() {
@@ -726,8 +739,7 @@ impl NetState {
         let (publisher, subscriber) = match self.handles(ctx) {
             Ok(h) => (h.publisher.clone(), h.subscriber.clone()),
             Err(e) => {
-                let e = compact_str::format_compact!("{e:?}");
-                ctx.rt.set_var(id, Value::error(e.as_str()));
+                ctx.rt.set_var(id, error_value(e));
                 return;
             }
         };
@@ -748,8 +760,7 @@ impl NetState {
                 }
                 match resolver.check_changed(&mut *ct).await {
                     Err(e) => {
-                        let e = compact_str::format_compact!("{e:?}");
-                        return (id, Value::error(e.as_str()));
+                        return (id, error_value(e));
                     }
                     Ok(false) => return (id, Value::Null),
                     Ok(true) => (),
@@ -757,10 +768,7 @@ impl NetState {
             }
             if table {
                 match resolver.table(path).await {
-                    Err(e) => {
-                        let e = compact_str::format_compact!("{e:?}");
-                        (id, Value::error(e.as_str()))
-                    }
+                    Err(e) => (id, error_value(e)),
                     Ok(mut tbl) => {
                         use netidx::protocol::valarray::ValArray;
                         let cols = tbl
@@ -781,10 +789,7 @@ impl NetState {
                 }
             } else {
                 match resolver.list(path).await {
-                    Err(e) => {
-                        let e = compact_str::format_compact!("{e:?}");
-                        (id, Value::error(e.as_str()))
-                    }
+                    Err(e) => (id, error_value(e)),
                     Ok(mut paths) => {
                         use netidx::protocol::valarray::ValArray;
                         let paths = paths.drain(..).map(|p| Value::String(p.into()));
@@ -806,5 +811,16 @@ impl NetState {
         ctx: &mut ExecCtx<'_, R, E>,
     ) -> Result<Subscriber> {
         Ok(self.handles(ctx)?.subscriber.clone())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn error_values_have_stable_context_text() {
+        let error = anyhow!("inner").context("outer");
+        assert_eq!(error_value(error), Value::error(literal!("outer: inner")));
     }
 }

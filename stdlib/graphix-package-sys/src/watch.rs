@@ -335,7 +335,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
             let watcher_result = builder
                 .event_handler(notify_tx)
                 .build()
-                .map_err(|e| anyhow::anyhow!("{e:?}"))
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
                 .and_then(|c| c.start());
             match watcher_result {
                 Ok(watcher) => {
@@ -346,7 +346,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
                 }
                 Err(e) => self.out.set(TagValue::fired(errf!(
                     "WatchError",
-                    "failed to create watcher: {e:?}"
+                    "failed to create watcher: {e:#}"
                 ))),
             }
         } else {
@@ -467,7 +467,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
                     Err(e) => {
                         return self
                             .out
-                            .set(TagValue::fired(errf!("WatchError", "{e:?}")));
+                            .set(TagValue::fired(errf!("WatchError", "{e:#}")));
                     }
                 }
             }
@@ -657,7 +657,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
             let v = ctx.event.with_custom(bid, |cbt| {
                 let w = (cbt as &dyn Any).downcast_ref::<WEvent>()?;
                 Some(match &w.0.event {
-                    EventKind::Error(e) => errf!("WatchError", "{e:?}"),
+                    EventKind::Error(e) => errf!("WatchError", "{e:#}"),
                     EventKind::Event(_) => K::convert(w),
                 })
             });

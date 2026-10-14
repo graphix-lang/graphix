@@ -50,6 +50,14 @@ fn remote_err(tag: &ArcStr, e: &Value) -> Value {
     }
 }
 
+fn list_response(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::Error(e) => Some(remote_err(&literal!("ListError"), e)),
+        v => Some(v.clone()),
+    }
+}
+
 /// The value written to a path. Values that fire before the path is
 /// known queue and are written, in order, when it arrives.
 #[derive(Debug)]
@@ -158,13 +166,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 // path and e in the messages, and add a pin that catches a WriteError
                 // by its variant. probe:
                 // design/review-2026-10-12/repro/x-fix-stdlib-03.gx (x-fix-stdlib-03)
-                let e = errf!(literal!("WriteError"), "invalid path {path:?}");
+                let e = errf!(literal!("WriteError"), "invalid path {path}");
                 return self.out.set(TagValue::fired(Value::Error(e.into())));
             };
             let dv = match NetState::get(ctx).write_target(ctx, p.clone()) {
                 Ok(dv) => dv,
                 Err(e) => {
-                    let e = errf!(literal!("WriteError"), "{e:?}");
+                    let e = errf!(literal!("WriteError"), "{e:#}");
                     return self.out.set(TagValue::fired(Value::Error(e.into())));
                 }
             };
@@ -300,7 +308,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                 ) {
                     Ok(dv) => dv,
                     Err(e) => {
-                        return self.out.set(TagValue::fired(errf!(ERR_TAG, "{e:?}")));
+                        return self.out.set(TagValue::fired(errf!(ERR_TAG, "{e:#}")));
                     }
                 };
                 self.cur = Some((path, dval));
@@ -625,13 +633,11 @@ macro_rules! list {
                     }
                     _ => (),
                 }
-                let res = ctx.event.variables.get(&self.id).and_then(|v| {
-                    v.with_value(|v| match v {
-                        Value::Null => None,
-                        Value::Error(e) => Some(errf!(literal!("ListError"), "{e}")),
-                        v => Some(v.clone()),
-                    })
-                });
+                let res = ctx
+                    .event
+                    .variables
+                    .get(&self.id)
+                    .and_then(|v| v.with_value(list_response));
                 match res {
                     Some(v) => self.out.set(TagValue::fired(v)),
                     None => self.out.ride(),
@@ -798,7 +804,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 let net = NetState::get(ctx);
                 match net.publish(ctx, path.clone(), $v.clone(), self.wid) {
                     Err(e) => {
-                        let msg: ArcStr = format_compact!("{e:?}").as_str().into();
+                        let msg: ArcStr = format_compact!("{e:#}").as_str().into();
                         let e: Value = (literal!("PublishError"), msg).into();
                         return self.out.set(TagValue::fired(Value::Error(e.into())));
                     }
@@ -1207,5 +1213,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.inbox = Default::default();
         self.current = None;
         self.handler.sleep(ctx);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn list_error_preserves_remote_message() {
+        let message = literal!("context: \"detail\"");
+        let error = Value::error(message.clone());
+        let expected = Value::Error(Value::from((literal!("ListError"), message)).into());
+        assert_eq!(list_response(&error), Some(expected));
+        assert_eq!(list_response(&Value::Null), None);
     }
 }

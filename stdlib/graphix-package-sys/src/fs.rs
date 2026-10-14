@@ -173,7 +173,7 @@ impl EvalCachedAsync for ReadAllOp {
         async move {
             match tokio::fs::read_to_string(&*path).await {
                 Ok(s) => Value::from(s),
-                Err(e) => errf!("IOError", "could not read {path}, {e:?}"),
+                Err(e) => errf!("IOError", "could not read {path}: {e}"),
             }
         }
     }
@@ -197,7 +197,7 @@ impl EvalCachedAsync for ReadAllBinOp {
         async move {
             match tokio::fs::read(&*path).await {
                 Ok(s) => Value::from(Bytes::from(s)),
-                Err(e) => errf!("IOError", "could not read {path}, {e:?}"),
+                Err(e) => errf!("IOError", "could not read {path}: {e}"),
             }
         }
     }
@@ -221,7 +221,7 @@ impl EvalCachedAsync for WriteAllOp {
         async move {
             match tokio::fs::write(&*path, &*value).await {
                 Ok(()) => Value::Null,
-                Err(e) => errf!("IOError", "could not write {path}, {e:?}"),
+                Err(e) => errf!("IOError", "could not write {path}: {e}"),
             }
         }
     }
@@ -245,7 +245,7 @@ impl EvalCachedAsync for WriteAllBinOp {
         async move {
             match tokio::fs::write(&*path, &*value).await {
                 Ok(()) => Value::Null,
-                Err(e) => errf!("IOError", "could not write {path}, {e:?}"),
+                Err(e) => errf!("IOError", "could not write {path}: {e}"),
             }
         }
     }
@@ -269,7 +269,7 @@ impl EvalCachedAsync for RemoveFileOp {
         async move {
             match tokio::fs::remove_file(&*path).await {
                 Ok(()) => Value::Null,
-                Err(e) => errf!("IOError", "could not remove file {path}, {e:?}"),
+                Err(e) => errf!("IOError", "could not remove file {path}: {e}"),
             }
         }
     }

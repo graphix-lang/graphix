@@ -36,9 +36,14 @@ impl EvalCachedAsync for IsFileEv {
                 // ... error or duration') for an ordinary bad number. When the cast
                 // target is known, it should say 'cannot parse "x1" as i64'.
                 // (x-errors-07)
-                Err(e) => errf!("IOError", "can't stat {e:?}"),
+                // 2026-10-13 codex: The sys error paths are fixed and pinned by
+                // filesystem_errors_include_paths_and_display_text and
+                // readdir_errors_include_path_and_display_text. str::parse still
+                // needs target-aware diagnostics in graphix-package-str/src/lib.rs
+                // (fc_parse), outside this scope. Network probes remain unverified.
+                Err(e) => errf!("IOError", "can't stat {path}: {e}"),
                 Ok(m) if m.is_file() => Value::String(path),
-                Ok(_) => errf!("IOError", "not a file"),
+                Ok(_) => errf!("IOError", "{path}: not a file"),
             }
         }
     }
@@ -61,9 +66,9 @@ impl EvalCachedAsync for IsDirEv {
     fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match tokio::fs::metadata(&*path).await {
-                Err(e) => errf!("IOError", "can't stat {e:?}"),
+                Err(e) => errf!("IOError", "can't stat {path}: {e}"),
                 Ok(m) if m.is_dir() => Value::String(path),
-                Ok(_) => errf!("IOError", "not a directory"),
+                Ok(_) => errf!("IOError", "{path}: not a directory"),
             }
         }
     }
@@ -159,7 +164,7 @@ impl EvalCachedAsync for MetadataEv {
                 tokio::fs::symlink_metadata(&*path).await
             };
             match md {
-                Err(e) => errf!("IOError", "could not stat {e:?}"),
+                Err(e) => errf!("IOError", "could not stat {path}: {e}"),
                 Ok(m) => convert_metadata(m),
             }
         }
@@ -169,3 +174,50 @@ impl EvalCachedAsync for MetadataEv {
 pub(crate) type Metadata = CachedArgsAsync<MetadataEv>;
 
 graphix_package_core::unit_image_state!(IsFileEv, IsDirEv, MetadataEv);
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+    use crate::{convert_path, dir, fs};
+    use bytes::Bytes;
+
+    pub(crate) fn assert_path_error(value: &Value, path: &str) {
+        let Value::Error(error) = value else {
+            panic!("expected IOError, got {value:?}")
+        };
+        let Value::Array(fields) = &**error else { panic!("expected tagged error") };
+        assert_eq!(fields[0], Value::String(literal!("IOError")));
+        let Value::String(message) = &fields[1] else { panic!("expected error text") };
+        assert!(message.contains(path), "path missing: {message}");
+        assert!(!message.contains("Os {"), "debug error: {message}");
+        assert!(!message.contains("Caused by:"), "debug context: {message}");
+    }
+
+    #[tokio::test]
+    async fn filesystem_errors_include_paths_and_display_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = convert_path(&dir.path().join("missing/leaf"));
+        let errors = [
+            IsFileEv::eval(path.clone()).await,
+            IsDirEv::eval(path.clone()).await,
+            MetadataEv::eval((true, path.clone())).await,
+            MetadataEv::eval((false, path.clone())).await,
+            fs::ReadAllOp::eval(path.clone()).await,
+            fs::ReadAllBinOp::eval(path.clone()).await,
+            fs::WriteAllOp::eval((path.clone(), literal!("data"))).await,
+            fs::WriteAllBinOp::eval((path.clone(), Bytes::from_static(b"data"))).await,
+            fs::RemoveFileOp::eval(path.clone()).await,
+            dir::CreateDirOp::eval((false, path.clone())).await,
+            dir::RemoveDirOp::eval((false, path.clone())).await,
+        ];
+        for error in errors {
+            assert_path_error(&error, &path);
+        }
+        let dir_path = convert_path(dir.path());
+        assert_path_error(&IsFileEv::eval(dir_path.clone()).await, &dir_path);
+        let file_path = dir.path().join("file");
+        std::fs::write(&file_path, b"").unwrap();
+        let file_path = convert_path(&file_path);
+        assert_path_error(&IsDirEv::eval(file_path.clone()).await, &file_path);
+    }
+}

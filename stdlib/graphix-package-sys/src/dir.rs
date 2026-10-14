@@ -93,9 +93,10 @@ impl EvalCachedAsync for ReadDirEv {
                 Ok(args) => args,
                 Err(s) => return errf!("IOError", "{s}"),
             };
+            let path = args.path.clone();
             match tokio::task::spawn_blocking(|| blocking_walkdir(args)).await {
-                Err(e) => errf!("IOError", "failed to spawn task {e:?}"),
-                Ok(Err(e)) => errf!("IOError", "walkdir failed {e:?}"),
+                Err(e) => errf!("IOError", "could not read directory {path}: {e}"),
+                Ok(Err(e)) => errf!("IOError", "could not read directory {path}: {e:#}"),
                 Ok(Ok(mut ents)) => {
                     #[derive(IntoValue)]
                     struct Fields {
@@ -142,7 +143,7 @@ impl EvalCachedAsync for CreateDirOp {
             };
             match result {
                 Ok(()) => Value::Null,
-                Err(e) => errf!("IOError", "could not create directory {path}, {e:?}"),
+                Err(e) => errf!("IOError", "could not create directory {path}: {e}"),
             }
         }
     }
@@ -171,7 +172,7 @@ impl EvalCachedAsync for RemoveDirOp {
             };
             match result {
                 Ok(()) => Value::Null,
-                Err(e) => errf!("IOError", "could not remove directory {path}, {e:?}"),
+                Err(e) => errf!("IOError", "could not remove directory {path}: {e}"),
             }
         }
     }
@@ -180,3 +181,26 @@ impl EvalCachedAsync for RemoveDirOp {
 pub(crate) type RemoveDir = CachedArgsAsync<RemoveDirOp>;
 
 graphix_package_core::unit_image_state!(ReadDirEv, CreateDirOp, RemoveDirOp);
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::metadata::test::assert_path_error;
+
+    #[tokio::test]
+    async fn readdir_errors_include_path_and_display_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = convert_path(&dir.path().join("missing"));
+        let error = ReadDirEv::eval(Ok(ReadDirArgs {
+            path: path.clone(),
+            max_depth: 1,
+            min_depth: 0,
+            contents_first: false,
+            follow_symlinks: false,
+            follow_root_symlink: false,
+            same_filesystem: true,
+        }))
+        .await;
+        assert_path_error(&error, &path);
+    }
+}
