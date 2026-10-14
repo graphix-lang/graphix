@@ -2337,3 +2337,13 @@ fn the_nesting_limit_is_reported_where_hit() {
     assert!(msg.contains("nesting too deep") && msg.contains('^'), "{msg}");
     assert!(!msg.contains("column: 9\n"), "{msg}");
 }
+
+/// A failure inside a call's arguments or an index is reported there, not
+/// at the callee: a `(` or `[` right after a term commits to the suffix.
+#[test]
+fn a_suffix_reports_its_own_failure() {
+    let msg = parse_program("let f = |#a, #b| a + b;\nf(#a: 1, #b 2)");
+    assert!(msg.contains("line: 2, column: 13"), "{msg}");
+    let msg = parse_program("let a = [1];\nlet y = a[#x];\ny");
+    assert!(msg.contains("line: 2, column: 11"), "{msg}");
+}

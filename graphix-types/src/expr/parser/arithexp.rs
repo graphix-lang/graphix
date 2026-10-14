@@ -16,7 +16,7 @@ use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice,
     error::StreamError,
-    many, not_followed_by, optional,
+    look_ahead, many, not_followed_by, optional,
     parser::char::string,
     position, satisfy,
     stream::{Range, StreamErrorFor, position::SourcePosition},
@@ -97,23 +97,14 @@ where
                     .map(|(pos, n)| Post::Field(Name::written(n, pos))),
             ))),
         ),
-        attempt(array_index_suffix()).map(Post::Array),
+        // a `[` or `(` right after a term starts an index or a call and
+        // nothing else: a failure past it is that suffix's to report
+        attempt(look_ahead(token('['))).with(array_index_suffix()).map(Post::Array),
         attempt(combine::value(()).then(move |()| match key {
             true => between(token('{'), sptoken('}'), expr()).map(Post::Key).left(),
             false => unexpected_any("a seq trigger takes no map access").right(),
         })),
-        // CR claude for claude: [readability/low] `attempt` around the whole of
-        // `apply_args()` (and around `array_index_suffix()` above) erases a failure
-        // that occurs after the opening bracket. The postfix loop then stops at the
-        // callee and the error lands at FURTHEST, which non-knot tokens such as
-        // `#label` never advance. `f(#a: 1, #b 2)` reports the column after `1` with no
-        // note, and `a[#x]` reports column 11 with an unrelated "a `;` separates this
-        // statement" note. A `(` or `[` directly after a term can only start a call or
-        // an index. Attempt only the opening token, `attempt(token('('))` followed by
-        // the rest, and keep the whole-arm `attempt` only on the `{k}` map access.
-        // Probe: design/review-2026-10-12/repro/t-parser-a-call-arg-error-pos.gx.
-        // (t-parser-a-05)
-        attempt(apply_args()).map(Post::Call),
+        attempt(look_ahead(token('('))).with(apply_args()).map(Post::Call),
         // `?`/`$` chain innermost first: `x?$` takes the errors off `x`,
         // then the null
         attempt(spaces().with(choice((
