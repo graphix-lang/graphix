@@ -260,11 +260,6 @@ struct Inner {
     publish_timeout: Option<Duration>,
 }
 
-// CR claude for claude: [dead/low] Nothing in this workspace or in ../netidx uses
-// NetConfigExport. Embedders import NetConfig from graphix_package_core. Delete the
-// alias. (sys-net-12)
-pub use graphix_package_core::NetConfig as NetConfigExport;
-
 /// The libstate entry. Clone-cheap; one per ExecCtx.
 #[derive(Clone)]
 pub struct NetState(Arc<Inner>);
