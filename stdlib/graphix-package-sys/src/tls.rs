@@ -94,7 +94,7 @@ started_image_state!(TlsConnectEv, TlsAcceptEv);
 pub(crate) struct TlsConnectEv(Started);
 
 impl EvalCachedAsync for TlsConnectEv {
-    type Args = (Option<Bytes>, ArcStr, Arc<Halves>);
+    type Args = Result<(Option<Bytes>, ArcStr, Arc<Halves>), Value>;
 
     const NAME: &str = "sys_tls_connect";
     const CALLS: Calls = Calls::Concurrent;
@@ -103,22 +103,22 @@ impl EvalCachedAsync for TlsConnectEv {
         let ca_cert = match cached.0.first()? {
             None => return None,
             Some(Value::Null) => None,
-            // CR claude for claude: [risk/low] A ca_cert that does not cast to bytes
-            // becomes `None`, and `None` means "trust the webpki roots". A pinned CA
-            // that cannot be read therefore stops pinning with no error: this fails
-            // open. The signature `[bytes, null]` keeps it unreachable today, but the
-            // security property should not depend on that. Match `Some(Value::Bytes(b))
-            // => Some(b.clone())` and make any other value a `TLSError` ("ca_cert must
-            // be bytes"), as an unparsable PEM already is. (x-security-09)
-            Some(v) => v.clone().cast_to::<Bytes>().ok(),
+            Some(Value::Bytes(b)) => Some((**b).clone()),
+            Some(_) => {
+                return Some(Err(errf!("TLSError", "ca_cert must be bytes or null")));
+            }
         };
         let hostname = cached.get::<ArcStr>(1)?;
         let sv = self.0.take_new(cached)?;
-        Some((ca_cert, hostname, sv))
+        Some(Ok((ca_cert, hostname, sv)))
     }
 
-    fn eval((ca_cert, hostname, sv): Self::Args) -> impl Future<Output = Value> + Send {
+    fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
+            let (ca_cert, hostname, sv) = match args {
+                Ok(args) => args,
+                Err(error) => return error,
+            };
             let mut root_store = rustls::RootCertStore::empty();
             match &ca_cert {
                 Some(pem) => {
@@ -227,3 +227,42 @@ impl EvalCachedAsync for TlsAcceptEv {
 }
 
 pub(crate) type TlsAccept = CachedArgsAsync<TlsAcceptEv>;
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use arcstr::literal;
+    use graphix_compiler::{NoUserEvent, Tag};
+    use graphix_rt::{GXRt, NoExt};
+    use netidx_value::ValArray;
+
+    #[tokio::test]
+    async fn invalid_ca_does_not_consume_stream() {
+        for ca in [
+            Value::Bool(false),
+            Value::I64(1),
+            Value::String(literal!("not a certificate")),
+            Value::Array(ValArray::from([Value::I64(1)])),
+        ] {
+            let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+            let stream = crate::wrap_tcp(StreamKind::File(file));
+            let halves = crate::stream_of(&stream).unwrap();
+            let mut cached = CachedVals::new::<GXRt<NoExt>, NoUserEvent>(&[]);
+            cached.0 = Box::new([
+                Some(ca),
+                Some(Value::String(literal!("localhost"))),
+                Some(stream),
+            ]);
+            cached.1 = Box::new([Tag::FIRED; 3]);
+            let mut connect = TlsConnectEv::default();
+            let args = connect.prepare_args(&cached).unwrap();
+            assert_eq!(
+                TlsConnectEv::eval(args).await,
+                errf!("TLSError", "ca_cert must be bytes or null")
+            );
+            assert!(halves.reader().await.is_some());
+            cached.0[0] = Some(Value::Null);
+            assert!(connect.prepare_args(&cached).is_some());
+        }
+    }
+}
