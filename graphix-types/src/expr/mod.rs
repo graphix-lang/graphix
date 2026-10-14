@@ -305,16 +305,20 @@ impl UseItem {
     }
 
     /// The final segment is the glob marker.
-    // CR claude for claude: [structure/low] The name a use item binds (its rename, else
-    // its path's basename; a glob binds any) is computed separately in the compiler's
-    // module install, the formatter's merge guard (`binds`), seq lowering's shadow_step
-    // and the fuzzer's typemorph. If use-item semantics change, these four drift apart.
-    // Add `UseItem::bound_name() -> Option<&str>` (None for a glob) here and call it
-    // from all four. typemorph's pattern_binds also re-implements
-    // StructurePattern::with_names less precisely: struct, abstract and or-patterns
-    // fall through to "binds it". It should use with_names. (x-dup-15)
     pub fn is_glob(&self) -> bool {
         Path::basename(&self.path.0) == Some("*")
+    }
+
+    /// The name this item binds: its rename, else its path's last
+    /// segment; `None` for a glob, which binds any.
+    pub fn bound_name(&self) -> Option<&str> {
+        if self.is_glob() {
+            return None;
+        }
+        match &self.rename {
+            Some(n) => Some(n.as_str()),
+            None => Path::basename(&self.path.0),
+        }
     }
 }
 

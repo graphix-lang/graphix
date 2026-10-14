@@ -147,12 +147,8 @@ fn merge_uses<T: Clone>(
     fn root(n: &UseItem) -> (u8, &str) {
         use_seg_key(use_seg(n, 0))
     }
-    /// The name a use item binds; a glob binds any.
     fn binds(n: &UseItem) -> Option<&str> {
-        n.rename
-            .as_ref()
-            .map(|n| n.as_str())
-            .or_else(|| netidx_core::path::Path::basename(&n.path.0))
+        n.bound_name()
     }
     /// The name a use item's path resolves through the imports of a
     /// level by: its first segment, or the one after a `self::` or

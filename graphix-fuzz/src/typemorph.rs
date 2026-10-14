@@ -21,7 +21,6 @@ use graphix_compiler::{
     },
     typ::{TVar, Type, TypeRef},
 };
-use netidx_core::path::Path;
 use std::collections::{HashMap, HashSet};
 use triomphe::Arc;
 
@@ -791,13 +790,9 @@ pub(crate) fn binds(n: &Expr, name: &str) -> bool {
         ExprKind::Seq(s) if let Some(SeqTrigger::Bind(b)) = &s.trigger => {
             pattern_binds(&b.pattern, name)
         }
-        ExprKind::Use { names, .. } => names.iter().any(|u| {
-            u.is_glob()
-                || match &u.rename {
-                    Some(r) => &**r == name,
-                    None => Path::basename(&u.path.0) == Some(name),
-                }
-        }),
+        ExprKind::Use { names, .. } => {
+            names.iter().any(|u| u.bound_name().is_none_or(|n| n == name))
+        }
         ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_) => true,
         _ => false,
     }
@@ -826,24 +821,9 @@ pub(crate) fn binds_after(st: &Expr, name: &str) -> bool {
 /// Does the pattern bind `name` anywhere? Conservative: an
 /// unrecognized pattern form claims it does.
 fn pattern_binds(p: &StructurePattern, name: &str) -> bool {
-    let all_binds = |all: &Option<Name>, binds: &Arc<[StructurePattern]>| {
-        all.as_ref().is_some_and(|a| &**a == name)
-            || binds.iter().any(|p| pattern_binds(p, name))
-    };
-    match p {
-        StructurePattern::Ignore | StructurePattern::Literal(..) => false,
-        StructurePattern::Bind(n) => &**n == name,
-        StructurePattern::Slice { list: _, all, binds } => all_binds(all, binds),
-        StructurePattern::SlicePrefix { list: _, all, prefix, tail } => {
-            all_binds(all, prefix) || tail.as_ref().is_some_and(|t| &**t == name)
-        }
-        StructurePattern::SliceSuffix { all, head, suffix } => {
-            all_binds(all, suffix) || head.as_ref().is_some_and(|h| &**h == name)
-        }
-        StructurePattern::Tuple { all, binds } => all_binds(all, binds),
-        StructurePattern::Variant { all, binds, .. } => all_binds(all, binds),
-        _ => true,
-    }
+    let mut binds = false;
+    p.with_names(&mut |n| binds |= &**n == name);
+    binds
 }
 
 #[cfg(test)]

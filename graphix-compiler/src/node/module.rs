@@ -63,7 +63,7 @@ fn resolve_use_item(
     let modpath = |p: &str| ModPath(Path::from(ArcStr::from(p)));
     let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
     let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
-    let key: &str = item.rename.as_ref().map_or(base, |n| n.as_str());
+    let key: &str = item.bound_name().unwrap_or(base);
     let compiled_here = env
         .names
         .get(&scope.lexical)

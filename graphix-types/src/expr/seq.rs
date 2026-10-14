@@ -1545,11 +1545,7 @@ fn shadow_step(e: &Expr, map: &mut Names) {
                 if u.is_glob() {
                     return map.clear();
                 }
-                let bound = match &u.rename {
-                    Some(r) => Some(r.name.as_str()),
-                    None => Path::basename(&u.path.0),
-                };
-                if let Some(n) = bound {
+                if let Some(n) = u.bound_name() {
                     map.remove(n);
                 }
             }
