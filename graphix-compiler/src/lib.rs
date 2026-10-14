@@ -2611,6 +2611,21 @@ pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// Refuse now each deferred typedef a declaration just completed (a
+/// typedef, or a `use` naming a type), before anything later in the run
+/// expands it.
+pub(crate) fn recheck_pending_contractive<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+) -> Result<()> {
+    use expr::At;
+    for p in ctx.pending_names.iter() {
+        if let Pending::Contractive(scope, name, spec) = p {
+            ctx.env.check_contractive(scope, name).at(spec)?;
+        }
+    }
+    Ok(())
+}
+
 /// Record the names `t`, written at `spec`, holds that do not resolve
 /// yet ([`CompileCtx::pending_names`]).
 pub(crate) fn defer_unresolved_names<R: Rt, E: UserEvent>(

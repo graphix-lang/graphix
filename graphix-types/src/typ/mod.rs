@@ -2383,63 +2383,38 @@ impl Type {
             t: &Type,
             env: &Env,
             def: usize,
-            path: &mut SmallVec<[usize; 8]>,
+            seen: &mut SmallVec<[(usize, Arc<[Type]>); 8]>,
         ) -> Unguarded {
             let any = |ts: &mut dyn Iterator<Item = Unguarded>| {
                 ts.fold(Unguarded::Guarded, |acc, u| acc.or(u))
             };
             ensure_sufficient(|| match t {
-                Type::Set(ts) => any(&mut ts.iter().map(|t| go(t, env, def, path))),
+                Type::Set(ts) => any(&mut ts.iter().map(|t| go(t, env, def, seen))),
                 Type::TVar(tv) => match tv.binding() {
-                    Some(b) => go(&b, env, def, path),
+                    Some(b) => go(&b, env, def, seen),
                     None => Unguarded::Guarded,
                 },
                 Type::App(c, a) => match Type::app_filled(c, a) {
-                    Some(f) => go(&f, env, def, path),
+                    Some(f) => go(&f, env, def, seen),
                     None => Unguarded::Guarded,
                 },
-                // CR claude for claude: [perf/low] reaches_unguarded expands each alias
-                // again at every occurrence, through replace_tvars, and keeps no record
-                // of what it already explored. Layered unions in which each alias names
-                // two aliases of the level below cost 2^depth expansions per deftype.
-                // design/review-2026-10-12/repro/t-typ-mod-contractive-exponential.gx
-                // (22 levels) spends about 8-12 s in --check, while the same shape
-                // behind a tuple takes 69 ms. Replace the unused `path` vector with a
-                // set of (def_key, params) already explored on this walk, and answer
-                // Guarded on a revisit. That is sound because `or` already folded in
-                // the first visit's verdict. (t-typ-mod-03)
                 Type::Ref(tr) => {
                     let Some(r) = tr.resolve_pure(env) else { return Unguarded::Unknown };
                     let key = r.def_key();
-                    // CR claude for claude: [bug/high] This walk does not always end.
-                    // The doc comment says a cycle among other definitions was refused
-                    // when its last member was defined, but a renaming `use` can close
-                    // the cycle after its members are defined. In `type A = X; use
-                    // self::A as X; type D = A`, A's own check returned `Unknown` and
-                    // was deferred to `Pending::Contractive`. The `use` makes X name A
-                    // without any check. D's walk then expands A -> X -> A forever
-                    // (`path` is pushed but never read), and `ensure_sufficient` grows
-                    // the stack until the process is OOM-killed. `let x: A = 1` in
-                    // place of `type D = A` hangs in another expansion loop instead
-                    // (t-typ-mod-import-closed-cycle-hang.gx), and the language server
-                    // would hang the same way while someone types such a buffer. Fix
-                    // both parts: in this arm, return `Guarded` when `path` already
-                    // holds `key` (that cycle is refused by its own deferred
-                    // `Env::check_contractive`), and have a `use` that binds a type
-                    // name run the deferred contractiveness check of every pending
-                    // definition that reaches it, so no relation ever expands a
-                    // non-contractive cycle mid-check. Probe:
-                    // design/review-2026-10-12/repro/t-typ-mod-01.gx (t-typ-mod-01)
                     if key == def {
                         return Unguarded::Reaches;
+                    }
+                    // a definition explored on this walk already folded its
+                    // verdict in, and a cycle not through `def` is refused at
+                    // its own check
+                    if seen.iter().any(|(k, ps)| *k == key && **ps == *tr.params) {
+                        return Unguarded::Guarded;
                     }
                     let Some(known) = r.bindings(&tr.params) else {
                         return Unguarded::Guarded;
                     };
-                    path.push(key);
-                    let u = go(&r.typ.replace_tvars(&known), env, def, path);
-                    path.pop();
-                    u
+                    seen.push((key, tr.params.clone()));
+                    go(&r.typ.replace_tvars(&known), env, def, seen)
                 }
                 _ => Unguarded::Guarded,
             })

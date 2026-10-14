@@ -252,6 +252,20 @@ const CYCLIC_ALIAS: &str = r#"
 run!(cyclic_alias, CYCLIC_ALIAS, refused("refers back to itself through unions and aliases alone");
     FuseExpect::None);
 
+// A renaming `use` that closes a cycle is refused at the `use`, before
+// a later typedef or annotation expands it.
+run!(
+    use_closed_cycle_typedef,
+    refused("refers back to itself through unions and aliases alone"),
+    "/test.gx" => "type A = X; use self::A as X; type D = A; let result = 0"
+; FuseExpect::None);
+
+run!(
+    use_closed_cycle_annotation,
+    refused("refers back to itself through unions and aliases alone"),
+    "/test.gx" => "type A = X; use self::A as X; let x: A = 1; let result = x"
+; FuseExpect::None);
+
 // `|a| a + a` is type-preserving: the result aliases the operand cell,
 // so an annotation at one call site narrows the signature instance.
 const SAME_CELL_ANNOTATED: &str = r#"
