@@ -619,49 +619,12 @@ impl FnType {
             f(vargs, false)
         }
         f(rtype, false);
-        // CR claude for claude: [perf/medium] The conjunct pass calls `sig_tvars`,
-        // which walks every child type again through `Type::collect_tvars`. For a
-        // nested `Type::Fn` that walk calls `for_each_part` on the inner signature,
-        // whose guard is a different address and so does not stop it. Each nesting
-        // level therefore walks its subtree twice. Parse, check and fmt of `type F =
-        // fn() -> fn() -> ... i64` double in time per level: 1.5 s at depth 20 and 5.3
-        // s at depth 22. The LSP re-checks on every edit, so a deep signature hangs it.
-        // Probe:
-        // design/review-2026-10-12/repro/tests-shell-compiler-fntype-exponential.gx.
-        // Fix: collect the signature's cells with a walk that does not run nested
-        // signatures' conjunct passes, or keep one visited set of FnType addresses for
-        // the whole top-level walk, so each signature's cells are visited once. Then
-        // add a `fn() -> ` shape to deep_nesting.rs `program()`.
-        // (tests-shell-compiler-01)
-        // 2026-10-13 claude: also `fn(x: fn(x: .. i64) -> i64) -> i64`: deep_nesting's
-        // bisection of the parser's limit never finished it. Add a `fntyp` shape to
-        // program() and SHAPES with the fix.
-        // CR claude for claude: [perf/medium] Visiting the conjuncts calls `sig_tvars`,
-        // which walks every position again through `collect_tvars`, and `collect_tvars`
-        // on a nested function type re-enters that type's `for_each_part`, which does
-        // the same. Each level of fn-type nesting doubles the work for every user of
-        // `for_each_part` (`collect_tvars`, `alias_tvars`, `inner_quantifiers`,
-        // `instantiate`, the settle walks): a parameter annotated with fn types 20 deep
-        // takes 5 s to `--check`, and each further level doubles it. Collect the
-        // signature's cells during the position walk itself (once, by identity) and
-        // visit their conjuncts from that, so no position is walked twice. probe:
-        // design/review-2026-10-12/repro/t-fntyp-02.gx (generator t-fntyp-02-gen.py).
-        // (t-fntyp-08)
         if let Some(_guard) = Walking::enter(&CONSTRAINING, self) {
-            // CR claude for claude: [perf/medium] sig_tvars walks every part with
-            // Type::collect_tvars. A nested fn type there runs FnType::collect_tvars,
-            // which is its own for_each_part and so its own sig_tvars. The part walk
-            // above then hands the same nested types to the callback, which enters them
-            // again. Each level of fn-type nesting doubles the work: `--check` of `|h:
-            // fn(x: fn(x: ... i64) -> i64) -> i64| 0` takes 0.4 s at depth 16 and 3.7 s
-            // at depth 20 (probe: design/review-2026-10-12/repro/t-tvar-05.gx). Every
-            // relation built on for_each_part pays it, including collect_tvars, the
-            // settles and the image codec. Collect the signature's cells in the same
-            // pass that visits the parts (a pooled map filled as the leaves go by,
-            // conjuncts visited after), or have sig_tvars use a leaf walk that does not
-            // list a nested signature's constraints. Also reported as (x-stack-02).
-            // (t-tvar-05)
-            for (_, tv) in sorted_tvars(self.sig_tvars().drain()).drain(..) {
+            // the cells the positions name, each nested signature's own
+            // conjunct pass left to that signature's walk
+            let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells));
+            for (_, tv) in sorted_tvars(cells.drain()).drain(..) {
                 if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr()) {
                     for tc in tv.cell_constraints() {
                         f(&tc, true);
@@ -1439,8 +1402,9 @@ impl fmt::Display for ArgPrefix<'_> {
     }
 }
 
-/// A return type as written after `->`: a function type is
-/// parenthesized, bare or behind a reference.
+/// A return type as written after `->`: a function type, bare or behind
+/// a reference, is parenthesized where a `throws` follows, which would
+/// otherwise read as its own.
 pub(crate) struct Ret<'a> {
     pub(crate) open: &'static str,
     pub(crate) typ: &'a dyn PrettyDisplay,
@@ -1448,12 +1412,16 @@ pub(crate) struct Ret<'a> {
 }
 
 impl<'a> Ret<'a> {
-    pub(crate) fn of(t: &'a Type) -> Self {
+    pub(crate) fn of(t: &'a Type, throws_follows: bool) -> Self {
         let (open, typ, close): (_, &dyn PrettyDisplay, _) = match t {
-            Type::Fn(ft) => ("(", &**ft, ")"),
+            Type::Fn(ft) if throws_follows => ("(", &**ft, ")"),
             Type::ByRef(m, t) => match (&**t, m) {
-                (Type::Fn(ft), Mutability::Shared) => ("&(", &**ft, ")"),
-                (Type::Fn(ft), Mutability::Mut) => ("&mut (", &**ft, ")"),
+                (Type::Fn(ft), Mutability::Shared) if throws_follows => {
+                    ("&(", &**ft, ")")
+                }
+                (Type::Fn(ft), Mutability::Mut) if throws_follows => {
+                    ("&mut (", &**ft, ")")
+                }
                 (t, m) => (m.prefix(), t, ""),
             },
             t => ("", t, ""),
@@ -1517,7 +1485,7 @@ impl fmt::Display for FnType {
         if let Some(vargs) = &self.vargs {
             write!(f, "@args: {}", vargs)?;
         }
-        write!(f, ") -> {}", Ret::of(&self.rtype))?;
+        write!(f, ") -> {}", Ret::of(&self.rtype, !self.suppress_throws()))?;
         if self.suppress_throws() {
             Ok(())
         } else {
@@ -1556,7 +1524,7 @@ impl PrettyDisplay for FnType {
         // with no arguments the return type follows `fn(`'s `)` on its line
         if self.args.is_empty() && self.vargs.is_none() {
             write!(buf, ") -> ")?;
-            Ret::of(&self.rtype).fmt_pretty(buf)?;
+            Ret::of(&self.rtype, !self.suppress_throws()).fmt_pretty(buf)?;
             return self.pretty_throws(buf);
         }
         writeln!(buf)?;
@@ -1580,7 +1548,7 @@ impl PrettyDisplay for FnType {
             Ok(())
         })?;
         write!(buf, ") -> ")?;
-        Ret::of(&self.rtype).fmt_pretty(buf)?;
+        Ret::of(&self.rtype, !self.suppress_throws()).fmt_pretty(buf)?;
         self.pretty_throws(buf)
     }
 }

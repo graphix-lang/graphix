@@ -1484,7 +1484,7 @@ impl LambdaExpr {
     /// What follows the closing bar, up to the body.
     fn write_returns(&self, f: &mut impl Write) -> fmt::Result {
         if let Some(t) = &self.rtype {
-            write!(f, " -> {}", Ret::of(t))?
+            write!(f, " -> {}", Ret::of(t, self.throws.is_some()))?
         }
         match &self.throws {
             None => Ok(()),
@@ -1511,7 +1511,7 @@ impl LambdaExpr {
     /// `write_returns` with the return type laid out over lines.
     fn pretty_returns(&self, buf: &mut PrettyBuf) -> fmt::Result {
         if let Some(rtype) = &self.rtype {
-            let Ret { open, typ, close } = Ret::of(rtype);
+            let Ret { open, typ, close } = Ret::of(rtype, self.throws.is_some());
             write!(buf, " -> {open}")?;
             typ.fmt_pretty_inner(buf)?;
             buf.kill_newline();

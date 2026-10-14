@@ -108,6 +108,10 @@ fn program(shape: &str, d: usize) -> String {
             format!("let x: {}i64{} = never()", "(i64, ".repeat(d), ")".repeat(d))
         }
         "uniontyp" => format!("let x: [{}null] = null", "i64, ".repeat(d)),
+        "fntyp" => {
+            format!("let x: {}i64{} = never()", "fn(x: ".repeat(d), ") -> i64".repeat(d))
+        }
+        "fnret" => format!("let x: {}i64 = never()", "fn() -> ".repeat(d)),
         "lambda" => format!("let f = {}1", "|x| ".repeat(d)),
         "call" => {
             format!("let f = |x| x;\nlet y = {}1{}", "f(".repeat(d), ")".repeat(d))
@@ -254,6 +258,8 @@ const SHAPES: &[&str] = &[
     "structtyp",
     "tupletyp",
     "uniontyp",
+    "fntyp",
+    "fnret",
     "lambda",
     "call",
     "block",
