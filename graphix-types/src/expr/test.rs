@@ -1879,30 +1879,35 @@ fn check_dec(d0: &Option<Arc<Decorations>>, d1: &Option<Arc<Decorations>>) -> bo
     }
 }
 
+/// Constants as a program sees them: the sign of a zero and a decimal's
+/// scale count, and every NaN is one.
+fn same_constant(v0: &Value, v1: &Value) -> bool {
+    match (v0, v1) {
+        (Value::F64(a), Value::F64(b)) => {
+            a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+        }
+        (Value::F32(a), Value::F32(b)) => {
+            a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+        }
+        (Value::Decimal(a), Value::Decimal(b)) => {
+            a.mantissa() == b.mantissa() && a.scale() == b.scale()
+        }
+        (v0, v1) => v0 == v1,
+    }
+}
+
 fn check(s0: &Expr, s1: &Expr) -> bool {
     if !check_dec(&s0.dec, &s1.dec) {
         return false;
     }
-    // CR claude for claude: [structure/low] This match has 20 identical binary-operator
-    // arms, one per operator from Add to Or plus Sample and StrictSample, each of the
-    // form `(Op{lhs,rhs}, Op{lhs,rhs}) => check(lhs0, lhs1) && check(rhs0, rhs1)`.
-    // BinOp::of already enumerates them, and add_parens in this file uses it. An
-    // operator added to BinOp without a new arm here falls to `(_, _) => false`, and
-    // the round trip fails with a confusing error. Fix: before the match, put `if let
-    // (Some((o0, l0, r0)), Some((o1, l1, r1))) = (BinOp::of(&s0.kind),
-    // BinOp::of(&s1.kind)) { return o0 == o1 && check(l0, l1) && check(r0, r1); }` and
-    // delete the 20 arms. (tests-expr-07)
+    if let (Some((o0, l0, r0)), Some((o1, l1, r1))) =
+        (BinOp::of(&s0.kind), BinOp::of(&s1.kind))
+    {
+        return o0 == o1 && check(l0, l1) && check(r0, r1);
+    }
     match (&s0.kind, &s1.kind) {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
-        // CR claude for claude: [test-gap/low] Value's PartialEq treats -0.0 as equal
-        // to 0.0 and compares decimals numerically (1.00 == 1). Programs can see both
-        // differences: `1.0 / -0.0` is -inf, and a decimal prints with its scale.
-        // value() generates both cases, but this comparison cannot fail on them, so a
-        // printer that drops the sign of zero or a decimal's scale would pass every
-        // round trip. Fix: compare floats by to_bits (with every NaN treated as equal)
-        // and decimals by mantissa and scale. Add ("-0.0", "0.0") and ("decimal:1.00",
-        // "decimal:1") to check_sees_a_lost_element. (tests-expr-05)
-        (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0 == v1,
+        (ExprKind::Constant(v0), ExprKind::Constant(v1)) => same_constant(v0, v1),
         (ExprKind::Array { args: a0 }, ExprKind::Array { args: a1 })
         | (ExprKind::List { args: a0 }, ExprKind::List { args: a1 })
         | (ExprKind::Tuple { args: a0 }, ExprKind::Tuple { args: a1 }) => {
@@ -2005,78 +2010,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         // && check(r0,r1) }` before the match. Write one Lambda arm that compares
         // bodies with a small match. Derive `valid_modpath` from one shared name list.
         // Unverified: the reviewer's report, not checked by a verifier. (tests-expr-10)
-        (
-            ExprKind::Add { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Add { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::CheckedAdd { lhs: lhs0, rhs: rhs0 },
-            ExprKind::CheckedAdd { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Sub { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Sub { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::CheckedSub { lhs: lhs0, rhs: rhs0 },
-            ExprKind::CheckedSub { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Mul { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Mul { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::CheckedMul { lhs: lhs0, rhs: rhs0 },
-            ExprKind::CheckedMul { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Div { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Div { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::CheckedDiv { lhs: lhs0, rhs: rhs0 },
-            ExprKind::CheckedDiv { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Mod { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Mod { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::CheckedMod { lhs: lhs0, rhs: rhs0 },
-            ExprKind::CheckedMod { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Eq { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Eq { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Ne { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Ne { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Lt { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Lt { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Gt { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Gt { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Lte { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Lte { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Gte { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Gte { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::And { lhs: lhs0, rhs: rhs0 },
-            ExprKind::And { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
-        (
-            ExprKind::Or { lhs: lhs0, rhs: rhs0 },
-            ExprKind::Or { lhs: lhs1, rhs: rhs1 },
-        ) => (check(lhs0, lhs1)) && (check(rhs0, rhs1)),
+        // 2026-10-14 claude: the operator arms are gone (BinOp::of, tests-expr-07); the two
+        // Lambda arms and the duplicated name lists stand.
         (ExprKind::Not { expr: expr0 }, ExprKind::Not { expr: expr1 }) => {
             check(expr0, expr1)
         }
@@ -2260,14 +2195,6 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::ByRef(m0, e0), ExprKind::ByRef(m1, e1)) => m0 == m1 && check(e0, e1),
         (ExprKind::Deref(e0), ExprKind::Deref(e1)) => check(e0, e1),
         (ExprKind::Neg(e0), ExprKind::Neg(e1)) => check(e0, e1),
-        (
-            ExprKind::Sample { lhs: l0, rhs: r0 },
-            ExprKind::Sample { lhs: l1, rhs: r1 },
-        ) => check(l0, l1) && check(r0, r1),
-        (
-            ExprKind::StrictSample { lhs: l0, rhs: r0 },
-            ExprKind::StrictSample { lhs: l1, rhs: r1 },
-        ) => check(l0, l1) && check(r0, r1),
         (ExprKind::NoOp, ExprKind::NoOp) => true,
         (ExprKind::Seq(s0), ExprKind::Seq(s1)) => {
             let SeqExpr { kind: k0, trigger: t0, abort: a0, body: b0 } = &**s0;
@@ -2771,22 +2698,9 @@ fn an_interface_module_has_the_interface_origin() {
     assert!(Arc::ptr_eq(&exprs[0].ori, &ori));
 }
 
-// CR claude for claude: [readability/low] A doc comment sits on the wrong test. `///
-// The comparator fails on a dropped or added element.` (test.rs) is stacked onto
-// compiler_kinds_children_agree's own doc, so the two docs merge.
-// check_sees_a_lost_element (test.rs), the test it describes, has no doc. Failure: A
-// reader of compiler_kinds_children_agree sees a description of a different test. Fix:
-// Move line 2662 to just above `fn check_sees_a_lost_element` (test.rs). Unverified:
-// the reviewer's report, not checked by a verifier. (tests-expr-12)
-/// The comparator fails on a dropped or added element.
 /// The kinds only the compiler builds (seq lowering, module resolution):
 /// `map_children` rebuilds from the children `for_each_child` visits.
 #[test]
-// CR claude for claude: [readability/low] The first doc line above this test, 'The
-// comparator fails on a dropped or added element.', describes
-// check_sees_a_lost_element, which has no doc of its own. Here it says this test checks
-// the comparator, which it does not. Move that line to sit above
-// check_sees_a_lost_element. (tests-expr-08)
 fn compiler_kinds_children_agree() {
     use ExprKind::*;
     let leaf = |n: &str| Ref { name: ModPath::from([n]) }.to_expr_nopos();
@@ -2898,6 +2812,7 @@ fn a_decorated_clone_is_another_tree() {
     assert!(!e.same_tree(&child));
 }
 
+/// The comparator fails on a dropped or added element.
 #[test]
 fn check_sees_a_lost_element() {
     for (a, b) in [
@@ -2907,6 +2822,8 @@ fn check_sees_a_lost_element() {
         ("v32:1", "u32:1"),
         ("i16:1", "1"),
         ("1e-300", "0.0"),
+        ("-0.0", "0.0"),
+        ("decimal:1.00", "decimal:1.0"),
     ] {
         let (a, b) = (parse_one(a).unwrap(), parse_one(b).unwrap());
         assert!(!check(&a, &b), "{a} vs {b}");
