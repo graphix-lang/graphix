@@ -290,7 +290,6 @@ fn desugar_plain(
 
     let mut machine = Machine {
         issue: Issue { pc: &pc, fns },
-        pc: &pc,
         result: &result,
         id,
         steps: LPooled::take(),
@@ -487,11 +486,15 @@ fn fn_names(
                     .lookup_bind(scope, &ModPath::from([n.as_str()]))
                     .ok()
                     .flatten()
-                    .is_some_and(|(_, b)| {
-                        b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
-                    }))
+                    .is_some_and(|(_, b)| is_function(env, b)))
     });
     args
+}
+
+/// Whether a binding is a function: a trait method, or of a function type.
+fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
+    env.trait_methods.get(&bind.id).is_some()
+        || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
 }
 
 /// Whether any of `stmts` reads the simple name `n`.
@@ -647,7 +650,6 @@ struct StepBuild {
 /// join cells.
 struct Machine<'a> {
     issue: Issue<'a>,
-    pc: &'a str,
     result: &'a str,
     id: u64,
     steps: LPooled<Vec<StepBuild>>,
@@ -741,7 +743,7 @@ impl Machine<'_> {
                 .at(stmt));
             }
             let cond = decorated(cond, &stmt.dec);
-            let value = guard(entry_fire(rewrite(&cond, visible), self.pc));
+            let value = guard(entry_fire(rewrite(&cond, visible), self.issue.pc));
             return Ok(Tails::from_iter([self.step(true, value, |_| LPooled::take())]));
         }
         if let ExprKind::Bind(b) = &stmt.kind
@@ -780,7 +782,7 @@ impl Machine<'_> {
                 let result = self.result;
                 match self.bound_lambda(b, &value, visible) {
                     Some((name, bind)) => {
-                        let value = guard(entry_fire(r#ref(pos, &name), self.pc));
+                        let value = guard(entry_fire(r#ref(pos, &name), self.issue.pc));
                         let k = self
                             .step(false, value, |v| writes(sink, result, pos, v, &vis));
                         self.steps[k].items.insert(0, bind);
@@ -879,7 +881,11 @@ impl Machine<'_> {
                 constraint: t.constraint.clone(),
                 handler: Arc::new(never(pos)),
                 role: CatchRole::Try {
-                    action: Arc::new(connect(pos, self.pc, variant(pos, &with_entry))),
+                    action: Arc::new(connect(
+                        pos,
+                        self.issue.pc,
+                        variant(pos, &with_entry),
+                    )),
                     capture: e_cell.clone(),
                 },
             }))
@@ -892,7 +898,7 @@ impl Machine<'_> {
         match join {
             None => Ok(tails),
             Some(cell) => {
-                let value = guard(entry_fire(r#ref(pos, &cell), self.pc));
+                let value = guard(entry_fire(r#ref(pos, &cell), self.issue.pc));
                 let result = self.result;
                 let j =
                     self.step(false, value, |v| writes(sink, result, pos, v, visible));
@@ -969,7 +975,8 @@ impl Machine<'_> {
                     match self.bound_lambda(b, &value, &vis) {
                         Some((name, bind)) => {
                             body.push(bind);
-                            let value = guard(entry_fire(r#ref(s.pos, &name), self.pc));
+                            let value =
+                                guard(entry_fire(r#ref(s.pos, &name), self.issue.pc));
                             body.push(let_bind(s.pos, &v, None, value));
                         }
                         None => {
@@ -1076,19 +1083,8 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             stmt.fold(caps, &mut |mut caps, e| {
                 if let ExprKind::Ref { name }
                 | ExprKind::Connect { name, deref: true, .. } = &e.kind
-                    // CR claude for claude: [structure/low] This lookup plus the
-                    // `Type::Fn` test is the same 'is this name a function binding'
-                    // decision `fn_names` makes, written a second time. The copies
-                    // already differ: only this one excludes `env.trait_methods`, so a
-                    // trait method named in a seqq body can fall on different sides of
-                    // the two tests. Fix: one helper (for example `fn_binding(env,
-                    // scope, name) -> bool`) used by both, with the trait-method rule
-                    // decided once. Also, `Machine::pc` holds the same string as
-                    // `Machine::issue.pc`. Drop the field and read `self.issue.pc`.
-                    // (t-seq-09)
                     && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
-                    && env.trait_methods.get(&bind.id).is_none()
-                    && !bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
+                    && !is_function(env, bind)
                 {
                     let n = caps.len();
                     caps.entry(ArcStr::from(
