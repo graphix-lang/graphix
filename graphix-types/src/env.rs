@@ -1777,6 +1777,15 @@ impl Env {
         // set of reachable ref pairs finite. Name it in the contractivity refusal and
         // pin it beside x-parallel-02's controls. Unverified: the reviewer's report,
         // not checked by a verifier. (x-rerun-8-03)
+        // 2026-10-14 claude: verified: `type T<'a> = {n: [T<['a, string]>, null], v: 'a}` and
+        // `let b: T<[i64, f64]> = a` with a: T<i64> hang --check (killed at 20 s). Lowering
+        // contains.rs's MAX_GROWTH to 8 does not end it. A stack sample shows contains
+        // only a few Ref expansions deep, then deep in setops::Identity::all: the
+        // parameter unions nest unflattened (['a, string] within itself), so each
+        // comparison walks a deeper union; flattening a union param at expansion may be
+        // the fix. Refusing non-regular typedefs would also refuse the nested
+        // datatypes cast.rs and x-fix-types-08 deliberately support, which is a language
+        // rule to settle first.
         match typ.reaches_unguarded(self, key) {
             Unguarded::Reaches => {
                 if let Type::Abstract { id, .. } = &typ {
