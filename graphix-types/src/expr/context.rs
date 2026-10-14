@@ -62,6 +62,11 @@ impl fmt::Display for ErrorContext {
         // slice `ori.text[pos..end]` (truncated as now), and fall back to the printer
         // otherwise. Alternatively, skip frames whose spec the seq lowering
         // synthesized. (x-errors-04)
+        // 2026-10-14 claude: tried printing ori.text[pos..end] where the expression has
+        // a written end: the seq lowering's nodes have none (built with to_expr(pos), 39
+        // sites in expr/seq.rs), so the probe's frames are unchanged. Giving them their
+        // statement's end would show the source but also feed the LSP's scope map spans
+        // it never had; skipping their frames needs a mark the lowering sets.
         let complete = write!(head, "{}", self.0).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {
