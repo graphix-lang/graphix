@@ -2846,3 +2846,11 @@ run!(forward_alias_refused_before_use, r#"{
     let x: T = 1;
     x
 }"#, refused("refers back to itself"); FuseExpect::None);
+
+// A bound naming its own quantifier is checked without looping (its
+// normalized copy holds the same cells), and an argument it would make
+// take itself (`'a: fn(x: 'a)`) is refused: no finite type holds it.
+run!(self_naming_bound_refused, r#"{
+    let f = 'a: fn(x: 'a) -> [string, 'b] |g: 'a| 0;
+    f(|x| 0)
+}"#, refused("does not contain fn(x:"); FuseExpect::None);

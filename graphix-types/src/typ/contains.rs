@@ -391,7 +391,11 @@ fn commit_parts(
                         .all(|(c, t)| c.name() == t.name()) =>
             {
                 for (ca, ta) in cf.args.iter().zip(tf.args.iter()) {
-                    if !ta.typ.contains_int(flags, env, hist, &ca.typ)? {
+                    // a bound that names its own cell (`'a: fn(x: 'a)`) would
+                    // make the cell's binding hold itself: no finite type
+                    if tv.would_cycle(&ca.typ)
+                        || !ta.typ.contains_int(flags, env, hist, &ca.typ)?
+                    {
                         return Ok(false);
                     }
                 }

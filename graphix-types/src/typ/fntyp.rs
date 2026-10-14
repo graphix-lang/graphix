@@ -292,6 +292,9 @@ pub(super) fn sorted_tvars(
 thread_local! {
     static VIEWING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
     static CONSTRAINING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+    /// The cells whose conjuncts a walk is visiting: a normalized copy of a
+    /// signature is a new FnType but holds the same cells.
+    static CONJUNCTS: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
 }
 
 /// One walk's reentrancy guard on a signature: a conjunct can reach the
@@ -306,7 +309,13 @@ impl Walking {
         set: &'static LocalKey<RefCell<IntSet<usize>>>,
         ft: &FnType,
     ) -> Option<Self> {
-        let key = ft as *const FnType as usize;
+        Self::enter_key(set, ft as *const FnType as usize)
+    }
+
+    fn enter_key(
+        set: &'static LocalKey<RefCell<IntSet<usize>>>,
+        key: usize,
+    ) -> Option<Self> {
         set.with_borrow_mut(|s| s.insert(key)).then_some(Walking { set, key })
     }
 }
@@ -666,8 +675,10 @@ impl FnType {
             // list a nested signature's constraints. Also reported as (x-stack-02).
             // (t-tvar-05)
             for (_, tv) in sorted_tvars(self.sig_tvars().drain()).drain(..) {
-                for tc in tv.cell_constraints() {
-                    f(&tc, true);
+                if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr()) {
+                    for tc in tv.cell_constraints() {
+                        f(&tc, true);
+                    }
                 }
             }
         }
@@ -961,20 +972,6 @@ impl FnType {
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         self.for_each_part(&mut |t, constraint| {
             if constraint {
-                // CR claude for claude: [bug/high] Normalizing a conjunct that names
-                // its own quantifier gives a new FnType on every round once a call has
-                // bound a variable in one of its unions. The CONSTRAINING guard in
-                // for_each_part keys on the FnType's address, so it never sees the
-                // copy. The walk then cycles for_each_part -> normalize ->
-                // collect_tvars -> for_each_part until memory runs out. Example: `let f
-                // = 'a: fn(x: 'a) -> [string, 'b] |g: 'a| 0; f(|x| 0)` OOMs under
-                // --check, which makes it reachable from the language server, and under
-                // a run; site_bounds is the entry point. Fix: collect from the stored
-                // conjunct, as alias_tvars does, or key the guard on something a
-                // normalized copy keeps, such as the quantifier cells whose conjuncts
-                // are being visited. The other address-guarded walks over normalized
-                // conjuncts need the same check. probe:
-                // design/review-2026-10-12/repro/t-fntyp-02.sh (t-fntyp-02)
                 t.normalize().collect_tvars(known)
             } else {
                 t.collect_tvars(known)
