@@ -63,18 +63,6 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
             (None, None) => (e, called),
         }
     }
-    // CR claude for claude: [bug/medium] reads_bare has no Lambda case, but seq_trigger
-    // reads the trigger with arithexp::arith(false), which accepts a lambda as an
-    // operator's last operand. So `seq x ~ |y: i64| y { 1 }` and `seq let a = x ~ |y:
-    // i64| y { a }` pass --check, then the printer writes `(x ~ |y: i64| y)`, the
-    // reparse holds an ExplicitParens the source did not, and `graphix fmt` (and LSP
-    // formatting) refuses with "formatter bug: the formatted text says something else".
-    // Fix: in the BinOp arm, accept a Lambda rhs whose body reads bare (or make the
-    // trigger head refuse a lambda operand, as it refuses a bare lambda), so printer
-    // and parser agree. Also widen bare_trigger in expr/test.rs to generate operator
-    // expressions (including `name ~ |x| name`), calls and postfix forms; today it
-    // never reaches the operator, call and postfix logic in trigger_needs_parens.
-    // probe: design/review-2026-10-12/repro/tests-expr-01.gx (tests-expr-01)
     fn reads_bare(e: &Expr) -> bool {
         match &e.kind {
             MapRef { .. } => false,
@@ -98,7 +86,10 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
             | StringInterpolate { .. } => true,
             Deref(e) | Not { expr: e } | Neg(e) | ByRef(_, e) => reads_bare(e),
             k => match (BinOp::of(k), bare_postfix_source(k)) {
-                (Some((_, lhs, rhs)), _) => reads_bare(lhs) && reads_bare(rhs),
+                // a lambda last operand's body is a whole expression
+                (Some((_, lhs, rhs)), _) => {
+                    reads_bare(lhs) && (matches!(rhs.kind, Lambda(_)) || reads_bare(rhs))
+                }
                 (None, Some(source)) => reads_bare(source),
                 (None, None) => matches!(
                     k,

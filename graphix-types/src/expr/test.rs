@@ -98,7 +98,17 @@ fn bare_trigger() -> impl Strategy<Value = Expr> {
         1 => reference().prop_map(|e| Not { expr: Arc::new(e) }.to_expr_nopos()),
         1 => reference().prop_map(|e| Neg(Arc::new(e)).to_expr_nopos()),
         1 => reference().prop_map(|e| ByRef(Mutability::Mut, Arc::new(e)).to_expr_nopos()),
+        1 => (reference(), reference()).prop_map(|(a, b)| parsed(&format!("{a} + {b}"))),
+        1 => (reference(), reference()).prop_map(|(a, b)| parsed(&format!("{a} ~ |x| {b}"))),
+        1 => (reference(), reference()).prop_map(|(a, b)| parsed(&format!("{a} ~ |x| {b}{{x}}"))),
+        1 => (reference(), reference()).prop_map(|(a, b)| parsed(&format!("{a}({b})"))),
+        1 => reference().prop_map(|a| parsed(&format!("{a}?.f"))),
+        1 => reference().prop_map(|a| parsed(&format!("{a}$"))),
     ]
+}
+
+fn parsed(s: &str) -> Expr {
+    parse_one(s).unwrap()
 }
 
 /// A `let` trigger's value: also a brace form or a call of `flush`, which
