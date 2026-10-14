@@ -637,7 +637,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         }
         if invocation == Invocation::Fired || std::mem::take(&mut self.slept) {
             self.unwatch(ctx);
-            for v in self.cached.0.iter().flatten() {
+            for v in self.cached.values().flatten() {
                 extract_bind_ids(v, &mut self.bind_ids);
             }
             for bid in &self.bind_ids {

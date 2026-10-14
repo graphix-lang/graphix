@@ -463,8 +463,8 @@ macro_rules! tree_arg_op {
 
 pub(crate) fn raw_args<const N: usize>(cached: &CachedVals) -> Option<[Value; N]> {
     let mut args = [const { Value::Null }; N];
-    for (arg, value) in args.iter_mut().zip(cached.0.get(1..=N)?) {
-        *arg = value.as_ref()?.clone();
+    for (i, arg) in args.iter_mut().enumerate() {
+        *arg = cached.value(i + 1)?.clone();
     }
     Some(args)
 }
@@ -893,13 +893,7 @@ pub(crate) mod test {
     };
 
     pub(crate) fn cached<const N: usize>(values: [Value; N]) -> CachedVals {
-        let mut cached = CachedVals::new::<
-            graphix_rt::GXRt<graphix_rt::NoExt>,
-            graphix_compiler::NoUserEvent,
-        >(&[]);
-        cached.0 = Box::new(values.map(Some));
-        cached.1 = Box::new([graphix_compiler::Tag::FIRED; N]);
-        cached
+        CachedVals::from_values(values.map(Some))
     }
 
     static ENCODED_ON: Mutex<Option<ThreadId>> = Mutex::new(None);

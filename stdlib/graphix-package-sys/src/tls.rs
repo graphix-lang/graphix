@@ -117,11 +117,10 @@ impl EvalCachedAsync for TlsConnectEv {
     const CALLS: Calls = Calls::Concurrent;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let ca_cert = match cached.0.first()? {
-            None => return None,
-            Some(Value::Null) => None,
-            Some(Value::Bytes(b)) => Some((**b).clone()),
-            Some(_) => {
+        let ca_cert = match cached.value(0)? {
+            Value::Null => None,
+            Value::Bytes(b) => Some((**b).clone()),
+            _ => {
                 return Some(Err(errf!("TLSError", "ca_cert must be bytes or null")));
             }
         };
@@ -247,8 +246,6 @@ pub(crate) type TlsAccept = CachedArgsAsync<TlsAcceptEv>;
 mod test {
     use super::*;
     use arcstr::literal;
-    use graphix_compiler::{NoUserEvent, Tag};
-    use graphix_rt::{GXRt, NoExt};
     use netidx_value::ValArray;
 
     #[tokio::test]
@@ -262,13 +259,12 @@ mod test {
             let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
             let stream = crate::wrap_tcp(StreamKind::File(file));
             let halves = crate::stream_of(&stream).unwrap();
-            let mut cached = CachedVals::new::<GXRt<NoExt>, NoUserEvent>(&[]);
-            cached.0 = Box::new([
+            let host = Value::String(literal!("localhost"));
+            let cached = CachedVals::from_values([
                 Some(ca),
-                Some(Value::String(literal!("localhost"))),
-                Some(stream),
+                Some(host.clone()),
+                Some(stream.clone()),
             ]);
-            cached.1 = Box::new([Tag::FIRED; 3]);
             let mut connect = TlsConnectEv::default();
             let args = connect.prepare_args(&cached).unwrap();
             assert_eq!(
@@ -276,7 +272,8 @@ mod test {
                 errf!("TLSError", "ca_cert must be bytes or null")
             );
             assert!(halves.reader().await.is_some());
-            cached.0[0] = Some(Value::Null);
+            let cached =
+                CachedVals::from_values([Some(Value::Null), Some(host), Some(stream)]);
             assert!(connect.prepare_args(&cached).is_some());
         }
     }

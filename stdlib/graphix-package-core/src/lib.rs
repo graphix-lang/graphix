@@ -160,7 +160,7 @@ pub enum ReadInput {
 impl ReadInput {
     /// The first argument, when it is a string or bytes.
     pub fn of(cached: &CachedVals) -> Option<Self> {
-        match cached.0.first()?.as_ref()? {
+        match cached.value(0)? {
             Value::String(s) => Some(Self::Str(s.clone())),
             Value::Bytes(b) => Some(Self::Bytes((**b).clone())),
             _ => None,
@@ -638,14 +638,11 @@ pub enum Invocation {
 }
 
 #[derive(Debug)]
-// CR claude for claude: [structure/low] A value slice and a tag slice must stay the
-// same length, but the type does not say so, and both fields are public. `update_full`
-// indexes `self.1[i]` assuming the lengths match. Store one `Box<[(Option<Value>,
-// Tag)]>`, which is also one allocation per call site, and make the field private with
-// a `get(i) -> Option<&Value>` accessor. That accessor replaces the
-// `cached.0.get(i)?.as_ref()?` repeated across the db, gui, http, sqlite and sys
-// packages. (core-lib-09)
-pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>, Evaluated);
+pub struct CachedVals {
+    /// Each argument's last value and the tag it arrived with.
+    slots: Box<[(Option<Value>, Tag)]>,
+    evaluated: Evaluated,
+}
 
 /// Whether `eval` (or `quiet`) has run over the slots as they stand.
 #[derive(Debug, Default, Clone, Copy)]
@@ -1043,11 +1040,11 @@ macro_rules! pack_image_state {
 
 impl CachedVals {
     pub fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        encode_varint(self.0.len() as u64, buf);
-        for v in self.0.iter() {
+        encode_varint(self.slots.len() as u64, buf);
+        for (v, _) in self.slots.iter() {
             v.encode(buf)?;
         }
-        for t in self.1.iter() {
+        for (_, t) in self.slots.iter() {
             t.bits().encode(buf)?;
         }
         Ok(())
@@ -1055,44 +1052,71 @@ impl CachedVals {
 
     pub fn image_decode(buf: &mut &[u8]) -> Result<Self, PackError> {
         let n = decode_varint(buf)? as usize;
-        let vals = (0..n)
-            .map(|_| <Option<Value> as Pack>::decode(buf))
-            .collect::<Result<_, _>>()?;
-        let tags = (0..n)
-            .map(|_| u8::decode(buf).map(Tag::from_raw))
-            .collect::<Result<_, _>>()?;
-        Ok(CachedVals(vals, tags, Evaluated(false)))
+        let mut vals: LPooled<Vec<Option<Value>>> = LPooled::take();
+        for _ in 0..n {
+            vals.push(<Option<Value> as Pack>::decode(buf)?);
+        }
+        let mut slots = Vec::with_capacity(n);
+        for v in vals.drain(..) {
+            slots.push((v, Tag::from_raw(u8::decode(buf)?)));
+        }
+        Ok(CachedVals { slots: slots.into(), evaluated: Evaluated(false) })
     }
 
     pub fn new<R: Rt, E: UserEvent>(from: &[Node<R, E>]) -> CachedVals {
-        CachedVals(
-            from.into_iter().map(|_| None).collect(),
-            from.into_iter().map(|_| Tag::FIRED).collect(),
-            Evaluated(false),
-        )
+        Self::from_values(from.iter().map(|_| None))
+    }
+
+    /// Slots holding `values`, each as if it just fired.
+    pub fn from_values(values: impl IntoIterator<Item = Option<Value>>) -> CachedVals {
+        CachedVals {
+            slots: values.into_iter().map(|v| (v, Tag::FIRED)).collect(),
+            evaluated: Evaluated(false),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Argument `i`'s value, when it has one.
+    pub fn value(&self, i: usize) -> Option<&Value> {
+        self.slots.get(i)?.0.as_ref()
+    }
+
+    /// Each argument's value, `None` where it has none.
+    pub fn values(&self) -> impl Iterator<Item = Option<&Value>> {
+        self.slots.iter().map(|(v, _)| v.as_ref())
+    }
+
+    /// The tag argument `i` last arrived with.
+    pub fn tag(&self, i: usize) -> Option<Tag> {
+        Some(self.slots.get(i)?.1)
     }
 
     pub fn clear(&mut self) {
-        for v in &mut self.0 {
-            *v = None
+        for (v, t) in self.slots.iter_mut() {
+            *v = None;
+            *t = Tag::FIRED;
         }
-        for t in &mut self.1 {
-            *t = Tag::FIRED
-        }
-        self.2 = Evaluated(false);
+        self.evaluated = Evaluated(false);
     }
 
     /// True if any arg slot holds a taint no clean production has
     /// overwritten since.
     pub fn any_tainted(&self) -> bool {
-        self.1.iter().any(|t| t.is_bottom())
+        self.slots.iter().any(|(_, t)| t.is_bottom())
     }
 
     /// True if any arg slot is bottom — tainted or never delivered. The
     /// wrapper bottoms the invocation on this instead of calling `eval`,
     /// so builtin authors never see a bottomed or missing arg.
     pub fn any_bottom(&self) -> bool {
-        self.0.iter().any(|v| v.is_none()) || self.any_tainted()
+        self.slots.iter().any(|(v, t)| v.is_none() || t.is_bottom())
     }
 
     /// Update the slots from the arg nodes (a stale production refreshes
@@ -1122,17 +1146,16 @@ impl CachedVals {
         from: &mut [Node<R, E>],
     ) -> Option<Tag> {
         let mut prod: Option<Tag> = None;
-        for (i, src) in from.iter_mut().enumerate() {
+        for (src, (slot, slot_tag)) in from.iter_mut().zip(self.slots.iter_mut()) {
             let tv = src.update(ctx);
             let tag = tv.tag();
             if tag.is_bottom() {
-                if !self.1[i].is_bottom() {
-                    self.2 = Evaluated(false);
+                if !slot_tag.is_bottom() {
+                    self.evaluated = Evaluated(false);
                 }
-                self.1[i] = Tag::STALE_BOTTOM;
+                *slot_tag = Tag::STALE_BOTTOM;
             } else {
-                let slot = &mut self.0[i];
-                let evaluated = &mut self.2;
+                let evaluated = &mut self.evaluated;
                 tv.with_value(|v| {
                     let same = |old: &Value| {
                         graphix_compiler::tval::value_words(old)
@@ -1143,7 +1166,7 @@ impl CachedVals {
                         *evaluated = Evaluated(false);
                     }
                 });
-                self.1[i] = tag;
+                *slot_tag = tag;
             }
             prod = Some(match prod {
                 None => tag,
@@ -1154,7 +1177,7 @@ impl CachedVals {
     }
 
     pub fn flat_iter<'a>(&'a self) -> impl Iterator<Item = Option<Value>> + 'a {
-        self.0.iter().flat_map(|v| match v {
+        self.slots.iter().flat_map(|(v, _)| match v {
             None => Either::Left(iter::once(None)),
             Some(v) => Either::Right(v.clone().flatten().map(Some)),
         })
@@ -1162,14 +1185,14 @@ impl CachedVals {
 
     /// Argument `i` as the abstract type `T` it holds.
     pub fn abstract_arg<T: Any + Send + Sync>(&self, i: usize) -> Option<&T> {
-        match self.0.get(i)?.as_ref()? {
+        match self.value(i)? {
             Value::Abstract(a) => a.downcast_ref::<T>(),
             _ => None,
         }
     }
 
     pub fn get<T: FromValue>(&self, i: usize) -> Option<T> {
-        self.0.get(i).and_then(|v| v.as_ref()).and_then(|v| v.clone().cast_to::<T>().ok())
+        self.value(i).and_then(|v| v.clone().cast_to::<T>().ok())
     }
 }
 
@@ -1211,8 +1234,8 @@ pub fn fast_get<T: FromValue>(args: &[Value], i: usize) -> Option<T> {
 /// if any slot has never been delivered.
 fn fast_args(from: &CachedVals) -> Option<LPooled<Vec<Value>>> {
     let mut args: LPooled<Vec<Value>> = LPooled::take();
-    for v in from.0.iter() {
-        args.push(v.as_ref()?.clone());
+    for v in from.values() {
+        args.push(v?.clone());
     }
     Some(args)
 }
@@ -1417,7 +1440,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.woke_pending = true;
-        self.cached.2 = Evaluated(false);
+        self.cached.evaluated = Evaluated(false);
     }
 }
 
@@ -1495,7 +1518,7 @@ impl<T> CachedArgs<T> {
             // a bottom arg bottoms the invocation without calling eval
             Some(t) if cached.any_bottom() => last_result.set_bottom_as(t),
             Some(t) if t.is_fired() => {
-                cached.2 = Evaluated(true);
+                cached.evaluated = Evaluated(true);
                 match ev.eval(ctx, cached) {
                     Some(v) => last_result.set(TagValue::tagged(v, t)),
                     // no value this cycle, as a kernel's fast call reads it
@@ -1507,7 +1530,7 @@ impl<T> CachedArgs<T> {
                 // stateless value is recomputed from the present slots; a
                 // stateful one must not be (its last result is its state).
                 if matches!(T::EFFECT, Effect::Stateless(_) | Effect::Io(_)) && woke {
-                    cached.2 = Evaluated(true);
+                    cached.evaluated = Evaluated(true);
                     match ev.quiet(ctx, cached) {
                         Some(v) => last_result.set(TagValue::stale(v)),
                         None => last_result.set_bottom(false),
@@ -1517,11 +1540,11 @@ impl<T> CachedArgs<T> {
                 }
             }
             // a bottom eval already gave over these slots stands
-            Some(_) if cached.2.0 => last_result.ride(),
+            Some(_) if cached.evaluated.0 => last_result.ride(),
             Some(_) => {
                 // Nothing to re-surface yet: compute the value once to
                 // establish the value channel, STALE.
-                cached.2 = Evaluated(true);
+                cached.evaluated = Evaluated(true);
                 match ev.quiet(ctx, cached) {
                     Some(v) => last_result.set(TagValue::stale(v)),
                     None => last_result.ride(),
@@ -2147,11 +2170,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let Some(t) = &self.refs else { return fast_eval(ctx, fc_all, from) };
-        let [hd, tl @ ..] = &from.0[..] else { return None };
-        let hd = hd.as_ref()?;
+        let mut vs = from.values();
+        let hd = vs.next()??;
         let named = ctx.ref_targets(t, hd);
-        for v in tl {
-            if ctx.ref_targets(t, v.as_ref()?) != named {
+        for v in vs {
+            if ctx.ref_targets(t, v?) != named {
                 return None;
             }
         }
@@ -2732,8 +2755,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
             return self.out.set_bottom(fresh);
         }
         if invocation == Invocation::Fired {
-            let err = match &self.args.0[..] {
-                [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
+            let err = match (self.args.value(0), self.args.value(1)) {
+                (Some(Value::I64(i)), Some(Value::I64(j))) if i <= j => {
                     let e = literal!("RangeError");
                     if range_len_exceeds_cap(*i, *j) {
                         Some(errf!(

@@ -64,7 +64,7 @@ impl EvalCachedAsync for FileSeekEv {
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let stream = get_stream(cached, 0)?;
-        let v = cached.0.get(1)?.as_ref()?;
+        let v = cached.value(1)?;
         let seek_from = parse_seek_from(v)?;
         Some((stream, seek_from))
     }

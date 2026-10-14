@@ -71,13 +71,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         let res = match self.args.update(ctx, from) {
             Invocation::Bottom { fresh } => return self.out.set_bottom(fresh),
             Invocation::Quiet => None,
-            Invocation::Fired => match &self.args.0[..] {
-                [Some(start), Some(end), Some(_)] => gen_cases!(
-                    start, end, F32, F64, I8, I16, I32, I64, Z32, Z64, U8, U16, U32, U64,
-                    V32, V64
-                ),
-                _ => None,
-            },
+            Invocation::Fired => {
+                match (self.args.value(0), self.args.value(1), self.args.value(2)) {
+                    (Some(start), Some(end), Some(_)) => gen_cases!(
+                        start, end, F32, F64, I8, I16, I32, I64, Z32, Z64, U8, U16, U32,
+                        U64, V32, V64
+                    ),
+                    _ => None,
+                }
+            }
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),

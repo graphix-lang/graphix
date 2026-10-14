@@ -99,7 +99,7 @@ impl ClipboardOp for ReadTextOp {
     const NAME: &str = "gui_clipboard_read_text";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
-        cached.0[0].as_ref()?;
+        cached.value(0)?;
         Some(())
     }
 
@@ -141,7 +141,7 @@ impl ClipboardOp for ReadImageOp {
     const NAME: &str = "gui_clipboard_read_image";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
-        cached.0[0].as_ref()?;
+        cached.value(0)?;
         Some(())
     }
 
@@ -171,7 +171,7 @@ impl ClipboardOp for WriteImageOp {
     const NAME: &str = "gui_clipboard_write_image";
 
     fn prepare(cached: &CachedVals) -> Option<Self::Args> {
-        Some(image_args_from_value(cached.0[0].as_ref()?))
+        Some(image_args_from_value(cached.value(0)?))
     }
 
     fn exec(args: Self::Args) -> Value {
@@ -202,7 +202,7 @@ impl ClipboardOp for ReadHtmlOp {
     const NAME: &str = "gui_clipboard_read_html";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
-        cached.0[0].as_ref()?;
+        cached.value(0)?;
         Some(())
     }
 
@@ -228,7 +228,7 @@ impl ClipboardOp for WriteHtmlOp {
     const NAME: &str = "gui_clipboard_write_html";
 
     fn prepare(cached: &CachedVals) -> Option<HtmlArgs> {
-        html_args_from_value(cached.0[0].as_ref()?)
+        html_args_from_value(cached.value(0)?)
     }
 
     fn exec(args: HtmlArgs) -> Value {
@@ -252,7 +252,7 @@ impl ClipboardOp for ReadFilesOp {
     const NAME: &str = "gui_clipboard_read_files";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
-        cached.0[0].as_ref()?;
+        cached.value(0)?;
         Some(())
     }
 
@@ -272,7 +272,7 @@ impl ClipboardOp for WriteFilesOp {
     const NAME: &str = "gui_clipboard_write_files";
 
     fn prepare(cached: &CachedVals) -> Option<Vec<String>> {
-        file_list_from_value(cached.0[0].as_ref()?)
+        file_list_from_value(cached.value(0)?)
     }
 
     fn exec(paths: Vec<String>) -> Value {
@@ -295,7 +295,7 @@ impl ClipboardOp for ClearOp {
     const NAME: &str = "gui_clipboard_clear";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
-        cached.0[0].as_ref()?;
+        cached.value(0)?;
         Some(())
     }
 

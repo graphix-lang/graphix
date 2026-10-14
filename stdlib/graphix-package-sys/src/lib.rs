@@ -546,7 +546,7 @@ stream_kinds! {
 }
 
 pub fn get_stream(cached: &CachedVals, idx: usize) -> Option<Arc<Halves>> {
-    stream_of(cached.0.get(idx)?.as_ref()?)
+    stream_of(cached.value(idx)?)
 }
 
 #[derive(Debug)]
@@ -609,7 +609,7 @@ impl EvalCachedAsync for GxTempDirEv {
     const NAME: &str = "sys_tempdir";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        if cached.0.iter().any(|v| v.is_none()) {
+        if cached.values().any(|v| v.is_none()) {
             None
         } else {
             let dir = cached.get::<Option<ArcStr>>(0).flatten();

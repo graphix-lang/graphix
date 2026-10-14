@@ -322,7 +322,7 @@ fn decode<R: Rt, E: UserEvent>(
     commit: bool,
 ) -> Option<Value> {
     let buf = from.get::<Bytes>(0)?;
-    let Value::Array(spec) = from.0.get(1)?.as_ref()? else { return None };
+    let Value::Array(spec) = from.value(1)? else { return None };
     let mut d = Decoder { buf: &buf, pos: 0, written: Default::default() };
     for elem in spec.iter() {
         let (tag, args) = variant_tag(elem)?;

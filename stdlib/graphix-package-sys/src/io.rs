@@ -557,7 +557,7 @@ macro_rules! stdio {
                 _ctx: &mut ExecCtx<'_, R, E>,
                 cached: &CachedVals,
             ) -> Option<Value> {
-                cached.0.first()?.as_ref()?;
+                cached.value(0)?;
                 Some(wrap_stdio(StreamKind::$kind(tokio::io::$constructor())))
             }
         }

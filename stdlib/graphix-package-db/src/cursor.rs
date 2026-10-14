@@ -70,7 +70,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
 
     fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 1)?;
-        let iter = match from.0.first()?.as_ref()? {
+        let iter = match from.value(0)? {
             Value::Null => Some(tree.tree.iter()),
             v => encode_prefix(tree.key_typ, v).ok().map(|p| tree.tree.scan_prefix(&*p)),
         };
@@ -104,8 +104,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorRangeEv {
 
     fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 2)?;
-        let lo = parse_bound(tree.key_typ, from.0.first()?.as_ref()?)?;
-        let hi = parse_bound(tree.key_typ, from.0.get(1)?.as_ref()?)?;
+        let lo = parse_bound(tree.key_typ, from.value(0)?)?;
+        let hi = parse_bound(tree.key_typ, from.value(1)?)?;
         let iter = lo.zip(hi).map(|r| tree.tree.range(r));
         Some(wrap_cursor(iter, tree))
     }
@@ -122,7 +122,7 @@ impl EvalCachedAsync for DbCursorReadEv {
     const NAME: &str = "db_cursor_read";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        cached.0.get(1)?.as_ref()?;
+        cached.value(1)?;
         get_cursor(cached)
     }
 

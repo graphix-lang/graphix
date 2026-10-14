@@ -144,7 +144,7 @@ graphix_package_core::abstract_wrapper!(
 );
 
 fn get_proc(cached: &CachedVals, idx: usize) -> Option<ProcValue> {
-    match cached.0.get(idx)?.as_ref()? {
+    match cached.value(idx)? {
         Value::Abstract(a) => a.downcast_ref::<ProcValue>().cloned(),
         _ => None,
     }
@@ -279,7 +279,7 @@ impl EvalCachedAsync for ProcessSpawnEv {
     type Args = Result<SpawnOptions>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let options = cached.0.get(0)?.as_ref()?;
+        let options = cached.value(0)?;
         Some(SpawnOptions::from_value(options.clone()))
     }
 
@@ -339,7 +339,7 @@ impl EvalCachedAsync for ProcessKillEv {
     type Args = (ProcValue, Duration);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let grace = cached.0.get(0)?.as_ref()?.clone().cast_to::<Duration>().ok()?;
+        let grace = cached.value(0)?.clone().cast_to::<Duration>().ok()?;
         let proc = get_proc(cached, 1)?;
         Some((proc, grace))
     }

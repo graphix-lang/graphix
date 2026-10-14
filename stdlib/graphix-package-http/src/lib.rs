@@ -168,10 +168,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
         cached: &CachedVals,
     ) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
-        let default_headers = cached.0.get(1)?.as_ref()?;
+        let default_headers = cached.value(1)?;
         let redirect_limit = cached.get::<u32>(2)?;
         let ca_cert = cached.get::<Option<Bytes>>(3)?;
-        cached.0.get(4)?.as_ref()?;
+        cached.value(4)?;
         let build = || {
             let mut builder = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(redirect_limit as usize));
@@ -224,7 +224,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
         _ctx: &mut ExecCtx<'_, R, E>,
         cached: &CachedVals,
     ) -> Option<Value> {
-        cached.0.first()?.as_ref()?;
+        cached.value(0)?;
         Some(CLIENT_WRAPPER.wrap(ClientValue { inner: DEFAULT_CLIENT.clone() }))
     }
 }
@@ -362,7 +362,7 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some(RequestArgs {
             method: cached.get::<ArcStr>(0)?,
-            headers: cached.0.get(1)?.as_ref()?.clone(),
+            headers: cached.value(1)?.clone(),
             body: cached.get::<Option<B>>(2)?,
             timeout: cached.get::<Option<Duration>>(3)?,
             client: cached.abstract_arg::<ClientValue>(4)?.inner.clone(),

@@ -252,7 +252,7 @@ impl DbSubscribe {
     fn watch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
         let Some(tree) = get_tree_inner(&self.args, 1) else { return };
-        let prefix = match self.args.0[0].as_ref() {
+        let prefix = match self.args.value(0) {
             None => return,
             Some(Value::Null) => Ok(GPooled::orphan(vec![])),
             Some(v) => encode_prefix(tree.key_typ, v),
@@ -280,7 +280,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let previous = [self.args.0[0].clone(), self.args.0[1].clone()];
+        let previous = [self.args.value(0).cloned(), self.args.value(1).cloned()];
         match self.args.update(ctx, from) {
             Invocation::Bottom { fresh } => {
                 self.stop();
@@ -288,7 +288,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
             }
             Invocation::Fired => {
                 self.slept = false;
-                if self.abort.is_some() && self.args.0.as_ref() == previous {
+                if self.abort.is_some()
+                    && self.args.values().eq(previous.iter().map(Option::as_ref))
+                {
                     return self.out.retag(Tag::FIRED);
                 }
                 self.bind_id = BindId::new();
@@ -414,8 +416,7 @@ macro_rules! db_event_accessor {
                         if let Some(bid) = self.bind_id.take() {
                             ctx.release_var(bid, self.top_id);
                         }
-                        self.bind_id =
-                            self.cached.0[0].as_ref().and_then(extract_sub_bind_id);
+                        self.bind_id = self.cached.value(0).and_then(extract_sub_bind_id);
                         if let Some(bid) = self.bind_id {
                             ctx.rt.ref_var(bid, self.top_id);
                         }

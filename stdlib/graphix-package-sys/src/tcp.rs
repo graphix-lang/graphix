@@ -51,7 +51,7 @@ graphix_package_core::abstract_wrapper!(
 );
 
 fn get_listener(cached: &CachedVals, idx: usize) -> Option<Arc<TcpListener>> {
-    match cached.0.get(idx)?.as_ref()? {
+    match cached.value(idx)? {
         Value::Abstract(a) => {
             let lv = a.downcast_ref::<TcpListenerValue>()?;
             Some(lv.listener.clone())
@@ -153,7 +153,7 @@ impl EvalCachedAsync for TcpAcceptEv {
     const CALLS: Calls = Calls::Latest;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let _ = cached.0.get(1)?.as_ref()?;
+        let _ = cached.value(1)?;
         get_listener(cached, 0)
     }
 

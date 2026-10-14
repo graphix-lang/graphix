@@ -27,7 +27,7 @@ graphix_package_core::impl_abstract_arc!(
 );
 
 fn get_conn_arc(cached: &CachedVals, idx: usize) -> Option<Conn> {
-    match cached.0.get(idx)?.as_ref()? {
+    match cached.value(idx)? {
         Value::Abstract(a) => {
             let cv = a.downcast_ref::<ConnectionValue>()?;
             Some(cv.inner.clone())
