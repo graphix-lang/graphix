@@ -1736,30 +1736,8 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 bind: c.bind.clone(),
                 constraint: c.constraint.clone(),
                 handler: Arc::new(rewrite_with(&c.handler, &inner, mode.deferred())),
-                role: match &c.role {
-                    CatchRole::User => CatchRole::User,
-                    // CR claude for claude: [dead/low] These two arms never run.
-                    // Machine and Try catches are built only by `desugar_plain` and
-                    // `lower_try`, after the statements they wrap have been rewritten.
-                    // The parser never builds them, and a nested seq reaches this
-                    // function as an unlowered `ExprKind::Seq`. So `rewrite_with` only
-                    // ever sees `CatchRole::User`. The arms also rewrite `action` under
-                    // `inner` and `manual` under `map`, a choice nothing tests. Fix:
-                    // rewrite only the handler and carry the role over unchanged
-                    // (`role: c.role.clone()`), with a one-line comment that generated
-                    // roles are built after every rewrite. (t-seq-10)
-                    CatchRole::Machine { action, manual, pc } => CatchRole::Machine {
-                        action: Arc::new(rewrite_with(action, &inner, mode.deferred())),
-                        manual: manual
-                            .as_ref()
-                            .map(|e| Arc::new(rewrite_with(e, map, mode.deferred()))),
-                        pc: pc.clone(),
-                    },
-                    CatchRole::Try { action, capture } => CatchRole::Try {
-                        action: Arc::new(rewrite_with(action, &inner, mode.deferred())),
-                        capture: capture.clone(),
-                    },
-                },
+                // a machine's and a try's roles are built after every rewrite
+                role: c.role.clone(),
             }))
         }
         ExprKind::Lambda(l) => {
