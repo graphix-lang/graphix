@@ -49,7 +49,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{FnType, Indiscernible, Open, Type},
+    typ::{FnType, Indiscernible, Open, Type, tvar::TaskId},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -1355,7 +1355,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     // current task. Fix: delete the field. Carry the task id in check_in_tasks' work
     // tuple: new_task() from typecheck1's loop, and the caller's current thread-local
     // task from typecheck0_modules. (c-lib-06)
-    pub(crate) task: u32,
+    pub(crate) task: TaskId,
     /// This task's share of the compile's profile ([`profile::Task`]).
     profile: profile::Task,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
@@ -1802,7 +1802,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 attr_absorbed: Mutex::new(IntSet::default()),
                 pending_refs: AHashMap::default(),
                 discarded: Vec::new(),
-                task: 0,
+                task: TaskId::OUTSIDE,
                 profile: profile::Task::default(),
                 fusion: fusion::FusionCtx::new(),
             },

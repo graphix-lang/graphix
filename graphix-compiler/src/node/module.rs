@@ -19,7 +19,7 @@ use crate::{
     profile::{self, Phase},
     typ::{
         FnArgKind, FnArgType, FnType, Type,
-        tvar::{AtLevel, Level},
+        tvar::{AtLevel, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
 };
@@ -864,7 +864,7 @@ pub struct Module<R: Rt, E: UserEvent> {
     top_id: ExprId,
     /// The compile task a static body compiles and checks in: the cells
     /// it creates are its own, and its check writes no others.
-    task: u32,
+    task: TaskId,
     resident: TagValue,
 }
 
@@ -920,7 +920,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             nodes,
             catches,
             top_id,
-            task: 0,
+            task: TaskId::OUTSIDE,
             resident: TagValue::phantom(),
         }))
     }
@@ -963,7 +963,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
-            task: 0,
+            task: TaskId::OUTSIDE,
             resident: TagValue::phantom(),
         }))
     }
@@ -977,8 +977,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         exprs: Arc<[Expr]>,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        let task = crate::typ::tvar::new_task();
-        let _task = crate::typ::tvar::InTask::enter(task);
+        let task = new_task();
+        let _task = InTask::enter(task);
         let mut env = ctx.env.lexical();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
@@ -1110,7 +1110,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     /// The compile task of a static body, which its statement checks in.
-    pub(crate) fn static_task(&self) -> Option<u32> {
+    pub(crate) fn static_task(&self) -> Option<TaskId> {
         matches!(self.body, Body::Static).then_some(self.task)
     }
 
@@ -1359,7 +1359,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 wrap!(source, t.check_contains(&self.env, source.typ()))?;
             }
             Body::Static => {
-                use crate::typ::tvar::{InTask, OwnWrites};
                 let _task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);

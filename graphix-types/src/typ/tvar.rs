@@ -181,41 +181,46 @@ impl Pack for Level {
 
 thread_local! {
     static LEVEL: std::cell::Cell<Level> = const { std::cell::Cell::new(Level::GENERIC) };
-    static TASK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static TASK: std::cell::Cell<TaskId> = const { std::cell::Cell::new(TaskId::OUTSIDE) };
     /// The compile task whose foreign writes this thread records
     /// ([`OwnWrites`]), and whether it made one.
-    static OWN_WRITES: std::cell::Cell<Option<(u32, bool)>> =
+    static OWN_WRITES: std::cell::Cell<Option<(TaskId, bool)>> =
         const { std::cell::Cell::new(None) };
 }
 
-static TASKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-
-/// A fresh concurrent compile task's id: a task started later has a
-/// larger one; 0 is outside every task.
+/// A concurrent compile task: one started later is greater.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[doc(hidden)]
-pub fn new_task() -> u32 {
-    // CR claude for claude: [risk/low] A process-global u32 that wraps silently.
-    // with_runtime_settles mints a task per run-time bind (each CallSite::build_bound,
-    // each core-trait hook site) for the life of the process. After 2^32 of them,
-    // earlier_task (`cell.task < TASK`) inverts and 0, the outside-every-task id, is
-    // minted again. A run-time bind then passes the decided/written guards and may
-    // write or settle the check's cells while parallel branches read them, and
-    // GRAPHIX_TASK_AUDIT stops reporting it. A long-running server doing thousands of
-    // dynamic binds per second gets there in days. Make the counter a u64 (TCell.task
-    // and the TASK thread-local with it), or treat exhaustion as fatal. At minimum,
-    // never hand out 0. (t-tvar-08)
-    TASKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+pub struct TaskId(u64);
+
+impl TaskId {
+    /// Outside every task.
+    pub const OUTSIDE: Self = Self(0);
+}
+
+impl std::fmt::Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+static TASKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A fresh concurrent compile task's id.
+#[doc(hidden)]
+pub fn new_task() -> TaskId {
+    TaskId(TASKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Cells created while this lives belong to compile task `id`; dropping
 /// it restores the enclosing task.
 #[must_use]
 #[doc(hidden)]
-pub struct InTask(u32);
+pub struct InTask(TaskId);
 
 impl InTask {
     #[doc(hidden)]
-    pub fn enter(id: u32) -> Self {
+    pub fn enter(id: TaskId) -> Self {
         Self(TASK.replace(id))
     }
 }
@@ -249,7 +254,7 @@ pub(super) fn decided(cell: &TCell) -> bool {
     decided_of(cell.task, "cell")
 }
 
-fn decided_of(owner: u32, what: &str) -> bool {
+fn decided_of(owner: TaskId, what: &str) -> bool {
     if owner >= TASK.get() {
         return true;
     }
@@ -257,7 +262,7 @@ fn decided_of(owner: u32, what: &str) -> bool {
     !OWN_WRITES.get().is_some_and(|(task, _)| task == TASK.get())
 }
 
-fn written_of(owner: u32, what: &str) {
+fn written_of(owner: TaskId, what: &str) {
     if owner < TASK.get() {
         foreign_write(owner, what)
     }
@@ -268,11 +273,11 @@ fn written_of(owner: u32, what: &str) {
 /// thread, and a task run while it waits keeps its own record.
 #[must_use]
 #[doc(hidden)]
-pub struct OwnWrites(Option<(u32, bool)>);
+pub struct OwnWrites(Option<(TaskId, bool)>);
 
 impl OwnWrites {
     #[doc(hidden)]
-    pub fn enter(task: u32) -> Self {
+    pub fn enter(task: TaskId) -> Self {
         Self(OWN_WRITES.replace(Some((task, false))))
     }
 
@@ -290,7 +295,7 @@ impl Drop for OwnWrites {
 }
 
 #[cold]
-fn foreign_write(owner: u32, what: &str) {
+fn foreign_write(owner: TaskId, what: &str) {
     if let Some((task, _)) = OWN_WRITES.get()
         && task == TASK.get()
     {
@@ -414,7 +419,7 @@ pub struct TCell {
     /// its depth or shallower.
     pub(crate) level: Level,
     /// The compile task that created the cell ([`written`]).
-    task: u32,
+    task: TaskId,
 }
 
 impl Default for TCell {
@@ -492,7 +497,7 @@ pub struct TVarLink {
     pub(crate) frozen: bool,
     pub(crate) cell: Arc<RwLock<TCell>>,
     /// The compile task that created the var ([`written`]).
-    task: u32,
+    task: TaskId,
 }
 
 #[derive(Debug)]

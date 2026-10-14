@@ -28,7 +28,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type,
-        tvar::{AtLevel, InTask, Level, RigidGate},
+        tvar::{AtLevel, InTask, Level, RigidGate, TaskId},
     },
     wrap,
 };
@@ -392,7 +392,7 @@ impl DefTables {
         let decoder = decoder.upgrade()?;
         let mut dec = decoder.lock();
         // restored cells belong to no compile task, whichever reads them
-        let _task = InTask::enter(0);
+        let _task = InTask::enter(TaskId::OUTSIDE);
         let table = image::DecodeImage::with(&mut dec, || {
             image::foreign_at(*ord, |b| DefTable::image_decode(b))
         });
