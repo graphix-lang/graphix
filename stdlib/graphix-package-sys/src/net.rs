@@ -148,7 +148,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (val, val_fired) = seam_arg(ctx, &mut from[1]);
         // the standing value goes to a new path when nothing queued is newer
-        let mut standing = val_fired;
+        let mut standing = woke || val_fired;
         if (woke || path_fired)
             && let Some(path) = &path
             && (woke || !self.same_path(path))
@@ -373,6 +373,7 @@ impl Subscribe {
 
 #[derive(Debug)]
 pub(crate) struct RpcCall {
+    slept: bool,
     top_id: ExprId,
     id: BindId,
     target: CastTarget,
@@ -395,6 +396,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         ctx.record_ref(id, top_id);
         let _ = from;
         Ok(Box::new(RpcCall {
+            slept: false,
             top_id,
             id,
             target: CastTarget::of(resolved),
@@ -407,16 +409,18 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let slept = bool::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let id = BindId::decode(buf)?;
         let target = CastTarget::decode(buf)?;
         ctx.record_ref(id, top_id);
-        Ok(Box::new(RpcCall { top_id, id, target, out: TagValue::phantom() }))
+        Ok(Box::new(RpcCall { slept, top_id, id, target, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.slept.encode(buf)?;
         self.top_id.encode(buf)?;
         self.id.encode(buf)?;
         self.target.encode(buf)
@@ -450,9 +454,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             };
             Ok((path, args))
         }
+        let woke = std::mem::take(&mut self.slept);
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (args, args_fired) = seam_arg(ctx, &mut from[1]);
-        // CR claude for claude: [bug/medium] `RpcCall::sleep` clears the output and
+        // XCR claude for claude: [bug/medium] `RpcCall::sleep` clears the output and
         // remints the reply id but keeps no slept bit, and this update calls only when
         // path or args fired. After a wake whose arguments are bound outside the arm
         // (so they read stale and do not fire), the call is never issued again and its
@@ -469,7 +474,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         // is not written again, unlike fs::write_all under `CachedArgsAsync`. Decide
         // which rule a write follows and pin it. probe:
         // design/review-2026-10-12/repro/sys-net-04.gx (sys-net-04)
-        if (path_fired || args_fired)
+        // 2026-10-13 codex: net_call_restarts_after_wake, net_list_restarts_after_wake and
+        // net_list_table_restarts_after_wake fail without the wake bits and pass
+        // with them, using a failing loader without sockets. Write now follows
+        // the async restart rule and writes its standing value on wake;
+        // net_write_standing_after_wake passes --check but its socket execution
+        // and before/after behavior remain unverified in this sandbox.
+        if (woke || path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {
             match parse_args(path, args) {
@@ -517,6 +528,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.slept = true;
         self.remint(ctx);
         self.out = TagValue::phantom();
     }
@@ -535,6 +547,7 @@ macro_rules! list {
     ($name:ident, $builtin:literal, $table:expr, $typ:literal) => {
         #[derive(Debug)]
         pub(crate) struct $name {
+            slept: bool,
             current: Option<Path>,
             id: BindId,
             top_id: ExprId,
@@ -567,6 +580,7 @@ macro_rules! list {
                 let id = BindId::new();
                 ctx.record_ref(id, top_id);
                 Ok(Box::new($name {
+                    slept: false,
                     current: None,
                     top_id,
                     id,
@@ -579,10 +593,12 @@ macro_rules! list {
                 _from: &[Node<R, E>],
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+                let slept = bool::decode(buf)?;
                 let id = BindId::decode(buf)?;
                 let top_id = ExprId::decode(buf)?;
                 ctx.record_ref(id, top_id);
                 Ok(Box::new($name {
+                    slept,
                     current: None,
                     top_id,
                     id,
@@ -597,6 +613,7 @@ macro_rules! list {
                 if self.current.is_some() {
                     return Err(PackError::Application(image::NOT_QUIESCENT));
                 }
+                self.slept.encode(buf)?;
                 self.id.encode(buf)?;
                 self.top_id.encode(buf)
             }
@@ -606,9 +623,10 @@ macro_rules! list {
                 ctx: &mut ExecCtx<'_, R, E>,
                 from: &mut [Node<R, E>],
             ) -> &TagValue {
+                let woke = std::mem::take(&mut self.slept);
                 let (_, trigger_fired) = seam_arg(ctx, &mut from[0]);
                 let (path, path_fired) = seam_arg(ctx, &mut from[1]);
-                if (path_fired || trigger_fired)
+                if (woke || path_fired || trigger_fired)
                     && let Some(requested) = path
                 {
                     let Some(path) = as_path(requested.clone()) else {
@@ -640,6 +658,7 @@ macro_rules! list {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+                self.slept = true;
                 self.remint(ctx);
                 self.out = TagValue::phantom();
             }

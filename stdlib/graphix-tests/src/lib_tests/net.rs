@@ -547,3 +547,77 @@ async fn net_lists_reject_relative_paths() -> Result<()> {
     }
     Ok(())
 }
+
+async fn request_restarts_after_wake(call: &str) -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let loads = Arc::new(AtomicUsize::new(0));
+    let setup_loads = loads.clone();
+    let mut code: LPooled<String> = LPooled::take();
+    write!(
+        code,
+        r#"{{
+        let path = "/local/restart";
+        let args = null;
+        let trigger = null;
+        let on = true;
+        on <- sys::time::after_idle(duration:100.ms, false);
+        on <- sys::time::after_idle(duration:200.ms, true);
+        let errors = 0;
+        catch(e) errors <- e ~ errors + 1;
+        let response: Any = select on {{
+            true => {call},
+            false => never()
+        }};
+        sys::time::after_idle(duration:400.ms, null) ~ errors
+    }}"#
+    )?;
+    let (value, ctx) = testing::eval_with_setup(&code, &crate::TEST_REGISTER, |ctx| {
+        ctx.libstate.set(NetConfig::Load {
+            load: Arc::new(move || {
+                setup_loads.fetch_add(1, Ordering::SeqCst);
+                Err(anyhow!("restart probe"))
+            }),
+            bind: None,
+        });
+    })
+    .await?;
+    ctx.shutdown().await;
+    assert_eq!(value, Value::I64(2), "{call}");
+    assert_eq!(loads.load(Ordering::SeqCst), 2, "{call}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn net_call_restarts_after_wake() -> Result<()> {
+    request_restarts_after_wake(
+        "{ let answer: i64 = sys::net::call(path, args)?; answer }",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn net_list_restarts_after_wake() -> Result<()> {
+    request_restarts_after_wake("sys::net::list(#update:trigger, path)?").await
+}
+
+#[tokio::test]
+async fn net_list_table_restarts_after_wake() -> Result<()> {
+    request_restarts_after_wake("sys::net::list_table(#update:trigger, path)?").await
+}
+
+run!(net_write_standing_after_wake, r#"{
+    let path = "/local/standing_write";
+    let value = 42;
+    let writes = 0;
+    sys::net::publish(#on_write: |v: i64| writes <- v ~ writes + 1, path, 0);
+    let ready: i64 = once(sys::net::subscribe(path)?);
+    let on = ready ~ true;
+    on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
+    on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
+    select on {
+        true => sys::net::write(path, value),
+        false => never()
+    };
+    sys::time::after_idle(duration:400.ms, ready) ~ writes
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);

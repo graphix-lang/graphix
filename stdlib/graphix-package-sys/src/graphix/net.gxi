@@ -1,7 +1,8 @@
 type Table = { rows: Array<string>, columns: Array<string> };
 type RpcArg<'a> = { default: 'a, doc: string };
 
-/// write the value to the specified path
+/// Write the value to the specified path. When its arm wakes, write the
+/// standing value again.
 val write: fn(path: string, value: Any) -> Result<_, `WriteError(string)>;
 
 /// subscribe to the specified path
