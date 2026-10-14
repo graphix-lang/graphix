@@ -384,6 +384,12 @@ impl EvalCachedAsync for IoReadExactEv {
             // need its bytes pushed back. probe:
             // design/review-2026-10-12/repro/sys-io-07.gx Also reported as
             // (x-concurrency-03). (sys-io-07)
+            // 2026-10-13 codex: A local child-pipe adaptation of the probe reproduced the lost
+            // "hello" prefix. The TCP probe cannot run in this sandbox. A complete
+            // fix needs read-result acknowledgment/recovery in core CachedArgsAsync
+            // (src/lib.rs::release/renew) and graphix-rt/src/gx.rs::deliver, which
+            // discards unreferenced replies. Those files are outside this scope; a
+            // Halves push-back buffer alone cannot recover an already-posted reply.
             match (&mut *s).take(n).read_to_end(&mut buf).await {
                 Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
                 Err(e) => errf!("IOError", "read_exact failed: {e}"),
