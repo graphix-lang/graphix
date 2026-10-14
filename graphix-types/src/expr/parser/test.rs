@@ -2504,3 +2504,15 @@ fn a_map_access_is_written_against_its_source() {
     assert!(matches!(parse_one("m{\"k\"}").unwrap().kind, ExprKind::MapRef { .. }));
     assert!(parse_one("m {\"k\"}").is_err());
 }
+
+#[test]
+fn an_infinite_float_literal_is_refused_wherever_it_sits() {
+    for src in ["1e999", "f32:1e39", "error:1e999", "error:f32:1e39"] {
+        let e = parse_one(src).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("a float literal out of its type's range"),
+            "{src}: {e:#}"
+        );
+    }
+    assert!(parse_one("error:1e300").is_ok());
+}

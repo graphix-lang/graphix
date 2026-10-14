@@ -803,22 +803,18 @@ where
     I: StreamOnce,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
 {
-    // CR claude for claude: [bug/low] `finite` refuses only a bare non-finite F64/F32.
-    // The netidx value parser also reads floats inside `error:`, so `error:1e999`
-    // becomes `Constant(Error(F64(inf)))`. The program then runs and prints
-    // `error:f64:inf`, which no literal parses back, and `graphix fmt` refuses the file
-    // as a formatter bug. Make `finite` recurse into `Value::Error` (and any other
-    // container the value parser can produce), so the same "a float literal out of its
-    // type's range" refusal applies wherever the float sits. Probe:
-    // design/review-2026-10-12/repro/t-parser-a-error-literal-inf.gx. (t-parser-a-06)
-    match v {
-        Value::F64(f) if !f.is_finite() => {
-            Err(grow::refusal::<I>(pos, "a float literal out of its type's range"))
+    fn holds_infinity(v: &Value) -> bool {
+        match v {
+            Value::F64(f) => !f.is_finite(),
+            Value::F32(f) => !f.is_finite(),
+            Value::Error(e) => holds_infinity(e),
+            Value::Array(a) => a.iter().any(holds_infinity),
+            _ => false,
         }
-        Value::F32(f) if !f.is_finite() => {
-            Err(grow::refusal::<I>(pos, "a float literal out of its type's range"))
-        }
-        v => Ok(v),
+    }
+    match holds_infinity(&v) {
+        true => Err(grow::refusal::<I>(pos, "a float literal out of its type's range")),
+        false => Ok(v),
     }
 }
 
@@ -1580,14 +1576,6 @@ fn text_origin(s: &str) -> impl FnOnce() -> Arc<Origin> + '_ {
 /// Parse one and only one expression.
 pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
     parse_all(s, text_origin(s), expr())
-}
-
-// CR claude for claude: [dead/low] `test_parse_mapref` is called nowhere in this
-// workspace or in ../netidx. The `parse_one` tests already cover map access. Delete it.
-// (tests-parser-05)
-#[cfg(test)]
-pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
-    parse_all(s, text_origin(s), arithexp::arith_term(true))
 }
 
 /// Parse one fntype expression
