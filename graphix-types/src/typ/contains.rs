@@ -171,11 +171,9 @@ impl ContainsHist {
     }
 }
 
-/// A cell whose chain of bindings ends open is as free as the cell it
-/// ends in.
 /// A union whose open member's cell another member mentions, as
 /// `['b, Array<'b>]`: where a member goes decides that cell.
-// CR claude for claude: [readability/low] The doc above this function is two docs run
+// XCR claude for claude: [readability/low] The doc above this function is two docs run
 // together. Its first two lines ('A cell whose chain of bindings ends open...') belong
 // to is_unbound_tvar, which now has none. Likewise, the 'A constructor application
 // (`self<'a>`, `'c<'b>`) ...' paragraph that opens place_members' doc belongs to
@@ -184,24 +182,21 @@ impl ContainsHist {
 // which follows a chain of bindings. A bare member that is an alias of an open cell is
 // therefore neither a candidate nor an 'other', and its cell goes unseen. Use the
 // open-cell notion (TVar::open_cell) on both sides. (x-fix-types-13)
-// CR claude for claude: [doc-drift/low] Two misplaced docs. The first sentence of this
-// function's doc ('A cell whose chain of bindings ends open is as free as the cell it
-// ends in.') describes a helper that no longer exists. Delete it. place_members' doc
-// opens with app_contains' doc ('A constructor application (`self<'a>`, `'c<'b>`)
-// against another type, ... is not a constructor.'), which tells the reader that
-// place_members binds constructor variables, which it does not. Move those lines above
-// `fn app_contains`, which has no doc. (t-contains-14)
+// 2026-10-13 claude: docs moved; both sides, and the cells the other members mention,
+// now compare by TVar::open_cell. No pin: I found no program that puts an alias of an
+// open cell in a union this function sees; the gates are green.
 fn shares_bare_cell(s0: &[Type]) -> bool {
+    let open = |tv: &TVar| tv.open_cell().map(|c| c.cell_addr());
     s0.iter()
         .filter_map(|m| match m {
-            Type::TVar(tv) if !tv.is_bound() => Some(tv.cell_addr()),
+            Type::TVar(tv) => open(tv),
             _ => None,
         })
         .any(|cell| {
             s0.iter().filter(|m| !is_unbound_tvar(m)).any(|m| {
                 let mut tvs: LPooled<AHashMap<arcstr::ArcStr, TVar>> = LPooled::take();
                 m.collect_tvars(&mut tvs);
-                tvs.values().any(|tv| tv.cell_addr() == cell)
+                tvs.values().any(|tv| open(tv) == Some(cell))
             })
         })
 }
@@ -215,6 +210,7 @@ fn nesting(t: &Type) -> usize {
     })
 }
 
+/// A variable whose chain of bindings ends open.
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
@@ -1932,12 +1928,6 @@ impl Type {
         })
     }
 
-    /// A constructor application (`self<'a>`, `'c<'b>`) against another
-    /// type, either way round. A bound constructor is its filled type;
-    /// an open one meets the other side decomposed on its outermost
-    /// form and binds the constructor variable by name, discharging its
-    /// bound through `find_impl`. A type with no last parameter is not
-    /// a constructor.
     /// `t0`, a union `s0` holding an open member, contains the members
     /// `s1` in that order: each goes to the first constructor member that
     /// fits it, and what none takes to the open member.
@@ -2026,6 +2016,12 @@ impl Type {
             && t.contains_int(flags, env, hist, self)?)
     }
 
+    /// A constructor application (`self<'a>`, `'c<'b>`) against another
+    /// type, either way round. A bound constructor is its filled type;
+    /// an open one meets the other side decomposed on its outermost
+    /// form and binds the constructor variable by name, discharging its
+    /// bound through `find_impl`. A type with no last parameter is not
+    /// a constructor.
     fn app_contains(
         &self,
         flags: BitFlags<ContainsFlags>,
