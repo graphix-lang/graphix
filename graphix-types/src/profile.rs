@@ -215,28 +215,20 @@ impl Task {
             module: module.is_some().then_some(0),
             modules: module.into_iter().map(|m| (m, [0; PHASES.len()])).collect(),
         };
-        let saved = PROFILE.with_borrow_mut(|p| std::mem::replace(p, fresh));
+        // the outgoing profile is charged up to the task, and its clock
+        // restarts after it: the task's costs reach it by the join alone
+        let saved = PROFILE.with_borrow_mut(|p| {
+            p.switch(p.current, now);
+            std::mem::replace(p, fresh)
+        });
         let r = f();
-        // CR claude for claude: [bug/low] The restored profile keeps the `last` it had
-        // before the task ran. Its next `switch` therefore charges the task's wall time
-        // on this thread to the parent's open phase, and `Task::join` then adds the
-        // task's own `self_ns` as well. Nested compile tasks double-count at every
-        // level: on repro 02, Typecheck1 reports 18.8 s of self time inside a 0.11 s
-        // interval. Switch the outgoing profile up to now before swapping in `fresh`.
-        // After restoring `saved`, set its `last` to `Instant::now()`, so that only the
-        // join adds the task's costs. probe:
-        // design/review-2026-10-12/repro/x-perf-compile-08-profile-double-count.sh
-        // (x-perf-compile-08)
-        // CR claude for claude: [bug/low] Restoring `saved` leaves its `last` where it
-        // was when the task started. A worker inside task A that blocks in a nested
-        // parallel check (`check_in_tasks` under a module) runs sibling task B on the
-        // same thread. A's next `switch` then charges all of B's wall time to A's open
-        // phase, and B's costs are merged again at B's join. So ModuleCheck/Typecheck0
-        // are counted twice exactly where the compile is parallel. Set `last` to
-        // `Instant::now()` on the restored profile so the interrupted span skips the
-        // nested task's time. (t-misc-07) (t-misc-07)
-        let mut ran = PROFILE.with_borrow_mut(|p| std::mem::replace(p, saved));
-        ran.switch(None, Instant::now());
+        let now = Instant::now();
+        let mut ran = PROFILE.with_borrow_mut(|p| {
+            let mut ran = std::mem::replace(p, saved);
+            p.last = now;
+            ran.switch(None, now);
+            ran
+        });
         let census = ran.census.as_mut().map(|c| {
             (
                 c.instances.drain().collect(),
