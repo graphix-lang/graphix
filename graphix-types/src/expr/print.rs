@@ -24,6 +24,61 @@ use triomphe::Arc;
 
 /// The `let pattern[: type] = ` of a bound seq trigger; the value
 /// follows under the trigger's own parenthesization.
+/// A seq's head up to its body: keyword, `let`, trigger and clauses, the
+/// trigger written by `trigger` (told whether it needs parentheses) and
+/// each clause's expression, between parentheses, by `clause`.
+fn write_seq_head<W: Write>(
+    w: &mut W,
+    s: &SeqExpr,
+    trigger: impl FnOnce(&mut W, &Expr, bool) -> fmt::Result,
+    mut clause: impl FnMut(&mut W, &Expr) -> fmt::Result,
+) -> fmt::Result {
+    write!(w, "{} ", if s.kind.queued() { "seqq" } else { "seq" })?;
+    if let Some(t) = &s.trigger {
+        let bound = matches!(t, SeqTrigger::Bind(_));
+        if let SeqTrigger::Bind(b) = t {
+            write_seq_let(w, b)?;
+        }
+        trigger(w, t.expr(), trigger_needs_parens(t.expr(), bound))?;
+    }
+    let mut first = s.trigger.is_none();
+    for (name, e) in [("abort", s.abort.as_ref()), ("flush", s.kind.flush())] {
+        if let Some(e) = e {
+            write!(w, "{}{name}", if first { "" } else { "; " })?;
+            first = false;
+            clause(w, e)?;
+        }
+    }
+    if !first {
+        write!(w, " ")?;
+    }
+    Ok(())
+}
+
+/// `write_seq_head` laid out, the trigger's continuation lines nested.
+fn pretty_seq_head(buf: &mut PrettyBuf, s: &SeqExpr) -> fmt::Result {
+    write_seq_head(
+        buf,
+        s,
+        |buf, t, parens| {
+            if parens {
+                write!(buf, "(")?;
+            }
+            buf.nested(|buf| t.fmt_pretty(buf))?;
+            buf.kill_newline();
+            if parens {
+                write!(buf, ")")?;
+            }
+            Ok(())
+        },
+        |buf, e| {
+            pretty_parens(buf, e)?;
+            buf.kill_newline();
+            Ok(())
+        },
+    )
+}
+
 fn write_seq_let(f: &mut impl Write, b: &BindExpr) -> fmt::Result {
     let rec = if b.rec { " rec" } else { "" };
     match &b.typ {
@@ -257,18 +312,10 @@ fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
             l.write_constraints(buf)?;
             write!(buf, "|")?;
         }
-        // CR claude for claude: [perf/medium] A seq reaches this fallback, and head_min
-        // counts only `seq {`, not the trigger. When the trigger does not fit,
-        // pretty_tail_bare lays out the whole seq body, finds that the first line
-        // overflows, rolls back and lays the body out again nested. That happens at
-        // every nesting level, so formatting time doubles per level: with --indent 2,
-        // depth 16 takes 1.1 s and depth 20 takes 7-13 s. A small indent in
-        // graphixfmt.json makes this reachable from the LSP's format-on-save. Give
-        // head_fits a Seq arm that writes the seq head (keyword, `let` binding,
-        // trigger, abort/flush clauses, ` {`) and measures its first line, as the
-        // Select arm does. Any other kind whose head_min understates its first line
-        // should get the same treatment. probe:
-        // design/review-2026-10-12/repro/t-print-02.gx (t-print-02)
+        Seq(s) => {
+            pretty_seq_head(buf, s)?;
+            write!(buf, "{{")?;
+        }
         k => return Ok(col + head_min(k) <= buf.limit),
     }
     let fits = col + buf.first_line_width(start) <= buf.limit;
@@ -1628,15 +1675,6 @@ fn ends_bodyless(e: &Expr) -> bool {
 /// empty body, which the arms' `{` would otherwise be read as.
 /// `select` and its scrutinee, continuation lines nested under it.
 fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
-    // CR claude for claude: [readability/low] The scrutinee is laid out with no
-    // nesting, so when it breaks (an operator chain) its continuation line starts at
-    // the column of the `let` that holds the select and reads like a new statement:
-    // `let r = select aaa +` / `bbb {`. The seq trigger in fmt_pretty_inner's Seq arm
-    // does the same. Lay both out inside buf.nested(..), as the arm guard already is,
-    // so continuation lines indent one step past the head. probe:
-    // design/review-2026-10-12/repro/t-print-07.gx (t-print-07)
-    // 2026-10-14 claude: the scrutinee is nested now (pretty_after, t-print-01); the
-    // seq trigger in fmt_pretty_inner's Seq arm is not yet.
     pretty_after(buf, "select", arg)?;
     buf.kill_newline();
     if ends_bodyless(arg) {
@@ -1732,48 +1770,9 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, ")")
             }
             Block { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";", false),
-            // CR claude for claude: [structure/low] The seq head (keyword, `let`
-            // binding, parenthesised trigger, the abort/flush clause loop with its
-            // `first` flag, the trailing space) is written here and again in Expr's
-            // Display Seq arm. The two copies differ only in how the trigger and clause
-            // expressions are emitted. A new clause must be added in both, and a missed
-            // one shows up only as a formatter reparse refusal. Write the head once,
-            // generic over the writer, with the sub-expression emitter passed in: `{e}`
-            // for flat, fmt_pretty + kill_newline for pretty. head_fits can then
-            // measure a seq's first line through the same writer (t-print-02).
-            // (t-print-09)
             Seq(s) => {
-                let SeqExpr { kind, trigger, abort, body } = &**s;
-                write!(buf, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
-                if let Some(t) = trigger {
-                    let bound = matches!(t, SeqTrigger::Bind(_));
-                    if let SeqTrigger::Bind(b) = t {
-                        write_seq_let(buf, b)?;
-                    }
-                    let t = t.expr();
-                    let parens = trigger_needs_parens(t, bound);
-                    if parens {
-                        write!(buf, "(")?;
-                    }
-                    t.fmt_pretty(buf)?;
-                    buf.kill_newline();
-                    if parens {
-                        write!(buf, ")")?;
-                    }
-                }
-                let mut first = trigger.is_none();
-                for (name, e) in [("abort", abort.as_ref()), ("flush", kind.flush())] {
-                    if let Some(e) = e {
-                        write!(buf, "{}{name}", if first { "" } else { "; " })?;
-                        first = false;
-                        pretty_parens(buf, e)?;
-                        buf.kill_newline();
-                    }
-                }
-                if !first {
-                    write!(buf, " ")?;
-                }
-                pretty_print_exprs(buf, body, "{", "}", ";", false)
+                pretty_seq_head(buf, s)?;
+                pretty_print_exprs(buf, &s.body, "{", "}", ";", false)
             }
             Until(e) => pretty_after(buf, "until", e),
             TryWith(t) => {
@@ -2455,31 +2454,16 @@ impl ExprKind {
             ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Block { exprs } => print_exprs(f, &**exprs, "{ ", " }", "; "),
             ExprKind::Seq(s) => {
-                let SeqExpr { kind, trigger, abort, body } = &**s;
-                write!(f, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
-                if let Some(t) = trigger {
-                    let bound = matches!(t, SeqTrigger::Bind(_));
-                    if let SeqTrigger::Bind(b) = t {
-                        write_seq_let(f, b)?;
-                    }
-                    let t = t.expr();
-                    if trigger_needs_parens(t, bound) {
-                        write!(f, "({t})")?;
-                    } else {
-                        write!(f, "{t}")?;
-                    }
-                }
-                let mut first = trigger.is_none();
-                for (name, e) in [("abort", abort.as_ref()), ("flush", kind.flush())] {
-                    if let Some(e) = e {
-                        write!(f, "{}{name}({e})", if first { "" } else { "; " })?;
-                        first = false;
-                    }
-                }
-                if !first {
-                    write!(f, " ")?;
-                }
-                print_exprs(f, body, "{ ", " }", "; ")
+                write_seq_head(
+                    f,
+                    s,
+                    |f, t, parens| match parens {
+                        true => write!(f, "({t})"),
+                        false => write!(f, "{t}"),
+                    },
+                    |f, e| write!(f, "({e})"),
+                )?;
+                print_exprs(f, &s.body, "{ ", " }", "; ")
             }
             ExprKind::Until(e) => write!(f, "until {e}"),
             ExprKind::TryWith(t) => {

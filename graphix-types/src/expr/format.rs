@@ -949,6 +949,37 @@ mod tests {
         );
     }
 
+    // a seq's head is measured once, not by laying out its body: nested
+    // seqs with long triggers format in linear time
+    #[test]
+    fn nested_seq_triggers_format_once() {
+        let mut src = String::from("let x0 = 1; x0");
+        for i in 1..=24 {
+            src = format!("let x{i} = seq {} {{ {src} }}; x{i}", "a".repeat(95));
+        }
+        let cfg = FormatConfig { indent: 2, ..FormatConfig::default() };
+        let start = std::time::Instant::now();
+        format_source(SourceKind::Program, &src, &cfg).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    // a select scrutinee or seq trigger that breaks continues nested past its
+    // head, never at the column of the `let` holding it
+    #[test]
+    fn a_broken_scrutinee_or_trigger_continues_nested() {
+        let a = "a".repeat(41);
+        let b = "b".repeat(53);
+        let src = format!(
+            "let f = |x| {{\n  let r = select {a} + {b} {{ 0 => 1, _ => 2 }};\n  let s = seq {a} ~ {b} {{ r }};\n  s\n}};\nf\n"
+        );
+        let out =
+            format_source(SourceKind::Program, &src, &FormatConfig::default()).unwrap();
+        for l in out.lines().filter(|l| l.trim_start().starts_with(&b)) {
+            assert!(l.starts_with("        "), "{l}\n{}", &*out)
+        }
+        stable(SourceKind::Program, &src);
+    }
+
     // a guard counts toward whether its arm's pattern stays on one line
     #[test]
     fn a_guarded_arm_fits() {
