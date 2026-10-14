@@ -1494,6 +1494,13 @@ impl fmt::Display for FnType {
     }
 }
 
+// CR claude for claude: [perf/low] A return-nested fn type (`fn() -> fn() -> ..
+// i64`) still costs superlinear time after the conjunct-pass fix: `graphix fmt`
+// of `let x: <fn() -> ×n> i64 = never()` takes 0.04 s at n=125, 0.27 s at 250
+// and 2.0 s at 500 (×8 per doubling, debug build), `--check` 0.09, 0.21 and 1.1
+// s. deep_nesting's fnret shape at the parser's limit (998) formats in 16 s.
+// Profile it (the flat-fit attempt at each level is a suspect for fmt; the check
+// side is not the printer). (x-perf-fnret-01)
 impl PrettyDisplay for FnType {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let constraints = printed_quantifiers(self);
