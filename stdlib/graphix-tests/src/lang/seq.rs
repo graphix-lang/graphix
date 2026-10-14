@@ -5,7 +5,7 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, as_i64s, eval},
+    testing::{FuseExpect, Mode, as_i64s, eval, refused},
 };
 use netidx::publisher::Value;
 
@@ -829,3 +829,9 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:1]")
 );
+
+// A `{ .. }` statement of declarations alone is no step, and neither is a
+// `let rec`, a try's included.
+run!(seq_declaration_block_refused, r#"seq { { type T = i64; use str }; 1 }"#, refused("a declaration is not a seq step"); FuseExpect::None);
+
+run!(seq_let_rec_try_refused, r#"seq { let rec x = try { 1 } with(e) { 2 }; x }"#, refused("let rec is not a seq step"); FuseExpect::None);

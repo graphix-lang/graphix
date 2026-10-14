@@ -724,13 +724,11 @@ impl Machine<'_> {
             let value = guard(entry_fire(rewrite(&cond, visible), self.pc));
             return Ok(Tails::from_iter([self.step(true, value, |_| LPooled::take())]));
         }
-        // CR claude for claude: [bug/low] This try branch runs before the `b.rec`
-        // refusal below, and the `Write::Let` it builds keeps only the pattern and the
-        // type. So `let rec x = try { 1 } with(e) { 2 }` is accepted as a plain `let`,
-        // while `let rec x = 1` here is refused ('let rec is not a seq step') and
-        // outside a seq a non-lambda `let rec` is refused too. Fix: refuse `b.rec`
-        // before taking the try branch, with the same 'let rec is not a seq step'
-        // error. probe: design/review-2026-10-12/repro/t-seq-07.gx (t-seq-07)
+        if let ExprKind::Bind(b) = &stmt.kind
+            && b.rec
+        {
+            return Err(anyhow!("let rec is not a seq step").at(stmt));
+        }
         if let Some((spec, t)) = try_of(stmt) {
             if stmt.dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
                 return Err(anyhow!(
@@ -762,17 +760,10 @@ impl Machine<'_> {
         // it so the module binding stays at the step's scope. probe:
         // design/review-2026-10-12/repro/x-expr-walks-02.gx (x-expr-walks-05)
         if is_declaration(stmt) {
-            return Err(anyhow!(
-                "a declaration is not a seq step: write it in a `{{ .. }}` statement \
-                 with the code that uses it, or outside the seq"
-            )
-            .at(stmt));
+            return Err(declaration_refused(stmt));
         }
         let k = match &stmt.kind {
             ExprKind::Bind(b) => {
-                if b.rec {
-                    return Err(anyhow!("let rec is not a seq step").at(stmt));
-                }
                 let value = decorated(&b.value, &stmt.dec);
                 let mut vis = scope(visible);
                 shadow_step(stmt, &mut vis);
@@ -1006,15 +997,7 @@ impl Machine<'_> {
             vals.push(r#ref(s.pos, &v));
         }
         let value = match vals.len() {
-            // CR claude for claude: [bug/low] A `{ .. }` seq statement that holds only
-            // declarations (`{ type T = i64; use str }`) gets `never()` as its value
-            // here. Its step never completes, so the seq stalls with no diagnostic, and
-            // --check accepts the program. Outside a seq the same block is refused ('a
-            // use declaration is not an expression'). Fix: refuse the block when `vals`
-            // is empty, with the message the seq-level declaration refusal in
-            // `lower_stmt` uses ('a declaration is not a seq step ..'). probe:
-            // design/review-2026-10-12/repro/t-seq-04.gx (t-seq-06)
-            0 => never(pos),
+            0 => return Err(declaration_refused(spec)),
             1 => vals.pop().unwrap(),
             n => {
                 let last = format_compact!("seqb{}", spec.id.inner());
@@ -1028,6 +1011,14 @@ impl Machine<'_> {
         body.push(value);
         Ok(block(pos, body.drain(..)))
     }
+}
+
+fn declaration_refused(e: &Expr) -> anyhow::Error {
+    anyhow!(
+        "a declaration is not a seq step: write it in a `{{ .. }}` statement with the \
+         code that uses it, or outside the seq"
+    )
+    .at(e)
 }
 
 /// What a statement's completion writes of its value `v`.
