@@ -792,3 +792,27 @@ run!(seq_qop_level_raises_after_entry, r#"{
     };
     caught
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "late"); FuseExpect::Jit);
+
+// A step whose call sits only in an untaken select arm re-enters on every
+// run: its call-free scrutinee fires at entry, so the standing level arm
+// re-emits.
+async fn select_level_arm_every_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let fetch = |k: i64| k * 100;
+        let cached = 7;
+        let hit = true;
+        let t = sys::time::timer(duration:20.ms, 4) ~ 3;
+        let runs = 0;
+        let r = seq let k = t {
+            let v = select hit { true => cached, false => fetch(k) };
+            v
+        };
+        runs <- r ~ runs + 1;
+        sys::time::after_idle(duration:100.ms, runs)
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [4]);
+    Ok(())
+}
+
+modes!(select_level_arm_every_run);

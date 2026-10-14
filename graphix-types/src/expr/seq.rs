@@ -1718,19 +1718,15 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             }
             ExprKind::Apply(call)
         }
-        // CR claude for claude: [bug/high] Under Rewrite::Issue, a step that holds a
-        // call only in a select arm is not entry-fired, because issue_expr sees
-        // has_call. This rewrite also leaves the scrutinee unsampled. When the taken
-        // arm is a standing level (`select hit { true => cached, false => fetch(k) }`
-        // with hit = true), nothing fires on re-entry, and the step completes on run 1
-        // and never again. The machine silently stalls, in both engines. Fix it as the
-        // Qop case does: under Rewrite::Issue with a call-free scrutinee, wrap the
-        // rewritten scrutinee in entry_fire(.., issue.pc), so a re-match re-emits a
-        // level arm while an arm holding an issued call stays guarded by its own
-        // completion. Pin it with a test that runs twice. probe:
-        // design/review-2026-10-12/repro/t-seq-02.gx (t-seq-02)
+        // A call-free scrutinee fires at entry, so a re-match re-emits a level
+        // arm while an arm holding an issued call waits on its own completion.
         ExprKind::Select(s) => ExprKind::Select(SelectExpr {
-            arg: Arc::new(rewrite(&s.arg, map)),
+            arg: Arc::new(match mode {
+                Rewrite::Issue(issue) if !has_call(&s.arg) => {
+                    entry_fire(rewrite(&s.arg, map), issue.pc)
+                }
+                _ => rewrite(&s.arg, map),
+            }),
             arms: Arc::from_iter(s.arms.iter().map(|(p, b)| {
                 let mut inner = scope(map);
                 p.structure_predicate.with_names(&mut |n| {
