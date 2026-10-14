@@ -128,7 +128,7 @@ impl EvalCachedAsync for TcpAcceptEv {
     // reply whose value owns a resource. CLAUDE.md lists `accept` under Latest, so the
     // choice is a semantics decision. probe:
     // design/review-2026-10-12/repro/x-builtin-effects-11.gx (x-builtin-effects-11)
-    // CR claude for claude: [bug/medium] Calls::Latest is wrong for accept because a
+    // XCR claude for claude: [bug/medium] Calls::Latest is wrong for accept because a
     // completed accept is not "an eval that loses nothing when dropped". Suppose the
     // trigger fires while an accept has already returned a stream but the runtime has
     // not joined its reply yet. Then CachedArgsAsync::renew releases the reply id,
@@ -139,7 +139,11 @@ impl EvalCachedAsync for TcpAcceptEv {
     // Calls::Fifo, one accept per fire, queued. If coalescing is wanted, a renew must
     // not discard an accept that has already completed. probe:
     // design/review-2026-10-12/repro/sys-io-08.gx (sys-io-08)
-    const CALLS: Calls = Calls::Latest;
+    // 2026-10-13 codex: tcp_accept_busy_trigger adapts the supplied 200-client
+    // probe and checks every connection is retained. The fixture passes --check,
+    // but neither its execution nor the before/after failure is verified here:
+    // this sandbox cannot run sockets. Review must run all four execution modes.
+    const CALLS: Calls = Calls::Fifo;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let _ = cached.0.get(1)?.as_ref()?;

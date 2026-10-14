@@ -201,3 +201,25 @@ const TCP_ACCEPT_DELETED: &str = r#"
 run!(tcp_accept_deleted, TCP_ACCEPT_DELETED, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
+
+const TCP_ACCEPT_BUSY_TRIGGER: &str = r#"
+{
+use sys::io::Read;
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(l)$;
+let clients = array::init(200, |i| sys::tcp::connect(addr)$);
+let ev = never();
+let held = array::map(clients, |c| { ev <- Read::read(c, u64:1) ~ 1; c });
+let lost = 0;
+lost <- ev ~ lost + 1;
+let conn = sys::tcp::accept(l, sys::time::timer(duration:1.ms, true))$;
+let all = [];
+all <- conn ~ array::push(all, conn);
+let r = (array::len(all), lost);
+sys::time::timer(duration:2900.ms, false) ~ r
+}
+"#;
+
+run!(tcp_accept_busy_trigger, TCP_ACCEPT_BUSY_TRIGGER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if matches!(&a[..], [Value::I64(200), Value::I64(0)]))
+}; FuseExpect::Jit);
