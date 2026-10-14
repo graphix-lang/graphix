@@ -829,7 +829,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 None | Some(_) => (),
             }
         }
-        let mut reply = None;
         if self.current.is_some() {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
@@ -848,25 +847,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     } else {
                         ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
                         ctx.event.variables.insert(self.x, TagValue::fired(v));
-                        reply = req.send_result.take();
                     }
                 }
             }
         }
-        // CR claude for claude: [dead/low] net.gx types on_write as `fn(v: 'a) -> _`,
-        // and the check refuses a callback that returns a value (`fn(v: i64) -> i64` is
-        // not contained). So this branch never yields a value and `reply.send` never
-        // runs. The `reply` taken from `req.send_result` is only dropped, which netidx
-        // answers as a Null write result. Delete the `reply` variable and this send.
-        // Keep `self.on_write.update(ctx)` for its effects and let send_result drop
-        // with the NetWrite. (sys-net-07)
-        if let Some(v) = graphix_package_core::seam_tick(self.on_write.update(ctx))
-            .map(|tv| tv.clone())
-        {
-            if let Some(reply) = reply {
-                reply.send(v.value())
-            }
-        }
+        self.on_write.update(ctx);
         self.out.ride()
     }
 
