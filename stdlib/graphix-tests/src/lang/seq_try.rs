@@ -247,6 +247,11 @@ async fn refusals() -> Result<()> {
             "seq { { let x = try { 1 } with(e) { 2 }; x } }",
             "try is a seq statement; write it at the seq level",
         ),
+        (
+            "seq { { until true; 1 } }",
+            "until is a seq statement; write it at the seq level",
+        ),
+        ("{ until true; 1 }", "`until` is only legal in a seq block"),
         ("seq { { catch(e) e; 1 } }", "catch is not allowed inside a seq"),
         ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
         (

@@ -2053,7 +2053,9 @@ fn seq_parses() {
     assert!(parse_one("let seqq = 1").is_err());
     assert!(parse_one("seqq").is_err());
     assert!(parse_one("seq").is_err());
-    assert!(parse_one("until x").is_err());
+    // `until` parses as `try` does; where it stands is the compile's to refuse
+    assert!(matches!(parse_one("until x").unwrap().kind, ExprKind::Until(_)));
+    assert!(parse_one("let until = 1").is_err());
 }
 
 #[test]

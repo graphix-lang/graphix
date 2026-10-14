@@ -923,14 +923,6 @@ where
         })
 }
 
-// CR claude for claude: [readability/low] `until` parses only as a seq statement
-// (seq_body_item). Inside a `{ .. }` block statement it hits the general expression
-// parser, and the user gets 'can't use keyword as a function or variable name' with a
-// dozen expected tokens. `try` in the same place gets a clear refusal from the seq
-// lowering ('try is a seq statement; write it at the seq level'). Fix: accept `until`
-// in a seq block's statements too and refuse it in the lowering with the same kind of
-// message ('until is a seq statement; write it at the seq level'). Also reported as
-// (x-engine-seq-errors-07). (book-core-18)
 fn until_expr<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1451,6 +1443,7 @@ parser! {
                 use_module(),
                 catch_stmt(),
                 try_with(),
+                until_expr(),
                 (position(), typedef())
                     .map(|(pos, td)| ExprKind::TypeDef(Arc::new(td)).to_expr(pos)),
                 (position(), trait_decl(false))

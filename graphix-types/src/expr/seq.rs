@@ -949,6 +949,12 @@ impl Machine<'_> {
                     anyhow!("try is a seq statement; write it at the seq level").at(s)
                 );
             }
+            if let ExprKind::Until(_) = s.kind {
+                return Err(anyhow!(
+                    "until is a seq statement; write it at the seq level"
+                )
+                .at(s));
+            }
             let v = format_compact!("seqb{}_{i}", spec.id.inner());
             match &s.kind {
                 ExprKind::NoOp => continue,
