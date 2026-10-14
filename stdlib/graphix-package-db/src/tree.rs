@@ -1,5 +1,5 @@
 use ahash::AHashMap;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
@@ -458,62 +458,52 @@ macro_rules! tree_op {
 /// A builtin over a tree and the encoding of its second argument (a key
 /// unless `$enc` says otherwise); a failed encoding is the builtin's DbErr.
 macro_rules! tree_arg_op {
-    ($ev:ident, $alias:ident, $name:literal, $enc:expr, $arg:ty,
+    ($ev:ident, $alias:ident, $name:literal, $enc:expr, $n:literal,
      |$t:ident, $k:pat_param| $body:expr) => {
         blocking_op!(
             $ev,
             $alias,
             $name,
-            (Tree, Result<$arg>),
-            |cached| {
-                let tree = get_tree_inner(cached, 0)?;
-                // CR claude for claude: [perf/low] prepare_args runs on the runtime
-                // thread during the cycle, so $enc (encode_key, the batch and get_many
-                // encoders) does O(n) encoding and allocation there, and only the sled
-                // call moves to the blocking thread. A db::batch of 100k ops stalls the
-                // cycle for the whole encoding before any I/O starts. Make Args the
-                // handle plus the raw argument Values (clones are cheap) and encode
-                // inside the blocking closure. That also removes the Result<$arg>
-                // plumbing. txn_op in txn.rs has the same shape and needs the same
-                // change. (db2-08)
-                let arg = $enc(&tree, cached)?;
-                Some((tree, arg))
-            },
-            |($t, arg)| {
-                let $k = arg?;
+            (Tree, [Value; $n]),
+            |cached| Some((get_tree_inner(cached, 0)?, raw_args(cached)?)),
+            |($t, args)| {
+                let $k = $enc(&$t, args)?;
                 $body
             }
         );
     };
     ($ev:ident, $alias:ident, $name:literal, |$t:ident, $k:pat_param| $body:expr) => {
-        tree_arg_op!($ev, $alias, $name, key_arg, GPooled<Vec<u8>>, |$t, $k| $body);
+        tree_arg_op!($ev, $alias, $name, key_arg, 1, |$t, $k| $body);
     };
+}
+
+pub(crate) fn raw_args<const N: usize>(cached: &CachedVals) -> Option<[Value; N]> {
+    let mut args = [const { Value::Null }; N];
+    for (arg, value) in args.iter_mut().zip(cached.0.get(1..=N)?) {
+        *arg = value.as_ref()?.clone();
+    }
+    Some(args)
 }
 
 pub(crate) fn key_arg(
     tree_key: impl KeyTyp,
-    cached: &CachedVals,
-) -> Option<Result<GPooled<Vec<u8>>>> {
-    Some(encode_key(tree_key.key_typ(), cached.0.get(1)?.as_ref()?))
+    [key]: [Value; 1],
+) -> Result<GPooled<Vec<u8>>> {
+    encode_key(tree_key.key_typ(), &key)
 }
 
-pub(crate) fn batch_arg(
-    tree: impl KeyTyp,
-    cached: &CachedVals,
-) -> Option<Result<sled::Batch>> {
-    match cached.0.get(1)?.as_ref()? {
-        Value::Array(a) => Some(parse_batch_ops(tree.key_typ(), a)),
-        v => Some(Err(anyhow!("not a batch: {v}"))),
+pub(crate) fn batch_arg(tree: impl KeyTyp, [batch]: [Value; 1]) -> Result<sled::Batch> {
+    match batch {
+        Value::Array(a) => parse_batch_ops(tree.key_typ(), &a),
+        v => bail!("not a batch: {v}"),
     }
 }
 
 pub(crate) fn insert_arg(
     tree: impl KeyTyp,
-    cached: &CachedVals,
-) -> Option<Result<(GPooled<Vec<u8>>, GPooled<Vec<u8>>)>> {
-    let k = cached.0.get(1)?.as_ref()?;
-    let v = cached.0.get(2)?.as_ref()?;
-    Some(encode_key(tree.key_typ(), k).and_then(|k| Ok((k, encode_value(v)?))))
+    [key, value]: [Value; 2],
+) -> Result<(GPooled<Vec<u8>>, GPooled<Vec<u8>>)> {
+    Ok((encode_key(tree.key_typ(), &key)?, encode_value(&value)?))
 }
 
 /// What knows a tree's key type: a tree or a transaction's tree.
@@ -529,34 +519,24 @@ impl KeyTyp for &Tree {
 
 fn many_keys_arg(
     tree: &Tree,
-    cached: &CachedVals,
-) -> Option<Result<GPooled<Vec<GPooled<Vec<u8>>>>>> {
-    let arr = match cached.0.get(1)?.as_ref()? {
-        Value::Array(a) => a,
-        v => return Some(Err(anyhow!("not an array of keys: {v}"))),
-    };
+    [keys]: [Value; 1],
+) -> Result<GPooled<Vec<GPooled<Vec<u8>>>>> {
+    let Value::Array(arr) = keys else { bail!("not an array of keys: {keys}") };
     let mut keys = ENCODE_MANY_POOL.take();
-    for k in arr.iter() {
-        match encode_key(tree.key_typ, k) {
-            Ok(k) => keys.push(k),
-            Err(e) => return Some(Err(e)),
-        }
+    for key in arr.iter() {
+        keys.push(encode_key(tree.key_typ, key)?);
     }
-    Some(Ok(keys))
+    Ok(keys)
 }
 
 type Swap = (GPooled<Vec<u8>>, Option<GPooled<Vec<u8>>>, Option<GPooled<Vec<u8>>>);
 
-fn swap_arg(tree: &Tree, cached: &CachedVals) -> Option<Result<Swap>> {
-    let opt = |i: usize| -> Option<Result<Option<GPooled<Vec<u8>>>>> {
-        Some(match cached.0.get(i)?.as_ref()? {
-            Value::Null => Ok(None),
-            v => encode_value(v).map(Some),
-        })
+fn swap_arg(tree: &Tree, [key, old, new]: [Value; 3]) -> Result<Swap> {
+    let opt = |v: &Value| match v {
+        Value::Null => Ok(None),
+        v => encode_value(v).map(Some),
     };
-    let key = key_arg(tree, cached)?;
-    let (old, new) = (opt(2)?, opt(3)?);
-    Some((|| Ok((key?, old?, new?)))())
+    Ok((encode_key(tree.key_typ, &key)?, opt(&old)?, opt(&new)?))
 }
 
 db_op!(DbFlushEv, DbFlush, "db_flush", |db| {
@@ -606,33 +586,26 @@ tree_arg_op!(
     DbInsert,
     "db_insert",
     insert_arg,
-    (GPooled<Vec<u8>>, GPooled<Vec<u8>>),
+    2,
     |t, (k, v)| value_or_null(t.tree.insert(&*k, v.as_slice())?)
 );
-tree_arg_op!(DbBatchEv, DbBatch, "db_batch", batch_arg, sled::Batch, |t, b| {
+tree_arg_op!(DbBatchEv, DbBatch, "db_batch", batch_arg, 1, |t, b| {
     t.tree.apply_batch(b)?;
     Ok(Value::Null)
 });
-tree_arg_op!(
-    DbGetManyEv,
-    DbGetMany,
-    "db_get_many",
-    many_keys_arg,
-    GPooled<Vec<GPooled<Vec<u8>>>>,
-    |t, keys| {
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        for k in keys.iter() {
-            vals.push(value_or_null(t.tree.get(&**k)?)?);
-        }
-        Ok(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
+tree_arg_op!(DbGetManyEv, DbGetMany, "db_get_many", many_keys_arg, 1, |t, keys| {
+    let mut vals: LPooled<Vec<Value>> = LPooled::take();
+    for k in keys.iter() {
+        vals.push(value_or_null(t.tree.get(&**k)?)?);
     }
-);
+    Ok(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
+});
 tree_arg_op!(
     DbCompareAndSwapEv,
     DbCompareAndSwap,
     "db_compare_and_swap",
     swap_arg,
-    Swap,
+    3,
     |t, (k, old, new)| {
         let old = old.as_ref().map(|v| v.as_slice());
         let new = new.as_ref().map(|v| v.as_slice());
@@ -880,9 +853,54 @@ impl TreeOpener for FromDb {
 pub(crate) type DbTree = CachedArgsAsync<OpenTreeEv<FromDb>>;
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
-    use std::{sync::mpsc, time::Duration};
+    use std::{
+        sync::mpsc,
+        thread::{self, ThreadId},
+        time::Duration,
+    };
+
+    pub(crate) fn cached<const N: usize>(values: [Value; N]) -> CachedVals {
+        let mut cached = CachedVals::new::<
+            graphix_rt::GXRt<graphix_rt::NoExt>,
+            graphix_compiler::NoUserEvent,
+        >(&[]);
+        cached.0 = Box::new(values.map(Some));
+        cached.1 = Box::new([graphix_compiler::Tag::FIRED; N]);
+        cached
+    }
+
+    static ENCODED_ON: Mutex<Option<ThreadId>> = Mutex::new(None);
+
+    fn probe_key_arg(tree: &Tree, args: [Value; 1]) -> Result<GPooled<Vec<u8>>> {
+        *ENCODED_ON.lock() = Some(thread::current().id());
+        key_arg(tree, args)
+    }
+
+    tree_arg_op!(
+        EncodingProbeEv,
+        EncodingProbe,
+        "db_encoding_probe",
+        probe_key_arg,
+        1,
+        |tree, key| value_or_null(tree.tree.get(&*key)?)
+    );
+
+    #[tokio::test]
+    async fn tree_encoding_runs_on_a_blocking_thread() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open_db(dir.path().to_str().unwrap().into()).await?;
+        let tree = wrap_tree(db.clone(), db.open_tree("t")?, Some(Typ::String));
+        let args =
+            EncodingProbeEv.prepare_args(&cached([tree, Value::from("key")])).unwrap();
+        assert!(ENCODED_ON.lock().is_none(), "prepare_args must not encode");
+        assert_eq!(EncodingProbeEv::eval(args).await, Value::Null);
+        assert_ne!(*ENCODED_ON.lock(), Some(thread::current().id()));
+        assert!(ENCODED_ON.lock().is_some());
+        let _: Option<EncodingProbe> = None;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn trees_keep_the_database_registered() -> Result<()> {

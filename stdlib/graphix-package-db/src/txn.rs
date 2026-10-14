@@ -2,7 +2,7 @@ use crate::{
     encoding::for_batch_ops,
     tree::{
         Db, KeyTyp, META_TREE, MetaStore, OpenTreeEv, TreeOpener, TreeTypes, blocking,
-        blocking_op, get_db, insert_arg, key_arg, meta_key, value_or_null,
+        blocking_op, get_db, insert_arg, key_arg, meta_key, raw_args, value_or_null,
     },
 };
 use ahash::AHashMap;
@@ -12,7 +12,7 @@ use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
 use netidx_value::Value;
 use parking_lot::Mutex;
-use poolshark::global::GPooled;
+use poolshark::local::LPooled;
 use sled::{
     IVec,
     transaction::{
@@ -249,18 +249,18 @@ graphix_package_core::impl_abstract_arc!(
     static TXN_TREE_WRAPPER = "db::txn::TxnTree"
 );
 
-type Writes = Vec<(IVec, Option<IVec>)>;
+type Writes = LPooled<Vec<(IVec, Option<IVec>)>>;
 
-fn writes_arg(tree: impl KeyTyp, cached: &CachedVals) -> Option<Result<Writes>> {
-    match cached.0.get(1)?.as_ref()? {
+fn writes_arg(tree: impl KeyTyp, [batch]: [Value; 1]) -> Result<Writes> {
+    match batch {
         Value::Array(a) => {
-            let mut writes = Vec::with_capacity(a.len());
-            let res = for_batch_ops(tree.key_typ(), a, |k, v| {
+            let mut writes: Writes = LPooled::take();
+            for_batch_ops(tree.key_typ(), &a, |k, v| {
                 writes.push((IVec::from(k), v.map(IVec::from)))
-            });
-            Some(res.map(|()| writes))
+            })?;
+            Ok(writes)
         }
-        v => Some(Err(anyhow!("not a batch: {v}"))),
+        v => bail!("not a batch: {v}"),
     }
 }
 
@@ -324,20 +324,19 @@ pub(crate) type DbTxnTree = CachedArgsAsync<OpenTreeEv<FromTxn>>;
 /// A builtin applying one operation to a transaction's tree, built from
 /// the encoding of its arguments; a failed encoding is its DbErr.
 macro_rules! txn_op {
-    ($ev:ident, $alias:ident, $name:literal, $enc:expr, $arg:ty,
+    ($ev:ident, $alias:ident, $name:literal, $enc:expr, $n:literal,
      |$t:ident, $a:pat_param| $body:expr) => {
         blocking_op!(
             $ev,
             $alias,
             $name,
-            (Arc<TxnTreeInner>, Result<$arg>),
+            (Arc<TxnTreeInner>, [Value; $n]),
             |cached| {
                 let tt = cached.abstract_arg::<TxnTreeValue>(0)?.inner.clone();
-                let arg = $enc(&tt, cached)?;
-                Some((tt, arg))
+                Some((tt, raw_args(cached)?))
             },
-            |(tt, arg)| {
-                let $a = arg?;
+            |(tt, args)| {
+                let $a = $enc(&tt, args)?;
                 tt.txn.with_state(|s| {
                     let $t = s.tree(tt.tree_idx)?;
                     $body
@@ -347,26 +346,13 @@ macro_rules! txn_op {
     };
 }
 
-txn_op!(DbTxnGetEv, DbTxnGet, "db_txn_get", key_arg, GPooled<Vec<u8>>, |t, key| t
-    .get(&key));
-txn_op!(
-    DbTxnRemoveEv,
-    DbTxnRemove,
-    "db_txn_remove",
-    key_arg,
-    GPooled<Vec<u8>>,
-    |t, key| t.put(&key, None)
-);
-txn_op!(
-    DbTxnInsertEv,
-    DbTxnInsert,
-    "db_txn_insert",
-    insert_arg,
-    (GPooled<Vec<u8>>, GPooled<Vec<u8>>),
-    |t, (key, value)| t.put(&key, Some(IVec::from(value.as_slice())))
-);
-txn_op!(DbTxnBatchEv, DbTxnBatch, "db_txn_batch", writes_arg, Writes, |t, writes| {
-    t.write.extend(writes);
+txn_op!(DbTxnGetEv, DbTxnGet, "db_txn_get", key_arg, 1, |t, key| t.get(&key));
+txn_op!(DbTxnRemoveEv, DbTxnRemove, "db_txn_remove", key_arg, 1, |t, key| t
+    .put(&key, None));
+txn_op!(DbTxnInsertEv, DbTxnInsert, "db_txn_insert", insert_arg, 2, |t, (key, value)| t
+    .put(&key, Some(IVec::from(value.as_slice()))));
+txn_op!(DbTxnBatchEv, DbTxnBatch, "db_txn_batch", writes_arg, 1, |t, mut writes| {
+    t.write.extend(writes.drain(..));
     Ok(Value::Null)
 });
 
@@ -409,3 +395,64 @@ impl EvalCachedAsync for DbTxnRollbackEv {
 pub(crate) type DbTxnRollback = CachedArgsAsync<DbTxnRollbackEv>;
 
 graphix_package_core::unit_image_state!(DbTxnBeginEv, DbTxnCommitEv, DbTxnRollbackEv);
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::tree::{open_db, test::cached};
+    use poolshark::global::GPooled;
+    use std::thread::{self, ThreadId};
+
+    static ENCODED_ON: Mutex<Option<ThreadId>> = Mutex::new(None);
+
+    fn probe_key_arg(
+        tree: &Arc<TxnTreeInner>,
+        args: [Value; 1],
+    ) -> Result<GPooled<Vec<u8>>> {
+        *ENCODED_ON.lock() = Some(thread::current().id());
+        key_arg(tree, args)
+    }
+
+    txn_op!(
+        EncodingProbeEv,
+        EncodingProbe,
+        "db_txn_encoding_probe",
+        probe_key_arg,
+        1,
+        |tree, key| tree.get(&key)
+    );
+
+    #[tokio::test]
+    async fn txn_encoding_runs_on_a_blocking_thread() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open_db(dir.path().to_str().unwrap().into()).await?;
+        let tree = TreeTxn {
+            tree: db.open_tree("t")?,
+            read: AHashMap::new(),
+            write: AHashMap::new(),
+        };
+        let txn = Arc::new(TxnInner {
+            state: Mutex::new(Some(TxnState {
+                trees: vec![tree],
+                opened: AHashMap::new(),
+                pending_meta: AHashMap::new(),
+                db,
+            })),
+        });
+        let tree = TXN_TREE_WRAPPER.wrap(TxnTreeValue {
+            inner: Arc::new(TxnTreeInner {
+                txn,
+                tree_idx: 0,
+                key_typ: Some(Typ::String),
+            }),
+        });
+        let args =
+            EncodingProbeEv.prepare_args(&cached([tree, Value::from("key")])).unwrap();
+        assert!(ENCODED_ON.lock().is_none(), "prepare_args must not encode");
+        assert_eq!(EncodingProbeEv::eval(args).await, Value::Null);
+        assert_ne!(*ENCODED_ON.lock(), Some(thread::current().id()));
+        assert!(ENCODED_ON.lock().is_some());
+        let _: Option<EncodingProbe> = None;
+        Ok(())
+    }
+}
