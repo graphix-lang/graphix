@@ -142,3 +142,21 @@ run!(
         _ => false,
     }
 );
+
+// An omitted field reads as null only where its type admits null: a
+// required string or array field left out is refused, never "null" or
+// [null].
+run!(omitted_required_field_refused, r##"{
+    let refused = |r: Any| select r { error as _ => true, _ => false };
+    let c: Result<{a: i64, b: string}, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(r#"{"a": 1}"#);
+    let n: Result<{a: i64, b: Array<[i64, null]>}, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(r#"{"a": 1}"#);
+    let t: Result<{a: i64, b: string}, [`TomlErr(string), `InvalidCast(string)]> =
+        toml::read("a = 1");
+    let o: Result<{a: i64, b: [string, null]}, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read(r#"{"a": 1}"#);
+    (refused(c), refused(n), refused(t), o$)
+}"##, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"[true, true, true, [["a", i64:1], ["b", null]]]"#)
+}; FuseExpect::None);

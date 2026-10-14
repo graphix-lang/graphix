@@ -702,8 +702,8 @@ impl Type {
                 if !sorted {
                     fields.sort_by_key(|(n, _)| *n);
                 }
-                // a field the data omits reads as null where null casts to its
-                // type (an optional field, a key a document leaves out)
+                // a field the data omits reads as null where its type admits
+                // null (an optional field, a key a document leaves out)
                 if fields.len() < ts.len() {
                     static NULL: Value = Value::Null;
                     let mut filled: SmallVec<[(&ArcStr, &Value); 8]> = SmallVec::new();
@@ -711,23 +711,11 @@ impl Type {
                     for (fname, ftyp, _) in ts.iter() {
                         match have.peek() {
                             Some((n, _)) if *n == fname => filled.extend(have.next()),
-                            // CR claude for claude: [bug/high] This guard fills an
-                            // omitted field whenever null CONVERTS to the field's type,
-                            // not only when null already inhabits it. Null converts to
-                            // string (as "null") and to Array<[T, null]> (as [null]).
-                            // So a required string field that a JSON or TOML document,
-                            // or a plain cast<T>, leaves out reads as the literal
-                            // string "null" instead of an InvalidCast. For example,
-                            // json::read("{\"a\": 1}") into {a: i64, b: string} gives
-                            // {a: 1, b: "null"}. Fill only when the field admits null
-                            // as-is: `matches!(ftyp.cast_int(env, cx, None, &NULL),
-                            // Ok(None))`, which is cast_inner's "already inhabits"
-                            // answer. Reword the CLAUDE.md sentence to "where the
-                            // field's type admits null". Pin a refusal for the string
-                            // and array cases next to toml_optional_field_round_trips.
-                            // probe: design/review-2026-10-12/repro/t-cast-setops-04.gx
-                            // (t-cast-setops-04)
-                            _ if ftyp.cast_int(env, cx, None, &NULL).is_ok() => {
+                            _ if matches!(
+                                ftyp.cast_int(env, cx, None, &NULL),
+                                Ok(None)
+                            ) =>
+                            {
                                 filled.push((fname, &NULL))
                             }
                             _ => return Err(self.cast_fail("struct size mismatch", v)),

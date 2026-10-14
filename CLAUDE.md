@@ -374,8 +374,8 @@ value exactly or is an `InvalidCast` (a float drops its fraction; a
 union target takes the first member in canonical order, narrowest
 integer first, that holds it), and the JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
-reads a field the data omits as null wherever null casts
-to the field's type (`typ/cast.rs`), and netidx-value casts an RFC3339
+reads a field the data omits as null wherever the field's type
+admits null (`typ/cast.rs`), and netidx-value casts an RFC3339
 string to a datetime and an array of numbers to bytes, so what the
 json and toml writers emit reads back into its type.
 A reference is not a number: a cast whose source can hold one is
