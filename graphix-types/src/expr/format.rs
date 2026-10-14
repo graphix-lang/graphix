@@ -1,8 +1,9 @@
 use crate::{
     PrintFlag,
     expr::{
-        Decorations, Expr, ExprKind, ModuleKind, Origin, SeqExpr, Sig, SigItem, SigKind,
-        StrForm, StructurePattern, TraitExpr, TraitMethod, TryWithExpr, UseItem,
+        Decorations, Expr, ExprKind, ModuleKind, Origin, SeqExpr, SeqTrigger, Sig,
+        SigItem, SigKind, StrForm, StructurePattern, TraitExpr, TraitMethod, TryWithExpr,
+        UseItem,
         parser::{parse, parse_sig},
         print::{
             PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items, use_seg,
@@ -436,14 +437,9 @@ impl<'a> Ornaments<'a> {
                 {
                     self.sig(sig)
                 }
-                // CR claude for claude: [test-gap/low] The pattern of `seq let
-                // <pattern> = trigger` (SeqTrigger::Bind) is never visited, because its
-                // BindExpr is not an ExprKind::Bind child. A printer change that
-                // rewrote a `r".."` or `""".."""` delimiter in a seq trigger pattern
-                // would therefore pass the refuse check, and `graphix fmt` would write
-                // it. Add an ExprKind::Seq arm that calls self.pattern on the trigger's
-                // pattern when it is SeqTrigger::Bind. Also add a seq trigger case to
-                // string_patterns_keep_their_delimiters. (t-format-resolver-05)
+                ExprKind::Seq(sq) if let Some(SeqTrigger::Bind(b)) = &sq.trigger => {
+                    self.pattern(&b.pattern)
+                }
                 _ => (),
             }
             e.for_each_child(&mut |c| self.expr(c))
@@ -496,17 +492,16 @@ pub fn format_source(
 ) -> Result<LPooled<String>> {
     let n = super::parser::shebang_len(text);
     if n > 0 {
-        // CR claude for claude: [bug/low] The text after the `#!` line is formatted as
-        // a fresh text, so every parse or refusal position that `fmt` (and the LSP's
-        // `format_source` error response) reports for a script with a shebang is one
-        // line too low. `--check` numbers lines through `without_shebang`, which keeps
-        // the newline for exactly this reason. Format the rest with that newline kept
-        // in front (as `without_shebang` does) and drop the extra leading newline from
-        // the output, so positions match the file. Probe:
-        // design/review-2026-10-12/repro/t-parser-a-11.gx. (t-parser-a-11)
-        let (line, rest) = text.split_at((n + 1).min(text.len()));
+        // the rest keeps the `#!` line's break, so its positions are the file's
+        let (line, rest) = text.split_at(n - usize::from(text[..n].ends_with('\r')));
+        let brk = match rest {
+            r if r.starts_with("\r\n") => "\r\n",
+            r if r.starts_with('\n') => "\n",
+            _ => "",
+        };
         let mut out: LPooled<String> = LPooled::take();
         out.push_str(line);
+        out.push_str(brk);
         out.push_str(&format_source(kind, rest, cfg)?);
         return Ok(out);
     }
@@ -642,6 +637,7 @@ mod tests {
             "select s { r\"C:\\p\\[x]\" => 1, \"\"\"t \"q\" [x]\"\"\" => 2, _ => 0 }",
         );
         stable(SourceKind::Program, "let `A(r\"a\\b\") = x; 1");
+        stable(SourceKind::Program, "seq let `A(r\"a\\b\") = x { 1 }");
     }
 
     #[test]
@@ -988,6 +984,28 @@ mod tests {
         let cfg = FormatConfig::default();
         fits(&format_source(SourceKind::Program, src, &cfg).unwrap(), cfg.width);
         stable(SourceKind::Program, src);
+    }
+
+    #[test]
+    fn a_shebang_line_stays_and_positions_count_it() {
+        use SourceKind::*;
+        formats_to(
+            Program,
+            "#!/usr/bin/env graphix\nlet x =   1;\nx\n",
+            "#!/usr/bin/env graphix\nlet x = 1;\nx\n",
+        );
+        formats_to(
+            Program,
+            "#!/usr/bin/env graphix\r\nlet x =   1;\r\nx\r\n",
+            "#!/usr/bin/env graphix\r\nlet x = 1;\r\nx\r\n",
+        );
+        let e = format_source(
+            Program,
+            "#!/usr/bin/env graphix\nlet x = 1 +\n",
+            &FormatConfig::default(),
+        )
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("line: 3"), "{e:#}");
     }
 
     #[test]
