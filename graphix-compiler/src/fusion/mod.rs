@@ -346,6 +346,30 @@ enum JitSlot {
     Unavailable,
 }
 
+enum EmissionSlot {
+    Root(Option<emit::Emission>),
+    Task(emit::Emission),
+    NonEmitting,
+}
+
+impl EmissionSlot {
+    fn as_ref(&self) -> Option<&emit::Emission> {
+        match self {
+            Self::Root(em) => em.as_ref(),
+            Self::Task(em) => Some(em),
+            Self::NonEmitting => None,
+        }
+    }
+
+    fn as_mut(&mut self) -> Option<&mut emit::Emission> {
+        match self {
+            Self::Root(em) => em.as_mut(),
+            Self::Task(em) => Some(em),
+            Self::NonEmitting => None,
+        }
+    }
+}
+
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, reached as
 /// `ctx.fusion.<x>`.
 pub struct FusionCtx {
@@ -359,7 +383,7 @@ pub struct FusionCtx {
     /// later compile may call an earlier one's lambda) and the functions
     /// waiting. Built with the JIT; a fusion task's is forked from its
     /// parent's ([`fuse_each`]).
-    emission: parking_lot::Mutex<Option<emit::Emission>>,
+    emission: parking_lot::Mutex<EmissionSlot>,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub stats: FusionStats,
@@ -378,7 +402,7 @@ impl FusionCtx {
     pub(crate) fn fork(&self) -> Self {
         Self {
             jit: self.jit.clone(),
-            emission: parking_lot::Mutex::new(None),
+            emission: parking_lot::Mutex::new(EmissionSlot::NonEmitting),
             stats: FusionStats::default(),
             top_id: self.top_id,
             share: None,
@@ -387,12 +411,15 @@ impl FusionCtx {
 
     pub(crate) fn join(&mut self, fork: Self) {
         self.stats.join(fork.stats);
-        if let Some(task) = fork.emission.into_inner() {
-            self.emission
+        match fork.emission.into_inner() {
+            EmissionSlot::Task(task) => self
+                .emission
                 .get_mut()
                 .as_mut()
                 .expect("a fusion task's parent emits")
-                .join(task)
+                .join(task),
+            EmissionSlot::NonEmitting => (),
+            EmissionSlot::Root(_) => panic!("a root emission cannot join as a task"),
         }
     }
 
@@ -430,23 +457,16 @@ impl FusionCtx {
     }
 
     /// What this context or task emits into, built with the JIT.
-    // CR claude for claude: [structure/low] `emission: Mutex<Option<Emission>>` cannot
-    // tell a root that has not emitted yet from a compile-task fork that must never
-    // emit. FusionCtx::fork leaves it None, so this function builds a fresh ROOT
-    // emission in a fork. A fork from CompileCtx::fork, such as a compile_each task,
-    // that reached cache_kernel or build_region would get a root emission. On join,
-    // FusionCtx::join would then either panic with "a fusion task's parent emits" or
-    // renumber a root emission's function ids as if it were a task's. Nothing does this
-    // today, but only by convention. Make the slot an enum (root, possibly unbuilt;
-    // task with its own fork; non-emitting fork), have fork() set the non-emitting
-    // state and emission() refuse it, and make join exhaustive over the cases.
-    // (f-mod-lowering-06)
     pub(crate) fn emission(
         &self,
     ) -> anyhow::Result<MappedMutexGuard<'_, emit::Emission>> {
         let mut em = self.emission.lock();
-        if em.is_none() {
-            *em = Some(self.jit()?.emission());
+        match &mut *em {
+            EmissionSlot::Root(root @ None) => *root = Some(self.jit()?.emission()),
+            EmissionSlot::Root(Some(_)) | EmissionSlot::Task(_) => (),
+            EmissionSlot::NonEmitting => {
+                anyhow::bail!("a non-emitting compile task cannot emit")
+            }
         }
         Ok(MutexGuard::map(em, |em| em.as_mut().expect("built above")))
     }
@@ -471,9 +491,11 @@ impl FusionCtx {
     /// How many regions this context emitted wait for the next link; a
     /// fusion task's count for nothing, it does not link.
     pub(crate) fn unlinked(&self) -> usize {
-        match self.emission.lock().as_ref() {
-            Some(em) if em.is_root() => em.unlinked(),
-            _ => 0,
+        match &*self.emission.lock() {
+            EmissionSlot::Root(Some(em)) => em.unlinked(),
+            EmissionSlot::Root(None)
+            | EmissionSlot::Task(_)
+            | EmissionSlot::NonEmitting => 0,
         }
     }
 
@@ -491,11 +513,11 @@ impl FusionCtx {
 
     fn with_jit(&mut self, f: impl FnOnce(&mut emit::Jit, Vec<emit::Pending>)) {
         let pending = match self.emission.get_mut() {
-            Some(em) => {
-                debug_assert!(em.is_root(), "only the context links");
-                em.take_pending()
+            EmissionSlot::Root(Some(em)) => em.take_pending(),
+            EmissionSlot::Root(None) => Vec::new(),
+            EmissionSlot::Task(_) | EmissionSlot::NonEmitting => {
+                panic!("only a root context links")
             }
-            None => Vec::new(),
         };
         let mut jit = self.jit.lock();
         let JitSlot::Built(jit) = &mut *jit else { return };
@@ -512,7 +534,7 @@ impl FusionCtx {
     pub fn new() -> Self {
         Self {
             jit: Arc::new(parking_lot::Mutex::new(JitSlot::Unbuilt)),
-            emission: parking_lot::Mutex::new(None),
+            emission: parking_lot::Mutex::new(EmissionSlot::Root(None)),
             stats: FusionStats::default(),
             top_id: None,
             share: None,
@@ -1109,7 +1131,7 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
         .map(|(i, p)| {
             let task = ctx.fork();
             *task.attr_census.lock() = census.clone();
-            *task.fusion.emission.lock() = Some(emission.fork());
+            *task.fusion.emission.lock() = EmissionSlot::Task(emission.fork());
             (i, p, task)
         })
         .collect();
@@ -1493,5 +1515,17 @@ pub(crate) fn sig_from_params(
         skipped_args: Vec::new(),
         tail_invariant: Vec::new(),
         site_block_words: std::sync::atomic::AtomicU64::new(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_emitting_fork_refuses_emission() {
+        let root = FusionCtx::new();
+        let fork = root.fork();
+        assert!(fork.emission().is_err());
     }
 }

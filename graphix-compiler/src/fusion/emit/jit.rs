@@ -941,12 +941,6 @@ impl Emission {
         }
     }
 
-    /// Whether this is the context's own emission, no layer of it frozen
-    /// for a fork: only it links.
-    pub(crate) fn is_root(&self) -> bool {
-        self.caches.base.is_none()
-    }
-
     /// How many regions wait for the next link.
     pub(crate) fn unlinked(&self) -> usize {
         self.pending.iter().filter(|p| matches!(p.of, PendingOf::Wrapper { .. })).count()
