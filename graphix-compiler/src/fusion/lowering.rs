@@ -1112,23 +1112,14 @@ fn each_arg_node<R: Rt, E: UserEvent>(
 }
 
 /// Is this an fn type once tvars deref and aliases expand?
-// CR claude for claude: [risk/low] Type::with_deref holds the TVar's read guards while
-// its closure runs, and this closure calls expand_refs, which reaches lookup_ref and
-// its locks. expand_ref_node avoids exactly this by cloning the binding out first,
-// because a guard held across lookup_ref can deadlock concurrent compiles. is_fn_shaped
-// runs in parallel fusion tasks (through body_fingerprint, instance_agrees,
-// formal_slots and capture_slots), and it is safe only while no fusion task writes a
-// cell, an invariant written down nowhere. Do what expand_ref_node does: match on
-// `t.deref_cloned()`, and call expand_refs only on the cloned Ref after the guard is
-// released. (f-mod-lowering-05)
 fn is_fn_shaped(t: &Type, env: &Env) -> bool {
-    t.with_deref(|t| match t {
+    match t.deref_cloned() {
         Some(Type::Fn(_)) => true,
         Some(r @ Type::Ref(_)) => {
-            expand_refs(r, env).with_deref(|t| matches!(t, Some(Type::Fn(_))))
+            expand_refs(&r, env).with_deref(|t| matches!(t, Some(Type::Fn(_))))
         }
         _ => false,
-    })
+    }
 }
 
 /// Per formal: is it passed unchanged (a `Ref` to its own binding) by
