@@ -1,19 +1,14 @@
-// CR claude for claude: [doc-drift/low] after_idle and timer both take `timeout:
-// [duration, Number]`, but neither doc says a number means seconds. Given an invalid
-// timeout (a negative number), timer returns a TimerError, but after_idle clears its
-// timer and never produces, with no report. Make after_idle report it as timer does (or
-// document the difference). Document seconds, and that repeat 0 stops a timer. The
-// graphix-lang skill also says 'a null timeout STOPS it', but this signature refuses
-// null at check, so correct the skill (or accept null here). probe:
-// design/review-2026-10-12/repro/gx-stdlib-09.gx (gx-stdlib-09)
 /// When v updates wait timeout and then return it. If v updates again
-/// before timeout expires, reset the timeout and continue waiting.
+/// before timeout expires, reset the timeout and continue waiting. A numeric
+/// timeout is a number of seconds. An invalid timeout is logged and leaves
+/// any pending timer armed; without a pending timer, no value is produced.
 val after_idle: fn(timeout: [duration, Number], v: 'a) -> 'a;
 
 /// timer will wait timeout and then update with the current time.
 /// If repeat is true, it will do this forever. If repeat is a number n,
 /// it will do this n times and then stop. If repeat is false, it will do
-/// this once.
+/// this once. A numeric timeout is a number of seconds. Setting repeat to
+/// zero stops the timer. An invalid timeout or repeat produces TimerError.
 val timer: fn(timeout: [duration, Number], repeat: [bool, Number]) -> Result<datetime, `TimerError(string)>;
 
 /// return the current time each time trigger updates

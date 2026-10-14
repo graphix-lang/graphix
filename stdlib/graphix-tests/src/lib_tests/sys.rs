@@ -119,3 +119,16 @@ const WRITE_EXACT_ZERO: &str = r#"
 run!(write_exact_zero, WRITE_EXACT_ZERO, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
+
+const AFTER_IDLE_INVALID_TIMEOUT: &str = r#"
+{
+    let timeout = 0.05;
+    timeout <- sys::time::after_idle(duration:10.ms, -1.0);
+    let result = sys::time::after_idle(timeout, 7);
+    result ~ (result == 7 && timeout == -1.0)
+}
+"#;
+
+run!(after_idle_invalid_timeout, AFTER_IDLE_INVALID_TIMEOUT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+}, timeout: 2; FuseExpect::Jit);

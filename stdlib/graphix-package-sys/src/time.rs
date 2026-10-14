@@ -15,9 +15,7 @@ use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError};
 use std::time::Duration;
 
-/// Drop a timer's private fire id: its timer, its reference and the value
-/// the runtime stored for it, which no one else can read.
-
+/// Emit the latest value after the inputs have been idle for the timeout.
 #[derive(Debug)]
 pub(crate) struct AfterIdle {
     /// The latest raw timeout value — re-cast when a delivery
@@ -105,27 +103,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         if let Some(secs) = &self.timeout_v
             && (timeout_up || val_up || (woke && self.last_v.is_some()))
         {
-            if let Some(old) = self.id.take() {
-                ctx.release_var(old, self.eid);
-            }
             match secs.clone().cast_to::<Duration>() {
                 Ok(dur) => {
+                    if let Some(old) = self.id.take() {
+                        ctx.release_var(old, self.eid);
+                    }
                     let id = BindId::new();
                     self.id = Some(id);
                     ctx.rt.ref_var(id, self.eid);
                     ctx.rt.set_timer(id, dur);
                     return self.out.ride();
                 }
-                // CR claude for claude: [bug/low] A timeout that does not cast to a
-                // Duration (e.g. -1) releases the armed timer and rides. A value
-                // already waiting is lost, and nothing is logged. after_idle returns
-                // 'a, so it has no error channel. Log the refusal under FAILURE_TARGET,
-                // as hot operators do. Release the old timer only once the new timeout
-                // has cast. probe: design/review-2026-10-12/repro/sys-io-11.gx
-                // (sys-io-11)
-                Err(_) => {
-                    self.id = None;
-                    return self.out.ride();
+                Err(e) => {
+                    log::error!(
+                        target: graphix_compiler::FAILURE_TARGET,
+                        "after_idle: invalid timeout {secs}: {e:#}"
+                    );
                 }
             }
         }
