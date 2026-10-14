@@ -151,6 +151,11 @@ type RefKey = (usize, Arc<[Type]>);
 /// array, whose arrays are never a list's cells.
 struct CastCx {
     hist: LPooled<AHashSet<(RefKey, usize)>>,
+    /// The params sizes on the path of each (definition, value address).
+    sizes: LPooled<AHashMap<(usize, usize), SmallVec<[usize; 2]>>>,
+    /// Each reference's expansion, by definition and params allocation,
+    /// with the params held so the allocation stays theirs.
+    expanded: LPooled<AHashMap<(usize, usize), (Arc<[Type]>, Type)>>,
     data: bool,
 }
 
@@ -841,37 +846,40 @@ impl Type {
             // `cx` is the current path, not a visited set: a name met
             // again on the same value expands without consuming it.
             Type::Ref(tr) => {
-                let t = match self.lookup_ref(env) {
-                    Ok(t) => t,
-                    Err(_) => return Err(self.cast_fail("undefined type", v)),
-                };
                 let Some(key) = ref_key(tr).map(|k| (k, (v as *const Value).addr()))
                 else {
                     return Err(self.cast_fail("undefined type", v));
                 };
+                let ek = (key.0.0, tr.params.as_ptr().addr());
+                let t = match cx.expanded.get(&ek) {
+                    Some((_, t)) => t.clone(),
+                    None => match self.lookup_ref(env) {
+                        Ok(t) => {
+                            cx.expanded.insert(ek, (tr.params.clone(), t.clone()));
+                            t
+                        }
+                        Err(_) => return Err(self.cast_fail("undefined type", v)),
+                    },
+                };
                 // the same definition over the same value with larger params
                 // grows at every level, the value never consumed
                 let size = params_size(&key.0.1);
-                // CR claude for claude: [perf/medium] This scans every (definition,
-                // value) pair on the current path at each Ref expansion. A recursive
-                // value n levels deep puts about n entries on the path, so a cast or
-                // type-directed read (cast, pack/json/toml reads, sys::net subscribe
-                // and call) costs O(n^2): a 40000-deep `type L = [`Cons(i64, L), `Nil]`
-                // adds about 2s of cast (probe:
-                // design/review-2026-10-12/repro/x-stack-cast-quadratic.gx). lookup_ref
-                // also re-expands the typedef at every level. Keep the path in a map
-                // keyed by (definition, value address) that holds that pair's params
-                // size, so the grows check is one lookup. Cache the expansion per
-                // (definition, params) as is_a's IsAHist does. (x-stack-04)
-                let grows = cx.hist.iter().any(|((d, ps), at)| {
-                    *d == key.0.0 && *at == key.1 && params_size(ps) < size
-                });
+                let at = (key.0.0, key.1);
+                let grows =
+                    cx.sizes.get(&at).is_some_and(|ss| ss.iter().any(|s| *s < size));
                 if grows || !cx.hist.insert(key.clone()) {
                     return Err(
                         self.cast_fail("the type recurses without consuming it", v)
                     );
                 }
+                cx.sizes.entry(at).or_default().push(size);
                 let r = t.cast_int(env, cx, src, v);
+                if let Some(ss) = cx.sizes.get_mut(&at) {
+                    ss.pop();
+                    if ss.is_empty() {
+                        cx.sizes.remove(&at);
+                    }
+                }
                 cx.hist.remove(&key);
                 r
             }
@@ -949,7 +957,12 @@ impl Type {
         data: bool,
         v: Value,
     ) -> Value {
-        let mut cx = CastCx { hist: LPooled::take(), data };
+        let mut cx = CastCx {
+            hist: LPooled::take(),
+            sizes: LPooled::take(),
+            expanded: LPooled::take(),
+            data,
+        };
         match self.cast_int(env, &mut cx, src, &v) {
             Ok(None) => v,
             Ok(Some(v)) => v,
