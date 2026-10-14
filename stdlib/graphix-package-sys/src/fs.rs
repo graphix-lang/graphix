@@ -74,15 +74,13 @@ impl EvalCachedAsync for FileSeekEv {
             let Some(mut kind) = stream.take().await else {
                 return errf!("IOError", "stream unavailable");
             };
-            let res = match &mut kind {
+            match &mut *kind {
                 StreamKind::File(f) => match f.seek(pos).await {
                     Ok(n) => Value::U64(n),
                     Err(e) => errf!("IOError", "seek failed: {e}"),
                 },
                 _ => errf!("IOError", "seek is only supported on file streams"),
-            };
-            stream.put(kind).await;
-            res
+            }
         }
     }
 }
@@ -116,15 +114,13 @@ impl EvalCachedAsync for FileFstatEv {
             let Some(kind) = stream.take().await else {
                 return errf!("IOError", "stream unavailable");
             };
-            let res = match &kind {
+            match &*kind {
                 StreamKind::File(f) => match f.metadata().await {
                     Ok(m) => convert_metadata(m),
                     Err(e) => errf!("IOError", "fstat failed: {e}"),
                 },
                 _ => errf!("IOError", "fstat is only supported on file streams"),
-            };
-            stream.put(kind).await;
-            res
+            }
         }
     }
 }
@@ -148,15 +144,13 @@ impl EvalCachedAsync for FileTruncateEv {
             let Some(kind) = stream.take().await else {
                 return errf!("IOError", "stream unavailable");
             };
-            let res = match &kind {
+            match &*kind {
                 StreamKind::File(f) => match f.set_len(len).await {
                     Ok(()) => Value::Null,
                     Err(e) => errf!("IOError", "truncate failed: {e}"),
                 },
                 _ => errf!("IOError", "truncate is only supported on file streams"),
-            };
-            stream.put(kind).await;
-            res
+            }
         }
     }
 }
@@ -294,3 +288,71 @@ graphix_package_core::unit_image_state!(
     WriteAllBinOp,
     RemoveFileOp
 );
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use futures::poll;
+    use std::{
+        io::{Seek, Write},
+        pin::pin,
+    };
+    use tokio::{io::AsyncReadExt, runtime::Builder, sync::oneshot};
+
+    fn abort_file_op<F: Future<Output = Value>>(op: impl FnOnce(Arc<Halves>) -> F) {
+        Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut file = tempfile::tempfile().unwrap();
+                file.write_all(b"hello").unwrap();
+                file.rewind().unwrap();
+                let stream = Arc::new(Halves::new(StreamKind::File(
+                    tokio::fs::File::from_std(file),
+                )));
+                let (release, blocked) = std::sync::mpsc::channel();
+                let (ready, started) = oneshot::channel();
+                let worker = tokio::task::spawn_blocking(move || {
+                    ready.send(()).unwrap();
+                    let _ = blocked.recv();
+                });
+                started.await.unwrap();
+                {
+                    let mut eval = pin!(op(stream.clone()));
+                    assert!(poll!(eval.as_mut()).is_pending());
+                    assert!(
+                        stream.r.try_lock().is_err(),
+                        "read half exposed during operation"
+                    );
+                    assert!(
+                        stream.w.try_lock().is_err(),
+                        "write half exposed during operation"
+                    );
+                }
+                release.send(()).unwrap();
+                worker.await.unwrap();
+                let mut guard = stream.reader().await;
+                let reader = guard.as_mut().expect("aborted operation lost the file");
+                let mut data = [0; 5];
+                reader.read_exact(&mut data).await.unwrap();
+                assert_eq!(&data, b"hello");
+            });
+    }
+
+    #[test]
+    fn aborted_fstat_preserves_file() {
+        abort_file_op(FileFstatEv::eval);
+    }
+
+    #[test]
+    fn aborted_seek_preserves_file() {
+        abort_file_op(|stream| FileSeekEv::eval((stream, SeekFrom::Start(0))));
+    }
+
+    #[test]
+    fn aborted_truncate_preserves_file() {
+        abort_file_op(|stream| FileTruncateEv::eval((stream, 5)));
+    }
+}

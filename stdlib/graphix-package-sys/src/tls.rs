@@ -15,8 +15,17 @@ use std::{
     ptr,
     sync::{Arc, Weak},
 };
-use tokio::time::timeout;
+use tokio::{net::TcpStream, time::timeout};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+async fn take_tcp(stream: &Halves) -> Result<TcpStream, Value> {
+    match stream.take().await {
+        Some(whole) => whole
+            .into_tcp()
+            .ok_or_else(|| errf!("TLSError", "stream is not a plain TCP stream")),
+        None => Err(errf!("TLSError", "stream unavailable")),
+    }
+}
 
 /// A handshake past `TLS_HANDSHAKE_TIMEOUT`: the stream is dropped.
 fn timed_out() -> Value {
@@ -110,14 +119,6 @@ impl EvalCachedAsync for TlsConnectEv {
 
     fn eval((ca_cert, hostname, sv): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let tcp = match sv.take().await {
-                Some(StreamKind::Tcp(tcp)) => tcp,
-                Some(other) => {
-                    sv.put(other).await;
-                    return errf!("TLSError", "stream is not a plain TCP stream");
-                }
-                None => return errf!("TLSError", "stream unavailable"),
-            };
             let mut root_store = rustls::RootCertStore::empty();
             match &ca_cert {
                 Some(pem) => {
@@ -125,13 +126,11 @@ impl EvalCachedAsync for TlsConnectEv {
                     {
                         Ok(c) => c,
                         Err(e) => {
-                            sv.put(StreamKind::Tcp(tcp)).await;
                             return errf!("TLSError", "invalid ca_cert PEM: {e}");
                         }
                     };
                     for cert in certs {
                         if let Err(e) = root_store.add(cert) {
-                            sv.put(StreamKind::Tcp(tcp)).await;
                             return errf!("TLSError", "invalid CA cert: {e}");
                         }
                     }
@@ -151,9 +150,12 @@ impl EvalCachedAsync for TlsConnectEv {
             ) {
                 Ok(sn) => sn,
                 Err(e) => {
-                    sv.put(StreamKind::Tcp(tcp)).await;
                     return errf!("TLSError", "invalid hostname: {e}");
                 }
+            };
+            let tcp = match take_tcp(&sv).await {
+                Ok(tcp) => tcp,
+                Err(e) => return e,
             };
             match timeout(TLS_HANDSHAKE_TIMEOUT, connector.connect(server_name, tcp))
                 .await
@@ -208,13 +210,9 @@ impl EvalCachedAsync for TlsAcceptEv {
                 Err(e) => return errf!("TLSError", "TLS config error: {e}"),
             };
             let acceptor = TlsAcceptor::from(Arc::new(config));
-            let tcp = match sv.take().await {
-                Some(StreamKind::Tcp(tcp)) => tcp,
-                Some(other) => {
-                    sv.put(other).await;
-                    return errf!("TLSError", "stream is not a plain TCP stream");
-                }
-                None => return errf!("TLSError", "stream unavailable"),
+            let tcp = match take_tcp(&sv).await {
+                Ok(tcp) => tcp,
+                Err(e) => return e,
             };
             match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
                 // consumes the TCP handle, as `connect` does

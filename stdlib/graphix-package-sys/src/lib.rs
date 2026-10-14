@@ -25,6 +25,7 @@ use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
     marker::PhantomData,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, LazyLock},
@@ -202,6 +203,50 @@ impl std::fmt::Debug for Halves {
     }
 }
 
+/// Holds both halves while an operation borrows the whole stream.
+pub(crate) struct Whole<'a> {
+    r: MutexGuard<'a, Option<ReadHalf<StreamKind>>>,
+    w: MutexGuard<'a, Option<WriteHalf<StreamKind>>>,
+    kind: Option<StreamKind>,
+}
+
+impl Whole<'_> {
+    pub(crate) fn into_tcp(mut self) -> Option<tokio::net::TcpStream> {
+        match self.kind.take()? {
+            StreamKind::Tcp(tcp) => Some(tcp),
+            other => {
+                self.kind = Some(other);
+                None
+            }
+        }
+    }
+}
+
+impl Deref for Whole<'_> {
+    type Target = StreamKind;
+
+    fn deref(&self) -> &Self::Target {
+        self.kind.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for Whole<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.kind.as_mut().unwrap()
+    }
+}
+
+impl Drop for Whole<'_> {
+    /// Put back what [Halves::take] took, unless the stream was consumed.
+    fn drop(&mut self) {
+        if let Some(kind) = self.kind.take() {
+            let (r, w) = tokio::io::split(kind);
+            *self.r = Some(r);
+            *self.w = Some(w);
+        }
+    }
+}
+
 impl Halves {
     fn new(kind: StreamKind) -> Self {
         let addrs = kind
@@ -223,19 +268,7 @@ impl Halves {
         self.addrs
     }
 
-    /// The whole stream, taken out; `None` if it is closed.
-    // CR claude for claude: [bug/medium] take leaves both halves None until the
-    // caller's put, and the evals of fstat, seek and truncate (FileFstatEv, FileSeekEv,
-    // FileTruncateEv) await I/O in between. CachedArgsAsync aborts a call in flight by
-    // dropping its future on sleep, on delete and on a seq abort. When that drop lands
-    // at the metadata/seek/set_len await, or inside put's lock awaits, the File is
-    // dropped and every later operation on the handle fails with "stream unavailable",
-    // even though nothing closed it. Probe:
-    // design/review-2026-10-12/repro/x-builtin-effects-02.gx, where an fstat in an arm
-    // that sleeps one cycle loses the file in about 1 run in 4. Fix: have take return a
-    // guard that owns the StreamKind and splits it back into the halves on Drop, so a
-    // dropped future restores the stream, and add a pin that aborts each of the three
-    // calls mid-flight and then reads the file. (x-builtin-effects-02)
+    /// Borrow the whole stream under both locks; `None` if it is closed.
     // CR claude for claude: [bug/medium] take waits on the read lock, and a Lines
     // reader (line_reader) holds that lock across every pending read until EOF. On a
     // socket whose peer is silent until the ClientHello arrives (STARTTLS),
@@ -246,19 +279,7 @@ impl Halves {
     // back its unconsumed bytes (a push-back buffer in the read slot that the upgrade
     // or the next read drains), and put the take under the handshake timeout. probe:
     // design/review-2026-10-12/repro/sys-io-06.gx (sys-io-06)
-    // CR claude for claude: [bug/high] take() releases both locks while the halves are
-    // empty. Until put() runs, every other user of the stream sees the "closed" state.
-    // A read, write or flush beside a sys::fs seek, fstat or truncate returns IOError
-    // "stream unavailable". A running lines/lines_batched reader breaks out of
-    // line_reader and ends without any error, so a tail-style program that also polls
-    // fstat silently stops getting lines. The fix: hold both guards for the whole
-    // operation, for example a take that returns a guard owning both MutexGuards, which
-    // re-splits and restores the halves in its Drop. Concurrent readers then wait
-    // rather than see None, and an aborted eval cannot lose the stream either (see
-    // x-builtin-effects-02). probe:
-    // design/review-2026-10-12/repro/x-builtin-effects-01.gx (and
-    // x-builtin-effects-01-fstat-read-race.gx) (x-builtin-effects-01)
-    // CR claude for claude: [bug/high] take() moves both halves out and releases both
+    // XCR claude for claude: [bug/high] take() moves both halves out and releases both
     // locks, so for the length of the op its callers await (FileSeekEv, FileFstatEv,
     // FileTruncateEv, the TLS upgrade) the Halves reads as closed. A concurrent
     // seek/fstat/truncate fails with "stream unavailable" and read/write see a closed
@@ -271,26 +292,22 @@ impl Halves {
     // cannot drop the stream. The TLS upgrade, which consumes the stream, must take it
     // under the held guards and leave the Halves marked closed in the same critical
     // section. probe: design/review-2026-10-12/repro/sys-io-01.gx (sys-io-01)
-    pub(crate) async fn take(&self) -> Option<StreamKind> {
+    // 2026-10-13 codex: aborted_fstat_preserves_file, aborted_seek_preserves_file,
+    // aborted_truncate_preserves_file and close_waits_for_whole_stream_operation
+    // fail without the guard and pass with it. rejecting_non_tcp_restores_stream
+    // pins refusal without consuming a handle. TLS socket tests cannot run here;
+    // review the configuration-before-consumption change in tls.rs.
+    pub(crate) async fn take(&self) -> Option<Whole<'_>> {
         let mut r = self.r.lock().await;
         let mut w = self.w.lock().await;
         match (r.take(), w.take()) {
-            (Some(rh), Some(wh)) => Some(rh.unsplit(wh)),
+            (Some(rh), Some(wh)) => Some(Whole { r, w, kind: Some(rh.unsplit(wh)) }),
             (rh, wh) => {
                 *r = rh;
                 *w = wh;
                 None
             }
         }
-    }
-
-    /// Put back what [`Self::take`] took.
-    pub(crate) async fn put(&self, kind: StreamKind) {
-        let (rh, wh) = tokio::io::split(kind);
-        let mut r = self.r.lock().await;
-        let mut w = self.w.lock().await;
-        *r = Some(rh);
-        *w = Some(wh);
     }
 
     /// Shut the write half down and drop both: the read half at once if
@@ -812,4 +829,34 @@ graphix_derive::defpackage! {
         dirs_mod::TemplateDir,
         dirs_mod::VideoDir,
     ],
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use futures::poll;
+    use std::pin::pin;
+
+    #[tokio::test]
+    async fn close_waits_for_whole_stream_operation() {
+        let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let stream = Arc::new(Halves::new(StreamKind::File(file)));
+        let whole = stream.take().await.unwrap();
+        let mut close = pin!(stream.close());
+        assert!(poll!(close.as_mut()).is_pending());
+        drop(whole);
+        close.await.unwrap();
+        assert!(stream.reader().await.is_none());
+        assert!(stream.writer().await.is_none());
+        assert!(stream.take().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejecting_non_tcp_restores_stream() {
+        let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let stream = Halves::new(StreamKind::File(file));
+        assert!(stream.take().await.unwrap().into_tcp().is_none());
+        assert!(stream.reader().await.is_some());
+        assert!(stream.writer().await.is_some());
+    }
 }
