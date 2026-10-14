@@ -3549,3 +3549,19 @@ run!(select_refuses_mixed_mutability, r#"{
     };
     f(&x)
 }"#, refused("this pattern can't tell &mut i64 from &i64"); FuseExpect::None);
+
+// A recursive pair met again inside its own difference subtracts nothing:
+// Error<T> less Error<U> keeps Error<Array<T>>, which no later arm covers.
+run!(
+    recursive_difference_keeps_what_it_did_not_cover,
+    refused("no arm covers Error<Array<T>>"),
+    "/test.gx" => r#"
+        type T = [`B, Array<T>];
+        type U = [`A, Array<U>];
+        let f = |x: [Error<T>, i64]| select x {
+          Error<U> as u => "U",
+          v => select v { i64 as n => "int", Error<`B> as e => "B-error" }
+        };
+        let result = f(error([`B]))
+    "#
+; FuseExpect::None);

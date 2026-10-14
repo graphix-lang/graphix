@@ -528,22 +528,9 @@ impl Type {
                 }
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                // CR claude for claude: [bug/high] Seeding the in-progress (ref, ref)
-                // pair with an empty difference assumes the subtrahend covers the
-                // minuend while that is still being computed. The List/Array arm reads
-                // that empty value as "covered" and drops the whole collection, and the
-                // Error arm turns the wrong residual into Error<residual>. For T = [`B,
-                // Array<T>] and U = [`A, Array<U>], Error<T> - Error<U> comes out as
-                // Error<`B>. The arm after an `Error<U> as` arm is then judged
-                // exhaustive with only i64 and Error<`B> arms, and error([`B]) reaches
-                // no arm at run time (an abort under GRAPHIX_ABORT_ON_NO_MATCH). Fix:
-                // decide the List/Array/Error "covered" test with the coinductive
-                // containment check (`contains_with_flags` with t1 containing t0)
-                // instead of an emptiness test on a diff that reads a provisional memo,
-                // or seed the memo with the conservative residual (t0, nothing
-                // subtracted) instead of empty. probe:
-                // design/review-2026-10-12/repro/t-cast-setops-07.gx (t-cast-setops-07)
-                hist.insert(key, Type::Primitive(BitFlags::empty()));
+                // a pair met again inside its own difference subtracts
+                // nothing: assuming it covered would drop what it did not
+                hist.insert(key, self.clone());
                 let r = t0.diff_int(env, hist, &t1);
                 hist.remove(&key);
                 r
