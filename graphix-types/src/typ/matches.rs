@@ -353,6 +353,10 @@ impl Type {
             // scratch copy of `tvar_map` and committing only a full assignment. probe:
             // design/review-2026-10-12/repro/t-fntyp-07/ (main.gx, m.gx, m.gxi).
             // (t-fntyp-09)
+            // 2026-10-14 claude: a pairing decided at the set cannot be right in general: in
+            // the probe both pairings fit `x`, and only `y`, matched after it, tells them
+            // apart. The search has to span the whole signature (or the set positions go
+            // last, then a backtracking pairing over scratch maps).
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
                 for (t0, t1) in s0.iter().zip(s1.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
