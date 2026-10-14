@@ -320,6 +320,20 @@ pub fn is_do_block(part: &str) -> bool {
     part.strip_prefix("#do").is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// A lexical scope as the source names it: every generated block
+/// component dropped.
+pub fn written_scope(scope: &str) -> compact_str::CompactString {
+    let mut out = compact_str::CompactString::new("");
+    for part in netidx_core::path::Path::parts(scope).filter(|p| !is_block_component(p)) {
+        out.push('/');
+        out.push_str(part);
+    }
+    if out.is_empty() {
+        out.push('/');
+    }
+    out
+}
+
 /// The module root of a lexical scope path: the path minus trailing
 /// generated block components.
 pub fn mod_root(mut scope: &str) -> &str {

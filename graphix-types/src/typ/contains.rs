@@ -827,24 +827,10 @@ impl Type {
                 });
                 return Some(match hidden {
                     None => anyhow::anyhow!("{m} does not implement {name}"),
-                    // CR claude for claude: [readability/low] im.scope is the impl's
-                    // synthetic module path, so the user reads "the impl in module
-                    // a::#impl4611686018427393777 is not in its interface". The
-                    // `#impl<id>` segment is an internal ExprId that changes between
-                    // runs and names nothing in the source. Print the enclosing user
-                    // module (the scope with the synthetic segment dropped), and if
-                    // possible the impl's source position. (x-rerun-1-15)
-                    // CR claude for claude: [readability/low] This message prints
-                    // im.scope, the impl's generated block scope, so the user reads
-                    // "the impl in module a::#impl4611686018427393767 is not in its
-                    // interface" and sees an internal relocated id. Print
-                    // mod_root(&im.scope), which names the module that declares the
-                    // impl. Also reported as (x-typecheck-patterns-09).
-                    // (tests-modules-image-05)
                     Some(im) => anyhow::anyhow!(
                         "{m} does not implement {name} here: the impl in module {} is \
                          not in its interface (declare `impl {name} for {m};` there)",
-                        im.scope
+                        crate::written_scope(&im.scope)
                     ),
                 });
             }

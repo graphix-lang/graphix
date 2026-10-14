@@ -1163,7 +1163,7 @@ run!(
 // stands between them.
 run!(
     undeclared_impl_hidden_apart,
-    refused("is not in its interface"),
+    refused("the impl in module /test/a is not in its interface"),
     "/test.gx" => r#"
         mod t;
         mod a;
