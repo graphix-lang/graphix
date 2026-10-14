@@ -571,6 +571,21 @@ impl Type {
                 hist.remove(&key);
                 r
             }
+            (Type::App(c, a), t) if let Some(filled) = Type::app_filled(c, a) => {
+                filled.diff_int(env, hist, t)
+            }
+            (t0, Type::App(c, a)) if let Some(filled) = Type::app_filled(c, a) => {
+                t0.diff_int(env, hist, &filled)
+            }
+            (Type::App(..), Type::Any) => Ok(Type::Primitive(BitFlags::empty())),
+            (Type::TVar(tv), t @ Type::App(..)) | (t @ Type::App(..), Type::TVar(tv))
+                if let Some(b) = tv.binding() =>
+            {
+                match self {
+                    Type::TVar(_) => b.diff_int(env, hist, t),
+                    _ => t.diff_int(env, hist, &b),
+                }
+            }
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)

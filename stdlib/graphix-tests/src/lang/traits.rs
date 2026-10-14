@@ -1790,3 +1790,44 @@ run!(trait_any_bound_does_not_imply_ordered, r#"{
     let a = 1;
     Cmp::lt(W(1), &a, &a)
 }"#, refused("the implementation requires 'a: Ordered"); FuseExpect::None);
+
+// A select over an open constructor application: a wildcard, a capture,
+// a null test beside it and a tuple pattern around it each match what
+// the constructor's bound admits.
+run!(
+    select_over_ctor_application,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if a[..] == [Value::I64(1), Value::I64(3), Value::I64(0), Value::I64(2)]),
+    "/test.gx" => r#"
+        let anyarm = 'c: Collection |xs: 'c<i64>| select xs { _ => 1 };
+        let len = |xs: Collection| select xs { v => Collection::len(v) };
+        let opt = 'c: Collection |xs: ['c<i64>, null]| select xs { null as _ => 0, _ => 2 };
+        let tup = 'c: Collection |p: ('c<i64>, bool)| select p {
+            (x, true) => Collection::len(x),
+            (_, false) => 0
+        };
+        let result = (anyarm([1]), len([1, 2, 3]), opt(null), tup(([1, 2], true)))
+    "#
+);
+
+// A second wildcard over an application is dead.
+run!(
+    select_over_ctor_application_dead_wildcard,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"),
+    "/test.gx" => r#"
+        let f = 'c: Collection |xs: 'c<i64>| select xs { _ => 1, _ => 2 };
+        let result = f([1])
+    "#
+    ; FuseExpect::None
+);
+
+// No head of Collection is null.
+run!(
+    select_over_ctor_application_null_arm_dead,
+    refused("pattern null will never match"),
+    "/test.gx" => r#"
+        let f = 'c: Collection |xs: 'c<i64>| select xs { null as _ => 0, _ => 2 };
+        let result = f([1])
+    "#
+    ; FuseExpect::None
+);

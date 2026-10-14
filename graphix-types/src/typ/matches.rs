@@ -96,36 +96,13 @@ impl Type {
                 hist.remove(&key);
                 r
             }
-            // CR claude for claude: [bug/medium] This arm judges every unfilled
-            // constructor application by `==`, and it sits ahead of the Any, Bottom and
-            // TVar arms. So a select over a constructor-trait value (`|c: Collection|`,
-            // `'c: Collection |c: 'c|`) refuses `_` as "pattern Any will never match
-            // 'c<..>". A capture `x` and a tuple pattern `(x, true)` are refused as
-            // well, even when the pattern and the scrutinee print identically. An open
-            // constructor can become any constructor, so it should overlap the way an
-            // open TVar does. Fix: move the Any/Bottom arms ahead of this one. Treat an
-            // App whose constructor is an unbound variable like an unbound TVar: true,
-            // or decompose it through the constructor's shape when the other side has
-            // one. Keep `==` only for two applications that cannot be decomposed.
-            // Probe: design/review-2026-10-12/repro/t-contains-02-app-wildcard.gx.
-            // (t-contains-02)
-            // CR claude for claude: [bug/high] This arm answers `self == t` for any
-            // pair with an unfilled constructor application on either side. It comes
-            // before the Any, TVar and Set arms, so Any against 'c<i64> answers false,
-            // and so does a distinct but equal copy of 'c<T>. select's Reach::arm then
-            // calls the arm dead. As a result every select whose scrutinee holds 'c<..>
-            // under 'c: Collection, or a `c: Collection` parameter, is refused at the
-            // definition, `_` included. Dropping the arm gives "missing match cases",
-            // so no spelling of the select works. Fix: handle Any, Bottom, TVar and Set
-            // before this arm. An unfilled App could match whatever its constructor's
-            // bound admits, so (App, x) should be true unless x is a concrete shape the
-            // bound excludes. Compare (App, App) by constructor and by could_match on
-            // the arguments, not by `==`. Add pins for `_` over 'c<i64>, a binding arm
-            // over `c: Collection` and a null arm over ['c<i64>, null]. probe:
-            // design/review-2026-10-12/repro/x-rerun-6-01.gx (x-rerun-6-01)
-            (Type::App(..), _)
-            | (_, Type::App(..))
-            | (Type::Hole, _)
+            (Type::App(c, a), t1) => {
+                Self::app_could_match(c, a, env, |f| f.could_match_int(env, hist, t1))
+            }
+            (t0, Type::App(c, a)) => {
+                Self::app_could_match(c, a, env, |f| t0.could_match_int(env, hist, f))
+            }
+            (Type::Hole, _)
             | (_, Type::Hole)
             | (Type::Concrete, _)
             | (Type::Function, _)
@@ -243,6 +220,32 @@ impl Type {
             | (_, Type::Map { .. })
             | (Type::Map { .. }, _) => Ok(false),
         }
+    }
+
+    /// Whether an application of the open constructor `c` to `a` could
+    /// match: as some head `c`'s trait bounds register, filled with `a`,
+    /// could; as anything when no bound names a head.
+    fn app_could_match(
+        c: &Type,
+        a: &Type,
+        env: &Env,
+        mut could: impl FnMut(&Type) -> Result<bool>,
+    ) -> Result<bool> {
+        let Type::TVar(cv) = c else { return Ok(true) };
+        let mut bounded = false;
+        for b in cv.cell_constraints().iter() {
+            let Type::Ref(tr) = b else { continue };
+            let Some(tid) = env.trait_of_ref(tr) else { continue };
+            let Some(heads) = env.impls_of(tid) else { continue };
+            for im in heads.iter() {
+                let Some(filled) = im.target.reset_tvars().fill_hole(a) else { continue };
+                bounded = true;
+                if could(&filled)? {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(!bounded)
     }
 
     pub fn could_match(&self, env: &Env, t: &Self) -> Result<bool> {
