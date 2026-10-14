@@ -354,27 +354,11 @@ impl EvalCachedAsync for ProcessKillEv {
 
 pub(crate) type ProcessKill = CachedArgsAsync<ProcessKillEv>;
 
-#[derive(Debug, Default)]
-pub(crate) struct ProcessPidEv;
-
-impl EvalCachedAsync for ProcessPidEv {
-    const NAME: &str = "sys_process_pid";
-    type Args = ProcValue;
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_proc(cached, 0)
-    }
-
-    fn eval(proc: Self::Args) -> impl Future<Output = Value> + Send {
-        async move { Value::I64(proc.inner.pid) }
-    }
+fn fc_pid(args: &[Value]) -> Option<Value> {
+    let Value::Abstract(a) = &args[0] else { return None };
+    Some(Value::I64(a.downcast_ref::<ProcValue>()?.inner.pid))
 }
 
-pub(crate) type ProcessPid = CachedArgsAsync<ProcessPidEv>;
+graphix_package_core::fast_builtin!(pub(crate) ProcessPid, ProcessPidEv, "sys_process_pid", fc_pid);
 
-graphix_package_core::unit_image_state!(
-    ProcessSpawnEv,
-    ProcessWaitEv,
-    ProcessKillEv,
-    ProcessPidEv
-);
+graphix_package_core::unit_image_state!(ProcessSpawnEv, ProcessWaitEv, ProcessKillEv);

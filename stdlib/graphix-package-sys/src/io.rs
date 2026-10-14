@@ -10,7 +10,9 @@ use graphix_compiler::{
     image::{self, ImageBuf},
     typ::FnType,
 };
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, seam_value};
+use graphix_package_core::{
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_value,
+};
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, ValArray, Value};
 use parking_lot::Mutex;
@@ -540,65 +542,32 @@ impl EvalCachedAsync for IoCloseEv {
 
 pub(crate) type IoClose = CachedArgsAsync<IoCloseEv>;
 
-#[derive(Debug, Default)]
-pub(crate) struct IoStdinEv;
+macro_rules! stdio {
+    ($name:ident, $ev:ident, $builtin:literal, $kind:ident, $constructor:ident) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
 
-impl EvalCachedAsync for IoStdinEv {
-    type Args = ();
+        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
+            const NAME: &str = $builtin;
+            const EFFECT: Effect = Effect::Sync;
 
-    const NAME: &str = "sys_io_stdin";
+            fn eval(
+                &mut self,
+                _ctx: &mut ExecCtx<'_, R, E>,
+                cached: &CachedVals,
+            ) -> Option<Value> {
+                cached.0.first()?.as_ref()?;
+                Some(wrap_stdio(StreamKind::$kind(tokio::io::$constructor())))
+            }
+        }
 
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        cached.0.get(0)?.as_ref()?;
-        Some(())
-    }
-
-    fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
-        async { wrap_stdio(StreamKind::Stdin(tokio::io::stdin())) }
-    }
+        pub(crate) type $name = CachedArgs<$ev>;
+    };
 }
 
-pub(crate) type IoStdin = CachedArgsAsync<IoStdinEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct IoStdoutEv;
-
-impl EvalCachedAsync for IoStdoutEv {
-    type Args = ();
-
-    const NAME: &str = "sys_io_stdout";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        cached.0.get(0)?.as_ref()?;
-        Some(())
-    }
-
-    fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
-        async { wrap_stdio(StreamKind::Stdout(tokio::io::stdout())) }
-    }
-}
-
-pub(crate) type IoStdout = CachedArgsAsync<IoStdoutEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct IoStderrEv;
-
-impl EvalCachedAsync for IoStderrEv {
-    type Args = ();
-
-    const NAME: &str = "sys_io_stderr";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        cached.0.get(0)?.as_ref()?;
-        Some(())
-    }
-
-    fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
-        async { wrap_stdio(StreamKind::Stderr(tokio::io::stderr())) }
-    }
-}
-
-pub(crate) type IoStderr = CachedArgsAsync<IoStderrEv>;
+stdio!(IoStdin, IoStdinEv, "sys_io_stdin", Stdin, stdin);
+stdio!(IoStdout, IoStdoutEv, "sys_io_stdout", Stdout, stdout);
+stdio!(IoStderr, IoStderrEv, "sys_io_stderr", Stderr, stderr);
 
 graphix_package_core::unit_image_state!(
     IoReadEv,

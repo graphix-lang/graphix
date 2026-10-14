@@ -132,3 +132,28 @@ const AFTER_IDLE_INVALID_TIMEOUT: &str = r#"
 run!(after_idle_invalid_timeout, AFTER_IDLE_INVALID_TIMEOUT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }, timeout: 2; FuseExpect::Jit);
+
+run!(handle_accessors_are_sync, r#"{
+    #[sync]
+    let peer = |s: sys::tcp::TcpStream| sys::tcp::Socket::peer_addr(s);
+    #[sync]
+    let local = |s: sys::tcp::TcpStream| sys::tcp::Socket::local_addr(s);
+    #[sync]
+    let listener = |l: sys::tcp::TcpListener| sys::tcp::listener_addr(l);
+    #[sync]
+    let pid = |p: sys::process::Proc| sys::process::pid(p);
+    (peer(never()), local(never()), listener(never()), pid(never()));
+    true
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit; build_only);
+
+run!(stdio_constructors_are_sync, r#"{
+    #[sync]
+    let input = |x| sys::io::stdin(x);
+    #[sync]
+    let output = |x| sys::io::stdout(x);
+    #[sync]
+    let error = |x| sys::io::stderr(x);
+    input(null) != input(null)
+        && output(null) != output(null)
+        && error(null) != error(null)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);

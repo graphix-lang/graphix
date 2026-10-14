@@ -1,4 +1,5 @@
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, Calls, EvalCachedAsync};
 use netidx_value::Value;
@@ -9,7 +10,7 @@ use std::{
 };
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::{Halves, StreamKind, get_stream, wrap_tcp};
+use crate::{Halves, StreamKind, get_stream, stream_of, wrap_tcp};
 
 #[derive(Debug, Clone)]
 pub(crate) struct TcpListenerValue {
@@ -192,101 +193,38 @@ impl EvalCachedAsync for TcpShutdownEv {
 
 pub(crate) type TcpShutdown = CachedArgsAsync<TcpShutdownEv>;
 
-#[derive(Debug, Default)]
-// CR claude for claude: [structure/low] `TcpPeerAddrEv`, `TcpLocalAddrEv`,
-// `TcpListenerAddrEv` and `ProcessPidEv` read their answer at once from the handle (the
-// cached `Halves::addrs`, `local_addr()`, the pid), yet each is an `EvalCachedAsync`.
-// Every call spawns a task and answers a cycle later, and the classification is Async.
-// So a caller is async (`#[sync]` refuses `|l| tcp::listener_addr(l)`), the call never
-// fuses, and a seq step waits an extra cycle. `HttpServerAddrEv` is the same kind of
-// accessor and is a synchronous `EvalCached`. Fix: make these `EvalCached` with a
-// `FastCall::Plain` fn that downcasts the abstract handle. Make the
-// `IoStdinEv`/`IoStdoutEv`/`IoStderrEv` constructors `Effect::Sync`, since each call
-// makes a new handle. Keep `EvalCachedAsync` for builtins that wait on I/O.
-// (x-builtin-effects-07)
-pub(crate) struct TcpPeerAddrEv;
-
-impl EvalCachedAsync for TcpPeerAddrEv {
-    type Args = Arc<Halves>;
-
-    const NAME: &str = "sys_tcp_peer_addr";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_stream(cached, 0)
-    }
-
-    fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match stream.addrs() {
-                Some((peer, _local)) => Value::String(
-                    compact_str::format_compact!("{}", peer).as_str().into(),
-                ),
-                None => errf!("TCPError", "peer_addr: not a socket"),
-            }
-        }
-    }
+fn fc_peer_addr(args: &[Value]) -> Option<Value> {
+    Some(match stream_of(&args[0])?.addrs() {
+        Some((peer, _)) => Value::String(format_compact!("{peer}").as_str().into()),
+        None => errf!("TCPError", "peer_addr: not a socket"),
+    })
 }
 
-pub(crate) type TcpPeerAddr = CachedArgsAsync<TcpPeerAddrEv>;
+graphix_package_core::fast_builtin!(pub(crate) TcpPeerAddr, TcpPeerAddrEv, "sys_tcp_peer_addr", fc_peer_addr);
 
-#[derive(Debug, Default)]
-pub(crate) struct TcpLocalAddrEv;
-
-impl EvalCachedAsync for TcpLocalAddrEv {
-    type Args = Arc<Halves>;
-
-    const NAME: &str = "sys_tcp_local_addr";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_stream(cached, 0)
-    }
-
-    fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match stream.addrs() {
-                Some((_peer, local)) => Value::String(
-                    compact_str::format_compact!("{}", local).as_str().into(),
-                ),
-                None => errf!("TCPError", "local_addr: not a socket"),
-            }
-        }
-    }
+fn fc_local_addr(args: &[Value]) -> Option<Value> {
+    Some(match stream_of(&args[0])?.addrs() {
+        Some((_, local)) => Value::String(format_compact!("{local}").as_str().into()),
+        None => errf!("TCPError", "local_addr: not a socket"),
+    })
 }
 
-pub(crate) type TcpLocalAddr = CachedArgsAsync<TcpLocalAddrEv>;
+graphix_package_core::fast_builtin!(pub(crate) TcpLocalAddr, TcpLocalAddrEv, "sys_tcp_local_addr", fc_local_addr);
 
-#[derive(Debug, Default)]
-pub(crate) struct TcpListenerAddrEv;
-
-impl EvalCachedAsync for TcpListenerAddrEv {
-    type Args = Arc<TcpListener>;
-
-    const NAME: &str = "sys_tcp_listener_addr";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_listener(cached, 0)
-    }
-
-    fn eval(listener: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match listener.local_addr() {
-                Ok(addr) => {
-                    Value::String(compact_str::format_compact!("{addr}").as_str().into())
-                }
-                Err(e) => errf!("TCPError", "listener_addr failed: {e}"),
-            }
-        }
-    }
+fn fc_listener_addr(args: &[Value]) -> Option<Value> {
+    let Value::Abstract(a) = &args[0] else { return None };
+    let listener = &a.downcast_ref::<TcpListenerValue>()?.listener;
+    Some(match listener.local_addr() {
+        Ok(addr) => Value::String(format_compact!("{addr}").as_str().into()),
+        Err(e) => errf!("TCPError", "listener_addr failed: {e}"),
+    })
 }
 
-pub(crate) type TcpListenerAddr = CachedArgsAsync<TcpListenerAddrEv>;
+graphix_package_core::fast_builtin!(pub(crate) TcpListenerAddr, TcpListenerAddrEv, "sys_tcp_listener_addr", fc_listener_addr);
 
 graphix_package_core::unit_image_state!(
     TcpConnectEv,
     TcpListenEv,
     TcpAcceptEv,
-    TcpShutdownEv,
-    TcpPeerAddrEv,
-    TcpLocalAddrEv,
-    TcpListenerAddrEv
+    TcpShutdownEv
 );
