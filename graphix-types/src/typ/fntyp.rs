@@ -1265,64 +1265,51 @@ impl FnType {
         // every conjunct of every impl cell must admit the signature's
         // concrete choice, or follow from the conjuncts of the signature
         // variable it stands for.
+        // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
+        // or a bound of the typedef parameter it fills, implies it; a
+        // predicate follows from a bound that holds it of every type the
+        // bound admits, none with an unknown part
+        let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
+            let mut sig_tcs = sig_tv.cell_constraints();
+            if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
+                sig_tcs.extend(bounds.iter().cloned());
+            }
+            for s in sig_tcs.iter() {
+                if s == impl_tc
+                    || ((!impl_tc.is_predicate() || !s.holds_unknown(env))
+                        && impl_tc.contains_with_flags(probe, env, s)?)
+                {
+                    return Ok(());
+                }
+            }
+            bail!(
+                "the implementation requires {sig_tv}: {impl_tc}, which the signature \
+                 does not declare"
+            )
+        };
         for (_, tv) in impl_cells.iter() {
             match tvar_map.get(&tv.cell_addr()) {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {
-                    let mut sig_tcs = sig_tv.cell_constraints();
-                    if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
-                        sig_tcs.extend(bounds.iter().cloned());
-                    }
                     for impl_tc in tv.cell_constraints() {
-                        let mut implied = false;
-                        for s in sig_tcs.iter() {
-                            if s == &impl_tc
-                                // a predicate follows from a bound that holds it
-                                // of every type the bound admits: none with an
-                                // unknown part
-                                || ((!impl_tc.is_predicate() || !s.holds_unknown(env))
-                                    && impl_tc.contains_with_flags(probe, env, s)?)
-                            {
-                                implied = true;
-                                break;
-                            }
-                        }
-                        if !implied {
-                            bail!(
-                                "the implementation requires {sig_tv}: {impl_tc}, which \
-                                 the signature does not declare"
-                            )
-                        }
+                        declared(sig_tv, &impl_tc)?
                     }
                 }
-                // CR claude for claude: [bug/high] The bound check here is wrong when
-                // an implementation cell maps to a compound that holds a signature
-                // variable (Array<'a>, ['a, i64], {a: 'a}). It only asks whether the
-                // impl bound contains sig_type. While 'a is open that always holds, so
-                // the signature never has to declare the Discernible, Ordered or
-                // Singleton bound that the implementation needs on 'a. The result: `val
-                // eq: fn(x: Array<'a>, y: Array<'a>) -> bool` over `|x, y| x == y`
-                // passes --check. A call over Array<[(i64, i64), Array<i64>]> is then
-                // refused by the build with the node::lambda::Typing compiler-bug
-                // message. A dynamic module's call silently never produces. The
-                // trait-method path refuses the same shape with "the implementation
-                // requires 'a: Discernible", so module interfaces and traits disagree.
-                // Fix: in this arm, require the impl bound of sig_type with the
-                // signature's variables rigid, carrying only their declared bounds plus
-                // param_bounds. Or share the trait path, which annotates the lambda
-                // from the declared type before its check. Add run! pins for Array<'a>
-                // with == and with <. probe:
-                // design/review-2026-10-12/repro/tests-modules-image-01.sh
-                // (tests-modules-image-01)
-                // 2026-10-14 claude: verified (the probe's --check passes and the build
-                // refuses). Opening rigid gates on the signature's variables and probing
-                // with RigidCheck does not refuse it: a predicate's containment treats a
-                // rigid open variable as satisfiable. The rule has to push each predicate
-                // through the compound the way the predicate composes (Discernible of
-                // Array<'a> needs 'a's, Singleton of Array<'a> needs nothing) and then
-                // ask the signature's declared bounds, as the trait path effectively
-                // does by checking the lambda against the declared type.
                 Some(sig_type) => {
+                    // a predicate that holds of a type only if it holds of
+                    // every part asks it of each signature variable inside
+                    for impl_tc in tv.cell_constraints() {
+                        if matches!(
+                            impl_tc,
+                            Type::Discernible | Type::Ordered | Type::Concrete
+                        ) {
+                            let mut vars: LPooled<Vec<TVar>> = LPooled::take();
+                            sig_type.tvar_occurrences(&mut vars);
+                            for v in vars.iter().filter(|v| v.open_cell().is_some()) {
+                                declared(v, &impl_tc)?
+                            }
+                        }
+                    }
                     for impl_tc in tv.cell_constraints() {
                         let ok = impl_tc
                             .contains_with_flags(probe, env, sig_type)

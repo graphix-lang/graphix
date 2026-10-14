@@ -1354,3 +1354,21 @@ run!(
     "/test/m.gxi" => "val f: fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a;",
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
 );
+
+// A predicate the implementation needs of a compound signature type asks
+// it of the variables inside: Array<'a> is discernible only if 'a is.
+run!(
+    a_compound_signature_type_needs_its_variables_bounds,
+    refused("the implementation requires 'a: Discernible"),
+    "/test.gx" => "mod m; let result = m::eq([1], [1])",
+    "/test/m.gxi" => "val eq: fn(x: Array<'a>, y: Array<'a>) -> bool;",
+    "/test/m.gx" => "let eq = |x, y| x == y"
+; FuseExpect::None);
+
+run!(
+    a_compound_signature_type_with_its_bounds_checks,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => "mod m; let result = m::eq([1], [1])",
+    "/test/m.gxi" => "val eq: fn<'a: Discernible>(x: Array<'a>, y: Array<'a>) -> bool;",
+    "/test/m.gx" => "let eq = 'a: Discernible |x: Array<'a>, y: Array<'a>| -> bool x == y"
+);
