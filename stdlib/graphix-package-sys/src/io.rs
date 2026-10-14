@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
@@ -18,7 +18,7 @@ use poolshark::{
     local::LPooled,
 };
 use std::sync::{Arc, LazyLock};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::{Halves, StreamKind, get_stream, stream_of, wrap_stdio};
 
@@ -41,22 +41,23 @@ impl EvalCachedAsync for IoReadEv {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
             };
-            let mut buf: LPooled<Vec<u8>> = LPooled::take();
-            // CR claude for claude: [perf/low] resize writes zeros over min(n,
-            // MAX_READ) bytes on every read. A `read(s, 65536)` loop on a socket that
-            // returns a few bytes per read therefore pays a 64 KiB memset per message.
-            // Instead, reserve the capacity and read into the pooled Vec's spare
-            // capacity with `read_buf` over `(&mut *buf).limit(n)`, which does not
-            // zero-fill. Then keep the exact-size copy. Do not freeze a BytesMut of
-            // capacity n into the result: that would keep the whole capacity alive
-            // behind a few-byte value. (sys-io-10)
-            buf.resize(n.min(MAX_READ) as usize, 0);
-            match s.read(&mut buf).await {
-                Ok(n) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf[..n]))),
+            match read_chunk(s, n).await {
+                Ok(bytes) => Value::Bytes(PBytes::new(bytes)),
                 Err(e) => errf!("IOError", "read failed: {e}"),
             }
         }
     }
+}
+
+async fn read_chunk(
+    reader: &mut (impl AsyncRead + Unpin),
+    n: u64,
+) -> std::io::Result<Bytes> {
+    let mut buf: LPooled<Vec<u8>> = LPooled::take();
+    let n = n.min(MAX_READ) as usize;
+    buf.reserve(n);
+    reader.read_buf(&mut (&mut *buf).limit(n)).await?;
+    Ok(Bytes::copy_from_slice(&buf))
 }
 
 pub(crate) type IoRead = CachedArgsAsync<IoReadEv>;
@@ -525,3 +526,40 @@ graphix_package_core::unit_image_state!(
     IoStdoutEv,
     IoStderrEv
 );
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::ReadBuf;
+
+    struct SpareReader {
+        capacity: usize,
+    }
+
+    impl AsyncRead for SpareReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            assert!(buf.initialized().is_empty(), "read buffer was zero-filled");
+            assert_eq!(buf.capacity(), self.capacity);
+            let n = buf.remaining().min(3);
+            buf.put_slice(&b"abc"[..n]);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_use_bounded_spare_capacity() {
+        for n in [0, 1, 3, 65536, MAX_READ + 1] {
+            let mut reader = SpareReader { capacity: n.min(MAX_READ) as usize };
+            let bytes = read_chunk(&mut reader, n).await.unwrap();
+            assert_eq!(bytes.as_ref(), &b"abc"[..n.min(3) as usize]);
+        }
+    }
+}
