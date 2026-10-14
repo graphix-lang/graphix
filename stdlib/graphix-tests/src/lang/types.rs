@@ -2812,3 +2812,28 @@ run!(
         matches!(v, Ok(Value::Array(a)) if a[..] == [Value::F64(4.0), Value::I64(3)])
     }
 );
+
+// A union of primitives the cell's bound refuses whole holds the cell in
+// one of its bits, as a union holds it in one member.
+run!(
+    primitive_union_holds_bounded_cell,
+    r#"{
+    let f = 'a: Number |x: 'a| -> 'a x + x;
+    let y = never();
+    let r: [i64, null] = f(y);
+    let z = never();
+    let s: [i64, null, Array<i64>] = f(z);
+    y <- 3;
+    z <- 4;
+    (r$, select s { i64 as n => n, _ => 0 })
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:6, i64:8]")
+);
+
+run!(primitive_union_no_bit_holds_bound, r#"{
+    let f = 'a: Number |x: 'a| -> 'a x + x;
+    let y = never();
+    let r: [string, null] = f(y);
+    y <- 3;
+    r
+}"#, refused("does not contain"); FuseExpect::None);

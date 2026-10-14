@@ -1386,26 +1386,20 @@ impl Type {
                 if !cell_constraints_ok(t1, env, hist, t0)? {
                     // a union the cell's constraints refuse whole may
                     // still hold it in one member: `['b, null] ⊇ 'r`
-                    // with `'r` within `Array<_>`, by `'b`
-                    // CR claude for claude: [bug/medium] Only a Set lhs gets the
-                    // one-member fallback here. A union of primitives is a single
-                    // multi-bit `Type::Primitive`, so it falls through to the witness
-                    // path. That path probes `[i64, null] ⊇ Number`, which fails, and
-                    // binding the cell to the one bit i64 is never tried. Effect: `let
-                    // r: [i64, null] = f(y)` with `f: 'a: Number` and `y` still ⊥ is
-                    // refused. `[i64, Array<i64>]` is accepted. So is `[i64, null,
-                    // Array<i64>]`'s sibling form with no multi-bit member; that form
-                    // itself is refused, because the Set fallback hands its `[i64,
-                    // null]` member back to this same arm. Fix: also handle
-                    // `Self::Primitive(p) if p.len() > 1`. Offer the cell each bit as a
-                    // single primitive through `set_commit`, the way the `(Set, t)` arm
-                    // splits a multi-bit rhs. probe:
-                    // design/review-2026-10-12/repro/t-contains-06-prim-union.gx
-                    // (t-contains-06)
-                    if let Self::Set(s) = t0 {
-                        return Ok(
-                            Self::set_commit(s, flags, env, hist, t)?.unwrap_or(false)
-                        );
+                    // with `'r` within `Array<_>`, by `'b`; a union of
+                    // primitives in one of its bits
+                    match t0 {
+                        Self::Set(s) => {
+                            return Ok(Self::set_commit(s, flags, env, hist, t)?
+                                .unwrap_or(false));
+                        }
+                        Self::Primitive(p) if p.len() > 1 => {
+                            let bits: SmallVec<[Type; 4]> =
+                                p.iter().map(|b| Self::Primitive(b.into())).collect();
+                            return Ok(Self::set_commit(&bits, flags, env, hist, t)?
+                                .unwrap_or(false));
+                        }
+                        _ => (),
                     }
                     // a t0 wider than the cell's witness holds it
                     // ('a ⊆ W ⊆ t0): the cell settles to W
