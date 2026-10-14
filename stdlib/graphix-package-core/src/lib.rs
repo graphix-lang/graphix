@@ -484,7 +484,12 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
         // so peak memory and allocations are about twice what they need to be. A serde
         // Visitor straight into Value, and a Serialize wrapper over (env, type, &Value)
         // that streams to the writer, would remove the intermediate tree. (x-alloc-07)
-        (Some(Type::Set(ts)), v) => shape(env, ts.iter().find(|m| m.is_a(env, v)), v),
+        // 2026-10-13 claude: the member is now chosen by its shallow form
+        // (graphix_types::typ::member_of), is_a only where two members share
+        // one. The json double-copy part stands.
+        (Some(Type::Set(ts)), v) => {
+            shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
+        }
         (Some(Type::Struct(fs)), Value::Array(a)) if fs.len() == a.len() => {
             let mut entries: LPooled<Vec<_>> = LPooled::take();
             for (f, (_, t, _)) in a.iter().zip(fs.iter()) {

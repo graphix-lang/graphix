@@ -5,7 +5,11 @@ use crate::{
     expr::{ModPath, WrittenAt},
     format_with_flags, list,
     stack::ensure_sufficient,
-    typ::{Type, TypeRef, params_size, setops::union_identical, tval::NakedPrefix},
+    typ::{
+        Type, TypeRef, params_size,
+        setops::union_identical,
+        tval::{NakedPrefix, has_form, member_of},
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -86,36 +90,6 @@ fn src_head(src: Option<&Type>, env: &Env, v: &Value) -> Option<Type> {
             Type::Any | Type::Bottom | Type::Hole => return None,
             _ => return Some(cur),
         };
-    }
-}
-
-/// Whether `v` has the outer runtime form of the head `t`; true where
-/// the form says nothing.
-fn has_form(t: &Type, v: &Value) -> bool {
-    match (t, v) {
-        (Type::Array(_), Value::Array(_)) => true,
-        (Type::List(_), v) => list::is_list(v),
-        (Type::Tuple(ts), Value::Array(a)) => a.len() == ts.len(),
-        (Type::Struct(fs), Value::Array(a)) => a.len() == fs.len(),
-        (Type::Variant(tag, ps, _), Value::String(s)) => ps.is_empty() && s == tag,
-        (Type::Variant(tag, ps, _), Value::Array(a)) => {
-            a.len() == ps.len() + 1 && matches!(&a[0], Value::String(s) if s == tag)
-        }
-        (Type::Map { .. }, Value::Map(_))
-        | (Type::Error(_), Value::Error(_))
-        | (Type::Abstract { .. }, Value::Abstract(_)) => true,
-        (Type::Primitive(p), v) => p.contains(Typ::get(v)),
-        (
-            Type::Array(_)
-            | Type::Tuple(_)
-            | Type::Struct(_)
-            | Type::Variant(..)
-            | Type::Map { .. }
-            | Type::Error(_)
-            | Type::Abstract { .. },
-            _,
-        ) => false,
-        _ => true,
     }
 }
 
@@ -2066,51 +2040,51 @@ fn float_int(f: f64) -> Option<i128> {
     f.is_finite().then(|| f.trunc() as i128)
 }
 
-fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) -> Value {
+/// Whether a part of each type a [`map_refs`] walk meets can hold a
+/// reference, decided once per type.
+type HoldsRef = AHashMap<Type, bool>;
+
+fn map_refs(
+    env: &Env,
+    holds: &mut HoldsRef,
+    t: &Type,
+    v: &Value,
+    f: &mut dyn FnMut(&Value) -> Value,
+) -> Value {
     ensure_sufficient(|| {
-        if !compared_ref(env, &mut Expanded::default(), t) {
+        let refs = match holds.get(t) {
+            Some(r) => *r,
+            None => {
+                let r = compared_ref(env, &mut Expanded::default(), t);
+                holds.insert(t.clone(), r);
+                r
+            }
+        };
+        if !refs {
             return v.clone();
         }
         let Some(t) = rep_head(env, t) else { return v.clone() };
         let t = &*t;
         let mut each = |ts: &mut dyn Iterator<Item = (&Type, &Value)>| {
             let mut vs: LPooled<Vec<Value>> =
-                Iterator::map(&mut &mut *ts, |(t, v)| map_refs(env, t, v, f)).collect();
+                Iterator::map(&mut &mut *ts, |(t, v)| map_refs(env, holds, t, v, f))
+                    .collect();
             Value::Array(ValArray::from_iter_exact(vs.drain(..)))
         };
         match (t, v) {
             (Type::ByRef(..), v) => f(v),
-            // CR claude for claude: [perf/low] is_a here checks the member against the
-            // whole remaining value, and map_refs then recurses one level down and does
-            // it again. Comparing two n-deep values of `type L = [`Cons(&i64, L),
-            // `Nil]` is therefore O(n^2): 3.6s at n=4000 against 0.5s to build them
-            // (probe: design/review-2026-10-12/repro/x-stack-map-refs-quadratic.gx).
-            // tval's member_of already chooses a union member cheaply, using
-            // shape_excludes before falling back to is_a. Share it here and in
-            // graphix-package-core's shape(), which has the same per-level is_a. Also
-            // stop allocating a fresh set for compared_ref at every level. (x-stack-05)
-            // CR claude for claude: [perf/medium] To choose a member, this runs a full
-            // is_a over the rest of the value. For a recursive type such as `[`Nil,
-            // `Cons(&i64, L)]`, each list cell walks the whole tail, so == on two
-            // 2000-element lists takes about 4 s and 4000 elements take tens of
-            // seconds. map_refs also calls compared_ref with a freshly allocated
-            // AHashSet at every value node. Choose the member by its shallow shape (tag
-            // and arity, as tval::member_of does) and fall back to is_a only when
-            // several members admit that shape. Decide compared_ref once per type, not
-            // once per value node. probe:
-            // design/review-2026-10-12/repro/t-cast-setops-01-map-refs-quadratic.gx
-            // (t-cast-setops-12)
-            (Type::Set(ts), v) => match ts.iter().find(|m| m.is_a(env, v)) {
-                Some(m) => map_refs(env, m, v, f),
+            (Type::Set(ts), v) => match member_of(env, ts, v) {
+                Some(i) => map_refs(env, holds, &ts[i], v, f),
                 None => v.clone(),
             },
             (Type::Error(e), Value::Error(x)) => {
-                Value::Error(map_refs(env, e, x, f).into())
+                Value::Error(map_refs(env, holds, e, x, f).into())
             }
             (Type::Array(e), Value::Array(x)) => each(&mut x.iter().map(|v| (&**e, v))),
             (Type::List(e), v) => {
-                let vs: LPooled<Vec<Value>> =
-                    list::Iter::new(v.clone()).map(|v| map_refs(env, e, &v, f)).collect();
+                let vs: LPooled<Vec<Value>> = list::Iter::new(v.clone())
+                    .map(|v| map_refs(env, holds, e, &v, f))
+                    .collect();
                 list::from_iter(vs.iter().cloned())
             }
             (Type::Tuple(ts), Value::Array(x)) if x.len() == ts.len() => {
@@ -2128,7 +2102,8 @@ fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) 
                     .map(|((_, t, _), field)| match field {
                         Value::Array(nv) if nv.len() == 2 => {
                             Value::Array(ValArray::from_iter_exact(
-                                [nv[0].clone(), map_refs(env, t, &nv[1], f)].into_iter(),
+                                [nv[0].clone(), map_refs(env, holds, t, &nv[1], f)]
+                                    .into_iter(),
                             ))
                         }
                         v => v.clone(),
@@ -2138,7 +2113,7 @@ fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) 
             }
             (Type::Map { value, .. }, Value::Map(m)) => Value::Map(
                 m.into_iter()
-                    .map(|(k, v)| (k.clone(), map_refs(env, value, v, f)))
+                    .map(|(k, v)| (k.clone(), map_refs(env, holds, value, v, f)))
                     .collect(),
             ),
             (_, v) => v.clone(),
@@ -2161,6 +2136,6 @@ impl Type {
         v: &Value,
         f: &mut dyn FnMut(&Value) -> Value,
     ) -> Value {
-        map_refs(env, self, v, f)
+        map_refs(env, &mut HoldsRef::default(), self, v, f)
     }
 }

@@ -46,6 +46,7 @@ mod setops;
 #[doc(hidden)]
 pub mod settle;
 pub(crate) mod tval;
+pub use tval::member_of;
 #[doc(hidden)]
 pub mod tvar;
 

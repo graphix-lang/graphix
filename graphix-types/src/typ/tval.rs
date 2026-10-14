@@ -1,7 +1,7 @@
 use super::{PrintFlag, Type, cast::IsAFlags};
-use crate::{abstract_value, env::Env, typ::format_with_flags};
+use crate::{abstract_value, env::Env, list, typ::format_with_flags};
 use ahash::AHashMap;
-use netidx_value::{NakedValue, Value};
+use netidx_value::{NakedValue, Typ, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt;
@@ -136,17 +136,33 @@ impl fmt::Display for NakedPrefix<'_> {
     }
 }
 
-/// Does `t`'s outer shape alone exclude `v`: a variant by tag and
-/// arity, a primitive by class. Anything else may hold it.
-fn shape_excludes(t: &Type, v: &Value) -> bool {
+/// Whether `v` has the outer runtime form of the head `t`; true where
+/// the form says nothing.
+pub(super) fn has_form(t: &Type, v: &Value) -> bool {
     match (t, v) {
-        (Type::Variant(name, flds, _), Value::Array(a)) => {
-            a.len() != flds.len() + 1 || !matches!(&a[0], Value::String(s) if s == name)
+        (Type::Array(_), Value::Array(_)) => true,
+        (Type::List(_), v) => list::is_list(v),
+        (Type::Tuple(ts), Value::Array(a)) => a.len() == ts.len(),
+        (Type::Struct(fs), Value::Array(a)) => a.len() == fs.len(),
+        (Type::Variant(tag, ps, _), Value::String(s)) => ps.is_empty() && s == tag,
+        (Type::Variant(tag, ps, _), Value::Array(a)) => {
+            a.len() == ps.len() + 1 && matches!(&a[0], Value::String(s) if s == tag)
         }
-        (Type::Variant(name, flds, _), Value::String(s)) => !flds.is_empty() || s != name,
-        (Type::Variant(..), _) => true,
-        (Type::Primitive(p), v) => !p.contains(netidx_value::Typ::get(v)),
-        _ => false,
+        (Type::Map { .. }, Value::Map(_))
+        | (Type::Error(_), Value::Error(_))
+        | (Type::Abstract { .. }, Value::Abstract(_)) => true,
+        (Type::Primitive(p), v) => p.contains(Typ::get(v)),
+        (
+            Type::Array(_)
+            | Type::Tuple(_)
+            | Type::Struct(_)
+            | Type::Variant(..)
+            | Type::Map { .. }
+            | Type::Error(_)
+            | Type::Abstract { .. },
+            _,
+        ) => false,
+        _ => true,
     }
 }
 
@@ -154,8 +170,8 @@ fn shape_excludes(t: &Type, v: &Value) -> bool {
 /// to: the one whose shape admits it when that is one member, else the
 /// first strict match, else the first structured plain match, else the
 /// first plain match.
-fn member_of(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
-    let mut admits = ts.iter().enumerate().filter(|(_, t)| !shape_excludes(t, v));
+pub fn member_of(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
+    let mut admits = ts.iter().enumerate().filter(|(_, t)| has_form(t, v));
     match (admits.next(), admits.next()) {
         (Some((i, _)), None) => return Some(i),
         (None, _) => return None,
