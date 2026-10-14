@@ -1592,20 +1592,17 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
-            // CR claude for claude: [bug/medium] collect_tvars goes into a nested fn
-            // type's own quantifiers and keeps the first cell seen for each name,
-            // unlike alias_tvars just above. In `'b: Number |g: fn<'b: Number>(x: 'b)
-            // -> 'b, y: 'b| y + 1` the inner 'b is recorded for the signature. Every
-            // name-keyed consumer then works on the wrong cell: DefGate's rigid set,
-            // FnType::sig_tvars (and so the printed quantifier bounds),
-            // has_open_quantifier, fresh_quantifiers, open_quantifier_gates and
-            // ctor_quantifiers. The effects: the outer declared 'b binds to i64; the
-            // outer quantifier prints with the inner one's bound; whether a program
-            // checks depends on parameter order; and with the parameters swapped the
-            // check passes but the build refuses the instance. Fix: skip a nested Fn's
-            // quantifier names the way alias_tvars does, leaving them to
-            // inner_quantifiers. Better, key signature cells by cell address, not by
-            // name. probe: design/review-2026-10-12/repro/t-fntyp-03.gx (t-fntyp-03)
+            // a nested fn type's own quantifiers are its own, whatever an
+            // enclosing signature names alike
+            Type::Fn(ft) if !ft.quantifiers.is_empty() => {
+                let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                ft.collect_tvars(&mut inner);
+                for (name, tv) in inner.drain() {
+                    if !ft.quantifiers.contains(&name) {
+                        known.entry(name).or_insert(tv);
+                    }
+                }
+            }
             Type::Fn(ft) => ft.collect_tvars(known),
             t => t.for_each_child(&mut |c| c.collect_tvars(known)),
         })

@@ -2919,3 +2919,17 @@ run!(lambda_sampled_on_a_trigger, r#"{
   let g = t ~ 'a: Number |x: 'a| -> 'a x + x;
   select f(5) { 6 => g(4), _ => never() }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(8))); FuseExpect::Jit);
+
+// A nested fn type's quantifier named like the signature's is its own:
+// the outer 'b stays rigid whichever parameter comes first.
+run!(
+    shadowing_quantifier_keeps_outer_rigid,
+    refused("cannot compute 'b: unbound within Number + i64"),
+    "/test.gx" => "let f = 'b: Number |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| -> 'b y + 1; let result = 0"
+; FuseExpect::None);
+
+run!(
+    shadowing_quantifier_keeps_outer_rigid_swapped,
+    refused("cannot compute 'b: unbound within Number + i64"),
+    "/test.gx" => "let f = 'b: Number |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| -> 'b y + 1; let result = 0"
+; FuseExpect::None);
