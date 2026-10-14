@@ -300,13 +300,6 @@ impl Type {
         ensure_sufficient(|| self.resolve_tvars_seen(cx))
     }
 
-    // CR claude for claude: [structure/low] This walk and `normalize_int_inner` each
-    // spell out the structural rebuild of every compound variant, which is
-    // `Type::cow_children`; only the memo and the TVar, Set and Fn arms are their own.
-    // The copies have drifted already: `normalize_int_inner` treats `Abstract` as a
-    // leaf while this walk and `cow_children` rebuild its params. Keep the memo and the
-    // distinct arms and send every other variant through `self.cow_children(&mut |c|
-    // ..)`, and decide explicitly whether an abstract's params normalize. (t-fntyp-12)
     fn resolve_tvars_seen(&self, cx: &mut ResolveTvarsCx) -> Option<Self> {
         let key = norm_key(self);
         if let Some(k) = key
@@ -315,33 +308,6 @@ impl Type {
             return r.clone();
         }
         let r = match self {
-            Type::Bottom
-            | Type::Any
-            | Type::Primitive(_)
-            | Type::Hole
-            | Type::Concrete
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::Discernible
-            | Type::Ordered
-            | Type::Function => None,
-            Type::App(c, a) => {
-                match (c.resolve_tvars_seen_int(cx), a.resolve_tvars_seen_int(cx)) {
-                    (None, None) => None,
-                    (c2, a2) => Some(Type::app(
-                        c2.unwrap_or_else(|| (**c).clone()),
-                        a2.unwrap_or_else(|| (**a).clone()),
-                    )),
-                }
-            }
-            Type::Abstract { id, params } => {
-                Self::cow_slice(params, |t| t.resolve_tvars_seen_int(cx))
-                    .map(|params| Type::Abstract { id: *id, params })
-            }
-            Type::Ref(tr) => {
-                Self::cow_slice(&tr.params, |t| t.resolve_tvars_seen_int(cx))
-                    .map(|params| Type::Ref(Arc::new(tr.with_params(params))))
-            }
             Type::TVar(tv) => Some({
                 let addr = tv.cell_addr();
                 if let Some(t) = cx.done.get(&addr) {
@@ -378,44 +344,10 @@ impl Type {
                 cx.in_progress.remove(&addr);
                 r
             }),
-            Type::Set(s) => {
-                Self::cow_slice(s, |t| t.resolve_tvars_seen_int(cx)).map(Type::Set)
-            }
-            Type::Error(t) => {
-                t.resolve_tvars_seen_int(cx).map(|t| Type::Error(Arc::new(t)))
-            }
-            Type::Array(t) => {
-                t.resolve_tvars_seen_int(cx).map(|t| Type::Array(Arc::new(t)))
-            }
-            Type::List(t) => {
-                t.resolve_tvars_seen_int(cx).map(|t| Type::List(Arc::new(t)))
-            }
-            Type::Map { key, value } => {
-                match (key.resolve_tvars_seen_int(cx), value.resolve_tvars_seen_int(cx)) {
-                    (None, None) => None,
-                    (k, v) => Some(Type::Map {
-                        key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                        value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                    }),
-                }
-            }
-            Type::ByRef(m, t) => {
-                t.resolve_tvars_seen_int(cx).map(|t| Type::ByRef(*m, Arc::new(t)))
-            }
-            Type::Tuple(t) => {
-                Self::cow_slice(t, |t| t.resolve_tvars_seen_int(cx)).map(Type::Tuple)
-            }
-            Type::Struct(t) => Self::cow_slice(t, |(n, t, at)| {
-                t.resolve_tvars_seen_int(cx).map(|t| (n.clone(), t, *at))
-            })
-            .map(Type::Struct),
-            Type::Variant(tag, t, at) => {
-                Self::cow_slice(t, |t| t.resolve_tvars_seen_int(cx))
-                    .map(|t| Type::Variant(tag.clone(), t, *at))
-            }
             Type::Fn(ft) => {
                 ft.resolve_tvars_seen_int(cx).map(|ft| Type::Fn(Arc::new(ft)))
             }
+            t => t.cow_children(&mut |c| c.resolve_tvars_seen_int(cx)),
         };
         if let Some(k) = key {
             cx.memo.insert(k, r.clone());
@@ -443,26 +375,6 @@ impl Type {
             return r.clone();
         }
         let r = match self {
-            Type::Bottom
-            | Type::Any
-            | Type::Abstract { .. }
-            | Type::Primitive(_)
-            | Type::Hole
-            | Type::Concrete
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::Discernible
-            | Type::Ordered
-            | Type::Function => None,
-            Type::App(c, a) => match (c.normalize_int(cx), a.normalize_int(cx)) {
-                (None, None) => None,
-                (c2, a2) => Some(Type::app(
-                    c2.unwrap_or_else(|| (**c).clone()),
-                    a2.unwrap_or_else(|| (**a).clone()),
-                )),
-            },
-            Type::Ref(tr) => Self::cow_slice(&tr.params, |t| t.normalize_int(cx))
-                .map(|params| Type::Ref(Arc::new(tr.with_params(params)))),
             Type::TVar(tv) => {
                 tv.normalize_int(cx);
                 None
@@ -482,31 +394,8 @@ impl Type {
                 let (flat, flat_changed) = Self::flatten_set_tracked(members.drain(..));
                 (members_changed || flat_changed).then_some(flat)
             }
-            Type::Error(t) => t.normalize_int(cx).map(|t| Type::Error(Arc::new(t))),
-            Type::Array(t) => t.normalize_int(cx).map(|t| Type::Array(Arc::new(t))),
-            Type::List(t) => t.normalize_int(cx).map(|t| Type::List(Arc::new(t))),
-            Type::Map { key, value } => {
-                match (key.normalize_int(cx), value.normalize_int(cx)) {
-                    (None, None) => None,
-                    (k, v) => Some(Type::Map {
-                        key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                        value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                    }),
-                }
-            }
-            Type::ByRef(m, t) => {
-                t.normalize_int(cx).map(|t| Type::ByRef(*m, Arc::new(t)))
-            }
-            Type::Tuple(t) => {
-                Self::cow_slice(t, |t| t.normalize_int(cx)).map(Type::Tuple)
-            }
-            Type::Struct(t) => Self::cow_slice(t, |(n, t, at)| {
-                t.normalize_int(cx).map(|t| (n.clone(), t, *at))
-            })
-            .map(Type::Struct),
-            Type::Variant(tag, t, at) => Self::cow_slice(t, |t| t.normalize_int(cx))
-                .map(|t| Type::Variant(tag.clone(), t, *at)),
             Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
+            t => t.cow_children(&mut |c| c.normalize_int(cx)),
         };
         if let Some(k) = key {
             cx.memo.insert(k, (self.clone(), r.clone()));
