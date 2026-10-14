@@ -1443,41 +1443,32 @@ fn cell_encode(
         |e| &mut e.cells,
         buf,
         |buf| {
-            let (typ, constraints, flags) = {
+            let (typ, constraints, facts, level) = {
                 let c = cell.read();
-                if c.rigid_gates != 0 {
+                let TCell {
+                    binding,
+                    constraints,
+                    facts,
+                    rigid_gates,
+                    quantifier_gates: _,
+                    level,
+                    task: _,
+                } = &*c;
+                if *rigid_gates != 0 {
                     log::warn!(
                         "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
-                        c.rigid_gates,
-                        c.binding,
-                        c.constraints
+                        rigid_gates,
+                        binding,
+                        constraints
                     );
                     return Err(PackError::InvalidFormat);
                 }
-                (
-                    c.binding.clone(),
-                    c.constraints.to_vec(),
-                    // CR claude for claude: [risk/low] cell_encode writes binding,
-                    // constraints, cycle_refused, bottom_fed and level, but never
-                    // bottom_required, and cell_decode leaves it false. On a warm
-                    // session, a ⊥ that a restored body required therefore reads as
-                    // vacuous to Type::unbind_vacuous_tvars at any later gate that
-                    // walks the cell, while the cold session keeps it. No gate walks a
-                    // restored cell today, so this is latent. Fix: encode and decode
-                    // bottom_required next to bottom_fed and bump REGISTRATION_FORMAT.
-                    // Destructure TCell in cell_encode so that a new field fails to
-                    // compile until it is imaged or explicitly skipped, as task and
-                    // rigid_gates are. TVar::freshen does not carry the flag into a
-                    // copy either. Decide whether a call's copy of a required ⊥ should
-                    // stay required, and make both places agree. (t-image-04)
-                    (c.cycle_refused, c.bottom_fed, c.level),
-                )
+                (binding.clone(), constraints.to_vec(), *facts, *level)
             };
             typ.encode(buf)?;
             slice_encode(&constraints, buf)?;
-            flags.0.encode(buf)?;
-            flags.1.encode(buf)?;
-            flags.2.encode(buf)
+            facts.bits().encode(buf)?;
+            level.encode(buf)
         },
     )
 }
@@ -1515,15 +1506,14 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
             enter(Obj::Cell(cell.clone()))?;
             let typ = Pack::decode(sub)?;
             let constraints: Vec<_> = Pack::decode(sub)?;
-            let refused = bool::decode(sub)?;
-            let bottom_fed = bool::decode(sub)?;
+            let facts = BitFlags::from_bits(u8::decode(sub)?)
+                .map_err(|_| PackError::InvalidFormat)?;
             let level = Pack::decode(sub)?;
             let mut c = cell.write();
             c.level = level;
             c.binding = typ;
             c.constraints = constraints.into_iter().collect();
-            c.cycle_refused = refused;
-            c.bottom_fed = bottom_fed;
+            c.facts = facts;
             drop(c);
             Ok(cell)
         },
@@ -2269,6 +2259,30 @@ mod decode_tests {
             let Type::Set(cms) = &cs[0] else { panic!("{:?}", cs[0]) };
             assert!(Arc::ptr_eq(ms, cms), "the read returned a second copy of X");
         }
+    }
+
+    /// A cell's facts travel whole: a ⊥ a `_` required stays required.
+    #[test]
+    fn a_cell_keeps_its_facts() {
+        use crate::typ::tvar::CellFact;
+        let tv = TVar::empty_named(literal!("a"));
+        tv.bind(Type::Bottom);
+        let all = CellFact::BottomRequired | CellFact::BottomFed | CellFact::CycleRefused;
+        tv.cell().write().facts = all;
+        let t = Type::TVar(tv);
+        let mut enc = ImageEncoder::new();
+        let len = EncodeImage::with(&mut enc, || t.encoded_len());
+        let mut buf = EncodeImage::with(&mut enc, || {
+            let mut buf = ImageBuf::with_capacity(0);
+            t.encode(&mut buf).unwrap();
+            buf
+        });
+        let offsets = enc.finish(&mut buf);
+        let image = buf.freeze();
+        let mut dec = ImageDecoder::new(enc.counts(), image.clone(), offsets).unwrap();
+        let back = read(&mut dec, &image, len).unwrap();
+        let Type::TVar(back) = &back else { panic!() };
+        assert_eq!(back.cell().read().facts, all);
     }
 
     /// A read that failed fails again on the same decoder: it left none

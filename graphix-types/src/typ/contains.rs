@@ -8,7 +8,7 @@ use crate::{
         AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair, TVar,
         TraitId, Type, node_addr, params_size, probe_key,
         setops::union_identical,
-        tvar::{Fresh, would_cycle_inner},
+        tvar::{CellFact, Fresh, would_cycle_inner},
     },
 };
 use ahash::AHashMap;
@@ -242,7 +242,7 @@ fn type_has_refused_open_cell(t: &Type) -> bool {
                         (
                             cell.binding.clone(),
                             cell.constraints.clone(),
-                            cell.cycle_refused,
+                            cell.facts.contains(CellFact::CycleRefused),
                         )
                     };
                     if bound.is_none() && cons.is_empty() && refused {

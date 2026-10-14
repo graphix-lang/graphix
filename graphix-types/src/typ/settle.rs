@@ -10,7 +10,7 @@ use crate::{
     typ::{
         FnType, TVar, Type,
         contains::{ContainsHist, INFINITE_TYPE_MSG},
-        tvar::would_cycle_inner,
+        tvar::{CellFact, would_cycle_inner},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -84,7 +84,7 @@ impl TVar {
     ///
     /// [`TCell::bottom_fed`]: super::tvar::TCell::bottom_fed
     pub fn settle(&self, env: &Env) -> Result<()> {
-        if self.cell().read().bottom_fed {
+        if self.cell().read().facts.contains(CellFact::BottomFed) {
             return self.settle_bottom();
         }
         self.settle_witness(env)
@@ -177,7 +177,7 @@ impl TVar {
             return Err(self.not_function());
         }
         // The only solution was infinite; ⊥ would be a lie.
-        if cell.cycle_refused {
+        if cell.facts.contains(CellFact::CycleRefused) {
             if graphix_dbg_bind() {
                 eprintln!("SETTLE-INFINITE '{}({:x})", self.name, self.cell_addr());
             }

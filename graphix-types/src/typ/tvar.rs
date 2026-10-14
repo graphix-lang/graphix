@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
-use enumflags2::BitFlags;
+use enumflags2::{BitFlags, bitflags};
 use netidx_core::pack::{self, Pack, PackError};
 use nohash::IntSet;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -372,41 +372,9 @@ pub(crate) enum Fresh<'a> {
 pub struct TCell {
     pub(crate) binding: Option<Type>,
     pub(crate) constraints: SmallVec<[Type; 1]>,
-    /// An occurs check refused to bind or link this cell (the only
-    /// solution was an infinite type). A flagged cell still open at
-    /// the terminal settle must error rather than default to ⊥.
-    // CR claude for claude: [structure/low] cycle_refused, bottom_fed and
-    // bottom_required are loose bools, and each site that carries a cell's facts lists
-    // its own subset. TVar::freshen and merge_into each spell out the same
-    // `cycle_refused |= ..; bottom_fed |= ..` pair, and cell_encode/cell_decode carry
-    // those two plus the level. bottom_required is dropped by every copy and by the
-    // image, so a copied or restored cell bound to ⊥ as a requirement reads as a
-    // vacuous ⊥ to unbind_vacuous_tvars. Today only a definition's own gate reads the
-    // flag, so nothing observes the loss, but the next caller that does will get a
-    // cold/warm or original/copy difference. Fold the three into one BitFlags<CellFact>
-    // with a single `absorb` used by freshen, merge_into and both codecs, and encode
-    // the whole set. (t-tvar-09)
-    pub(crate) cycle_refused: bool,
-    /// A ⊥ was produced into this cell while it was unbound. Every other
-    /// production binds a cell, so one still open once its writers are
-    /// checked had only ⊥ produced into it (`TVar::settle`).
-    pub(crate) bottom_fed: bool,
-    /// The cell is bound to ⊥ because something required it (`⊥ ⊇ 'x`:
-    /// a `_` annotation, a `-> _` return): a fact the gate keeps, where
-    /// a ⊥ nothing required is vacuous and reopens.
-    // CR claude for claude: [risk/low] `bottom_required` only means something when
-    // `binding` is `Some(Bottom)`, and two writers of a cell drop it. The session image
-    // (`cell_encode`/`cell_decode` in image/mod.rs) encodes `cycle_refused`,
-    // `bottom_fed` and `level` but not this flag. `TVar::freshen` carries the other two
-    // flags into a copy but not this one. A restored or copied cell bound to ⊥ because
-    // a `_` or `-> _` required it then reads as a vacuous ⊥, which
-    // `Type::unbind_vacuous_tvars` reopens. Today that runs only at a definition's own
-    // gate, so a warm start would type differently only if a later definition's
-    // signature shared such a cell. Fold the flag into the binding, e.g. `enum Binding
-    // { Open, Bound(Type), RequiredBottom }`, so the image codec and the copy walk have
-    // to handle it and `unbind_vacuous_tvars` matches on it. At minimum, encode it and
-    // copy it beside `bottom_fed`. (x-invalid-states-04)
-    pub(crate) bottom_required: bool,
+    /// What the checks learned of the cell ([`CellFact`]): every copy, merge
+    /// and image carries the whole set.
+    pub(crate) facts: BitFlags<CellFact>,
     /// Nonzero while a declared (named) lambda tvar is inside its def's
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
@@ -419,7 +387,42 @@ pub struct TCell {
     /// its depth or shallower.
     pub(crate) level: Level,
     /// The compile task that created the cell ([`written`]).
-    task: TaskId,
+    pub(crate) task: TaskId,
+}
+
+/// A fact about a cell, beside its binding and constraints.
+#[bitflags]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellFact {
+    /// An occurs check refused to bind or link the cell (the only
+    /// solution was an infinite type). A flagged cell still open at the
+    /// terminal settle must error rather than default to ⊥.
+    CycleRefused,
+    /// A ⊥ was produced into the cell while it was unbound. Every other
+    /// production binds a cell, so one still open once its writers are
+    /// checked had only ⊥ produced into it (`TVar::settle`).
+    BottomFed,
+    /// The cell is bound to ⊥ because something required it (`⊥ ⊇ 'x`:
+    /// a `_` annotation, a `-> _` return): a fact the gate keeps, where a
+    /// ⊥ nothing required is vacuous and reopens.
+    // CR claude for claude: [risk/low] `bottom_required` only means something when
+    // `binding` is `Some(Bottom)`, and two writers of a cell drop it. The session image
+    // (`cell_encode`/`cell_decode` in image/mod.rs) encodes `cycle_refused`,
+    // `bottom_fed` and `level` but not this flag. `TVar::freshen` carries the other two
+    // flags into a copy but not this one. A restored or copied cell bound to ⊥ because
+    // a `_` or `-> _` required it then reads as a vacuous ⊥, which
+    // `Type::unbind_vacuous_tvars` reopens. Today that runs only at a definition's own
+    // gate, so a warm start would type differently only if a later definition's
+    // signature shared such a cell. Fold the flag into the binding, e.g. `enum Binding
+    // { Open, Bound(Type), RequiredBottom }`, so the image codec and the copy walk have
+    // to handle it and `unbind_vacuous_tvars` matches on it. At minimum, encode it and
+    // copy it beside `bottom_fed`. (x-invalid-states-04)
+    // 2026-10-14 claude: the image and the copy now carry it (CellFact, with
+    // t-tvar-09 and t-image-04; pins image::decode_tests::a_cell_keeps_its_facts,
+    // typ::tvar::tests::a_copy_keeps_its_cells_facts). A BottomRequired beside a
+    // binding other than ⊥ is still representable.
+    BottomRequired,
 }
 
 impl Default for TCell {
@@ -427,9 +430,7 @@ impl Default for TCell {
         TCell {
             binding: None,
             constraints: SmallVec::new(),
-            cycle_refused: false,
-            bottom_fed: false,
-            bottom_required: false,
+            facts: BitFlags::empty(),
             rigid_gates: 0,
             quantifier_gates: 0,
             level: current_level(),
@@ -962,14 +963,14 @@ impl TVar {
             }
         }
         // Dedup computed lock-free: the identity walk can re-enter these cells.
-        let (mut to_add, (refused, bottom_fed)) = if same {
-            (LPooled::take(), (false, false))
+        let (mut to_add, facts) = if same {
+            (LPooled::take(), BitFlags::empty())
         } else {
             let mine = s_cell.read().constraints.clone();
             let theirs = o_cell.read().constraints.clone();
             let conjuncts = new_conjuncts(&theirs, mine);
             let s = s_cell.read();
-            (conjuncts, (s.cycle_refused, s.bottom_fed))
+            (conjuncts, s.facts)
         };
         let oid = other.read().id;
         if !same {
@@ -1008,9 +1009,8 @@ impl TVar {
             let mut oc = o_cell.write();
             oc.constraints.extend(to_add.drain(..));
             if !earlier_task(&oc) {
-                oc.cycle_refused |= refused;
-                oc.bottom_fed |= bottom_fed;
-            } else if (refused && !oc.cycle_refused) || (bottom_fed && !oc.bottom_fed) {
+                oc.facts |= facts;
+            } else if !oc.facts.contains(facts) {
                 written_of(oc.task, "cell");
             }
         }
@@ -1197,7 +1197,7 @@ impl TVar {
         let cell = self.cell();
         let mut c = cell.write();
         if decided(&c) {
-            c.bottom_required = true;
+            c.facts |= CellFact::BottomRequired;
         }
     }
 
@@ -1205,7 +1205,7 @@ impl TVar {
     /// binding over ⊥ that took its type from its first use.
     #[doc(hidden)]
     pub fn bottom_fed(&self) -> bool {
-        self.cell().read().bottom_fed
+        self.cell().read().facts.contains(CellFact::BottomFed)
     }
 
     /// Record a ⊥ produced into the open cell; see [`TCell::bottom_fed`].
@@ -1215,10 +1215,10 @@ impl TVar {
         }
         let cell = self.cell();
         let mut c = cell.write();
-        if !c.bottom_fed && !decided(&c) {
+        if !c.facts.contains(CellFact::BottomFed) && !decided(&c) {
             return;
         }
-        c.bottom_fed = true;
+        c.facts |= CellFact::BottomFed;
     }
 
     /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
@@ -1236,10 +1236,10 @@ impl TVar {
         }
         let cell = self.cell();
         let mut c = cell.write();
-        if !c.cycle_refused && !decided(&c) {
+        if !c.facts.contains(CellFact::CycleRefused) && !decided(&c) {
             return;
         }
-        c.cycle_refused = true;
+        c.facts |= CellFact::CycleRefused;
     }
 
     pub(super) fn would_cycle(&self, t: &Type) -> bool {
@@ -1286,19 +1286,9 @@ impl TVar {
             let c = walk(&c, fresh, memo).unwrap_or(c);
             f.add_cell_constraint(c);
         }
-        // A var whose only solution was infinite in the source is
-        // infinite in every copy.
-        let (refused, bottom_fed) = {
-            let c = self.cell();
-            let c = c.read();
-            (c.cycle_refused, c.bottom_fed)
-        };
-        {
-            let c = f.cell();
-            let mut c = c.write();
-            c.cycle_refused |= refused;
-            c.bottom_fed |= bottom_fed;
-        }
+        // what the source's checks learned holds of every copy
+        let facts = self.cell().read().facts;
+        f.cell().write().facts |= facts;
         if let Some(t) = self.binding() {
             f.bind(walk(&t, fresh, memo).unwrap_or(t));
         }
@@ -1831,7 +1821,7 @@ impl Type {
     pub fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                let required = tv.cell().read().bottom_required;
+                let required = tv.cell().read().facts.contains(CellFact::BottomRequired);
                 if !required && tv.binding().is_some_and(|t| t == Type::Bottom) {
                     tv.unbind()
                 }
@@ -1853,6 +1843,19 @@ mod tests {
         tv.alias(&tv);
         tv.alias_cells(&tv);
         assert!(!tv.is_bound());
+    }
+
+    /// A copy knows what the source's checks learned of each cell.
+    #[test]
+    fn a_copy_keeps_its_cells_facts() {
+        let tv = TVar::empty_named(literal!("a"));
+        tv.bind(Type::Bottom);
+        let all = CellFact::BottomRequired | CellFact::BottomFed | CellFact::CycleRefused;
+        tv.cell().write().facts = all;
+        let copy = Type::TVar(tv.clone()).reset_tvars();
+        let Type::TVar(copy) = &copy else { panic!() };
+        assert!(!copy.same_cell(&tv));
+        assert_eq!(copy.cell().read().facts, all);
     }
 
     /// A copy's nested fn type collects the lambdas checked against the
