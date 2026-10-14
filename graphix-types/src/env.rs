@@ -1790,20 +1790,6 @@ impl Env {
     /// [`Self::deftype`]'s contractiveness again, for a definition whose
     /// body named something not defined yet: at the end of the check
     /// every name it reaches is.
-    // CR claude for claude: [bug/medium] x-typecheck-patterns-05 variant: a forward
-    // alias plus an annotated let hangs the check. `type T = G<T>; type G<'a> = 'a;` is
-    // non-contractive. Because G is defined after T, the refusal is deferred to
-    // check_contractive (env.rs). A `let x: T = 1` placed before that deferred check
-    // makes the pattern compile run StructPatternNode's lookup_ref loop on T, which
-    // expands to T forever. The original 256-deep W chain is now refused; this second
-    // shape, also listed in the original repro, is not. Failure: `graphix --check` on
-    // the 4-line program below never answers (killed at 15 s, exit 137); the LSP shares
-    // the path. Without the let, the refusal arrives in 0.06 s. Fix: Run
-    // check_contractive for every typedef of a statement run before anything in that
-    // run resolves the types (or at the first lookup of an unchecked typedef).
-    // Alternatively, bound lookup_ref's expansion by a visited set of TypeDef keys and
-    // treat a revisit as non-contractive. Unverified: the reviewer's report, not
-    // checked by a verifier. (x-rerun-8-10)
     pub fn check_contractive(&self, scope: &ModPath, name: &str) -> Result<()> {
         let Some(td) = self.typedefs.get(scope).and_then(|m| m.get(name)) else {
             return Ok(());
