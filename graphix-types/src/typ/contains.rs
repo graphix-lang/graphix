@@ -457,6 +457,34 @@ fn cell_constraints_ok(
     Ok(true)
 }
 
+/// Whether `q`, when a rank-2 formal's quantifier holds it rigid at a
+/// call, admits unifying with the open cell `o`: the callee was checked
+/// against `q`'s declared bound alone, so each of `o`'s type conjuncts
+/// must follow from it. A quantifier with no type conjunct is not judged.
+fn quantifier_admits(env: &Env, q: &TVar, o: &TVar) -> bool {
+    if !q.is_quantifier_rigid() || o.is_rigid() {
+        return true;
+    }
+    let own = q.cell_constraints();
+    if own.iter().all(|c| c.is_predicate()) {
+        return true;
+    }
+    let trait_of = |t: &Type| match t {
+        Type::Ref(tr) => env.trait_of_ref(tr),
+        _ => None,
+    };
+    o.cell_constraints().iter().filter(|c| !c.is_predicate()).all(|c| {
+        own.iter().any(|q| match (trait_of(q), trait_of(c)) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => {
+                q == c
+                    || c.contains_with_flags(BitFlags::empty(), env, q).unwrap_or(false)
+            }
+            _ => false,
+        })
+    })
+}
+
 /// How two distinct open cells unify.
 #[derive(Debug, Clone, Copy)]
 enum OpenPair {
@@ -478,7 +506,7 @@ impl OpenPair {
             return OpenPair::Distinct;
         }
         // a rigid cell survives only a merge
-        // CR claude for claude: [bug/medium] When an open cell meets a rigid one this
+        // CR claude for eric: [bug/medium] When an open cell meets a rigid one this
         // returns Merge, and `TVar::merge_into` then adds the other cell's conjuncts to
         // the rigid cell without checking that the rigid cell's declared bound implies
         // them. That absorption is right for a definition's own declared variables
@@ -495,6 +523,18 @@ impl OpenPair {
         // with a message naming the missing bound. probe:
         // design/review-2026-10-12/repro/x-typecheck-generics-02.gx
         // (x-typecheck-generics-02)
+        // 2026-10-13 claude: partly fixed. A call's rank-2 gate (callsite.rs
+        // quantified_formal) now refuses an argument whose type conjuncts its bound does
+        // not imply (quantifier_admits): app(add) with 'a: Int under 'b: Number is
+        // refused at the passing site (lang::types::rank2_refuses_narrower_bound).
+        // Re-addressed for the predicates: refusing an implied Singleton would refuse the
+        // pinned NESTED_QUANTIFIER_TWO_TYPES (apply(sq), sq = |x| x * x under 'b:
+        // Number), which the build accepts since apply calls f at concrete types. Is a
+        // rank-2 'b: Number argument held to Singleton, Ordered and Discernible? Also
+        // open: a quantifier copy that reaches a later comparison without its bound
+        // (the instance re-check of a variadic builtin's fn(x: Eq), and of a collection
+        // element's fn<'a: Number>) is not judged, so 'b with no type conjunct is
+        // skipped; FnType::contains_int's own quantifier gates are not judged either.
         if t0.is_rigid() || t1.is_rigid() {
             return OpenPair::Merge;
         }
@@ -1733,6 +1773,9 @@ impl Type {
             (None, None) => {
                 if cyc0() || cyc1() {
                     return refuse();
+                }
+                if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
+                    return Ok(false);
                 }
                 match OpenPair::of(t0, t1) {
                     OpenPair::Distinct => Ok(false),

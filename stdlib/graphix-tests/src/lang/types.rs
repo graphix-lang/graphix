@@ -2790,3 +2790,25 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
 );
+
+// A rank-2 formal's quantifier takes only an argument whose bounds its own
+// imply: the callee was checked against the declared bound alone.
+run!(rank2_refuses_narrower_bound, r#"{
+    let app = |f: fn<'b: Number>(x: 'b, y: 'b) -> 'b| f(1.5, 2.5);
+    let add = 'a: Int |x: 'a, y: 'a| -> 'a x + y;
+    app(add)
+}"#, refused("does not contain fn<'a: Int + Singleton>"); FuseExpect::None);
+
+run!(
+    rank2_accepts_implied_bounds,
+    r#"{
+    let app = |f: fn<'b: Number + Singleton>(x: 'b, y: 'b) -> 'b| f(1.5, 2.5);
+    let add = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
+    let app2 = |f: fn<'b: Int>(x: 'b) -> 'b| f(3);
+    let id = 'a: Number |x: 'a| -> 'a x;
+    (app(add), app2(id))
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if a[..] == [Value::F64(4.0), Value::I64(3)])
+    }
+);

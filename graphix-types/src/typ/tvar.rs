@@ -406,6 +406,10 @@ pub struct TCell {
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
     pub(crate) rigid_gates: u32,
+    /// The rigid gates a call opened on a rank-2 formal's quantifiers: a callee
+    /// checked against the declared bound alone, so a unification may not
+    /// add a conjunct the bound does not imply.
+    pub(crate) quantifier_gates: u32,
     /// Where the cell belongs ([`Level`]); everything it reaches is at
     /// its depth or shallower.
     pub(crate) level: Level,
@@ -422,6 +426,7 @@ impl Default for TCell {
             bottom_fed: false,
             bottom_required: false,
             rigid_gates: 0,
+            quantifier_gates: 0,
             level: current_level(),
             task: TASK.get(),
         }
@@ -433,13 +438,19 @@ impl Default for TCell {
 /// the gate closes, and a rollback may undo the forward link the merge
 /// left, so the close decrements this cell and not whatever the var
 /// reads by then.
-pub struct RigidGate(Arc<RwLock<TCell>>);
+pub struct RigidGate {
+    cell: Arc<RwLock<TCell>>,
+    quantifier: bool,
+}
 
 impl Drop for RigidGate {
     fn drop(&mut self) {
-        let mut cell = self.0.write();
+        let mut cell = self.cell.write();
         written(&cell);
         cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
+        if self.quantifier {
+            cell.quantifier_gates = cell.quantifier_gates.saturating_sub(1);
+        }
     }
 }
 
@@ -1133,13 +1144,31 @@ impl TVar {
     /// Open a rigid gate on the cell this var reads now; see
     /// [`TCell::rigid_gates`].
     pub fn open_rigid(&self) -> RigidGate {
+        self.open_gate(false)
+    }
+
+    /// [`Self::open_rigid`] for a rank-2 formal's quantifier; see
+    /// [`TCell::quantifier_gates`].
+    pub fn open_quantifier_rigid(&self) -> RigidGate {
+        self.open_gate(true)
+    }
+
+    fn open_gate(&self, quantifier: bool) -> RigidGate {
         let cell = self.cell();
         {
             let mut c = cell.write();
             written(&c);
             c.rigid_gates += 1;
+            if quantifier {
+                c.quantifier_gates += 1;
+            }
         }
-        RigidGate(cell)
+        RigidGate { cell, quantifier }
+    }
+
+    /// Whether a rank-2 formal's quantifier holds this cell rigid.
+    pub(super) fn is_quantifier_rigid(&self) -> bool {
+        self.read().cell.read().quantifier_gates > 0
     }
 
     pub(crate) fn earlier_task(&self) -> bool {

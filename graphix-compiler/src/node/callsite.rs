@@ -310,7 +310,7 @@ fn quantified_formal(
     let gates = named
         .iter()
         .filter(|(name, _)| ft.quantifiers.contains(*name))
-        .map(|(_, tv)| tv.open_rigid())
+        .map(|(_, tv)| tv.open_quantifier_rigid())
         .collect();
     Ok(Some((formal.clone(), gates)))
 }
