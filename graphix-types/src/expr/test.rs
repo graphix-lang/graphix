@@ -2273,14 +2273,18 @@ proptest! {
         // expr_round_trip and expr_pp_round_trip again under AsWritten. Have the
         // generator set str_form on string constants too, and make check compare
         // str_form in that mode. (tests-expr-03)
-        let st = format_with_flags(BitFlags::empty(), || s.to_string());
+        // 2026-10-14 claude: expr_round_trip and expr_pp_round_trip print under
+        // AsWritten now (comments print only as written, t-print-03); the generator still
+        // sets no str_form and check still does not compare it, and the canonical form has
+        // no round trip of its own.
+        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
         let e = parse_one(st.as_str()).unwrap();
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
     }
 
     #[test]
     fn expr_pp_round_trip(s in expr()) {
-        let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(80));
         let e = parse_one(st.as_str()).unwrap();
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
     }
@@ -2311,7 +2315,7 @@ proptest! {
     #[test]
     fn pack_round_trip(s in expr()) {
         use crate::expr::serialize::{pack_module, unpack_module};
-        let st = format_with_flags(BitFlags::empty(), || s.to_string());
+        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
         let e = parse_one(st.as_str()).unwrap();
         let packed = pack_module(std::slice::from_ref(&e)).unwrap();
         let unpacked = unpack_module(&packed, Arc::new(Origin::unspecified(""))).unwrap();
@@ -2634,13 +2638,13 @@ mod tree_sitter_compat {
 
         #[test]
         fn ts_expr(s in expr()) {
-            let st = format_with_flags(BitFlags::empty(), || s.to_string());
+            let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
             assert_ts_parses(&st);
         }
 
         #[test]
         fn ts_pp(s in expr()) {
-            let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
+            let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(80));
             assert_ts_parses(&st);
         }
     }

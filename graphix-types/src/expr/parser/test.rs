@@ -105,10 +105,13 @@ fn comment_above_expr_captured() {
 
 #[test]
 fn comment_block_round_trips() {
-    let e = parse_one("// first\n// second\n42").unwrap();
-    let e2 = parse_one(&e.to_string()).unwrap();
-    let c = e2.dec.as_ref().expect("comments lost on round-trip");
-    assert_eq!(&c.comments[..], &[literal!(" first"), literal!(" second")]);
+    // comments print only as written, the formatter's mode
+    crate::format_with_flags(crate::PrintFlag::AsWritten, || {
+        let e = parse_one("// first\n// second\n42").unwrap();
+        let e2 = parse_one(&e.to_string()).unwrap();
+        let c = e2.dec.as_ref().expect("comments lost on round-trip");
+        assert_eq!(&c.comments[..], &[literal!(" first"), literal!(" second")]);
+    })
 }
 
 #[test]
@@ -151,15 +154,19 @@ fn arm_comments(e: &Expr) -> Vec<Vec<ArcStr>> {
 
 #[test]
 fn comment_above_select_arm() {
-    // A comment above an arm's pattern belongs to the arm's body and
-    // prints back above the pattern.
-    let e = parse_one("select x {\n// zero\n0 => 1,\n// rest\n_ => 2\n}").unwrap();
-    let want = vec![vec![literal!(" zero")], vec![literal!(" rest")]];
-    assert_eq!(arm_comments(&e), want);
-    assert_eq!(arm_comments(&parse_one(&e.to_string()).unwrap()), want);
-    assert_eq!(arm_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
-    let e = parse_one("select x {\n// zero\n0 => { 1; 2 },\n// rest\n_ => 3\n}").unwrap();
-    assert_eq!(arm_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+    // comments print only as written, the formatter's mode
+    crate::format_with_flags(crate::PrintFlag::AsWritten, || {
+        // A comment above an arm's pattern belongs to the arm's body and
+        // prints back above the pattern.
+        let e = parse_one("select x {\n// zero\n0 => 1,\n// rest\n_ => 2\n}").unwrap();
+        let want = vec![vec![literal!(" zero")], vec![literal!(" rest")]];
+        assert_eq!(arm_comments(&e), want);
+        assert_eq!(arm_comments(&parse_one(&e.to_string()).unwrap()), want);
+        assert_eq!(arm_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+        let e =
+            parse_one("select x {\n// zero\n0 => { 1; 2 },\n// rest\n_ => 3\n}").unwrap();
+        assert_eq!(arm_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+    })
 }
 
 #[test]
@@ -196,14 +203,17 @@ fn method_comments(e: &Expr) -> Vec<Vec<ArcStr>> {
 
 #[test]
 fn comment_above_impl_method() {
-    let e = parse_one(
+    // comments print only as written, the formatter's mode
+    crate::format_with_flags(crate::PrintFlag::AsWritten, || {
+        let e = parse_one(
         "impl Show for Counter {\n// how it prints\nlet show = |c| \"c\";\n// twice\nlet twice = |c| \"cc\"\n}",
     )
     .unwrap();
-    let want = vec![vec![literal!(" how it prints")], vec![literal!(" twice")]];
-    assert_eq!(method_comments(&e), want);
-    assert_eq!(method_comments(&parse_one(&e.to_string()).unwrap()), want);
-    assert_eq!(method_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+        let want = vec![vec![literal!(" how it prints")], vec![literal!(" twice")]];
+        assert_eq!(method_comments(&e), want);
+        assert_eq!(method_comments(&parse_one(&e.to_string()).unwrap()), want);
+        assert_eq!(method_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+    })
 }
 
 #[test]
@@ -230,32 +240,38 @@ fn field_comments(e: &Expr) -> Vec<(ArcStr, Vec<ArcStr>)> {
 
 #[test]
 fn comment_above_struct_field() {
-    // A comment above a field belongs to its value; the printers keep the
-    // shorthand.
-    let e = parse_one("{\n// the host\nhost: \"h\",\n// the port\nport\n}").unwrap();
-    let want = vec![
-        (literal!("host"), vec![literal!(" the host")]),
-        (literal!("port"), vec![literal!(" the port")]),
-    ];
-    assert_eq!(field_comments(&e), want);
-    let printed = e.to_string();
-    assert!(!printed.contains("port: port"), "{printed}");
-    assert_eq!(field_comments(&parse_one(&printed).unwrap()), want);
-    let pretty = e.to_string_pretty(0);
-    assert!(!pretty.contains("port: port"), "{pretty}");
-    assert_eq!(field_comments(&parse_one(&pretty).unwrap()), want);
+    // comments print only as written, the formatter's mode
+    crate::format_with_flags(crate::PrintFlag::AsWritten, || {
+        // A comment above a field belongs to its value; the printers keep the
+        // shorthand.
+        let e = parse_one("{\n// the host\nhost: \"h\",\n// the port\nport\n}").unwrap();
+        let want = vec![
+            (literal!("host"), vec![literal!(" the host")]),
+            (literal!("port"), vec![literal!(" the port")]),
+        ];
+        assert_eq!(field_comments(&e), want);
+        let printed = e.to_string();
+        assert!(!printed.contains("port: port"), "{printed}");
+        assert_eq!(field_comments(&parse_one(&printed).unwrap()), want);
+        let pretty = e.to_string_pretty(0);
+        assert!(!pretty.contains("port: port"), "{pretty}");
+        assert_eq!(field_comments(&parse_one(&pretty).unwrap()), want);
+    })
 }
 
 #[test]
 fn comment_above_struct_with_field() {
-    let e = parse_one("{ s with\n// bump\nn: 1,\n// keep\nm\n}").unwrap();
-    let want = vec![
-        (literal!("m"), vec![literal!(" keep")]),
-        (literal!("n"), vec![literal!(" bump")]),
-    ];
-    assert_eq!(field_comments(&e), want);
-    assert_eq!(field_comments(&parse_one(&e.to_string()).unwrap()), want);
-    assert_eq!(field_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+    // comments print only as written, the formatter's mode
+    crate::format_with_flags(crate::PrintFlag::AsWritten, || {
+        let e = parse_one("{ s with\n// bump\nn: 1,\n// keep\nm\n}").unwrap();
+        let want = vec![
+            (literal!("m"), vec![literal!(" keep")]),
+            (literal!("n"), vec![literal!(" bump")]),
+        ];
+        assert_eq!(field_comments(&e), want);
+        assert_eq!(field_comments(&parse_one(&e.to_string()).unwrap()), want);
+        assert_eq!(field_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+    })
 }
 
 #[test]
@@ -269,14 +285,17 @@ fn reserved_shorthand_field_still_needs_explicit_form() {
 // other width and prints through `Display`.
 #[test]
 fn block_item_comment_pretty_round_trips() {
-    let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
-    let e2 = parse_one(&e.to_string_pretty(0)).unwrap();
-    match &e2.kind {
-        ExprKind::Block { exprs } => {
-            assert_eq!(comments_of(exprs.last().unwrap()), vec![literal!(" note")])
+    // comments print only as written, the formatter's mode
+    crate::format_with_flags(crate::PrintFlag::AsWritten, || {
+        let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
+        let e2 = parse_one(&e.to_string_pretty(0)).unwrap();
+        match &e2.kind {
+            ExprKind::Block { exprs } => {
+                assert_eq!(comments_of(exprs.last().unwrap()), vec![literal!(" note")])
+            }
+            other => panic!("expected a do block, got {other:?}"),
         }
-        other => panic!("expected a do block, got {other:?}"),
-    }
+    })
 }
 
 // `#[name]` / `#[name(args)]` above an expression is captured into

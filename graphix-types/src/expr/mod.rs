@@ -1318,18 +1318,6 @@ impl fmt::Debug for Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // CR claude for claude: [bug/low] The canonical Display writes an expression's
-        // comments, and nested ones through the other `write_leading_flat` callers in
-        // print.rs. `node::error::null_error` formats the `?` operand with this
-        // Display, so a program sees `NullError("(\n// why\ns.b)")` where the same code
-        // without the comment gives `NullError("(s.b)")`. Adding or editing a comment
-        // changes a value the program can compare. The `PrintFlag::AsWritten` doc says
-        // text without that flag is a function of the syntax alone, and `Comments`
-        // decide nothing. Fix: have the flat printers write comments only under
-        // `PrintFlag::AsWritten`, the flag the formatter sets. Attributes are syntax
-        // and can stay. Then make sure the print round-trip tests that expect comments
-        // set that flag. probe: design/review-2026-10-12/repro/t-print-03.gx
-        // (t-print-03)
         print::write_leading_flat(f, &self.dec)?;
         // Printing descends the whole tree, including arbitrary user
         // subexpressions on error paths.

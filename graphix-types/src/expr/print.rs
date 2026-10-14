@@ -408,7 +408,12 @@ pub(crate) fn write_leading(
     Ok(())
 }
 
+/// Comments as written, which only the formatter prints: canonical text
+/// is a function of the syntax alone, and a comment is not syntax.
 fn write_comments(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
+    if !print_as_written() {
+        return Ok(());
+    }
     for c in lines {
         writeln!(f, "//{c}")?;
     }
@@ -421,7 +426,9 @@ pub(crate) fn write_leading_flat(
     f: &mut impl fmt::Write,
     dec: &Option<Arc<Decorations>>,
 ) -> fmt::Result {
-    if dec.as_ref().is_some_and(|d| !d.comments.is_empty() || !d.attrs.is_empty()) {
+    if dec.as_ref().is_some_and(|d| {
+        (!d.comments.is_empty() && print_as_written()) || !d.attrs.is_empty()
+    }) {
         writeln!(f)?;
     }
     write_leading(f, dec)
@@ -442,7 +449,7 @@ fn write_doc_flat(
 
 /// `write_comments` in a flat form.
 fn write_comments_flat(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
-    if !lines.is_empty() {
+    if !lines.is_empty() && print_as_written() {
         writeln!(f)?;
     }
     write_comments(f, lines)

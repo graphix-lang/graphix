@@ -848,3 +848,24 @@ run!(
     "#,
     "/test/m.gx" => "let g = |x: i64| -> Error<ErrChain<`A>> { catch(e) e; error(`A)? }"
 ; FuseExpect::Jit);
+
+// A comment is not syntax: the text of a `?`'s NullError is the same with
+// one above the operand.
+run!(
+    a_comment_does_not_reach_an_error_value,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let x: [i64, null] = null;
+        let s = { a: 1, b: x };
+        let out = never();
+        let r = {
+          catch(e) out <- (e.0).error == `NullError("(s.b)");
+          let v = (
+            // why
+            s.b
+          )?;
+          v
+        };
+        let result = out
+    "#
+; FuseExpect::Jit);
