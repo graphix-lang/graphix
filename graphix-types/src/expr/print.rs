@@ -479,25 +479,16 @@ fn sig_item_decorated(si: &SigItem) -> bool {
 
 /// A literal as source text: `i64` and `f64`, the types an unprefixed
 /// number reads as, print bare, an `f64` always with a point or an
-/// exponent; a string escapes as an expression's does.
+/// exponent, an `f32` in its shortest form; a string escapes as an
+/// expression's does.
 pub(crate) struct Literal<'a>(pub &'a Value);
 
 impl fmt::Display for Literal<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {
             Value::I64(v) => write!(f, "{v}"),
-            // CR claude for claude: [doc-drift/low] Only i64 and f64 keep a short
-            // spelling here. Every other literal goes through Value::fmt_ext, so
-            // `graphix fmt` turns f32:1e-45 into a 45-digit decimal, f32:3.4028235e38
-            // into a 39-digit one, a `+05:00` datetime into its UTC form and 0.1s into
-            // 100.ms. The values are equal, but the author's spelling is lost and the
-            // f32s overflow the width. CLAUDE.md ('What the formatter does normalize')
-            // lists only the i64/f64 bare printing. Print a finite f32 as `f32:{v:?}`
-            // as f64 is printed, and add the datetime and duration reprinting to that
-            // CLAUDE.md list (or keep their written text, as str_form does for
-            // strings). probe: design/review-2026-10-12/repro/t-format-resolver-06.gx
-            // (t-format-resolver-06)
             Value::F64(v) if v.is_finite() => write!(f, "{v:?}"),
+            Value::F32(v) if v.is_finite() => write!(f, "f32:{v:?}"),
             v @ Value::String(_) => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
             v => v.fmt_ext(f, &parser::VALUE_ESC, true),
         }

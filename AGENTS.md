@@ -445,7 +445,9 @@ program-visible values (a cast error, a null error); `WrittenAt` and
 are), and a type is shared by content, so whose written order it carries
 is incidental. A tree holding a comment,
 an attribute or a doc has no single-line form. What the formatter
-does normalize: `i64`/`f64` literals print bare; a run of adjacent
+does normalize: `i64`/`f64` literals print bare and an `f32` in its
+shortest form; a datetime prints in UTC and a duration in its largest
+whole unit; a run of adjacent
 undecorated `use` statements merges into one per root and visibility, a
 sorted tree with every shared prefix written once, where no item reads or
 binds what another binds or reads (a glob merges with nothing); a blank line stands

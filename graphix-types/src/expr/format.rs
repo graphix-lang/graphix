@@ -945,7 +945,7 @@ mod tests {
         formats_to(
             Program,
             "[i64:1, -2, f64:3., 4.5, u8:6, f32:7., - 8, 1e3, 1e300, - 1.5]",
-            "[1, -2, 3.0, 4.5, u8:6, f32:7., - 8, 1000.0, 1e300, - 1.5]\n",
+            "[1, -2, 3.0, 4.5, u8:6, f32:7.0, - 8, 1000.0, 1e300, - 1.5]\n",
         );
     }
 
@@ -978,6 +978,15 @@ mod tests {
             assert!(l.starts_with("        "), "{l}\n{}", &*out)
         }
         stable(SourceKind::Program, &src);
+    }
+
+    #[test]
+    fn an_f32_keeps_its_shortest_spelling() {
+        formats_to(
+            SourceKind::Program,
+            "[f32:1e-45, f32:3.4028235e38, f32:0.1, f32:-0.0]",
+            "[f32:1e-45, f32:3.4028235e38, f32:0.1, f32:-0.0]\n",
+        );
     }
 
     // a guard counts toward whether its arm's pattern stays on one line
