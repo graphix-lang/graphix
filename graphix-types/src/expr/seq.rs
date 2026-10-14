@@ -1176,6 +1176,10 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // only the entries pushed before the flush's cycle. For example, stamp queue
     // entries with a push counter and carry the counter value at the flush through the
     // variable. Pin both routes. (t-seq-05)
+    // 2026-10-14 claude: the variable is forced: the flush reads the dequeued request,
+    // which the queue's output defines, so a same-cycle #flush would be a cycle. The fix
+    // therefore lives in core::queue: a #flush carrying a push mark (the entries pushed
+    // before it) beside today's clear-all. Not started.
     let flush_reads_request = flush.is_some_and(|f| {
         trigger_name.as_ref().is_some_and(|n| reads_name(std::slice::from_ref(f), n))
     });
