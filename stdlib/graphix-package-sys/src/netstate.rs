@@ -448,6 +448,16 @@ impl NetState {
         // calling subscribe_updates, and replay dv.last() whenever a reader joins a
         // route that netidx already streams, which needs `streamed` to outlive held==0
         // while the Dval does. (x-concurrency-07)
+        // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
+        // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
+        // pushes its replay into stream_batch, and process_updates_batch broadcasts
+        // that replay to every channel on the subscription. New readers would fire
+        // existing readers too (contrary to net_second_subscriber), and several
+        // channel registrations in one batch can replay duplicates to new readers.
+        // Netidx must target the replay at the joining channel in stream order;
+        // then sys can remove shared routing/manual last replay. Equality filtering
+        // would discard legitimate repeated writes. Socket probes cannot run here;
+        // the candidate sys rewrite was discarded. Upstream changes are outside scope.
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         let mut routes = self.0.routes.lock();
@@ -466,6 +476,16 @@ impl NetState {
         // fix as the late-subscriber finding), or always replay `dv.last()` here and
         // drop the duplicate in the pump. probe:
         // design/review-2026-10-12/repro/sys-net-02.gx (sys-net-02)
+        // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
+        // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
+        // pushes its replay into stream_batch, and process_updates_batch broadcasts
+        // that replay to every channel on the subscription. New readers would fire
+        // existing readers too (contrary to net_second_subscriber), and several
+        // channel registrations in one batch can replay duplicates to new readers.
+        // Netidx must target the replay at the joining channel in stream order;
+        // then sys can remove shared routing/manual last replay. Equality filtering
+        // would discard legitimate repeated writes. Socket probes cannot run here;
+        // the candidate sys rewrite was discarded. Upstream changes are outside scope.
         // CR claude for claude: [bug/high] A late second reader of a busy path sees the
         // same value twice, or newer then older values. This replay sends dv.last()
         // through set_var, and then the reader's BindId joins route.ids. The pump reads
@@ -482,6 +502,16 @@ impl NetState {
         // fast publisher and a late subscriber that asserts strictly increasing values.
         // The existing net_second_subscriber pin uses a static value, so it cannot
         // catch this. (sys-net-01)
+        // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
+        // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
+        // pushes its replay into stream_batch, and process_updates_batch broadcasts
+        // that replay to every channel on the subscription. New readers would fire
+        // existing readers too (contrary to net_second_subscriber), and several
+        // channel registrations in one batch can replay duplicates to new readers.
+        // Netidx must target the replay at the joining channel in stream order;
+        // then sys can remove shared routing/manual last replay. Equality filtering
+        // would discard legitimate repeated writes. Socket probes cannot run here;
+        // the candidate sys rewrite was discarded. Upstream changes are outside scope.
         if route.streamed
             && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
             && let ev @ NEvent::Update(_) = dv.last()
