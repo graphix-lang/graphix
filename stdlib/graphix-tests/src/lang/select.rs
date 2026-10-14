@@ -3520,3 +3520,21 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2]")
 );
+
+// An abstract value has no primitive form, and a cast's refusal prints
+// no payload, which could hold a reference's session id.
+run!(
+    abstract_cast_refused_without_payload,
+    r#"{
+    type Cell = Abstract<&i64>;
+    let x: i64 = 41;
+    let c = Cell(&x);
+    (cast<u64>(c), cast<string>(c))
+}"#,
+    |v: Result<&Value>| {
+        let why = "an abstract value has no primitive form";
+        matches!(v, Ok(v) if v.to_string() == format!(
+            r#"[error:["InvalidCast", "can't cast Cell(…) to u64: {why}"], error:["InvalidCast", "can't cast Cell(…) to string: {why}"]]"#
+        ))
+    }
+);

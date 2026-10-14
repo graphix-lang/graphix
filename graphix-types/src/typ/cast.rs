@@ -465,22 +465,11 @@ impl Type {
                 if let Value::Error(_) = v {
                     return Err(self.cast_fail("an error is not data", v));
                 }
-                // CR claude for claude: [bug/medium] A cast of an abstract value takes
-                // it apart here, which holds_ref assumes never happens (it stops at
-                // Type::Abstract). With a string target, convert turns a
-                // Value::Abstract into netidx's "abstract:<base64>" packing, which
-                // carries a reference's raw session id. With any other target, the
-                // CastFail message prints the value through NakedPrefix, and
-                // GxAbstract's Debug prints the payload untyped (so `Cell(4103)`
-                // appears where the typed printer gives `Cell(&ref)`). So `type Cell =
-                // Abstract<&i64>; cast<u64>(Cell(&x))` and `cast<string>(..)` give
-                // different strings under --no-cache, --no-fusion and a warm image,
-                // against the rule that a reference prints as &ref. Fix: refuse a
-                // Value::Abstract source in this Primitive arm, since an abstract has
-                // no primitive conversion. Then render CastFail's value through the
-                // typed printer, or elide abstract payloads, so no raw id reaches the
-                // message. probe: design/review-2026-10-12/repro/t-cast-setops-11.gx
-                // (t-cast-setops-11)
+                if let Value::Abstract(_) = v {
+                    return Err(
+                        self.cast_fail("an abstract value has no primitive form", v)
+                    );
+                }
                 // CR claude for eric: [bug/high] When the integer member of a
                 // primitive-set target refuses a number, this falls through to netidx's
                 // lossy `Value::cast` for a sibling member. A number (or a datetime,

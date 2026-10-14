@@ -73,8 +73,14 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                     let cut = Value::String(s[..end].into());
                     write!(f, "{}…", NakedValue(&cut))?
                 }
-                // Debug consults a user Display impl when the hooks are armed.
+                // a capped print is a message, where an untyped payload
+                // could show a reference's session id
                 v @ Value::Abstract(_) => match abstract_value::get(v) {
+                    Some(g) if capped => match g.displayed() {
+                        Some(d) => write!(f, "{d}")?,
+                        None => write!(f, "{}(…)", g.name)?,
+                    },
+                    // Debug consults a user Display impl when the hooks are armed.
                     Some(g) => write!(f, "{g:?}")?,
                     None => write!(f, "{}", NakedValue(v))?,
                 },
