@@ -590,6 +590,22 @@ mod tests {
         }
     }
 
+    // a commented guard, until, abort, flush, scrutinee or dynamic source
+    // starts on a line of its own after its head
+    #[test]
+    fn a_decorated_child_after_a_head_reads_back() {
+        for src in [
+            "let r = select x {\n  a if\n    // c\n    a > 1 => 1,\n  _ => 2\n};\nr\n",
+            "seq t {\n  a;\n  until\n    // d\n    b;\n  c\n}\n",
+            "seq t; abort(\n  // c\n  e\n) {\n  a;\n  c\n}\n",
+            "seqq t; flush(\n  // c\n  e\n) {\n  a;\n  c\n}\n",
+            "select\n  // c\n  x {\n  _ => 2\n}\n",
+            "mod m dynamic {\n  sandbox unrestricted;\n  sig { val x: i64 };\n  source\n    // c\n    \"let x = 1\"\n};\nm::x\n",
+        ] {
+            stable(SourceKind::Program, src);
+        }
+    }
+
     // a quantifier that occurs only inside another's bound keeps its own
     #[test]
     fn a_bound_only_quantifier_keeps_its_bound() {
@@ -931,6 +947,15 @@ mod tests {
             "[i64:1, -2, f64:3., 4.5, u8:6, f32:7., - 8, 1e3, 1e300, - 1.5]",
             "[1, -2, 3.0, 4.5, u8:6, f32:7., - 8, 1000.0, 1e300, - 1.5]\n",
         );
+    }
+
+    // a guard counts toward whether its arm's pattern stays on one line
+    #[test]
+    fn a_guarded_arm_fits() {
+        let src = "select x {\n  `Aaaaaaaaaaaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccc, ddddddddd) if bbbbbbbbbbbbbbbbbbbbb => 1,\n  _ => 0\n}\n";
+        let cfg = FormatConfig::default();
+        fits(&format_source(SourceKind::Program, src, &cfg).unwrap(), cfg.width);
+        stable(SourceKind::Program, src);
     }
 
     #[test]

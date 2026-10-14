@@ -240,24 +240,15 @@ fn flat_width(x: &impl fmt::Display) -> usize {
     n.0
 }
 
-/// The least the first line of `e`'s multi-line layout can take: the text
-/// in front of its bracket that no layout breaks.
 /// Whether the first line of `e`'s head fits on the current line: laid
 /// out alone where its width depends on a subexpression (a scrutinee, a
 /// source, a callee), else by its fixed width.
-// CR claude for claude: [doc-drift/low] The first doc paragraph above this function
-// (`The least the first line of e's multi-line layout can take`) describes head_min,
-// which has no doc of its own. The same thing happens further down: the `` `(e)`; a
-// decorated `e` stands on lines of its own inside `` line belongs to pretty_parens but
-// sits above ends_bodyless and merges into its doc. Move each paragraph above the
-// function it describes. (t-print-08)
 fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
     use ExprKind::*;
     let col = buf.col();
     let start = buf.mark();
     match e {
         Select(se) => {
-            write!(buf, "select ")?;
             pretty_scrutinee(buf, &se.arg)?;
             write!(buf, " {{")?;
         }
@@ -294,6 +285,8 @@ fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
     Ok(fits)
 }
 
+/// The least the first line of `e`'s multi-line layout can take: the text
+/// in front of its bracket that no layout breaks.
 fn head_min(e: &ExprKind) -> usize {
     use ExprKind::*;
     match e {
@@ -1351,15 +1344,9 @@ impl PrettyDisplay for ApplyExpr {
             buf.kill_newline();
             return writeln!(buf, ")");
         }
-        // CR claude for claude: [bug/low] With no arguments this writes `(`, a newline
-        // and then `)` on its own line. So whenever a zero-argument call is laid out in
-        // pretty mode, `graphix fmt` emits `f(` followed by a line holding only `)`.
-        // Examples: an 84-character function name inside an array at width 90, or `let
-        // x = f();` at a narrow width. The test `whitespace_in_empty_delimiters` claims
-        // the printer never emits that loose form. Fix: when `args` is empty, write
-        // `()` on the function's line and return, as `pretty_print_exprs` does for an
-        // empty list. Also add a `to_string_pretty(0)` check of `f()` to that test.
-        // Probe: design/review-2026-10-12/repro/tests-parser-03.gx (tests-parser-03)
+        if args.is_empty() {
+            return writeln!(buf, "()");
+        }
         writeln!(buf, "(")?;
         buf.nested(|buf| {
             for (i, (name, e)) in args.iter().enumerate() {
@@ -1580,7 +1567,6 @@ impl fmt::Display for SelectExpr {
 impl PrettyDisplay for SelectExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let SelectExpr { arg, arms } = self;
-        write!(buf, "select ")?;
         pretty_scrutinee(buf, arg)?;
         writeln!(buf, " {{")?;
         buf.nested(|buf| {
@@ -1589,32 +1575,15 @@ impl PrettyDisplay for SelectExpr {
                 if let Some(tp) = &pat.type_predicate {
                     write!(buf, "{tp} as ")?;
                 }
-                // CR claude for claude: [bug/low] The pattern is kept flat when pattern
-                // + ` =>` fits, but when the arm has a guard, ` if <guard>` is written
-                // between them, so the guard's width never enters the decision. An arm
-                // such as `` `Aaaa(bbb, ccc, ddd) if bbb => 1 `` prints as one
-                // 111-column line at width 90. Measure pattern + ` if <guard>` + ` =>`
-                // together. When that does not fit, lay the pattern out over lines, or
-                // move `if <guard>` to its own nested line. probe:
-                // design/review-2026-10-12/repro/t-print-04.gx (t-print-04)
-                pretty_pattern_then(buf, &pat.structure_predicate, " =>")?;
+                // the pattern stays flat only if its guard fits beside it too
+                let follows = match &pat.guard {
+                    Some(g) if g.dec.is_none() => format_compact!(" if {g} =>"),
+                    _ => CompactString::const_new(" =>"),
+                };
+                pretty_pattern_then(buf, &pat.structure_predicate, &follows)?;
                 write!(buf, " ")?;
                 if let Some(guard) = &pat.guard {
-                    write!(buf, "if ")?;
-                    // CR claude for claude: [bug/medium] A decorated guard prints its
-                    // comment straight after `if ` (`a if // c`), which does not parse.
-                    // `graphix fmt` and LSP formatting then refuse the whole file as a
-                    // formatter bug. Five sites share the mistake: they write inline
-                    // text and then call a child's `fmt_pretty`, which writes
-                    // `write_leading` mid-line. The five are this guard, the `until `
-                    // arm, the seq `abort(`/`flush(` clauses, `pretty_scrutinee` after
-                    // `select `, and a dynamic module's `source `. Fix: add one helper
-                    // that continues on the current line when `e.dec` is `None`, and
-                    // otherwise ends the line and lays `e` out nested, as
-                    // `pretty_tail`'s decorated branch does. Use it at all five sites.
-                    // For `abort(`/`flush(` use `pretty_parens`'s decorated layout.
-                    // probe: design/review-2026-10-12/repro/t-print-01.sh (t-print-01)
-                    buf.nested(|buf| guard.fmt_pretty(buf))?;
+                    pretty_after(buf, "if", guard)?;
                     buf.kill_newline();
                     write!(buf, " ")?;
                 }
@@ -1650,7 +1619,6 @@ fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
     writeln!(buf, "{suffix}")
 }
 
-/// `(e)`; a decorated `e` stands on lines of its own inside.
 /// Whether `e` ends with an impl that has no body, which reads a `{`
 /// printed after it as its body.
 fn ends_bodyless(e: &Expr) -> bool {
@@ -1667,6 +1635,7 @@ fn ends_bodyless(e: &Expr) -> bool {
 
 /// A select's scrutinee; one ending in a bodyless impl gets the impl's
 /// empty body, which the arms' `{` would otherwise be read as.
+/// `select` and its scrutinee, continuation lines nested under it.
 fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
     // CR claude for claude: [readability/low] The scrutinee is laid out with no
     // nesting, so when it breaks (an operator chain) its continuation line starts at
@@ -1675,7 +1644,9 @@ fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
     // does the same. Lay both out inside buf.nested(..), as the arm guard already is,
     // so continuation lines indent one step past the head. probe:
     // design/review-2026-10-12/repro/t-print-07.gx (t-print-07)
-    arg.fmt_pretty(buf)?;
+    // 2026-10-14 claude: the scrutinee is nested now (pretty_after, t-print-01); the
+    // seq trigger in fmt_pretty_inner's Seq arm is not yet.
+    pretty_after(buf, "select", arg)?;
     buf.kill_newline();
     if ends_bodyless(arg) {
         write!(buf, " {{}}")?
@@ -1683,6 +1654,17 @@ fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
     Ok(())
 }
 
+/// `head e`, `e` continuing the line and nested under `head`; a
+/// decorated `e` starts on a line of its own, its comments above it.
+fn pretty_after(buf: &mut PrettyBuf, head: &str, e: &Expr) -> fmt::Result {
+    match e.dec {
+        None => write!(buf, "{head} ")?,
+        Some(_) => writeln!(buf, "{head}")?,
+    }
+    buf.nested(|buf| e.fmt_pretty(buf))
+}
+
+/// `(e)`; a decorated `e` stands on lines of its own inside.
 fn pretty_parens(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     if decorated(e) {
         writeln!(buf, "(")?;
@@ -1791,11 +1773,10 @@ impl PrettyDisplay for ExprKind {
                 let mut first = trigger.is_none();
                 for (name, e) in [("abort", abort.as_ref()), ("flush", kind.flush())] {
                     if let Some(e) = e {
-                        write!(buf, "{}{name}(", if first { "" } else { "; " })?;
+                        write!(buf, "{}{name}", if first { "" } else { "; " })?;
                         first = false;
-                        e.fmt_pretty(buf)?;
+                        pretty_parens(buf, e)?;
                         buf.kill_newline();
-                        write!(buf, ")")?;
                     }
                 }
                 if !first {
@@ -1803,10 +1784,7 @@ impl PrettyDisplay for ExprKind {
                 }
                 pretty_print_exprs(buf, body, "{", "}", ";", false)
             }
-            Until(e) => {
-                write!(buf, "until ")?;
-                e.fmt_pretty(buf)
-            }
+            Until(e) => pretty_after(buf, "until", e),
             TryWith(t) => {
                 pretty_print_exprs(buf, &t.body, "try {", "}", ";", false)?;
                 buf.kill_newline();
@@ -1836,8 +1814,7 @@ impl PrettyDisplay for ExprKind {
                     sig.fmt_pretty(buf)?;
                     buf.kill_newline();
                     writeln!(buf, ";")?;
-                    write!(buf, "source ")?;
-                    buf.nested(|buf| source.fmt_pretty(buf))?;
+                    pretty_after(buf, "source", source)?;
                     buf.kill_newline();
                     writeln!(buf, ";")
                 })?;

@@ -362,6 +362,8 @@ fn whitespace_in_empty_delimiters() {
         parse_structure_pattern("[ ]").unwrap(),
         parse_structure_pattern("[]").unwrap()
     );
+    let call = parse_one("f()").unwrap();
+    assert_eq!(call.to_string_pretty(0).trim_end(), "f()");
 }
 
 #[test]
