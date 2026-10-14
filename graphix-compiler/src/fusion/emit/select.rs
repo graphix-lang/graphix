@@ -394,17 +394,10 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 /// the end, struct leaves read `a[i][1]`.
 ///
 /// Element reads are total, so the condition is the AND of the length
-/// test and every leaf's own test, in one block. An array `@` or rest
-/// bind lowers as a subslice and a non-scalar leaf as an element value;
-/// a tuple or struct `@` and a nested variant, or- or abstract leaf
-/// refuse (the select de-fuses).
-// CR claude for claude: [doc-drift/low] The doc above says a tuple or struct `@`
-// refuses and the select de-fuses. The code lowers both as a whole-composite Subslice
-// bind, and they agree with the node-walk. Only a nested variant, or- or abstract leaf
-// refuses here (see f-select-04 on the variant leaf). The never-arm comment in
-// emit_select_value_arm has the same problem: it says such an arm fires only with the
-// scrutinee, but its STALE fold also takes the consulted guards' fires (guards_stale),
-// as the node-walk does. Fix both comments to match the code. (f-select-07)
+/// test and every leaf's own test, in one block. An array, tuple or
+/// struct `@` or rest bind lowers as a subslice. Variant leaves test
+/// borrowed words; non-scalar binds clone owned locals. Or- and abstract
+/// leaves refuse.
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -1444,11 +1437,9 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         kernel_abi::freeze_for_abi_normalized(body.typ()).ok_or_else(|| {
             anyhow!("emit_clif: select arm type {} doesn't freeze concrete", body.typ())
         })?;
-    // A `never(args..)` arm is a standing bottom: it fires only with the
-    // scrutinee, through the STALE fold below, whatever its args do; the
-    // args are still consumed (a raise or an effect in one delivers or
-    // de-fuses at its own emission). Any other bottom-typed body runs:
-    // its production's fire is the arm's.
+    // A never arm's fire follows the scrutinee and consulted guards,
+    // independent of its arguments' fires. Its arguments still run.
+    // Any other bottom-typed body's production contributes its own fire.
     let never_args = match body.view() {
         NodeView::Never(n) => Some(&n.n),
         _ => None,
