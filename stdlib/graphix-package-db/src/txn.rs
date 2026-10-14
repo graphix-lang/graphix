@@ -105,6 +105,11 @@ impl TxnState {
             // yet, defer creating it to commit (create it just before the sled
             // transaction, together with its meta entry), or drop it on
             // rollback/conflict when this transaction created it. (db2-10)
+            // 2026-10-13 codex: The supplied probe reproduces (["fresh"], null) after rollback.
+            // sled 0.34.7 creates collections outside its entry transactions. Moving
+            // creation to commit still leaks a collection on conflict; dropping it
+            // afterward can erase concurrent writes. Atomic collection creation is
+            // needed in sled::Db/transaction (outside this worktree scope).
             Some(n) => self.db.open_tree(n.as_bytes())?,
         };
         let idx = self.trees.len();
