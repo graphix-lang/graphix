@@ -1252,16 +1252,10 @@ pub(crate) fn object_decode<T: Object>(
         |sub| {
             let v = contents(sub)?;
             enter(v.clone().into_obj())?;
-            // CR claude for claude: [perf/low] When a type's contents reach a cell that
-            // refers back to the type (for example a tvar constraint mentioning the
-            // type that holds it), decode_at builds the same ordinal a second time. The
-            // inner build is entered in the store, the outer enter is a no-op, and this
-            // returns the outer copy. The caller then holds a second value for one
-            // ordinal, while every later reference gets the store's. That breaks 'equal
-            // types decode to one value' for every type on such a cycle, and its spine
-            // is decoded and kept twice. Fix: after enter, return the stored object
-            // (built::<T> of the ordinal being defined) instead of v. (t-image-05)
-            Ok(v)
+            // a cycle through the object built it first: every occurrence
+            // is that one
+            let stored = decoding(|d| d.defining.last().and_then(|ord| d.get::<T>(*ord)));
+            Ok(stored.flatten().unwrap_or(v))
         },
         full,
         unknown_tag,
@@ -2269,7 +2263,11 @@ mod decode_tests {
         let Type::Tuple(vs) = &ms[1] else { panic!("{t:?}") };
         for v in vs.iter() {
             let Type::TVar(tv) = v else { panic!("{v:?}") };
-            assert_eq!(tv.cell_constraints().len(), 1, "{t:?}");
+            let cs = tv.cell_constraints();
+            assert_eq!(cs.len(), 1, "{t:?}");
+            // one ordinal, one value: the read's result is the stored type
+            let Type::Set(cms) = &cs[0] else { panic!("{:?}", cs[0]) };
+            assert!(Arc::ptr_eq(ms, cms), "the read returned a second copy of X");
         }
     }
 
