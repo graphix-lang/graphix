@@ -1326,3 +1326,12 @@ run!(
     "/test/m.gxi" => "val add: fn(x: i64) -> i64;",
     "/test/m.gx" => "let add = |x| x + 1."
 ; FuseExpect::None);
+
+// An argument whose kinds differ is named in Graphix syntax.
+run!(
+    arg_default_mismatch_is_named,
+    refused("argument #a: the signature gives it no default, the implementation a default"),
+    "/test.gx" => "mod m; let result = m::f(#a: 1)",
+    "/test/m.gxi" => "val f: fn(#a: i64) -> i64;",
+    "/test/m.gx" => "let f = |#a = 0| -> i64 a"
+; FuseExpect::None);

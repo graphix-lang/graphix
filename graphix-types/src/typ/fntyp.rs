@@ -1153,13 +1153,27 @@ impl FnType {
             // design/review-2026-10-05/repro/t-typ-mod-06.gx ('Error<ErrChain<P<i64,
             // string>>> does not contain Error<ErrChain<P<i64, string>>>'), the message
             // should add each side's expansion or defining scope. (x-fix-types-14)
+            // 2026-10-14 claude: the kinds print in Graphix syntax and a default's
+            // difference is named; the identically printed sides stand (x-rerun-7-07).
             if sig_arg.kind != impl_arg.kind {
-                bail!(
-                    "argument {} kind mismatch: signature has {:?}, implementation has {:?}",
-                    i,
-                    sig_arg.kind,
-                    impl_arg.kind
-                );
+                use FnArgKind::Labeled;
+                match (&sig_arg.kind, &impl_arg.kind) {
+                    (
+                        Labeled { name: n0, has_default: d0 },
+                        Labeled { name: n1, has_default: _ },
+                    ) if n0 == n1 => {
+                        let (s, i) = if *d0 { ("a", "no") } else { ("no", "a") };
+                        bail!(
+                            "argument #{n0}: the signature gives it {s} default, the \
+                             implementation {i} default"
+                        )
+                    }
+                    (k0, k1) => bail!(
+                        "argument {i}: the signature has {}, the implementation {}",
+                        ArgKindText(k0),
+                        ArgKindText(k1)
+                    ),
+                }
             }
             sig_arg
                 .typ
@@ -1386,6 +1400,20 @@ fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     let mut v = ft.constraint_view();
     v.retain(|(tv, _)| &*tv.name != "self" && !tv.name.starts_with('#'));
     v
+}
+
+/// An argument's kind as a message names it: `#a`, `?#a`, positional.
+struct ArgKindText<'a>(&'a FnArgKind);
+
+impl fmt::Display for ArgKindText<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            FnArgKind::Labeled { name, has_default: true } => write!(f, "?#{name}"),
+            FnArgKind::Labeled { name, has_default: false } => write!(f, "#{name}"),
+            FnArgKind::Positional { name: Some(n) } => write!(f, "positional {n}"),
+            FnArgKind::Positional { name: None } => write!(f, "a positional argument"),
+        }
+    }
 }
 
 /// How an argument's name is written before its type.
