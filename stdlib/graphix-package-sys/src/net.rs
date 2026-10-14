@@ -1139,6 +1139,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             // frees the path at once the way publisher::Val's drop does. Then add a pin
             // that changes #doc and calls the rpc after each change. probe:
             // design/review-2026-10-12/repro/sys-net-03.gx (sys-net-03)
+            // 2026-10-13 codex: Needs synchronous publication ownership/unpublish in
+            // ../netidx/netidx-protocols/src/rpc.rs: server::ProcInner owns the Vals,
+            // while server::Proc only owns its stop sender and id. That upstream
+            // change is outside scope. sys-net-03.gx is unverified because the
+            // sandbox cannot run netidx sockets; no retry workaround was added.
             self.current = None;
             if let (Some(path), Some(doc), Some(spec)) = (&pathv, &docv, &specv)
                 && let Err(e) = self.publish(ctx, path, doc, spec)
