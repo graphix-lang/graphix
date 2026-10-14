@@ -1684,30 +1684,11 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let original = written.clone().unwrap_or_else(|| x.clone());
             let x = rewrite(x, map);
             let arg = match mode {
-                // A `?` over a level reads it as it stands at entry, so a
-                // carried error raises at every entry.
-                // CR claude for claude: [bug/high] This lowers a call-free `x?` in a
-                // step to `(pc ~! x)?`, so the operand is read only at entry and never
-                // tracked. If x is absent at entry the step never completes once x
-                // arrives (a seqq then queues every later trigger behind the stalled
-                // run). Otherwise the step can complete with x frozen at its entry
-                // value while its siblings track, and an error x takes after entry
-                // never raises. `x$` in the same position waits and tracks.
-                // design/seq_blocks.md §5 says a level step fires at entry and is
-                // waited for if absent, and §6.3 says the entry sample is in addition
-                // to tracking. Fix: bind the operand once and keep the level shape
-                // inside the Qop, `{ let q = x; any(pc ~! q, q) }?`, so a carried error
-                // still re-raises at each entry. Pin `let v = x?` with x absent at
-                // entry, and an error arriving after entry. probe:
-                // design/review-2026-10-12/repro/x-engine-seq-errors-04.gx and 04b.gx
-                // (x-engine-seq-errors-02)
-                Rewrite::Issue(issue) if !has_call(&x) => Arc::new(
-                    ExprKind::StrictSample {
-                        lhs: Arc::new(r#ref(x.pos, issue.pc)),
-                        rhs: Arc::new(x),
-                    }
-                    .to_expr(e.pos),
-                ),
+                // A `?` over a level fires at entry as it stands, so a
+                // carried error raises at every entry, and tracks after.
+                Rewrite::Issue(issue) if !has_call(&x) => {
+                    Arc::new(entry_fire(x, issue.pc))
+                }
                 _ => Arc::new(x),
             };
             let written = (arg != original).then_some(original);

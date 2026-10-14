@@ -766,3 +766,29 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "x was null")
 );
+
+// A level `x?` in a step fires at entry as it stands and tracks after:
+// absent at entry it is waited for, and an error it takes after entry,
+// while a sibling holds the step, raises.
+run!(seq_qop_level_waits, r#"{
+    let n = 0;
+    n <- select n { s if s < 10 => s + 1, _ => never() };
+    let trig = select n { 1 => n, _ => never() };
+    let x: [i64, Error<`E>] = never();
+    x <- select n { 3 => 42, _ => never() };
+    seq let t = trig { let v = x?; (t, v) }
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:42]"); FuseExpect::Jit);
+
+run!(seq_qop_level_raises_after_entry, r#"{
+    let n = 0;
+    n <- select n { s if s < 10 => s + 1, _ => never() };
+    let trig = select n { 1 => n, _ => never() };
+    let late: [i64, Error<`Late>] = select n { 5 => error(`Late), s => s };
+    let caught = never();
+    catch(e) caught <- select (e.0).error { `Late => "late" };
+    let r = seq let t = trig {
+        let w = select n > 6 { true => n, false => never() } + late?;
+        w
+    };
+    caught
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "late"); FuseExpect::Jit);
