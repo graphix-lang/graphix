@@ -1909,24 +1909,12 @@ impl PrettyDisplay for ExprKind {
             Lambda(l) => l.fmt_pretty_inner(buf),
             Not { expr } => match &expr.kind {
                 Block { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";", false),
-                _ => {
-                    write!(buf, "!")?;
-                    expr.fmt_pretty(buf)
-                }
+                _ => pretty_prefixed(buf, "!", expr),
             },
-            ByRef(m, e) => {
-                write!(buf, "{}", m.prefix())?;
-                e.fmt_pretty(buf)
-            }
-            Deref(e) => {
-                write!(buf, "*")?;
-                e.fmt_pretty(buf)
-            }
+            ByRef(m, e) => pretty_prefixed(buf, m.prefix(), e),
+            Deref(e) => pretty_prefixed(buf, "*", e),
             Neg(e) if matches!(e.kind, Constant(_)) => writeln!(buf, "{self}"),
-            Neg(e) => {
-                write!(buf, "-")?;
-                e.fmt_pretty(buf)
-            }
+            Neg(e) => pretty_prefixed(buf, "-", e),
             Select(se) => se.fmt_pretty_inner(buf),
             Eq { .. }
             | Ne { .. }
@@ -2564,14 +2552,16 @@ impl ExprKind {
             | ExprKind::CheckedMod { .. }
             | ExprKind::Sample { .. }
             | ExprKind::StrictSample { .. } => unreachable!("BinOp::of matched it"),
-            ExprKind::ByRef(m, e) => write!(f, "{}{e}", m.prefix()),
-            ExprKind::Deref(e) => write!(f, "*{e}"),
+            ExprKind::ByRef(m, e) => {
+                write!(f, "{}{}", m.prefix(), Operand(e, prefixed(e)))
+            }
+            ExprKind::Deref(e) => write!(f, "*{}", Operand(e, prefixed(e))),
             // `-1` reads back as the literal: a negated one keeps the space
             ExprKind::Neg(e) => match &e.kind {
                 ExprKind::Constant(_) if e.dec.is_none() => write!(f, "- {}", Bare(e)),
-                _ => write!(f, "-{e}"),
+                _ => write!(f, "-{}", Operand(e, prefixed(e))),
             },
-            ExprKind::Not { expr } => write!(f, "!{expr}"),
+            ExprKind::Not { expr } => write!(f, "!{}", Operand(expr, prefixed(expr))),
         }
     }
 }
@@ -2592,6 +2582,21 @@ fn suffixed(e: &Expr) -> bool {
     use ExprKind::*;
     BinOp::of(&e.kind).is_some()
         || matches!(&e.kind, Deref(_) | Not { .. } | Neg(_) | ByRef(..))
+}
+
+/// Whether `e`, the operand of a prefix operator (`!`, `-`, `*`, `&`),
+/// needs parens: an operator's binds looser.
+fn prefixed(e: &Expr) -> bool {
+    BinOp::of(&e.kind).is_some()
+}
+
+/// `op e`, laid out, `e` in parens when it needs them.
+fn pretty_prefixed(buf: &mut PrettyBuf, op: &str, e: &Expr) -> fmt::Result {
+    write!(buf, "{op}")?;
+    match prefixed(e) {
+        true => pretty_parens(buf, e),
+        false => e.fmt_pretty(buf),
+    }
 }
 
 /// An operand, in parens when `parens` says so.

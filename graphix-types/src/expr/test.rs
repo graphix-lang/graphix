@@ -1441,16 +1441,33 @@ fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
 
 /// Add the ExplicitParens a generated tree needs to reparse with the same
 /// shape.
-// CR claude for claude: [test-gap/low] add_parens puts ExplicitParens around every
-// operand that needs them, using the same rule the printer's `under` applies. qop!
-// wraps only kinds that need no parens. So the printer's own decisions (`under` for
-// binop operands, `suffixed` for the operands of `?` and `$`) never answer true in any
-// round trip. Those paths print trees the compiler builds without parens: error
-// messages, --expand, hover. A regression such as treating equal precedence on the
-// right as safe would print `a - (b - c)` as `a - b - c` with no test failing. Fix: add
-// a property that strips every ExplicitParens from a generated tree, prints it,
-// reparses, and compares while seeing through ExplicitParens. Let qop! wrap any kind.
-// (tests-expr-06)
+/// `e` with the written parens around operator expressions taken out, the
+/// trees the compiler builds without them (error messages, --expand,
+/// hover); a declaration or a lambda as an operand is written only in
+/// parens, so those stay.
+fn strip_parens(e: &Expr) -> Expr {
+    use ExprKind::*;
+    match &e.kind {
+        ExplicitParens(inner)
+            if e.dec.is_none()
+                && inner.dec.is_none()
+                && (BinOp::of(&inner.kind).is_some()
+                    || matches!(
+                        inner.kind,
+                        Not { .. }
+                            | Neg(_)
+                            | Deref(_)
+                            | ByRef(..)
+                            | Qop { .. }
+                            | OrNever(_)
+                    )) =>
+        {
+            strip_parens(inner)
+        }
+        _ => e.map_children(&mut |c| strip_parens(c)),
+    }
+}
+
 fn add_parens(mut e: Expr) -> Expr {
     if let Some((op, lhs, rhs)) = BinOp::of(&e.kind) {
         let prec = op.precedence();
@@ -2256,6 +2273,17 @@ proptest! {
     }
 
     #[test]
+    /// The printer's own parenthesization: a tree with every written
+    /// paren taken out prints with the parens it needs, so it reads back
+    /// as itself, parens aside.
+    #[test]
+    fn printer_parenthesizes_unparenthesized_trees(s in expr()) {
+        let s = strip_parens(&s);
+        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
+        let e = strip_parens(&parse_one(st.as_str()).unwrap());
+        prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
+    }
+
     fn expr_pp_round_trip(s in expr(), width in 0usize..120) {
         // every layout: all broken, the usual width, and anywhere between
         for w in [0, 80, width] {
