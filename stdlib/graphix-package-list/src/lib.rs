@@ -3,8 +3,8 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use graphix_compiler::node::list::{
-    Iter as ListIter, cons as make_cons, from_iter as from_iter_back, is_list, is_nil,
-    nil as make_nil, split as get_cons, to_array,
+    Iter as ListIter, cons as make_cons, cons_all, from_iter as from_iter_back, is_list,
+    is_nil, nil as make_nil, split as get_cons, to_array,
 };
 use graphix_package_core::sort_values;
 use netidx::subscriber::Value;
@@ -196,7 +196,7 @@ fn fc_concat(args: &[Value]) -> Option<Value> {
     for l in front {
         buf.extend(ListIter::new(l.clone()));
     }
-    Some(buf.drain(..).rev().fold(last.clone(), |rest, v| make_cons(v, rest)))
+    Some(cons_all(&mut buf, last.clone()))
 }
 
 graphix_package_core::fast_builtin!(Concat, ConcatEv, "list_concat", fc_concat);
@@ -208,7 +208,7 @@ fn fc_flatten(args: &[Value]) -> Option<Value> {
     }
     let mut buf: LPooled<Vec<Value>> =
         ListIter::new(list.clone()).flat_map(ListIter::new).collect();
-    Some(from_iter_back(buf.drain(..)))
+    Some(cons_all(&mut buf, make_nil()))
 }
 
 graphix_package_core::fast_builtin!(Flatten, FlattenEv, "list_flatten", fc_flatten);
@@ -217,7 +217,7 @@ fn fc_sort(args: &[Value]) -> Option<Value> {
     match args {
         [Value::String(dir), Value::Bool(numeric), list] if is_list(list) => {
             let mut sorted = sort_values(dir, *numeric, ListIter::new(list.clone()))?;
-            Some(from_iter_back(sorted.drain(..)))
+            Some(cons_all(&mut sorted, make_nil()))
         }
         _ => None,
     }
@@ -269,8 +269,8 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
             t1.push(a[1].clone());
         }
     }
-    let v0 = from_iter_back(t0.drain(..));
-    let v1 = from_iter_back(t1.drain(..));
+    let v0 = cons_all(&mut t0, make_nil());
+    let v1 = cons_all(&mut t1, make_nil());
     Some(Value::Array(ValArray::from_iter_exact([v0, v1].into_iter())))
 }
 
