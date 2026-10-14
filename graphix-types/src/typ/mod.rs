@@ -808,6 +808,16 @@ impl TypeRef {
     /// empty ones alike; one of each may differ (a def's thrown types keep
     /// their cells when they move into its scope), and a disagreement
     /// only sends the pair to the expansion arm.
+    /// Whether two references name one definition: two filled cells by
+    /// the definition, two open ones by the written scope and name.
+    pub(crate) fn same_definition(&self, other: &Self) -> bool {
+        match (self.resolved(), other.resolved()) {
+            (Some(a), Some(b)) => a.def_key() == b.def_key(),
+            (None, None) => self.scope == other.scope && self.name == other.name,
+            _ => false,
+        }
+    }
+
     pub(crate) fn cells_agree(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),

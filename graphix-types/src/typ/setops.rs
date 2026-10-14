@@ -130,10 +130,7 @@ impl Identity {
                 Type::Abstract { id: i1, params: p1 },
             ) => i0 == i1 && self.all(p0, p1),
             (Type::Ref(r0), Type::Ref(r1)) => {
-                r0.scope == r1.scope
-                    && r0.name == r1.name
-                    && r0.cells_agree(r1)
-                    && self.all(&r0.params, &r1.params)
+                r0.same_definition(r1) && self.all(&r0.params, &r1.params)
             }
             (Type::Set(s0), Type::Set(s1)) => self.all(s0, s1),
             (Type::Error(a), Type::Error(b))
@@ -184,9 +181,7 @@ impl Identity {
 
 /// Two same-named refs to one definition with identical params.
 fn same_ref(r0: &TypeRef, r1: &TypeRef) -> bool {
-    r0.scope == r1.scope
-        && r0.name == r1.name
-        && r0.cells_agree(r1)
+    r0.same_definition(r1)
         && r0.params.len() == r1.params.len()
         && r0.params.iter().zip(r1.params.iter()).all(|(a, b)| union_identical(a, b))
 }
@@ -268,30 +263,12 @@ impl Type {
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
+            (Type::Bottom, t) | (t, Type::Bottom) => Ok(t.clone()),
+            (Type::Primitive(p), t) | (t, Type::Primitive(p)) if p.is_empty() => {
+                Ok(t.clone())
+            }
             (Type::Ref(t0), Type::Ref(t1))
-                // CR claude for claude: [bug/medium] Two refs merge here only if they
-                // were written in the same scope (`t0.scope == t1.scope`), not if they
-                // resolve to the same definition. `same_inner` and `same_ref` make the
-                // same comparison. So `ErrChain<`A>` written in a block, a lambda body
-                // or a module does not merge with the root-scope `ErrChain<`B>` that a
-                // fresh `?` raises. A catch that joins them (`join_raised` ->
-                // `Type::union`) gets a union of two expanded chain structs, and
-                // `(e.0).error` is refused with "expected struct not [..]". The same
-                // code at the file root, or behind a root-scope type alias, gets
-                // `Error<ErrChain<[`A, `B]>>` and runs. The common case is a module
-                // function that returns its caught error and a caller that re-raises it
-                // beside another error. graphix-fuzz also refuses such programs,
-                // because it wraps them in a module. Fix: when both resolution cells
-                // are filled, decide by the definition alone (`cells_agree` already
-                // compares `def_key`), and keep the scope+name test only for two
-                // unfilled refs. Add a pin for a block-local and a module-returned
-                // `Error<ErrChain<..>>` re-raised beside a fresh error. probe:
-                // design/review-2026-10-12/repro/x-engine-seq-errors-03.sh
-                // (x-engine-seq-errors-03)
-                if t0.name == t1.name
-                    && t0.scope == t1.scope
-                    && t0.cells_agree(t1)
-                    && t0.params.len() == t1.params.len() =>
+                if t0.same_definition(t1) && t0.params.len() == t1.params.len() =>
             {
                 self.union_ref_params(env, hist, merge, t0, t1, t)
             }
@@ -304,6 +281,10 @@ impl Type {
             // and the empty-primitive arm above this one. probe:
             // design/review-2026-10-12/repro/t-cast-setops-18-union-bottom-expands-name.gx
             // (t-cast-setops-13)
+            // 2026-10-14 claude: the ⊥ and empty arms now come first, so T ∪ ⊥ is T.
+            // The probe's message still expands Shape: so does `let s: Shape = ..; let
+            // q: i64 = s`, with no union at all, so the expansion is the mismatch
+            // message's (or the binding's), not this arm's.
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
                     (hist.ref_id(tr, env), hist.ref_id(t, env))
@@ -331,7 +312,6 @@ impl Type {
             (t0 @ Type::Abstract { .. }, t1) | (t0, t1 @ Type::Abstract { .. }) => {
                 Ok(pair(t0, t1))
             }
-            (Type::Bottom, t) | (t, Type::Bottom) => Ok(t.clone()),
             (Type::Any, _) | (_, Type::Any) => Ok(Type::Any),
             (Type::App(..), _)
             | (_, Type::App(..))
@@ -354,9 +334,6 @@ impl Type {
                 } else {
                     Ok(pair(self, t))
                 }
-            }
-            (Type::Primitive(p), t) | (t, Type::Primitive(p)) if p.is_empty() => {
-                Ok(t.clone())
             }
             (Type::Primitive(s0), Type::Primitive(s1)) => {
                 let mut s = *s0;

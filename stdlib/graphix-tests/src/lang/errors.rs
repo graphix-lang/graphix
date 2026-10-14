@@ -818,3 +818,33 @@ run!(generic_reraise_keeps_the_chain, GENERIC_RERAISE_KEEPS_THE_CHAIN, |v: Resul
     let s = format!("{}", v.unwrap());
     s.starts_with(r#"error:[["cause", [["cause", null], ["error", "Zero"]"#)
 });
+
+// A chain written in a block joins the chain a fresh `?` raises: two
+// references to ErrChain are one definition whatever scope wrote them.
+run!(
+    block_local_chain_joins_a_fresh_raise,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "B"),
+    "/test.gx" => r#"
+        let result = {
+          let out = never();
+          let saved: Error<ErrChain<`A>> = never();
+          let r = { catch(e) out <- select (e.0).error { `A => "A", `B => "B" }; saved?; error(`B)? };
+          out
+        }
+    "#
+; FuseExpect::None);
+
+run!(
+    module_returned_chain_joins_a_fresh_raise,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "B"),
+    "/test.gx" => r#"
+        mod m;
+        let result = {
+          let out = never();
+          let saved = m::g(1);
+          let r = { catch(e) out <- select (e.0).error { `A => "A", `B => "B" }; saved?; error(`B)? };
+          out
+        }
+    "#,
+    "/test/m.gx" => "let g = |x: i64| -> Error<ErrChain<`A>> { catch(e) e; error(`A)? }"
+; FuseExpect::Jit);
