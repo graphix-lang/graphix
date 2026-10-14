@@ -249,13 +249,21 @@ pub fn lexical_encode(env: &Env, buf: &mut impl BufMut) -> Result<(), PackError>
 
 #[doc(hidden)]
 pub fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
-    Ok(Env {
+    let env = Env {
         binds: nested_decode(buf)?,
         modules: SharedSet::decode(buf)?.0,
         typedefs: nested_decode(buf)?,
         traits: nested_decode(buf)?,
         ..Env::default()
-    })
+    };
+    for (_, defs) in env.typedefs.iter() {
+        for (name, td) in defs.iter() {
+            if let crate::typ::Type::Abstract { id, .. } = td.def.typ() {
+                id.named(name);
+            }
+        }
+    }
+    Ok(env)
 }
 
 /// The lexical part, then the global registries. The IDE mode is runtime

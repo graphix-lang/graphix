@@ -66,3 +66,14 @@ fn interface_defaults_check_warm() {
         check_twice("accepted", "let x = never();\nx <- rand::rand(#clock: null);\nx\n");
     assert!(cold.passed && warm.passed, "{}\n{}", cold.stderr, warm.stderr);
 }
+
+/// A restored abstract type prints by its name, as a cold one does.
+#[test]
+fn abstract_types_print_by_name_warm() {
+    let [cold, warm] = check_twice("abstract", "let s = sys::io::stdout(null);\ns + 1\n");
+    let refusal = |r: &Ran| {
+        r.stderr.lines().find(|l| l.contains("cannot compute")).map(str::to_owned)
+    };
+    assert!(refusal(&cold).is_some_and(|l| l.contains("Stdio")), "{}", cold.stderr);
+    assert_eq!(refusal(&cold), refusal(&warm), "{}", warm.stderr);
+}

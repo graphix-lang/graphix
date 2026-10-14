@@ -354,25 +354,6 @@ pub fn abstract_uuid(path: &str) -> uuid::Uuid {
 
 /// The names of every abstract type minted in this process, for
 /// diagnostics (`Type::Abstract` carries only the id).
-// CR claude for claude: [bug/low] This table is filled only when AbstractId::of or
-// AbstractId::declared mints an id. A warm start decodes Type::Abstract's id as a bare
-// u64 and mints nothing, so after a restored image AbstractId::name returns None and
-// the type prints as <abstract#ID>. The same refusal names 'Tree<i64, i64>' cold and
-// '<abstract#11463945668770139902><i64, i64>' warm. Printed types also reach
-// program-visible values (cast errors), so the text can differ between cold and warm
-// starts. Fix: make the image carry each abstract id's name, and have the decode put it
-// back into this table, for example where the defining TypeDef decodes. probe:
-// design/review-2026-10-12/repro/x-rerun-5-09.gx (x-rerun-5-09)
-// CR claude for claude: [bug/medium] Only AbstractId::of/declared fill this map,
-// through Env::deftype. A session restored from an image never runs deftype, so after a
-// warm start every abstract type prints as "abstract" or "<abstract#N>": "cannot
-// compute Stdio + i64" becomes "cannot compute abstract + i64" in run output and in
-// --check, and so in the LSP. Re-registering from Env::abstract_reps is not enough,
-// because a type without a rep (sys::io::Stdio, File, Proc, the tcp/tls streams) has no
-// entry there. Register the name of every restored typedef whose type is Type::Abstract
-// when the env decodes (lexical_decode), through one helper shared with of/declared.
-// Alternatively, let the printer read the name from the env instead of a process
-// global. probe: design/review-2026-10-12/repro/t-image-02.sh (t-image-02)
 static ABSTRACT_NAMES: LazyLock<Mutex<IntMap<AbstractId, ArcStr>>> =
     LazyLock::new(|| Mutex::new(IntMap::default()));
 
@@ -382,9 +363,7 @@ impl AbstractId {
     pub fn of(scope: &ModPath, name: &str) -> Self {
         let path = format_compact!("{scope}::{name}");
         let (_, lo) = abstract_uuid(&path).as_u64_pair();
-        let id = AbstractId(lo);
-        ABSTRACT_NAMES.lock().entry(id).or_insert_with(|| ArcStr::from(name));
-        id
+        AbstractId(lo).named(name)
     }
 
     /// The identity of the abstract type `name` declared at `pos` in
@@ -429,9 +408,14 @@ impl AbstractId {
             true => format_compact!("{stable}::#{}:{pos}::{name}", ori.source),
         };
         let (_, lo) = abstract_uuid(&place).as_u64_pair();
-        let id = AbstractId(lo);
-        ABSTRACT_NAMES.lock().entry(id).or_insert_with(|| ArcStr::from(name));
-        id
+        AbstractId(lo).named(name)
+    }
+
+    /// This id, its declared name recorded for diagnostics: by a mint,
+    /// and by a restored definition, which mints nothing.
+    pub(crate) fn named(self, name: &str) -> Self {
+        ABSTRACT_NAMES.lock().entry(self).or_insert_with(|| ArcStr::from(name));
+        self
     }
 
     /// The type's declared name, if this process has minted the id.
