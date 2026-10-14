@@ -12,7 +12,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
-use futures::future::try_join_all;
+use futures::future::{Future, join_all};
 use indexmap::IndexMap;
 use log::info;
 use netidx_core::path::Path;
@@ -28,6 +28,14 @@ use std::{
 };
 use tokio::{task, time::Instant};
 use triomphe::Arc;
+
+/// Every future run to its end; the first error in input order, so the
+/// error reported does not depend on which finished first.
+pub async fn join_in_order<T>(
+    futs: impl IntoIterator<Item = impl Future<Output = Result<T>>>,
+) -> Result<Vec<T>> {
+    join_all(futs).await.into_iter().collect()
+}
 
 pub type BufferOverrides = Arc<Mutex<AHashMap<PathBuf, ArcStr>>>;
 
@@ -884,15 +892,7 @@ impl Expr {
         resolvers: &'a Resolvers,
         probes: Option<&'a Probes>,
     ) -> Result<Option<SmallVec<[Option<Expr>; 4]>>> {
-        // CR claude for claude: [bug/low] try_join_all returns the first error to
-        // complete, not the first in program order. When two sibling `mod` statements
-        // both fail to resolve, the error reported (by --check, and the LSP's
-        // diagnostic) varies from run to run on an unchanged file. Probe:
-        // design/review-2026-10-12/repro/x-engine-seq-errors-02.gx gave 15 reports of
-        // the first mod and 5 of the second over 20 --check runs. Fix: use join_all and
-        // return the first Err in input order, so the earliest failing statement is
-        // always the one reported. (x-engine-seq-errors-05)
-        let resolved = try_join_all(exprs.into_iter().map(|e| async move {
+        let resolved = join_in_order(exprs.into_iter().map(|e| async move {
             match e.holds_unresolved() {
                 true => {
                     e.resolve_modules_int(scope, prepend, chain, resolvers, probes).await

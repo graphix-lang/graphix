@@ -1170,3 +1170,11 @@ const RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_TYPEDEF: &str = r#"
 run!(reload_changes_a_representation_through_a_typedef,
     RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_TYPEDEF,
     load_refused("representation cannot change"); FuseExpect::Jit);
+
+// Of several modules that fail to resolve, the first in program order is
+// the one reported.
+run!(
+    the_first_unresolved_module_is_reported,
+    refused("nosuch_a could not be found"),
+    "/test.gx" => "mod nosuch_a; mod nosuch_b; mod nosuch_c; let result = 0"
+; FuseExpect::None);

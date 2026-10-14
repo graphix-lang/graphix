@@ -3,13 +3,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use enumflags2::BitFlags;
-use futures::{FutureExt, StreamExt, future::try_join_all};
+use futures::{FutureExt, StreamExt};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
     View, diagnostic_site,
     expr::{
         self, Expr, ExprId, ExprKind, ModPath, Origin, Probes, ResolverRef, Resolvers,
-        RootFile, Sig, Source,
+        RootFile, Sig, Source, join_in_order,
     },
     ide::{Ide, IdeMode},
     image::ProgramRoot,
@@ -832,7 +832,7 @@ impl<X: GXExt> GX<X> {
         let exprs = expr::parser::parse(ori.clone())
             .with_context(|| format!("parsing the root module {ori}"))?;
         let exprs =
-            try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
+            join_in_order(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
                 .await?;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
@@ -862,7 +862,7 @@ impl<X: GXExt> GX<X> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = expr::parser::parse(ori.clone())?;
         let exprs =
-            try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
+            join_in_order(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
                 .await?;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
@@ -1009,7 +1009,7 @@ impl<X: GXExt> GX<X> {
                     (ori, exprs, ModPath::root(), false, sig)
                 }
             };
-            let exprs = try_join_all(exprs.iter().map(|e| {
+            let exprs = join_in_order(exprs.iter().map(|e| {
                 e.resolve_modules_in_scope(&modules_at, &resolvers_for_call, None)
             }))
             .await?;
@@ -1117,7 +1117,7 @@ impl<X: GXExt> GX<X> {
         let (ori, exprs, sig) = self.load_exprs(source, &self.resolvers, probes).await?;
         info!("parse time: {:?}", st.elapsed());
         let st = Instant::now();
-        let exprs = try_join_all(
+        let exprs = join_in_order(
             exprs.iter().map(|e| e.resolve_modules(&self.resolvers, probes)),
         )
         .await?;

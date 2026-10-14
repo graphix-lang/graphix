@@ -18,8 +18,8 @@ use poolshark::local::LPooled;
 pub use resolver::{
     BufferOverrides, FilesResolver, MODULE_LAYOUTS, ModuleResolver, Probe, Probes,
     Resolution, ResolverFactory, ResolverRef, Resolvers, RootFile, VfsEntry, VfsResolver,
-    add_interface_modules, modpath_dirs, parse_modpath, read_optional, read_to_arcstr,
-    split_escaped, submodule_base,
+    add_interface_modules, join_in_order, modpath_dirs, parse_modpath, read_optional,
+    read_to_arcstr, split_escaped, submodule_base,
 };
 use smallvec::SmallVec;
 use std::{
