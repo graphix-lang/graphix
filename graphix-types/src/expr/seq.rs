@@ -871,18 +871,13 @@ impl Machine<'_> {
         let mut tails = self.lower_scoped(&body, &branch, visible)?;
         let with_entry = label(self.steps.len());
         let caught = ArcStr::from(format_compact!("seqtry{}", spec.id.inner()).as_str());
-        // CR claude for claude: [perf/low] Each try puts a jump catch into every step
-        // built since `mark`, the steps of nested try bodies and with bodies included.
-        // A step under d nested trys therefore carries d `Catch` nodes, and the machine
-        // holds O(d^2) of them. With `let v_i = try { <previous> } with(e) { 0 }`
-        // nested d deep, --check takes about 0.2s at d=25, 0.7s at d=50 and 10s at
-        // d=100 (3725 `catch(seqtry` in --expand at d=50), while 400 sequential trys
-        // check in 0.3s. Graph building grows faster than the catch count, so some
-        // per-catch compile cost also scales with depth. Fix: give a step one Try catch
-        // that holds its enclosing try targets (constraint, capture, jump), innermost
-        // first, or find the depth-dependent per-catch cost and make it constant.
-        // (t-seq-08)
+        // an inner try catches every error its body raises (a constraint
+        // must hold them all), so none reaches this one
+        let inner_try = |e: &Expr| matches!(&e.kind, ExprKind::Catch(c) if matches!(c.role, CatchRole::Try { .. }));
         for step in self.steps[mark..].iter_mut() {
+            if step.items.iter().any(inner_try) {
+                continue;
+            }
             let jump = ExprKind::Catch(Arc::new(CatchExpr {
                 bind: caught.clone().into(),
                 constraint: t.constraint.clone(),
@@ -1941,6 +1936,28 @@ mod test {
             _ => n,
         });
         assert_eq!(steps, n);
+    }
+
+    /// A step under nested trys carries one jump catch, its innermost
+    /// try's: that try catches every error its body raises.
+    #[test]
+    fn nested_trys_put_one_catch_on_a_step() {
+        let d = 40;
+        let mut body = String::from("let v0 = f()?");
+        for i in 1..=d {
+            body = format!("let v{i} = try {{ {body}; 1 }} with(e) {{ 0 }}");
+        }
+        let seq = parse_one(&format!("seq {{ {body}; v{d} }}")).expect("parses");
+        let lowered = desugar(&seq, &Env::default(), &ModPath::root()).expect("lowers");
+        let tries = lowered.fold(0, &mut |n, e| match &e.kind {
+            ExprKind::Catch(c) if matches!(c.role, CatchRole::Try { .. }) => n + 1,
+            _ => n,
+        });
+        let steps = lowered.fold(0, &mut |n, e| match &e.kind {
+            ExprKind::SeqMachine(m) => n + m.steps.len(),
+            _ => n,
+        });
+        assert!(tries <= steps, "{tries} try catches over {steps} steps");
     }
 
     fn names(entries: &[(&str, Redirect)]) -> Names {
