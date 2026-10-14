@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5d2ad3ef.js";
+            window.path_to_searchindex_js = "searchindex-87a7a4f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -6262,18 +6262,12 @@ trait Write {
         let written = write(s, rest);
         select written {
             error as _ =&gt; filter_err(written),
-            // CR claude for claude: [bug/medium] When write answers 0 while bytes
-            // remain, this default never finishes. The false arm writes rest[0..] back
-            // into rest, which issues the same write again every cycle: the call spins
-            // at full CPU and produces neither null nor an error. Only Graphix-written
-            // streams reach this default, since every system stream overrides
-            // write_exact. Add an arm before the retry for n == u64:0 with rest not
-            // empty that answers error(`IOError("write returned 0 bytes")`), as Rust's
-            // write_all does with WriteZero. probe:
-            // design/review-2026-10-12/repro/gx-stdlib-02.gx (gx-stdlib-02)
             u64 as n =&gt; select n ~ (n &gt;= buffer::len(rest)) {
                 true =&gt; null,
-                false =&gt; { rest &lt;- n ~ rest[n..]$; never() }
+                false =&gt; select n {
+                    u64:0 =&gt; error(`IOError("write returned 0 bytes")),
+                    _ =&gt; { rest &lt;- n ~ rest[n..]$; never() }
+                }
             }
         }
     };
@@ -6818,7 +6812,8 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
-/// write the value to the specified path
+/// Write the value to the specified path. When its arm wakes, write the
+/// standing value again.
 val write: fn(path: string, value: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
@@ -6853,22 +6848,17 @@ val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers-and-time-arithmetic"><a class="header" href="#systime---timers-and-time-arithmetic">sys::time - Timers and Time Arithmetic</a></h1>
-<pre><code class="language-graphix">// CR claude for claude: [doc-drift/low] after_idle and timer both take `timeout:
-// [duration, Number]`, but neither doc says a number means seconds. Given an invalid
-// timeout (a negative number), timer returns a TimerError, but after_idle clears its
-// timer and never produces, with no report. Make after_idle report it as timer does (or
-// document the difference). Document seconds, and that repeat 0 stops a timer. The
-// graphix-lang skill also says 'a null timeout STOPS it', but this signature refuses
-// null at check, so correct the skill (or accept null here). probe:
-// design/review-2026-10-12/repro/gx-stdlib-09.gx (gx-stdlib-09)
-/// When v updates wait timeout and then return it. If v updates again
-/// before timeout expires, reset the timeout and continue waiting.
+<pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
+/// before timeout expires, reset the timeout and continue waiting. A numeric
+/// timeout is a number of seconds. An invalid timeout is logged and leaves
+/// any pending timer armed; without a pending timer, no value is produced.
 val after_idle: fn(timeout: [duration, Number], v: 'a) -&gt; 'a;
 
 /// timer will wait timeout and then update with the current time.
 /// If repeat is true, it will do this forever. If repeat is a number n,
 /// it will do this n times and then stop. If repeat is false, it will do
-/// this once.
+/// this once. A numeric timeout is a number of seconds. Setting repeat to
+/// zero stops the timer. An invalid timeout or repeat produces TimerError.
 val timer: fn(timeout: [duration, Number], repeat: [bool, Number]) -&gt; Result&lt;datetime, `TimerError(string)&gt;;
 
 /// return the current time each time trigger updates
@@ -7400,7 +7390,10 @@ val checksum: fn(db: Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
 /// Export all database contents to a file.
 val export: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
-/// Import previously exported data from a file. The database must be empty.
+/// Import previously exported data from a file in one transaction.
+/// Every imported key must be absent, including stored tree-type metadata:
+/// opening a typed tree creates metadata even when that tree has no entries.
+/// Malformed input and key collisions are refused without writing entries.
 val import: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
@@ -7409,15 +7402,11 @@ val import: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 /// A cursor for iterating over tree entries one at a time.
 type Cursor&lt;'k, 'v&gt;;
 
-// CR claude for claude: [doc-drift/low] #prefix has type 'k, but only string and bytes
-// keys are stored raw (see encode_key). Every other key type is encoded tagged and
-// self-delimited, so the prefix is one whole key and matches only that key. On a
-// Tree&lt;(string, i64), _&gt;, #prefix ("a", 1) returns just that entry, and there is no way
-// to ask for every key starting with "a". Document that the prefix is a byte prefix for
-// string and bytes keys and an exact key otherwise, and point to cursor::range for
-// compound keys, or narrow the type of #prefix. subscription.gxi's `new` has the same
-// doc. (gx-stdlib-12)
 /// Create a new cursor, optionally filtering by key prefix.
+/// Strings and bytes match by their byte prefix, including in union key types.
+/// Arrays match initial whole elements; maps match initial whole key/value pairs
+/// in key order. Other keys match exactly. Use cursor::range for compound ranges.
+/// A null prefix disables filtering, including when the key type contains null.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Create a cursor over a key range. Both bounds are optional (null = unbounded).
@@ -7487,6 +7476,12 @@ copy of a tree follows it; a commit may arrive across several cycles.</p>
 type Subscription&lt;'k, 'v&gt;;
 
 /// Subscribe to changes on a tree, optionally filtering by key prefix.
+/// Strings and bytes match by their byte prefix, including in union key types.
+/// Arrays match initial whole elements; maps match initial whole key/value pairs
+/// in key order. Other keys match exactly. Use cursor::range for compound ranges.
+/// A null prefix disables filtering, including when the key type contains null.
+/// Re-firing the same tree and prefix keeps the subscription. Changing either
+/// discards pending events and starts a new watch.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
 /// Fires with the changes each delivery carries, each key's in the order

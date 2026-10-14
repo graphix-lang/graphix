@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5d2ad3ef.js";
+            window.path_to_searchindex_js = "../searchindex-87a7a4f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -282,7 +282,10 @@ val checksum: fn(db: Db) -&gt; Result&lt;u32, `DbErr(string)&gt;;
 /// Export all database contents to a file.
 val export: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
-/// Import previously exported data from a file. The database must be empty.
+/// Import previously exported data from a file in one transaction.
+/// Every imported key must be absent, including stored tree-type metadata:
+/// opening a typed tree creates metadata even when that tree has no entries.
+/// Malformed input and key collisions are refused without writing entries.
 val import: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
@@ -291,15 +294,11 @@ val import: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 /// A cursor for iterating over tree entries one at a time.
 type Cursor&lt;'k, 'v&gt;;
 
-// CR claude for claude: [doc-drift/low] #prefix has type 'k, but only string and bytes
-// keys are stored raw (see encode_key). Every other key type is encoded tagged and
-// self-delimited, so the prefix is one whole key and matches only that key. On a
-// Tree&lt;(string, i64), _&gt;, #prefix ("a", 1) returns just that entry, and there is no way
-// to ask for every key starting with "a". Document that the prefix is a byte prefix for
-// string and bytes keys and an exact key otherwise, and point to cursor::range for
-// compound keys, or narrow the type of #prefix. subscription.gxi's `new` has the same
-// doc. (gx-stdlib-12)
 /// Create a new cursor, optionally filtering by key prefix.
+/// Strings and bytes match by their byte prefix, including in union key types.
+/// Arrays match initial whole elements; maps match initial whole key/value pairs
+/// in key order. Other keys match exactly. Use cursor::range for compound ranges.
+/// A null prefix disables filtering, including when the key type contains null.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Create a cursor over a key range. Both bounds are optional (null = unbounded).
@@ -369,6 +368,12 @@ copy of a tree follows it; a commit may arrive across several cycles.</p>
 type Subscription&lt;'k, 'v&gt;;
 
 /// Subscribe to changes on a tree, optionally filtering by key prefix.
+/// Strings and bytes match by their byte prefix, including in union key types.
+/// Arrays match initial whole elements; maps match initial whole key/value pairs
+/// in key order. Other keys match exactly. Use cursor::range for compound ranges.
+/// A null prefix disables filtering, including when the key type contains null.
+/// Re-firing the same tree and prefix keeps the subscription. Changing either
+/// discards pending events and starts a new watch.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
 /// Fires with the changes each delivery carries, each key's in the order

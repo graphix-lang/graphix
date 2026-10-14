@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5d2ad3ef.js";
+            window.path_to_searchindex_js = "../../searchindex-87a7a4f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -307,18 +307,12 @@ trait Write {
         let written = write(s, rest);
         select written {
             error as _ =&gt; filter_err(written),
-            // CR claude for claude: [bug/medium] When write answers 0 while bytes
-            // remain, this default never finishes. The false arm writes rest[0..] back
-            // into rest, which issues the same write again every cycle: the call spins
-            // at full CPU and produces neither null nor an error. Only Graphix-written
-            // streams reach this default, since every system stream overrides
-            // write_exact. Add an arm before the retry for n == u64:0 with rest not
-            // empty that answers error(`IOError("write returned 0 bytes")`), as Rust's
-            // write_all does with WriteZero. probe:
-            // design/review-2026-10-12/repro/gx-stdlib-02.gx (gx-stdlib-02)
             u64 as n =&gt; select n ~ (n &gt;= buffer::len(rest)) {
                 true =&gt; null,
-                false =&gt; { rest &lt;- n ~ rest[n..]$; never() }
+                false =&gt; select n {
+                    u64:0 =&gt; error(`IOError("write returned 0 bytes")),
+                    _ =&gt; { rest &lt;- n ~ rest[n..]$; never() }
+                }
             }
         }
     };
