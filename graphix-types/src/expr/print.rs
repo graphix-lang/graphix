@@ -2230,6 +2230,8 @@ fn write_template<'a>(
             match c {
                 '\\' => write!(f, "\\\\")?,
                 '\t' => write!(f, "\\t")?,
+                // a CR before a LF is that line's own break, kept as written
+                '\r' if chars.peek() == Some(&'\n') => write!(f, "\r")?,
                 '\r' => write!(f, "\\r")?,
                 '\0' => write!(f, "\\0")?,
                 '"' => {

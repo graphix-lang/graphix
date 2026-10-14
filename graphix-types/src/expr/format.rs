@@ -512,45 +512,29 @@ pub fn format_source(
     }
     // a file whose every line ends in CRLF keeps them; the layout is LF
     let lines = text.matches('\n').count();
-    // CR claude for claude: [bug/medium] This path turns every CRLF into LF, inside
-    // string literals as well, and format_lf's reparse guard compares against that
-    // rewritten text, not the input. A CR LF inside a non-raw string is part of its
-    // value. The printer writes the newline as the escape `\n`, so turning LF back into
-    // CRLF afterwards cannot restore the CR, and the formatter changes the program
-    // without refusing. Example: `let s = "a<CR><LF>b"; str::len(s)` prints 4 before
-    // `graphix fmt` and 3 after. The LSP's formatting goes through the same path. Fix:
-    // check the reparse against the original text, or convert only the line endings the
-    // layout owns and leave literal contents alone. Add a multi-line non-raw string to
-    // the pin crlf_lines_stay_crlf. Probe:
-    // design/review-2026-10-12/repro/x-fix-tools-01.sh (x-fix-tools-01)
-    // CR claude for claude: [bug/high] The CRLF path rewrites the input before the
-    // guard: format_lf parses `text.replace("\r\n", "\n")`, so the reparse check
-    // compares the output with that rewritten text and never with the original. A
-    // quoted string that spans a line changes value from "a\r\nb" to "a\nb". The
-    // printer writes it as the escape `\n`, which the final `replace('\n', "\r\n")`
-    // cannot undo. `graphix fmt` (in place and --stdout) and the LSP's formatting both
-    // write the changed program without a refusal. Fix: parse the original text,
-    // convert only the printer's own line breaks (or the whole output) to CRLF, and
-    // reparse that result against the parse of the original, so a literal that cannot
-    // survive is refused. Add a quoted-string case and a template case to
-    // crlf_lines_stay_crlf. Probe: design/review-2026-10-12/repro/x-formatter-01.sh
-    // (value 4 becomes 3 after fmt). Also reported as (x-rerun-6-04). (x-formatter-01)
+    let (parsed, buf) = layout(kind, text, cfg)?;
     if lines > 0 && text.matches("\r\n").count() == lines {
-        let formatted = format_lf(kind, &text.replace("\r\n", "\n"), cfg)?;
+        // the layout's line breaks become CRLF; a literal's own already are
         let mut crlf: LPooled<String> = LPooled::take();
-        crlf.push_str(&formatted.replace('\n', "\r\n"));
+        let mut prev = '\0';
+        for c in buf.as_str().chars() {
+            if c == '\n' && prev != '\r' {
+                crlf.push('\r');
+            }
+            crlf.push(c);
+            prev = c;
+        }
+        guard(kind, &parsed, &crlf)?;
         return Ok(crlf);
     }
-    format_lf(kind, text, cfg)
+    guard(kind, &parsed, buf.as_str())?;
+    Ok(buf.into_string())
 }
 
-fn format_lf(
-    kind: SourceKind,
-    text: &str,
-    cfg: &FormatConfig,
-) -> Result<LPooled<String>> {
-    let (parsed, buf) = layout(kind, text, cfg)?;
-    let reparsed = match Parsed::new(kind, buf.as_str()) {
+/// Refused unless `out` reads back as what `parsed` said, comments,
+/// attributes and string delimiters included.
+fn guard(kind: SourceKind, parsed: &Parsed, out: &str) -> Result<()> {
+    let reparsed = match Parsed::new(kind, out) {
         Ok(p) => p,
         Err(e) => {
             let msg = format_compact!("the formatted text does not parse: {e:#}");
@@ -574,7 +558,7 @@ fn format_lf(
         };
         bail!(Refused(arcstr::ArcStr::from(msg)))
     }
-    Ok(buf.into_string())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -683,6 +667,14 @@ mod tests {
         );
         // a mixed file comes out LF
         formats_to(Program, "let s = \"a\";\r\ns\n", "let s = \"a\";\ns\n");
+        // a quoted or template string spanning a line keeps its CR
+        for src in
+            ["let s = \"a\r\nb\";\r\ns\r\n", "let s = \"\"\"a\r\nb\"\"\";\r\ns\r\n"]
+        {
+            let out = format_source(Program, src, &FormatConfig::default()).unwrap();
+            guard(Program, &Parsed::new(Program, src).unwrap(), &out).unwrap();
+            stable(Program, src);
+        }
     }
 
     #[test]
