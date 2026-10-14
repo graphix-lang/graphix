@@ -2516,3 +2516,15 @@ fn an_infinite_float_literal_is_refused_wherever_it_sits() {
     }
     assert!(parse_one("error:1e300").is_ok());
 }
+
+#[test]
+fn an_attribute_on_a_positional_argument() {
+    for src in ["f(#[native] 1 + 2)", "f(1, #[native] 1 + 2)", "f(#x: 1, #[native] y)"] {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Apply(a) = &e.kind else { panic!("{src}: {e:?}") };
+        let (name, arg) = a.args.last().unwrap();
+        assert!(name.is_none(), "{src}");
+        let dec = arg.dec.as_ref().unwrap_or_else(|| panic!("{src}: attribute lost"));
+        assert_eq!(&dec.attrs[0].name, &literal!("native"), "{src}");
+    }
+}

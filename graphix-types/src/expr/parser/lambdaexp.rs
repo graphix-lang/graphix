@@ -43,20 +43,11 @@ where
 {
     spaces().with(choice((
         // `#name` alone passes the variable of that name
-        // CR claude for claude: [bug/medium] This labeled-argument branch consumes `#`
-        // before `fname()` sees the `[` of an attribute. So `f(#[native] e)` fails
-        // inside this branch with input already consumed, and the `expr()` alternative,
-        // whose `leading_decorations` would take the attribute, is never tried. The
-        // postfix loop's `attempt(apply_args())` then gives up quietly, and the error
-        // shows at the call's `(` with a misleading "a `;` separates this statement"
-        // note. The same attribute works on a labeled argument's value and on an array
-        // element, and a `//` comment above a positional argument works too. Fix: guard
-        // the branch with `attempt(token('#').skip(not_followed_by(token('['))))`, or
-        // equivalent, and add a parser test with an attribute on a positional argument,
-        // both alone and after another argument. probe:
-        // design/review-2026-10-12/repro/t-parser-a-04.gx (t-parser-a-04)
-        token('#').with((position(), fname(), position())).skip(spaces()).then(
-            |(pos, name, end)| {
+        // `#[` is an attribute on a positional argument
+        attempt(token('#').skip(not_followed_by(token('['))))
+            .with((position(), fname(), position()))
+            .skip(spaces())
+            .then(|(pos, name, end)| {
                 optional(token(':').with(expr())).map(move |e| match e {
                     Some(e) => (Some(name.clone()), e),
                     None => {
@@ -64,8 +55,7 @@ where
                         (Some(name.clone()), e.to_expr(pos).ending(end))
                     }
                 })
-            },
-        ),
+            }),
         expr().map(|e| (None, e)),
     )))
 }
