@@ -1071,6 +1071,17 @@ impl Env {
         })
     }
 
+    /// Whether `r` is core's `ErrChain`, under whatever name it was
+    /// reached.
+    pub(crate) fn is_core_errchain(&self, r: &ResolvedRef) -> bool {
+        static CORE: std::sync::LazyLock<ModPath> =
+            std::sync::LazyLock::new(|| ModPath::from(["core"]));
+        self.typedefs
+            .get(&*CORE)
+            .and_then(|defs| defs.get("ErrChain"))
+            .is_some_and(|td| td.def.def_key() == r.def_key())
+    }
+
     /// The trait a type reference names, if it names one rather than a
     /// typedef (a filled resolution cell is always a typedef).
     pub fn trait_of_ref(&self, tr: &TypeRef) -> Option<TraitId> {

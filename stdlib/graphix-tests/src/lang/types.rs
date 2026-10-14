@@ -2915,3 +2915,10 @@ async fn repl_inputs_declare_distinct_abstract_types() -> anyhow::Result<()> {
         }
     }
 }
+
+// A renaming import of ErrChain is ErrChain: a chain of it is a chain.
+run!(
+    renamed_errchain_collapses,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => "use core::ErrChain as EC; let f = |e: Error<ErrChain<`A>>| 0; let h = |g: Error<EC<EC<`A>>>| f(g); let result = 0"
+);

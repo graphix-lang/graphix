@@ -2489,21 +2489,7 @@ impl Type {
                 }
                 // a raise extends a chain rather than nesting it, so a chain
                 // of a chain is that chain
-                // CR claude for claude: [bug/low] The rule that ErrChain<ErrChain<X>>
-                // is ErrChain<X> fires only when the written name's basename is
-                // `ErrChain`, here and in chain_type's Ref arm. So `use core::ErrChain
-                // as EC` makes EC<EC<`A>> a different type from ErrChain<`A>, although
-                // a renaming import is the type it names (reaches_unguarded already
-                // compares by definition for this reason). probe:
-                // design/review-2026-10-12/repro/t-typ-mod-05.gx (refused with
-                // 'Error<ErrChain<`A>> does not contain Error<EC<EC<`A>>>'; the same
-                // program spelled ErrChain checks). Identify core's ErrChain by its
-                // definition's def_key, recorded once in Env, in both places.
-                // Separately, `ModPath::from(["core"])` allocates a Path on every
-                // lookup_ref: compare with `*canonical_scope == ["core"]`, which does
-                // not. (t-typ-mod-05)
-                if *canonical_scope == ModPath::from(["core"])
-                    && Path::basename(&**name) == Some("ErrChain")
+                if env.is_core_errchain(&resolved)
                     && let [payload] = &params[..]
                     && let Some(chain) = payload.chain_type(env)?
                 {
@@ -2538,7 +2524,9 @@ impl Type {
                 Some(t) => return t.chain_type(env),
                 None => return Ok(None),
             },
-            Type::Ref(tr) if Path::basename(&*tr.name) == Some("ErrChain") => {
+            Type::Ref(tr)
+                if tr.resolve_pure(env).is_some_and(|r| env.is_core_errchain(&r)) =>
+            {
                 match self.lookup_ref_peek(env)? {
                     t @ Type::Struct(_) => t,
                     _ => return Ok(None),
