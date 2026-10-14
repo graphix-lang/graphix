@@ -1688,25 +1688,6 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
-        // CR claude for claude: [bug/high] x-engine-seq-errors-10 variant: a reload can
-        // change a hidden rep through a private typedef. Env::deftype refuses a
-        // re-registration whose Abstract rep differs by comparing `was` and `now` with
-        // sig_matches (env.rs). sig_matches_inner's Ref/Ref arm (typ/matches.rs)
-        // accepts two refs with the same scope and name without expanding them. So
-        // `type C = Abstract<R>` with R = {x: string} matches a reload's `type C =
-        // Abstract<R>` with R = {x: i64}: the private typedef R is redefined freely,
-        // and values minted by the old body reach code compiled for the new
-        // representation. Failure: The program below prints 7. When the reload lands,
-        // the JIT panics the runtime: "kernel param `r`: runtime String(\"v41\") does
-        // not match the compiled Scalar(I64) slot" (fusion/kernel.rs). A second panic
-        // follows, tokio oneshot 'called after complete', then 'Error: tokio thread
-        // panicked'. --no-fusion logs an arith error parsing "v41" as i64. Fix: Compare
-        // representations structurally, not by name. Expand every Ref on both sides
-        // through each side's own resolution cell (the old rep's cells still hold the
-        // old R), or compare Type::content_key of the fully expanded reps. Add a pin
-        // beside lang::modules::reload_changes_a_representation in which the change
-        // goes through a typedef. Unverified: the reviewer's report, not checked by a
-        // verifier. (x-rerun-8-02)
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep)
             && let Some(old) = self.abstract_reps.get(id)
         {
