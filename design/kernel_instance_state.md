@@ -140,8 +140,9 @@ pointer, uniform on every kernel signature:
   definition. A region's fresh callee bodies are emitted in a
   depth-first postorder over their static call edges (`jit::def_order`:
   callees first, the parent last) so callers read their callees'
-  layouts; a still-missing
-  layout IS the recursive back-edge discriminator and the call passes 0.
+  layouts. A still-missing layout marks a recursive back-edge: a self-call
+  roots a per-activation block tree; a mutual edge de-fuses. Only a callee
+  that claims no words receives a null block.
 - **The caller supplies the storage** (`emit_site_block`). At a root
   call site: a contiguous run in the caller's own space — instance
   words in a parent (the callee's anchors translate into the parent's
@@ -153,12 +154,12 @@ pointer, uniform on every kernel signature:
   block leaf (`graphix_slot_state_blocks`) whose in-block anchors the
   resize helper and `free_slot_chain` walk recursively, so a callee with
   a nested loop called from inside a loop frees exactly.
-- **Null-guards everywhere the base can be 0**: the wrapper packs 0 for
-  region parents, and recursive back-edges pass 0 (a fresh transient
-  activation in the node-walk — for a single-shot activation fresh
-  memory ≡ no memory). A consumer whose base is null branches to the
-  stateless approximation (`StateWord::Guarded`); a callee loop's chain
-  branches around its ensure calls.
+- **Channel ownership determines whether a base can be null.** The wrapper
+  packs 0 in a region parent's site slot, which the parent never claims.
+  A callee claiming site words receives an allocated block, including
+  self-call activations. `StateWord::Guarded` and the loop-chain guards
+  defensively skip access through a null base; such a base is valid only
+  when the body claims nothing.
 
 A region parent has no kernel caller and claims only state words, so its
 site block is always null.

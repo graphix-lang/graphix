@@ -177,17 +177,7 @@ pub(super) trait BodyEmitter {
 #[derive(Clone, Copy)]
 pub(super) enum BodyRole<'a> {
     /// The region root, the only body that claims per-instance state
-    /// words (see [`StateChannel::enabled`]).
-    // CR claude for claude: [doc-drift/low] The doc link `StateChannel::enabled` points
-    // at nothing: the channel a body claims from is `LowerCtx::claims`
-    // (`Channel::State` for a parent). design/kernel_instance_state.md is also stale.
-    // Its "callee declares its layout" bullet says a missing layout makes the call pass
-    // 0, and its null-guard bullet says recursive back-edges pass 0. `emit_site_block`
-    // now refuses a non-self back-edge and roots a per-activation block tree for a
-    // self-call. Fix the link, and rewrite those sentences: a missing layout is a
-    // self-call, which roots an activation tree; a mutual edge de-fuses; and only a
-    // body that claims nothing receives a null block. See f-scaffold-body-01, whose
-    // dead null guards rest on that stale sentence. (f-scaffold-body-10)
+    /// words (see [`LowerCtx::claims`]).
     Parent,
     /// A callee body, claiming per-call-site block words; `Some` when it
     /// is self-recursive: the binding its self-references carry and the
