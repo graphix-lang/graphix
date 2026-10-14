@@ -73,13 +73,7 @@ pub enum KernelConst {
         f: TypedFastFn,
     },
     /// The cast pseudo-site's fn.
-    // CR claude for claude: [structure/low] This variant carries a function pointer,
-    // but the only constructor passes cast_typed, the image writes only the tag, and
-    // decode rebuilds it as Cast(cast_typed). Any other fn put here would run cold and
-    // be silently replaced by cast_typed in a warm image. Make it a unit variant `Cast`
-    // whose pointer() returns `cast_typed as usize`. same_as then needs only the
-    // variant match, and the encoder and decoder carry nothing else. (f-jit-09)
-    Cast(crate::fusion::lowering::CastFn),
+    Cast,
     SiteLeaf(Arc<SiteLeaf>),
     /// The owning kernel's `site_block_words` cell.
     SiteBlockWords,
@@ -98,7 +92,7 @@ impl KernelConst {
             KernelConst::IoSite(b) => &**b as *const crate::IoSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
             KernelConst::TypedFn { f, .. } => *f as usize,
-            KernelConst::Cast(f) => *f as usize,
+            KernelConst::Cast => cast_typed as usize,
             KernelConst::SiteLeaf(l) => Arc::as_ptr(l) as *const u8 as usize,
             KernelConst::SiteBlockWords => {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
@@ -120,7 +114,7 @@ impl KernelConst {
             (KernelConst::TypedFn { f: a, .. }, KernelConst::TypedFn { f: b, .. }) => {
                 *a as usize == *b as usize
             }
-            (KernelConst::Cast(a), KernelConst::Cast(b)) => *a as usize == *b as usize,
+            (KernelConst::Cast, KernelConst::Cast) => true,
             (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => Arc::ptr_eq(a, b),
             (KernelConst::SiteBlockWords, KernelConst::SiteBlockWords) => true,
             (KernelConst::LoopSite(a), KernelConst::LoopSite(b)) => Arc::ptr_eq(a, b),
@@ -461,7 +455,7 @@ impl Pack for KernelConst {
             KernelConst::FastFn { name, .. } | KernelConst::TypedFn { name, .. } => {
                 name.encoded_len()
             }
-            KernelConst::Cast(_)
+            KernelConst::Cast
             | KernelConst::SiteBlockWords
             | KernelConst::LoopSite(_) => 0,
             KernelConst::SiteLeaf(l) => kernel_abi::site_leaf_len(l),
@@ -502,7 +496,7 @@ impl Pack for KernelConst {
                 buf.put_u8(tag::TYPED_FN);
                 name.encode(buf)
             }
-            KernelConst::Cast(_) => Ok(buf.put_u8(tag::CAST)),
+            KernelConst::Cast => Ok(buf.put_u8(tag::CAST)),
             KernelConst::SiteLeaf(l) => {
                 buf.put_u8(tag::SITE_LEAF);
                 kernel_abi::site_leaf_encode(l, buf)
@@ -547,7 +541,7 @@ impl Pack for KernelConst {
                     FastCall::Plain(_) => return Err(PackError::InvalidFormat),
                 }
             }
-            tag::CAST => KernelConst::Cast(cast_typed),
+            tag::CAST => KernelConst::Cast,
             tag::SITE_LEAF => KernelConst::SiteLeaf(kernel_abi::site_leaf_decode(buf)?),
             tag::SITE_BLOCK_WORDS => KernelConst::SiteBlockWords,
             tag::LOOP_SITE => KernelConst::LoopSite(Arc::new(LoopSite::default())),

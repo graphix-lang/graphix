@@ -8,9 +8,7 @@ use crate::{
     fusion::{
         LambdaCallInfo,
         kernel_abi::{self, AbiKind},
-        lowering::{
-            BuiltinCallSiteInfo, CaptureSlot, SiteDispatch, cast_typed, formal_arg,
-        },
+        lowering::{BuiltinCallSiteInfo, CaptureSlot, SiteDispatch, formal_arg},
     },
     node::callsite::CallSite,
     typ::Type,
@@ -213,7 +211,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             )?
         }
         SiteDispatch::Cast { target, source } => {
-            let fp = cx.const_ptr(KernelConst::Cast(cast_typed))?;
+            let fp = cx.const_ptr(KernelConst::Cast)?;
             let pair =
                 Type::Tuple(triomphe::Arc::from_iter([target.clone(), source.clone()]));
             let tp = cx.interned_type(&pair)?;
