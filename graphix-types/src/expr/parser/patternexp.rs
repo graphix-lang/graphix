@@ -217,14 +217,12 @@ where
         position(),
     )
         .then(move |(mut fields, end): (LPooled<Vec<Field>>, _)| {
-            // CR claude for claude: [bug/low] Every `..` in a struct pattern becomes a
-            // `Field::Rest`, and only whether one exists is kept. So `{x, .., ..}` and
-            // `{.., x}` both parse, and `graphix fmt` silently rewrites them to `{ x,
-            // .. }`. The slice pattern refuses a second rest. Refuse more than one
-            // Rest, and a Rest that is not the last field, with `refuse(end, ..)` as
-            // `slice_pattern` does. probe:
-            // design/review-2026-10-12/repro/t-parser-b-07.gx (t-parser-b-07)
-            let exhaustive = !fields.iter().any(|f| matches!(f, Field::Rest));
+            // one rest, and it ends the fields
+            let rests = fields.iter().filter(|f| matches!(f, Field::Rest)).count();
+            if rests > 1 || (rests == 1 && !matches!(fields.last(), Some(Field::Rest))) {
+                return refuse(end, "`..` must be a struct pattern's last field").right();
+            }
+            let exhaustive = rests == 0;
             let mut binds: LPooled<Vec<(ArcStr, StructurePattern, WrittenAt)>> = fields
                 .drain(..)
                 .filter_map(|f| match f {

@@ -81,34 +81,27 @@ where
 {
     choice((
         spstring("unrestricted").map(|_| Sandbox::Unrestricted),
-        // CR claude for claude: [structure/low] The `blacklist` and `whitelist`
-        // branches are the same bracketed modpath-list parser and differ only in the
-        // keyword and the constructor. Parse the list once (one local parser fn) and
-        // map it into `Sandbox::Blacklist` or `Sandbox::Whitelist`. `bound` in
-        // typexp.rs has the same problem: six identical
-        // `attempt(spaces().with(string(K)).skip(not_prefix())).map(|_| Type::K)`
-        // parsers. Write those as one table of (keyword, Type) pairs mapped into a
-        // single `choice`, or parse an identifier once and look it up in the table, so
-        // a new bound is one row. (t-parser-b-08)
-        spstring("blacklist")
-            .with(between(
-                sptoken('['),
-                sptoken(']'),
-                sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
-            ))
-            .map(|mut l: LPooled<Vec<ModPath>>| {
-                Sandbox::Blacklist(Arc::from_iter(l.drain(..)))
-            }),
-        spstring("whitelist")
-            .with(between(
-                sptoken('['),
-                sptoken(']'),
-                sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
-            ))
-            .map(|mut l: LPooled<Vec<ModPath>>| {
-                Sandbox::Whitelist(Arc::from_iter(l.drain(..)))
-            }),
+        spstring("blacklist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
+            Sandbox::Blacklist(Arc::from_iter(l.drain(..)))
+        }),
+        spstring("whitelist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
+            Sandbox::Whitelist(Arc::from_iter(l.drain(..)))
+        }),
     ))
+}
+
+/// `[a::b, c]`: a sandbox's module paths.
+fn paths<I>() -> impl Parser<I, Output = LPooled<Vec<ModPath>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    between(
+        sptoken('['),
+        sptoken(']'),
+        sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
+    )
 }
 
 pub(crate) fn dynamic_module<I>() -> impl Parser<I, Output = ModuleKind>

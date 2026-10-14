@@ -12,13 +12,14 @@ use crate::{
 };
 use arcstr::{ArcStr, literal};
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice, look_ahead,
+    ParseError, Parser, RangeStream, attempt, between, choice, look_ahead, many1,
     not_followed_by, optional,
     parser::char::string,
-    position, sep_by1,
+    position, satisfy, sep_by1,
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
+use compact_str::CompactString;
 use netidx_core::utils::Either;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
@@ -75,22 +76,28 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    let concrete = attempt(spaces().with(string("Concrete")).skip(not_prefix()))
-        .map(|_| Type::Concrete);
-    let function = attempt(spaces().with(string("Function")).skip(not_prefix()))
-        .map(|_| Type::Function);
-    let singleton = attempt(spaces().with(string("Singleton")).skip(not_prefix()))
-        .map(|_| Type::Singleton);
-    let one_number = attempt(spaces().with(string("OneNumber")).skip(not_prefix()))
-        .map(|_| Type::OneNumber);
-    let discernible = attempt(spaces().with(string("Discernible")).skip(not_prefix()))
-        .map(|_| Type::Discernible);
-    let ordered = attempt(spaces().with(string("Ordered")).skip(not_prefix()))
-        .map(|_| Type::Ordered);
-    sep_by1(
-        choice((concrete, function, singleton, one_number, discernible, ordered, typ())),
-        attempt(spaces().with(token('+'))),
-    )
+    /// The predicates a bound may name, by keyword.
+    fn predicate(word: &str) -> Option<Type> {
+        Some(match word {
+            "Concrete" => Type::Concrete,
+            "Function" => Type::Function,
+            "Singleton" => Type::Singleton,
+            "OneNumber" => Type::OneNumber,
+            "Discernible" => Type::Discernible,
+            "Ordered" => Type::Ordered,
+            _ => return None,
+        })
+    }
+    let keyword = attempt(
+        spaces()
+            .with(many1(satisfy(|c: char| c.is_ascii_alphabetic())))
+            .skip(not_prefix())
+            .then(|w: CompactString| match predicate(&w) {
+                Some(t) => value(t).left(),
+                None => unexpected_any("not a predicate").right(),
+            }),
+    );
+    sep_by1(choice((keyword, typ())), attempt(spaces().with(token('+'))))
 }
 
 /// Flatten `(tvar, bounds)` pairs into one `(tvar, type)` pair per

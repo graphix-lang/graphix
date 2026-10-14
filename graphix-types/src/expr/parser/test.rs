@@ -2549,3 +2549,22 @@ fn a_variant_without_a_payload_ends_at_its_tag() {
     assert!(parse_one("`B\n[0]").is_err());
     assert!(parse_one("`B (1)").is_ok());
 }
+
+#[test]
+fn an_index_takes_i64_min() {
+    let e = parse_one("a[-9223372036854775808..]").unwrap();
+    let ExprKind::ArraySlice { start: Some(s), .. } = &e.kind else { panic!("{e:?}") };
+    assert!(matches!(s.kind, ExprKind::Constant(Value::I64(i64::MIN))), "{s:?}");
+}
+
+#[test]
+fn a_struct_pattern_has_one_rest_last() {
+    for src in ["{x, .., ..}", "{.., x}"] {
+        let e = parse_structure_pattern(src).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("must be a struct pattern's last field"),
+            "{src}: {e:#}"
+        );
+    }
+    assert!(parse_structure_pattern("{x, ..}").is_ok());
+}
