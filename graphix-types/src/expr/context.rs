@@ -67,6 +67,9 @@ impl fmt::Display for ErrorContext {
         // sites in expr/seq.rs), so the probe's frames are unchanged. Giving them their
         // statement's end would show the source but also feed the LSP's scope map spans
         // it never had; skipping their frames needs a mark the lowering sets.
+        // 2026-10-14 claude: tests-seq-08 is the same finding. Expr::end was weighed as
+        // the mark and refused: it decides nothing by rule and is absent from packed and
+        // image-restored ASTs.
         let complete = write!(head, "{}", self.0).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {

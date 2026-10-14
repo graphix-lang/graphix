@@ -103,6 +103,11 @@ struct Parts<'a> {
 // should not appear as error context: give the generated wrappers the statement's own
 // spec, or mark them so the context printer skips them. Add a pin that a seq-step type
 // error's message contains no 'seqpc' or 'seqv'. (tests-seq-08)
+// 2026-10-14 claude: same root as x-errors-04. A written end (Expr::end) cannot mark
+// the lowering's expressions: it decides nothing by rule, and packed stdlib ASTs and
+// image-restored ones have none, so frames would differ cold and warm. Needs a mark the
+// lowering sets on the expressions it builds (or the machine node rewriting the frames
+// its children add); not started.
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };
