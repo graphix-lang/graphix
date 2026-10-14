@@ -292,12 +292,14 @@ impl PrettyDisplay for Type {
             Self::Any => writeln!(buf, "Any"),
             Self::Ref(tr) => {
                 let TypeRef { name, params, .. } = &**tr;
-                if params.is_empty() {
-                    writeln!(buf, "{name}")
-                } else {
-                    writeln!(buf, "{name}<")?;
-                    pretty_list(buf, params.iter(), false)?;
-                    writeln!(buf, ">")
+                match &params[..] {
+                    [] => writeln!(buf, "{name}"),
+                    [p] => pretty_lone_arg(buf, &format_compact!("{name}<"), p, ">"),
+                    params => {
+                        writeln!(buf, "{name}<")?;
+                        pretty_list(buf, params.iter(), false)?;
+                        writeln!(buf, ">")
+                    }
                 }
             }
             Self::TVar(tv) => writeln!(buf, "{tv}"),
@@ -342,21 +344,12 @@ impl PrettyDisplay for Type {
                             writeln!(buf, ",")?;
                         }
                         write!(buf, "{n}: ")?;
-                        // CR claude for claude: [style/low] After `name: `, the field
-                        // value prints inside a second nesting. A multi-line value
-                        // therefore puts its fields two indent steps in and its closing
-                        // bracket one step in, e.g. `alpha: {` with the inner fields at
-                        // 12 columns and `},` at 8. Print the value the way
-                        // pretty_lone_arg does: on the head's line when it opens with a
-                        // bracket, nested only when it moves under the head.
-                        // Separately, the Type::Ref arm in fmt_pretty always lists its
-                        // params one per line, so `O<{..}>` does not hug while
-                        // `Array<{..}>` does. Route a Ref with one param through
-                        // pretty_lone_arg, as CLAUDE.md's layout rule requires for
-                        // types. probe:
-                        // design/review-2026-10-12/repro/t-cast-setops-14.gx
-                        // (t-cast-setops-14)
-                        buf.nested(|buf| t.fmt_pretty(buf))?;
+                        // a bracketed value hugs its name; any other nests
+                        if opens_with_bracket(t) {
+                            t.fmt_pretty(buf)?;
+                        } else {
+                            buf.nested(|buf| t.fmt_pretty(buf))?;
+                        }
                     }
                     Ok(())
                 })?;

@@ -1014,6 +1014,25 @@ mod tests {
         stable(SourceKind::Interface, src);
     }
 
+    // a struct field's bracketed type hugs its name, and a typedef's lone
+    // parameter hugs its brackets, as Array<..> does
+    #[test]
+    fn type_fields_and_lone_params_hug() {
+        let fields = "beta_long_field_name: i64, gamma_long_field_name: string, delta_long_long_long: f64, eps: i64";
+        let src = format!(
+            "type O<'a> = [null, 'a];\ntype T = {{alpha: {{{fields}}}, z: i64}};\ntype U = O<{{{fields}}}>;\n0\n"
+        );
+        let out =
+            format_source(SourceKind::Program, &src, &FormatConfig::default()).unwrap();
+        assert!(
+            out.contains("    alpha: {\n        beta_long_field_name: i64,"),
+            "{out}"
+        );
+        assert!(out.contains("    },\n    z: i64"), "{out}");
+        assert!(out.contains("type U = O<{\n    beta_long_field_name: i64,"), "{out}");
+        stable(SourceKind::Program, &src);
+    }
+
     #[test]
     fn primitive_sets_print_as_written() {
         stable(SourceKind::Interface, "type Sint = [i8, i16, i32, z32, i64, z64]");
