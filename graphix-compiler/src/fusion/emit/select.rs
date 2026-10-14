@@ -32,7 +32,7 @@ use super::{
     body::{BodyCx, ensure_owned_composite_src, fold_stale, node_composite_source},
     call::{CompositeSource, emit_drop_local},
     flow::{emit_discard_result, emit_scope_drops},
-    lower::resolve_node_typ,
+    lower::{freeze_node_typ, resolve_node_typ},
     nodes::{emit_bottom_of_kind, emit_owned_value_operand_node},
     scalar::{
         ElementRead, cast_u64_to_prim, compile_cmp, compile_const, element_read_helper,
@@ -640,10 +640,8 @@ fn emit_composite_pattern_cond_inner(
                     }
                 }
             }
-            StructPatternNode::Variant { .. } => {
-                return Err(anyhow!(
-                    "emit_clif: nested variant pattern leaf not lowerable"
-                ));
+            sub @ StructPatternNode::Variant { .. } => {
+                nested.push((leaf.idx, sub, leaf.typ.clone()));
             }
             StructPatternNode::Or { .. } => {
                 return Err(anyhow!("emit_clif: or-pattern leaf not lowerable"));
@@ -659,16 +657,35 @@ fn emit_composite_pattern_cond_inner(
         cond = cx.b.ins().band(cond, c);
     }
     for (idx, sub, typ) in nested {
-        // A borrowed interior pointer: the root is a pinned borrowed
-        // slot and values are immutable, so no ownership or drops.
         let (read, idx_v) = elem_index(cx, idx);
-        let helper_name = match read {
-            ElementRead::ArrayIndex => "graphix_valarray_get_array_borrowed",
-            ElementRead::StructField => "graphix_struct_get_array_borrowed",
+        let c = match sub {
+            StructPatternNode::Variant { tag, all, binds: payloads } => {
+                if let Some(id) = all {
+                    binds.push(SelectArmBind::ElemValue {
+                        id: *id,
+                        idx,
+                        typ: typ.clone(),
+                        kind: OwnedKind::Value,
+                        parent_ptr: ptr,
+                    });
+                }
+                let helper = match read {
+                    ElementRead::ArrayIndex => "graphix_valarray_get_value_borrowed",
+                    ElementRead::StructField => "graphix_struct_get_value_borrowed",
+                };
+                let call = cx.call_helper(helper, &[ptr, idx_v])?;
+                let child = (call[0], call[1]);
+                emit_variant_cond(cx, child, Some(child), tag, payloads, &typ, binds)?
+            }
+            _ => {
+                let helper = match read {
+                    ElementRead::ArrayIndex => "graphix_valarray_get_array_borrowed",
+                    ElementRead::StructField => "graphix_struct_get_array_borrowed",
+                };
+                let child = cx.call_helper(helper, &[ptr, idx_v])?[0];
+                emit_composite_pattern_cond(cx, child, &typ, sub, binds)?
+            }
         };
-        let call = cx.call_helper(helper_name, &[ptr, idx_v])?;
-        let child_ptr = call[0];
-        let c = emit_composite_pattern_cond(cx, child_ptr, &typ, sub, binds)?;
         cond = cx.b.ins().band(cond, c);
     }
     Ok(cond)
@@ -1018,7 +1035,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
         None
     } else {
-        let pred = kernel_abi::freeze_for_abi(&pat.type_predicate).ok_or_else(|| {
+        let pred = freeze_node_typ(cx.ctx, &pat.type_predicate).ok_or_else(|| {
             anyhow!(
                 "emit_clif: select type predicate {:?} doesn't \
                          freeze concrete",
@@ -1039,21 +1056,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                 let cd = clean_disc(cx.b, disc);
                 let mut cond: Option<ClifValue> = None;
                 for t in p.iter() {
-                    let td = match t {
-                        netidx_value::Typ::Null => {
-                            cx.b.ins().iconst(types::I64, value_disc::NULL)
-                        }
-                        netidx_value::Typ::String => {
-                            cx.b.ins().iconst(types::I64, value_disc::STRING)
-                        }
-                        t => match PrimType::from_typ(t) {
-                            Some(prim) => scalar_disc(cx.b, prim),
-                            None => bail!(
-                                "emit_clif: type predicate member {t} over a \
-                                 primitive union not lowerable"
-                            ),
-                        },
-                    };
+                    let td = cx.b.ins().iconst(types::I64, t as i64);
                     let eq = cx.b.ins().icmp(IntCC::Equal, cd, td);
                     cond = Some(match cond {
                         None => eq,
@@ -1065,26 +1068,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
             Type::Primitive(p)
                 if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
             {
-                match scrut {
-                    SelectScrut::Value { kind: ValueKind::Nullable, disc, .. } => {
-                        // Only the option shape has a null member; a
-                        // result union's non-success value is an error.
-                        if kernel_abi::nullable_error_marked(&scrut_typ) != Some(false) {
-                            return Err(anyhow!(
-                                "emit_clif: null predicate over a \
-                                     result union {scrut_typ}"
-                            ));
-                        }
-                        let cd = clean_disc(cx.b, disc);
-                        Some(cx.b.ins().icmp_imm(IntCC::Equal, cd, value_disc::NULL))
-                    }
-                    _ => {
-                        return Err(anyhow!(
-                            "emit_clif: null predicate over non-\
-                                 Nullable scrutinee {scrut_typ}"
-                        ));
-                    }
-                }
+                Some(emit_null_cond(cx, scrut, scrut_typ)?)
             }
             Type::Primitive(p)
                 if !p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
@@ -1160,6 +1144,23 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
         binds,
     )?;
     Ok((tcond, scond))
+}
+
+fn emit_null_cond(cx: &mut BodyCx, scrut: SelectScrut, typ: &Type) -> Result<ClifValue> {
+    match scrut {
+        SelectScrut::Value { kind: ValueKind::Nullable, .. }
+            if kernel_abi::nullable_error_marked(typ) != Some(false) =>
+        {
+            bail!("emit_clif: null predicate over a result union {typ}")
+        }
+        SelectScrut::Value {
+            kind: ValueKind::Nullable | ValueKind::Value, disc, ..
+        } => {
+            let disc = clean_disc(cx.b, disc);
+            Ok(cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL))
+        }
+        _ => bail!("emit_clif: null predicate over {typ}"),
+    }
 }
 
 /// OR `TAINT|STALE` into `disc` when `cond` is false: the pattern did
@@ -1655,22 +1656,10 @@ fn emit_structure_cond(
                 ));
             }
         },
+        StructPatternNode::Literal(Value::Null) => {
+            Some(emit_null_cond(cx, scrut, scrut_typ)?)
+        }
         StructPatternNode::Literal(v) => {
-            // CR claude for claude: [perf/medium] Three common select shapes make the
-            // select and its lambda node-walk, so a #[native] over any of them refuses.
-            // (a) A `null` literal arm is refused here as non-scalar, although the
-            // `null as _` predicate in emit_arm_cond already lowers as a clean-disc
-            // compare with value_disc::NULL. Lower Value::Null the same way over an
-            // option or Value scrutinee, refusing a result union as that path does. (b)
-            // emit_arm_cond freezes a written predicate with freeze_for_abi, which
-            // leaves core set refs (`Int`, `Number`) unresolved, so `Int as n` is
-            // refused. Resolve the refs first (resolve_node_typ, or the normalized
-            // freeze). (c) emit_composite_pattern_cond refuses a variant leaf, so the
-            // usual state-machine shape `select (mode, ev) { (`Idle, 0) => .. }`
-            // de-fuses. emit_variant_cond already takes a borrowed (disc, payload)
-            // through `on`: read the element borrowed and call it with the leaf's
-            // static type. probe: design/review-2026-10-12/repro/f-select-04.gx
-            // (f-select-04)
             let lit_prim = kernel_abi::scalar_prim_of_value(v)
                 .ok_or_else(|| anyhow!("emit_clif: non-scalar literal pattern {v:?}"))?;
             match scrut {

@@ -158,3 +158,44 @@ run!(variant_payload_literal_tags, r#"
         nested(`Outer(`Inner(null))), nested(`Outer(`Inner(i32:0))))
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0, i64:1, i64:4, i64:3, i64:6, i64:5]"); FuseExpect::Jit);
+
+run!(select_null_literal, r#"
+{
+    let f = |v: [i64, null]| select v { null => 0, n => n + 1 };
+    let g = |v: [i64, string, null]| select v { null => 2, _ => 3 };
+    #[native] (f(null), f(5), g(null), g("present"))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:6, i64:2, i64:3]"); FuseExpect::Jit);
+
+run!(select_named_numeric_predicates, r#"
+{
+    let f = |v: [i64, f64]| select v { Int as _ => 0, _ => 1 };
+    let g = |v: [i64, f64, decimal, string]| select v { Number as _ => 2, _ => 3 };
+    #[native] (f(7), f(2.5), g(7), g(2.5), g(decimal:1.5), g("text"))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:2, i64:2, i64:2, i64:3]"); FuseExpect::Jit);
+
+run!(select_variant_composite_leaves, r#"
+{
+    let f = |m: [`Idle, `Busy(i64)], n: i64| select (m, n) {
+        (`Idle, 0) => 1,
+        (`Busy(x), y) => x + y,
+        (_, _) => 0
+    };
+    let g = |m: [`Idle, `Busy(i64)]| select {mode: m, step: 0} {
+        {mode: `Busy(x), step: _} => x,
+        _ => 0
+    };
+    #[native] (f(`Idle, 0), f(`Idle, 1), f(`Busy(5), 7), g(`Busy(9)), g(`Idle))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0, i64:12, i64:9, i64:0]"); FuseExpect::Jit);
+
+run!(select_variant_composite_whole_bind, r#"
+{
+    let f = |m: [`No, `Some(string)]| select (m, 0) {
+        (v@ `Some(s), _) => (select v { `Some(t) => t }) == s,
+        _ => false
+    };
+    #[native] (f(`Some("payload")), f(`No))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if **a == [Value::Bool(true), Value::Bool(false)]); FuseExpect::Jit);

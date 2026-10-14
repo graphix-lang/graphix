@@ -1551,6 +1551,14 @@ fn struct_field(p: &ValArray, sorted_idx: usize) -> Option<&Value> {
     }
 }
 
+/// The returned words borrow the slot; no consumer may drop them or outlive it.
+unsafe fn slot_value_borrowed(v: Option<&Value>) -> TagValue {
+    TagValue::fired(match v {
+        Some(v) => unsafe { std::ptr::read(v) },
+        None => Value::Null,
+    })
+}
+
 /// A slot as an array; the static empty array on mismatch.
 fn slot_array(v: Option<&Value>) -> &ValArray {
     match v {
@@ -1879,6 +1887,16 @@ unsafe fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64
 /// `arr[idx]` as an owned `ArcStr` (String elem).
 unsafe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> u64 {
     arcstr_bits(slot_arcstr(unsafe { va_ref(&bits) }.get(idx)))
+}
+
+/// The result borrows the array slot and must never be dropped.
+unsafe fn graphix_valarray_get_value_borrowed(bits: u64, idx: usize) -> TagValue {
+    unsafe { slot_value_borrowed(va_ref(&bits).get(idx)) }
+}
+
+/// The result borrows the struct field and must never be dropped.
+unsafe fn graphix_struct_get_value_borrowed(bits: u64, idx: usize) -> TagValue {
+    unsafe { slot_value_borrowed(struct_field(va_ref(&bits), idx)) }
 }
 
 /// `arr[idx]` as an owned `Value`.
