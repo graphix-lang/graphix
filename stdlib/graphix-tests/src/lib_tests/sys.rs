@@ -86,3 +86,36 @@ const STDIN_WRITE_ERR: &str = r#"
 run!(stdin_write_err, STDIN_WRITE_ERR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
 }; FuseExpect::None);
+
+const WRITE_EXACT_ZERO: &str = r#"
+{
+    use sys::io::Write;
+    type Sink = Abstract<null>;
+    impl Write for Sink {
+        let write = |s, data| {
+            let result: Result<u64, `IOError(string)> = select count((s, data)) {
+                1 => u64:0,
+                _ => error(`IOError("write retried after returning zero"))
+            };
+            result
+        };
+        let flush = |s| {
+            let result: Result<null, `IOError(string)> = s ~ null;
+            result
+        }
+    };
+    let sink = Sink(null);
+    let empty = Write::write_exact(sink, buffer::from_string(""));
+    let full = Write::write_exact(sink, buffer::from_string("hello"));
+    let result = never();
+    catch(e) select (e.0).error {
+        `IOError(message) => result <- empty ~ (message == "write returned 0 bytes")
+    };
+    full?;
+    result
+}
+"#;
+
+run!(write_exact_zero, WRITE_EXACT_ZERO, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+}; FuseExpect::Jit);
