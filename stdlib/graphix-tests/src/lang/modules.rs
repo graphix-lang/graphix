@@ -1150,3 +1150,23 @@ async fn instances_share_their_lowerings() -> Result<()> {
     assert_eq!(kept(2).await?, kept(30).await?);
     Ok(())
 }
+
+// A reload may not change a hidden representation through a private
+// typedef either: the old and the new `R` are compared by what they mean.
+const RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_TYPEDEF: &str = r#"
+{
+    let source = """type R = {x: string}; type C = Abstract<R>; let make = |x: i64| C({x: "v"})""";
+    sys::net::publish("/local/reprchange_td", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { type C; val make: fn(x: i64) -> C };
+        source sys::net::subscribe("/local/reprchange_td")?
+    };
+    source <- once(status) ~ """type R = {x: i64}; type C = Abstract<R>; let make = |x: i64| C({x: x})""";
+    select status { error as e => e, null as _ => never() }
+}
+"#;
+
+run!(reload_changes_a_representation_through_a_typedef,
+    RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_TYPEDEF,
+    load_refused("representation cannot change"); FuseExpect::Jit);

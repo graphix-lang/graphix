@@ -289,9 +289,12 @@ impl Type {
             (Self::Bottom, Self::Bottom) => Ok(()),
             (Self::Any, Self::Any) => Ok(()),
             (Self::Primitive(p0), Self::Primitive(p1)) if p0 == p1 => Ok(()),
+            // one name over two definitions (a reload's) is compared by
+            // what each means
             (Self::Ref(r0), Self::Ref(r1))
                 if r0.scope == r1.scope
                     && r0.name == r1.name
+                    && r0.cells_agree(r1)
                     && r0.params.len() == r1.params.len() =>
             {
                 for (t0, t1) in r0.params.iter().zip(r1.params.iter()) {
