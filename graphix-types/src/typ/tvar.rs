@@ -1034,6 +1034,11 @@ impl TVar {
         // rules usually keep the generic side as the abandoned cell. When `level` is
         // not generic, call `other.claim(level)` here (claim lowers generic cells too)
         // instead of `lower`. (t-tvar-07)
+        // 2026-10-14 claude: tried `other.claim(level)` here; it breaks
+        // lang::traits::core_display_nested_same_tag (`impl<'a> Display for Box<'a>`
+        // over Box(Box(Box(1))) prints "<Box(Box(1))>"): the impl's quantifier welds
+        // with the method's parameter cell and must stay generic for each call's
+        // dispatch. A rule has to tell that weld from an environment-owned one.
         lower(&Type::TVar(other.clone()), level);
     }
 
@@ -1336,7 +1341,7 @@ impl Type {
     pub(crate) fn singleton_holds(&self, env: &Env, commit: bool) -> Result<bool> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, commit)), &mut parts)?;
-        Ok(parts.known <= 1 && !parts.rigid_pair())
+        Ok(parts.known <= 1 && !parts.rigid_apart())
     }
 
     /// Whether `OneNumber ⊇ self` holds as the type stands: at most one
@@ -1420,7 +1425,7 @@ impl Type {
     pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, false)), &mut parts)?;
-        if parts.rigid_pair() {
+        if parts.rigid_apart() {
             bail!(
                 "{} must be one type, but its type variables may differ",
                 self.resolve_tvars()
@@ -1982,28 +1987,15 @@ impl UnionParts {
         Self { measure, known: 0, first: None, open: SmallVec::new() }
     }
 
-    /// Whether two different rigid cells are open members beside no
-    /// known one: nothing can make them one type.
-    // CR claude for claude: [bug/medium] rigid_pair refuses only two distinct rigid
-    // cells beside no known member. With exactly one known member, singleton_holds
-    // passes and narrowing() hands that member to require_singleton / narrow_singleton,
-    // which add it as a conjunct to every open cell, rigid ones included. A declared
-    // variable in its own body check then absorbs a concrete type, against the rule
-    // that a rigid variable binds to nothing concrete. Example: `let g = 'a: Singleton
-    // |x: 'a| -> 'a x; let f = 'r: Number |x: 'r, b: bool| g(select b { true => x,
-    // false => 1 })`. The body is accepted and f's scheme silently becomes `'r: Number
-    // & i64`. As a result, `f(2.5, false)` is refused at the caller, and `f(3, false)`
-    // passes --check but its build refuses g's instance at `[i64, i64]`, so elaboration
-    // disagrees with the check. The analogue `h(x, 1)` with `h = 'a: Number |x: 'a, y:
-    // 'a| x` is correctly refused in the body. Fix: a rigid open member beside any
-    // known member cannot be made one type, so refuse it here (known >= 1 with any
-    // rigid open member, or two distinct rigid with none). Then singleton_holds fails
-    // and narrow_singleton bails, and a rigid cell never takes a concrete member as a
-    // conjunct. probe: design/review-2026-10-12/repro/t-tvar-02.sh (t-tvar-02)
-    fn rigid_pair(&self) -> bool {
+    /// Whether a rigid open member cannot be made one type with the
+    /// rest: beside a known member, or beside another rigid cell.
+    fn rigid_apart(&self) -> bool {
         let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
-        self.known == 0
-            && rigid.next().is_some_and(|a| rigid.any(|b| b.cell_addr() != a.cell_addr()))
+        match rigid.next() {
+            None => false,
+            Some(_) if self.known > 0 => true,
+            Some(a) => rigid.any(|b| b.cell_addr() != a.cell_addr()),
+        }
     }
 
     /// Beside no known member, the open members must be one type: merge

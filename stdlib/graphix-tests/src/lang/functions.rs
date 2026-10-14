@@ -2933,3 +2933,15 @@ run!(
     refused("cannot compute 'b: unbound within Number + i64"),
     "/test.gx" => "let f = 'b: Number |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| -> 'b y + 1; let result = 0"
 ; FuseExpect::None);
+
+// A declared variable beside a concrete member cannot be made one type:
+// the body is refused, not the variable narrowed to the member.
+run!(
+    rigid_member_beside_a_known_one_is_refused,
+    refused("does not contain [i64, 'r: unbound within Number]"),
+    "/test.gx" => r#"
+        let g = 'a: Singleton |x: 'a| -> 'a x;
+        let f = 'r: Number |x: 'r, b: bool| g(select b { true => x, false => 1 });
+        let result = f(3, false)
+    "#
+; FuseExpect::None);
