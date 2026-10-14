@@ -442,6 +442,10 @@ async fn resolve_from_files(
     // the scope's parts before the name here, which leaves root scope unchanged, or
     // chain a VFS body's submodules to VFS resolvers only. Add the fixture without
     // /m/x.gx as a pin that this is refused. (t-format-resolver-04)
+    // 2026-10-14 claude: joining the scope here would also move a file body's own
+    // submodules: their prepended FilesResolver is already rooted in the module's
+    // directory, so `m/x` would read base/m/m/x.gx. The VFS-only chaining is the fix
+    // that holds.
     let rel = Path::parts(&name).collect::<Vec<_>>().join("/");
     let mut found: SmallVec<[(PathBuf, Option<ArcStr>, PathBuf, Option<ArcStr>); 2]> =
         SmallVec::new();
