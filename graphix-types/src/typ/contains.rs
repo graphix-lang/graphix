@@ -289,62 +289,156 @@ fn commit_cell_constraints(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    // CR claude for claude: [bug/high] Only an `exact` conjunct is committed here. One
-    // that holds a union (`'a: Array<[i64, null]>`) or comes from a body (`let f = |i|
-    // a[i]$`) is only probed by cell_constraints_ok, which admits the open `'y` free,
-    // and then it is dropped. So in `let g = |y| f([y])` the `'y` generalizes
-    // unbounded. `--check` accepts `g("hello")`, the build refuses the instance of f,
-    // and graphix-fuzz reports "the check accepted what the build refused". Through a
-    // dynamic call (`let hs: Array<fn(y: string) -> i64> = [g]; hs[0]$("hello")`) the
-    // run silently produces nothing. Fix: pass a non-exact conjunct's parts down as
-    // cell constraints on the open cells they meet (`'y: [i64, null]`), not as a
-    // binding to the whole union. That way inferred conjuncts reach the cells too. Pin
-    // a union-bearing bound and the inferred form beside the `Array<i64>` pin. probe:
-    // design/review-2026-10-12/repro/x-fix-types-01.gx, x-fix-types-01b.gx
-    // (x-fix-types-01)
     for c in tv.cell_constraints().iter() {
         let predicate = c.is_predicate();
-        // CR claude for claude: [bug/medium] A conjunct that is not exact is dropped
-        // here. That includes Int, Number and any other primitive set, and any
-        // structural type with a union inside. The probe in cell_constraints_ok has
-        // already accepted the open cells inside `t` without binding them, so those
-        // cells never receive the conjunct. In `let f = |i| a[i]$; let g = |b, k|
-        // f(select b { true => 1, false => k })`, f's Int is checked against [i64, 'k],
-        // 'k stays free, and g checks as fn(b: bool, k: 'k) -> i64. `g(false, "s")`
-        // then passes --check and the LSP, and elaboration refuses it
-        // (GRAPHIX_ELAB_AUDIT reports it). Behind a dynamic call (x-rerun-5-02-dyn.gx),
-        // the run-time bind fails and the value is silently never produced. The written
-        // bound `'a: Int |i: 'a|` behaves the same way. Fix: when a conjunct that is
-        // not exact holds `t`, narrow each open cell that `t` places directly (a union
-        // member, or `t` itself) by that conjunct (TVar::narrow_cell), the way exact
-        // conjuncts are committed. Add must-reject pins for the static and dynamic
-        // forms. This is the inferred-conjunct form of t-contains-08, same as
-        // x-fix-types-01b. probe: design/review-2026-10-12/repro/x-rerun-5-03.gx
-        // (x-rerun-5-03)
-        if !predicate
-            && !c.is_trait_ref(env)
-            // CR claude for claude: [bug/medium] A conjunct that holds a union anywhere
-            // is not `exact`, so this skips the whole conjunct, its exact parts
-            // included. With the bound `'a: fn(x: i64, y: [i64, string]) -> i64`,
-            // binding 'a to an unannotated lambda never gives the lambda's x the type
-            // i64. The probe in `cell_constraints_ok` admits the open param cells
-            // freely, and once the lambda's body binds x := string nothing checks the
-            // conjunct again. Effects: the check accepts `f(|x, y| str::len(x))`, and
-            // the build then refuses it in `InstanceTypes::new` ("an instance at .. of
-            // a definition typed .."). It also refuses the well-typed `f(|x, y| 0)`,
-            // whose params settle to bottom. Without the union the check refuses
-            // correctly. Fix: commit the exact parts of the conjunct (a function's
-            // argument and return positions that hold no union), or check the conjunct
-            // again at the statement's settle. InstanceTypes is right to refuse and
-            // should not be loosened. probe:
-            // design/review-2026-10-12/repro/t-fntyp-05.gx (t-fntyp-05)
-            && exact(c)
-            && !c.contains_int(flags, env, hist, t)?
-        {
+        if predicate || c.is_trait_ref(env) {
+            continue;
+        }
+        let held = match exact(c) {
+            true => c.contains_int(flags, env, hist, t)?,
+            false => commit_parts(tv, flags, env, hist, c, t)?,
+        };
+        if !held {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// Pass the parts of a conjunct `c` that is not exact down to the open
+/// cells of `t` they meet: a cell in a covariant position is narrowed by
+/// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
+/// ⊇ [i64, 'k]` gives `'k: Int`), an exact part is committed as an exact
+/// conjunct is, and a function's argument takes the conjunct's argument,
+/// the least it must accept. A probe accepted `t` already; what the walk
+/// can't line up it leaves.
+fn commit_parts(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    c: &Type,
+    t: &Type,
+) -> Result<bool> {
+    ensure_sufficient(|| {
+        if exact(c) {
+            return c.contains_int(flags, env, hist, t);
+        }
+        let all = |pairs: &mut dyn Iterator<Item = (&Type, &Type)>,
+                   hist: &mut ContainsHist|
+         -> Result<bool> {
+            for (c, t) in pairs {
+                if !commit_parts(tv, flags, env, hist, c, t)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        match (c, t) {
+            (Type::Any, _) => Ok(true),
+            (_, Type::TVar(t)) => match t.open_cell() {
+                Some(cell) if cell.cell_addr() != tv.cell_addr() => {
+                    cell.narrow_cell(env, c.clone())?;
+                    Ok(true)
+                }
+                Some(_) => Ok(true),
+                None => match t.binding() {
+                    Some(b) => commit_parts(tv, flags, env, hist, c, &b),
+                    None => Ok(true),
+                },
+            },
+            (Type::Ref(_), _) => match c.lookup_ref(env) {
+                Ok(c) => commit_parts(tv, flags, env, hist, &c, t),
+                Err(_) => Ok(true),
+            },
+            (_, Type::Set(ts)) => all(&mut ts.iter().map(|t| (c, t)), hist),
+            (Type::Set(cs), t) if structured(t) && cs.iter().all(structured_or_prim) => {
+                let mut same = cs.iter().filter(|c| same_head(c, t));
+                match (same.next(), same.next()) {
+                    (Some(c), None) => commit_parts(tv, flags, env, hist, c, t),
+                    _ => Ok(true),
+                }
+            }
+            (Type::Array(c), Type::Array(t))
+            | (Type::List(c), Type::List(t))
+            | (Type::Error(c), Type::Error(t))
+            | (Type::ByRef(Mutability::Shared, c), Type::ByRef(Mutability::Shared, t)) => {
+                commit_parts(tv, flags, env, hist, c, t)
+            }
+            (Type::Map { value: c, .. }, Type::Map { value: t, .. }) => {
+                commit_parts(tv, flags, env, hist, c, t)
+            }
+            (Type::Tuple(cs), Type::Tuple(ts)) if cs.len() == ts.len() => {
+                all(&mut cs.iter().zip(ts.iter()), hist)
+            }
+            (Type::Variant(x, cs, _), Type::Variant(y, ts, _))
+                if x == y && cs.len() == ts.len() =>
+            {
+                all(&mut cs.iter().zip(ts.iter()), hist)
+            }
+            (Type::Struct(cs), Type::Struct(ts))
+                if cs.len() == ts.len()
+                    && cs.iter().zip(ts.iter()).all(|(c, t)| c.0 == t.0) =>
+            {
+                all(&mut cs.iter().zip(ts.iter()).map(|(c, t)| (&c.1, &t.1)), hist)
+            }
+            (Type::Fn(cf), Type::Fn(tf))
+                if cf.args.len() == tf.args.len()
+                    && cf
+                        .args
+                        .iter()
+                        .zip(tf.args.iter())
+                        .all(|(c, t)| c.name() == t.name()) =>
+            {
+                for (ca, ta) in cf.args.iter().zip(tf.args.iter()) {
+                    if !ta.typ.contains_int(flags, env, hist, &ca.typ)? {
+                        return Ok(false);
+                    }
+                }
+                commit_parts(tv, flags, env, hist, &cf.rtype, &tf.rtype)
+            }
+            _ => Ok(true),
+        }
+    })
+}
+
+/// Whether `t` is built by a constructor with parts.
+fn structured(t: &Type) -> bool {
+    match t {
+        Type::Variant(_, ps, _) => !ps.is_empty(),
+        Type::Array(_)
+        | Type::List(_)
+        | Type::Tuple(_)
+        | Type::Struct(_)
+        | Type::Map { .. }
+        | Type::Error(_)
+        | Type::ByRef(..)
+        | Type::Fn(_) => true,
+        _ => false,
+    }
+}
+
+/// Whether a union member's head is known without expanding it, and
+/// holds no structured value unless it is structured.
+fn structured_or_prim(t: &Type) -> bool {
+    match t {
+        Type::Primitive(p) => {
+            !p.intersects(Typ::Array | Typ::Map | Typ::Error | Typ::Abstract)
+        }
+        t => structured(t) || matches!(t, Type::Variant(..)),
+    }
+}
+
+/// Whether `c` and `t` are applications of one constructor.
+fn same_head(c: &Type, t: &Type) -> bool {
+    match (c, t) {
+        (Type::Variant(x, xs, _), Type::Variant(y, ys, _)) => {
+            x == y && xs.len() == ys.len()
+        }
+        (Type::Tuple(xs), Type::Tuple(ys)) => xs.len() == ys.len(),
+        (Type::ByRef(m, _), Type::ByRef(n, _)) => m == n,
+        _ => mem::discriminant(c) == mem::discriminant(t),
+    }
 }
 
 /// True iff binding `t` into the cell would satisfy every conjunct of

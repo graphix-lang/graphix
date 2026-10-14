@@ -2739,3 +2739,54 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)))
 );
+
+// A conjunct that is not exact passes its parts down to the open cells it
+// meets, so the check refuses what the build would: a union-bearing bound,
+// an inferred Int, and a function bound's argument.
+run!(union_bound_reaches_open_cell, r#"{
+    let f = 'a: Array<[i64, null]> |x: 'a| -> i64 x[0]$$;
+    let g = |y| f([y]);
+    g("hello")
+}"#, refused("[i64, null] does not contain string"); FuseExpect::None);
+
+run!(
+    union_bound_open_cell_accepts,
+    r#"{
+    let f = 'a: Array<[i64, null]> |x: 'a| -> i64 x[0]$$;
+    let g = |y| f([y]);
+    g(i64:5)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(5)))
+);
+
+run!(inferred_int_reaches_open_cell, r#"{
+    let a = [10, 20, 30];
+    let f = |i| a[i]$;
+    let g = |b, k| f(select b { true => 1, false => k });
+    g(false, "s")
+}"#, refused("Int does not contain string"); FuseExpect::None);
+
+run!(
+    inferred_int_open_cell_accepts,
+    r#"{
+    let a = [10, 20, 30];
+    let f = |i| a[i]$;
+    let g = |b, k| f(select b { true => 1, false => k });
+    g(false, 2)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(30)))
+);
+
+run!(fn_bound_commits_argument, r#"{
+    let f = 'a: fn(x: i64, y: [i64, string]) -> i64 |g: 'a| 0;
+    f(|x, y| str::len(x))
+}"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(
+    fn_bound_unused_arguments_build,
+    r#"{
+    let f = 'a: fn(x: i64, y: [i64, string]) -> i64 |g: 'a| 0;
+    f(|x, y| 0)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
+);
