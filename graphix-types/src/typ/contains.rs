@@ -1,5 +1,5 @@
 use crate::{
-    PrintFlag,
+    PrintFlag, SourcePosition,
     dbgenv::{graphix_dbg_bind, graphix_dbg_cycle_bt},
     env::{Env, ImplDef},
     expr::ModPath,
@@ -14,6 +14,7 @@ use crate::{
 };
 use ahash::AHashMap;
 use anyhow::Result;
+use compact_str::format_compact;
 use enumflags2::{BitFlags, bitflags};
 use netidx_value::Typ;
 use nohash::{IntMap, IntSet};
@@ -735,20 +736,14 @@ fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
 pub struct TypeMismatch {
     expected: Type,
     actual: Type,
+    /// A name the two sides write at one place for two definitions, and
+    /// where each is written: taken while the definitions are in scope.
+    apart: Option<(ModPath, SourcePosition, SourcePosition)>,
 }
 
 impl std::fmt::Display for TypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-            // CR claude for claude: [readability/low] When the two sides are distinct
-            // typedefs with one written name (a block-local `type E` in each of two
-            // blocks), this prints 'type mismatch Error<ErrChain<E>> does not contain
-            // Error<ErrChain<E>>', which reads as a contradiction, and nothing tells
-            // the user that the two E's are different definitions. When the rendered
-            // sides are textually equal, render again with each Ref qualified by its
-            // definition (its scope or defining position), or expanded one level.
-            // probe: design/review-2026-10-12/repro/x-rerun-7-07-same-name-diag.gx
-            // (x-rerun-7-07)
             if let Some((passed, takes)) =
                 positional_arity(&self.expected).zip(positional_arity(&self.actual))
                 && passed != takes
@@ -762,9 +757,60 @@ impl std::fmt::Display for TypeMismatch {
                     s(passed)
                 )?;
             }
-            write!(f, "type mismatch {} does not contain {}", self.expected, self.actual)
+            let (expected, actual) = (
+                format_compact!("{}", self.expected),
+                format_compact!("{}", self.actual),
+            );
+            write!(f, "type mismatch {expected} does not contain {actual}")?;
+            // sides that print alike name two definitions of one name
+            if expected == actual
+                && let Some((name, p0, p1)) = &self.apart
+            {
+                write!(
+                    f,
+                    ": the two {name} are different definitions, at {p0} and {p1}"
+                )?;
+            }
+            Ok(())
         })
     }
+}
+
+/// The first two references, at one place in `t0` and `t1`, that write one
+/// name and resolve to different definitions: the name and where each
+/// definition is written.
+fn same_name_apart(
+    t0: &Type,
+    t1: &Type,
+) -> Option<(ModPath, SourcePosition, SourcePosition)> {
+    ensure_sufficient(|| match (t0, t1) {
+        (Type::TVar(tv), _) | (_, Type::TVar(tv)) => {
+            let b = tv.binding()?;
+            match t0 {
+                Type::TVar(_) => same_name_apart(&b, t1),
+                _ => same_name_apart(t0, &b),
+            }
+        }
+        (Type::Ref(r0), Type::Ref(r1)) if r0.name == r1.name => {
+            match (r0.resolved(), r1.resolved()) {
+                (Some(d0), Some(d1)) if r0.def_key() != r1.def_key() => {
+                    Some((r0.name.clone(), d0.pos(), d1.pos()))
+                }
+                _ => r0
+                    .params
+                    .iter()
+                    .zip(r1.params.iter())
+                    .find_map(|(a, b)| same_name_apart(a, b)),
+            }
+        }
+        _ => {
+            let mut c0: LPooled<Vec<Type>> = LPooled::take();
+            let mut c1: LPooled<Vec<Type>> = LPooled::take();
+            t0.for_each_child(&mut |c| c0.push(c.clone()));
+            t1.for_each_child(&mut |c| c1.push(c.clone()));
+            c0.iter().zip(c1.iter()).find_map(|(a, b)| same_name_apart(a, b))
+        }
+    })
 }
 
 impl std::error::Error for TypeMismatch {}
@@ -862,7 +908,11 @@ impl Type {
         if let Some(e) = self.trait_refusal(env, t) {
             return e;
         }
-        anyhow::Error::new(TypeMismatch { expected: self.clone(), actual: t.clone() })
+        anyhow::Error::new(TypeMismatch {
+            expected: self.clone(),
+            actual: t.clone(),
+            apart: same_name_apart(self, t),
+        })
     }
 
     /// An open cell bounded by a trait refuses a type with a member that

@@ -1134,18 +1134,6 @@ impl FnType {
             bail!("the signature's and the implementation's labeled arguments differ")
         }
         for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
-            // CR claude for claude: [readability/low] This message formats FnArgKind
-            // with Debug, so a user reads `signature has Labeled { name: "a",
-            // has_default: false }, implementation has Labeled { name: "a",
-            // has_default: true }`. Give FnArgKind a Display in Graphix syntax (`#a` vs
-            // `?#a`) and say what differs (the default, or positional vs labeled). A
-            // related problem: when a contains refusal's two sides print identically,
-            // as with two block-scoped typedefs both named P in
-            // design/review-2026-10-05/repro/t-typ-mod-06.gx ('Error<ErrChain<P<i64,
-            // string>>> does not contain Error<ErrChain<P<i64, string>>>'), the message
-            // should add each side's expansion or defining scope. (x-fix-types-14)
-            // 2026-10-14 claude: the kinds print in Graphix syntax and a default's
-            // difference is named; the identically printed sides stand (x-rerun-7-07).
             if sig_arg.kind != impl_arg.kind {
                 use FnArgKind::Labeled;
                 match (&sig_arg.kind, &impl_arg.kind) {

@@ -3101,3 +3101,12 @@ run!(
         let result = array::fold(array::map(fs, |h| h((i64:1, true))), 0, |a, b| a + b)
     "#
 );
+
+// Two definitions of one name print alike: the refusal says which is which.
+run!(
+    same_name_definitions_are_told_apart,
+    refused("the two E are different definitions, at line: 2, column: 16 and line: 1, column: 16"),
+    "/test.gx" => r#"let f = { type E = `A(string); |x: i64| -> i64 throws Error<ErrChain<E>> select x { 0 => error(`A("one"))?, n => n } };
+let g = { type E = `A(i64); |x: i64| -> i64 throws Error<ErrChain<E>> f(x) };
+let result = { catch(e) println("[e]"); g(0) }"#
+; FuseExpect::None);
