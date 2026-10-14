@@ -674,24 +674,9 @@ impl Env {
         message: impl fmt::Display,
     ) {
         match self.ide.sink() {
-            // CR claude for claude: [readability/low] The position is printed after the
-            // Origin's Display, and that Display ends with 'included from file
-            // <includer>'. For a warning in a module, the line and column read as a
-            // place in the includer: 'in file a.gx / included from file main.gx at
-            // line: 1, column: 9'. Errors are formatted position first and then the
-            // file (ParserContext's Display). Format warnings the same way, for example
-            // 'WARNING at {pos} in {ori}: {message}', or reuse ParserContext, so the
-            // two read alike. Shares the probe of t-env-02. (t-env-03)
-            // CR claude for claude: [bug/low] Without an IDE sink a warning goes
-            // straight to stderr from whichever compile task raises it. Sibling module
-            // checks run as parallel tasks, so their warnings (Qop's 'will not be
-            // caught', for example) print in completion order, which changes from run
-            // to run. The sink path stays in program order because IdeMode::fork gives
-            // each task its own buffer and IdeMode::join appends them in join order.
-            // Fix: buffer warnings per task even when there is no sink (always fork a
-            // private warning buffer), and print them at join or after the check.
-            // probe: design/review-2026-10-12/repro/t-env-02.gx (t-env-02)
-            None => eprintln!("WARNING: {ori} at {pos} {message}"),
+            None => self
+                .ide
+                .print_warning(format_compact!("WARNING at {pos} {ori}: {message}")),
             Some(ide) => ide.lock().warnings.push(Warning {
                 pos,
                 end,

@@ -135,6 +135,9 @@ pub enum IdeMode {
     /// is `Some` during a check, and every compile within it drains into
     /// the one buffer the clones share.
     Lsp(Option<Arc<Mutex<Ide>>>),
+    /// A compile task with no sink: its warnings wait here and print when
+    /// it joins, so they come out in program order.
+    Warnings(Arc<Mutex<Vec<CompactString>>>),
 }
 
 impl IdeMode {
@@ -147,20 +150,40 @@ impl IdeMode {
     pub(crate) fn fork(&self) -> Self {
         match self {
             Self::Lsp(Some(_)) => Self::Lsp(Some(Arc::new(Mutex::new(Ide::new())))),
+            Self::Off | Self::Warnings(_) => {
+                Self::Warnings(Arc::new(Mutex::new(Vec::new())))
+            }
             mode => mode.clone(),
         }
     }
 
     pub(crate) fn join(&self, fork: Self) {
-        if let (Some(sink), Self::Lsp(Some(task))) = (self.sink(), fork) {
-            sink.lock().append(&mut task.lock())
+        match (self, fork) {
+            (Self::Lsp(Some(sink)), Self::Lsp(Some(task))) => {
+                sink.lock().append(&mut task.lock())
+            }
+            (Self::Warnings(parent), Self::Warnings(task)) => {
+                parent.lock().extend(task.lock().drain(..))
+            }
+            (Self::Off, Self::Warnings(task)) => {
+                task.lock().drain(..).for_each(|w| eprintln!("{w}"))
+            }
+            _ => (),
+        }
+    }
+
+    /// Print a warning now, or hold it for the task's join.
+    pub(crate) fn print_warning(&self, warning: CompactString) {
+        match self {
+            Self::Warnings(buf) => buf.lock().push(warning),
+            _ => eprintln!("{warning}"),
         }
     }
 
     pub fn sink(&self) -> Option<&Arc<Mutex<Ide>>> {
         match self {
             Self::Lsp(sink) => sink.as_ref(),
-            Self::Off => None,
+            Self::Off | Self::Warnings(_) => None,
         }
     }
 }
