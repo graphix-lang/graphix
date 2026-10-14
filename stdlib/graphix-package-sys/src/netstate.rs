@@ -30,7 +30,10 @@ use std::{
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
 };
-use tokio::{sync::oneshot, task, time};
+use tokio::{
+    sync::{Notify, oneshot},
+    task, time,
+};
 
 graphix_compiler::dbg_flag!(rpc_dbg, "GXDBG_RPC");
 
@@ -249,15 +252,20 @@ struct Inner {
     netidx_updates_tx: mpsc::Sender<GPooled<Vec<(SubId, NEvent)>>>,
     writes_tx: mpsc::Sender<GPooled<Vec<WriteRequest>>>,
     rpcs_tx: mpsc::Sender<BindId>,
-    /// The flusher's too: it holds this and not the Inner, so dropping
-    /// the NetState closes `flush_tx` and the tasks end.
+    /// The flusher holds this buffer without retaining the Inner.
     pending_publish_batch: Arc<Mutex<Option<UpdateBatch>>>,
-    flush_tx: mpsc::UnboundedSender<()>,
+    flush: Arc<Notify>,
+    flusher: task::JoinHandle<()>,
     // rpc client procs, GC'd on use
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
     // per-list-builtin resolver change trackers
     change_trackers: Mutex<IntMap<BindId, Arc<tokio::sync::Mutex<ChangeTracker>>>>,
-    publish_timeout: Option<Duration>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.flusher.abort();
+    }
 }
 
 /// The libstate entry. Clone-cheap; one per ExecCtx.
@@ -294,24 +302,41 @@ impl NetState {
         let (updates_tx, mut updates_rx) = mpsc::channel(100);
         let (writes_tx, mut writes_rx) = mpsc::channel(100);
         let (rpcs_tx, mut rpcs_rx) = mpsc::channel(100);
-        let (flush_tx, mut flush_rx) = mpsc::unbounded();
         let routes: Arc<Mutex<Routes>> = Arc::default();
         // the graph-facing delivery channels
         let (mut var_tx, var_rx) = mpsc::channel(100);
         let (mut custom_tx, custom_rx) = mpsc::channel(100);
         rt.watch_var(var_rx);
         rt.watch(custom_rx);
+        let pending_publish_batch: Arc<Mutex<Option<UpdateBatch>>> = Arc::default();
+        let flush = Arc::new(Notify::new());
+        let flusher = {
+            let pending = pending_publish_batch.clone();
+            let flush = flush.clone();
+            let timeout = timeouts.publish;
+            task::spawn(async move {
+                loop {
+                    flush.notified().await;
+                    let batch = pending.lock().take();
+                    if let Some(batch) = batch
+                        && batch.len() > 0
+                    {
+                        batch.commit(timeout).await;
+                    }
+                }
+            })
+        };
         let st = NetState(Arc::new(Inner {
             handles,
             routes: routes.clone(),
             netidx_updates_tx: updates_tx,
             writes_tx,
             rpcs_tx,
-            pending_publish_batch: Arc::default(),
-            flush_tx,
+            pending_publish_batch,
+            flush,
+            flusher,
             rpc_clients: Mutex::new(Vec::new()),
             change_trackers: Mutex::new(IntMap::default()),
-            publish_timeout: timeouts.publish,
         }));
         // PUMP: netidx events -> graph events. Subscription updates route
         // SubId -> the subscribing builtin's BindId; writes route the
@@ -385,22 +410,6 @@ impl NetState {
                                 }
                             }
                         },
-                    }
-                }
-            });
-        }
-        // FLUSHER: commit the publish batch when pinged, coalescing
-        // pings that arrive while a commit is in flight.
-        {
-            let pending = st.0.pending_publish_batch.clone();
-            let timeout = st.0.publish_timeout;
-            task::spawn(async move {
-                while let Some(()) = flush_rx.next().await {
-                    let batch = pending.lock().take();
-                    if let Some(batch) = batch
-                        && batch.len() > 0
-                    {
-                        batch.commit(timeout).await;
                     }
                 }
             });
@@ -598,14 +607,19 @@ impl NetState {
             };
             val.update(batch, value);
         }
-        // CR claude for claude: [perf/low] Every published value update pushes a ()
+        // XCR claude for claude: [perf/low] Every published value update pushes a ()
         // into an unbounded channel: one queued node per update. While a commit is
         // stalled (a slow subscriber, publish_timeout None), the queue grows with every
         // update, and the flusher then wakes once per stale ping. The flusher only
         // needs to know that a batch is pending. A tokio::sync::Notify (notify_one
         // keeps one permit) coalesces the pings, costs no allocation, and needs no
         // queue. (sys-net-08)
-        let _ = self.0.flush_tx.unbounded_send(());
+        // 2026-10-13 codex: Flush requests now use Notify, which retains one permit, and Inner
+        // owns/aborts the flusher task. dropping_state_stops_idle_flusher pins
+        // shutdown and fails when that abort is removed; all sys unit tests pass.
+        // The slow-subscriber queue-growth case and net_burst_in_order require
+        // sockets and remain unverified here; review must exercise live commits.
+        self.0.flush.notify_one();
     }
 
     pub(crate) fn unpublish(&self, val: Val) {
@@ -839,10 +853,27 @@ impl NetState {
 #[cfg(test)]
 mod test {
     use super::*;
+    use graphix_rt::{GXRt, NoExt};
 
     #[test]
     fn error_values_have_stable_context_text() {
         let error = anyhow!("inner").context("outer");
         assert_eq!(error_value(error), Value::error(literal!("outer: inner")));
+    }
+
+    #[tokio::test]
+    async fn dropping_state_stops_idle_flusher() {
+        let mut ctx = GXRt::<NoExt>::new_state().unwrap();
+        let state = NetState::get(&mut ctx.view());
+        let pending = Arc::downgrade(&state.0.pending_publish_batch);
+        drop(state);
+        drop(ctx);
+        time::timeout(Duration::from_secs(1), async {
+            while pending.upgrade().is_some() {
+                task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the flusher outlived its NetState");
     }
 }
