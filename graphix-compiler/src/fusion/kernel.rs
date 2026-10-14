@@ -38,6 +38,7 @@ use triomphe::Arc;
 
 /// The placeholder words of an absent composite input.
 static EMPTY_ARRAY: LazyLock<Value> = LazyLock::new(|| Value::Array(EMPTY_ARR.clone()));
+static EMPTY_STRING: Value = Value::String(arcstr::literal!(""));
 
 /// An `Update` node over a compiled kernel and its input feeders.
 pub struct FusedKernel<R: Rt, E: UserEvent> {
@@ -230,14 +231,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ParamKind::Array { .. }
                 | ParamKind::Tuple { .. }
                 | ParamKind::Struct { .. } => value_words(&EMPTY_ARRAY),
-                // CR claude for claude: [risk/low] These words come from a temporary
-                // Value that is dropped at the end of the statement, and the kernel
-                // reads them later. This is sound only because ArcStr::new() is
-                // arcstr's static empty literal. A reader has to know that to see it is
-                // not a use-after-free, and changing the placeholder to anything else
-                // would make it one. Take the words from a static, as the composite arm
-                // does with EMPTY_ARRAY: an EMPTY_STRING Value beside it. (f-kernel-08)
-                ParamKind::String => value_words(&Value::String(arcstr::ArcStr::new())),
+                ParamKind::String => value_words(&EMPTY_STRING),
                 ParamKind::Variant { .. }
                 | ParamKind::Nullable { .. }
                 | ParamKind::Value { .. } => value_words(&Value::Null),
