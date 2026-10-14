@@ -329,6 +329,17 @@ pub const MODULE_LAYOUTS: [(&str, &str); 2] = [(".gx", ".gxi"), ("/mod.gx", "/mo
 /// Where the submodules of the module at `path` (its implementation or
 /// its interface) live: `{stem}/` beside `{stem}.gx`, its own directory
 /// for `mod.gx`.
+/// [`submodule_base`] of a file, by path operations: any encoding, the
+/// platform's separators.
+pub fn file_submodule_base(path: &std::path::Path) -> PathBuf {
+    match path.file_stem() {
+        Some(stem) if stem == "mod" => {
+            path.parent().map_or_else(PathBuf::new, PathBuf::from)
+        }
+        _ => path.with_extension(""),
+    }
+}
+
 pub fn submodule_base(path: &str) -> &str {
     let stem =
         path.strip_suffix(".gxi").or_else(|| path.strip_suffix(".gx")).unwrap_or(path);
@@ -974,25 +985,7 @@ impl Expr {
                     // `foo.gx`, `<dir>/` for `foo/mod.gx`), by the module path
                     // for a VFS body, through the transport for a netidx one.
                     let prepend = match source {
-                        Some(Source::File(p)) => {
-                            // CR claude for claude: [bug/low] A File body whose path is
-                            // not UTF-8 returns Ok(None) here, so its `mod` children
-                            // stay unresolved. The compile then fails with 'external
-                            // modules are not allowed in this context', which names the
-                            // wrong cause. submodule_base also strips only a "/mod"
-                            // suffix, so on Windows a package root loaded by
-                            // RootFile::load (`...\graphix\mod.gx`, a native path)
-                            // would look for its submodules one directory too deep.
-                            // Compute a File body's base with Path operations: the
-                            // parent when file_stem is "mod", else with_extension("").
-                            // Keep the string submodule_base for netidx paths only, and
-                            // never return Ok(None) for a body that still holds
-                            // unresolved modules. probe:
-                            // design/review-2026-10-12/repro/t-format-resolver-non-utf8-dir.sh
-                            // (t-format-resolver-02)
-                            let Some(p) = p.to_str() else { return Ok(None) };
-                            Some(files(PathBuf::from(submodule_base(p))))
-                        }
+                        Some(Source::File(p)) => Some(files(file_submodule_base(p))),
                         Some(
                             Source::Vfs(_) | Source::Program(_) | Source::Unspecified,
                         ) => None,
@@ -1079,11 +1072,22 @@ impl<F: Future + Unpin> Future for Guarded<F> {
 }
 
 /// The sources on the path of module loads that led here, innermost
-/// first.
+/// first. A file is known by its canonical path, so a directory that
+/// links back into itself is a cycle; the names loaded stay as written.
 struct LoadChain {
     source: Source,
     name: Name,
     prev: Option<Arc<LoadChain>>,
+}
+
+/// `source` as a load cycle compares it: a file by its canonical path.
+fn chain_source(source: &Source) -> Source {
+    match source {
+        Source::File(p) => {
+            Source::File(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        }
+        s => s.clone(),
+    }
 }
 
 impl LoadChain {
@@ -1092,22 +1096,9 @@ impl LoadChain {
         source: &Source,
         name: &Name,
     ) -> Result<Arc<Self>> {
+        let source = &chain_source(source);
         let mut cur = chain.as_ref();
         while let Some(c) = cur {
-            // CR claude for claude: [dead/low] This comparison never matches. Every
-            // submodule's File or Netidx source is strictly deeper than its parent's
-            // (`<stem>/name.gx`), so no two entries on one chain are equal, and
-            // graphix-shell/tests/import_cycle.rs pins that two files naming each other
-            // are no cycle. The one real cycle, a directory symlink, gives different
-            // path strings, so the load recurses until the kernel reports 'Too many
-            // levels of symbolic links' at a 40-segment path. Delete LoadChain, since
-            // the filesystem's ELOOP already bounds depth. Alternatively, key File
-            // entries by canonical path so the symlink loop is reported as an import
-            // cycle. Either way, fix the comment above nested_module_of_its_own_name in
-            // stdlib/graphix-tests/src/lang/modules.rs, which calls import_cycle.rs a
-            // real cycle. probe:
-            // design/review-2026-10-12/repro/t-format-resolver-symlink-cycle.sh
-            // (t-format-resolver-03)
             if c.source == *source {
                 let mut names: SmallVec<[&ArcStr; 4]> = SmallVec::new();
                 let mut back = chain.as_ref();
@@ -1174,6 +1165,10 @@ mod test {
         assert_eq!(submodule_base("/d/m.gxi"), "/d/m");
         assert_eq!(submodule_base("/d/m/mod.gx"), "/d/m");
         assert_eq!(submodule_base("/d/m/mod.gxi"), "/d/m");
+        for p in ["/d/m.gx", "/d/m.gxi", "/d/m/mod.gx", "/d/m/mod.gxi"] {
+            let p = std::path::Path::new(p);
+            assert_eq!(file_submodule_base(p), std::path::Path::new("/d/m"), "{p:?}");
+        }
     }
 
     use super::*;
