@@ -1957,6 +1957,26 @@ fn parse_program(text: &str) -> String {
     format!("{:#}", parse(ori).unwrap_err())
 }
 
+// A missing separator is named only before something that could start an
+// item; a `;` inside a list is a list left open.
+#[test]
+fn separator_notes_only_where_an_item_follows() {
+    let note = |src: &str| {
+        let msg = parse_program(src);
+        msg.lines().find(|l| l.contains("note:")).map(|l| l.trim().to_string())
+    };
+    let sep = "a `,` separates this item from the one before";
+    assert!(note("let a = [1 2];\na").is_some_and(|n| n.ends_with(sep)));
+    assert!(note("f(a b)").is_some_and(|n| n.ends_with(sep)));
+    let semi = "a `;` separates this statement from the one before";
+    assert!(note("{ let x = 1 let y = 2; y }").is_some_and(|n| n.ends_with(semi)));
+    let open = "the list is not closed before this `;`";
+    assert!(note("[`A, `B;").is_some_and(|n| n.ends_with(open)));
+    assert!(note("let y = (x + 1;\ny").is_some_and(|n| n.ends_with(open)));
+    assert_eq!(note("let m = {\"a\": 1};\nm"), None);
+    assert_eq!(note("let f = |x: i64 -> i64 x;\nf"), None);
+}
+
 #[test]
 fn parse_errors_report_the_furthest_point() {
     // The error names the furthest point any branch reached, with the

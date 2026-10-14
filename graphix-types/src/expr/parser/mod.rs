@@ -618,37 +618,37 @@ where
     separator(',', "a `,` separates this item from the one before")
 }
 
-/// `sep` between two items. Where something other than a closing bracket
-/// follows an item instead, the reason names the missing separator, for a
-/// failure right there.
+/// `sep` between two items. Where what follows an item could start another
+/// one, the reason names the missing separator; where a list meets a `;`,
+/// it names the list left open; either for a failure right there.
 fn separator<I>(sep: char, why: &'static str) -> impl Parser<I, Output = char>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    let closes = |c: char| matches!(c, ')' | ']' | '}' | '>' | '|');
+    let starts_item = |c: char| {
+        c.is_alphanumeric()
+            || matches!(
+                c,
+                '_' | '"' | '\'' | '`' | '(' | '[' | '{' | '#' | '@' | '&' | '*' | '!'
+            )
+    };
+    let reason = move |c: char| match c {
+        ';' if sep == ',' => Some("the list is not closed before this `;`"),
+        c if starts_item(c) => Some(why),
+        _ => None,
+    };
     choice((
         attempt(spaces().with(token(sep))),
         attempt(
-            spaces().with((position(), look_ahead(satisfy(move |c| !closes(c))))).then(
-                move |(pos, _)| {
-                    // CR claude for claude: [readability/low] `separator` notes a
-                    // missing `,`/`;` whenever the next char is anything but `) ] } >
-                    // |`. That includes another separator or punctuation that points to
-                    // a different mistake, so the hint is often wrong. `let m = {"a":
-                    // 1};` gets the `;` note, `[`A, `B;` and `(x + 1;` get the `,` note
-                    // when the fix is the closing bracket, `|x: i64 -> i64 x` gets the
-                    // `,` note when the `|` is missing, and `mod a { let x = 1 }` gets
-                    // the `;` note. Note a missing separator only when the following
-                    // char could start an item (identifier, literal, opening bracket,
-                    // backtick, ...), not when it is `;`, `:`, `=`, `-` or another
-                    // separator. For a `;` inside a bracketed list, name the unclosed
-                    // opener instead. (x-errors-05)
+            spaces()
+                .with((position(), look_ahead(satisfy(move |c| reason(c).is_some()))))
+                .then(move |(pos, c)| {
+                    let why = reason(c).expect("satisfied");
                     grow::note_reason(pos, Some(1), CompactString::const_new(why));
                     satisfy(|_| false)
-                },
-            ),
+                }),
         ),
     ))
     .skip(spaces())
