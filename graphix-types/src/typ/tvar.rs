@@ -356,12 +356,14 @@ pub(super) fn lower(t: &Type, level: Level) {
 /// cell at the current level per cell a call copies
 /// ([`Level::copied_by`] the open gates), every other cell shared;
 /// `Scheme` is `Instantiate` whose fresh cells are generic, a
-/// reference's copy of the scheme it names.
+/// reference's copy of the scheme it names; `Generic` copies the generic
+/// cells alone, a stored scheme's, and shares every live one.
 #[derive(Clone, Copy)]
 pub(crate) enum Fresh<'a> {
     Copy,
     Instantiate(&'a IntSet<LambdaId>),
     Scheme(&'a IntSet<LambdaId>),
+    Generic,
 }
 
 /// The shared binding cell: aliased `TVar`s hold one `Arc` of this.
@@ -1279,7 +1281,12 @@ impl TVar {
             Fresh::Scheme(open) if self.level().copied_by(open) => {
                 TVar::empty_generic(self.name.clone())
             }
-            Fresh::Instantiate(_) | Fresh::Scheme(_) => return self.clone(),
+            Fresh::Generic if self.level().is_generic() => {
+                TVar::empty_named(self.name.clone())
+            }
+            Fresh::Instantiate(_) | Fresh::Scheme(_) | Fresh::Generic => {
+                return self.clone();
+            }
         };
         fresh.insert(addr, f.clone());
         for c in self.cell_constraints() {
@@ -1600,6 +1607,27 @@ impl Type {
             }
             Type::Fn(ft) => ft.collect_tvars(known),
             t => t.for_each_child(&mut |c| c.collect_tvars(known)),
+        })
+    }
+
+    /// [`Self::collect_tvars`] over positions alone: a nested signature's
+    /// cells by its own positions, never its conjuncts, so the walk is
+    /// linear in the type.
+    pub(crate) fn collect_position_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
+            }
+            Type::Fn(ft) => {
+                let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                ft.for_each_type(&mut |t| t.collect_position_tvars(&mut inner));
+                for (name, tv) in inner.drain() {
+                    if !ft.quantifiers.contains(&name) {
+                        known.entry(name).or_insert(tv);
+                    }
+                }
+            }
+            t => t.for_each_child(&mut |c| c.collect_position_tvars(known)),
         })
     }
 

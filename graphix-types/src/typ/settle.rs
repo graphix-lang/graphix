@@ -10,7 +10,7 @@ use crate::{
     typ::{
         FnType, TVar, Type,
         contains::{ContainsHist, INFINITE_TYPE_MSG},
-        tvar::{CellFact, would_cycle_inner},
+        tvar::{CellFact, Fresh, would_cycle_inner},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -22,11 +22,11 @@ use smallvec::SmallVec;
 use std::fmt::Write;
 
 impl TVar {
-    /// The narrowest conjunct every other conjunct contains, as a
-    /// private copy (the store's type verbatim would alias its interior
-    /// cells into live inference). `Err(true)` when there is none,
-    /// `Err(false)` when no conjunct could be one (all traits or
-    /// self-referential). Bound and unconstrained cells have none.
+    /// The narrowest conjunct every other conjunct contains, its generic
+    /// cells copied (a stored scheme's cells must not join live inference)
+    /// and its live cells shared, so it keeps its relations. `Err(true)`
+    /// when there is none, `Err(false)` when no conjunct could be one (all
+    /// traits or self-referential). Bound and unconstrained cells have none.
     pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
         let cons = {
             let cell = self.cell();
@@ -51,29 +51,9 @@ impl TVar {
                     continue 'cand;
                 }
             }
-            // CR claude for claude: [bug/medium] `reset_tvars` is `Fresh::Copy`, which
-            // freshens every cell under the conjunct. That includes cells it shares
-            // with live inference, such as a call's instance of 'a that is linked to
-            // the caller's parameter. So `'b: Array<'a>` settles to `Array<'fresh>` and
-            // loses its relation to 'a. Both users of the witness are affected: the
-            // eager rtype-only settle in `CallSite::typecheck0` and the "t0 wider than
-            // the cell's witness" bind in contains. Example: `let g = |y| { let k =
-            // f(y); let z: i64 = y; k }` over `f = 'b: Array<'a> |x: 'a| -> fn(v: 'b)
-            // -> 'a ..` gives g a free `Array<'fresh>`. `h(["a"])` then passes
-            // `--check` and the LSP, but the build refuses it with the internal "an
-            // instance at .. of a definition typed .." error, and graphix-fuzz reports
-            // a check/build DIVERGENCE. Fix: freshen only what a call would copy, that
-            // is, cells under `Level::copied_by` (generic, or owned by a closed gate),
-            // and share every live cell. For example, have the caller pass the
-            // `Fresh::Instantiate` open set. Probe:
-            // design/review-2026-10-12/repro/t-tvar-03.sh. (t-tvar-03)
-            // 2026-10-13 claude: the copy also makes a chain of bounds exponential: a
-            // call of `'a0: Array<'a1>, .., 'aN-1: Array<'aN> |x: ('a0, .., 'aN)| x` on
-            // `never()` settles each cell to a fresh copy of the rest of the chain, and
-            // the copies settle in turn. 20 links check in 2.6 s and each one more
-            // doubles it; 24 pass 4 GB. deep_nesting's `chainbounds` shape (10000 links)
-            // pins it.
-            return Ok(Ok(c.reset_tvars()));
+            return Ok(Ok(c
+                .reset_tvars_int(&mut LPooled::take(), Fresh::Generic)
+                .unwrap_or_else(|| c.clone())));
         }
         Ok(Err(candidates))
     }

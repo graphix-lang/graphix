@@ -2945,3 +2945,21 @@ run!(
         let result = f(3, false)
     "#
 ; FuseExpect::None);
+
+// A settled cell keeps its relation to the live cells its bound names:
+// 'b settles to Array<'a> with 'a the caller's i64, so h takes no array
+// of strings, at the check as at the build.
+run!(
+    a_settled_bound_keeps_its_live_cells,
+    refused("Array<i64> does not contain Array<string>"),
+    "/test.gx" => r#"
+        let f = 'b: Array<'a> |x: 'a| -> fn(v: 'b) -> 'a |v: 'b| select v { [h, ..] => h, _ => x };
+        let g = |y| {
+          let k = f(y);
+          let z: i64 = y;
+          k
+        };
+        let h = g(1);
+        let result = h(["a", "b"])
+    "#
+; FuseExpect::None);
