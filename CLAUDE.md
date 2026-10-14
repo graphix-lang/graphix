@@ -256,7 +256,8 @@ for struct literal fields, `Expr::str_form` for a string's delimiters,
 a trait method.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
-program-visible values (a cast error, a null error); `WrittenAt` and
+program-visible values (a cast error, a null error), so comments print
+only under it; `WrittenAt` and
 `str_form` are not part of a session image (`Expr::pos` and comments
 are), and a type is shared by content, so whose written order it carries
 is incidental. A tree holding a comment,
