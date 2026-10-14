@@ -153,6 +153,10 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     // cases. Keep the base map at fork (an O(1) persistent clone), and debug-assert in
     // the slow path that the parent's entry for each touched key is still the base's,
     // so a conflicting write is reported instead of lost. (t-misc-04) (t-misc-04)
+    // 2026-10-14 claude: the fast path, the slow path, siblings, a fork of a fork,
+    // removes and an idle fork are tested (tracked::tests). The conflict check stands:
+    // it needs the base map kept at the fork and V: PartialEq, which not every value
+    // type here has.
     pub fn join(&mut self, fork: Self) {
         let Self { map, touched, generation, forked_at } = fork;
         if self.generation == forked_at {
@@ -311,5 +315,87 @@ impl<'a, K: Hash + Eq + Clone + Debug> IntoIterator for &'a TrackedSet<K> {
 
     fn into_iter(self) -> Self::IntoIter {
         (&self.set).into_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(kvs: &[(u32, u32)]) -> TrackedMap<u32, u32> {
+        let mut m = TrackedMap::default();
+        for (k, v) in kvs {
+            m.insert(*k, *v);
+        }
+        m
+    }
+
+    fn entries(m: &TrackedMap<u32, u32>) -> Vec<(u32, u32)> {
+        let mut v: Vec<_> = m.iter().map(|(k, v)| (*k, *v)).collect();
+        v.sort();
+        v
+    }
+
+    /// The parent unwritten since the fork takes the fork's whole map.
+    #[test]
+    fn join_into_an_unwritten_parent() {
+        let mut parent = map(&[(1, 1), (2, 2)]);
+        let mut fork = parent.fork();
+        fork.insert(3, 3);
+        fork.remove(&1);
+        parent.join(fork);
+        assert_eq!(entries(&parent), [(2, 2), (3, 3)]);
+    }
+
+    /// A parent written since the fork takes the fork's writes, removes
+    /// included, and keeps its own.
+    #[test]
+    fn join_into_a_written_parent() {
+        let mut parent = map(&[(1, 1), (2, 2)]);
+        let mut fork = parent.fork();
+        fork.insert(3, 3);
+        fork.remove(&1);
+        parent.insert(4, 4);
+        parent.join(fork);
+        assert_eq!(entries(&parent), [(2, 2), (3, 3), (4, 4)]);
+    }
+
+    /// Siblings forked together each bring back their own writes.
+    #[test]
+    fn join_siblings() {
+        let mut parent = map(&[(1, 1)]);
+        let mut a = parent.fork();
+        let mut b = parent.fork();
+        a.insert(2, 2);
+        b.insert(3, 3);
+        b.remove(&1);
+        parent.join(a);
+        parent.join(b);
+        assert_eq!(entries(&parent), [(2, 2), (3, 3)]);
+    }
+
+    /// A fork of a fork joins into its fork, which carries the writes on
+    /// to the parent as its own.
+    #[test]
+    fn join_a_fork_of_a_fork() {
+        let mut parent = map(&[(1, 1)]);
+        let mut outer = parent.fork();
+        let mut inner = outer.fork();
+        inner.insert(2, 2);
+        outer.insert(3, 3);
+        outer.join(inner);
+        parent.insert(4, 4);
+        parent.join(outer);
+        assert_eq!(entries(&parent), [(1, 1), (2, 2), (3, 3), (4, 4)]);
+    }
+
+    /// A fork that wrote nothing changes nothing.
+    #[test]
+    fn join_an_idle_fork() {
+        let mut parent = map(&[(1, 1)]);
+        let fork = parent.fork();
+        parent.insert(2, 2);
+        parent.join(fork);
+        assert_eq!(entries(&parent), [(1, 1), (2, 2)]);
     }
 }
