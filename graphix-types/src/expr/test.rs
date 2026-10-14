@@ -1648,20 +1648,12 @@ fn acc_strings<'a>(args: impl IntoIterator<Item = &'a Expr> + 'a) -> Arc<[Expr]>
     Arc::from_iter(v.drain(..))
 }
 
-// CR claude for claude: [test-gap/medium] check_type compares with Type's PartialEq.
-// Its TVar arm is TVar's binding equality, under which any two unbound cells are equal,
-// and every type variable the generator or the parser builds is unbound.
-// check_typedef's param comparison and FnType's constraint list compare the same way.
-// So no round trip can see a printer that renames, swaps or merges type variables: `|x:
-// 'a, y: 'b| -> 'a` printed as `|x: 'a, y: 'a| -> 'a`, or swapped typedef params, both
-// pass. The formatter's guard (format.rs Parsed::difference) uses the same derived Expr
-// equality, so it would not refuse that output either. Fix: compare types by name as
-// well, with a walk that checks TVar names and constraints, or by comparing the
-// canonical printed forms of the normalized types. Use it in check_type and
-// check_typedef. Add ("|x: 'a| x", "|x: 'b| x") and ("type T<'a> = 'a", "type T<'b> =
-// 'b") to check_sees_a_lost_element. (tests-expr-02)
+/// Types equal as values and as written: Type's equality calls any two
+/// open cells equal, so the names and bounds are compared by the
+/// canonical text.
 fn check_type(t0: &Type, t1: &Type) -> bool {
-    t0.normalize() == t1.normalize()
+    let (t0, t1) = (t0.normalize(), t1.normalize());
+    t0 == t1 && t0.to_string() == t1.to_string()
 }
 
 fn check_type_opt(t0: &Option<Type>, t1: &Option<Type>) -> bool {
@@ -1801,7 +1793,7 @@ fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
     (name0 == name1)
         && (p0.len() == p1.len()
             && p0.iter().zip(p1.iter()).all(|((t0, c0), (t1, c1))| {
-                t0 == t1
+                t0.name == t1.name
                     && match (c0.as_ref(), c1.as_ref()) {
                         (Some(c0), Some(c1)) => check_type(c0, c1),
                         (None, None) => true,
@@ -2837,6 +2829,9 @@ fn check_sees_a_lost_element() {
         ("i16:1", "1"),
         ("1e-300", "0.0"),
         ("-0.0", "0.0"),
+        ("|x: 'a| x", "|x: 'b| x"),
+        ("|x: 'a, y: 'b| -> 'a x", "|x: 'a, y: 'a| -> 'a x"),
+        ("type T<'a> = 'a", "type T<'b> = 'b"),
         ("decimal:1.00", "decimal:1.0"),
     ] {
         let (a, b) = (parse_one(a).unwrap(), parse_one(b).unwrap());
