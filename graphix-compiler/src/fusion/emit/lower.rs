@@ -18,8 +18,8 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use cranelift_codegen::{
     ir::{
-        AbiParam, Block, FuncRef, Function, InstBuilder, Signature, StackSlotData,
-        StackSlotKind, Value as ClifValue, types,
+        AbiParam, Block, FuncRef, Function, InstBuilder, Signature, StackSlot,
+        StackSlotData, StackSlotKind, Value as ClifValue, types,
     },
     isa::CallConv,
 };
@@ -584,11 +584,18 @@ pub(super) struct HelperRefs<'a> {
     ids: &'a HelperFuncIds,
     names: &'a RefCell<&'a mut Names>,
     refs: RefCell<BTreeMap<&'static str, FuncRef>>,
+    /// Pair arguments and results are dead after their call returns.
+    pair_slots: RefCell<LPooled<Vec<StackSlot>>>,
 }
 
 impl<'a> HelperRefs<'a> {
     pub(super) fn new(ids: &'a HelperFuncIds, names: &'a RefCell<&'a mut Names>) -> Self {
-        Self { ids, names, refs: RefCell::new(BTreeMap::new()) }
+        Self {
+            ids,
+            names,
+            refs: RefCell::new(BTreeMap::new()),
+            pair_slots: RefCell::new(LPooled::take()),
+        }
     }
 
     /// The helper's `FuncRef` in `func`, the body being built.
@@ -613,37 +620,19 @@ impl<'a> HelperRefs<'a> {
     ) -> Result<SmallVec<[ClifValue; 2]>> {
         let f = self.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))?;
         let shape = self.shape(name).expect("a registered helper has a shape");
-        // CR claude for claude: [perf/low] Every Pair parameter and every Pair return
-        // of every helper call creates a new 16-byte explicit stack slot. Cranelift
-        // never shares them, so a body's frame grows with each value-shaped helper call
-        // even though each slot is dead once its call returns. A recursive kernel pays
-        // this in every activation: probe
-        // design/review-2026-10-12/repro/f-scaffold-body-pair-slots.gx shows 38
-        // explicit slots in `f`, so the stack budget is reached sooner. Keep a
-        // per-function set of pair slots in `HelperRefs`, as many as the widest
-        // helper's pair params plus one for the return, and reuse them at every call.
-        // (f-scaffold-body-04)
-        // CR claude for claude: [bug/medium] Every pair argument and every pair return
-        // gets a fresh 16-byte ExplicitSlot at every call site. Cranelift never shares
-        // these slots, so a kernel's frame grows by about 64 bytes per decimal `+`, and
-        // a pure region has no size limit. isa_with does not set enable_probestack, and
-        // graphix_stack_check runs only at self-calls, so nothing checks the frame
-        // against the stack that is left. A 40000-op decimal body gets a frame of about
-        // 2.5 MB, larger than the 2 MB worker stack, and dies with "tokio-rt-worker has
-        // overflowed its stack" inside the JIT code under FusedKernel::update. The
-        // node-walk prints 80001.0. A larger frame can jump past the guard page without
-        // faulting on it. Fix: allocate one spill area per function body, sized to the
-        // largest pair-word count of any single call, and reuse it at every call, since
-        // the words are dead once the call returns. Also turn on stack probes
-        // (enable_probestack=true, probestack_strategy=inline) so that any frame that
-        // is still large faults on the guard page. probe:
-        // design/review-2026-10-12/repro/x-fix-fusion-02.sh (x-fix-fusion-02)
-        let slot = |b: &mut FunctionBuilder| {
-            b.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                16,
-                3,
-            ))
+        let mut slots = self.pair_slots.borrow_mut();
+        let mut next = 0;
+        let mut slot = |b: &mut FunctionBuilder| {
+            if next == slots.len() {
+                slots.push(b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    16,
+                    3,
+                )));
+            }
+            let slot = slots[next];
+            next += 1;
+            slot
         };
         let mut wire: SmallVec<[ClifValue; 8]> = SmallVec::new();
         let mut words = args.iter();
@@ -730,6 +719,36 @@ impl HelperFuncIds {
             shapes.insert(h.name, HelperShape { params: h.params, ret: h.ret });
         }
         Ok(Self { ids, arity, shapes })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cranelift_frontend::FunctionBuilderContext;
+
+    #[test]
+    fn helper_spill_space_is_bounded_by_one_call() -> Result<()> {
+        let mut names = Names::default();
+        let ids = HelperFuncIds::new(CallConv::SystemV, |_, sig| Ok(names.local(sig)))?;
+        let names = RefCell::new(&mut names);
+        let refs = HelperRefs::new(&ids, &names);
+        let mut func = Function::new();
+        let mut context = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut func, &mut context);
+        let entry = b.create_block();
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let disc = b.ins().iconst(types::I64, netidx_value::Typ::I64 as i64);
+        let payload = b.ins().iconst(types::I64, 1);
+        for _ in 0..1000 {
+            refs.call(&mut b, "graphix_value_add", &[disc, payload, disc, payload])?;
+        }
+        b.ins().return_(&[]);
+        b.finalize();
+        let bytes: u32 = func.sized_stack_slots.values().map(|s| s.size).sum();
+        assert!(bytes <= 48, "helper spill frame grew to {bytes} bytes");
+        Ok(())
     }
 }
 

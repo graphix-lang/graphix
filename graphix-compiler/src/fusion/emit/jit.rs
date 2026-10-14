@@ -132,6 +132,10 @@ fn isa_with(
         .context("set use_colocated_libcalls")?;
     // cranelift-jit requires PIC off.
     flag_builder.set("is_pic", "false").context("set is_pic")?;
+    flag_builder.set("enable_probestack", "true").context("set enable_probestack")?;
+    flag_builder
+        .set("probestack_strategy", "inline")
+        .context("set probestack_strategy")?;
     let isa_builder = cranelift_native::builder()
         .map_err(|e| anyhow!("cranelift_native::builder failed: {e}"))?;
     isa_builder.finish(settings::Flags::new(flag_builder)).context("isa_builder.finish")
