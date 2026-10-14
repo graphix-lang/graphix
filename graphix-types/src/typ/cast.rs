@@ -52,58 +52,70 @@ impl fmt::Display for CastFail {
 /// A cast level's result: `None` when the value already has the type.
 type Cast = std::result::Result<Option<Value>, CastFail>;
 
-/// The static source type at a cast position, with names, cells and
-/// applications looked through; `None` when unknown. A union decides
-/// only the kind of collection its array-shaped members all are (a list
-/// and an array share `Value::Array`): the member when it is one, else
-/// that kind over `Any`; a union holding both cannot be told apart.
-fn src_head(src: Option<&Type>, env: &Env) -> Option<Type> {
+/// The static source type of `v` at a cast position, with names, cells
+/// and applications looked through; `None` when unknown. Of a union,
+/// the member whose outer form `v` has, or the kind of collection all
+/// such members are (a list, an array, a tuple and a struct share
+/// `Value::Array`); `None` when they differ.
+fn src_head(src: Option<&Type>, env: &Env, v: &Value) -> Option<Type> {
     let mut cur = src?.clone();
     loop {
         cur = match &cur {
             Type::TVar(_) => cur.deref_cloned()?,
             Type::App(c, a) => Type::app_filled(c, a)?,
             Type::Ref(_) => cur.lookup_ref(env).ok()?,
-            // CR claude for claude: [bug/high] A union source picks its collection kind
-            // statically and ignores the value. Every member that is not an Array or
-            // List is also dropped here. Effect 1: a value from another member is read
-            // as the union's list or array. cast<List<i64>> of "abc" from [List<i64>,
-            // string] returns "abc" typed List<i64>, because the List arm iterates a
-            // non-spine as empty and returns Ok(None). A later exhaustive select then
-            // hits "no arm matches: a coverage hole". The same arm turns a null from
-            // [List<i64>, null] into [] under cast<Array<i64>>, where the null from Any
-            // is an InvalidCast. Effect 2: dropping tuple, struct, variant, map and
-            // error members loses a nested List's source. A [(List<string>, i64), null]
-            // then casts a list's cons cell as an array and stringifies its tail. Fix:
-            // resolve a union source per value. Take the head of the member the value
-            // inhabits (is_a, or a shallow shape test, with ambiguity between list and
-            // array still giving None), and never a member it does not inhabit. In the
-            // List arm, refuse a value that is not a spine instead of returning
-            // Ok(None). probe: design/review-2026-10-12/repro/t-cast-setops-06.gx
-            // (t-cast-setops-06)
             Type::Set(ms) => {
-                let heads: SmallVec<[Type; 4]> = ms
-                    .iter()
-                    .filter_map(|m| src_head(Some(m), env))
-                    .filter(|h| matches!(h, Type::Array(_) | Type::List(_)))
-                    .collect();
+                let mut heads: SmallVec<[Type; 4]> = SmallVec::new();
+                for m in ms.iter() {
+                    let h = src_head(Some(m), env, v)?;
+                    if has_form(&h, v) {
+                        heads.push(h)
+                    }
+                }
                 return match &heads[..] {
                     [one] => Some(one.clone()),
-                    [first, rest @ ..] => {
-                        let list = matches!(first, Type::List(_));
-                        rest.iter().all(|h| matches!(h, Type::List(_)) == list).then(
-                            || match list {
-                                true => Type::List(Arc::new(Type::Any)),
-                                false => Type::Array(Arc::new(Type::Any)),
-                            },
-                        )
+                    [_, ..] if heads.iter().all(|h| matches!(h, Type::Array(_))) => {
+                        Some(Type::Array(Arc::new(Type::Any)))
                     }
-                    [] => None,
+                    [_, ..] if heads.iter().all(|h| matches!(h, Type::List(_))) => {
+                        Some(Type::List(Arc::new(Type::Any)))
+                    }
+                    _ => None,
                 };
             }
             Type::Any | Type::Bottom | Type::Hole => return None,
             _ => return Some(cur),
         };
+    }
+}
+
+/// Whether `v` has the outer runtime form of the head `t`; true where
+/// the form says nothing.
+fn has_form(t: &Type, v: &Value) -> bool {
+    match (t, v) {
+        (Type::Array(_), Value::Array(_)) => true,
+        (Type::List(_), v) => list::is_list(v),
+        (Type::Tuple(ts), Value::Array(a)) => a.len() == ts.len(),
+        (Type::Struct(fs), Value::Array(a)) => a.len() == fs.len(),
+        (Type::Variant(tag, ps, _), Value::String(s)) => ps.is_empty() && s == tag,
+        (Type::Variant(tag, ps, _), Value::Array(a)) => {
+            a.len() == ps.len() + 1 && matches!(&a[0], Value::String(s) if s == tag)
+        }
+        (Type::Map { .. }, Value::Map(_))
+        | (Type::Error(_), Value::Error(_))
+        | (Type::Abstract { .. }, Value::Abstract(_)) => true,
+        (Type::Primitive(p), v) => p.contains(Typ::get(v)),
+        (
+            Type::Array(_)
+            | Type::Tuple(_)
+            | Type::Struct(_)
+            | Type::Variant(..)
+            | Type::Map { .. }
+            | Type::Error(_)
+            | Type::Abstract { .. },
+            _,
+        ) => false,
+        _ => true,
     }
 }
 
@@ -498,7 +510,7 @@ impl Type {
                 None => Ok(None),
             },
             Type::Error(e) => {
-                let src = src_head(src, env);
+                let src = src_head(src, env, v);
                 let src = match &src {
                     Some(Type::Error(s)) => Some(&**s),
                     _ => None,
@@ -535,8 +547,11 @@ impl Type {
             // static type says which one the value is, the shape only
             // when the source is unknown.
             Type::Array(et) => {
-                let src = src_head(src, env);
+                let src = src_head(src, env, v);
                 let from_list = matches!(&src, Some(Type::List(_)));
+                if from_list && !list::is_list(v) {
+                    return Err(self.cast_fail("not a list", v));
+                }
                 let src = match &src {
                     Some(Type::Array(s) | Type::List(s)) => Some(&**s),
                     _ => None,
@@ -563,8 +578,11 @@ impl Type {
                 }
             }
             Type::List(et) => {
-                let src = src_head(src, env);
+                let src = src_head(src, env, v);
                 let spine = match &src {
+                    Some(Type::List(_)) if !list::is_list(v) => {
+                        return Err(self.cast_fail("not a list", v));
+                    }
                     Some(Type::List(_)) => true,
                     Some(Type::Array(_)) => false,
                     // CR claude for eric: [bug/medium] With no source type, this
@@ -624,7 +642,7 @@ impl Type {
                 }
             }
             Type::Map { key, value } => {
-                let src = src_head(src, env);
+                let src = src_head(src, env, v);
                 let (ks, vs) = match &src {
                     Some(Type::Map { key, value }) => (Some(&**key), Some(&**value)),
                     _ => (None, None),
@@ -678,7 +696,7 @@ impl Type {
                 }
             }
             Type::Tuple(ts) => {
-                let src = src_head(src, env);
+                let src = src_head(src, env, v);
                 let ss = match &src {
                     Some(Type::Tuple(ss)) if ss.len() == ts.len() => Some(ss),
                     _ => None,
@@ -753,7 +771,7 @@ impl Type {
                 {
                     return Err(self.cast_fail("struct fields mismatch", v));
                 }
-                let src = src_head(src, env);
+                let src = src_head(src, env, v);
                 let ss = match &src {
                     Some(Type::Struct(ss)) if ss.len() == ts.len() => Some(ss),
                     _ => None,
@@ -782,7 +800,7 @@ impl Type {
                 _ => Err(self.cast_fail("variant tag mismatch", v)),
             },
             Type::Variant(tag, ts, _) => {
-                let src = src_head(src, env);
+                let src = src_head(src, env, v);
                 let ss = match &src {
                     Some(Type::Variant(stag, ss, _))
                         if stag == tag && ss.len() == ts.len() =>

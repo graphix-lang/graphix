@@ -176,3 +176,22 @@ const CAST_OF_A_COLLECTION_PARAM: &str = r#"
 run!(cast_of_a_collection_param, CAST_OF_A_COLLECTION_PARAM, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a.len() == 3)
 }; FuseExpect::Jit);
+
+// A union source decides per value: the member the value has the form of
+// is its source, so a string from [List<i64>, string] is no list, a null
+// is no array, and a tuple member keeps its list's source.
+run!(
+    union_source_per_value,
+    r#"{
+    let x: [List<i64>, string] = "abc";
+    let l = select cast<List<i64>>(x) { error as _ => "refused", _ => "cast" };
+    let x2: [List<i64>, null] = null;
+    let a = select cast<Array<i64>>(x2) { error as _ => "refused", _ => "cast" };
+    let y: (List<string>, i64) = ([<"a", "b", "c">], 3);
+    let w: [(List<string>, i64), null] = y;
+    (l, a, cast<(Array<string>, i64)>(w)$)
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(v) if v.to_string() == r#"["refused", "refused", [["a", "b", "c"], i64:3]]"#)
+    }
+);
