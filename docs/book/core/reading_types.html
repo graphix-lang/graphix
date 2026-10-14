@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-87a7a4f7.js";
+            window.path_to_searchindex_js = "../searchindex-4abef885.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -426,12 +426,14 @@ worth putting in the work to learn to decipher it.</p>
 <li><code>throws 'e</code> - propagates any errors from the predicate</li>
 </ul>
 <h3 id="example-3-queue-function"><a class="header" href="#example-3-queue-function">Example 3: Queue Function</a></h3>
-<pre><code class="language-graphix">val queue: fn(#clock: Any, ?#flush: Any, v: 'a) -&gt; 'a
+<pre><code class="language-graphix">val queue: fn(#clock: Any, ?#flush: Any, ?#flush_before: [i64, null], v: 'a) -&gt; 'a
 </code></pre>
 <p>Breaking it down:</p>
 <ul>
 <li><code>#clock: Any</code> - required labeled argument of any type, just used as an event source</li>
 <li><code>?#flush: Any</code> - optional labeled argument, an event that empties the queue</li>
+<li><code>?#flush_before: [i64, null]</code> - optional labeled argument: when it is <code>n</code>, the
+values that arrived before the <code>n</code>-th are discarded</li>
 <li><code>v: 'a</code> - a value of any type</li>
 <li><code>-&gt; 'a</code> - returns values of the same type</li>
 </ul>

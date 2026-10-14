@@ -218,7 +218,9 @@ val uniq: fn<'a: Discernible>(v: 'a) -> 'a;
 /// empty, record the number of clock updates, and produce that number of
 /// values from the queue when they are available. When flush updates
 /// discard every value waiting in the queue; recorded clock updates are kept.
-val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -> 'a;
+/// When flush_before updates to n, discard the values waiting that arrived
+/// before the n-th v update, the first being the 0-th.
+val queue: fn(#clock:Any, ?#flush:Any, ?#flush_before: [i64, null], v: 'a) -> 'a;
 
 /// queuefn wraps a function f and returns a function with the same signature
 /// whose invocations are queued and released by an external trigger.

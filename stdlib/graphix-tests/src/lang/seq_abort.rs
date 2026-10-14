@@ -169,6 +169,28 @@ async fn seqq_flush_empties_the_queue(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A request arriving with the flush is kept, whether the flush reads the
+// run's request (it reaches the queue a cycle late) or not: request 1 is
+// running, 2 waits, the flush at step 5 clears 2, and 5 and 8 run.
+async fn seqq_flush_keeps_a_request_arriving_with_it(mode: Mode) -> Result<()> {
+    for flush in ["req", "true"] {
+        let code = format!(
+            r#"{{
+            let step = 0;
+            step <- select step {{ s if s < 30 => s + 1, _ => never() }};
+            let req = select step {{ 1 => 1, 2 => 2, 5 => 5, 8 => 8, _ => never() }};
+            seqq req; flush(select step {{ 5 => {flush}, _ => never() }}) {{
+                until req != 1;
+                req
+            }}
+        }}"#
+        );
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), [5, 8], "flush({flush})");
+    }
+    Ok(())
+}
+
 // A machine whose arm sleeps mid-run is idle when the arm wakes.
 async fn sleep_resets_the_machine(mode: Mode) -> Result<()> {
     for kw in ["seq", "seqq"] {
@@ -246,6 +268,7 @@ modes!(abort_timer_starts_with_the_run);
 modes!(abort_reads_the_trigger);
 modes!(seqq_abort_starts_the_next);
 modes!(seqq_flush_empties_the_queue);
+modes!(seqq_flush_keeps_a_request_arriving_with_it);
 modes!(sleep_resets_the_machine);
 modes!(nested_machine_restarts);
 modes!(nested_abort_reads_live);

@@ -128,9 +128,10 @@ pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
 struct Queue<'a> {
     clock: &'a str,
     /// The variable the flush is written to when the flush reads the run's
-    /// request, a cycle late; `None` when the queue reads the flush event
-    /// itself, in its own cycle.
-    flush: Option<&'a str>,
+    /// request, a cycle late, and the count of requests it carries: the
+    /// queue keeps those that arrived with the flush or after. `None` when
+    /// the queue reads the flush event itself, in its own cycle.
+    flush: Option<(&'a str, &'a str)>,
     /// The queue and the lets that read it: emitted after a flush the
     /// queue reads, before the events that read the run's request.
     lets: LPooled<Vec<Expr>>,
@@ -381,8 +382,9 @@ fn run_events(
         if let Some(e) = flush {
             let event = run_event(&rewrite(e, visible), &edge, &armed);
             out.push(let_bind(e.pos, &flushed, None, event));
-            if let Some(v) = flush_var {
-                out.push(connect(e.pos, v, r#ref(e.pos, &flushed)));
+            if let Some((v, count)) = flush_var {
+                let mark = sample(e.pos, r#ref(e.pos, &flushed), r#ref(e.pos, count));
+                out.push(connect(e.pos, v, mark));
             }
             events.push(r#ref(e.pos, &flushed));
         }
@@ -1076,6 +1078,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     let pos = spec.pos;
     let id = spec.id.inner();
     let flushed = format_compact!("seqqflush{id}");
+    let requests = format_compact!("seqqrequests{id}");
     let dequeued = format_compact!("seqqrun{id}");
     let request = format_compact!("seqqrequest{id}");
     let clock = format_compact!("seqqclock{id}");
@@ -1171,26 +1174,24 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     ]);
     // a flush that reads the run's request reads what the queue produces,
     // so the queue cannot read the flush in the same cycle
-    // CR claude for claude: [bug/medium] A flush that reads the run's request reaches
-    // core::queue's #flush through a variable, so the clear lands a cycle after the
-    // flush fires. A request pushed in the flush's own cycle is then cleared with the
-    // ones that came before. That breaks design/seq_blocks.md §9 ("a request arriving
-    // with or after the flush is kept"), which the non-request-reading route honours.
-    // Probe: design/review-2026-10-12/repro/t-seq-05.gx. With `flush(select step { 5 =>
-    // req, .. })`, request 5, which arrives at the flush's step, is dropped and request
-    // 8 runs next. With `5 => true`, request 5 runs. Fix: the late #flush should clear
-    // only the entries pushed before the flush's cycle. For example, stamp queue
-    // entries with a push counter and carry the counter value at the flush through the
-    // variable. Pin both routes. (t-seq-05)
-    // 2026-10-14 claude: the variable is forced: the flush reads the dequeued request,
-    // which the queue's output defines, so a same-cycle #flush would be a cycle. The fix
-    // therefore lives in core::queue: a #flush carrying a push mark (the entries pushed
-    // before it) beside today's clear-all. Not started.
     let flush_reads_request = flush.is_some_and(|f| {
         trigger_name.as_ref().is_some_and(|n| reads_name(std::slice::from_ref(f), n))
     });
     if flush_reads_request {
         prelude.push(let_bind(pos, &flushed, None, never(pos)));
+        // the requests arrived so far; read in a cycle, those before it
+        prelude.push(let_bind(
+            pos,
+            &requests,
+            None,
+            ExprKind::Constant(Value::I64(0)).to_expr(pos),
+        ));
+        let next = ExprKind::Add {
+            lhs: Arc::new(r#ref(pos, &requests)),
+            rhs: Arc::new(ExprKind::Constant(Value::I64(1)).to_expr(pos)),
+        }
+        .to_expr(pos);
+        prelude.push(connect(pos, &requests, sample(pos, r#ref(pos, &request), next)));
     }
     let mut qlets: LPooled<Vec<Expr>> = LPooled::take();
     // the request rides field 0; a capture of the trigger's own name is
@@ -1245,11 +1246,11 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         .to_expr(pos),
     ));
     if flush.is_some() {
-        let event = match flush_reads_request {
-            true => flushed.clone(),
-            false => format_compact!("seqfl{id}"),
+        let (label, event) = match flush_reads_request {
+            true => (literal!("flush_before"), flushed.clone()),
+            false => (literal!("flush"), format_compact!("seqfl{id}")),
         };
-        queue_args.push((Some(literal!("flush")), r#ref(pos, &event)));
+        queue_args.push((Some(label), r#ref(pos, &event)));
     }
     queue_args.push((None, sample(pos, r#ref(pos, &request), payload)));
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
@@ -1292,7 +1293,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     };
     let queue = Queue {
         clock: &clock,
-        flush: flush_reads_request.then_some(flushed.as_str()),
+        flush: flush_reads_request.then_some((flushed.as_str(), requests.as_str())),
         lets: qlets,
     };
     let fns = fn_names(&body, trigger, env, scope);

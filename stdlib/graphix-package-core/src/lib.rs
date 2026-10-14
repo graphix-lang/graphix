@@ -2499,7 +2499,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
 #[derive(Debug)]
 struct Queue {
     triggered: usize,
-    queue: VecDeque<Value>,
+    /// Each waiting value with its arrival number.
+    queue: VecDeque<(u64, Value)>,
+    /// How many values have arrived.
+    pushed: u64,
     id: BindId,
     top_id: ExprId,
     out: TagValue,
@@ -2512,11 +2515,19 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let triggered = decode_varint(buf)? as usize;
-        let queue = Vec::<Value>::decode(buf)?.into();
+        let queue = Vec::<(u64, Value)>::decode(buf)?.into();
+        let pushed = decode_varint(buf)?;
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { triggered, queue, id, top_id, out: TagValue::phantom() }))
+        Ok(Box::new(Self {
+            triggered,
+            queue,
+            pushed,
+            id,
+            top_id,
+            out: TagValue::phantom(),
+        }))
     }
 
     const NAME: &str = "core_queue";
@@ -2530,18 +2541,21 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _, _] => {
+            [_, _, _, _] => {
                 let id = BindId::new();
                 ctx.record_ref(id, top_id);
                 Ok(Box::new(Self {
                     triggered: 0,
                     queue: VecDeque::new(),
+                    pushed: 0,
                     id,
                     top_id,
                     out: TagValue::phantom(),
                 }))
             }
-            _ => bail!("queue: expected three arguments (#clock, #flush, v)"),
+            _ => {
+                bail!("queue: expected four arguments (#clock, #flush, #flush_before, v)")
+            }
         }
     }
 }
@@ -2553,6 +2567,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         for v in &self.queue {
             v.encode(buf)?;
         }
+        encode_varint(self.pushed, buf);
         self.id.encode(buf)?;
         self.top_id.encode(buf)
     }
@@ -2564,7 +2579,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
     ) -> &TagValue {
         let fired = seam_tick(from[0].update(ctx)).is_some();
         let cleared = seam_tick(from[1].update(ctx)).is_some();
-        let x = from[2].update(ctx);
+        let before =
+            seam_tick(from[2].update(ctx)).and_then(|tv| match tv.value_cloned() {
+                Value::I64(n) => Some(n),
+                _ => None,
+            });
+        let x = from[3].update(ctx);
         let x_tag = x.tag();
         if fired {
             self.triggered += 1;
@@ -2572,13 +2592,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         if cleared {
             self.queue.clear();
         }
+        if let Some(n) = before {
+            self.queue.retain(|(i, _)| *i as i64 >= n);
+        }
         if let Some(tv) = seam_tick(x) {
-            self.queue.push_back(tv.value_cloned());
+            self.queue.push_back((self.pushed, tv.value_cloned()));
+            self.pushed += 1;
         }
         let bottom = bottom_of([x_tag]);
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
-            ctx.rt.set_var(self.id, self.queue.pop_front().unwrap());
+            ctx.rt.set_var(self.id, self.queue.pop_front().unwrap().1);
         }
         match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),

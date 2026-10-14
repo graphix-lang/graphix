@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-87a7a4f7.js";
+            window.path_to_searchindex_js = "../searchindex-4abef885.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -400,7 +400,9 @@ val uniq: fn&lt;'a: Discernible&gt;(v: 'a) -&gt; 'a;
 /// empty, record the number of clock updates, and produce that number of
 /// values from the queue when they are available. When flush updates
 /// discard every value waiting in the queue; recorded clock updates are kept.
-val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -&gt; 'a;
+/// When flush_before updates to n, discard the values waiting that arrived
+/// before the n-th v update, the first being the 0-th.
+val queue: fn(#clock:Any, ?#flush:Any, ?#flush_before: [i64, null], v: 'a) -&gt; 'a;
 
 /// queuefn wraps a function f and returns a function with the same signature
 /// whose invocations are queued and released by an external trigger.

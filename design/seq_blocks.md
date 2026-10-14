@@ -654,7 +654,11 @@ written to a variable outside.
 
 **`seqq`.** `abort` ends the current run and returns its credit, so the
 next queued request starts. `flush` is an abort that also empties the
-queue; a request arriving with or after the flush is kept.
+queue; a request arriving with or after the flush is kept. A flush
+that reads the run's request reaches the queue a cycle late through a
+variable, so it carries the number of requests that arrived before its
+cycle (`#flush_before`): the queue numbers its arrivals and drops only
+those below it.
 
 **The lowering.**
 

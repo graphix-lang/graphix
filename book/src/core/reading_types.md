@@ -390,12 +390,14 @@ Breaking it down:
 ### Example 3: Queue Function
 
 ```graphix
-val queue: fn(#clock: Any, ?#flush: Any, v: 'a) -> 'a
+val queue: fn(#clock: Any, ?#flush: Any, ?#flush_before: [i64, null], v: 'a) -> 'a
 ```
 
 Breaking it down:
 - `#clock: Any` - required labeled argument of any type, just used as an event source
 - `?#flush: Any` - optional labeled argument, an event that empties the queue
+- `?#flush_before: [i64, null]` - optional labeled argument: when it is `n`, the
+  values that arrived before the `n`-th are discarded
 - `v: 'a` - a value of any type
 - `-> 'a` - returns values of the same type
 
