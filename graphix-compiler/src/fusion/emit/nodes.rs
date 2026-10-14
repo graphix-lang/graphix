@@ -496,33 +496,25 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, value))
 }
 
-/// `-x`. A non-register-scalar operand (`decimal`) Errs and de-fuses.
-// CR claude for claude: [perf/low] emit_neg_node accepts only a register scalar, so
-// `-x` on decimal, z32 or z64 fails emission and de-fuses the whole region.
-// emit_arith_node sends the same operand kinds through the Value helpers
-// (emit_value_arith_node), so `a + b` over decimal fuses and `-a` does not. That breaks
-// predictable fusion. Fix: move Neg::update's value match into a shared `pub(crate) fn
-// neg(&Value) -> Option<Value>` beside `arith`, add a `graphix_value_neg` helper that
-// calls it, and route AbiKind::Value operands here through that helper, as
-// emit_value_arith_node does. probe: design/review-2026-10-12/repro/c-error-op-05.gx
-// (c-error-op-05)
+/// `-x` on a register scalar or a borrowed Value.
 pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
     out_typ: &Type,
 ) -> Result<CompiledExpr> {
-    let cv = inner.emit_clif(cx)?;
-    // CR claude for claude: [perf/low] A decimal operand fails here, so `|d: decimal|
-    // -> decimal -d` de-fuses its whole region, while `a - b` over decimals fuses
-    // through emit_value_arith_node's graphix_value_* helpers. Neg::update is a pure
-    // value match. Fix: move it into one `neg(Value) -> Option<Value>`, call it from
-    // Neg::update and from a borrowing `graphix_value_neg` helper, and take that helper
-    // here when cx.node_kind(inner.typ()) is Value, as emit_arith_node does.
-    // (f-nodes-scalar-05)
-    let prim = freeze_node_typ(cx.ctx, inner.typ())
+    let Some(prim) = freeze_node_typ(cx.ctx, inner.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t))
-        .ok_or_else(|| anyhow!("emit_neg: operand of non-scalar type {}", inner.typ()))?;
+    else {
+        let operand = emit_value_operand_node(cx, inner)?;
+        let call =
+            cx.call_helper("graphix_value_neg", &[operand.cv.disc, operand.cv.payload])?;
+        let (disc, payload) = (call[0], call[1]);
+        drop_operands(cx, &[operand])?;
+        let disc = propagate_flags(cx.b, disc, &[operand.cv.disc]);
+        return Ok(CompiledExpr::new(disc, payload));
+    };
+    let cv = inner.emit_clif(cx)?;
     let value = if prim.is_integer() {
         cx.b.ins().ineg(cv.payload)
     } else {

@@ -16,6 +16,15 @@ use netidx::publisher::Value;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::Instant};
 
+run!(neg_value_shapes, r#"
+{
+    let d = decimal:1.5;
+    let z = z32:7;
+    let w = z64:9;
+    #[native] (-d, -z, -w)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[decimal:-1.5, z32:-7, z64:-9]"); FuseExpect::Jit);
+
 run!(neg_widened_f64, r#"
 {
     let y = f64:2.5;

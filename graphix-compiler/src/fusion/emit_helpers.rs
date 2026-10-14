@@ -43,7 +43,7 @@ use crate::{
         collection::Flavor,
         error::{report_failure, report_ignored, unhandled_msg},
         map::map_get,
-        op::{BinOp, arith},
+        op::{BinOp, arith, neg},
     },
 };
 use netidx_value::{ValArray, Value};
@@ -996,6 +996,10 @@ safe fn graphix_abstract_get_value(tv: ManuallyDrop<TagValue>) -> TagValue {
         TagValue::fired(crate::abstract_value::payload(v).cloned().unwrap_or(Value::Null))
     });
     r
+}
+
+safe fn graphix_value_neg(v: ManuallyDrop<TagValue>) -> TagValue {
+    v.with_value(neg).map(TagValue::fired).unwrap_or_else(|| TagValue::bottom_null(true).clone())
 }
 
 safe fn graphix_value_add(l: TagValue, r: TagValue) -> TagValue {

@@ -576,18 +576,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         let tv = self.n.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag, tag.is_bottom());
-        let neg = tv.with_value(|v| match v {
-            Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
-            Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
-            Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
-            Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
-            Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
-            Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
-            Value::F32(x) => Some(Value::F32(-*x)),
-            Value::F64(x) => Some(Value::F64(-*x)),
-            Value::Decimal(x) => Some(Value::Decimal(Arc::new(-**x))),
-            _ => None,
-        });
+        let neg = tv.with_value(neg);
         match neg {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
             None => self.resident.ride(),
@@ -635,6 +624,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_neg_node(cx, &self.n, &self.typ)
+    }
+}
+
+pub(crate) fn neg(v: &Value) -> Option<Value> {
+    match v {
+        Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
+        Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
+        Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
+        Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
+        Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
+        Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
+        Value::F32(x) => Some(Value::F32(-*x)),
+        Value::F64(x) => Some(Value::F64(-*x)),
+        Value::Decimal(x) => Some(Value::Decimal(Arc::new(-**x))),
+        _ => None,
     }
 }
 
