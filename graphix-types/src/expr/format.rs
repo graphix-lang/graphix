@@ -590,6 +590,15 @@ mod tests {
         }
     }
 
+    // a quantifier that occurs only inside another's bound keeps its own
+    #[test]
+    fn a_bound_only_quantifier_keeps_its_bound() {
+        let src = "type F = fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a;\n0\n";
+        let out =
+            format_source(SourceKind::Program, src, &FormatConfig::default()).unwrap();
+        assert!(out.contains("'b: Int"), "{}", *out);
+    }
+
     #[test]
     fn a_spliced_string_constant_stays_spliced() {
         for src in [

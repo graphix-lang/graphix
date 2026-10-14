@@ -377,21 +377,11 @@ impl FnType {
     ) -> LPooled<Vec<(TVar, Type)>> {
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
         let Some(_guard) = Walking::enter(&VIEWING, self) else { return view };
-        // CR claude for claude: [bug/high] constraint_pairs lists conjuncts only for
-        // the cells sig_tvars reaches through args, vargs, rtype and throws.
-        // Type::collect_tvars does not descend into a cell's conjuncts, so a quantifier
-        // that occurs only inside another bound loses its own bound from
-        // constraint_view. Example: 'b in `fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a`.
-        // Display, PrettyDisplay and FnType Eq/Ord all read this view. As a result
-        // `graphix fmt` rewrites the type without `'b: Int`, and its reparse guard
-        // compares two equally bound-less FnTypes and accepts. The original program is
-        // refused, while the formatted one checks and runs (prints [1.5]). Fix: build
-        // the listing from every cell the signature reaches through positions and
-        // conjuncts, transitively (as FnType::collect_tvars does through
-        // for_each_part), filtered to the declared quantifiers. Also add a printer
-        // round-trip pin with a quantifier that appears only in a bound. probe:
-        // design/review-2026-10-12/repro/t-fntyp-01.sh (t-fntyp-01)
-        for (_, tv) in self.sig_tvars().drain() {
+        // every cell the signature reaches, through its conjuncts too: a
+        // quantifier may occur only inside another's bound
+        let mut reached: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut reached);
+        for (_, tv) in reached.drain() {
             if keep(&tv) {
                 for tc in tv.cell_constraints() {
                     view.push((tv.clone(), tc.normalize()));
