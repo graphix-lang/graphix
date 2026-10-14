@@ -1840,6 +1840,10 @@ impl Type {
                 f.lambda_ids = ft.lambda_ids.instantiate();
                 Some(Type::Fn(Arc::new(f)))
             }
+            // a union substituted into a union is one union: unflattened, a
+            // non-regular typedef's unfoldings nest without end
+            Type::Set(s) => Type::cow_slice(s, |c| c.replace_tvars_int(known, fresh))
+                .map(|s| Type::flatten_set(s.iter().cloned())),
             t => t.cow_children(&mut |c| c.replace_tvars_int(known, fresh)),
         })
     }

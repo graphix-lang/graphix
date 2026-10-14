@@ -44,6 +44,17 @@ pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: uni
      contains itself (e.g. a function that returns itself); declare a \
      named recursive type and annotate the binding";
 
+/// A question a walk may meet again inside its own answer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Question {
+    /// The distribution law over the type with this id: met again, it
+    /// claims nothing.
+    Distribution(usize),
+    /// The type with this id implements the trait: met again, it does if
+    /// the rest of it does.
+    Implements(usize, TraitId),
+}
+
 /// contains' walk state: its cycle memo (each pair in progress with the
 /// memo depth it was assumed at), and caches no other relation uses.
 pub(super) struct ContainsHist {
@@ -59,16 +70,21 @@ pub(super) struct ContainsHist {
     /// cell a verdict read, so the epoch bumps there.
     probe_pairs: Lazy<AHashMap<(NormKey, NormKey, bool), (u64, bool)>>,
     probe_pins: Lazy<Vec<Type>>,
-    /// A probe that depends on its own verdict claims nothing.
-    distribution_probes_in_progress: SmallVec<[usize; 4]>,
-    /// The typedefs a trait question is in progress for.
-    traits_in_progress: SmallVec<[(usize, TraitId); 4]>,
+    /// The questions in progress on this path, answered by assumption
+    /// when met again.
+    in_progress: SmallVec<[Question; 4]>,
+    /// The shallowest entry of `in_progress` a verdict was answered by
+    /// assumption from: what depends on it is the walk's answer, not the
+    /// pair's, until that question returns.
+    tainted: Option<usize>,
     /// The shallowest in-progress pair the current verdict assumed.
     low_water: usize,
     epoch: u64,
-    /// Per definition, on this path: the size of the params its latest
-    /// expansion took, and how many expansions in a row grew them.
-    unfolding: Lazy<IntMap<usize, (usize, u32)>>,
+    /// Per definition and side (`true` for the right), on this path: the
+    /// size of the params its latest expansion took, and how many
+    /// expansions in a row grew them. The sides expand on alternate steps
+    /// (`T ⊇ {..}`, then `[T, null] ⊇ T`), each growing on its own.
+    unfolding: Lazy<AHashMap<(usize, bool), (usize, u32)>>,
     /// A definition whose parameters grew past [`MAX_GROWTH`] under a
     /// probe: the reason a refusal gives when the verdict needed it.
     grew: Option<ModPath>,
@@ -101,8 +117,8 @@ impl ContainsHist {
             expansions: Lazy::new(),
             probe_pairs: Lazy::new(),
             probe_pins: Lazy::new(),
-            distribution_probes_in_progress: SmallVec::new(),
-            traits_in_progress: SmallVec::new(),
+            in_progress: SmallVec::new(),
+            tainted: None,
             low_water: usize::MAX,
             epoch: 0,
             unfolding: Lazy::new(),
@@ -148,6 +164,29 @@ impl ContainsHist {
         self.hist.insert(key, depth);
         let r = f(self);
         self.hist.remove(&key);
+        r
+    }
+
+    /// Decide `q` by `f` with it in progress; met again inside, it is
+    /// `assumed`, and the verdicts that met it are memoized no further
+    /// out than it.
+    fn question(
+        &mut self,
+        q: Question,
+        assumed: bool,
+        f: impl FnOnce(&mut Self) -> Result<bool>,
+    ) -> Result<bool> {
+        if let Some(i) = self.in_progress.iter().position(|p| *p == q) {
+            self.tainted = Some(self.tainted.map_or(i, |t| t.min(i)));
+            return Ok(assumed);
+        }
+        let i = self.in_progress.len();
+        self.in_progress.push(q);
+        let r = f(self);
+        self.in_progress.pop();
+        if self.tainted.is_some_and(|t| t >= i) {
+            self.tainted = None;
+        }
         r
     }
 
@@ -960,6 +999,11 @@ impl Type {
         // the probe memo. Key Ref pairs by their ref_id pair. Probe:
         // design/review-2026-10-12/repro/t-contains-commit-dag-tree-walk.gx,
         // t-contains-typedef-dag-tree-walk.gx. (t-contains-08)
+        // 2026-10-14 claude: the distribution law's heads now come from the expansion
+        // cache, so its sub-questions reach the memo. Keying a Ref pair by its ref_id
+        // pair was tried and made the GUI package's data_table refuse a ColumnSpec in
+        // about one run in three (graphix-package-gui's table tests): some verdict over
+        // a Ref depends on state its key does not carry. Not landed; the rest stands.
         if flags.contains(ContainsFlags::Commit) {
             // A committing call may bind a cell a cached verdict read.
             hist.epoch += 1;
@@ -977,9 +1021,15 @@ impl Type {
         // outside this call.
         let height = hist.len();
         let outer = mem::replace(&mut hist.low_water, usize::MAX);
+        let outer_taint = hist.tainted.take();
         let r = self.contains_dispatch(flags, env, hist, t);
         let assumed = hist.low_water;
         hist.low_water = outer.min(assumed);
+        let tainted = hist.tainted;
+        hist.tainted = match (outer_taint, tainted) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let r = r?;
         // CR claude for claude: [risk/low] Only `assuming` lowers low_water. A verdict
         // can also depend on other walk state: a re-entered distribution probe
@@ -990,7 +1040,12 @@ impl Type {
         // after that state has unwound. Fix: when any of those three decides a verdict,
         // lower low_water (or set a taint flag), so the verdicts above it skip
         // probe_put. No program shown. (t-contains-11)
-        if assumed >= height {
+        // 2026-10-14 claude: the distribution and trait questions are one in-progress
+        // stack now (ContainsHist::question, Question); a verdict answered by
+        // assumption from one of them taints the walk (ContainsHist::tainted) and is
+        // not memoized until that question returns. The rigid gate opened by
+        // FnType::open_quantifier_gates is not covered yet; no program shown for it.
+        if assumed >= height && tainted.is_none() {
             hist.probe_put(rigid, self, t, r);
         }
         Ok(r)
@@ -1108,20 +1163,17 @@ impl Type {
                     }
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
-                // one entry per definition, at its larger params
-                let defs = match [t0, t1].map(|t| match t {
-                    Self::Ref(tr) => tr.def_key().map(|d| (d, params_size(&tr.params))),
-                    _ => None,
-                }) {
-                    [Some((d0, s0)), Some((d1, s1))] if d0 == d1 => {
-                        [Some((d0, s0.max(s1))), None]
+                let defs = [(t0, false), (t1, true)].map(|(t, right)| match t {
+                    Self::Ref(tr) => {
+                        tr.def_key().map(|d| ((d, right), params_size(&tr.params)))
                     }
-                    defs => defs,
-                };
-                let mut saved: SmallVec<[(usize, Option<(usize, u32)>); 2]> =
+                    _ => None,
+                });
+                let mut saved: SmallVec<[((usize, bool), Option<(usize, u32)>); 2]> =
                     SmallVec::new();
                 let restore =
-                    |hist: &mut ContainsHist, saved: &[(usize, Option<(usize, u32)>)]| {
+                    |hist: &mut ContainsHist,
+                     saved: &[((usize, bool), Option<(usize, u32)>)]| {
                         for (d, old) in saved.iter().rev() {
                             match old {
                                 Some(old) => {
@@ -1843,18 +1895,12 @@ impl Type {
         s: &Arc<[Type]>,
         t: &Self,
     ) -> Result<bool> {
-        let t_id = hist.ref_id(t, env);
-        if let Some(id) = t_id {
-            if hist.distribution_probes_in_progress.contains(&id) {
-                return Ok(false);
-            }
-            hist.distribution_probes_in_progress.push(id);
+        match hist.ref_id(t, env) {
+            Some(id) => hist.question(Question::Distribution(id), false, |hist| {
+                Self::set_covers_by_distribution_inner(flags, env, hist, s, t)
+            }),
+            None => Self::set_covers_by_distribution_inner(flags, env, hist, s, t),
         }
-        let r = Self::set_covers_by_distribution_inner(flags, env, hist, s, t);
-        if t_id.is_some() {
-            hist.distribution_probes_in_progress.pop();
-        }
-        r
     }
 
     fn set_covers_by_distribution_inner(
@@ -1864,7 +1910,9 @@ impl Type {
         s: &Arc<[Type]>,
         t: &Self,
     ) -> Result<bool> {
-        fn head(env: &Env, t: &Type) -> Result<Type> {
+        // a reference's head comes from the expansion cache, so the
+        // questions about its parts are the memo's
+        fn head(env: &Env, hist: &mut ContainsHist, t: &Type) -> Result<Type> {
             let mut cur = t.clone();
             for _ in 0..HEAD_CHAIN_LIMIT {
                 cur = match &cur {
@@ -1873,17 +1921,20 @@ impl Type {
                         None => break,
                     },
                     // An unresolvable ref does not distribute; not an error.
-                    Type::Ref(_) => match cur.lookup_ref_with(env, false) {
-                        Ok(Some(next)) => next,
-                        Ok(None) | Err(_) => break,
-                    },
+                    Type::Ref(_) => {
+                        let id = hist.ref_id(&cur, env);
+                        match hist.expand_ref(&cur, id, env, false) {
+                            Ok(Some(next)) => next,
+                            Ok(None) | Err(_) => break,
+                        }
+                    }
                     _ => break,
                 }
             }
             Ok(cur)
         }
         // a rigid cell never binds: a constant to the law
-        let t = head(env, t)?;
+        let t = head(env, hist, t)?;
         if t.has_free() {
             return Ok(false);
         }
@@ -1896,7 +1947,7 @@ impl Type {
         }
         let mut cands: LPooled<Vec<LPooled<Vec<Type>>>> = LPooled::take();
         for m in s.iter() {
-            let m = head(env, m)?;
+            let m = head(env, hist, m)?;
             let args: Option<LPooled<Vec<Type>>> = match (&t, &m) {
                 (Type::Variant(tt, ta, _), Type::Variant(mt, ma, _))
                     if tt == mt && ta.len() == ma.len() =>
@@ -2301,27 +2352,19 @@ impl Type {
                 // the trait if the rest of it does.
                 None => {
                     let e = t.lookup_ref(env)?;
-                    let key = (hist.ref_id(t, env).unwrap_or(usize::MAX), tid);
-                    if hist.traits_in_progress.contains(&key) {
-                        return Ok(true);
-                    }
-                    hist.traits_in_progress.push(key);
-                    let r = Self::trait_contains(tid, flags, env, hist, &e);
-                    hist.traits_in_progress.pop();
-                    r
+                    let id = hist.ref_id(t, env).unwrap_or(usize::MAX);
+                    hist.question(Question::Implements(id, tid), true, |hist| {
+                        Self::trait_contains(tid, flags, env, hist, &e)
+                    })
                 }
             },
             // An impl's bound can ask the question again of the expanded
             // type: met again, it holds if the rest does.
             t => {
-                let key = (hist.ref_id(t, env).unwrap_or(usize::MAX), tid);
-                if hist.traits_in_progress.contains(&key) {
-                    return Ok(true);
-                }
-                hist.traits_in_progress.push(key);
-                let r = find_impl_with(env, tid, t, hist);
-                hist.traits_in_progress.pop();
-                Ok(r?.is_some())
+                let id = hist.ref_id(t, env).unwrap_or(usize::MAX);
+                hist.question(Question::Implements(id, tid), true, |hist| {
+                    Ok(find_impl_with(env, tid, t, hist)?.is_some())
+                })
             }
         }
     }

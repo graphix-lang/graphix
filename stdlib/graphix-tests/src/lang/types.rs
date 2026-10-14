@@ -2023,6 +2023,42 @@ const GROWING_TYPEDEF_REFUSED: &str = r#"
 
 run!(growing_typedef_refused, GROWING_TYPEDEF_REFUSED, refused("its parameters grow"); FuseExpect::None);
 
+/// The same through a struct field, where the two sides expand on
+/// alternate steps: each side's growth counts, so the walk ends.
+const GROWING_FIELD_TYPEDEF_REFUSED: &str = r#"
+{
+    type T<'a> = {n: [T<Array<'a>>, null], v: 'a};
+    let a: T<i64> = {n: null, v: 1};
+    let b: T<[i64, f64]> = a;
+    b
+}
+"#;
+
+run!(
+    growing_field_typedef_refused,
+    GROWING_FIELD_TYPEDEF_REFUSED,
+    refused("its parameters grow");
+    FuseExpect::None
+);
+
+/// A typedef whose self-reference adds a union member reaches a fixed
+/// point once a substituted union is flattened: the comparison ends.
+const UNION_GROWING_TYPEDEF_ENDS: &str = r#"
+{
+    type T<'a> = {n: [T<['a, string]>, null], v: 'a};
+    let a: T<i64> = {n: {n: null, v: "x"}, v: 1};
+    let b: T<[i64, f64]> = a;
+    let g = |t: T<'b>| -> T<['b, i64]> t;
+    g(b).v
+}
+"#;
+
+run!(
+    union_growing_typedef_ends,
+    UNION_GROWING_TYPEDEF_ENDS,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
 /// A deep nominal value compares, and drops, without the thread stack.
 const DEEP_ABSTRACT_EQ: &str = r#"
 {
