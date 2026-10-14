@@ -1673,15 +1673,28 @@ impl Type {
     /// an open cell is open. `Ref` params are walked (`Alias<'b>` with
     /// 'b open is open), expansions are not.
     pub fn has_unbound(&self) -> bool {
-        fn go(t: &Type, seen: &mut IntSet<usize>) -> bool {
+        self.open_beneath(true)
+    }
+
+    /// [`Self::has_unbound`] less the rigid cells: a declared variable in
+    /// its own body never binds, so it stands as a constant.
+    pub(crate) fn has_free(&self) -> bool {
+        self.open_beneath(false)
+    }
+
+    fn open_beneath(&self, rigid: bool) -> bool {
+        fn go(t: &Type, rigid: bool, seen: &mut IntSet<usize>) -> bool {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
                     seen.insert(tv.cell_addr())
-                        && tv.binding().is_none_or(|b| go(&b, seen))
+                        && match tv.binding() {
+                            Some(b) => go(&b, rigid, seen),
+                            None => rigid || !tv.is_rigid(),
+                        }
                 }
                 t => t
                     .try_for_each_child(&mut |c| {
-                        if go(c, seen) {
+                        if go(c, rigid, seen) {
                             ControlFlow::Break(())
                         } else {
                             ControlFlow::Continue(())
@@ -1690,7 +1703,7 @@ impl Type {
                     .is_break(),
             })
         }
-        go(self, &mut LPooled::take())
+        go(self, rigid, &mut LPooled::take())
     }
 
     /// A copy of self with fresh type variable cells: unbound cells

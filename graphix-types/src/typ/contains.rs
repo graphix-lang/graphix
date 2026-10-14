@@ -1888,21 +1888,9 @@ impl Type {
             }
             Ok(cur)
         }
+        // a rigid cell never binds: a constant to the law
         let t = head(env, t)?;
-        // CR claude for claude: [bug/medium] `has_unbound` counts a definition's rigid
-        // variable as an open cell, so this guard refuses the distribution law for any
-        // scrutinee that holds one. The same rigid-blind test sits on the candidates
-        // before `covers_by_parts`. A rigid cell never binds, so it is a constant here,
-        // and the law should hold for it. Result: inside a generic definition, `` T<'a>
-        // = [`P(i64, 'a), `P(string, 'a)] `` does not contain `` `P([i64, string], 'a)
-        // ``. The same program over `bool` is accepted. Probe:
-        // design/review-2026-10-12/repro/t-contains-07.gx (also t-contains-01.gx and
-        // t-contains-01b.gx). Fix: at both guards, test only for cells that are open
-        // and not rigid, i.e. a `has_unbound` that skips rigid cells. The probes in
-        // this function must then hold a rigid cell to itself, by passing `RigidCheck`
-        // or relying on the committing walk's recheck, so that a rigid `'a` on the
-        // candidate side never stands in for a concrete type. (t-contains-07)
-        if t.has_unbound() {
+        if t.has_free() {
             return Ok(false);
         }
         let mut targs: LPooled<Vec<Type>> = LPooled::take();
@@ -1945,7 +1933,7 @@ impl Type {
         if cands.is_empty() {
             return Ok(false);
         }
-        let probe = BitFlags::empty();
+        let probe = BitFlags::from(ContainsFlags::RigidCheck);
         let mut distributing: Option<usize> = None;
         for j in 0..targs.len() {
             let mut full = true;
@@ -1959,7 +1947,7 @@ impl Type {
                 // a second position differs: split position by position,
                 // a verdict only where nothing could bind
                 if distributing.is_some() {
-                    if !cands.iter().all(|c| c.iter().all(|t| !t.has_unbound())) {
+                    if !cands.iter().all(|c| c.iter().all(|t| !t.has_free())) {
                         return Ok(false);
                     }
                     let cands: LPooled<Vec<&[Type]>> =

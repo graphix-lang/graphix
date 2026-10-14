@@ -2992,3 +2992,25 @@ run!(
         let result = f(1, "str")
     "#
 );
+
+// A declared variable is a constant to the distribution law: in its own
+// body, `P([i64, string], 'a) is covered by `P(i64, 'a) | `P(string, 'a),
+// and it still stands for no concrete type.
+run!(
+    rigid_variable_distributes,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 3 && a[1] == Value::I64(1)),
+    "/test.gx" => r#"
+        type T<'a> = [`P(i64, 'a), `P(string, 'a)];
+        let g = |x: 'a, b: bool| -> T<'a> select b { true => `P(1, x), false => `P("s", x) };
+        let result = g(1, true)
+    "#
+);
+
+run!(
+    rigid_variable_is_no_concrete_payload,
+    refused("does not contain `P([i64, string], 'a: unbound)"),
+    "/test.gx" => r#"
+        let g = |x: 'a, b: bool| -> [`P(i64, i64), `P(string, i64)] select b { true => `P(1, x), false => `P("s", x) };
+        let result = g(1, true)
+    "#
+; FuseExpect::None);
