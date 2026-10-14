@@ -106,3 +106,10 @@ fn a_module_named_like_a_package_is_a_duplicate() {
         assert!(e.contains("duplicate module definition str"), "{mode}: {e}");
     }
 }
+
+#[test]
+fn a_root_duplicate_names_the_top_level() {
+    let [check, _] = verdicts("dup-root", "type T = i64;\ntype T = string;\n0\n", &[]);
+    let e = check.expect_err("--check accepted a duplicate type");
+    assert!(e.contains("T is already defined at the top level"), "{e}");
+}

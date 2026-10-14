@@ -384,6 +384,14 @@ pub(crate) enum TypeName {
 }
 
 /// True if scope `s` is `prefix` itself or a path descendant of it.
+/// Where a scope is, for a message: the root is the top level.
+fn in_scope(scope: &ModPath) -> compact_str::CompactString {
+    match &*scope.0 {
+        "/" | "" => compact_str::CompactString::const_new("at the top level"),
+        _ => compact_str::format_compact!("in scope {scope}"),
+    }
+}
+
 pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
     if prefix == "/" || s == prefix {
         return true;
@@ -1135,15 +1143,15 @@ impl Env {
         ori: Arc<Origin>,
     ) -> Result<Arc<TraitDef>> {
         if self.traits.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
-            bail!("trait {name} is already defined in scope {scope}")
+            bail!("trait {name} is already defined {}", in_scope(scope))
         }
         if self.typedefs.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
-            bail!("{name} is already defined as a type in scope {scope}")
+            bail!("{name} is already defined as a type {}", in_scope(scope))
         }
         let id = TraitId::of(scope, name);
         let path = ModPath(scope.append(name));
         if self.modules.contains(&path) {
-            bail!("{name} is already defined as a module in scope {scope}")
+            bail!("{name} is already defined as a module {}", in_scope(scope))
         }
         self.modules.insert_cow(path.clone());
         let mut defs: LPooled<Vec<TraitMethodDef>> = LPooled::take();
@@ -1625,17 +1633,10 @@ impl Env {
         ori: Arc<Origin>,
     ) -> Result<Unguarded> {
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
-            // CR claude for claude: [readability/low] The root ModPath displays as the
-            // empty string, so a top-level duplicate (`type T = i64; type T = string;`)
-            // reads 'T is already defined in scope ' with a trailing space and nothing
-            // after it. The same `{scope}` formatting is in `deftype`'s trait check and
-            // in `deftrait`'s three refusals. Add one helper that names the root as the
-            // top level and use it at all five sites. Point at the earlier definition's
-            // position where the entry has one. (x-errors-10)
-            bail!("{name} is already defined in scope {scope}")
+            bail!("{name} is already defined {}", in_scope(scope))
         }
         if self.traits.get(scope).and_then(|m| m.get(name)).is_some() {
-            bail!("{name} is already defined as a trait in scope {scope}")
+            bail!("{name} is already defined as a trait {}", in_scope(scope))
         }
         let (typ, rep) = match body {
             TypeDefBody::Alias(typ) => {
