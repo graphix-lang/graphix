@@ -1199,22 +1199,9 @@ impl FnType {
         // is bound, and the cells its binding holds carry the conjuncts
         let impl_cells = {
             let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            // CR claude for claude: [bug/medium] impl_cells is collected over argument,
-            // return and throws positions only (for_each_type skips cell constraints,
-            // and so does position_cells). An implementation variable that appears only
-            // inside another variable's bound is never checked against the signature.
-            // Example: 'b in `'a: Array<'b>, 'b: Int`. A .gxi `val f: fn<'a:
-            // Array<'b>>(x: 'a) -> 'a` is accepted over that implementation, so
-            // `m::f([1.5])` passes --check and is then refused by the build ("an
-            // instance at fn(x: Array<f64>) ... of a definition typed ..."). The 'a
-            // conjunct comparison Array<'b_impl> vs Array<'b_sig> passes because both
-            // cells are open, and it records nothing in tvar_map. Fix: collect
-            // impl_cells transitively through conjuncts too (every cell
-            // FnType::collect_tvars reaches), and relate the paired conjuncts with
-            // sig_matches_int so that tvar_map maps 'b_impl to 'b_sig before the
-            // implied-bound loop runs. probe:
-            // design/review-2026-10-12/repro/t-fntyp-04.sh (t-fntyp-04)
-            impl_fn.for_each_type(&mut |t| super::settle::position_cells(t, &mut cells));
+            // every cell, a variable named only inside another's bound too
+            impl_fn
+                .for_each_part(&mut |t, _| super::settle::position_cells(t, &mut cells));
             sorted_tvars(cells.drain().map(|(_, tv)| (tv.name.clone(), tv)))
         };
         let probe = BitFlags::empty();
@@ -1251,6 +1238,14 @@ impl FnType {
                 });
             if let Some((_, impl_tv)) = matched {
                 for c in impl_tv.cell_constraints().iter() {
+                    // a conjunct that matches the signature's by structure
+                    // pairs the variables inside them, as positions do
+                    let mut scratch = tvar_map.clone();
+                    if sig_tc.sig_matches_int(env, c, &mut scratch, hist).is_ok() {
+                        *tvar_map = scratch;
+                        found = true;
+                        break;
+                    }
                     if c == sig_tc
                         || (c.contains_with_flags(probe, env, sig_tc)?
                             && sig_tc.contains_with_flags(probe, env, c)?)

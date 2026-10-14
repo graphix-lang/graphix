@@ -1335,3 +1335,22 @@ run!(
     "/test/m.gxi" => "val f: fn(#a: i64) -> i64;",
     "/test/m.gx" => "let f = |#a = 0| -> i64 a"
 ; FuseExpect::None);
+
+// A variable named only inside another's bound is matched with the
+// signature's: its bound must be declared, and when it is, it holds at
+// the call.
+run!(
+    a_bound_inside_a_bound_must_be_declared,
+    refused("the implementation requires 'b: Int"),
+    "/test.gx" => "mod m; let result = m::f([1])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'b>>(x: 'a) -> 'a;",
+    "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
+; FuseExpect::None);
+
+run!(
+    a_declared_bound_inside_a_bound_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1)]),
+    "/test.gx" => "mod m; let result = m::f([1])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a;",
+    "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
+);
