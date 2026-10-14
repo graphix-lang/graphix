@@ -117,6 +117,11 @@ impl ModuleResolver for NetidxResolver {
             // Fix: every resolver fetches both layouts' implementation and interface,
             // and one shared function in `expr::resolver` (keyed by `MODULE_LAYOUTS`)
             // decides Resolved, Broken or TryNextMethod. (x-security-14)
+            // 2026-10-13 codex: Needs the shared four-probe layout decision in
+            // graphix-types/src/expr/resolver.rs and callers in all three resolvers.
+            // That file is outside this scope. The netidx probe (stray and both
+            // modes) is unverified because this sandbox refuses sockets; the early
+            // return here still bypasses the second layout.
             // CR claude for claude: [bug/medium] This loop takes the first layout whose
             // implementation exists and pairs it only with the interface beside it. It
             // never looks at the other layout. resolve_from_vfs and resolve_from_files
@@ -131,6 +136,11 @@ impl ModuleResolver for NetidxResolver {
             // copied match from resolve_from_vfs and resolve_from_files. Probe:
             // design/review-2026-10-12/repro/t-format-resolver-01.sh (stray, both).
             // (t-format-resolver-01)
+            // 2026-10-13 codex: Needs the shared four-probe layout decision in
+            // graphix-types/src/expr/resolver.rs and callers in all three resolvers.
+            // That file is outside this scope. The netidx probe (stray and both
+            // modes) is unverified because this sandbox refuses sockets; the early
+            // return here still bypasses the second layout.
             for (imp, intf) in MODULE_LAYOUTS {
                 let impl_path = self.base.append(&format_compact!("{name}{imp}"));
                 let intf_path = self.base.append(&format_compact!("{name}{intf}"));
