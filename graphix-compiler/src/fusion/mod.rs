@@ -291,17 +291,19 @@ impl TypeMemo {
         too_big: impl FnOnce() -> V,
         compute: impl FnOnce() -> V,
     ) -> V {
-        // the walks below treat a type as a tree: one that shares its
-        // parts may unfold exponentially, past what any kernel encodes
+        let identity = identity(t);
+        let memo = Self::current();
+        let tb = memo.as_deref().map(table);
+        if let (Some((id, _)), Some(tb)) = (&identity, tb)
+            && let Some(v) = tb.by_id.get(id).map(|e| e.1.clone())
+        {
+            return v;
+        }
         if lowering::unfolds_past(t, lowering::FUSION_SIZE_CAP) {
             return too_big();
         }
-        let Some((id, owner)) = identity(t) else { return compute() };
-        let Some(memo) = Self::current() else { return compute() };
-        let tb = table(&memo);
-        if let Some(v) = tb.by_id.get(&id).map(|e| e.1.clone()) {
-            return v;
-        }
+        let Some((id, owner)) = identity else { return compute() };
+        let Some(tb) = tb else { return compute() };
         let Some(resolved) = resolutions(t) else { return compute() };
         let key = (!t.has_unbound()).then(|| (t.clone(), resolved));
         let hit = key.as_ref().and_then(|k| tb.by_content.get(k).map(|v| v.clone()));

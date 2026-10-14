@@ -694,42 +694,46 @@ pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
 /// Whether `t` unfolds, as a tree, past `cap` nodes. A shared part
 /// counts at every place it unfolds but is walked once, so the check is
 /// linear in the type's allocations however much it shares.
-// CR claude for claude: [perf/medium] unfolds_past is not linear over shared types,
-// despite its doc comment. Its memo is keyed by typ::norm_key, which gives no key for
-// Type::Variant, TVar or Ref, so a payload shared through a variant is walked again at
-// every place it occurs. The walk also keeps going after it passes `cap`.
-// TypeMemo::cached calls it before its memo lookup, and freeze_region_return calls it
-// for every region root. A chain like `let x{i} = `A(x{i-1}, x{i-1})` therefore doubles
-// fusion compile time with each line: 28 levels take about 10 s, against 0.3 s with
-// --no-fusion. Fix: memoize by a key that covers Variant (the payload Arc address) and
-// Ref, thread a budget so the walk returns as soon as it passes `cap`, and move the
-// by_id lookup in TypeMemo::cached ahead of this check. probe:
-// design/review-2026-10-12/repro/f-mod-lowering-02.gx (f-mod-lowering-02)
 pub(crate) fn unfolds_past(t: &Type, cap: u32) -> bool {
-    fn size(t: &Type, memo: &mut ahash::AHashMap<crate::typ::NormKey, u64>) -> u64 {
+    fn size(t: &Type, cap: u64, memo: &mut ahash::AHashMap<super::Identity, u64>) -> u64 {
         crate::stack::ensure_sufficient(|| {
-            if let Type::TVar(tv) = t {
-                return tv.binding().map_or(1, |b| size(&b, memo));
+            if cap == 0 {
+                return 1;
             }
-            let key = crate::typ::norm_key(t);
+            if let Type::TVar(tv) = t {
+                return tv.binding().map_or(1, |b| size(&b, cap, memo));
+            }
+            let key = match t {
+                Type::Abstract { params, .. } => Some((
+                    std::mem::discriminant(t),
+                    Arc::as_ptr(params) as *const () as usize,
+                    0,
+                )),
+                _ => super::identity(t).map(|(key, _)| key),
+            };
             if let Some(n) = key.as_ref().and_then(|k| memo.get(k)) {
                 return *n;
             }
-            let mut n = 1u64;
-            match t {
-                Type::Fn(ft) => {
-                    ft.for_each_part(&mut |c, _| n = n.saturating_add(size(c, memo)))
+            let mut n = 1;
+            let mut visit = |c: &Type| {
+                if n <= cap {
+                    n += size(c, cap - n, memo);
                 }
-                t => t.for_each_child(&mut |c| n = n.saturating_add(size(c, memo))),
+            };
+            match t {
+                Type::Fn(ft) => ft.for_each_part(&mut |c, _| visit(c)),
+                t => t.for_each_child(&mut visit),
             }
-            if let Some(k) = key {
+            if n <= cap
+                && let Some(k) = key
+            {
                 memo.insert(k, n);
             }
             n
         })
     }
-    let mut memo: LPooled<ahash::AHashMap<crate::typ::NormKey, u64>> = LPooled::take();
-    size(t, &mut memo) > cap as u64
+    let mut memo = LPooled::take();
+    size(t, cap as u64, &mut memo) > cap as u64
 }
 
 /// State of one top-level resolve. Memo entries are keyed by the
@@ -1693,5 +1697,30 @@ fn is_call_return_supported(t: &Type) -> bool {
             | AbiKind::String,
         ) => true,
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use netidx_value::Typ;
+
+    #[test]
+    fn variant_unfolding_is_bounded() {
+        let mut typ = Type::Primitive(Typ::I64.into());
+        for level in 1..=40 {
+            typ = Type::Variant(
+                arcstr::literal!("A"),
+                Arc::from_iter([typ.clone(), typ]),
+                Default::default(),
+            );
+            if level <= 10 {
+                let size = (1 << (level + 1)) - 1;
+                assert!(!unfolds_past(&typ, size));
+                assert!(unfolds_past(&typ, size - 1));
+            }
+        }
+        assert!(unfolds_past(&typ, FUSION_SIZE_CAP));
+        assert!(unfolds_past(&typ, u32::MAX));
     }
 }
