@@ -494,17 +494,25 @@ fn reads_name(stmts: &[Expr], n: &str) -> bool {
 
 /// `catch` is refused anywhere in a seq body: an install cannot produce
 /// the value the next step waits for. So is `#[parallel]`: a seq runs
-/// serially inside, so nothing under it forks. A lambda literal is its
-/// own dynamic scope, so its body and defaults are exempt.
+/// serially inside, so nothing under it forks. So is a dynamic module: a
+/// step's value is scoped away from the steps after it, which could not
+/// name the module. A lambda literal is its own dynamic scope, so its
+/// body and defaults are exempt.
 fn refuse_in_seq(e: &Expr) -> Result<()> {
+    let dynamic = |x: &Expr| {
+        matches!(&x.kind, ExprKind::Module { value, .. }
+            if matches!(**value, ModuleKind::Dynamic { .. }))
+    };
+    if let Some(m) = find_outside_lambdas(e, dynamic) {
+        return Err(anyhow!(
+            "a dynamic module is not allowed inside a seq: load it outside the seq"
+        )
+        .at(&m));
+    }
     if let Some(c) = find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Catch(_))) {
-        // CR claude for claude: [readability/low] The message opens a backtick before
-        // `try {{ .. }} with(e) {{ .. }}` and never closes it, so an LSP client that
-        // renders markdown shows the rest of the message as code. Close it after
-        // `with(e) {{ .. }}`. (lang-skill-11) (lang-skill-11)
         return Err(anyhow!(
             "catch is not allowed inside a seq: `?` aborts the run, \
-             `try {{ .. }} with(e) {{ .. }} handles it, and a catch around the \
+             `try {{ .. }} with(e) {{ .. }}` handles it, and a catch around the \
              seq sees the abort"
         )
         .at(&c));
@@ -749,16 +757,6 @@ impl Machine<'_> {
             }
             return self.lower_try(spec, t, &sink, visible);
         }
-        // CR claude for claude: [bug/low] A dynamic module in a seq step is scoped away
-        // from the steps after it. is_declaration excludes `mod m dynamic`, so a bare
-        // one, or one under `let s = mod m dynamic {..}`, is lowered as a step value.
-        // entry_fire (and lower_block's per-statement `let`) then wraps that value in a
-        // block, and the block hides `m`. A later `m::x` is refused with "m::x not
-        // defined", although the same statements outside a seq work. Fix: refuse a
-        // dynamic module anywhere in a seq step's value with an explicit message, like
-        // the declaration refusal here and lower_block's `is_declaration` arm. Or lower
-        // it so the module binding stays at the step's scope. probe:
-        // design/review-2026-10-12/repro/x-expr-walks-02.gx (x-expr-walks-05)
         if is_declaration(stmt) {
             return Err(declaration_refused(stmt));
         }
@@ -1582,20 +1580,19 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             ExprKind::Until(Arc::new(rewrite(x, &request)))
         }
         ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, map) },
-        // a module's body names nothing of the seq's: it is a scope of its own
-        // CR claude for claude: [bug/medium] A dynamic module's `source` is an
-        // expression in the enclosing scope, not part of the module body, yet this arm
-        // returns it unrewritten. Inside a seq, a trigger name (`seq let c = ..`), a
-        // `try .. with(e)` name or a seqq capture used in `source` either reads the
-        // outer variable of that name or is refused as "not defined".
-        // fold_outside_lambdas also stops at every Module, so a `catch` or
-        // `#[parallel]` inside a dynamic source escapes the seq refusals. Fix: rebuild
-        // `ModuleKind::Dynamic` here with its `source` rewritten like any other
-        // non-step child, and return only a resolved module unchanged. Make
-        // fold_outside_lambdas descend into a dynamic source as well, and correct the
-        // comment above this arm. probe:
-        // design/review-2026-10-12/repro/x-expr-walks-01.gx (x-expr-walks-01)
-        ExprKind::Module { .. } => return e.clone(),
+        // a module's body names nothing of the seq's: it is a scope of its own,
+        // but a dynamic module's source is an expression here
+        ExprKind::Module { name, value } => match &**value {
+            ModuleKind::Dynamic { sandbox, sig, source } => ExprKind::Module {
+                name: name.clone(),
+                value: Arc::new(ModuleKind::Dynamic {
+                    sandbox: sandbox.clone(),
+                    sig: sig.clone(),
+                    source: Arc::new(rewrite(source, map)),
+                }),
+            },
+            _ => return e.clone(),
+        },
         ExprKind::Connect { name, value, deref } => ExprKind::Connect {
             name: rewrite_target(name, *deref, map),
             value: Arc::new(rewrite(value, map)),

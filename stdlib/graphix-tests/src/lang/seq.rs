@@ -835,3 +835,19 @@ run!(
 run!(seq_declaration_block_refused, r#"seq { { type T = i64; use str }; 1 }"#, refused("a declaration is not a seq step"); FuseExpect::None);
 
 run!(seq_let_rec_try_refused, r#"seq { let rec x = try { 1 } with(e) { 2 }; x }"#, refused("let rec is not a seq step"); FuseExpect::None);
+
+// A dynamic module is no seq step; inside a lambda in a seq body its
+// source reads the body's names, the trigger's included.
+run!(seq_dynamic_module_refused, r#"seq { mod foo dynamic { sandbox unrestricted; sig { val x: i64 }; source "let x = 1" }; foo::x }"#,
+    refused("a dynamic module is not allowed inside a seq"); FuseExpect::None);
+
+run!(seq_dynamic_source_reads_trigger, r#"{
+    let t = 1;
+    seq let s = (t ~ "let x = 5") {
+        let f = |u: i64| {
+            mod foo dynamic { sandbox unrestricted; sig { val x: i64 }; source s };
+            foo::x + u
+        };
+        f(1)
+    }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
