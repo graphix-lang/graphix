@@ -1,10 +1,12 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use arcstr::literal;
 use graphix_package_core::{
-    run,
-    testing::{Collect, FuseExpect, Mode, collect},
+    NetConfig, run,
+    testing::{self, Collect, FuseExpect, Mode, collect},
 };
 use netidx::subscriber::Value;
-use std::time::Duration;
+use poolshark::local::LPooled;
+use std::{fmt::Write, sync::Arc, time::Duration};
 
 const NET_PUB_SUB: &str = r#"
 {
@@ -456,5 +458,46 @@ async fn net_no_stale_value() -> Result<()> {
             _ => panic!("{mode:?}: {v:?}"),
         }
     }
+    Ok(())
+}
+
+fn write_error_program(path: &str) -> LPooled<String> {
+    let mut code: LPooled<String> = LPooled::take();
+    write!(
+        code,
+        r#"
+    {{
+        let result = never();
+        catch(e) result <- select (e.0).error {{ `WriteError(message) => message }};
+        sys::net::write("{path}", 1)?;
+        result
+    }}
+    "#
+    )
+    .unwrap();
+    code
+}
+
+run!(net_write_invalid_path_error_tag, write_error_program("relative/path"), |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("invalid path") && s.contains("relative/path"))
+}, timeout: 2; FuseExpect::None);
+
+#[tokio::test]
+async fn net_write_config_error_tag() -> Result<()> {
+    let (value, ctx) = testing::eval_with_setup(
+        &write_error_program("/local/unavailable"),
+        &crate::TEST_REGISTER,
+        |ctx| {
+            ctx.libstate.set(NetConfig::Load {
+                load: Arc::new(|| {
+                    Err(anyhow!("config unavailable").context("test loader"))
+                }),
+                bind: None,
+            });
+        },
+    )
+    .await?;
+    assert_eq!(value, Value::String(literal!("test loader: config unavailable")));
+    ctx.shutdown().await;
     Ok(())
 }

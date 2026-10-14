@@ -155,25 +155,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         {
             self.release(ctx);
             let Some(p) = as_path(path.clone()) else {
-                // CR claude for claude: [bug/medium] errf! already returns a
-                // Value::Error, and both error paths in Write::update (this one and the
-                // write_target failure below) wrap it in a second Value::Error. So
-                // sys::net::write yields error:error:["WriteError", msg], which does
-                // not match its declared type Result<_, `WriteError(string)>. A handler
-                // that selects `WriteError(m) on (e.0).error matches nothing at run
-                // time, and the check calls the select exhaustive anyway. Fix: return
-                // errf!(..) directly at both sites, use Display rather than Debug for
-                // path and e in the messages, and add a pin that catches a WriteError
-                // by its variant. probe:
-                // design/review-2026-10-12/repro/x-fix-stdlib-03.gx (x-fix-stdlib-03)
                 let e = errf!(literal!("WriteError"), "invalid path {path}");
-                return self.out.set(TagValue::fired(Value::Error(e.into())));
+                return self.out.set(TagValue::fired(e));
             };
             let dv = match NetState::get(ctx).write_target(ctx, p.clone()) {
                 Ok(dv) => dv,
                 Err(e) => {
                     let e = errf!(literal!("WriteError"), "{e:#}");
-                    return self.out.set(TagValue::fired(Value::Error(e.into())));
+                    return self.out.set(TagValue::fired(e));
                 }
             };
             if let Either::Right(q) = &mut self.dv {
