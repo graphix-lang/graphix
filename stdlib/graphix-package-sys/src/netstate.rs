@@ -622,18 +622,6 @@ impl NetState {
             };
             val.update(batch, value);
         }
-        // XCR claude for claude: [perf/low] Every published value update pushes a ()
-        // into an unbounded channel: one queued node per update. While a commit is
-        // stalled (a slow subscriber, publish_timeout None), the queue grows with every
-        // update, and the flusher then wakes once per stale ping. The flusher only
-        // needs to know that a batch is pending. A tokio::sync::Notify (notify_one
-        // keeps one permit) coalesces the pings, costs no allocation, and needs no
-        // queue. (sys-net-08)
-        // 2026-10-13 codex: Flush requests now use Notify, which retains one permit, and Inner
-        // owns/aborts the flusher task. dropping_state_stops_idle_flusher pins
-        // shutdown and fails when that abort is removed; all sys unit tests pass.
-        // The slow-subscriber queue-growth case and net_burst_in_order require
-        // sockets and remain unverified here; review must exercise live commits.
         self.0.flush.notify_one();
     }
 
@@ -659,23 +647,6 @@ impl NetState {
         self.0.requests.lock().remove(&id);
     }
 
-    // XCR claude for claude: [risk/low] call_rpc and list spawn their futures with
-    // spawn_var and keep no abort handle. remint, sleep and delete only stop listening
-    // to the id. netidx's rpc Proc::call waits for its reply with no timeout, so every
-    // call to a procedure that never answers stays in the runtime's task set for the
-    // life of the runtime, and repeated calls pile up. The list builtins do not remint
-    // when the path changes. A reply for the old path that lands after the new path's
-    // reply stands as the current listing. Both tasks also share the per-id
-    // ChangeTracker and reset each other's path, so the newer one can see 'unchanged'
-    // and return Null, which the builtin ignores. Fix: keep an abort handle per
-    // in-flight call and list, as CachedArgsAsync does, and drop it at remint, sleep
-    // and delete; remint the list id on a path change. (x-concurrency-11)
-    // 2026-10-13 codex: obsolete_requests_release_their_futures exercises replacement and
-    // explicit cancellation on the real runtime task set without sockets, and
-    // fails when abort-on-drop is removed. RPC remint/delete and list stop now
-    // cancel; list path changes also remint the delivery id. Cancelled or failed
-    // listings leave no advanced change tracker to suppress the next refresh.
-    // Live RPC/list races and resolver behavior remain unverified in this sandbox.
     pub(crate) fn call_rpc<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
@@ -714,23 +685,6 @@ impl NetState {
         };
         match proc {
             Err(e) => {
-                // XCR claude for claude: [bug/low] Every anyhow error sys::net turns
-                // into a program-visible Value is formatted with {e:?}: here, the other
-                // rpc and list sites in this file,
-                // WriteError/SubscribeError/PublishError in net.rs, and the watcher
-                // errors in watch.rs. anyhow's Debug appends a captured backtrace when
-                // RUST_BACKTRACE is set, so an RpcError's text grows from 40 to about
-                // 4000 characters with the environment. Use {e:#} at each of these
-                // sites, as str and re already do. Separately, the ListError arm in
-                // net.rs's list update formats the inner Value with "{e}", which quotes
-                // the string; route it through remote_err as subscribe and rpc do.
-                // probe: design/review-2026-10-12/repro/x-fix-stdlib-06.gx
-                // (x-fix-stdlib-06)
-                // 2026-10-13 codex: error_values_have_stable_context_text and
-                // list_error_preserves_remote_message pin the error conversions and
-                // fail when reverted, including with RUST_BACKTRACE=1. RPC/list and
-                // watcher formatting uses Display; the socket probe cannot run here.
-
                 ctx.rt.set_var(id, error_value(e));
             }
             Ok(proc) => {

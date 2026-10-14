@@ -49,9 +49,14 @@ value or refresh it without starting a new asynchronous wait.
 ## Line reader identity
 
 `IoLines` retains its reader and its delivery ID across sleep. The
-reader owns the stream position and the partial-line buffer; a second
-reader would race it for bytes. A reselected listener starts without an
-old output and receives later lines from the same reader.
+reader owns the stream position; a second reader would race it for
+bytes. Unbatched lines wait in the reader's queue until the graph takes
+them, one a cycle, and the reader reads no more until it has: a
+sleeping listener holds the reader back and loses nothing. A partial
+line stays in the stream's read half (`BufferedRead`), so an operation
+on the whole stream that stops the reader (a TLS upgrade, a seek) reads
+those bytes first. A reselected listener starts without an old output
+and receives later lines from the same reader.
 
 ## Strict consumers and kernels
 

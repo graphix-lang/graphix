@@ -113,23 +113,6 @@ pub(super) async fn open_db(path: ArcStr) -> Result<Db> {
 }
 
 #[derive(Debug)]
-// XCR claude for claude: [bug/medium] A tree, and a cursor's `sled::Iter` made from one,
-// keeps sled's context alive, and that context holds the database's file lock. Neither
-// keeps the `Db` Arc alive. So once the last `DbValue` drops, the `OPEN` entry's Weak
-// is dead while the lock is still held, and `open_db` calls `sled::open` again, which
-// fails with WouldBlock. A program that switches a.db -> b.db -> a.db while a tree of
-// a.db is still alive (for example, kept by `once`) gets `DbErr("IO error: could not
-// acquire lock ...")`. Fix: have `TreeInner` own the `Db` Arc, and have `CursorInner`
-// own the `Arc<TreeInner>` it iterates. Then the registry entry stays upgradable for as
-// long as any handle holding the lock exists. The async drop in `Reaped` leaves a
-// smaller window of the same kind: the lock is released on a blocking thread after the
-// Weak is already dead. Consider having that drop clear the registry entry only once
-// sled's drop has finished. probe: design/review-2026-10-12/repro/db2-03.gx (db2-03)
-// 2026-10-13 codex: Trees and cursors now retain their owners through reaping; the registry
-// waits for database teardown before reopening a dead weak entry. Pins:
-// trees_keep_the_database_registered, cursors_keep_the_database_registered,
-// reopening_waits_for_deferred_close. Each fails with its ownership/wait
-// change undone and passes after restoration. Please review drop order.
 pub(crate) struct TreeInner {
     pub(crate) tree: sled::Tree,
     pub(crate) key_typ: Option<Typ>,
@@ -765,43 +748,6 @@ fn import_data(db: &sled::Db, data: ExportData) -> Result<()> {
 db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {
     let buf = std::fs::read(&*path)?;
     let data = ExportData::decode(&mut buf.as_slice())?;
-    // XCR claude for claude: [bug/medium] sled's `Db::import` panics instead of
-    // returning errors. It asserts that no key it inserts already exists, it `expect`s
-    // every insert and every entry's key and value, and it panics on a collection type
-    // other than "tree". The export carries graphix's meta tree, so a database that has
-    // only opened a tree (no entries, so empty as the gxi demands) collides on that
-    // tree's meta key. The task panics, the panic is printed on stderr, and the caller
-    // gets `DbErr "task panicked: ..."`. Every entry inserted before the collision
-    // stays written. In the probe, the meta entry of a tree the destination never
-    // opened is stored with no data, so opening that tree later fixes its type to what
-    // the file said. A crafted or corrupt file panics the same way. Fix: never hand
-    // file input to sled's import. Validate the collection type and entry shape, refuse
-    // an existing key with a DbErr (or skip an identical meta entry), and check every
-    // key before writing anything, so a refused import writes nothing. Also state
-    // precisely in the gxi what "empty" means. probe:
-    // design/review-2026-10-12/repro/http-sqlite-db1-07.gx (http-sqlite-db1-07)
-    // 2026-10-13 codex: Archive validation and collision checks precede tree creation; entries
-    // are then inserted in one sled transaction. Pins: malformed_import_leaves_database_unchanged
-    // and colliding_import_leaves_database_unchanged, plus db_export_import.
-    // Please review import validation and transaction behavior.
-    // XCR claude for claude: [bug/medium] sled's `Db::import` asserts that no key it
-    // writes already exists, and it expects and panics on a malformed file (an entry
-    // that is not [k, v], or a collection type other than "tree"). Here we call it on
-    // whatever the file decodes to. An export carries the meta tree, so a destination
-    // where the program has only called `db::tree(dst, "a")` already collides. The
-    // import then panics partway: `blocking` reports DbErr("task panicked: ...import is
-    // overwriting existing data"), the panic is printed on stderr, and the trees
-    // imported before the collision stay imported (probe:
-    // design/review-2026-10-12/repro/db2-06.gx prints a=0 b=1 c=1 beside the error).
-    // Fix: validate ExportData before writing (every entry is [k, v], every typ is
-    // "tree"), and refuse with a clean DbErr when any destination tree, the meta tree
-    // included, already holds a key the import would write. Alternatively, do the
-    // inserts ourselves in one transaction so a refusal changes nothing. Then the
-    // .gxi's "must be empty" should say what counts as empty. (db2-06)
-    // 2026-10-13 codex: Archive validation and collision checks precede tree creation; entries
-    // are then inserted in one sled transaction. Pins: malformed_import_leaves_database_unchanged
-    // and colliding_import_leaves_database_unchanged, plus db_export_import.
-    // Please review import validation and transaction behavior.
     import_data(&db, data)?;
     Ok(Value::Null)
 });

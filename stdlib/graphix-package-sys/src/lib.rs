@@ -389,41 +389,6 @@ impl Halves {
     }
 
     /// Borrow the whole stream under both locks; `None` if it is closed.
-    // XCR claude for claude: [bug/medium] take waits on the read lock, and a Lines
-    // reader (line_reader) holds that lock across every pending read until EOF. On a
-    // socket whose peer is silent until the ClientHello arrives (STARTTLS),
-    // tls::connect/tls::accept never get the stream, and the wait sits outside the
-    // TLS_HANDSHAKE_TIMEOUT timeout, so the call never answers. If take did win, the
-    // bytes the line reader had buffered would be lost to the upgraded stream. Fix:
-    // have take cancel a running line reader before it locks, have the line reader hand
-    // back its unconsumed bytes (a push-back buffer in the read slot that the upgrade
-    // or the next read drains), and put the take under the handshake timeout. probe:
-    // design/review-2026-10-12/repro/sys-io-06.gx (sys-io-06)
-    // 2026-10-13 codex: whole_take_stops_lines_and_preserves_partial_bytes pins cancellation and
-    // retained bytes; handshake_deadline_includes_stream_lock pins the deadline.
-    // Both fail without the fix. buffered_stream_reads_prefix_and_forwards_writes
-    // and relative_seek_accounts_for_buffered_bytes cover the shared buffer.
-    // tls_upgrade_after_lines compiles; its socket execution is unverified here.
-    // Review the transport handoff. The ownership description in
-    // design/async_sleep_outputs.md needs an update outside this scope.
-    // XCR claude for claude: [bug/high] take() moves both halves out and releases both
-    // locks, so for the length of the op its callers await (FileSeekEv, FileFstatEv,
-    // FileTruncateEv, the TLS upgrade) the Halves reads as closed. A concurrent
-    // seek/fstat/truncate fails with "stream unavailable" and read/write see a closed
-    // half. A close() in that window returns Ok, and then put() re-installs the stream,
-    // so the handle is open again. Also, CachedArgsAsync drops an aborted eval (sleep,
-    // delete, Latest), and the StreamKind it holds goes with it, so the handle is empty
-    // for good. Fix: never let the stream leave the locks. Hold both guards (read half
-    // first) for the whole unsplit/op/re-split, e.g. a Halves::with_whole that takes a
-    // closure, and run the op in a spawned task the eval only awaits, so an abort
-    // cannot drop the stream. The TLS upgrade, which consumes the stream, must take it
-    // under the held guards and leave the Halves marked closed in the same critical
-    // section. probe: design/review-2026-10-12/repro/sys-io-01.gx (sys-io-01)
-    // 2026-10-13 codex: aborted_fstat_preserves_file, aborted_seek_preserves_file,
-    // aborted_truncate_preserves_file and close_waits_for_whole_stream_operation
-    // fail without the guard and pass with it. rejecting_non_tcp_restores_stream
-    // pins refusal without consuming a handle. TLS socket tests cannot run here;
-    // review the configuration-before-consumption change in tls.rs.
     pub(crate) async fn take(&self) -> Option<Whole<'_>> {
         if let Some(stop) = self.stop_lines.get() {
             stop.send_replace(());
@@ -445,23 +410,6 @@ impl Halves {
 
     /// Cancel pending reads, shut down the writer, and release both halves.
     pub(crate) async fn close(self: &Arc<Self>) -> IoResult<()> {
-        // XCR claude for claude: [bug/medium] When a read holds the read lock, close
-        // leaves the read half to a spawned task and returns Ok. Lines::lines always
-        // holds that lock while it waits on the socket, and so does a pending read,
-        // read_exact or read_all. The split halves share one stream, so the fd stays
-        // open until the peer sends or closes, even though Close::close promises to
-        // release the resource. A server that closes idle connections it reads lines
-        // from keeps all of them open, and a peer that ignores the FIN pins the fd
-        // forever. The fix: give Halves a cancellation signal (a Notify or a token)
-        // that every read path selects against (line_reader, IoReadEv, IoReadExactEv,
-        // IoReadAllEv). close, and take (see sys-io-06), fire it, then wait for the
-        // read lock and drop the half before returning. probe:
-        // design/review-2026-10-12/repro/sys-io-05.gx (sys-io-05)
-        // 2026-10-13 codex: close_cancels_read, close_cancels_read_exact,
-        // close_cancels_read_all and close_cancels_lines use silent child pipes.
-        // All fail without cancellation; closed_stream_refuses_late_reads pins the
-        // notification race. Both halves are released before close returns. The
-        // sys-io-05 TCP probe remains unverified: sockets are unavailable here.
         self.closing.store(true, AtomicOrdering::Release);
         self.closed.notify_waiters();
         let mut r = self.r.lock().await;

@@ -19,7 +19,7 @@ run!(tls_round_trip, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
     buffer::to_string(Read::read(server ~ client, u64:1024)?)?
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello tls")
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // Trait dispatch over a union of two Rust-backed abstract types: each
 // member's tag test answers by its registered wrapper UUID.
@@ -39,7 +39,7 @@ run!(socket_union_dispatch, { let cd = crate::lib_tests::cert_dir(); format!(r#"
     str::len(Socket::peer_addr(server ~ either)?) > 0
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A client that never speaks connects first; the handshakes run at once,
 // so client 2's completes while the silent one is still pending.
@@ -79,7 +79,7 @@ run!(tls_config_update_no_rehandshake, { let cd = crate::lib_tests::cert_dir(); 
     settled ~ [count(server), count(client)]
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a.len() == 2 && a[0] == Value::I64(1) && a[1] == Value::I64(1))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // The streams arrive before the certificates: each handshake starts when
 // its site first holds everything, not only at the stream's own fire.
@@ -97,7 +97,7 @@ run!(tls_stream_before_cert, { let cd = crate::lib_tests::cert_dir(); format!(r#
     (server, client) ~ true
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 /// A client that never speaks fails its server's handshake at the timeout
 /// rather than holding the socket until it hangs up.

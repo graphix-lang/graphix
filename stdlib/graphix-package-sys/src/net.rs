@@ -457,29 +457,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         let woke = std::mem::take(&mut self.slept);
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (args, args_fired) = seam_arg(ctx, &mut from[1]);
-        // XCR claude for claude: [bug/medium] `RpcCall::sleep` clears the output and
-        // remints the reply id but keeps no slept bit, and this update calls only when
-        // path or args fired. After a wake whose arguments are bound outside the arm
-        // (so they read stale and do not fire), the call is never issued again and its
-        // value stays bottom for good. The `list!` builtins (`sys_net_list`,
-        // `sys_net_list_table`) have the same gap: their `sleep` clears `current` and
-        // the output, and their update lists only on a fired path or trigger.
-        // design/async_sleep_outputs.md requires a restart over the arguments as they
-        // stand, and `CachedArgsAsync` does that (`Invocation::Quiet => woke`), as do
-        // Subscribe, Publish and PublishRpc. Fix: add a `slept` bit to RpcCall and the
-        // list! struct, set it in `sleep`, and treat it as a fire in update. Pin each
-        // with arguments bound outside a toggled arm. `Write` has a `woke` bit but
-        // writes the standing value only when `val` (or a new path) fired. A value that
-        // fired during the sleep is still delivered by catch-up, but an unchanged one
-        // is not written again, unlike fs::write_all under `CachedArgsAsync`. Decide
-        // which rule a write follows and pin it. probe:
-        // design/review-2026-10-12/repro/sys-net-04.gx (sys-net-04)
-        // 2026-10-13 codex: net_call_restarts_after_wake, net_list_restarts_after_wake and
-        // net_list_table_restarts_after_wake fail without the wake bits and pass
-        // with them, using a failing loader without sockets. Write now follows
-        // the async restart rule and writes its standing value on wake;
-        // net_write_standing_after_wake passes --check but its socket execution
-        // and before/after behavior remain unverified in this sandbox.
         if (woke || path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {

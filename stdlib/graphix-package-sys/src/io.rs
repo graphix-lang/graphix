@@ -144,24 +144,6 @@ fn line_reader(
 ) -> impl Future<Output = ()> + Send {
     let mut stopped = stream.lines_stopped();
     async move {
-        // XCR claude for claude: [bug/high] Unbatched line_reader has no backpressure.
-        // Each chunk's lines go out as one batch to a single BindId. The runtime's run
-        // loop drains every watch_var channel on every pass, and do_cycle then queues
-        // all but the first line in var_updates, which delivers one line per cycle. So
-        // the capacity-3 channel is always empty and the reader reads the whole input
-        // ahead, at about 90 bytes per pending line: a 20 MB file of short lines passes
-        // 1.1 GB, and a fast or hostile socket peer can exhaust memory. A stale backlog
-        // also keeps draining one per cycle after a stream switch. Fix: have the reader
-        // wait until the previous lines are consumed. For example, IoLines could own a
-        // bounded line queue that it hands out one per cycle and signal the reader (a
-        // Notify or semaphore) when the queue drains. Or the runtime could stop polling
-        // a watch_var receiver while its ids still have writes waiting. lines_batched
-        // does not have this problem. probe:
-        // design/review-2026-10-12/repro/sys-io-03.gx (sys-io-03)
-        // 2026-10-13 codex: line_batches_wait_until_consumed pins one chunk in the builtin,
-        // with one wake event and a wait for consumption. Removing the wait fails.
-        // Review queue ownership across sleep and stream replacement; pipe framing
-        // is checked by process::io_lines and process::io_lines_batched.
         let read = async {
             let batched = queue.is_none();
             loop {

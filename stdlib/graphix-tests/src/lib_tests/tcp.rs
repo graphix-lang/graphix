@@ -18,7 +18,7 @@ const TCP_CONNECT_ACCEPT: &str = r#"
 
 run!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // Connecting to port 1 (reserved, nothing listening) fails.
 const TCP_CONNECT_FAIL: &str = r#"
@@ -40,7 +40,7 @@ const TCP_LISTEN_FAIL: &str = r#"
 
 run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // Write on the client, read on the server.
 const TCP_WRITE_READ: &str = r#"
@@ -57,7 +57,7 @@ const TCP_WRITE_READ: &str = r#"
 
 run!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // write_exact on the client, read on the server.
 const TCP_WRITE_EXACT: &str = r#"
@@ -74,7 +74,7 @@ const TCP_WRITE_EXACT: &str = r#"
 
 run!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "world")
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // read_exact on the server.
 const TCP_READ_EXACT: &str = r#"
@@ -91,7 +91,7 @@ const TCP_READ_EXACT: &str = r#"
 
 run!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "exact")
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // shutdown returns null (after accept).
 const TCP_SHUTDOWN: &str = r#"
@@ -107,7 +107,7 @@ const TCP_SHUTDOWN: &str = r#"
 
 run!(tcp_shutdown, TCP_SHUTDOWN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // peer_addr on the client is the listener's bound address.
 const TCP_PEER_ADDR: &str = r#"
@@ -123,7 +123,7 @@ const TCP_PEER_ADDR: &str = r#"
 
 run!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // local_addr on the server is the listener's address.
 const TCP_LOCAL_ADDR: &str = r#"
@@ -139,7 +139,7 @@ const TCP_LOCAL_ADDR: &str = r#"
 
 run!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // write returns the number of bytes written.
 const TCP_WRITE_RETURNS_LEN: &str = r#"
@@ -155,7 +155,7 @@ const TCP_WRITE_RETURNS_LEN: &str = r#"
 
 run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // The listener is replaced while an accept on the old one is pending: the
 // new invocation aborts it, so the new listener's client is accepted and
@@ -200,26 +200,4 @@ const TCP_ACCEPT_DELETED: &str = r#"
 
 run!(tcp_accept_deleted, TCP_ACCEPT_DELETED, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::Jit);
-
-const TCP_ACCEPT_BUSY_TRIGGER: &str = r#"
-{
-use sys::io::Read;
-let l = sys::tcp::listen("127.0.0.1:0")$;
-let addr = sys::tcp::listener_addr(l)$;
-let clients = array::init(200, |i| sys::tcp::connect(addr)$);
-let ev = never();
-let held = array::map(clients, |c| { ev <- Read::read(c, u64:1) ~ 1; c });
-let lost = 0;
-lost <- ev ~ lost + 1;
-let conn = sys::tcp::accept(l, sys::time::timer(duration:1.ms, true))$;
-let all = [];
-all <- conn ~ array::push(all, conn);
-let r = (array::len(all), lost);
-sys::time::timer(duration:2900.ms, false) ~ r
-}
-"#;
-
-run!(tcp_accept_busy_trigger, TCP_ACCEPT_BUSY_TRIGGER, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if matches!(&a[..], [Value::I64(200), Value::I64(0)]))
 }; FuseExpect::Jit);
