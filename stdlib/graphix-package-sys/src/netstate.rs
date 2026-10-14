@@ -415,12 +415,9 @@ impl NetState {
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
     ) -> Result<&Handles> {
-        // CR claude for claude: [perf/low] LibState::get clones the NetConfig on every
-        // subscribe, write target, publish, list and rpc call. For NetConfig::Config
-        // that clone copies a netidx Config (heap data) that get_or_materialize throws
-        // away whenever the handles already exist, which is every call after the first.
-        // Return `self.0.handles.get()` first, and read the config from libstate only
-        // on the materializing path. (sys-net-09)
+        if let Some(handles) = self.0.handles.get() {
+            return Ok(handles);
+        }
         let cfg = ctx.libstate.get::<NetConfig>().unwrap_or(NetConfig::Internal);
         self.0.handles.get_or_materialize(cfg)
     }
