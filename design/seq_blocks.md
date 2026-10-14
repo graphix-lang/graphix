@@ -123,9 +123,11 @@ and a body, never `t{f(t)}`. Parenthesize a trigger that needs either.
 start event writes the value, destructured when `pat` is not one name,
 into a cell per name, so naming it costs no step, a busy-dropped trigger
 leaves the names alone, and they are the body's own (a write goes to the
-cell, as for a `let`). `seqq let pat = e { .. }` lowers to `{ let name =
-e; let pat = name; seqq name { .. } }` and the request's captures are the
-snapshot. `rec` is refused there.
+cell, as for a `let`). `seqq let pat = e { .. }` lowers to `{ let seqbind =
+e; seqq seqbind { let pat = seqbind; .. } }`, its abort and flush events
+destructuring the same way, and the request's captures are the snapshot.
+The request is a generated name even when `pat` is one name, so a body
+write to that name updates the run's value and enqueues nothing. `rec` is refused there.
 The head is a `;`-separated list like a block's statements, so a clause
 that comes first takes no `;`: `seq abort(e) { .. }`.
 `abort` is a reserved word; `flush` is not (it is an io method), so a

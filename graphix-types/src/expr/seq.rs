@@ -143,45 +143,20 @@ fn refuse_rec(spec: &Expr, b: &BindExpr) -> Result<()> {
     Ok(())
 }
 
-/// `seqq let pat = e { body }` is `{ let name = e; seqq name { let pat
-/// = name; body } }`: a run destructures the request it dequeued, and so
-/// does an abort or flush event.
+/// `seqq let pat = e { body }` is `{ let seqbind = e; seqq seqbind { let
+/// pat = seqbind; body } }`: a run destructures the request it dequeued,
+/// and so does an abort or flush event. The request is never the body's
+/// own name, which a body write would enqueue.
 fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
     let pos = seq.spec.pos;
     refuse_rec(seq.spec, b)?;
     let BindExpr { pattern, typ, value, .. } = b;
-    let name = match pattern {
-        // CR claude for claude: [bug/medium] For a single-name pattern, the user's own
-        // name becomes the queue's request variable (`{ let x = e; seqq x { body } }`).
-        // A body write `x <- v` therefore enqueues a new request instead of updating
-        // the run's value. `seqq let x = t ~ 1 { x <- x + 1; n <- n + 1; x }` loops
-        // forever (thousands of runs from one fire), in both engines. The same body
-        // under `seq let`, or with a pattern `seqq let (x, y) = ..`, runs once and
-        // gives (1, 2). Fix: always bind the trigger to the generated `seqbind{id}`
-        // name and give the body (and the abort/flush events) its own `let x =
-        // seqbind{id}`, as the pattern branch already does. Then update this function's
-        // doc comment and design/seq_blocks.md §4 to describe that one lowering; today
-        // they describe two different shapes, and the code matches neither. probe:
-        // design/review-2026-10-12/repro/t-seq-02.gx (t-seq-03)
-        StructurePattern::Bind(n) => n.name.clone(),
-        _ => ArcStr::from(format_compact!("seqbind{}", seq.spec.id.inner()).as_str()),
-    };
-    let destructure = match pattern {
-        StructurePattern::Bind(_) => None,
-        _ => Some(let_pat(pos, pattern.clone(), typ.clone(), r#ref(pos, &name))),
-    };
-    let event = |e: &Expr| {
-        Arc::new(match &destructure {
-            Some(d) => block(e.pos, [d.clone(), e.clone()]),
-            None => e.clone(),
-        })
-    };
-    let body = match &destructure {
-        Some(d) => {
-            Arc::from_iter(std::iter::once(d.clone()).chain(seq.body.iter().cloned()))
-        }
-        None => seq.body.clone(),
-    };
+    let name = ArcStr::from(format_compact!("seqbind{}", seq.spec.id.inner()).as_str());
+    let destructure = let_pat(pos, pattern.clone(), typ.clone(), r#ref(pos, &name));
+    let event = |e: &Expr| Arc::new(block(e.pos, [destructure.clone(), e.clone()]));
+    let body = Arc::from_iter(
+        std::iter::once(destructure.clone()).chain(seq.body.iter().cloned()),
+    );
     let queued = ExprKind::Seq(Arc::new(SeqExpr {
         kind: SeqKind::Queued { flush: seq.flush.map(&event) },
         trigger: Some(SeqTrigger::Expr(Arc::new(r#ref(pos, &name)))),

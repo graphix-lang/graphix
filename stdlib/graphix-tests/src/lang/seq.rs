@@ -816,3 +816,16 @@ async fn select_level_arm_every_run(mode: Mode) -> Result<()> {
 }
 
 modes!(select_level_arm_every_run);
+
+// `seqq let x = e` binds x as the run's own: a body write to it updates
+// the run's value and enqueues nothing.
+run!(
+    seqq_let_name_write_stays_in_run,
+    r#"{
+    let t = sys::time::timer(duration:10.ms, false) ~ 1;
+    let n = 0;
+    let r = seqq let x = t { x <- x + 1; n <- n + 1; x };
+    sys::time::after_idle(duration:100.ms, (r, n))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:1]")
+);
