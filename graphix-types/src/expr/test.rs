@@ -948,7 +948,7 @@ macro_rules! any {
 
 macro_rules! until_stmt {
     ($inner:expr) => {
-        $inner.prop_map(|e| ExprKind::Until(Arc::new(e)).to_expr_nopos())
+        decorated($inner).prop_map(|e| ExprKind::Until(Arc::new(e)).to_expr_nopos())
     };
 }
 
@@ -1083,17 +1083,11 @@ macro_rules! lambda {
 macro_rules! select {
     ($inner:expr) => {
         (
-            $inner,
-            // CR claude for claude: [test-gap/low] The guard is generated undecorated,
-            // as are until_stmt!, the seq abort/flush clauses, the select scrutinee and
-            // a dynamic module's source, because `inner` is undecorated_expr and
-            // decorated() wraps only the top level, arm bodies, struct fields and seq
-            // items. So the formatter's refusals of a decorated guard, until or abort
-            // (t-print-01) pass expr_pp_round_trip. Wrap every child position where the
-            // parser accepts decorations in decorated(..). Also run expr_pp_round_trip
-            // at width 0 and at a random width, not only 80, so the hug, give-way and
-            // retry paths of the pretty printer get exercised. (t-print-06)
-            collection::vec((option::of($inner), pattern(), decorated($inner)), (1, 10)),
+            decorated($inner),
+            collection::vec(
+                (option::of(decorated($inner)), pattern(), decorated($inner)),
+                (1, 10),
+            ),
         )
             .prop_map(|(arg, arms)| build_pattern(arg, arms))
     };
@@ -1370,7 +1364,7 @@ macro_rules! dynamic_module {
             random_fname(),
             module_sandbox(),
             collection::vec(module_sigitem(), (1, 10)),
-            $inner,
+            decorated($inner),
         )
             .prop_map(|(name, sandbox, sig, source)| {
                 ExprKind::Module {
@@ -1577,8 +1571,8 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                             }))
                         }),
                 ]),
-                option::of(inner.clone()),
-                option::of(inner.clone()),
+                option::of(decorated(inner.clone())),
+                option::of(decorated(inner.clone())),
                 collection::vec(decorated(seq_item!(inner.clone())), 1..5),
             )
                 .prop_map(|(queued, trigger, abort, flush, body)| {
@@ -2262,10 +2256,13 @@ proptest! {
     }
 
     #[test]
-    fn expr_pp_round_trip(s in expr()) {
-        let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(80));
-        let e = parse_one(st.as_str()).unwrap();
-        prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
+    fn expr_pp_round_trip(s in expr(), width in 0usize..120) {
+        // every layout: all broken, the usual width, and anywhere between
+        for w in [0, 80, width] {
+            let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(w));
+            let e = parse_one(st.as_str()).unwrap();
+            prop_assert!(check(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}")
+        }
     }
 
     /// `map_children` rebuilds from exactly the children `for_each_child`
