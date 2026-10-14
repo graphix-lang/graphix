@@ -33,17 +33,8 @@ where
 {
     (
         spaces().with(path_root()),
-        // CR claude for claude: [bug/low] A type path accepts whitespace, including a
-        // newline, after each `::` (`m::\n T`, `m:: T`), but a value path (`modpath`)
-        // refuses it, so the two path grammars disagree. A TypeRef keeps only its start
-        // position, and the LSP's `segments` (and the impl trait lookup) compute each
-        // segment's column as start + len + 2. As a result, references and other
-        // queries on a spaced type path land on whitespace instead of the name. Drop
-        // the inner `spaces()` here so a type path is written like a value path.
-        // Recording per-segment positions on the TypeRef, as `use` items do with
-        // `WrittenPath`, would also remove the arithmetic. probe:
-        // design/review-2026-10-12/repro/t-parser-b-02.sh (t-parser-b-02)
-        sep_by1(spaces().with(choice((fname_noting(false), typname()))), string("::")),
+        // a type path is written as a value path is: no space inside it
+        sep_by1(choice((fname_noting(false), typname())), string("::")),
     )
         .then(
             |(mut root, mut parts): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {

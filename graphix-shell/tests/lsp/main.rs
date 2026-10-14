@@ -117,6 +117,34 @@ fn traits_and_methods_answer() {
     }
 }
 
+const GENERIC_IMPLS: &str = "\
+type Counter<'a> = Abstract<'a>;
+trait Show {
+    val show: fn(self) -> string
+};
+impl<'a> Show for Counter<'a> { let show = |c| \"x\" };
+impl<'a>
+Show for Array<'a> { let show = |c| \"y\" };
+Show::show(Counter(1))
+";
+
+// A generic impl's trait name is found at its name, whatever space or line
+// break follows the parameters.
+#[test]
+fn a_generic_impl_names_its_trait_where_written() {
+    let mut c = Client::start(&[("main.gx", GENERIC_IMPLS)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let show = c.references("main.gx", "trait |Show");
+    for m in ["impl<'a> |Show for Counter", "\n|Show for Array"] {
+        assert!(show.contains(&c.site("main.gx", m)), "{m} missing from {show:?}");
+    }
+    assert_eq!(
+        c.definition("main.gx", "impl<'a> Show| for Counter"),
+        Some(c.site("main.gx", "trait |Show"))
+    );
+}
+
 #[test]
 fn stdlib_definitions_are_not_in_the_document() {
     let mut c = two_files();
