@@ -130,17 +130,20 @@ impl CastTarget {
 
     /// What a reader whose errors are tagged `tag` hands back: its own
     /// error as it is, and data as [`Self::read_data`] does.
-    pub fn read(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
+    pub fn read(&self, env: &Env, tag: &ArcStr, flat: bool, v: Value) -> Value {
         match v {
             v @ Value::Error(_) => v,
-            v => self.read_data(env, tag, v),
+            v => self.read_data(env, tag, flat, v),
         }
     }
 
     /// Data cast to the target (an error in it refused like any value the
-    /// target does not admit), or with no target an error saying so.
-    pub fn read_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
+    /// target does not admit), or with no target an error saying so. A
+    /// `flat` format writes a list as a flat array, so its arrays are
+    /// never read as a list's cells.
+    pub fn read_data(&self, env: &Env, tag: &ArcStr, flat: bool, v: Value) -> Value {
         match &self.0 {
+            Some(t) if flat => t.cast_data(env, v),
             Some(t) => t.cast_value(env, v),
             None => errf!(tag, "no concrete return type found"),
         }
@@ -170,6 +173,8 @@ impl ReadInput {
 pub trait ReadFormat: Debug + Send + Sync + 'static {
     const NAME: &str;
     const TAG: ArcStr;
+    /// The format writes a list as a flat array, and reads it back so.
+    const FLAT_LISTS: bool;
     type Args: Debug + Any + Send + Sync;
 
     fn prepare_args(cached: &CachedVals) -> Option<Self::Args>;
@@ -179,7 +184,7 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
 
     /// What the reader hands back for what `parse` made.
     fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
-        target.read(env, &Self::TAG, v)
+        target.read(env, &Self::TAG, Self::FLAT_LISTS, v)
     }
 }
 

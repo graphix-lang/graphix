@@ -151,6 +151,7 @@ struct Toml;
 impl ReadFormat for Toml {
     const NAME: &str = "toml_read";
     const TAG: ArcStr = literal!("TomlErr");
+    const FLAT_LISTS: bool = true;
     type Args = ReadInput;
 
     fn prepare_args(cached: &CachedVals) -> Option<ReadInput> {

@@ -134,6 +134,14 @@ fn cast_elts<T>(
 /// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
 type RefKey = (usize, Arc<[Type]>);
 
+/// A cast in progress: the refs expanded on the way to each value, and
+/// whether the value is data from a format that writes a list as a flat
+/// array, whose arrays are never a list's cells.
+struct CastCx {
+    hist: LPooled<AHashSet<(RefKey, usize)>>,
+    data: bool,
+}
+
 /// An `is_a` walk's state: the references on its path with the value
 /// each met, and each reference's expansion, made once a walk. Within a
 /// walk a reference is its definition and its params' allocation, and
@@ -379,11 +387,11 @@ impl Type {
     fn cast_int(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(RefKey, usize)>,
+        cx: &mut CastCx,
         src: Option<&Type>,
         v: &Value,
     ) -> Cast {
-        ensure_sufficient(|| self.cast_inner(env, hist, src, v))
+        ensure_sufficient(|| self.cast_inner(env, cx, src, v))
     }
 
     fn cast_fail(&self, why: &'static str, v: &Value) -> CastFail {
@@ -393,13 +401,13 @@ impl Type {
     fn cast_inner(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(RefKey, usize)>,
+        cx: &mut CastCx,
         src: Option<&Type>,
         v: &Value,
     ) -> Cast {
         match self {
             Type::App(c, a) => match Type::app_filled(c, a) {
-                Some(t) => t.cast_int(env, hist, src, v),
+                Some(t) => t.cast_int(env, cx, src, v),
                 None => Ok(None),
             },
             Type::Hole => Err(self.cast_fail("a type constructor", v)),
@@ -486,7 +494,7 @@ impl Type {
                 }
             }
             Type::TVar(tv) => match tv.binding() {
-                Some(t) => t.cast_int(env, hist, src, v),
+                Some(t) => t.cast_int(env, cx, src, v),
                 None => Ok(None),
             },
             Type::Error(e) => {
@@ -497,7 +505,7 @@ impl Type {
                 };
                 match v {
                     Value::Error(inner) => Ok(e
-                        .cast_int(env, hist, src, inner)?
+                        .cast_int(env, cx, src, inner)?
                         .map(|c| Value::Error(c.into()))),
                     // CR claude for claude: [bug/medium] This arm turns any value that
                     // is not an error into Value::Error of its payload cast. So an
@@ -518,7 +526,7 @@ impl Type {
                     // design/review-2026-10-12/repro/t-cast-setops-10.gx
                     // (t-cast-setops-10)
                     v => {
-                        let c = e.cast_int(env, hist, src, v)?;
+                        let c = e.cast_int(env, cx, src, v)?;
                         Ok(Some(Value::Error(c.unwrap_or_else(|| v.clone()).into())))
                     }
                 }
@@ -537,7 +545,7 @@ impl Type {
                     _ if from_list => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for el in list::Iter::new(v.clone()) {
-                            let c = et.cast_int(env, hist, src, &el)?;
+                            let c = et.cast_int(env, cx, src, &el)?;
                             out.push(c.unwrap_or(el));
                         }
                         Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
@@ -545,11 +553,11 @@ impl Type {
                     Value::Array(elts) => Ok(cast_elts(
                         &elts[..],
                         |v| v,
-                        |_, el| et.cast_int(env, hist, src, el),
+                        |_, el| et.cast_int(env, cx, src, el),
                     )?
                     .map(|mut a| Value::Array(ValArray::from_iter_exact(a.drain(..))))),
                     v => {
-                        let c = et.cast_int(env, hist, src, v)?;
+                        let c = et.cast_int(env, cx, src, v)?;
                         Ok(Some(Value::Array([c.unwrap_or_else(|| v.clone())].into())))
                     }
                 }
@@ -559,36 +567,6 @@ impl Type {
                 let spine = match &src {
                     Some(Type::List(_)) => true,
                     Some(Type::Array(_)) => false,
-                    // CR claude for claude: [bug/high] json/toml round-trip of a List
-                    // loses elements: writer flattens by type, reader guesses chain by
-                    // shape. Since 2d2cad08 (the x-stack-06 fix), writers serialize by
-                    // static type: `shape` (stdlib/graphix-package-core/src/lib.rs)
-                    // writes a `List<T>` as a flat JSON/TOML array. The typed read
-                    // (`TypedRead`, core lib.rs/167) calls `t.cast_value(env, v)` with
-                    // no source type. The List arm of the cast then decides 'spine'
-                    // from the value's shape (`_ => list::len(v).is_some()`, cast.rs).
-                    // A flat array that happens to be a well-formed cons chain is
-                    // therefore read as a chain. A two-element list whose second
-                    // element is `[]` (or `[x, []]`, ...) comes back with one element.
-                    // CLAUDE.md promises that 'what the json and toml writers emit
-                    // reads back into its type'. pack round-trips (it writes the
-                    // chain). The fix covered the write side only.
-                    // book/src/core/fundamental_types.md still says a list is written
-                    // out as its chain of cells and that an array read into a List is
-                    // taken for a chain. Both statements are now false for json/toml.
-                    // Failure: `type T = {xs: List<Array<i64>>}; let orig: T = {xs:
-                    // [<[1], []>]}`. `json::read(json::write_str(orig)$)` typed T gives
-                    // `{xs: [<[1]>]}`, and toml gives the same, with no error. The
-                    // empty array element is silently dropped. Fix: Make the read agree
-                    // with the writer. Data decoded from a flat format is an array, so
-                    // TypedRead for json/toml should pass `Some(Array<Any>)`-shaped
-                    // source information into the cast (or use a cast entry that never
-                    // takes the spine path), leaving shape-guessing only for netidx/Any
-                    // sources. Then rewrite fundamental_types.md 'Lists as Data' to say
-                    // json/toml write and read a List as a flat array, while
-                    // pack/netidx carry the chain. Add a round-trip pin over `[<[1],
-                    // []>]` for json and toml. Unverified: the reviewer's report, not
-                    // checked by a verifier. (book-core-01)
                     // CR claude for eric: [bug/medium] With no source type, this
                     // guesses that any array that parses as a cons spine is already a
                     // list. An ordinary array whose last element is [] (or a 2-array
@@ -606,37 +584,11 @@ impl Type {
                     // arrays element by element. Pin `[[1], []]` and the json round
                     // trip either way. probe:
                     // design/review-2026-10-12/repro/t-expr-core-01.gx (t-expr-core-01)
-                    // CR claude for claude: [bug/high] json::write_str and toml's
-                    // writers now write a List flat, but their typed reads (core's
-                    // TypedRead, then cast_value with no source) still reach this
-                    // guess. A flat array that is also a valid cons spine is taken for
-                    // one. Any 2-element list whose last element is an empty array or
-                    // list loses that element, silently: [<[1, 2], []>] reads back as
-                    // [<[1, 2]>], and [<[], []>] as [<[]>]. pack is unaffected because
-                    // it writes the spine. Fix: a format that writes a List flat should
-                    // read it flat. Pass that to the cast (an Array source, or a flag
-                    // on TypedRead for json/toml) so the shape guess never decides on
-                    // data from those formats. Add json and toml round-trip pins for
-                    // these two lists, and rewrite the "Lists as Data" section of
-                    // book/src/core/fundamental_types.md, which still says json writes
-                    // the chain of cells. probe:
-                    // design/review-2026-10-12/repro/x-rerun-5-01.gx (x-rerun-5-01)
-                    // CR claude for claude: [bug/high] With no source type, a List
-                    // target guesses array-vs-list from the value's shape, and every
-                    // data reader takes this path (json::read, toml, str::parse,
-                    // sys::net reads through Type::cast_value). Data never holds a cons
-                    // spine: the writers emit a list as a flat array. So a two-element
-                    // array whose second element is [] or another pair is misread as a
-                    // cons cell. json::read of json::write_str([<[1, 2], []>]) gives
-                    // [<[1, 2]>] and silently drops an element. This breaks the rule
-                    // that what the json and toml writers emit reads back into its
-                    // type. The fix: data readers cast in a mode (or with a source)
-                    // that says every Value::Array is an array, at every nesting level.
-                    // Keep the shape guess only for an in-language cast whose source is
-                    // genuinely unknown. probe:
-                    // design/review-2026-10-12/repro/t-cast-setops-05.gx
-                    // (t-cast-setops-05)
-                    _ => list::len(v).is_some(),
+                    // 2026-10-13 claude: the data readers (json, toml, sqlite) now cast
+                    // through cast_data, so their arrays never reach this guess; what
+                    // stands is the in-language cast of an Any. Pins:
+                    // lib_tests::json::flat_list_round_trips (json and toml).
+                    _ => !cx.data && list::len(v).is_some(),
                 };
                 let src = match &src {
                     Some(Type::Array(s) | Type::List(s)) => Some(&**s),
@@ -647,7 +599,7 @@ impl Type {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         let mut changed = false;
                         for el in list::Iter::new(v.clone()) {
-                            match et.cast_int(env, hist, src, &el)? {
+                            match et.cast_int(env, cx, src, &el)? {
                                 Some(c) => {
                                     changed = true;
                                     out.push(c)
@@ -660,13 +612,13 @@ impl Type {
                     Value::Array(elts) => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for el in elts.iter() {
-                            let c = et.cast_int(env, hist, src, el)?;
+                            let c = et.cast_int(env, cx, src, el)?;
                             out.push(c.unwrap_or_else(|| el.clone()));
                         }
                         Ok(Some(list::from_iter(out.drain(..))))
                     }
                     v => {
-                        let c = et.cast_int(env, hist, src, v)?;
+                        let c = et.cast_int(env, cx, src, v)?;
                         Ok(Some(list::from_iter([c.unwrap_or_else(|| v.clone())])))
                     }
                 }
@@ -680,8 +632,8 @@ impl Type {
                 let mut entry = |k: &Value,
                                  v: &Value|
                  -> std::result::Result<_, CastFail> {
-                    let ck = key.cast_int(env, hist, ks, k)?;
-                    let cv = value.cast_int(env, hist, vs, v)?;
+                    let ck = key.cast_int(env, cx, ks, k)?;
+                    let cv = value.cast_int(env, cx, vs, v)?;
                     Ok((ck.is_some() || cv.is_some()).then(|| {
                         (ck.unwrap_or_else(|| k.clone()), cv.unwrap_or_else(|| v.clone()))
                     }))
@@ -735,7 +687,7 @@ impl Type {
                     Value::Array(elts) if elts.len() == ts.len() => Ok(cast_elts(
                         &elts[..],
                         |v| v,
-                        |i, el| ts[i].cast_int(env, hist, ss.map(|ss| &ss[i]), el),
+                        |i, el| ts[i].cast_int(env, cx, ss.map(|ss| &ss[i]), el),
                     )?
                     .map(|mut a| Value::Array(ValArray::from_iter_exact(a.drain(..))))),
                     Value::Array(_) => Err(self.cast_fail("tuple size mismatch", v)),
@@ -778,14 +730,14 @@ impl Type {
                             // string "null" instead of an InvalidCast. For example,
                             // json::read("{\"a\": 1}") into {a: i64, b: string} gives
                             // {a: 1, b: "null"}. Fill only when the field admits null
-                            // as-is: `matches!(ftyp.cast_int(env, hist, None, &NULL),
+                            // as-is: `matches!(ftyp.cast_int(env, cx, None, &NULL),
                             // Ok(None))`, which is cast_inner's "already inhabits"
                             // answer. Reword the CLAUDE.md sentence to "where the
                             // field's type admits null". Pin a refusal for the string
                             // and array cases next to toml_optional_field_round_trips.
                             // probe: design/review-2026-10-12/repro/t-cast-setops-04.gx
                             // (t-cast-setops-04)
-                            _ if ftyp.cast_int(env, hist, None, &NULL).is_ok() => {
+                            _ if ftyp.cast_int(env, cx, None, &NULL).is_ok() => {
                                 filled.push((fname, &NULL))
                             }
                             _ => return Err(self.cast_fail("struct size mismatch", v)),
@@ -809,7 +761,7 @@ impl Type {
                 let cast = cast_elts(
                     &fields[..],
                     |(_, fv)| *fv,
-                    |i, fv| ts[i].1.cast_int(env, hist, ss.map(|ss| &ss[i].1), fv),
+                    |i, fv| ts[i].1.cast_int(env, cx, ss.map(|ss| &ss[i].1), fv),
                 )?;
                 if sorted && cast.is_none() {
                     return Ok(None);
@@ -848,7 +800,7 @@ impl Type {
                         Ok(cast_elts(
                             &elts[1..],
                             |v| v,
-                            |i, el| ts[i].cast_int(env, hist, payload(i), el),
+                            |i, el| ts[i].cast_int(env, cx, payload(i), el),
                         )?
                         .map(|mut a| {
                             a.insert(0, Value::String(tag.clone()));
@@ -859,7 +811,7 @@ impl Type {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         out.push(Value::String(tag.clone()));
                         for (i, el) in elts.iter().enumerate() {
-                            let c = ts[i].cast_int(env, hist, payload(i), el)?;
+                            let c = ts[i].cast_int(env, cx, payload(i), el)?;
                             out.push(c.unwrap_or_else(|| el.clone()));
                         }
                         Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
@@ -868,7 +820,7 @@ impl Type {
                     _ => Err(self.cast_fail("not a variant", v)),
                 }
             }
-            // `hist` is the current path, not a visited set: a name met
+            // `cx` is the current path, not a visited set: a name met
             // again on the same value expands without consuming it.
             Type::Ref(tr) => {
                 let t = match self.lookup_ref(env) {
@@ -893,16 +845,16 @@ impl Type {
                 // keyed by (definition, value address) that holds that pair's params
                 // size, so the grows check is one lookup. Cache the expansion per
                 // (definition, params) as is_a's IsAHist does. (x-stack-04)
-                let grows = hist.iter().any(|((d, ps), at)| {
+                let grows = cx.hist.iter().any(|((d, ps), at)| {
                     *d == key.0.0 && *at == key.1 && params_size(ps) < size
                 });
-                if grows || !hist.insert(key.clone()) {
+                if grows || !cx.hist.insert(key.clone()) {
                     return Err(
                         self.cast_fail("the type recurses without consuming it", v)
                     );
                 }
-                let r = t.cast_int(env, hist, src, v);
-                hist.remove(&key);
+                let r = t.cast_int(env, cx, src, v);
+                cx.hist.remove(&key);
                 r
             }
             // A member the value already inhabits wins; else the first
@@ -914,7 +866,7 @@ impl Type {
                 if tagged.peek().is_some() {
                     let mut refused = None;
                     for t in tagged {
-                        match t.cast_int(env, hist, src, v) {
+                        match t.cast_int(env, cx, src, v) {
                             Ok(r) => return Ok(r),
                             Err(e) => refused = Some(e),
                         }
@@ -939,7 +891,7 @@ impl Type {
                 // design/review-2026-10-12/repro/t-cast-setops-03.gx (t-cast-setops-03)
                 let mut converted = None;
                 for t in ts.iter() {
-                    match t.cast_int(env, hist, src, v) {
+                    match t.cast_int(env, cx, src, v) {
                         Ok(None) => return Ok(None),
                         Ok(Some(c)) if converted.is_none() => converted = Some(c),
                         Ok(Some(_)) | Err(_) => (),
@@ -956,17 +908,31 @@ impl Type {
     /// `InvalidCast` error value. An array and a list are told apart by
     /// shape.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, v)
+        self.cast_value_int(env, None, false, v)
+    }
+
+    /// [`Self::cast_value`] of data decoded from a format that writes a
+    /// list as a flat array (json, toml): every array in it is an array,
+    /// never a list's cells.
+    pub fn cast_data(&self, env: &Env, v: Value) -> Value {
+        self.cast_value_int(env, None, true, v)
     }
 
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
     /// decides whether a value is an array or a list.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
-        self.cast_value_int(env, Some(src), v)
+        self.cast_value_int(env, Some(src), false, v)
     }
 
-    fn cast_value_int(&self, env: &Env, src: Option<&Type>, v: Value) -> Value {
-        match self.cast_int(env, &mut LPooled::take(), src, &v) {
+    fn cast_value_int(
+        &self,
+        env: &Env,
+        src: Option<&Type>,
+        data: bool,
+        v: Value,
+    ) -> Value {
+        let mut cx = CastCx { hist: LPooled::take(), data };
+        match self.cast_int(env, &mut cx, src, &v) {
             Ok(None) => v,
             Ok(Some(v)) => v,
             Err(e) => errf!(CAST_ERR_TAG, "{e}"),

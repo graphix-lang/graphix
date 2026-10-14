@@ -276,3 +276,18 @@ run!(writers_refuse_references, r#"{
 run!(json_composite_key_is_naked, r#"json::write_str({[1, 2] => 3})$"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == r#"{"[1, 2]":3}"#)
 }; FuseExpect::Jit);
+
+// json and toml write a list as a flat array and read it back so: a list
+// whose last element is an empty array keeps it.
+run!(flat_list_round_trips, r#"{
+    type T = {xs: List<Array<i64>>};
+    let a: T = {xs: [<[1, 2], []>]};
+    let b: T = {xs: [<[], []>]};
+    let ja: T = json::read(json::write_str(a)$)$;
+    let jb: T = json::read(json::write_str(b)$)$;
+    let ta: T = toml::read(toml::write_str(a)$)$;
+    let tb: T = toml::read(toml::write_str(b)$)$;
+    (list::len(ja.xs), list::len(jb.xs), list::len(ta.xs), list::len(tb.xs))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:2, i64:2, i64:2]")
+}; FuseExpect::Jit);

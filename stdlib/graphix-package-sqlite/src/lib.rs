@@ -193,6 +193,7 @@ struct Query;
 impl ReadFormat for Query {
     const NAME: &str = "sqlite_query";
     const TAG: ArcStr = literal!("SqliteError");
+    const FLAT_LISTS: bool = true;
     type Args = (Conn, ArcStr, ValArray);
 
     fn prepare_args(cached: &CachedVals) -> Option<Self::Args> {
