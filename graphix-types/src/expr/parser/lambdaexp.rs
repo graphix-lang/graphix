@@ -1,4 +1,5 @@
 use super::{
+    arithexp::mutability,
     csep, expr, fname,
     grow::refusal,
     name, sep_by_tok, spaces, spaces1, sptoken, structure_pattern,
@@ -13,7 +14,8 @@ use crate::{
 };
 use arcstr::{ArcStr, literal};
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice, not_followed_by, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, look_ahead,
+    not_followed_by, one_of, optional,
     parser::char::string,
     position,
     stream::{Range, position::SourcePosition},
@@ -154,18 +156,6 @@ where
     )
 }
 
-// CR claude for claude: [bug/medium] `lambda` does not set its own span. It takes
-// `position()` before its leading `spaces()` and never calls `.ending`. Only `expr()`
-// adds the end afterwards, so a lambda reached through `operand` (`t ~ |x| ..`),
-// through `byref_lambda` (`&|x| ..`) or through a seq trigger has no end, and as an
-// operand its start sits on whitespace. `shunting_yard`'s `reduce` then copies that
-// missing end into the operator node. The LSP scope map records such a lambda as ending
-// at NOWHERE, and `Completer::scope_at` takes it as the statement that ended before the
-// cursor. As a result, completion on a line before a nested block offers that block's
-// locals. Fix: make `lambda` take `spaces().with(position())` and end itself with a
-// trailing `position()`. Then add `t ~ |x| x`, `&|x| x` and `seq t ~ |x| x { 1 }` to
-// expr_spans.rs's FIXTURE. probe: design/review-2026-10-12/repro/t-parser-a-01.sh
-// (t-parser-a-01)
 pub(super) fn lambda<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -173,8 +163,8 @@ where
     I::Range: Range,
 {
     (
-        position(),
-        spaces().with(sep_by_tok(tvar_bound(), csep(), token('|'))).map(
+        spaces().with(position()),
+        sep_by_tok(tvar_bound(), csep(), token('|')).map(
             |mut tvs: LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>| {
                 let mut tvs = flatten_bounds(tvs.drain(..));
                 Arc::from_iter(tvs.drain(..))
@@ -199,8 +189,9 @@ where
                 .map(LambdaBody::Builtin),
             expr().map(LambdaBody::Expr),
         ))),
+        position(),
     )
-        .map(|(pos, constraints, (mut args, vargs), rtype, throws, body)| {
+        .map(|(pos, constraints, (mut args, vargs), rtype, throws, body, end)| {
             let args = Arc::from_iter(args.drain(..));
             ExprKind::Lambda(Arc::new(LambdaExpr {
                 args,
@@ -211,5 +202,46 @@ where
                 body,
             }))
             .to_expr(pos)
+            .ending(end)
         })
+}
+
+/// `&|x| ..` or `&mut |x| ..`: a reference to a lambda.
+pub(super) fn byref_lambda<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), token('&'), mutability(), lambda(), position()).map(
+        |(pos, _, m, expr, end)| {
+            ExprKind::ByRef(m, Arc::new(expr)).to_expr(pos).ending(end)
+        },
+    )
+}
+
+/// What starts a lambda, by reference or not, after any whitespace.
+pub(super) fn lambda_ahead<I>() -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(look_ahead(
+        spaces()
+            .with(optional(token('&').with(mutability())))
+            .with(spaces())
+            .with(one_of(['|', '\''])),
+    ))
+    .map(|_| ())
+}
+
+/// A lambda, by reference or not, after any whitespace.
+pub(super) fn any_lambda<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    spaces().with(choice((byref_lambda(), lambda())))
 }

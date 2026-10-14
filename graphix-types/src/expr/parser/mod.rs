@@ -57,7 +57,7 @@ mod traitexp;
 use traitexp::{impl_decl, trait_decl};
 
 mod lambdaexp;
-use lambdaexp::{apply_args, lambda};
+use lambdaexp::{any_lambda, apply_args, lambda_ahead};
 
 mod arrayexp;
 use arrayexp::{array, array_index_suffix, list_lit};
@@ -1321,19 +1321,8 @@ where
     (
         position(),
         token('`').with(ident(true)),
-        // CR claude for claude: [bug/low] `variant` consumes the whitespace after the
-        // tag even when no payload follows. Every span ending there (the Variant, a
-        // ByRef of it) then takes in the trailing spaces and newline: 27 corpus files
-        // have a variant span that runs onto the next line, so a diagnostic or hover on
-        // it covers the following indent. It also lets a postfix bind across the gap.
-        // `` let w = `B `` with `[0];` on the next line parses as `` (`B)[0] ``, while
-        // the same text with a name in place of the variant is a parse error. Consume
-        // the spaces only together with a payload:
-        // `optional(attempt(spaces().with(between(token('('), ..))))`. Whether `` `A
-        // (1) `` with a space should stay a payload variant, when `f (1)` is not a
-        // call, is a separate choice. Probe:
-        // design/review-2026-10-12/repro/t-parser-a-07.gx. (t-parser-a-07)
-        spaces().with(optional(between(
+        // the spaces after the tag belong to a payload, when one follows
+        optional(attempt(spaces().skip(look_ahead(token('(')))).with(between(
             token('('),
             sptoken(')'),
             sep_by1_tok(expr(), csep(), token(')')),
@@ -1451,17 +1440,6 @@ where
         )
 }
 
-/// `&|x| ..`: the one reference `arith` cannot read, a lambda's.
-fn byref_lambda<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), token('&'), arithexp::mutability(), lambda())
-        .map(|(pos, _, m, expr)| ExprKind::ByRef(m, Arc::new(expr)).to_expr(pos))
-}
-
 parser! {
     fn expr[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
@@ -1479,10 +1457,9 @@ parser! {
                     .map(|(pos, t)| ExprKind::Trait(Arc::new(t)).to_expr(pos)),
                 (position(), impl_decl()).map(|(pos, i)| ExprKind::Impl(Arc::new(i)).to_expr(pos)),
                 letbind(),
-                attempt(lambda()),
+                lambda_ahead().with(any_lambda()),
                 attempt(connect()),
-                attempt(arith(true)),
-                byref_lambda(),
+                arith(true),
             )),
             position(),
         )

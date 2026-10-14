@@ -64,17 +64,9 @@ fn wrong(text: &str, e: &Expr, parent: Option<&Expr>) -> Option<String> {
             _ => Some(format!("does not read back: `{slice}`")),
         };
     }
-    // CR claude for claude: [test-gap/low] This pin passes any span with whitespace at
-    // either edge, because `parse_one` trims it before the read-back compare. It also
-    // checks only forms that appear in the corpus or FIXTURE. So the variant span that
-    // runs onto the next line (t-parser-a-07, in 27 corpus files) passes, and so does
-    // any parser site only an absent form reaches: a lambda as an operator's operand,
-    // `&|x| ..`, or a seq trigger ending in a lambda. Fix: refuse a non-NoOp span whose
-    // slice starts or ends with whitespace (interpolation text runs excepted, which are
-    // content). Add `t ~ |x| x + 1`, `&|x| x`, `&mut |x| x`, `seq t ~ |x| x { 1 }` and
-    // a variant followed by spaces to FIXTURE. Probe:
-    // design/review-2026-10-12/repro/t-parser-a-spans.rs (corpus_span_edges).
-    // (t-parser-a-02)
+    if slice.starts_with(char::is_whitespace) || slice.ends_with(char::is_whitespace) {
+        return Some(format!("whitespace at an edge: `{slice}`"));
+    }
     match parser::parse_one(slice) {
         Ok(back) if back == *e => None,
         Ok(_) => Some(format!("reads back as something else: `{slice}`")),
@@ -119,7 +111,7 @@ fn file_exprs(path: &Path, text: &ArcStr) -> anyhow::Result<Vec<Expr>> {
 }
 
 /// What the corpus has little of: decorated seq statements, `until`.
-const FIXTURE: &str = "let r = seq t {\n    // before\n    #[native]\n    until ready;\n    until done && !failed;\n    x + 1\n}";
+const FIXTURE: &str = "let r = seq t {\n    // before\n    #[native]\n    until ready;\n    until done && !failed;\n    x + 1\n};\nlet a = t ~ |x| x + 1;\nlet b = &|x| x;\nlet c = &mut |x| x;\nlet d = t ~ &|x| x;\nlet e = seq t ~ |x| x { 1 };\nlet w = `B   \n;\nlet v = [`A  , `B(1)  ]";
 
 #[test]
 fn every_span_reads_back_as_its_node() {

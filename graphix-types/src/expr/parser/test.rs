@@ -2528,3 +2528,24 @@ fn an_attribute_on_a_positional_argument() {
         assert_eq!(&dec.attrs[0].name, &literal!("native"), "{src}");
     }
 }
+
+#[test]
+fn a_lambda_by_reference_is_an_operand() {
+    for (src, m) in
+        [("t ~ &|x| x + 1", Mutability::Shared), ("t ~ &mut |x| x", Mutability::Mut)]
+    {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Sample { rhs, .. } = &e.kind else { panic!("{src}: {e:?}") };
+        let ExprKind::ByRef(m1, l) = &rhs.kind else { panic!("{src}: {rhs:?}") };
+        assert_eq!(*m1, m, "{src}");
+        assert!(matches!(l.kind, ExprKind::Lambda(_)), "{src}");
+    }
+}
+
+#[test]
+fn a_variant_without_a_payload_ends_at_its_tag() {
+    let e = parse_one("`B   ").unwrap();
+    assert_eq!(e.end.get().unwrap().column, 3);
+    assert!(parse_one("`B\n[0]").is_err());
+    assert!(parse_one("`B (1)").is_ok());
+}

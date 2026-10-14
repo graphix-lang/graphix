@@ -6,7 +6,7 @@ use crate::expr::{
         brace, cast, construct, csep, expr, fldname,
         grow::{fold_fits, grow},
         interpolated,
-        lambdaexp::lambda,
+        lambdaexp::{any_lambda, lambda_ahead},
         list_lit, literal, never_expr, raw_string, reference, select, sep_by1_tok, seq,
         spaces, sptoken, variant,
     },
@@ -16,7 +16,7 @@ use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice,
     error::StreamError,
-    look_ahead, many, not_followed_by, one_of, optional,
+    many, not_followed_by, optional,
     parser::char::string,
     position, satisfy,
     stream::{Range, StreamErrorFor, position::SourcePosition},
@@ -304,20 +304,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((
-        // CR claude for claude: [bug/low] `operand` admits a bare lambda as an
-        // operator's last operand but not a by-reference one. `byref_lambda` is
-        // reachable only from `expr()`, and `primary`'s `&` arm reads an `arith_term`,
-        // which cannot be a lambda. So `t ~ &|x| x + 1` is a parse error at the `|`,
-        // while `[&|x| x]` and `f(&|x| x)` parse. Route `&` followed by an optional
-        // `mut` and then `|` or `'` to `byref_lambda` here as well. Better, use one
-        // helper for "a lambda, by reference or not" from both `expr()` and `operand`,
-        // so the two cannot drift. Probe:
-        // design/review-2026-10-12/repro/t-parser-a-byref-lambda-operand.gx.
-        // (t-parser-a-08)
-        attempt(look_ahead(spaces().with(one_of(['|', '\''])))).with(lambda()),
-        arith_term(key),
-    ))
+    choice((lambda_ahead().with(any_lambda()), arith_term(key)))
 }
 
 parser! {
