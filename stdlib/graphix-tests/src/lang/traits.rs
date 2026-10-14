@@ -1781,3 +1781,12 @@ run!(trait_over_recursive_typedef_missing_impl, r#"{
     let j: Json = 1;
     Show::show(j)
 }"#, refused("Show"); FuseExpect::None);
+
+// A trait method bounded by Any implies no Ordered for its implementation.
+run!(trait_any_bound_does_not_imply_ordered, r#"{
+    trait Cmp { val lt: fn<'a: Any>(self, x: 'a, y: 'a) -> bool };
+    type W = Abstract<i64>;
+    impl Cmp for W { let lt = 'a: Any |s: W, x: 'a, y: 'a| -> bool x < y };
+    let a = 1;
+    Cmp::lt(W(1), &a, &a)
+}"#, refused("the implementation requires 'a: Ordered"); FuseExpect::None);

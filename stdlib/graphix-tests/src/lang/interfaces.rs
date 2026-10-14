@@ -1245,3 +1245,30 @@ run!(
         type T = Abstract<i64>
     "#
 ; FuseExpect::None);
+
+// A bound holding `Any` implies no predicate: a quantifier bounded by Any
+// ranges over references, functions and indiscernible unions, so the
+// implementation's Ordered, Discernible or Concrete must be declared.
+run!(
+    any_bound_does_not_imply_ordered,
+    refused("the implementation requires 'a: Ordered"),
+    "/test.gx" => "mod m; let result = m::lt(1, 2)",
+    "/test/m.gxi" => "val lt: fn<'a: Any>(x: 'a, y: 'a) -> bool;",
+    "/test/m.gx" => "let lt = 'a: Any |x: 'a, y: 'a| -> bool x < y"
+; FuseExpect::None);
+
+run!(
+    array_any_bound_does_not_imply_discernible,
+    refused("the implementation requires 'a: Discernible"),
+    "/test.gx" => "mod m; let result = m::eq([1], [2])",
+    "/test/m.gxi" => "val eq: fn<'a: Array<Any>>(x: 'a, y: 'a) -> bool;",
+    "/test/m.gx" => "let eq = 'a: Array<Any> |x: 'a, y: 'a| -> bool x == y"
+; FuseExpect::None);
+
+run!(
+    any_bound_does_not_imply_concrete,
+    refused("the implementation requires 'b: Concrete"),
+    "/test.gx" => "mod m; let result = m::parse(\"1\", 0)",
+    "/test/m.gxi" => "val parse: fn<'b: Any>(s: string, d: 'b) -> Result<'b, `ParseError(string)>;",
+    "/test/m.gx" => "let parse = 'b: Any |s: string, d: 'b| -> Result<'b, `ParseError(string)> str::parse(s)"
+; FuseExpect::None);

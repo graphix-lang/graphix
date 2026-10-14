@@ -1316,33 +1316,11 @@ impl FnType {
                         let mut implied = false;
                         for s in sig_tcs.iter() {
                             if s == &impl_tc
-                                // CR claude for claude: [bug/high] A predicate conjunct
-                                // of the impl cell (Ordered, Discernible, Concrete,
-                                // ...) is taken as implied when it holds of the
-                                // signature bound read as a type, so a bound that holds
-                                // `Any` anywhere (`'a: Any`, `'a: Array<Any>`) implies
-                                // all of them: the type Any is ordered and concrete,
-                                // but a quantifier bounded by Any ranges over
-                                // references, functions and indiscernible unions. An
-                                // interface or trait that writes `fn<'a: Any>` over an
-                                // impl doing `x < y` (or calling `str::parse`) passes
-                                // the check, and a call with `&a` then fails at the
-                                // build with the internal "an instance at .. of a
-                                // definition typed fn<'a: Any + Ordered>" error;
-                                // without the `: Any` the module check refuses it. Fix:
-                                // decide a predicate conjunct by the signature
-                                // variable's meaning, not by the bound as a type: imply
-                                // it only by an equal predicate or by a bound that
-                                // holds it with every `Any` (and open cell) read as
-                                // unknown, and add pins for
-                                // Ordered/Discernible/Concrete under `'a: Any` and `'a:
-                                // Array<Any>` in lang/interfaces.rs and lang/traits.rs.
-                                // probe:
-                                // design/review-2026-10-12/repro/x-typecheck-generics-03.gx
-                                // (interface forms in
-                                // x-typecheck-generics-03a-sig-any-ordered/,
-                                // 03b-sig-any-concrete/). (x-typecheck-generics-03)
-                                || impl_tc.contains_with_flags(probe, env, s)?
+                                // a predicate follows from a bound that holds it
+                                // of every type the bound admits: none with an
+                                // unknown part
+                                || ((!impl_tc.is_predicate() || !s.holds_unknown(env))
+                                    && impl_tc.contains_with_flags(probe, env, s)?)
                             {
                                 implied = true;
                                 break;

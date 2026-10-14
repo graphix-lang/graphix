@@ -340,6 +340,16 @@ impl Type {
         })
     }
 
+    /// Whether the type holds `Any` or an open cell anywhere: a part a
+    /// value-level predicate cannot be decided of.
+    pub(crate) fn holds_unknown(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Any => Some(true),
+            Type::TVar(tv) if tv.binding().is_none() => Some(true),
+            _ => None,
+        })
+    }
+
     /// Whether a value of this type can hold a function outside an
     /// abstract type: a runtime type test tells a function from a value
     /// but not one signature from another.
