@@ -933,7 +933,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
 }
 
 /// True when a guard is a pure, never-bottom function of its arm's
-/// binds and constants (comparisons, logicals, not, wrapping +/-/*/neg;
+/// binds and constants (comparisons, logicals, not, scalar +/-/*/neg;
 /// no div, indexing, calls or state). Such a guard is evaluated lazily
 /// in the chain instead of in the prologue.
 fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
@@ -958,21 +958,10 @@ fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
         | NodeView::Gte(_)
         | NodeView::And(_)
         | NodeView::Or(_)
-        | NodeView::Not(_)
-        // CR claude for claude: [bug/medium] These arms accept +, -, * and neg on any
-        // operand type as "never bottom", but decimal arithmetic logs and bottoms on
-        // overflow. A guard this accepts is emitted lazily in the chain, where `eff =
-        // payload & valid` has no undecidable branch, so the bottom reads as false and
-        // the kernel takes the next arm. The node-walk makes the selection undecidable
-        // (the consulted-guard rule) and the select is bottom. Fix: accept these ops
-        // only when the node's type is an integer or float scalar
-        // (kernel_abi::scalar_prim on n.typ()), or send any guard holding an op that
-        // can bottom to the prologue. probe:
-        // design/review-2026-10-12/repro/f-select-03.gx (f-select-03)
-        | NodeView::Neg(_)
-        | NodeView::Add(_)
-        | NodeView::Sub(_)
-        | NodeView::Mul(_) => {}
+        | NodeView::Not(_) => {}
+        NodeView::Neg(_) | NodeView::Add(_) | NodeView::Sub(_) | NodeView::Mul(_) => {
+            ok &= kernel_abi::scalar_prim(n.typ()).is_some();
+        }
         _ => ok = false,
     });
     ok

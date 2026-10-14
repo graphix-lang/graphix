@@ -2,6 +2,16 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
+run!(decimal_guard_bottom_is_undecided, r#"
+{
+    let g = |v: decimal| select v {
+        x if x * x > decimal:1.0 => 1,
+        _ => 2
+    };
+    any(#[native] g(decimal:79228162514264337593543950335.0), 7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
+
 run!(variant_payload_literal_tags, r#"
 {
     let count = |v: [`Count([i64, null]), `Off]| select v {
