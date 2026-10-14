@@ -223,56 +223,62 @@ fn typart() -> impl Strategy<Value = ArcStr> {
         .prop_filter("Filter reserved words", |s| !parser::is_reserved(s.as_str()))
 }
 
+/// Names a program might bind; the first ones are also paths, `join` and
+/// `concat` under `str`.
+const FNAMES: &[&str] = &[
+    "all",
+    "sum",
+    "product",
+    "divide",
+    "mean",
+    "min",
+    "max",
+    "and",
+    "or",
+    "not",
+    "cmp",
+    "filter",
+    "isa",
+    "eval",
+    "count",
+    "sample",
+    "join",
+    "concat",
+    "navigate",
+    "confirm",
+    "load",
+    "get",
+    "store",
+    "set",
+    "selected",
+    "throwsstuff",
+    "anything",
+    "letstuff",
+    "recval",
+    "castval",
+    "withval",
+    "catchit",
+    "valn",
+    "used",
+    "mods",
+    "sigs",
+    "as_thing",
+    "if_thing",
+    // Type keywords are legal binding names; mix them into every name pool.
+    "duration",
+    "string",
+    "i64",
+    "bool",
+    "datetime",
+    "f64",
+    "decimal",
+];
+
+/// How many of [`FNAMES`] are paths.
+const PATH_NAMES: usize = 24;
+
 fn valid_fname() -> impl Strategy<Value = ArcStr> {
-    prop_oneof![
-        Just(ArcStr::from("all")),
-        Just(ArcStr::from("sum")),
-        Just(ArcStr::from("product")),
-        Just(ArcStr::from("divide")),
-        Just(ArcStr::from("mean")),
-        Just(ArcStr::from("min")),
-        Just(ArcStr::from("max")),
-        Just(ArcStr::from("and")),
-        Just(ArcStr::from("or")),
-        Just(ArcStr::from("not")),
-        Just(ArcStr::from("cmp")),
-        Just(ArcStr::from("filter")),
-        Just(ArcStr::from("isa")),
-        Just(ArcStr::from("eval")),
-        Just(ArcStr::from("count")),
-        Just(ArcStr::from("sample")),
-        Just(ArcStr::from("join")),
-        Just(ArcStr::from("concat")),
-        Just(ArcStr::from("navigate")),
-        Just(ArcStr::from("confirm")),
-        Just(ArcStr::from("load")),
-        Just(ArcStr::from("get")),
-        Just(ArcStr::from("store")),
-        Just(ArcStr::from("set")),
-        Just(ArcStr::from("selected")),
-        Just(ArcStr::from("throwsstuff")),
-        Just(ArcStr::from("anything")),
-        Just(ArcStr::from("letstuff")),
-        Just(ArcStr::from("recval")),
-        Just(ArcStr::from("castval")),
-        Just(ArcStr::from("withval")),
-        Just(ArcStr::from("catchit")),
-        Just(ArcStr::from("valn")),
-        Just(ArcStr::from("used")),
-        Just(ArcStr::from("mods")),
-        Just(ArcStr::from("sigs")),
-        Just(ArcStr::from("as_thing")),
-        Just(ArcStr::from("if_thing")),
-        // Type keywords are legal binding names; mix them into every name
-        // pool.
-        Just(ArcStr::from("duration")),
-        Just(ArcStr::from("string")),
-        Just(ArcStr::from("i64")),
-        Just(ArcStr::from("bool")),
-        Just(ArcStr::from("datetime")),
-        Just(ArcStr::from("f64")),
-        Just(ArcStr::from("decimal")),
-    ]
+    proptest::sample::select(FNAMES).prop_map(ArcStr::from)
 }
 
 fn random_fname() -> impl Strategy<Value = ArcStr> {
@@ -335,32 +341,10 @@ fn typath() -> impl Strategy<Value = ModPath> {
 }
 
 fn valid_modpath() -> impl Strategy<Value = ModPath> {
-    prop_oneof![
-        Just(ModPath::from_iter(["all"])),
-        Just(ModPath::from_iter(["sum"])),
-        Just(ModPath::from_iter(["product"])),
-        Just(ModPath::from_iter(["divide"])),
-        Just(ModPath::from_iter(["mean"])),
-        Just(ModPath::from_iter(["min"])),
-        Just(ModPath::from_iter(["max"])),
-        Just(ModPath::from_iter(["and"])),
-        Just(ModPath::from_iter(["or"])),
-        Just(ModPath::from_iter(["not"])),
-        Just(ModPath::from_iter(["cmp"])),
-        Just(ModPath::from_iter(["filter"])),
-        Just(ModPath::from_iter(["isa"])),
-        Just(ModPath::from_iter(["eval"])),
-        Just(ModPath::from_iter(["count"])),
-        Just(ModPath::from_iter(["sample"])),
-        Just(ModPath::from_iter(["str", "join"])),
-        Just(ModPath::from_iter(["str", "concat"])),
-        Just(ModPath::from_iter(["navigate"])),
-        Just(ModPath::from_iter(["confirm"])),
-        Just(ModPath::from_iter(["load"])),
-        Just(ModPath::from_iter(["get"])),
-        Just(ModPath::from_iter(["store"])),
-        Just(ModPath::from_iter(["set"])),
-    ]
+    proptest::sample::select(&FNAMES[..PATH_NAMES]).prop_map(|n| match n {
+        "join" | "concat" => ModPath::from_iter(["str", n]),
+        n => ModPath::from_iter([n]),
+    })
 }
 
 fn modpath() -> impl Strategy<Value = ModPath> {
@@ -1996,22 +1980,6 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             .iter()
             .zip(srs1.iter())
             .fold(true, |r, ((n0, s0), (n1, s1))| r && n0 == n1 && check(s0, s1)),
-        // CR claude for claude: [structure/low] check repeats one arm 20 times for the
-        // binary operators, and duplicates the lambda arm and the name pools. `check`
-        // has 18 identical binop arms (test.rs) plus separate Sample/StrictSample arms
-        // (2189-2196), although `BinOp::of` exists and `add_parens` already uses it.
-        // The two Lambda arms (2083-2153) differ only in the body comparison.
-        // `valid_fname` (217-267) and `valid_modpath` (328-355) repeat the same name
-        // list. A new operator needs a new arm, and a missing one fails confusingly.
-        // Failure: Maintenance cost: about 90 lines that one `BinOp::of` arm replaces;
-        // a newly added BinOp variant falls to `(_, _) => false` with an unhelpful
-        // message. Fix: `if let (Some((o0,l0,r0)), Some((o1,l1,r1))) =
-        // (BinOp::of(&s0.kind), BinOp::of(&s1.kind)) { return o0 == o1 && check(l0,l1)
-        // && check(r0,r1) }` before the match. Write one Lambda arm that compares
-        // bodies with a small match. Derive `valid_modpath` from one shared name list.
-        // Unverified: the reviewer's report, not checked by a verifier. (tests-expr-10)
-        // 2026-10-14 claude: the operator arms are gone (BinOp::of, tests-expr-07); the two
-        // Lambda arms and the duplicated name lists stand.
         (ExprKind::Not { expr: expr0 }, ExprKind::Not { expr: expr1 }) => {
             check(expr0, expr1)
         }
@@ -2089,77 +2057,43 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 }
         }
         (ExprKind::Ref { name: name0 }, ExprKind::Ref { name: name1 }) => name0 == name1,
-        (ExprKind::Lambda(l0), ExprKind::Lambda(l1)) => match (&**l0, &**l1) {
-            (
-                LambdaExpr {
-                    args: args0,
-                    vargs: vargs0,
-                    rtype: rtype0,
-                    constraints: constraints0,
-                    throws: throws0,
-                    body: LambdaBody::Expr(body0),
-                },
-                LambdaExpr {
-                    args: args1,
-                    vargs: vargs1,
-                    rtype: rtype1,
-                    constraints: constraints1,
-                    throws: throws1,
-                    body: LambdaBody::Expr(body1),
-                },
-            ) => {
-                (check_args(args0, args1))
-                    && (match (vargs0, vargs1) {
-                        (Some(t0), Some(t1)) => check_type_opt(t0, t1),
-                        (None, None) => true,
-                        _ => false,
-                    })
-                    && (check_type_opt(rtype0, rtype1))
-                    && (constraints0.len() == constraints1.len()
-                        && constraints0.iter().zip(constraints1.iter()).all(
-                            |((tv0, tc0), (tv1, tc1))| {
-                                tv0.name == tv1.name && check_type(&tc0, &tc1)
-                            },
-                        ))
-                    && (check_type_opt(throws0, throws1))
-                    && (check(body0, body1))
-            }
-            (
-                LambdaExpr {
-                    args: args0,
-                    vargs: vargs0,
-                    rtype: rtype0,
-                    constraints: constraints0,
-                    throws: throws0,
-                    body: LambdaBody::Builtin(b0),
-                },
-                LambdaExpr {
-                    args: args1,
-                    vargs: vargs1,
-                    rtype: rtype1,
-                    constraints: constraints1,
-                    throws: throws1,
-                    body: LambdaBody::Builtin(b1),
-                },
-            ) => {
-                (check_args(args0, args1))
-                    && (match (vargs0, vargs1) {
-                        (Some(t0), Some(t1)) => check_type_opt(t0, t1),
-                        (None, None) => true,
-                        _ => false,
-                    })
-                    && (check_type_opt(rtype0, rtype1))
-                    && (constraints0.len() == constraints1.len()
-                        && constraints0.iter().zip(constraints1.iter()).all(
-                            |((tv0, tc0), (tv1, tc1))| {
-                                tv0.name == tv1.name && check_type(&tc0, &tc1)
-                            },
-                        ))
-                    && (check_type_opt(throws0, throws1))
-                    && (b0 == b1)
-            }
-            (_, _) => false,
-        },
+        (ExprKind::Lambda(l0), ExprKind::Lambda(l1)) => {
+            let LambdaExpr {
+                args: args0,
+                vargs: vargs0,
+                rtype: rtype0,
+                constraints: constraints0,
+                throws: throws0,
+                body: body0,
+            } = &**l0;
+            let LambdaExpr {
+                args: args1,
+                vargs: vargs1,
+                rtype: rtype1,
+                constraints: constraints1,
+                throws: throws1,
+                body: body1,
+            } = &**l1;
+            check_args(args0, args1)
+                && (match (vargs0, vargs1) {
+                    (Some(t0), Some(t1)) => check_type_opt(t0, t1),
+                    (None, None) => true,
+                    _ => false,
+                })
+                && check_type_opt(rtype0, rtype1)
+                && constraints0.len() == constraints1.len()
+                && constraints0.iter().zip(constraints1.iter()).all(
+                    |((tv0, tc0), (tv1, tc1))| {
+                        tv0.name == tv1.name && check_type(tc0, tc1)
+                    },
+                )
+                && check_type_opt(throws0, throws1)
+                && match (body0, body1) {
+                    (LambdaBody::Expr(b0), LambdaBody::Expr(b1)) => check(b0, b1),
+                    (LambdaBody::Builtin(b0), LambdaBody::Builtin(b1)) => b0 == b1,
+                    _ => false,
+                }
+        }
         (
             ExprKind::Select(SelectExpr { arg: arg0, arms: arms0 }),
             ExprKind::Select(SelectExpr { arg: arg1, arms: arms1 }),
