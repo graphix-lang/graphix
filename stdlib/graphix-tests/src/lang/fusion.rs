@@ -16,6 +16,23 @@ use netidx::publisher::Value;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::Instant};
 
+run!(neg_widened_f64, r#"
+{
+    let y = f64:2.5;
+    let ignored = filter_err({ let x = -y; x });
+    -y
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::F64(n)) if *n == -2.5);
+FuseExpect::Jit);
+
+run!(neg_widened_i32, r#"
+{
+    let y = i32:7 * i32:3;
+    let ignored = filter_err({ let x = -y; x });
+    -y
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I32(-21))); FuseExpect::Jit);
+
 /// Run `code` in a fresh runtime compiled with `flags`, after compiling
 /// each of `pre` (kept alive): loaded as a file when `as_file`, else
 /// compiled. Its first value and the (fused kernel runs, JIT wrapper

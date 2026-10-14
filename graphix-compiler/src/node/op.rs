@@ -634,7 +634,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_neg_node(cx, &self.n)
+        emit_neg_node(cx, &self.n, &self.typ)
     }
 }
 

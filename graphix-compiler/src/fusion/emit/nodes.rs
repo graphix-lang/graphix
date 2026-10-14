@@ -506,19 +506,10 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
 // calls it, and route AbiKind::Value operands here through that helper, as
 // emit_value_arith_node does. probe: design/review-2026-10-12/repro/c-error-op-05.gx
 // (c-error-op-05)
-// CR claude for claude: [bug/high] emit_neg_node returns the operand's register scalar
-// as is and never sees the Neg node's own type: `Neg::emit_clif` passes only the
-// operand. A Neg cell that a union parameter widens, as filter_err's Result<'a, 'b>
-// does, freezes to a Value shape. Its consumers then declare a two-word slot and get an
-// f64 or i32, and the JIT link panics with "Verifier errors" and takes the runtime
-// down. --no-fusion runs the same program fine. Fix: pass the Neg node's type and
-// return through widen_to_declared_repr as emit_arith_node does. Better, give every
-// scalar-producing emitter one shared exit that applies the declared-shape widening.
-// Pin the f64 and i32 forms beside findings/arith-widened-cell-aug2026. probe:
-// design/review-2026-10-12/repro/f-nodes-scalar-01.gx (f-nodes-scalar-01)
 pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
+    out_typ: &Type,
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
     // CR claude for claude: [perf/low] A decimal operand fails here, so `|d: decimal|
@@ -539,7 +530,7 @@ pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     };
     let base = scalar_disc(cx.b, prim);
     let disc = propagate_flags(cx.b, base, &[cv.disc]);
-    Ok(CompiledExpr::new(disc, value))
+    Ok(widen_to_declared_repr(cx, out_typ, prim, CompiledExpr::new(disc, value)))
 }
 
 /// `cast<T>(x)`.
