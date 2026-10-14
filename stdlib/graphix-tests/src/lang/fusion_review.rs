@@ -2,6 +2,17 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
+run!(outlined_loop_stack_space, {
+    use std::fmt::Write;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    src.push_str("{ let f = |a0: Array<i64>| {\n");
+    for i in 1..=500 {
+        writeln!(src, "let a{i} = array::map(a{}, |x| x + 1);", i - 1).unwrap();
+    }
+    src.push_str("a500 }; #[native] f([0]) }");
+    arcstr::ArcStr::from(src.as_str())
+}, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if **a == [Value::I64(500)]); FuseExpect::Jit);
+
 run!(inferred_guard_masks_unmatched_bind, r#"
 {
     let errors = 0;

@@ -85,7 +85,7 @@ pub(super) fn emit_outlined(
     cx.emit_slot_truncates()?;
     let locals: SmallVec<[ValueVar; 16]> =
         cx.env.locals.iter().map(|l| l.words).collect();
-    // CR claude for claude: [bug/high] Each outlined loop gets a fresh stack slot that
+    // XCR claude for claude: [bug/high] Each outlined loop gets a fresh stack slot that
     // holds every local in `cx.env.locals`, not only the ones the chunk reads, and
     // these slots are never reused across sequential loops. A kernel's frame therefore
     // grows as loops x locals. 500 chained `array::map` lets in one lambda overflow the
@@ -96,7 +96,8 @@ pub(super) fn emit_outlined(
     // chunk-frame record per kernel and reuse it, store only the chunk's free locals,
     // and turn on inline stack probes in `isa_with`. probe:
     // design/review-2026-10-12/repro/x-perf-compile-01.gx (x-perf-compile-01)
-    let fbase = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
+    // 2026-10-14 codex: outlined_loop_stack_space passes in all four modes and overflows the JIT stack when frame reuse is reverted. The shared frame is sized to the largest call; marshalling still includes all visible locals. Inline probes are enabled by the helper-spill fix.
+    let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
     let ctx_word =
         CtxWord { init: cx.ctx.init_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
     let header = [
@@ -119,7 +120,6 @@ pub(super) fn emit_outlined(
         cx.b.ins().store(MemFlags::trusted(), disc, fbase, word(base + 2 * i));
         cx.b.ins().store(MemFlags::trusted(), payload, fbase, word(base + 2 * i + 1));
     }
-    let obase = stack_record(cx, OUT_WORDS);
     let chunk_ref = cx.ctx.names.borrow().import_func(id, cx.b.func);
     let chunk = cx.b.ins().func_addr(types::I64, chunk_ref);
     let mut kind = 0;
@@ -159,11 +159,24 @@ pub(super) fn emit_outlined(
     })
 }
 
-/// The address of a fresh `words`-word record on the stack.
-fn stack_record(cx: &mut BodyCx, words: usize) -> ClifValue {
-    let data = StackSlotData::new(StackSlotKind::ExplicitSlot, (8 * words) as u32, 3);
-    let slot = cx.b.create_sized_stack_slot(data);
-    cx.b.ins().stack_addr(types::I64, slot, 0)
+fn stack_record(cx: &mut BodyCx, words: usize) -> (ClifValue, ClifValue) {
+    let size = (8 * (words + OUT_WORDS)) as u32;
+    let slot = match cx.ctx.outline_frame.get() {
+        Some(slot) => {
+            let record = &mut cx.b.func.sized_stack_slots[slot];
+            record.size = record.size.max(size);
+            slot
+        }
+        None => {
+            let data = StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3);
+            let slot = cx.b.create_sized_stack_slot(data);
+            cx.ctx.outline_frame.set(Some(slot));
+            slot
+        }
+    };
+    let out = cx.b.ins().stack_addr(types::I64, slot, 0);
+    let frame = cx.b.ins().stack_addr(types::I64, slot, word(OUT_WORDS));
+    (frame, out)
 }
 
 /// A state channel of the body continued in its chunk: the chunk claims
@@ -275,6 +288,7 @@ fn emit_chunk(
         helper_ids: p.helper_ids,
         helper_refs: HelperRefs::new(p.helper_ids, &names),
         chunks: p.chunks,
+        outline_frame: Cell::new(None),
         chunk: true,
         owned_floor: env.mark(),
         in_flight_bufs: RefCell::new(Vec::new()),

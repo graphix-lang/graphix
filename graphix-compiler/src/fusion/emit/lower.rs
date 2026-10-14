@@ -156,6 +156,7 @@ pub(super) fn compile_into_function<'a>(
         helper_ids,
         helper_refs,
         chunks,
+        outline_frame: Cell::new(None),
         chunk: false,
         owned_floor: 0,
         in_flight_bufs: RefCell::new(Vec::new()),
@@ -505,6 +506,8 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) helper_refs: HelperRefs<'a>,
     /// The body's outlined loops, emitted so far.
     pub(super) chunks: &'a RefCell<Vec<ChunkFn>>,
+    /// An outlined call joins every chunk before another reuses this frame.
+    pub(super) outline_frame: Cell<Option<StackSlot>>,
     /// Emitting an outlined loop's chunk: the chain level its loop sizes
     /// is shared by forked chunks, sized before the fork, read-only here.
     pub(super) chunk: bool,
