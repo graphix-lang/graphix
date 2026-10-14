@@ -116,17 +116,21 @@ The parse-time process counter it replaced made two parses of one
 interface two types.
 
 Runtime shape: `GxAbstract { id, name, params, payload }`
-(`graphix-types/src/abstract_value.rs`), registered once with
-netidx-value; `params` are the type arguments it was built at. Eq and
+(`graphix-types/src/abstract_value.rs`), registered with netidx-value
+when an execution state is built, before any value can decode; `params`
+are the type arguments it was built at. Eq and
 ord follow `(id, payload)` unless a core-trait impl rides the value;
 hash covers the id and the payload, and the id alone where a hook loan
 is installed and an `Eq` impl applies to the id (`eq_applies`: a user
 `Eq` no payload hash could agree with). Hash, eq and ord all follow the
 loan state, so a hashed or ordered container is filled and probed under
-one loan state. Pack writes every field. `Type::Abstract` carries the id and the
-params, so `Display` consults a process-global `AbstractId → name`
-registry filled at `AbstractId::of` — diagnostics print `Box`, not the
-word "abstract".
+one loan state. Pack writes every field; abstract values nest at most 1024
+deep in bytes (each level is a reader around the last), and the writer
+refuses deeper ones with `TooBig`, as the reader would. `Type::Abstract`
+carries the id and the params, so `Display` consults a process-global
+`AbstractId → name` registry, filled when an id is minted and when a
+restored environment decodes — diagnostics print `Box`, not the word
+"abstract".
 
 Rust-backed abstracts register the same path-derived UUIDs
 (`abstract_wrapper!`, `impl_abstract_arc!`'s `= "pkg::mod::Type"`

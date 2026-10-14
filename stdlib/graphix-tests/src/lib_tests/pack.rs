@@ -137,3 +137,13 @@ run!(pack_read_oversize_duration_nanos, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == r#"error:["PackErr", "InvalidFormat"]"#)
 }; FuseExpect::Jit);
+
+// Abstract values nest at most 1024 deep in bytes; the writer refuses a
+// deeper one, as the reader would, instead of writing what never reads.
+run!(pack_abstract_too_deep_is_refused_by_the_writer, r#"{
+    type T = Abstract<[T, null]>;
+    let v = array::fold(array::init(1100, |i| i), T(null), |acc, i| T(acc));
+    select pack::write_bytes(v) { error as e => "[e]", _ => "written" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("TooBig"))
+}; FuseExpect::Jit);

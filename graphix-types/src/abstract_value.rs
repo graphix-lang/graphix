@@ -131,12 +131,30 @@ impl fmt::Debug for GxAbstract {
     }
 }
 
-/// How deeply abstract values may nest in bytes being decoded: each
-/// level is a reader around the last, which netidx walks recursively.
-const MAX_DECODE_DEPTH: usize = 1024;
+/// How deeply abstract values may nest in bytes: each level is a reader
+/// around the last, which netidx walks recursively, so the writer refuses
+/// what no reader could read.
+const MAX_DEPTH: usize = 1024;
 
 thread_local! {
     static DECODE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static ENCODE_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `f` one level deeper in the walk `depth` counts, refused past
+/// [`MAX_DEPTH`].
+fn nested<T>(
+    depth: &'static std::thread::LocalKey<Cell<usize>>,
+    f: impl FnOnce() -> Result<T, PackError>,
+) -> Result<T, PackError> {
+    let d = depth.with(|d| d.get());
+    if d >= MAX_DEPTH {
+        return Err(PackError::TooBig);
+    }
+    depth.with(|c| c.set(d + 1));
+    let r = crate::stack::ensure_sufficient(f);
+    depth.with(|c| c.set(d));
+    r
 }
 
 /// The fields in order, as the derived codec wrote them; every walk of
@@ -152,7 +170,7 @@ impl Pack for GxAbstract {
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        crate::stack::ensure_sufficient(|| {
+        nested(&ENCODE_DEPTH, || {
             self.id.encode(buf)?;
             self.name.encode(buf)?;
             self.params.encode(buf)?;
@@ -160,32 +178,15 @@ impl Pack for GxAbstract {
         })
     }
 
-    // CR claude for claude: [bug/medium] decode refuses abstract values nested deeper
-    // than MAX_DECODE_DEPTH (1024) with TooBig, but encode and encoded_len write them
-    // at any depth. A recursive abstract value deeper than 1024 levels (a linked list
-    // of more than 1024 elements built as `type T = Abstract<[T, null]>`) is written by
-    // pack::write_bytes, published or saved, and can never be read back, by this
-    // process or any subscriber. Either apply the same depth count when encoding, so
-    // the writer fails with TooBig, or remove the cap by decoding without one nested
-    // length-limited reader per level. Whatever the limit ends up being, document it in
-    // design/nominal_abstract_types.md. probe:
-    // design/review-2026-10-12/repro/t-expr-core-02.gx (t-expr-core-02)
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let depth = DECODE_DEPTH.with(|d| d.get());
-        if depth >= MAX_DECODE_DEPTH {
-            return Err(PackError::TooBig);
-        }
-        DECODE_DEPTH.with(|d| d.set(depth + 1));
-        let r = crate::stack::ensure_sufficient(|| {
+        nested(&DECODE_DEPTH, || {
             Ok(GxAbstract {
                 id: Pack::decode(buf)?,
                 name: Pack::decode(buf)?,
                 params: Pack::decode(buf)?,
                 payload: Pack::decode(buf)?,
             })
-        });
-        DECODE_DEPTH.with(|d| d.set(depth));
-        r
+        })
     }
 }
 
