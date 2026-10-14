@@ -249,3 +249,21 @@ modes!(seqq_flush_empties_the_queue);
 modes!(sleep_resets_the_machine);
 modes!(nested_machine_restarts);
 modes!(nested_abort_reads_live);
+
+// An abort that alone reads a bare trigger reads the run's snapshot of it:
+// the busy-dropped fires that follow do not move it.
+async fn abort_reads_trigger_snapshot(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 40 => n + 1, _ => never() };
+        let go = select step { n if n < 20 && n % 2 == 1 => n, _ => never() };
+        seq go; abort(select step - go { 6 => step, _ => never() }) {
+            until step > 30;
+            0
+        }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), Vec::<i64>::new());
+    Ok(())
+}
+modes!(abort_reads_trigger_snapshot);

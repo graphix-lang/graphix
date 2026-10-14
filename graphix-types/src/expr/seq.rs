@@ -209,19 +209,10 @@ fn trigger_snapshot(
     match trigger {
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
-            // CR claude for claude: [bug/medium] The snapshot cell for a bare-variable
-            // trigger is made only when the body reads the name, but the abort clause
-            // is rewritten with this same `visible` map in run_events. So `seq go;
-            // abort(sys::time::after_idle(d, go)) { .. }`, where the body does not read
-            // `go`, reads the live trigger. Each busy-dropped `go` then restarts the
-            // after_idle, and the per-run budget never fires. Adding any read of `go`
-            // to the body fixes it, which contradicts design/seq_blocks.md §9. Make the
-            // cell when the body or the abort reads the name (`reads_name(body, &n) ||
-            // seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), &n))`), and
-            // add a seq_abort pin where only the abort reads the bare trigger. probe:
-            // design/review-2026-10-12/repro/t-seq-04-abort-snapshot.gx (t-seq-04)
+            // the abort clause reads the run's trigger too
             if let Some(n) = simple_ref_name(e)
-                && reads_name(body, &n)
+                && (reads_name(body, &n)
+                    || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), &n)))
             {
                 let c = cell(n.as_str());
                 decls.push(let_bind(e.pos, &c, None, never(e.pos)));
