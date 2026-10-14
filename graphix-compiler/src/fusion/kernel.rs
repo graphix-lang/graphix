@@ -76,33 +76,9 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     redirects: Redirects,
 }
 
-// CR claude for claude: [bug/medium] The activation blocks freed here are uncharged
-// through `stack::record_self_blocks(-1)`. That reaches the runtime's Control only
-// through the `with_control` thread-local, which is set only while `do_cycle` updates
-// nodes. A kernel dropped by `ToGX::Delete`, by `delete_callable` or at shutdown
-// therefore leaves its blocks counted in `self_blocks` and `activations` forever. A
-// REPL or embedder that re-evaluates a recursion under an activation budget then aborts
-// the runtime spuriously: 50 activations leak per deleted f(50), and the 7th run aborts
-// at budget 300, while `--no-fusion` runs all 8 (probe:
-// design/review-2026-10-12/repro/f-kernel-02.py; same leak as t-misc-01). Fix: give
-// FusedKernel a `delete` that frees the trees and chains under `ctx.control`, as
-// `GXLambda::delete` does, and keep Drop as the fallback. Or record the Control a block
-// was charged to when it is made, and uncharge that one, not the thread-local. Also
-// reported as (x-unsafe-02). (f-kernel-02)
 impl<R: Rt, E: UserEvent> Drop for FusedKernel<R, E> {
     fn drop(&mut self) {
-        // Only instance death frees the slot chains and activation trees;
-        // `sleep` does not touch them.
-        // SAFETY: the words are taken out of the state, so each chain and
-        // tree is freed once, by the layout the wrapper describes.
-        for a in self.jit.slot_table_words.iter() {
-            let p = std::mem::replace(&mut self.state[a.rel as usize], 0);
-            unsafe { free_slot_chain(p, a.own_levels as u64, a.leaf.as_deref()) };
-        }
-        for b in self.jit.state_self_blocks.iter() {
-            let p = std::mem::replace(&mut self.state[b.rel as usize], 0);
-            unsafe { free_self_block_tree(p, &b.layout) };
-        }
+        self.free_state();
     }
 }
 
@@ -116,6 +92,21 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
+    fn free_state(&mut self) {
+        // Only instance death frees the slot chains and activation trees;
+        // `sleep` does not touch them.
+        // SAFETY: the words are taken out of the state, so each chain and
+        // tree is freed once, by the layout the wrapper describes.
+        for a in self.jit.slot_table_words.iter() {
+            let p = std::mem::replace(&mut self.state[a.rel as usize], 0);
+            unsafe { free_slot_chain(p, a.own_levels as u64, a.leaf.as_deref()) };
+        }
+        for b in self.jit.state_self_blocks.iter() {
+            let p = std::mem::replace(&mut self.state[b.rel as usize], 0);
+            unsafe { free_self_block_tree(p, &b.layout) };
+        }
+    }
+
     pub(crate) fn new(
         spec: Expr,
         typ: Type,
@@ -296,6 +287,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
         self.feeders.iter_mut().for_each(f)
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        crate::stack::with_control(ctx.control, || self.free_state());
+        self.for_each_child_mut(&mut |node| node.delete(ctx));
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {

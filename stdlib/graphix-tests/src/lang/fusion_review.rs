@@ -2,6 +2,56 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
+#[tokio::test]
+async fn deleted_kernel_releases_activation_budget() -> Result<()> {
+    use arcstr::literal;
+    use graphix_package_core::testing::{Mode, fixture_runtime, next_update};
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    for mode in Mode::ALL {
+        let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |ctx| {
+            ctx.control.set_activation_budget(300);
+        })
+        .await?;
+        let definitions = ctx
+            .rt
+            .compile(literal!(
+                r#"
+            let g = |x: i64| x + 1;
+            let rec f = |n: i64| -> i64 select n < 1 {
+                true => 0,
+                false => f(n - 1) + g(n)
+            }
+        "#
+            ))
+            .await?;
+        let base = ctx.rt.control().live_activations();
+        for _ in 0..8 {
+            let result = ctx.rt.compile(literal!("#[native] f(50)")).await?;
+            let id = result.exprs.last().unwrap().id;
+            let value =
+                next_update(&mut rx, id, Instant::now() + Duration::from_secs(5)).await?;
+            assert_eq!(value, Value::I64(1325), "{mode:?}");
+            if !mode.node_walk() {
+                assert!(ctx.rt.control().live_self_blocks() >= 50, "vacuous kernel test");
+            }
+            drop(result);
+            let (blocks, activations) = ctx
+                .rt
+                .with_ctx(|ctx| {
+                    (ctx.control.live_self_blocks(), ctx.control.live_activations())
+                })
+                .await?;
+            assert_eq!(blocks, 0, "{mode:?}");
+            assert_eq!(activations, base, "{mode:?}");
+        }
+        drop(definitions);
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
 run!(outlined_loop_stack_space, {
     use std::fmt::Write;
     let mut src = poolshark::local::LPooled::<String>::take();
