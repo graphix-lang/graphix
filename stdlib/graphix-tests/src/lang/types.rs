@@ -2955,3 +2955,17 @@ run!(
     refused("Array<f64> does not contain Array<string>"),
     "/test.gx" => "let g = |x: (i64, Array<f64>)| 0; let result = g((1, [\"a\"]))"
 ; FuseExpect::None);
+
+// A probe of a union member answers as its commit would: the element's
+// bound cell fails 'a: Number in the first member, so the second takes
+// the argument and 'q stays free for y.
+run!(
+    probe_checks_an_open_cells_bounds_against_a_bound_cell,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: [(Any, 'q, Array<'a>), (string, string, Array<[string, null]>)], y: 'q| -> i64 0;
+        let s = "x";
+        let v = [s];
+        let result = f(("s", "t", v), 3)
+    "#
+);

@@ -1644,13 +1644,7 @@ impl Type {
         let (addr0, addr1) = (t0.cell_addr(), t1.cell_addr());
         let cyc0 = || would_cycle_inner(addr0, tt1);
         let cyc1 = || would_cycle_inner(addr1, tt0);
-        // CR claude for claude: [risk/low] `refuse` marks both cells cycle_refused even
-        // in a probe, which should bind nothing. Every other side effect in this file
-        // (mark_bottom_fed, bind_bottom_required, copy) is gated on `commit`. If a
-        // probe of a union member the commit never takes meets the occurs check, the
-        // cell is still flagged, and a cell left open then fails its terminal settle
-        // with the infinite-type error, not ⊥. Fix: mark the cells only under Commit. A
-        // probe returns the verdict alone. (t-contains-12)
+        // a probe answers the verdict alone; a commit records the refusal
         let refuse = || {
             if graphix_dbg_cycle_bt() {
                 eprintln!(
@@ -1658,8 +1652,10 @@ impl Type {
                     std::backtrace::Backtrace::force_capture()
                 );
             }
-            t0.mark_cycle_refused();
-            t1.mark_cycle_refused();
+            if commit {
+                t0.mark_cycle_refused();
+                t1.mark_cycle_refused();
+            }
             Ok(true)
         };
         match (t0.binding(), t1.binding()) {
@@ -1681,22 +1677,11 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
-                // CR claude for claude: [bug/medium] An open cell meeting a bound cell
-                // checks its own constraints only when committing. A probe answers true
-                // whatever t0's conjuncts say. The mirror arm (Some(b0), None) does the
-                // same for t1. The (TVar, t1) arm of contains_int checks
-                // cell_constraints_ok in probes too, so the verdict depends on whether
-                // the rhs is a bound cell or its binding. set_commit trusts the probe
-                // and commits that member. The commit binds earlier cells (a 'q), then
-                // fails on the constraint, and the next member is tried with those
-                // binds left in place. `f(("s", "t", v), 3)` over `x: [(Any, 'q,
-                // Array<'a: Number>), (string, string, Array<[string, null]>)], y: 'q`
-                // is refused with `'q: string does not contain i64` when `v = [s]`, and
-                // accepted when v is annotated. Fix: run cell_constraints_ok(t0, env,
-                // hist, &b1) (t1/&b0 in the mirror) before the commit test in both
-                // arms, and return false on failure in a probe too. probe:
-                // design/review-2026-10-12/repro/t-contains-04.gx (control
-                // t-contains-04-control.gx, runner t-contains-03.sh) (t-contains-03)
+                // a probe answers as the commit would: the cell's own
+                // conjuncts must admit the binding
+                if !cell_constraints_ok(t0, env, hist, &b1)? {
+                    return Ok(false);
+                }
                 if commit && !t0.is_rigid() {
                     if graphix_dbg_bind() {
                         eprintln!(
@@ -1705,9 +1690,7 @@ impl Type {
                             t1.read().id.inner()
                         );
                     }
-                    if !cell_constraints_ok(t0, env, hist, &b1)?
-                        || !commit_cell_constraints(t0, flags, env, hist, &b1)?
-                    {
+                    if !commit_cell_constraints(t0, flags, env, hist, &b1)? {
                         return Ok(false);
                     }
                     t0.copy(t1, b1);
@@ -1724,6 +1707,9 @@ impl Type {
                 if (rigid || commit) && t1.is_rigid() {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
+                if !cell_constraints_ok(t1, env, hist, &b0)? {
+                    return Ok(false);
+                }
                 if commit && !t1.is_rigid() {
                     if graphix_dbg_bind() {
                         eprintln!(
@@ -1732,9 +1718,7 @@ impl Type {
                             t0.read().id.inner()
                         );
                     }
-                    if !cell_constraints_ok(t1, env, hist, &b0)?
-                        || !commit_cell_constraints(t1, flags, env, hist, &b0)?
-                    {
+                    if !commit_cell_constraints(t1, flags, env, hist, &b0)? {
                         return Ok(false);
                     }
                     t1.copy(t0, b0);
