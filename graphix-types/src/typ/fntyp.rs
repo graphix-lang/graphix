@@ -751,20 +751,6 @@ impl FnType {
     /// Map each of the signature's own open quantifiers to a fresh cell
     /// in `known`, its conjuncts copied through `walk`: every call picks
     /// them anew, whatever gate owns them.
-    // CR claude for claude: [bug/medium] A signature's own quantifiers are found by
-    // name through collect_tvars, which keeps the first cell seen per name, nested fn
-    // types included. Type::alias_tvars, however, gives a rank-2 formal's `fn<'a: C>` a
-    // cell of its own even when the enclosing definition also declares 'a. So when the
-    // formal comes first, fresh_quantifiers freshens the inner cell and leaves the
-    // outer 'a shared: the check refuses a valid call ("the argument is not polymorphic
-    // in 'a"). In the other order the check passes, but the instance signature loses
-    // the formal's quantifier, InstanceTypes::new returns None and the build refuses
-    // the program, a check/build split. has_open_quantifier, open_quantifier_gates and
-    // constraint_pairs (`quantifiers.contains(&tv.name)`) share the name lookup. Fix:
-    // collect the quantifiers' cells with a walk that stops at a nested fn type
-    // redeclaring the name, the way alias_tvars and check_tvars_declared already scope
-    // it, and pin both parameter orders. probe:
-    // design/review-2026-10-12/repro/c-lambda-03.gx (c-lambda-03)
     fn fresh_quantifiers(
         &self,
         known: &mut AHashMap<usize, TVar>,

@@ -2963,3 +2963,17 @@ run!(
         let result = h(["a", "b"])
     "#
 ; FuseExpect::None);
+
+// A rank-2 formal's quantifier named like the definition's own is its
+// own, whichever parameter comes first: check and build agree.
+run!(
+    shadowing_rank2_formal_after,
+    |v: Result<&Value>| matches!(v, Ok(Value::F64(2.5))),
+    "/test.gx" => "let f = 'a: Number |y: 'a, g: fn<'a: Number>(x: 'a) -> 'a| -> 'a g(y); let result = f(2.5, |x| x)"
+);
+
+run!(
+    shadowing_rank2_formal_before,
+    |v: Result<&Value>| matches!(v, Ok(Value::F64(2.5))),
+    "/test.gx" => "let f = 'a: Number |g: fn<'a: Number>(x: 'a) -> 'a, y: 'a| -> 'a g(y); let result = f(|x| x, 2.5)"
+);
