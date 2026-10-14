@@ -738,14 +738,24 @@ impl FnType {
     /// A quantifier of this signature no call has picked: the type is a
     /// scheme, not the type of a call.
     pub fn has_open_quantifier(&self) -> bool {
+        self.any_open_quantifier(|_| true)
+    }
+
+    /// A rank-2 formal in its definition's body: its open quantifiers are
+    /// held rigid there, so its value is still any instance of itself.
+    fn is_rigid_formal(&self) -> bool {
+        self.any_open_quantifier(|tv| tv.is_rigid())
+    }
+
+    fn any_open_quantifier(&self, also: impl Fn(&TVar) -> bool) -> bool {
         if self.quantifiers.is_empty() {
             return false;
         }
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut named);
-        named
-            .iter()
-            .any(|(name, tv)| self.quantifiers.contains(name) && tv.open_cell().is_some())
+        named.iter().any(|(name, tv)| {
+            self.quantifiers.contains(name) && tv.open_cell().is_some() && also(tv)
+        })
     }
 
     /// Map each of the signature's own open quantifiers to a fresh cell
@@ -993,22 +1003,17 @@ impl FnType {
         // A quantifier self has not picked stands for every type its bound
         // admits, since each call through the value picks it anew: t must
         // fit it held rigid, wherever the type stands.
-        // CR claude for claude: [bug/medium] Only self's open quantifiers are gated
-        // here. t's own open quantifiers stay as they stand, and inside a definition
-        // body a rank-2 formal's quantifier is rigid. So `fn<'b: Any>(x: 'b) -> 'b ⊇
-        // fn<'c: Any>(x: 'c) -> 'c` reaches the rigid-pair arm of `TVar` contains,
-        // which accepts only through a conjunct of t's variable, and is refused.
-        // Forwarding a rank-2 formal to another rank-2 formal is therefore refused
-        // (`app(g)`), and so is a `let` rebinding of it or storing it in a typedef
-        // field of the same rank-2 type. The same program passes when both sides name
-        // one typedef (one shared cell) or when written as `app(|x| g(x))`. t's value
-        // is polymorphic: instantiate its open quantifiers fresh (as
-        // `fresh_quantifiers` does for a call) before the comparison, so self's rigid
-        // 'b can bind them, subject to t's bounds being implied by self's. Pin it next
-        // to `rank2_formal_applied_at_a_number`. probe:
-        // design/review-2026-10-12/repro/x-typecheck-generics-05.gx
-        // (x-typecheck-generics-05)
         let _gates = self.open_quantifier_gates();
+        // a rank-2 formal passed on is any instance of itself: its
+        // quantifiers are fresh for this comparison, so self's bind them
+        let fresh;
+        let t = match t.is_rigid_formal() {
+            true => {
+                fresh = t.shared_call();
+                &fresh
+            }
+            false => t,
+        };
         let (pairs, ok) = self.align(t);
         if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
             return Ok(false);

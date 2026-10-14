@@ -2977,3 +2977,25 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::F64(2.5))),
     "/test.gx" => "let f = 'a: Number |g: fn<'a: Number>(x: 'a) -> 'a, y: 'a| -> 'a g(y); let result = f(|x| x, 2.5)"
 );
+
+// A rank-2 formal passes on to another rank-2 formal: its value is any
+// instance of itself. One bounded tighter than the target is refused.
+run!(
+    rank2_formal_forwards_to_rank2,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        let app = |f: fn<'b: Any>(x: 'b) -> 'b| f(1);
+        let app2 = |g: fn<'c: Any>(x: 'c) -> 'c| app(g);
+        let result = app2(|x| x)
+    "#
+);
+
+run!(
+    rank2_formal_bounded_tighter_is_refused,
+    refused("does not contain fn<'c: Number>"),
+    "/test.gx" => r#"
+        let app = |f: fn<'b: Any>(x: 'b) -> 'b| f("s");
+        let app2 = |g: fn<'c: Number>(x: 'c) -> 'c| app(g);
+        let result = app2(|x| x)
+    "#
+; FuseExpect::None);
