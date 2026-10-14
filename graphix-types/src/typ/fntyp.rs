@@ -395,13 +395,10 @@ impl FnType {
 
     /// The declared quantifiers' conjuncts, as [`Self::constraint_pairs`]:
     /// the part of the constraints that is the signature's identity.
-    // CR claude for claude: [perf/low] With no declared quantifiers (every inferred
-    // signature) the view is always empty, but it still runs `sig_tvars` over the whole
-    // signature before discarding every cell. `PartialEq` and `Ord` for `FnType` call
-    // it twice whenever the shapes compare equal, which is the `union_identical` and
-    // set-sort path of the checker, and `Display` once. Return an empty view when
-    // `self.quantifiers` is empty. (t-fntyp-11)
     pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
+        if self.quantifiers.is_empty() {
+            return LPooled::take();
+        }
         self.constraint_pairs(|tv| self.quantifiers.contains(&tv.name))
     }
 
@@ -1533,17 +1530,7 @@ impl PrettyDisplay for FnType {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let constraints = printed_quantifiers(self);
         if constraints.is_empty() {
-            // CR claude for claude: [readability/low] FnType::fmt_pretty_inner always
-            // breaks after `fn(`, even when there are no args or vargs. When a
-            // zero-argument fn type does not fit, it prints `fn(` and then `) -> T` on
-            // its own line with nothing between. At width 20, `val h: fn(x: &mut (fn()
-            // -> i64)) -> ..` gives `x: &mut fn(\n ) -> i64`. Each argument type also
-            // gets a second `buf.nested` inside the outer one, so a nested `fn<..>(`
-            // closes at a different column than it opens. Fix: with no args and no
-            // vargs, write `fn() -> ` (or `fn<..>() -> `) and lay out only the return
-            // type, and drop the inner nested around each argument's type.
-            // (x-formatter-04)
-            writeln!(buf, "fn(")?;
+            write!(buf, "fn(")?;
         } else {
             writeln!(buf, "fn<")?;
             buf.nested(|buf| {
@@ -1564,15 +1551,22 @@ impl PrettyDisplay for FnType {
                 }
                 Ok(())
             })?;
-            writeln!(buf, ">(")?;
+            write!(buf, ">(")?;
         }
+        // with no arguments the return type follows `fn(`'s `)` on its line
+        if self.args.is_empty() && self.vargs.is_none() {
+            write!(buf, ") -> ")?;
+            Ret::of(&self.rtype).fmt_pretty(buf)?;
+            return self.pretty_throws(buf);
+        }
+        writeln!(buf)?;
         buf.nested(|buf| {
             for (i, a) in self.args.iter().enumerate() {
                 if is_self_param(a) {
                     writeln!(buf, "{}", a.typ)?;
                 } else {
                     write!(buf, "{}", ArgPrefix(&a.kind))?;
-                    buf.nested(|buf| a.typ.fmt_pretty(buf))?;
+                    a.typ.fmt_pretty(buf)?;
                 }
                 if i < self.args.len() - 1 || self.vargs.is_some() {
                     buf.kill_newline();
@@ -1581,12 +1575,18 @@ impl PrettyDisplay for FnType {
             }
             if let Some(vargs) = &self.vargs {
                 write!(buf, "@args: ")?;
-                buf.nested(|buf| vargs.fmt_pretty(buf))?;
+                vargs.fmt_pretty(buf)?;
             }
             Ok(())
         })?;
         write!(buf, ") -> ")?;
         Ret::of(&self.rtype).fmt_pretty(buf)?;
+        self.pretty_throws(buf)
+    }
+}
+
+impl FnType {
+    fn pretty_throws(&self, buf: &mut PrettyBuf) -> fmt::Result {
         if self.suppress_throws() {
             Ok(())
         } else {
@@ -1644,14 +1644,7 @@ mod tests {
     }
 }
 
-// CR claude for claude: [doc-drift/low] The `//` lines above `shape_len` describe a
-// constraints wire slot that decode re-seeds onto the cells;
-// `shape_encode`/`shape_decode` have no such slot and decode re-seeds nothing. Delete
-// those two lines and keep the `///` doc, which states what is true (the conjuncts
-// travel with their cells). (t-fntyp-13)
 impl FnType {
-    // The constraints wire slot is a derived view of the cells: decode
-    // re-seeds its entries onto the cells (`add_cell_constraint` dedups).
     /// The conjuncts travel with their cells: each TVar writes its own,
     /// or the image's shared cell definition holds them.
     fn shape_len(&self) -> usize {

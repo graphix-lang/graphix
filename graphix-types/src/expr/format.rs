@@ -1008,6 +1008,16 @@ mod tests {
         assert!(format!("{e:#}").contains("line: 3"), "{e:#}");
     }
 
+    // a zero-argument fn type keeps `fn()` whole at any width
+    #[test]
+    fn an_empty_fn_type_never_breaks_inside_its_parens() {
+        let src = "val h: fn(x: &mut fn() -> i64) -> i64;";
+        let cfg = FormatConfig { width: 20, ..FormatConfig::default() };
+        let out = format_source(SourceKind::Interface, src, &cfg).unwrap();
+        assert!(out.contains("x: &mut fn() -> i64"), "{out}");
+        stable(SourceKind::Interface, src);
+    }
+
     #[test]
     fn primitive_sets_print_as_written() {
         stable(SourceKind::Interface, "type Sint = [i8, i16, i32, z32, i64, z64]");
