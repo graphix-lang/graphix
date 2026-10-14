@@ -3,6 +3,50 @@ use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
 #[tokio::test]
+async fn late_callee_dispatch_primes_constants() -> Result<()> {
+    use arcstr::literal;
+    use graphix_package_core::{
+        PrintSink,
+        testing::{Mode, fixture_runtime, updates_until_quiet},
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    for mode in Mode::ALL {
+        let sink = PrintSink::default();
+        let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |ctx| {
+            ctx.libstate.set(sink.clone());
+        })
+        .await?;
+        ctx.rt.control().reset_invocations();
+        let result = ctx
+            .rt
+            .compile(literal!(
+                r#"{
+                    let k = 0;
+                    k <- select k < 6 { true => k + 1, false => never() };
+                    let g = |n: i64| -> i64 { println("first"); n };
+                    let f = |s: i64| -> i64 select s { 0 => 0, n => g(n) };
+                    #[native] f(select k < 3 { true => 0, false => k })
+                }"#
+            ))
+            .await?;
+        let values = updates_until_quiet(
+            &mut rx,
+            result.exprs[0].id,
+            Duration::from_millis(100),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await?;
+        assert_eq!(values, [0, 0, 0, 3, 4, 5, 6].map(Value::I64), "{mode:?}");
+        assert_eq!(sink.take(), "first\n", "{mode:?}");
+        assert!(mode.node_walk() || ctx.rt.control().invocations().1 > 0);
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn deleted_kernel_releases_activation_budget() -> Result<()> {
     use arcstr::literal;
     use graphix_package_core::testing::{Mode, fixture_runtime, next_update};

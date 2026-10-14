@@ -365,34 +365,17 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// of its own.
 fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     let word = match cx.env.loop_depth {
-        // CR claude for claude: [risk/low] In a callee body (`Channel::Site`),
-        // `claim_state_word` returns None, so a root-level call site there has no
-        // first-call word. Its callee then sees only this body's init flag: a callee
-        // first reached late (under a select arm, or a deeper self-call activation)
-        // runs without the init view the node-walk's first dispatch gives it. Today a
-        // scrutinee fire and the arm-entry blockers mask the difference.
-        // `SlotFlags::new` and `claim_block_run` already claim from the body's own
-        // channel at depth 0. Do the same here: `claim_site_word` wrapped as
-        // `StateWord::Guarded` in a callee, as the design doc's first-call rule
-        // requires. (f-scaffold-body-03)
-        // CR claude for claude: [bug/high] In a callee body, claim_state_word always
-        // returns None, because callee bodies claim on Channel::Site. So a call site at
-        // depth 0 inside a fused callee passes the caller's init view, and the doc
-        // comment's "forced on this site's first call ever" does not hold. Take a
-        // callee g first reached in a later cycle, for example from an arm of fused
-        // callee f entered after f's first call. g runs with init=0, so its constants
-        // do not fire, and an Io with a constant trigger in it (`dbg(7)`,
-        // `println("..")`) never performs, while the node-walk primes g's first
-        // dispatch and performs it. arm_io_blocker does not catch this: it judges only
-        // the call's arguments as the trigger. Fix: in a callee body, take the
-        // first-call word from the site channel (claim_site_word, used as
-        // StateWord::Guarded over site_ptr), so first_use forces init once per caller
-        // instance. f-call-flow-03 is the tail-loop sibling. probe:
-        // design/review-2026-10-12/repro/f-call-flow-01.gx (f-call-flow-01)
-        0 => cx.claim_state_word().map(|off| {
-            let sp = cx.state_ptr();
-            StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
-        }),
+        0 => match cx.ctx.claims {
+            Channel::State => cx.claim_state_word().map(|off| {
+                let sp = cx.state_ptr();
+                StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
+            }),
+            Channel::Site => cx.claim_site_word().map(|off| {
+                let base = cx.site_ptr();
+                let addr = cx.b.ins().iadd_imm(base, off as i64);
+                StateWord::Guarded { base, addr }
+            }),
+        },
         _ => cx.slot_word(site),
     };
     let init = cx.first_use(word);
