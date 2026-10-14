@@ -66,8 +66,10 @@ The `ctx.fusion.enabled` check runs once in `compile()`, not per recursion.
 
 Block liveness uses a backward pass over the statements, accumulating
 later reads and connect targets. A statement can be discarded only if
-none of its bindings are needed later and it is effect-free. Each
-statement's references are collected once per block emission.
+none of its bindings are needed later and it carries neither an effect
+nor a `?` or `$` diagnostic. Every `?` and `$` keeps its statement live, even
+when its result is unused. Each statement's references are collected
+once per block emission.
 
 Startup measurements and the profiling interface are described in
 [`jit_startup.md`](jit_startup.md).
@@ -151,9 +153,10 @@ each was obvious in hindsight and invisible in advance.
    function of the kernel's inputs (the raise queue,
    `strict_fusion.md`). Dead-statement elimination
    (`stmt_subtree_effect_free`, `flow.rs`) is conservative by
-   construction — every CallSite counts as effectful — and a
-   statement binds whatever its subtree binds. The error DIAGNOSTICS of
-   `$`, handler-less `?` and unchecked arith are not effects. `$` and
+   construction — every CallSite, Qop and OrNever keeps its statement live — and
+   a statement binds whatever its subtree binds. Error diagnostics do
+   not change a node's effect classification, but a discarded `?` or `$`
+   must still report its error. `$` and
    handler-less `?` log the swallowed error from both engines (the
    kernel through `graphix_swallowed_error`, against an interned
    site string); unchecked arith logs from the node-walk only

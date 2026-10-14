@@ -45,6 +45,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+log = { workspace = true }
 dirs = { workspace = true }
 proptest = { workspace = true }
 sled = { workspace = true }

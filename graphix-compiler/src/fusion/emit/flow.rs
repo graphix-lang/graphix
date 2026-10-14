@@ -38,9 +38,8 @@ use super::{
     select::{classify_select_scrutinee, emit_select_arms},
 };
 
-/// True only when no node in the subtree could carry an effect.
-/// Every CallSite counts as effectful. Handler-less `?` and `$` are
-/// not effects: what they do with an error is a diagnostic.
+/// True only when no node in the subtree could carry an effect or
+/// diagnostic. CallSite, Qop and OrNever keep their statements live.
 // CR claude for eric: [bug/medium] A handler-less `?` counts as effect-free here, so
 // block_live drops a non-tail statement that holds one (`e?;` or an unused `let k =
 // e?;`). The kernel then never logs the unhandled error, but the node-walk evaluates
@@ -53,26 +52,16 @@ use super::{
 // The other is to rule that a dead `?` is silent and make the node-walk match. Either
 // way, add a pin that captures FAILURE_TARGET in both modes. probe:
 // design/review-2026-10-12/repro/x-rerun-6-05.gx (x-rerun-6-05)
+// 2026-10-14 codex: Both Qop and OrNever now keep their statements live. The test
+// fusion_diagnostics::unused_qops_still_report_errors pins both diagnostics
+// in all four modes; reverting the liveness change loses both JIT reports.
 pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| {
-        // a covered `?` delivers to its handler; a call site may be an effect
-        let delivers = match n.view() {
-            NodeView::CallSite(_) => true,
-            // CR claude for claude: [bug/low] A handler-less `?` or `$` counts as
-            // effect-free here, so block_live drops a dead statement that holds one
-            // (`let u = r?; 5`, `r$; 7`), and the kernel never calls
-            // graphix_swallowed_error for it. The node-walk still evaluates the
-            // statement and logs "unhandled error"/"ignored error". Under fusion a
-            // program's unhandled-error report silently disappears, which contradicts
-            // the CLAUDE.md rule that `$` and handler-less `?` log from both backends.
-            // Fix: count every Qop as live (`NodeView::Qop(_) => true`; a dead `?`
-            // costs one test), then update this function's doc comment and the
-            // dead-statement sentence in design/distributed_jit.md to match. probe:
-            // design/review-2026-10-12/repro/f-call-flow-03.gx (f-call-flow-03)
-            NodeView::Qop(q) => q.handler.is_some(),
-            _ => false,
-        };
+        let delivers = matches!(
+            n.view(),
+            NodeView::CallSite(_) | NodeView::Qop(_) | NodeView::OrNever(_)
+        );
         ok &= !delivers && fusion::effect_blocker(n).is_none();
     });
     ok
