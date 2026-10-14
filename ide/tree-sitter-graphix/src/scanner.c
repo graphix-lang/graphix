@@ -174,7 +174,7 @@ bool tree_sitter_graphix_external_scanner_scan(
         }
         if (lexer->lookahead == '"') {
           lexer->advance(lexer, false);
-          while (lexer->lookahead != 0) {
+          while (!lexer->eof(lexer)) {
             if (lexer->lookahead == '"') {
               lexer->advance(lexer, false);
               int seen = 0;
@@ -284,7 +284,7 @@ bool tree_sitter_graphix_external_scanner_scan(
     // content (the splice is the marked thing, \[expr]); stop only at
     // backslash, and at a quote that begins the closing """.
     bool has = false;
-    while (lexer->lookahead != 0) {
+    while (!lexer->eof(lexer)) {
       int32_t c = lexer->lookahead;
       if (c == '\\') break;
       if (c == '"') {
@@ -324,7 +324,7 @@ bool tree_sitter_graphix_external_scanner_scan(
   // meaning: '"' (close string), '\\' (escape), '[' (interpolation in
   // regular strings, or literal token in value_string).
   bool has_content = false;
-  while (lexer->lookahead != 0) {
+  while (!lexer->eof(lexer)) {
     if (lexer->lookahead == '"' || lexer->lookahead == '\\' ||
         lexer->lookahead == '[' || lexer->lookahead == ']') {
       break;

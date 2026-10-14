@@ -352,7 +352,46 @@ fn modpath() -> impl Strategy<Value = ModPath> {
 }
 
 fn constant() -> impl Strategy<Value = Expr> {
-    value().prop_map(|v| ExprKind::Constant(v).to_expr_nopos())
+    (value(), str_form()).prop_map(|(v, form)| {
+        let string = matches!(v, Value::String(_));
+        let mut e = ExprKind::Constant(v).to_expr_nopos();
+        if string {
+            e.str_form = form;
+        }
+        e
+    })
+}
+
+fn str_form() -> impl Strategy<Value = StrForm> {
+    prop_oneof![Just(StrForm::Quoted), Just(StrForm::Raw), Just(StrForm::Template)]
+}
+
+/// The delimiters of every string in `e`, in order: what printing as
+/// written must keep. An interpolation's string arguments are its text,
+/// which has no delimiters of its own.
+fn str_forms(e: &Expr, out: &mut Vec<StrForm>) {
+    match &e.kind {
+        ExprKind::Constant(Value::String(_)) => out.push(e.str_form),
+        ExprKind::StringInterpolate { args } => {
+            out.push(e.str_form);
+            for a in args.iter() {
+                if !matches!(a.kind, ExprKind::Constant(Value::String(_))) {
+                    str_forms(a, out)
+                }
+            }
+            return;
+        }
+        _ => (),
+    }
+    e.for_each_child(&mut |c| str_forms(c, out))
+}
+
+/// `e0` and `e1` write their strings between the same delimiters.
+fn same_str_forms(e0: &Expr, e1: &Expr) -> bool {
+    let (mut f0, mut f1) = (Vec::new(), Vec::new());
+    str_forms(e0, &mut f0);
+    str_forms(e1, &mut f1);
+    f0 == f1
 }
 
 fn reference() -> impl Strategy<Value = Expr> {
@@ -2187,23 +2226,10 @@ proptest! {
 
     #[test]
     fn expr_round_trip(s in expr()) {
-        // CR claude for claude: [test-gap/low] Every round-trip property prints
-        // canonically. PrintFlag::AsWritten, the mode graphix fmt prints in, is never
-        // run on a generated tree. That leaves the as-written paths covered only by
-        // format.rs's example tests and the hand-run gxfmt corpus: string delimiters
-        // chosen from str_form, written field and union order, and use-tree merging. It
-        // also means the `template` choice in interpolation() does nothing, because the
-        // canonical printer ignores str_form and check never compares it. Fix: run
-        // expr_round_trip and expr_pp_round_trip again under AsWritten. Have the
-        // generator set str_form on string constants too, and make check compare
-        // str_form in that mode. (tests-expr-03)
-        // 2026-10-14 claude: expr_round_trip and expr_pp_round_trip print under
-        // AsWritten now (comments print only as written, t-print-03); the generator still
-        // sets no str_form and check still does not compare it, and the canonical form has
-        // no round trip of its own.
         let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
         let e = parse_one(st.as_str()).unwrap();
-        prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
+        prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}");
+        prop_assert!(same_str_forms(&s, &e), "{st}\n{s:?}\n{e:?}")
     }
 
     #[test]
@@ -2223,7 +2249,8 @@ proptest! {
         for w in [0, 80, width] {
             let st = format_with_flags(PrintFlag::AsWritten, || s.to_string_pretty(w));
             let e = parse_one(st.as_str()).unwrap();
-            prop_assert!(check(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}")
+            prop_assert!(check(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}");
+            prop_assert!(same_str_forms(&s, &e), "width {w}\n{st}\n{s:?}\n{e:?}")
         }
     }
 
