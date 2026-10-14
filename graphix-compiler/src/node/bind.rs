@@ -750,16 +750,12 @@ impl Ref {
                     true => (Type::empty_tvar(), Signature::Pending),
                     false => (bind.typ.clone(), Signature::Binding),
                 };
-                let def_pos = bind.pos;
-                let def_ori = bind.ori.clone();
                 if ctx.env.ide.is_lsp() {
                     ctx.env.push_reference(ReferenceSite {
                         pos: spec.pos,
                         ori: spec.ori.clone(),
                         name: name.clone(),
                         bind_id,
-                        def_pos,
-                        def_ori,
                     });
                 }
                 Ok(Self::with_signature(ctx, bind_id, typ, signature, top_id, spec))

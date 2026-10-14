@@ -1501,10 +1501,10 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (id, def_pos, def_ori) =
+        let id =
             match ctx.env.lookup_bind(&scope.lexical, name).map_err(|e| e.at(&spec))? {
                 None => bailat!(spec, "{name} is undefined"),
-                Some((_, b)) => (b.id, b.pos, b.ori.clone()),
+                Some((_, b)) => b.id,
             };
         // a `<-` target is never a static call target
         ctx.mark_connect_target(id);
@@ -1514,8 +1514,6 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                 ori: spec.ori.clone(),
                 name: name.clone(),
                 bind_id: id,
-                def_pos,
-                def_ori,
             });
         }
         let node = compile(ctx, flags, value.clone(), scope, top_id)?;
@@ -1687,10 +1685,10 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (src_id, def_pos, def_ori) =
+        let src_id =
             match ctx.env.lookup_bind(&scope.lexical, name).map_err(|e| e.at(&spec))? {
                 None => bailat!(spec, "{name} is undefined"),
-                Some((_, b)) => (b.id, b.pos, b.ori.clone()),
+                Some((_, b)) => b.id,
             };
         if ctx.env.ide.is_lsp() {
             ctx.env.push_reference(ReferenceSite {
@@ -1698,8 +1696,6 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 ori: spec.ori.clone(),
                 name: name.clone(),
                 bind_id: src_id,
-                def_pos,
-                def_ori,
             });
         }
         ctx.record_ref(src_id, top_id);

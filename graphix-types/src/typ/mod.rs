@@ -2477,8 +2477,8 @@ impl Type {
                 })?;
                 let ResolvedRef {
                     canonical_scope,
-                    pos: def_pos,
-                    ori: def_ori,
+                    pos: _,
+                    ori: _,
                     params: def_params,
                     typ: def_typ,
                 } = &*resolved;
@@ -2492,8 +2492,6 @@ impl Type {
                             ori: ori.clone(),
                             name: name.clone(),
                             canonical_scope: canonical_scope.clone(),
-                            def_pos: *def_pos,
-                            def_ori: def_ori.clone(),
                         });
                     }
                 }
@@ -2582,21 +2580,15 @@ impl Type {
         ensure_sufficient(|| match self {
             Type::Ref(tr) => {
                 if let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) {
-                    let (canonical_scope, def_pos, def_ori) = match tr.resolve_pure(env) {
-                        Some(r) => (r.canonical_scope.clone(), r.pos, r.ori.clone()),
-                        None => (
-                            fallback_scope.clone(),
-                            SourcePosition::default(),
-                            ori.clone(),
-                        ),
+                    let canonical_scope = match tr.resolve_pure(env) {
+                        Some(r) => r.canonical_scope.clone(),
+                        None => fallback_scope.clone(),
                     };
                     env.push_type_ref(crate::ide::TypeRefSite {
                         pos,
                         ori: ori.clone(),
                         name: tr.name.clone(),
                         canonical_scope,
-                        def_pos,
-                        def_ori,
                     });
                 }
                 for p in tr.params.iter() {
