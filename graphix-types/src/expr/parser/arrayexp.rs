@@ -1,6 +1,6 @@
 use crate::expr::{
     Expr, ExprKind,
-    parser::{csep, expr, sep_by_tok, spaces, spstring, sptoken},
+    parser::{csep, expr, grow::because, sep_by_tok, spaces, spstring, sptoken},
 };
 use combine::{
     ParseError, Parser, RangeStream, attempt, between,
@@ -10,7 +10,7 @@ use combine::{
     parser::combinator::recognize,
     position,
     stream::{Range, StreamErrorFor, position::SourcePosition},
-    token, unexpected_any, value,
+    token, value,
 };
 use compact_str::CompactString;
 use netidx_value::Value;
@@ -70,7 +70,7 @@ where
     ))
     .then(|idx: CompactString| match idx.parse::<i64>() {
         Ok(i) => value(Value::I64(i)).right(),
-        Err(_) => unexpected_any("expected int").left(),
+        Err(_) => because("expected int").left(),
     })
 }
 

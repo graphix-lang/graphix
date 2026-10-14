@@ -509,7 +509,7 @@ where
                     ),
                 );
             }
-            unexpected_any("can't use keyword as a function or variable name").left()
+            grow::because("can't use keyword as a function or variable name").left()
         } else {
             value(s).right()
         }
@@ -552,7 +552,7 @@ where
 {
     ident(true).then(|s| {
         if is_reserved(&s) {
-            unexpected_any("can't use keyword as a type name").left()
+            grow::because("can't use keyword as a type name").left()
         } else {
             value(s).right()
         }
@@ -732,7 +732,7 @@ where
             structure_pattern().skip(optional(attempt(spaces().with(token('|')))).then(
                 |t| match t {
                     Some(_) => {
-                        unexpected_any("or-patterns are only legal in select arms").left()
+                        grow::because("or-patterns are only legal in select arms").left()
                     }
                     None => value(()).right(),
                 },
@@ -868,7 +868,7 @@ where
                 let terminal_is_value =
                     v.last().and_then(|s| s.chars().next()).is_some_and(is_value_initial);
                 if !terminal_is_value {
-                    return unexpected_any("expected a value name").left();
+                    return grow::because("expected a value name").left();
                 }
                 root.extend(v.drain(..));
                 value(ModPath(Path::from_iter(root.drain(..)))).right()
@@ -1167,7 +1167,7 @@ where
                 Some(v) => v,
                 // routine: a block's first statement may begin with a keyword
                 None if is_reserved_binding(&name) => {
-                    return unexpected_any(
+                    return grow::because(
                         "a reserved word field needs the explicit `name: value` form",
                     )
                     .left();
@@ -1490,8 +1490,15 @@ where
             // `expr()` and `primary`. (t-parser-a-03)
             .easy_parse(position::Stream::new(text))
             .map(|(r, _)| r)
-            .map_err(|e| {
+            .map_err(|mut e| {
                 grow::note_error_pos(e.position);
+                // a whitespace token is never what went wrong
+                let blank = |err: &easy::Error<char, &str>| {
+                    matches!(err, easy::Error::Unexpected(easy::Info::Token(c)) if c.is_whitespace())
+                };
+                if e.errors.iter().any(|err| !blank(err)) {
+                    e.errors.retain(|err| !blank(err));
+                }
                 e
             })
     })

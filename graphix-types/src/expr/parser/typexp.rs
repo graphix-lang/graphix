@@ -1,6 +1,6 @@
 use super::{
     csep, fldname, fname, fname_noting,
-    grow::{grow, refuse},
+    grow::{because, grow, refuse},
     ident,
     lambdaexp::{LABELED_FIRST, labeled_first},
     not_prefix, path_root, sep_by_tok, sep_by1_tok, sort_unique, spaces, spaces1,
@@ -47,7 +47,7 @@ where
                     root.extend(parts.drain(..));
                     value(ModPath::from(root.drain(..))).right()
                 } else {
-                    unexpected_any("type names must be capitalized").left()
+                    because("type names must be capitalized").left()
                 }
             },
         )
@@ -94,7 +94,7 @@ where
             .skip(not_prefix())
             .then(|w: CompactString| match predicate(&w) {
                 Some(t) => value(t).left(),
-                None => unexpected_any("not a predicate").right(),
+                None => because("not a predicate").right(),
             }),
     );
     sep_by1(choice((keyword, typ())), attempt(spaces().with(token('+'))))
@@ -240,15 +240,14 @@ where
                 }
             };
             if !args.iter().all(|a| a.is_left()) {
-                return unexpected_any("vargs must appear once at the end of the args")
-                    .left();
+                return because("vargs must appear once at the end of the args").left();
             }
             let args = Arc::from_iter(args.drain(..).map(|t| match t {
                 Either::Left(t) => t,
                 Either::Right(_) => unreachable!(),
             }));
             if !labeled_first(args.iter().map(|a| a.is_labeled())) {
-                return unexpected_any(LABELED_FIRST).left();
+                return because(LABELED_FIRST).left();
             }
             let explicit_throws = throws.is_some();
             let throws = throws.unwrap_or(Type::Bottom);
@@ -405,7 +404,7 @@ parser! {
             attempt(string("Error").skip(not_prefix())).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Error(Arc::new(t))),
             attempt(string("Abstract").skip(not_prefix())).then(|_| {
-                unexpected_any("Abstract<..> is legal only as the whole body of a type definition")
+                because("Abstract<..> is legal only as the whole body of a type definition")
             }),
             attempt(typeprim().skip(not_followed_by(string("::"))))
                 .map(|typ| Type::Primitive(typ.into())),

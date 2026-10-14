@@ -1957,6 +1957,30 @@ fn parse_program(text: &str) -> String {
     format!("{:#}", parse(ori).unwrap_err())
 }
 
+// A refusal reads as its reason, no whitespace is ever the unexpected
+// token, and input that ends inside a bracket points at the bracket.
+#[test]
+fn parse_errors_read_as_reasons() {
+    let msg = parse_program("let select = 1");
+    assert!(msg.contains("\ncan't use keyword as a function or variable name"), "{msg}");
+    assert!(!msg.contains("Unexpected"), "{msg}");
+    let msg = parse_program("{ 1 }\n");
+    assert!(msg.contains("\na block must contain at least 2 expressions"), "{msg}");
+    assert!(!msg.contains("Unexpected"), "{msg}");
+    let msg = parse_program(
+        "let s = \"a [str::len(\"x)\")] b\";\nlet f = r#\"{\"#;\nlet a = [1, (2\n",
+    );
+    assert!(
+        msg.contains("note: at line: 3, column: 13: this `(` is not closed"),
+        "{msg}"
+    );
+    let msg = parse_program("// a ( comment\nlet g = |x| {\n  x\n");
+    assert!(
+        msg.contains("note: at line: 2, column: 13: this `{` is not closed"),
+        "{msg}"
+    );
+}
+
 // A missing separator is named only before something that could start an
 // item; a `;` inside a list is a list left open.
 #[test]

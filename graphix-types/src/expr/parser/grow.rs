@@ -4,12 +4,12 @@ use combine::{
     error::{ParseResult, StreamError, Tracked},
     parser::ParseMode,
     stream::{StreamErrorFor, position::SourcePosition},
-    unexpected_any,
 };
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
 use std::{
     cell::{Cell, RefCell},
+    marker::PhantomData,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -125,7 +125,28 @@ where
     I: Stream,
 {
     note_reason(pos, None, CompactString::const_new(reason));
-    unexpected_any(reason)
+    because(reason)
+}
+
+/// Always fails, consuming nothing, with `reason` as the error's message:
+/// a refusal, where `unexpected_any` names the token it met.
+pub(super) fn because<I: Stream, T>(reason: &'static str) -> Because<I, T> {
+    Because(reason, PhantomData)
+}
+
+pub(super) struct Because<I, T>(&'static str, PhantomData<fn(I) -> T>);
+
+impl<I: Stream, T> Parser<I> for Because<I, T> {
+    type Output = T;
+    type PartialState = ();
+
+    fn parse_lazy(&mut self, input: &mut I) -> ParseResult<T, <I as StreamOnce>::Error> {
+        ParseResult::PeekErr(<I as StreamOnce>::Error::empty(input.position()).into())
+    }
+
+    fn add_error(&mut self, errors: &mut Tracked<<I as StreamOnce>::Error>) {
+        errors.error.add(StreamError::message_static_message(self.0));
+    }
 }
 
 /// [`refuse`] as the error of an `and_then`.
@@ -171,6 +192,111 @@ impl std::fmt::Display for ParseFailure {
 /// The source line at `pos` with a caret under its column, the line
 /// windowed around the caret when it is long. Past the last line (the
 /// end of input) the caret follows the last line that holds anything.
+/// Where `pos` is the end of `text`, the innermost bracket left open and
+/// where it opens. Comments and string contents are skipped, the
+/// expressions a string interpolates are not.
+fn unclosed_at_end(text: &str, pos: SourcePosition) -> Option<(char, SourcePosition)> {
+    #[derive(Clone, Copy)]
+    enum Ctx {
+        /// A bracket open in code.
+        Open(char, SourcePosition),
+        /// A string; `raw` holds the `#`s of a raw one, none for a plain one.
+        Str { raw: Option<usize> },
+        /// A `"""` template.
+        Template,
+        /// An interpolation, open until its `]`.
+        Interp,
+    }
+    let mut stack: LPooled<Vec<Ctx>> = LPooled::take();
+    let mut at = SourcePosition { line: 1, column: 1 };
+    let mut chars: LPooled<Vec<char>> = LPooled::take();
+    chars.extend(text.chars());
+    let mut i = 0;
+    let step = |c: char, at: &mut SourcePosition| match c {
+        '\n' => *at = SourcePosition { line: at.line + 1, column: 1 },
+        _ => at.column += 1,
+    };
+    while i < chars.len() {
+        let c = chars[i];
+        let here = at;
+        let ahead = |k: usize| chars.get(i + k).copied();
+        let mut advance = 1;
+        match stack.last().copied() {
+            Some(Ctx::Str { raw: None }) => match c {
+                '\\' => advance = 2,
+                '[' => stack.push(Ctx::Interp),
+                '"' => {
+                    stack.pop();
+                }
+                _ => (),
+            },
+            Some(Ctx::Str { raw: Some(n) }) => {
+                if c == '"' && (1..=n).all(|k| ahead(k) == Some('#')) {
+                    stack.pop();
+                    advance = 1 + n;
+                }
+            }
+            Some(Ctx::Template) => match c {
+                '\\' if ahead(1) == Some('[') => {
+                    stack.push(Ctx::Interp);
+                    advance = 2;
+                }
+                '"' if ahead(1) == Some('"') && ahead(2) == Some('"') => {
+                    stack.pop();
+                    advance = 3;
+                }
+                _ => (),
+            },
+            _ => match c {
+                '/' if ahead(1) == Some('/') => {
+                    while i + advance < chars.len() && chars[i + advance] != '\n' {
+                        advance += 1;
+                    }
+                }
+                '"' if ahead(1) == Some('"') && ahead(2) == Some('"') => {
+                    stack.push(Ctx::Template);
+                    advance = 3;
+                }
+                '"' => stack.push(Ctx::Str { raw: None }),
+                'r' if matches!(ahead(1), Some('"' | '#')) => {
+                    let mut n = 0;
+                    while ahead(1 + n) == Some('#') {
+                        n += 1;
+                    }
+                    if ahead(1 + n) == Some('"') {
+                        stack.push(Ctx::Str { raw: Some(n) });
+                        advance = 2 + n;
+                    }
+                }
+                '(' | '[' | '{' => stack.push(Ctx::Open(c, here)),
+                ')' | ']' | '}' => match stack.last() {
+                    Some(Ctx::Interp) if c == ']' => {
+                        stack.pop();
+                    }
+                    Some(Ctx::Open(..)) => {
+                        stack.pop();
+                    }
+                    _ => (),
+                },
+                _ => (),
+            },
+        }
+        for k in 0..advance {
+            if let Some(c) = chars.get(i + k) {
+                step(*c, &mut at);
+            }
+        }
+        i += advance;
+    }
+    if at != pos {
+        return None;
+    }
+    stack.iter().rev().find_map(|c| match c {
+        Ctx::Open(c, at) => Some((*c, *at)),
+        _ => None,
+    })
+}
+
 fn snippet(text: &str, pos: SourcePosition) -> String {
     let (line, col) = match text.lines().nth((pos.line.max(1) - 1) as usize) {
         Some(line) => (line, (pos.column.max(1) - 1) as usize),
@@ -299,19 +425,6 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
             return ParseFailure { pos: at, summary, msg };
         }
         let pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
-        // CR claude for claude: [readability/low] When the furthest point is combine's
-        // error position, the message is combine's merged error printed verbatim, and
-        // it has three problems. It lists Unexpected entries for tokens that are not at
-        // the caret: 'Unexpected `s`' for `select x { }`, and 'Unexpected `[`' for `[1;
-        // 2; 3]`. Inside a bracket it ends with statement-only expectations ('mod, pub,
-        // use, catch, try, type, trait, impl, let'). Refusals raised with
-        // `unexpected_any(reason)` read 'Unexpected can't use keyword as a function or
-        // variable name' and 'Unexpected a block must contain at least 2 expressions'.
-        // Also, an unclosed `{` is reported only at end of input, with no pointer to
-        // the opener. To fix: keep only the Unexpected entry at the reported position,
-        // drop statement expectations inside a bracket, raise reason-style refusals
-        // with `message` instead of `unexpected_any`, and for an end-of-input failure
-        // note the innermost unclosed opener's position. (x-errors-06)
         let (mut msg, mut summary) = if pos == err_pos {
             // combine's rendering: its position line, then what it expected
             let msg = format!("{e}");
@@ -327,14 +440,18 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
             msg.push('\n');
             msg.push_str(&snippet);
         }
-        if let Some(r) = REASON.with(|r| r.borrow().clone())
-            && r.explains(pos)
-        {
+        let reason = REASON.with(|r| r.borrow().clone()).filter(|r| r.explains(pos));
+        let note = match reason {
+            Some(r) => Some((r.pos, r.reason)),
+            None => unclosed_at_end(text, pos)
+                .map(|(c, at)| (at, format_compact!("this `{c}` is not closed"))),
+        };
+        if let Some((at, reason)) = note {
             msg.push_str(&format!(
-                "\n  note: at line: {}, column: {}: {}",
-                r.pos.line, r.pos.column, r.reason
+                "\n  note: at line: {}, column: {}: {reason}",
+                at.line, at.column
             ));
-            summary.push_str(&format!("\nnote: {}", r.reason));
+            summary.push_str(&format!("\nnote: {reason}"));
         }
         ParseFailure { pos, msg, summary }
     })
