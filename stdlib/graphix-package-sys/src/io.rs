@@ -45,7 +45,7 @@ impl EvalCachedAsync for IoReadEv {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
             };
-            match read_chunk(s, n).await {
+            match stream.until_closed(read_chunk(s, n)).await {
                 Ok(bytes) => Value::Bytes(PBytes::new(bytes)),
                 Err(e) => errf!("IOError", "read failed: {e}"),
             }
@@ -148,7 +148,7 @@ async fn line_reader(
         let read = {
             let mut guard = stream.reader().await;
             let Some(s) = guard.as_mut() else { break };
-            s.read(&mut chunk).await
+            stream.until_closed(s.read(&mut chunk)).await
         };
         let n = match read {
             Ok(0) => {
@@ -390,7 +390,7 @@ impl EvalCachedAsync for IoReadExactEv {
             // (src/lib.rs::release/renew) and graphix-rt/src/gx.rs::deliver, which
             // discards unreferenced replies. Those files are outside this scope; a
             // Halves push-back buffer alone cannot recover an already-posted reply.
-            match (&mut *s).take(n).read_to_end(&mut buf).await {
+            match stream.until_closed((&mut *s).take(n).read_to_end(&mut buf)).await {
                 Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
                 Err(e) => errf!("IOError", "read_exact failed: {e}"),
             }
@@ -419,7 +419,7 @@ impl EvalCachedAsync for IoReadAllEv {
                 return errf!("IOError", "stream unavailable");
             };
             let mut buf = Vec::new();
-            match s.read_to_end(&mut buf).await {
+            match stream.until_closed(s.read_to_end(&mut buf)).await {
                 Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
                 Err(e) => errf!("IOError", "read_all failed: {e}"),
             }
@@ -678,5 +678,57 @@ mod test {
         }
         timeout(Duration::from_secs(1), sender).await.unwrap().unwrap();
         assert!(queue.pop().is_none());
+    }
+    #[cfg(unix)]
+    async fn close_pending_read<F: Future>(read: impl FnOnce(Arc<Halves>) -> F) {
+        use futures::poll;
+        use std::{pin::pin, process::Stdio};
+        use tokio::process::Command;
+
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stream =
+            Arc::new(Halves::new(StreamKind::ChildStdout(child.stdout.take().unwrap())));
+        let mut read = pin!(read(stream.clone()));
+        assert!(poll!(read.as_mut()).is_pending());
+        let mut close = pin!(stream.close());
+        let closed = poll!(close.as_mut());
+        assert!(poll!(read.as_mut()).is_ready(), "close left the read pending");
+        match closed {
+            Poll::Ready(result) => result.unwrap(),
+            Poll::Pending => close.await.unwrap(),
+        }
+        assert!(stream.r.try_lock().unwrap().is_none());
+        assert!(stream.w.try_lock().unwrap().is_none());
+        child.kill().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_cancels_read() {
+        close_pending_read(|stream| IoReadEv::eval((stream, 10))).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_cancels_read_exact() {
+        close_pending_read(|stream| IoReadExactEv::eval((stream, 10))).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_cancels_read_all() {
+        close_pending_read(IoReadAllEv::eval).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_cancels_lines() {
+        let (tx, _rx) = mpsc::channel(3);
+        close_pending_read(|stream| line_reader(stream, BindId::new(), None, tx)).await;
     }
 }

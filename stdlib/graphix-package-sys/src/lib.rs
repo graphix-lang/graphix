@@ -24,17 +24,21 @@ use std::{
     cell::RefCell,
     cmp::Ordering,
     hash::{Hash, Hasher},
+    io::{ErrorKind, Result as IoResult},
     marker::PhantomData,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, LazyLock},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
     task::{Context, Poll},
 };
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf},
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, Notify},
 };
 
 pub(crate) mod dir;
@@ -191,6 +195,8 @@ pub trait StreamMark: 'static + Send + Sync {
 /// seek, a TLS upgrade) takes both halves, the read half first. A half is
 /// `None` once closed.
 pub struct Halves {
+    closing: AtomicBool,
+    closed: Notify,
     r: Mutex<Option<ReadHalf<StreamKind>>>,
     w: Mutex<Option<WriteHalf<StreamKind>>>,
     /// A socket's (peer, local) addresses, read when it was made.
@@ -253,7 +259,30 @@ impl Halves {
             .tcp_ref()
             .and_then(|t| Some((t.peer_addr().ok()?, t.local_addr().ok()?)));
         let (r, w) = tokio::io::split(kind);
-        Self { r: Mutex::new(Some(r)), w: Mutex::new(Some(w)), addrs }
+        Self {
+            closing: AtomicBool::new(false),
+            closed: Notify::new(),
+            r: Mutex::new(Some(r)),
+            w: Mutex::new(Some(w)),
+            addrs,
+        }
+    }
+
+    pub(crate) async fn until_closed<T>(
+        &self,
+        read: impl Future<Output = IoResult<T>>,
+    ) -> IoResult<T> {
+        let closed = self.closed.notified();
+        tokio::pin!(closed);
+        closed.as_mut().enable();
+        if self.closing.load(AtomicOrdering::Acquire) {
+            return Err(ErrorKind::BrokenPipe.into());
+        }
+        tokio::select! {
+            biased;
+            _ = closed => Err(ErrorKind::BrokenPipe.into()),
+            result = read => result,
+        }
     }
 
     pub(crate) async fn reader(&self) -> MutexGuard<'_, Option<ReadHalf<StreamKind>>> {
@@ -310,14 +339,9 @@ impl Halves {
         }
     }
 
-    /// Shut the write half down and drop both: the read half at once if
-    /// no read holds it, else when that read ends.
-    pub(crate) async fn close(self: &Arc<Self>) -> std::io::Result<()> {
-        let res = match self.w.lock().await.take() {
-            Some(mut w) => w.shutdown().await,
-            None => Ok(()),
-        };
-        // CR claude for claude: [bug/medium] When a read holds the read lock, close
+    /// Cancel pending reads, shut down the writer, and release both halves.
+    pub(crate) async fn close(self: &Arc<Self>) -> IoResult<()> {
+        // XCR claude for claude: [bug/medium] When a read holds the read lock, close
         // leaves the read half to a spawned task and returns Ok. Lines::lines always
         // holds that lock while it waits on the socket, and so does a pending read,
         // read_exact or read_all. The split halves share one stream, so the fd stays
@@ -329,13 +353,20 @@ impl Halves {
         // IoReadAllEv). close, and take (see sys-io-06), fire it, then wait for the
         // read lock and drop the half before returning. probe:
         // design/review-2026-10-12/repro/sys-io-05.gx (sys-io-05)
-        match self.r.try_lock() {
-            Ok(mut r) => drop(r.take()),
-            Err(_) => {
-                let this = self.clone();
-                tokio::spawn(async move { drop(this.r.lock().await.take()) });
-            }
-        }
+        // 2026-10-13 codex: close_cancels_read, close_cancels_read_exact,
+        // close_cancels_read_all and close_cancels_lines use silent child pipes.
+        // All fail without cancellation; closed_stream_refuses_late_reads pins the
+        // notification race. Both halves are released before close returns. The
+        // sys-io-05 TCP probe remains unverified: sockets are unavailable here.
+        self.closing.store(true, AtomicOrdering::Release);
+        self.closed.notify_waiters();
+        let mut r = self.r.lock().await;
+        let mut w = self.w.lock().await;
+        let res = match w.take() {
+            Some(mut w) => w.shutdown().await,
+            None => Ok(()),
+        };
+        r.take();
         res
     }
 }
@@ -858,5 +889,13 @@ mod test {
         assert!(stream.take().await.unwrap().into_tcp().is_none());
         assert!(stream.reader().await.is_some());
         assert!(stream.writer().await.is_some());
+    }
+    #[tokio::test]
+    async fn closed_stream_refuses_late_reads() {
+        let file = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let stream = Arc::new(Halves::new(StreamKind::File(file)));
+        stream.close().await.unwrap();
+        let error = stream.until_closed(std::future::ready(Ok(()))).await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
     }
 }
