@@ -507,19 +507,14 @@ impl FusionCtx {
         matches!(self.share, Some(share::Share::Reuse { .. }))
     }
 
-    // CR claude for claude: [style/low] This constructor cannot fail: the JIT is built
-    // lazily (JitSlot::Unbuilt) and nothing else here can error. The `anyhow::Result`
-    // return and the `?` at its one call site, where the CompileCtx is built, suggest
-    // that creating a context can fail on fusion. Return Self, or implement Default,
-    // and drop the `?` at the caller. (f-mod-lowering-08)
-    pub fn new() -> anyhow::Result<Self> {
-        Ok(Self {
+    pub fn new() -> Self {
+        Self {
             jit: Arc::new(parking_lot::Mutex::new(JitSlot::Unbuilt)),
             emission: parking_lot::Mutex::new(None),
             stats: FusionStats::default(),
             top_id: None,
             share: None,
-        })
+        }
     }
 }
 

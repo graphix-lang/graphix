@@ -1804,7 +1804,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 discarded: Vec::new(),
                 task: 0,
                 profile: profile::Task::default(),
-                fusion: fusion::FusionCtx::new()?,
+                fusion: fusion::FusionCtx::new(),
             },
             image_decoder: std::sync::OnceLock::new(),
             libstate: LibState::default(),
