@@ -221,6 +221,16 @@ fn nesting(t: &Type) -> usize {
 }
 
 /// A variable whose chain of bindings ends open.
+/// The flags a probe guiding a decision under `flags` runs with: it holds
+/// a rigid cell rigid wherever the decision will, so a member it admits
+/// does not fail on that cell.
+fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
+    match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
+        true => BitFlags::from(ContainsFlags::RigidCheck),
+        false => BitFlags::empty(),
+    }
+}
+
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
@@ -1381,7 +1391,7 @@ impl Type {
                         // probed first: a failed flagged check would leave
                         // bindings behind; the one that holds commits, so
                         // t0's open cells take their part of the conjunct
-                        if t0.contains_int(BitFlags::empty(), env, hist, c)? {
+                        if t0.contains_int(guide(flags), env, hist, c)? {
                             return match commit {
                                 true => t0.contains_int(flags, env, hist, c),
                                 false => Ok(true),
@@ -1411,7 +1421,7 @@ impl Type {
                     // a t0 wider than the cell's witness holds it
                     // ('a ⊆ W ⊆ t0): the cell settles to W
                     let Ok(w) = t1.witness(env)? else { return Ok(false) };
-                    if !t0.contains_int(BitFlags::empty(), env, hist, &w)? {
+                    if !t0.contains_int(guide(flags), env, hist, &w)? {
                         return Ok(false);
                     }
                     if !commit || t1.is_rigid() {
@@ -1495,7 +1505,7 @@ impl Type {
                         return Ok(false);
                     }
                     for (i, c) in s0.iter().enumerate() {
-                        if c.contains_int(BitFlags::empty(), env, hist, m)? {
+                        if c.contains_int(guide(flags), env, hist, m)? {
                             used[i] = true;
                             break;
                         }
@@ -1806,35 +1816,9 @@ impl Type {
             .iter()
             .filter(|m| !is_unbound_tvar(m))
             .chain(s.iter().filter(|m| is_unbound_tvar(m)));
-        // the probe holds a rigid cell rigid wherever the decision will
-        let probe =
-            match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
-                true => BitFlags::from(ContainsFlags::RigidCheck),
-                false => BitFlags::empty(),
-            };
+        let probe = guide(flags);
         let mut admitted = false;
         for m in members {
-            // CR claude for claude: [bug/medium] This guiding probe runs with empty
-            // flags, so it treats a rigid (declared) cell as free; the commit after it
-            // refuses the same cell. A member the probe admits can then bind some cells
-            // and fail on the rigid one, and the loop moves on with those binds left in
-            // place. `|x: 'a, y| -> [(i64, 'a), ([i64, string], string)] (y, "s")` is
-            // accepted with y fixed to i64, so `f(1, "str")` is refused; with `(string,
-            // string)` as the second member the def itself is refused. place_members
-            // has the same mismatch and returns false as soon as such a commit fails,
-            // instead of handing the member to the bare open member as residue: `g(x,
-            // select t { true => [1, 2], false => "s" })` with `g: fn(w: 'd, v: ['c,
-            // Array<'d>])` and `x: 'a` is refused. The used-marking probe in the Set ⊇
-            // Set arm and the witness probe in the `(t0, TVar)` arm follow the same
-            // pattern. Fix: whenever flags carry Commit or RigidCheck, run the guiding
-            // probes with RigidCheck. A failed member commit should also leave nothing
-            // bound, either by trying it on reset_tvars copies as the shares_bare_cell
-            // path does, or by falling through to the residue in place_members. probe:
-            // design/review-2026-10-12/repro/t-contains-04.sh (t-contains-04)
-            // 2026-10-14 claude: set_commit's probe is RigidCheck under a commit or a
-            // rigid check now (pin lang::types::rigid_cell_guides_the_member_probe);
-            // place_members, the Set ⊇ Set used-marking probe, the (t0, TVar) witness
-            // probe and leaving nothing bound after a failed member commit stand.
             if m.contains_int(probe, env, hist, t)? {
                 admitted = true;
                 if flags.is_empty() || m.contains_int(flags, env, hist, t)? {
@@ -2063,7 +2047,7 @@ impl Type {
         // bind one (`Array<'b> ⊇ Array<i64>`) before the residue
         // reaches it
         let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
-        let probe = BitFlags::empty();
+        let probe = guide(flags);
         let mut residue: LPooled<Vec<Type>> = LPooled::take();
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
