@@ -20,6 +20,7 @@ use cranelift_codegen::ir::{
     Block, BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
+use cranelift_module::DataId;
 use netidx_value::Value;
 use smallvec::SmallVec;
 use std::convert::Infallible;
@@ -31,6 +32,7 @@ use super::{
     },
     call::{CompositeSource, emit_drop_local, emit_pending_cleanup},
     flow::{emit_body_tail, emit_scope_drops},
+    jit::Names,
     lower::{
         Channel, ClosedFrame, LowerCtx, SiteLayout, SlotTable, SlotTableFrame, StateWord,
         TruncAnchor, TruncLeaf, TruncRec, freeze_node_typ,
@@ -735,10 +737,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let gv = match consts.iter().find(|c| c.recipe.same_as(&recipe)) {
             Some(c) => c.gv,
             None => {
-                let mut names = self.ctx.names.borrow_mut();
-                let data = names.data();
-                let gv = names.import_data(data, self.b.func);
-                consts.push(EmitConst { recipe, data, gv });
+                let index =
+                    u32::try_from(consts.len()).expect("constant index exceeds u32");
+                let gv = Names::import_data(DataId::from_u32(index), self.b.func);
+                consts.push(EmitConst { recipe, gv });
                 gv
             }
         };

@@ -24,7 +24,6 @@ use cranelift_codegen::{
     binemit::Reloc,
     ir::{GlobalValue, LibCall},
 };
-use cranelift_module::DataId;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use parking_lot::Mutex;
@@ -92,7 +91,7 @@ impl KernelConst {
             KernelConst::IoSite(b) => &**b as *const crate::IoSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
             KernelConst::TypedFn { f, .. } => *f as usize,
-            KernelConst::Cast => cast_typed as usize,
+            KernelConst::Cast => cast_typed as *const () as usize,
             KernelConst::SiteLeaf(l) => Arc::as_ptr(l) as *const u8 as usize,
             KernelConst::SiteBlockWords => {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
@@ -135,11 +134,10 @@ fn identical(a: &Value, b: &Value) -> bool {
     a.encode(&mut *ab).is_ok() && b.encode(&mut *bb).is_ok() && *ab == *bb
 }
 
-/// A constant while its body is being emitted: the recipe, its data
-/// symbol and the function-local global value the code reads it through.
+/// A constant while its body is being emitted: the recipe and the
+/// function-local global value the code reads it through.
 pub(super) struct EmitConst {
     pub(super) recipe: KernelConst,
-    pub(super) data: DataId,
     pub(super) gv: GlobalValue,
 }
 

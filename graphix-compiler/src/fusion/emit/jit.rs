@@ -196,12 +196,11 @@ pub(super) struct Names {
     first: u32,
     /// Each function's signature and whether calls to it are colocated.
     funcs: Vec<(Signature, bool)>,
-    data: u32,
 }
 
 impl Names {
     fn over(base: Arc<Names>) -> Self {
-        Self { first: base.next(), data: base.data, funcs: Vec::new(), base: Some(base) }
+        Self { first: base.next(), funcs: Vec::new(), base: Some(base) }
     }
 
     fn next(&self) -> u32 {
@@ -230,20 +229,6 @@ impl Names {
         self.func(sig, true)
     }
 
-    // CR claude for claude: [structure/low] A DataId is meaningful only inside the
-    // function that imports it. Each body and each chunk keeps its own EmitConst list,
-    // record_relocs resolves a namespace-1 relocation only against that list, and
-    // Generation::define_record re-declares every const under a new name. Yet the id
-    // comes from a counter that Names::over copies and Emission's join and thaw merge
-    // by max, and parallel tasks can mint the same ids. Mint
-    // `DataId::from_u32(consts.len())` in BodyCx::const_ptr, delete `data` here along
-    // with its over/join/thaw handling, and have record_relocs map the relocation index
-    // straight to RelocTarget::Const instead of searching consts. (f-jit-08)
-    pub(super) fn data(&mut self) -> DataId {
-        self.data += 1;
-        DataId::from_u32(self.data - 1)
-    }
-
     /// `id` as a callee of `func`, the body being built.
     pub(super) fn import_func(&self, id: FuncId, func: &mut Function) -> FuncRef {
         let (sig, colocated) = self.sig(id);
@@ -262,7 +247,7 @@ impl Names {
 
     /// Constant `id`'s address in `func`: an imported symbol, resolved
     /// at install to the pointer its recipe names.
-    pub(super) fn import_data(&self, id: DataId, func: &mut Function) -> GlobalValue {
+    pub(super) fn import_data(id: DataId, func: &mut Function) -> GlobalValue {
         let name = func.declare_imported_user_function(UserExternalName {
             namespace: 1,
             index: id.as_u32(),
@@ -340,11 +325,10 @@ impl EmitShared {
                         }
                     }
                     ModuleRelocTarget::User { namespace: 1, index } => {
-                        let did = DataId::from_u32(index);
-                        match consts.iter().position(|c| c.data == did) {
-                            Some(i) => RelocTarget::Const(i as u32),
-                            None => bail!("a relocation to an unrecorded constant"),
+                        if index as usize >= consts.len() {
+                            bail!("a relocation to an unrecorded constant");
                         }
+                        RelocTarget::Const(index)
                     }
                     ModuleRelocTarget::LibCall(lc) => RelocTarget::LibCall(lc),
                     ModuleRelocTarget::User { .. }
@@ -1123,7 +1107,6 @@ impl Emission {
             self.caches.by_kernel.insert(key, cached);
         }
         self.names.funcs.extend(names.funcs);
-        self.names.data = self.names.data.max(names.data);
         for mut p in pending {
             if moved.contains_key(&p.id.as_u32()) {
                 continue;
@@ -1150,7 +1133,6 @@ impl Emission {
             match Arc::try_unwrap(base) {
                 Ok(mut base) => {
                     base.funcs.append(&mut self.names.funcs);
-                    base.data = base.data.max(self.names.data);
                     self.names = base;
                 }
                 Err(base) => {
