@@ -1797,19 +1797,13 @@ impl Type {
                     }))
                 }
             }),
-            // CR claude for claude: [risk/low] replace_tvars_int has no Type::Fn arm. A
-            // nested fn type therefore goes through FnType::cow_walk, which clones
-            // lambda_ids, or is returned shared when it holds no TVar. Every typedef
-            // expansion (lookup_ref_by) then shares the stored FnType's LambdaIds node,
-            // and each committing (Fn, Fn) contains links into it. As a result, the
-            // lambda_ids of any value typed by `F<..>` pool every lambda checked
-            // against any expansion of F, and the consumers read that pool: the
-            // omitted-default checks, recheck_builtin, polymorphic_in, and the rec_defs
-            // knot tests in Ref::decide and CallSite::typecheck0. reset_tvars_int
-            // states the invariant this breaks (a nested fn type's lambda_ids is the
-            // copy's own). No wrong answer has been reached yet. Give replace_tvars_int
-            // the same Type::Fn arm: rebuild through FnType::replace_tvars_int and set
-            // `lambda_ids = ft.lambda_ids.instantiate()`. (t-tvar-06)
+            // a nested fn type's lambda_ids is the copy's own
+            Type::Fn(ft) => {
+                let mut f =
+                    ft.replace_tvars_int(known, fresh).unwrap_or_else(|| (**ft).clone());
+                f.lambda_ids = ft.lambda_ids.instantiate();
+                Some(Type::Fn(Arc::new(f)))
+            }
             t => t.cow_children(&mut |c| c.replace_tvars_int(known, fresh)),
         })
     }
@@ -1854,6 +1848,24 @@ mod tests {
         tv.alias(&tv);
         tv.alias_cells(&tv);
         assert!(!tv.is_bound());
+    }
+
+    /// A copy's nested fn type collects the lambdas checked against the
+    /// copy alone.
+    #[test]
+    fn replaced_nested_fn_has_its_own_lambda_ids() {
+        let t = crate::expr::parser::parse_type("{f: fn(x: i64) -> i64, g: 'a}").unwrap();
+        let mut known: AHashMap<ArcStr, Type> = AHashMap::default();
+        known.insert(literal!("a"), Type::Any);
+        let copy = t.replace_tvars(&known);
+        let ids = |t: &Type| match t {
+            Type::Struct(fs) => match &fs[0].1 {
+                Type::Fn(ft) => ft.lambda_ids.addr(),
+                t => panic!("{t:?}"),
+            },
+            t => panic!("{t:?}"),
+        };
+        assert_ne!(ids(&t), ids(&copy));
     }
 }
 
