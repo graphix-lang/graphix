@@ -304,8 +304,10 @@ written, so an occurrence of it inside its own definition is a reference
 too; a decode that reaches an object while that object is being decoded
 builds it again from its offset, and every such cycle passes through a
 kind that registers before its contents (a type variable's wrapper and
-cell, a resolution cell), so it ends, having entered one definition at
-most twice; a third entry is a corrupt image and fails the read. The trailer carries the
+cell, a resolution cell), so it enters an object between any two entries
+of one definition and ends, the slots being counted; an entry with nothing
+entered since that definition's last is a corrupt image and fails the read,
+and a failed read empties every slot it entered. The trailer carries the
 ordinal-to-offset table the reader loads before anything decodes (every
 decode buffer is a slice of the mapped image). An occurrence costs its
 reference, a function of its ordinal alone, in any length query of the

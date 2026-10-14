@@ -400,15 +400,17 @@ pub struct ImageDecoder {
     /// Every definition's offset by ordinal, from the trailer.
     offsets: Vec<u64>,
     objects: Vec<Option<Obj>>,
-    /// How many objects the session has entered into an empty slot.
+    /// How many slots hold an object.
     built: usize,
     /// Each definition being decoded, by ordinal: [`Self::built`] at its
-    /// latest entry and how many of its entries are open (see
-    /// [`decode_at`]).
-    active: AHashMap<u32, (usize, u8)>,
+    /// latest entry (see [`decode_at`]).
+    active: AHashMap<u32, usize>,
     /// The definitions being decoded, innermost last: an object enters
     /// the slot of the innermost.
     defining: Vec<u32>,
+    /// The slots the reads in progress entered, in order: a read that
+    /// fails empties those it entered, so a later read builds them whole.
+    entered: Vec<u32>,
     /// Typedef definitions being built, which a cell inside one reaches
     /// weakly.
     resolving: AHashMap<u32, Weak<ResolvedRef>>,
@@ -432,6 +434,7 @@ impl ImageDecoder {
         let slot = self.objects.get_mut(ord as usize).ok_or(PackError::InvalidFormat)?;
         if slot.is_none() {
             self.built += 1;
+            self.entered.push(ord);
             *slot = Some(obj);
         }
         Ok(())
@@ -467,6 +470,7 @@ impl ImageDecoder {
             built: 0,
             active: AHashMap::new(),
             defining: Vec::new(),
+            entered: Vec::new(),
             resolving: AHashMap::new(),
             relocations,
             ext: None,
@@ -1053,44 +1057,27 @@ pub fn with_slice<T>(
 /// which enters it in the store as a side effect. A decode that meets
 /// the object it is inside builds it again from here. Every cycle of a
 /// valid image passes through a kind entered before its contents, so it
-/// enters an object before it meets a definition again, and so enters a
-/// definition at most twice; an entry with nothing entered since that
-/// definition's last, or a third, is a cycle in the image.
+/// enters an object before it meets a definition again; an entry with
+/// nothing entered since that definition's last is a cycle in the image.
+/// Entries stay finite: each enters a slot, and the slots are counted.
 #[doc(hidden)]
 pub fn decode_at<T>(
     ord: u32,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
 ) -> Result<T, PackError> {
-    let (image, at, prev) = decoding(|d| {
+    let (image, at, prev, mark) = decoding(|d| {
         let at = d
             .offsets
             .get(ord as usize)
             .and_then(|at| usize::try_from(*at).ok())
             .filter(|at| *at < d.image.len())?;
         let built = d.built;
-        let open = match d.active.get(&ord) {
-            None => 0,
-            // CR claude for claude: [bug/high] The `*open < 2` cap rejects valid
-            // images, because a valid image can enter a definition more than twice.
-            // Take a type X that holds two tvars, where each tvar is constrained by X,
-            // and decode X first. The decode runs X, 'a, cell_a, X, 'b, cell_b, X, and
-            // the third entry of X is refused with InvalidFormat even though objects
-            // were entered between every pair of entries. On a warm start, a restored
-            // definition's tables then fail to decode and the call site never binds:
-            // the program prints nothing where the cold run prints (4, 11). Whether a
-            // write hits this depends on encode order. Fix: make progress the only
-            // guard (`Some((at, open)) if *at != built => *open`). Nesting stays finite
-            // because `built` is bounded by the slot count. Also correct the "at most
-            // twice" claim in the doc comment above, in CLAUDE.md and in
-            // design/program_image.md, and add a pin: the tuple type of two tvars that
-            // it constrains, decoded starting from the tuple. probe:
-            // design/review-2026-10-12/repro/t-image-01.gx (t-image-01)
-            Some((at, open)) if *at != built && *open < 2 => *open,
-            Some(_) => return None,
-        };
-        let prev = d.active.insert(ord, (built, open + 1));
+        if d.active.get(&ord) == Some(&built) {
+            return None;
+        }
+        let prev = d.active.insert(ord, built);
         d.defining.push(ord);
-        Some(((d.image.as_ptr(), d.image.len()), at, prev))
+        Some(((d.image.as_ptr(), d.image.len()), at, prev, d.entered.len()))
     })
     .flatten()
     .ok_or(PackError::InvalidFormat)?;
@@ -1098,23 +1085,19 @@ pub fn decode_at<T>(
     // while the session is installed.
     let image = unsafe { std::slice::from_raw_parts(image.0, image.1) };
     let r = crate::stack::ensure_sufficient(|| full(&mut &image[at..]));
-    // CR claude for claude: [bug/medium] A failed `full` leaves in `objects` every
-    // object it entered before its contents: a tvar wrapper over tvar_decode's
-    // placeholder cell, cell_decode's empty TCell, refcell_decode's Open cell. The
-    // decoder outlives the read. DefTables::get decodes again at the next instance, and
-    // so does a call site's fallback after a failed materialize. That retry takes those
-    // slots as built and succeeds with no error. In the probe the second read of the
-    // same union returns tvars with no constraints, and a restored definition's table
-    // that failed twice decodes on the third call. Fix: on failure, clear every slot
-    // the top-level read entered (a watermark of `built` plus the list of ordinals it
-    // entered). Or poison the decoder after a failure, so every later lazy decode
-    // refuses and the call site compiles afresh. probe:
-    // design/review-2026-10-12/repro/t-image-03.rs (t-image-03)
     decoding(|d| {
         d.defining.pop();
         match prev {
             Some(p) => d.active.insert(ord, p),
             None => d.active.remove(&ord),
+        };
+        if r.is_err() {
+            for ord in d.entered.drain(mark..) {
+                d.objects[ord as usize] = None;
+                d.built -= 1;
+            }
+        } else if d.defining.is_empty() {
+            d.entered.clear();
         }
     });
     r
@@ -2236,5 +2219,78 @@ mod tests {
             assert_eq!(d2.id.inner() - start, e2.id.inner() - e1.id.inner());
             assert_eq!(d1.kind, ExprKind::Constant(Value::I64(1)));
         });
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    use crate::typ::{TVar, Type};
+    use arcstr::literal;
+    use netidx_value::Typ;
+
+    /// `X = [i64, ('a, 'b)]` with each variable constrained by `X`, and
+    /// the image of `[X, 'a]`, with its body's length.
+    fn knot() -> (Bytes, Vec<u64>, IdCounts, usize) {
+        let a = TVar::empty_named(literal!("a"));
+        let b = TVar::empty_named(literal!("b"));
+        let tup =
+            Type::Tuple(Arc::from_iter([Type::TVar(a.clone()), Type::TVar(b.clone())]));
+        let t = Type::Set(Arc::from_iter([Type::Primitive(Typ::I64.into()), tup]));
+        a.add_cell_constraint(t.clone());
+        b.add_cell_constraint(t.clone());
+        let mut enc = ImageEncoder::new();
+        let lens = EncodeImage::with(&mut enc, || t.encoded_len());
+        let mut buf = EncodeImage::with(&mut enc, || {
+            let mut buf = ImageBuf::with_capacity(0);
+            t.encode(&mut buf).unwrap();
+            buf
+        });
+        assert_eq!(buf.len(), lens);
+        let offsets = enc.finish(&mut buf);
+        (buf.freeze(), offsets, enc.counts(), lens)
+    }
+
+    fn read(
+        dec: &mut ImageDecoder,
+        image: &Bytes,
+        body: usize,
+    ) -> Result<Type, PackError> {
+        DecodeImage::with(dec, || Type::decode(&mut &image[..body]))
+    }
+
+    /// A definition entered three times, with progress between, decodes.
+    #[test]
+    fn a_knot_through_two_variables_decodes() {
+        let (image, offsets, counts, body) = knot();
+        let mut dec = ImageDecoder::new(counts, image.clone(), offsets).unwrap();
+        let t = read(&mut dec, &image, body).unwrap();
+        let Type::Set(ms) = &t else { panic!("{t:?}") };
+        let Type::Tuple(vs) = &ms[1] else { panic!("{t:?}") };
+        for v in vs.iter() {
+            let Type::TVar(tv) = v else { panic!("{v:?}") };
+            assert_eq!(tv.cell_constraints().len(), 1, "{t:?}");
+        }
+    }
+
+    /// A read that failed fails again on the same decoder: it left none
+    /// of the objects it entered behind for the retry to take as built.
+    #[test]
+    fn a_failed_read_leaves_nothing_built() {
+        let (image, offsets, counts, body) = knot();
+        for at in offsets.iter().map(|at| *at as usize) {
+            let mut bad = image.to_vec();
+            bad[at] = 0xff;
+            let bad = Bytes::from(bad);
+            let mut dec =
+                ImageDecoder::new(counts, bad.clone(), offsets.clone()).unwrap();
+            if read(&mut dec, &bad, body).is_ok() {
+                continue;
+            }
+            assert!(
+                read(&mut dec, &bad, body).is_err(),
+                "a retry took a half-built object"
+            );
+        }
     }
 }
