@@ -25,22 +25,9 @@ fn datetime() -> impl Strategy<Value = DateTime<Utc>> {
         .prop_map(|(s, ns)| Utc.timestamp_opt(s, ns).unwrap())
 }
 
-/// A duration a literal can denote: a literal goes through an f64 of
-/// seconds, which resolves a nanosecond below 2^23 seconds.
-// CR claude for claude: [bug/low] This strategy stays below 2^23 seconds because a
-// duration literal is read through an f64 of seconds. That lossy read is the bug.
-// netidx-value's parser reads the count with flt::<f64> and duration_of calls
-// Duration::try_from_secs_f64, and duration_display prints through as_secs_f64, despite
-// its doc saying every form parses back to the same duration.
-// `duration:10000000.000000001s` evaluates to 10000000.000000002s, and graphix fmt
-// silently rewrites the source literal to that value. The guard does not refuse it
-// because both texts read to the same Duration. Fix it in netidx-value: parse the count
-// as an exact decimal (whole part plus up to 9 fractional digits, scaled by the unit),
-// print from integer seconds and nanoseconds, then widen this strategy to the full
-// Duration range. probe: design/review-2026-10-12/repro/tests-expr-04.gx
-// (tests-expr-04)
+/// Any duration: a literal's count is read exactly.
 fn duration() -> impl Strategy<Value = Duration> {
-    (0..1u64 << 23, 0..1_000_000_000u32).prop_map(|(s, ns)| Duration::new(s, ns))
+    (any::<u64>(), 0..1_000_000_000u32).prop_map(|(s, ns)| Duration::new(s, ns))
 }
 
 fn pbytes() -> impl Strategy<Value = PBytes> {
