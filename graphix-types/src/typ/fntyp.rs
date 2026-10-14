@@ -26,7 +26,7 @@ use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::Ordering,
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
@@ -295,6 +295,61 @@ thread_local! {
     /// The cells whose conjuncts a walk is visiting: a normalized copy of a
     /// signature is a new FnType but holds the same cells.
     static CONJUNCTS: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+    /// How deep `for_each_part` calls nest on this thread.
+    static PARTS_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// For the outermost `for_each_part` call: each nested signature's
+    /// position cells, keyed by the signature it pins, so a walk collects
+    /// each signature's once rather than once per signature above it.
+    static POSITIONS: RefCell<IntMap<usize, (Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
+        RefCell::new(IntMap::default());
+}
+
+/// One `for_each_part` call's depth; the outermost forgets the positions
+/// memo on its way out, unwind too.
+struct PartsDepth;
+
+impl PartsDepth {
+    fn enter() -> Self {
+        PARTS_DEPTH.with(|d| d.set(d.get() + 1));
+        PartsDepth
+    }
+}
+
+impl Drop for PartsDepth {
+    fn drop(&mut self) {
+        let outermost = PARTS_DEPTH.with(|d| {
+            d.set(d.get() - 1);
+            d.get() == 0
+        });
+        if outermost {
+            POSITIONS.with_borrow_mut(|m| m.clear());
+        }
+    }
+}
+
+/// The cells `ft`'s positions name, its own quantifiers' included, into
+/// `out`: memoized while a `for_each_part` walk is in progress.
+pub(super) fn position_cells(ft: &Arc<FnType>, out: &mut AHashMap<ArcStr, TVar>) {
+    let key = Arc::as_ptr(ft) as usize;
+    let hit = POSITIONS.with_borrow(|m| {
+        m.get(&key).map(|(_, cells)| {
+            for (name, tv) in cells {
+                out.entry(name.clone()).or_insert_with(|| tv.clone());
+            }
+        })
+    });
+    if hit.is_some() {
+        return;
+    }
+    let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.for_each_type(&mut |t| t.collect_position_tvars(&mut inner));
+    if PARTS_DEPTH.with(|d| d.get()) > 0 {
+        let cells = inner.iter().map(|(n, tv)| (n.clone(), tv.clone())).collect();
+        POSITIONS.with_borrow_mut(|m| m.insert(key, (ft.clone(), cells)));
+    }
+    for (name, tv) in inner.drain() {
+        out.entry(name).or_insert(tv);
+    }
 }
 
 /// One walk's reentrancy guard on a signature: a conjunct can reach the
@@ -603,6 +658,7 @@ impl FnType {
     /// conjuncts are guarded per `FnType` address: one can reach back.
     #[doc(hidden)]
     pub fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
+        let _depth = PartsDepth::enter();
         let FnType {
             args,
             vargs,
@@ -1483,13 +1539,6 @@ impl fmt::Display for FnType {
     }
 }
 
-// CR claude for claude: [perf/low] A return-nested fn type (`fn() -> fn() -> ..
-// i64`) still costs superlinear time after the conjunct-pass fix: `graphix fmt`
-// of `let x: <fn() -> ×n> i64 = never()` takes 0.04 s at n=125, 0.27 s at 250
-// and 2.0 s at 500 (×8 per doubling, debug build), `--check` 0.09, 0.21 and 1.1
-// s. deep_nesting's fnret shape at the parser's limit (998) formats in 16 s.
-// Profile it (the flat-fit attempt at each level is a suspect for fmt; the check
-// side is not the printer). (x-perf-fnret-01)
 impl PrettyDisplay for FnType {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let constraints = printed_quantifiers(self);

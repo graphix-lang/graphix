@@ -1620,7 +1620,7 @@ impl Type {
             }
             Type::Fn(ft) => {
                 let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                ft.for_each_type(&mut |t| t.collect_position_tvars(&mut inner));
+                super::fntyp::position_cells(ft, &mut inner);
                 for (name, tv) in inner.drain() {
                     if !ft.quantifiers.contains(&name) {
                         known.entry(name).or_insert(tv);
