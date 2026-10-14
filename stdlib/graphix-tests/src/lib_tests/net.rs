@@ -501,3 +501,49 @@ async fn net_write_config_error_tag() -> Result<()> {
     ctx.shutdown().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn net_lists_reject_relative_paths() -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for operation in ["list", "list_table"] {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let setup_loads = loads.clone();
+        let mut code: LPooled<String> = LPooled::take();
+        write!(
+            code,
+            r#"
+        {{
+            let trigger = 0;
+            trigger <- sys::time::after_idle(duration:10.ms, 1);
+            let message = never();
+            catch(e) message <- select (e.0).error {{ `ListError(text) => text }};
+            sys::net::{operation}(#update: trigger, "relative/path")?;
+            array::group(message, |n, _| n == 2)
+        }}
+        "#
+        )?;
+        let (value, ctx) =
+            testing::eval_with_setup(&code, &crate::TEST_REGISTER, |ctx| {
+                ctx.libstate.set(NetConfig::Load {
+                    load: Arc::new(move || {
+                        setup_loads.fetch_add(1, Ordering::SeqCst);
+                        Err(anyhow!("unexpected loader use"))
+                    }),
+                    bind: None,
+                });
+            })
+            .await?;
+        let Value::Array(messages) = value else { panic!("expected two errors") };
+        assert_eq!(messages.len(), 2);
+        for message in messages.iter() {
+            assert!(
+                matches!(message, Value::String(s) if s.starts_with("invalid path") && s.contains("relative/path")),
+                "{operation}: {message}"
+            );
+        }
+        assert_eq!(loads.load(Ordering::SeqCst), 0);
+        ctx.shutdown().await;
+    }
+    Ok(())
+}

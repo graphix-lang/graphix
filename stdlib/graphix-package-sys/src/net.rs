@@ -29,7 +29,7 @@ use poolshark::local::LPooled;
 use std::any::Any;
 
 fn as_path(v: Value) -> Option<Path> {
-    match v.cast_to::<String>() {
+    match v.cast_to::<ArcStr>() {
         Err(_) => None,
         Ok(p) => {
             if Path::is_absolute(&p) {
@@ -541,6 +541,16 @@ macro_rules! list {
             out: TagValue,
         }
 
+        impl $name {
+            fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+                ctx.release_var(self.id, self.top_id);
+                NetState::get(ctx).stop_list(self.id);
+                self.id = BindId::new();
+                ctx.rt.ref_var(self.id, self.top_id);
+                self.current = None;
+            }
+        }
+
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
@@ -598,29 +608,20 @@ macro_rules! list {
             ) -> &TagValue {
                 let (_, trigger_fired) = seam_arg(ctx, &mut from[0]);
                 let (path, path_fired) = seam_arg(ctx, &mut from[1]);
-                // CR claude for claude: [bug/low] Both arms build the path with
-                // Path::from and send it on to the resolver, so a relative path (a
-                // typo, a missing leading slash) lists [] and reads as an empty
-                // directory. Write, Subscribe and the rpc builtins refuse it. Validate
-                // with as_path in both arms and fire `ListError("invalid path ..")` on
-                // None, as Write fires its WriteError. probe:
-                // design/review-2026-10-12/repro/sys-net-06.gx (sys-net-06)
-                match (path, path_fired, trigger_fired) {
-                    (Some(Value::String(path)), true, _)
-                        if self
-                            .current
-                            .as_ref()
-                            .map(|p| &**p != &*path)
-                            .unwrap_or(true) =>
-                    {
-                        let path = Path::from(path);
+                if (path_fired || trigger_fired)
+                    && let Some(requested) = path
+                {
+                    let Some(path) = as_path(requested.clone()) else {
+                        self.remint(ctx);
+                        return self.out.set(TagValue::fired(errf!(
+                            literal!("ListError"),
+                            "invalid path {requested}"
+                        )));
+                    };
+                    if trigger_fired || self.current.as_ref() != Some(&path) {
                         self.current = Some(path.clone());
                         NetState::get(ctx).list(ctx, self.id, path, $table);
                     }
-                    (Some(Value::String(path)), _, true) => {
-                        NetState::get(ctx).list(ctx, self.id, Path::from(path), $table);
-                    }
-                    _ => (),
                 }
                 let res = ctx
                     .event
@@ -639,11 +640,7 @@ macro_rules! list {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-                ctx.release_var(self.id, self.top_id);
-                NetState::get(ctx).stop_list(self.id);
-                self.id = BindId::new();
-                ctx.rt.ref_var(self.id, self.top_id);
-                self.current = None;
+                self.remint(ctx);
                 self.out = TagValue::phantom();
             }
         }
