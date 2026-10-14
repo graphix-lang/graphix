@@ -1772,6 +1772,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
     /// as the event's user part. A low-level interface for custom
     /// runtimes; most embedders want `graphix-rt`.
     pub fn new(rt: R, user: E) -> Result<Self> {
+        graphix_types::abstract_value::register();
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
             cx: CompileCtx {

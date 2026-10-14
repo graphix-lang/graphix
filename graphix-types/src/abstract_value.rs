@@ -242,16 +242,6 @@ impl Hash for GxAbstract {
     }
 }
 
-// CR claude for claude: [bug/medium] The wrapper is registered with netidx's Abstract
-// registry only on the first `wrap`. A Value decoded before any Graphix abstract value
-// exists in the process does not downcast to GxAbstract: `pack::read`, `str::parse`, a
-// netidx subscription or a file load all hit this. `Type::is_a` then refuses it with
-// "not this abstract type". The same bytes are accepted once any abstract value has
-// been minted, so whether a program can load its own saved data depends on evaluation
-// order. Register the wrapper eagerly, before any Value decode: force `WRAPPER`
-// wherever an Env or a CompileCtx is created, or from a public `init` that the runtime
-// calls. Add a pin that `pack::read`s a literal abstract value in a program that mints
-// none. probe: design/review-2026-10-12/repro/tests-types-03.sh (tests-types-03)
 static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
     let id = uuid::Uuid::from_bytes([
         0x5a, 0x0c, 0x31, 0x7e, 0x92, 0x4b, 0x4e, 0x61, 0xb8, 0x2d, 0x6f, 0x13, 0xc9,
@@ -259,6 +249,13 @@ static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
     ]);
     Abstract::register::<GxAbstract>(id).expect("failed to register GxAbstract")
 });
+
+/// Register the wrapper with netidx before any value decodes: a value
+/// read before the first mint must still downcast to a [`GxAbstract`].
+#[doc(hidden)]
+pub fn register() {
+    LazyLock::force(&WRAPPER);
+}
 
 /// Mint a value of the abstract type `id<params>` around `payload`.
 #[doc(hidden)]
