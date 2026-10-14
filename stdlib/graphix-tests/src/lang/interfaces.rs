@@ -401,7 +401,7 @@ run!(
 // Error: string does not satisfy `Box<'a: Number>`.
 run!(
     abstract_type_constraint_auto_enforced_error,
-    refused("Number does not contain 'a: string"),
+    refused("'a: unbound within Number does not contain string"),
     "/test.gx" => r#"
         mod inner;
         let box = inner::wrap("hello");
