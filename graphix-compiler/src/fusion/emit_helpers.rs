@@ -32,6 +32,7 @@ use crate::{
         map::map_get,
         op::{BinOp, arith, neg},
     },
+    typ::{IsAFlags, Type},
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
@@ -956,6 +957,15 @@ safe fn graphix_abstract_get_value(tv: ManuallyDrop<TagValue>) -> TagValue {
 
 safe fn graphix_value_neg(v: ManuallyDrop<TagValue>) -> TagValue {
     v.with_value(neg).map(TagValue::fired).unwrap_or_else(|| TagValue::bottom_null(true).clone())
+}
+
+/// # Safety
+/// `typ` must point to a type that outlives the kernel invocation.
+unsafe fn graphix_inferred_type_matches(v: ManuallyDrop<TagValue>, typ: *const Type) -> u8 {
+    let typ = unsafe { &*typ };
+    guard_panic(0, || v.with_value(|v| {
+        typ.is_a_with(unsafe { kernel_env() }, IsAFlags::MatchAbstract.into(), v) as u8
+    }))
 }
 
 safe fn graphix_value_add(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {

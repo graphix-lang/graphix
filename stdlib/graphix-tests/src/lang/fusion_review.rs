@@ -2,6 +2,27 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
+run!(inferred_guard_masks_unmatched_bind, r#"
+{
+    let errors = 0;
+    catch(e) errors <- e ~ errors + 1;
+    let f = |v: [i64, null]| select v {
+        null as _ => 0,
+        x if (100 /? x)? > 1 => 1,
+        _ => 2
+    };
+    let n: [i64, null] = null;
+    let selected = #[native] f(n);
+    let variant = |v: [`A(i64), `B(i64)]| select v {
+        `A(_) => 0,
+        x if cast<i64>(x)? > 1 => 1,
+        _ => 2
+    };
+    let selected_variant = #[native] variant(`A(0));
+    sys::time::after_idle(duration:10.ms, (selected, selected_variant, errors))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:0, i64:0]"); FuseExpect::Jit);
+
 run!(decimal_guard_bottom_is_undecided, r#"
 {
     let g = |v: decimal| select v {

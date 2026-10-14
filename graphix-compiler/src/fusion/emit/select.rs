@@ -36,7 +36,8 @@ use super::{
     nodes::{emit_bottom_of_kind, emit_owned_value_operand_node},
     scalar::{
         ElementRead, cast_u64_to_prim, compile_cmp, compile_const, element_read_helper,
-        prim_to_clif, struct_get_helper, valarray_get_helper, variant_payload_helper,
+        prim_to_clif, scalar_to_payload_i64, struct_get_helper, valarray_get_helper,
+        variant_payload_helper,
     },
 };
 
@@ -751,7 +752,16 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         }
         let gmark = cx.env.mark();
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-        let pcond = emit_arm_condition(cx, pat, scrut, scrut_typ, None, &mut binds)?;
+        let mut pcond = emit_arm_condition(cx, pat, scrut, scrut_typ, None, &mut binds)?;
+        if !pat.explicit_type_predicate
+            && let Some(typed) =
+                emit_inferred_guard_cond(cx, &pat.type_predicate, scrut, scrut_typ)?
+        {
+            pcond = Some(match pcond {
+                Some(shape) => cx.b.ins().band(shape, typed),
+                None => typed,
+            });
+        }
         // CR claude for claude: [perf/low] For a guard that reads its arm's binds, this
         // prologue clones every owned bind (strings, Values, a slice's rest as a fresh
         // subslice) under the mask, evaluates the guard and drops them. The chain later
@@ -761,20 +771,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // reuse them. Drop them once at the select's exits: the arm exit, guard-false,
         // undecided and no-match. The mask already makes them drop-safe on every path.
         // (f-select-06)
-        // CR claude for claude: [bug/high] The prologue runs every impure guard before
-        // the chain decides anything, but pcond leaves out the arm's inferred predicate
-        // (emit_arm_cond tests only a written one). A plain bind whose arm narrows the
-        // scrutinee is therefore installed unmasked. The node-walk feeds a guard its
-        // binds only when PatternNode::shape_matches holds, inferred predicate
-        // included, so a JIT guard computes over a value an earlier arm claimed.
-        // Example: after `null as _`, the guard `x if (100 /? x)? > 1` reads null's
-        // payload as 0, and its `?` raises an ArithError that the node-walk never
-        // raises (the same holds for `$` logs and kernel firing memory). Fix: in the
-        // prologue, AND pcond with a lowering of the arm's shallow discriminant, the
-        // same test the node-walk's delivery uses, or refuse to fuse an impure guard on
-        // an arm whose inferred predicate narrows the scrutinee. Then make
-        // emit_arm_cond's comment say the prologue needs that test. probe:
-        // design/review-2026-10-12/repro/f-select-01.gx (f-select-01)
         install_arm_binds(cx, &binds, scrut, pcond)?;
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
@@ -967,6 +963,46 @@ fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
     ok
 }
 
+fn emit_inferred_guard_cond(
+    cx: &mut BodyCx,
+    pred: &Type,
+    scrut: SelectScrut,
+    scrut_typ: &Type,
+) -> Result<Option<ClifValue>> {
+    let pred = resolve_node_typ(cx.ctx, pred);
+    if pred == *scrut_typ || matches!(pred, Type::Any) {
+        return Ok(None);
+    }
+    let pred = pred.shallow_discriminant(cx.ctx.type_env, scrut_typ).unwrap_or(pred);
+    let cond = match &pred {
+        Type::Primitive(prims) => {
+            let disc = clean_disc(cx.b, scrut.disc());
+            let mut cond = cx.b.ins().iconst(types::I8, 0);
+            for prim in prims.iter() {
+                let matches = cx.b.ins().icmp_imm(IntCC::Equal, disc, prim as i64);
+                cond = cx.b.ins().bor(cond, matches);
+            }
+            cond
+        }
+        Type::Any => return Ok(None),
+        _ => {
+            let payload = match scrut {
+                SelectScrut::Scalar { value, prim, .. } => {
+                    scalar_to_payload_i64(cx.b, prim, value)
+                }
+                SelectScrut::Value { payload, .. } => payload,
+                SelectScrut::Composite { ptr, .. } => ptr,
+            };
+            let typ = cx.interned_type(&pred)?;
+            cx.call_helper(
+                "graphix_inferred_type_matches",
+                &[scrut.disc(), payload, typ],
+            )?[0]
+        }
+    };
+    Ok(Some(cond))
+}
+
 /// Emit arm `pat`'s pattern condition against `scrut`: the type
 /// predicate (`tcond`) and the structure condition (`scond`), pushing
 /// the pattern's binds onto `binds`.
@@ -977,12 +1013,8 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     scrut_typ: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
-    // An inferred predicate rejects nothing beyond what the arm's
-    // structure rejects and what earlier unguarded arms took, both of
-    // which the chain decides before it reaches this arm; only a written
-    // one is tested here. The node-walk tests both (`PatternNode::
-    // shape_matches`): a narrowing source that breaks this rule breaks
-    // the agreement.
+    // The chain has excluded earlier arms. The guard prologue has not,
+    // so it also tests the inferred predicate before delivering binds.
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
         None
     } else {
