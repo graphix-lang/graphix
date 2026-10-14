@@ -391,21 +391,17 @@ impl AbstractId {
         let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
         let place = match in_body {
             false => format_compact!("{stable}::{name}"),
-            // CR claude for claude: [bug/low] A body-declared type's place is
-            // `Source`'s Display plus line:column. That Display prints "expr" for every
-            // `Source::Unspecified` (every rt.compile input, so every REPL line) and
-            // "program" for every `Source::Program`, whatever its text. So two REPL
-            // inputs that each declare a block-local `type T` at the same line and
-            // column mint one AbstractId. If the reps are the same, a value of the
-            // first T passes the second T's `T as o` test and `.0` reads it (`f(a)`
-            // prints 42 where 0 is right). If the reps differ, the second input is
-            // refused because Env::deftype thinks the type's representation is
-            // changing. Fix: for a source with no stable identity, add something unique
-            // to the compile unit to the place, such as a hash of `ori.text` or a
-            // per-compile counter. Such types never need to match across processes.
-            // Keep the File/Vfs/Netidx form unchanged so cold and warm starts agree.
-            // probe: design/review-2026-10-12/repro/t-typ-mod-04.sh (t-typ-mod-04)
-            true => format_compact!("{stable}::#{}:{pos}::{name}", ori.source),
+            true => match &ori.source {
+                Source::File(_) | Source::Vfs(_) | Source::Netidx(_) => {
+                    format_compact!("{stable}::#{}:{pos}::{name}", ori.source)
+                }
+                // a source named by its text alone (a REPL input, an
+                // embedded program) is told apart by the text
+                Source::Program(_) | Source::Unspecified => {
+                    let (_, text) = abstract_uuid(&ori.text).as_u64_pair();
+                    format_compact!("{stable}::#{}:{text:x}:{pos}::{name}", ori.source)
+                }
+            },
         };
         let (_, lo) = abstract_uuid(&place).as_u64_pair();
         AbstractId(lo).named(name)

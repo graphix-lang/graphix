@@ -2875,3 +2875,43 @@ run!(
     refused("`_` in a type is bottom"),
     "/test.gx" => "type Box<'a> = Abstract<'a>; let x: [Box<i64>, string] = Box(1); let result = select x { Box<_> as b => 1, string as s => 2 }"
 ; FuseExpect::None);
+
+/// Two REPL inputs each declaring a block-local abstract `T` at one
+/// position declare two types: neither input's value passes the other's
+/// type test, and a different representation is no redefinition.
+#[tokio::test(flavor = "current_thread")]
+async fn repl_inputs_declare_distinct_abstract_types() -> anyhow::Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    use graphix_rt::GXEvent;
+    use tokio::sync::mpsc;
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let _a =
+        ctx.rt.compile(ArcStr::from("let a = { type T = Abstract<i64>; T(41) }")).await?;
+    let _f = ctx
+        .rt
+        .compile(ArcStr::from(
+            "let f = { type T = Abstract<i64>; |x: Any| select x { T as o => o.0 + 1, _ => 0 } }",
+        ))
+        .await?;
+    let _b = ctx
+        .rt
+        .compile(ArcStr::from("let b = { type T = Abstract<string>; T(\"x\") }"))
+        .await?;
+    let probe = ctx.rt.compile(ArcStr::from("f(a)")).await?;
+    let id = probe.exprs[0].id;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
+        let Ok(Some(batch)) = batch else { anyhow::bail!("f(a) never produced") };
+        for ev in batch.iter() {
+            if let GXEvent::Updated(eid, v) = ev
+                && *eid == id
+            {
+                assert_eq!(*v, netidx_value::Value::I64(0));
+                return Ok(());
+            }
+        }
+    }
+}
