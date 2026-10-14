@@ -722,7 +722,24 @@ impl Env {
     pub fn grant_trait(&mut self, tid: TraitId) {
         if let Some(d) = self.trait_defs.get(&tid) {
             let (scope, name) = (d.scope.clone(), CompactString::from(d.name.as_str()));
+            self.keep_module_path(&scope, true);
             self.traits.get_or_default_cow(scope).insert_cow(name, tid);
+        }
+    }
+
+    /// Keep `path`'s enclosing modules, and `path` itself when `inclusive`,
+    /// as modules a qualified path can descend through, without their
+    /// contents.
+    fn keep_module_path(&mut self, path: &str, inclusive: bool) {
+        let mut cur = match inclusive {
+            true => Some(path),
+            false => Path::dirname(path),
+        };
+        while let Some(p) = cur
+            && p != "/"
+        {
+            self.modules.insert_cow(ModPath(Path::from(ArcStr::from(p))));
+            cur = Path::dirname(p);
         }
     }
 
@@ -777,24 +794,6 @@ impl Env {
                 let kept = |k: &ModPath| under_listed(k) || names.contains_key(k);
                 let mut t = self.clone();
                 t.typedefs = retain(&self.typedefs, |k, _| kept(k));
-                // CR claude for claude: [bug/medium] The whitelist keeps a listed
-                // module or a listed value's scope but drops its ancestors.
-                // Qualified-path descent (descend_step / module_at) needs every
-                // interior module in `modules`, so a whitelisted `sys::fs::tempdir`, a
-                // value `a::b::f` or a module `a::b` cannot be reached: "no module `fs`
-                // in `sys`" or "no module `a` in `/`". The package_roots shortcut in
-                // resolve_module_seg rescues only the first segment. grant_trait has
-                // the same root cause: it re-inserts `traits[scope]` but not the module
-                // path. Under `whitelist [core]`, a granted trait declared in any user
-                // module, even one level down (`super::a::Show`), cannot be named. Fix:
-                // also insert into `t.modules` every ancestor path of each kept module
-                // and of each listed value's dir, as module entries only, without their
-                // binds, typedefs or traits. Do the same for the trait's scope in
-                // grant_trait. Add a pin with a nested module, a value two levels deep
-                // and a non-root granted trait (the existing dynamic-trait tests use
-                // only root-level traits). probe:
-                // design/review-2026-10-12/repro/t-env-01.gx and
-                // repro/t-env-01-trait/main.gx (t-env-01)
                 t.modules = retain_set(&self.modules, kept);
                 t.binds = retain(&self.binds, |k, _| kept(k));
                 t.traits = retain(&self.traits, |k, _| kept(k));
@@ -802,6 +801,12 @@ impl Env {
                     if let Some(vals) = t.binds.get_mut_cow(dir) {
                         *vals = retain(vals, |n, _| ns.contains(n));
                     }
+                }
+                for m in modules.iter() {
+                    t.keep_module_path(m, false);
+                }
+                for dir in names.keys() {
+                    t.keep_module_path(dir, true);
                 }
                 Ok(t)
             }
