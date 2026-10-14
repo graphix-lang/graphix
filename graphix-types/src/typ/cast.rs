@@ -1546,19 +1546,8 @@ fn rep_collision(
                     && px.iter().zip(py.iter()).all(|(p, q)| union_identical(p, q));
                 (rust_backed && !same).then(|| (a.clone(), b.clone()))
             }
-            // CR claude for claude: [bug/high] This arm compares the pointee types and
-            // ignores mutability. At run time `is_a` matches any reference against any
-            // `ByRef` type, so &i64 and &mut i64 share one runtime form. As a result,
-            // `[&i64, &mut i64]` passes the one-runtime-form rule, and an `&mut i64 as
-            // m` arm catches a read-only reference. Writing `*m <- v` through it then
-            // mutates a place that was handed out only as `&T`, which breaks the
-            // place_references rule that a write needs `&mut`. Match the mutability
-            // too, `(Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y`, so
-            // that mixed mutability falls through to `rep_overlaps` and is refused, as
-            // `[&i64, &mut string]` already is. Probe:
-            // design/review-2026-10-12/repro/t-cast-setops-02.gx (prints "wrote 5").
-            // (t-cast-setops-02)
-            (Type::ByRef(_, x), Type::ByRef(_, y)) if x == y => None,
+            // a runtime test can't tell a reference's mutability
+            (Type::ByRef(m0, x), Type::ByRef(m1, y)) if m0 == m1 && x == y => None,
             (Type::Fn(x), Type::Fn(y)) if x == y => None,
             (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
                 .then(|| (a.clone(), b.clone())),

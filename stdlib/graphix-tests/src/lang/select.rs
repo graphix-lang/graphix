@@ -3538,3 +3538,14 @@ run!(
         ))
     }
 );
+
+// A runtime test can't tell a reference's mutability, so an arm may not
+// take a `&mut` out of a union that also holds a read-only reference.
+run!(select_refuses_mixed_mutability, r#"{
+    let x = 1;
+    let f = |r: &i64| {
+        let u: [&i64, &mut i64] = r;
+        select u { &mut i64 as m => { *m <- 5; "wrote" }, &i64 as s => "shared" }
+    };
+    f(&x)
+}"#, refused("this pattern can't tell &mut i64 from &i64"); FuseExpect::None);
