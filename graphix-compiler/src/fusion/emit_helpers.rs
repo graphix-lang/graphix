@@ -15,20 +15,14 @@
 //! as the return shape's placeholder (0 / "" / empty array / `Null`),
 //! because tainted placeholders are `Value::Null` in composite slots.
 
-// CR claude for claude: [style/low] This file writes several repeated items as full
-// inline paths: crate::Tag::*, crate::typ::Type, crate::FastFn,
-// crate::node::error::QopSite, crate::node::list (also re-imported locally in four
-// functions) and std::sync::atomic::*. Fold them into this grouped use and a
-// `std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed}` import, and delete
-// the function-local copies. graphix_list_to_valarray also builds `ValArray::from([])`
-// where every other placeholder uses EMPTY_ARR.clone(); use EMPTY_ARR there too.
-// (f-helpers-07)
 use crate::{
+    FastFn, Tag,
     fusion::kernel_abi::{ActivationLayout, SiteLeaf},
     node::{
         array::{array_index, array_slice, bytes_index},
         collection::Flavor,
-        error::{report_failure, report_ignored, unhandled_msg},
+        error::{QopSite, report_failure, report_ignored, unhandled_msg},
+        list,
         map::map_get,
         op::{BinOp, arith, neg},
     },
@@ -42,6 +36,7 @@ use std::{
     cell::{Cell, RefCell},
     mem::{ManuallyDrop, MaybeUninit},
     panic::AssertUnwindSafe,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
 };
 
 /// The Value ABI the helpers' two-`I64` signatures depend on: two
@@ -541,8 +536,8 @@ safe fn graphix_shape_mismatch(got_disc: u64) {
 /// A fused select matched no arm: a hole in the check's coverage. Said
 /// once per process.
 safe fn graphix_select_no_match() {
-    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    static SAID: AtomicBool = AtomicBool::new(false);
+    if !SAID.swap(true, Relaxed) {
         crate::node::error::report_coverage_hole(&"a fused select matched no arm");
     } else if crate::dbgenv::graphix_abort_on_no_match() {
         std::process::abort()
@@ -593,7 +588,7 @@ unsafe fn graphix_swallowed_error(
     payload: u64,
 ) {
     // SAFETY: the words are a valid clean `Value`; viewed, never owned.
-    let tv = ManuallyDrop::new(unsafe { crate::TagValue::from_raw(disc, payload) });
+    let tv = ManuallyDrop::new(unsafe { TagValue::from_raw(disc, payload) });
     // SAFETY: the kernel's interned string outlives this invocation.
     let site = unsafe { &*site };
     tv.with_value(|v| {
@@ -612,10 +607,10 @@ unsafe fn graphix_swallowed_error(
 /// queue takes a clone. `FusedKernel::update` drains the queue in order.
 unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     // SAFETY: the words are a valid clean `Value`; viewed, never owned.
-    let tv = ManuallyDrop::new(unsafe { crate::TagValue::from_raw(disc, payload) });
+    let tv = ManuallyDrop::new(unsafe { TagValue::from_raw(disc, payload) });
     let v = tv.value_cloned();
     // SAFETY: the kernel's interned QopSite outlives this invocation.
-    let site = unsafe { &*(site as *const crate::node::error::QopSite) };
+    let site = unsafe { &*(site as *const QopSite) };
     DEFERRED.with(|q| q.borrow_mut().raises.push((site, v)));
 }
 
@@ -623,7 +618,7 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
 /// invocation's delivery queue (`DEFERRED`).
 unsafe fn graphix_qop_raise_null(site: u64) {
     // SAFETY: the kernel's interned QopSite outlives this invocation.
-    let site = unsafe { &*(site as *const crate::node::error::QopSite) };
+    let site = unsafe { &*(site as *const QopSite) };
     let e = Value::Error(crate::node::error::null_error(&site.spec).into());
     DEFERRED.with(|q| q.borrow_mut().raises.push((site, e)));
 }
@@ -680,8 +675,8 @@ unsafe fn graphix_fastcall(
     stale_mask: u64,
 ) -> TagValue {
     // SAFETY: `fn_ptr` is the `FastFn` constant the kernel's record names.
-    let f: crate::FastFn =
-        unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
+    let f: FastFn =
+        unsafe { std::mem::transmute::<usize, FastFn>(fn_ptr as usize) };
     unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) }
 }
 
@@ -699,8 +694,8 @@ unsafe fn graphix_iocall(
     trigger: u64,
 ) -> TagValue {
     // SAFETY: `fn_ptr` is the `FastFn` constant the kernel's record names.
-    let f: crate::FastFn =
-        unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
+    let f: FastFn =
+        unsafe { std::mem::transmute::<usize, FastFn>(fn_ptr as usize) };
     let tv = unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) };
     if taint_mask == 0 && stale_mask & trigger == 0 {
         // SAFETY: the call site's buffer holds `n` clean Values for the call.
@@ -726,7 +721,7 @@ unsafe fn graphix_typedcall(
     // which outlives its code; the site interns its function type.
     let f: crate::TypedFastFn =
         unsafe { std::mem::transmute::<usize, crate::TypedFastFn>(fn_ptr as usize) };
-    let crate::typ::Type::Fn(ft) = (unsafe { &*(typ as *const crate::typ::Type) }) else {
+    let Type::Fn(ft) = (unsafe { &*(typ as *const Type) }) else {
         unreachable!("a typed fast call's type is its site's function type")
     };
     let env = unsafe { kernel_env() };
@@ -747,7 +742,7 @@ unsafe fn graphix_castcall(
     let f: crate::fusion::lowering::CastFn = unsafe {
         std::mem::transmute::<usize, crate::fusion::lowering::CastFn>(fn_ptr as usize)
     };
-    let typ = unsafe { &*(typ as *const crate::typ::Type) };
+    let typ = unsafe { &*(typ as *const Type) };
     let env = unsafe { kernel_env() };
     unsafe { fast_dispatch(|args| f(env, typ, args), args, n, taint_mask, stale_mask) }
 }
@@ -812,16 +807,14 @@ unsafe fn fast_dispatch(
     let n = n as usize;
     // A zero-argument call site is refused at emission.
     let all_stale = n > 0 && stale_mask == u64::MAX >> (64 - n);
-    let bottom =
-        if all_stale { crate::Tag::STALE_BOTTOM } else { crate::Tag::FRESH_BOTTOM };
+    let bottom = if all_stale { Tag::STALE_BOTTOM } else { Tag::FRESH_BOTTOM };
     let tv = if taint_mask != 0 {
         TagValue::tagged(Value::Null, bottom)
     } else {
         guard_panic(TagValue::tagged(Value::Null, bottom), || match call(args_vec) {
-            Some(v) => TagValue::tagged(
-                v,
-                if all_stale { crate::Tag::STALE } else { crate::Tag::FIRED },
-            ),
+            Some(v) => {
+                TagValue::tagged(v, if all_stale { Tag::STALE } else { Tag::FIRED })
+            }
             None => TagValue::tagged(Value::Null, bottom),
         })
     };
@@ -849,7 +842,6 @@ fn variant_payload_read<T: Default>(
 
 /// The j-th spine cell of a list value; `None` on a short or malformed chain.
 fn list_walk(v: &Value, j: usize) -> Option<&Value> {
-    use crate::node::list;
     let mut cur = v;
     for _ in 0..j {
         match list::split(cur) {
@@ -865,9 +857,7 @@ fn list_walk(v: &Value, j: usize) -> Option<&Value> {
 /// `ArithError` value.
 fn value_arith(op: BinOp, checked: bool, l: &TagValue, r: &TagValue) -> TagValue {
     match l.with_value(|a| r.with_value(|b| arith(op, checked, a.clone(), b.clone()))) {
-        Value::Error(_) if !checked => {
-            TagValue::tagged(Value::Null, crate::Tag::FRESH_BOTTOM)
-        }
+        Value::Error(_) if !checked => TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
         v => TagValue::fired(v),
     }
 }
@@ -926,13 +916,13 @@ unsafe fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
 /// `typ` (a `Type::Abstract` constant of the kernel's record). Consumes
 /// `tv`.
 unsafe fn graphix_abstract_wrap(
-    typ: *const crate::typ::Type,
+    typ: *const Type,
     name: *const arcstr::ArcStr,
     tv: TagValue,
 ) -> TagValue {
     let name = unsafe { (*name).clone() };
     let (id, params) = match unsafe { &*typ } {
-        crate::typ::Type::Abstract { id, params } => (*id, params.clone()),
+        Type::Abstract { id, params } => (*id, params.clone()),
         t => panic!("graphix_abstract_wrap: {t} is not an abstract type — JIT codegen bug"),
     };
     TagValue::fired(crate::abstract_value::wrap(id, name, params, tv.value()))
@@ -1142,7 +1132,6 @@ safe fn graphix_nullable_array(v: ManuallyDrop<TagValue>) -> u64 {
 /// List-pattern structure test: `k` cells exist; `exact` also requires
 /// nil after them. A non-list fails the walk.
 safe fn graphix_list_match(v: ManuallyDrop<TagValue>, k: usize, exact: u8) -> u8 {
-    use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, k) {
         None => 0,
         Some(cur) => {
@@ -1158,7 +1147,6 @@ safe fn graphix_list_match(v: ManuallyDrop<TagValue>, k: usize, exact: u8) -> u8
 
 /// Owned clone of the j-th head of a list as a Value; `Null` on a short chain.
 safe fn graphix_list_get_value(v: ManuallyDrop<TagValue>, j: usize) -> TagValue {
-    use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((h, _)) => h.clone(),
         None => Value::Null,
@@ -1168,7 +1156,6 @@ safe fn graphix_list_get_value(v: ManuallyDrop<TagValue>, j: usize) -> TagValue 
 
 /// Owned `ValArray` bits of the j-th head; the empty array on mismatch.
 safe fn graphix_list_get_array(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
-    use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((Value::Array(a), _)) => a.clone(),
         _ => EMPTY_ARR.clone(),
@@ -1179,7 +1166,7 @@ safe fn graphix_list_get_array(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
 /// Owned `ArcStr` of the j-th head; the empty string on mismatch.
 safe fn graphix_list_get_string(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
     let r = v.with_value(|v| {
-        match list_walk(v, j).and_then(|c| crate::node::list::split(c)) {
+        match list_walk(v, j).and_then(|c| list::split(c)) {
             Some((Value::String(s), _)) => s.clone(),
             _ => arcstr::ArcStr::new(),
         }
@@ -1289,13 +1276,13 @@ jit_helpers! { registry = collection_helpers;
 /// source disc's taint rides the loop's SlotFlags.
 safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
     let v = tv.value();
-    let arr = crate::node::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
+    let arr = list::to_array(&v).unwrap_or_else(|| EMPTY_ARR.clone());
     va_bits(arr)
 }
 
 /// Finalize a value buf into the List of its elements, consuming the buf.
 unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
-    let list = crate::node::list::from_iter(unsafe { (*buf).drain(..) });
+    let list = list::from_iter(unsafe { (*buf).drain(..) });
     unsafe { buf_give(buf) };
     TagValue::fired(list)
 }
@@ -1303,7 +1290,7 @@ unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
 /// Consume finalized ValArray bits and build the List value.
 unsafe fn graphix_valarray_into_list(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
-    TagValue::fired(crate::node::list::from_iter(arr.iter().cloned()))
+    TagValue::fired(list::from_iter(arr.iter().cloned()))
 }
 
 /// Flatten a Map value into owned ValArray bits of `[k, v]` pairs in
@@ -1820,9 +1807,8 @@ unsafe fn graphix_slot_state_table_shared(
 /// block size is unknown while its body is still emitting.
 unsafe fn graphix_site_child_block(
     word: *mut u64,
-    desc: *const std::sync::atomic::AtomicU64,
+    desc: *const AtomicU64,
 ) -> ChildBlock {
-    use std::sync::atomic::Ordering::Relaxed;
     let none = ChildBlock { block: std::ptr::null_mut(), fresh: 0 };
     if word.is_null() {
         return none;
@@ -1964,7 +1950,7 @@ safe fn graphix_record_jit_invocation() {
 
 /// One `?` raise a kernel queued: the site's interned `QopSite` and the
 /// error.
-pub(crate) type QopRaise = (*const crate::node::error::QopSite, Value);
+pub(crate) type QopRaise = (*const QopSite, Value);
 
 /// An `Effect::Io` call a kernel queued: its site and its arguments.
 pub(crate) type IoQueued = (*const crate::IoSite, SmallVec<[Value; 2]>);
@@ -2118,18 +2104,18 @@ mod tests {
             }
         };
         let tv = fastcall(fp, 0, 0);
-        assert_eq!(tv.tag(), crate::Tag::FIRED);
+        assert_eq!(tv.tag(), Tag::FIRED);
         assert_eq!(tv.value_cloned(), Value::I64(3));
         let tv = fastcall(fp, 0, 0b1);
-        assert_eq!(tv.tag(), crate::Tag::STALE);
+        assert_eq!(tv.tag(), Tag::STALE);
         assert_eq!(tv.value_cloned(), Value::I64(3));
         let never_p = never as *const () as u64;
         let tv = fastcall(never_p, 0b1, 0);
-        assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
+        assert_eq!(tv.tag(), Tag::FRESH_BOTTOM);
         let tv = fastcall(never_p, 0b1, 0b1);
-        assert_eq!(tv.tag(), crate::Tag::STALE_BOTTOM);
+        assert_eq!(tv.tag(), Tag::STALE_BOTTOM);
         let tv = fastcall(none as *const () as u64, 0, 0);
-        assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
+        assert_eq!(tv.tag(), Tag::FRESH_BOTTOM);
         assert_eq!(args.len(), 1);
     }
 }
