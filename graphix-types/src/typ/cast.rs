@@ -175,14 +175,18 @@ fn ref_key(tr: &TypeRef) -> Option<RefKey> {
 type ShapeKey = (usize, SmallVec<[bool; 4]>);
 
 /// What a walk knows of one application: it is being decided, at its
-/// depth in the walk, or what was decided.
+/// depth in the walk, what was decided, or a verdict that holds if the
+/// application being decided at depth `read` turns out `cycle` too.
 enum Verdict<T> {
     Deciding(usize),
     Decided(T),
+    Provisional { read: usize, t: T },
 }
 
 struct Verdicts<T> {
     known: LPooled<AHashMap<ShapeKey, Verdict<T>>>,
+    /// The provisional verdicts, each with the depth it was decided at.
+    pending: LPooled<Vec<(ShapeKey, usize)>>,
     /// The number of applications being decided.
     depth: usize,
     /// The shallowest application being decided that the decision in
@@ -192,15 +196,52 @@ struct Verdicts<T> {
 
 impl<T> Verdicts<T> {
     fn new() -> Self {
-        Self { known: LPooled::take(), depth: 0, read: usize::MAX }
+        Self {
+            known: LPooled::take(),
+            pending: LPooled::take(),
+            depth: 0,
+            read: usize::MAX,
+        }
+    }
+
+    /// Settle the provisional verdicts that read the application decided
+    /// at `depth` as `t`: refuted, every one decided inside it may have
+    /// assumed it and is dropped; confirmed outright, those that read it
+    /// first are decided; confirmed provisionally, they read what it read.
+    fn settle(&mut self, depth: usize, refuted: bool, read: usize) {
+        let mut i = 0;
+        while i < self.pending.len() {
+            let (k, at) = &self.pending[i];
+            let Some(Verdict::Provisional { read: r, .. }) = self.known.get_mut(k) else {
+                self.pending.swap_remove(i);
+                continue;
+            };
+            if refuted && *at > depth {
+                self.known.remove(k);
+                self.pending.swap_remove(i);
+            } else if *r < depth || refuted {
+                i += 1;
+            } else if read < depth {
+                *r = read;
+                i += 1;
+            } else {
+                let (k, _) = self.pending.swap_remove(i);
+                if let Some(v) = self.known.get_mut(&k)
+                    && let Verdict::Provisional { t, .. } =
+                        mem::replace(v, Verdict::Deciding(0))
+                {
+                    *v = Verdict::Decided(t)
+                }
+            }
+        }
     }
 }
 
 /// `decide` the application `k` once per walk. A repeat while it is being
 /// decided answers `cycle`, an assumption that holds coinductively for
 /// `k` itself; a decision that read the assumption of an application
-/// further out answers `cycle` only provisionally, since that application
-/// may yet fail it, so it is not kept.
+/// further out answers `cycle` provisionally, since that application may
+/// yet fail it, and is settled when that application is.
 fn decide_once<T: Clone + PartialEq>(
     seen: &mut Verdicts<T>,
     k: ShapeKey,
@@ -212,6 +253,10 @@ fn decide_once<T: Clone + PartialEq>(
             seen.read = seen.read.min(*depth);
             cycle
         }
+        Some(Verdict::Provisional { read, t }) => {
+            seen.read = seen.read.min(*read);
+            t.clone()
+        }
         Some(Verdict::Decided(t)) => t.clone(),
         None => {
             let depth = seen.depth;
@@ -220,19 +265,14 @@ fn decide_once<T: Clone + PartialEq>(
             let outer = mem::replace(&mut seen.read, usize::MAX);
             let t = decide(seen);
             seen.depth -= 1;
-            // CR claude for claude: [perf/medium] A `cycle` verdict that read an outer
-            // application's assumption is removed here, so every later occurrence of
-            // the same application decides again. For a cycle of typedefs where each
-            // one names the next twice, the work doubles per typedef. With 22 typedefs,
-            // a program that only prints `null` takes about 12 s, because check_cast,
-            // holds_ref, reaches_out and holds_abstract all go through decide_once.
-            // Keep these provisional verdicts in a pending list tagged with the
-            // shallowest depth they read. When that application finishes with `cycle`,
-            // commit them as Decided. When it finishes otherwise, drop them. probe:
-            // design/review-2026-10-12/repro/t-cast-setops-16-decide-once-exponential.gx
-            // (t-cast-setops-09)
-            if seen.read < depth && t == cycle {
-                seen.known.remove(&k);
+            let refuted = t != cycle;
+            seen.settle(depth, refuted, seen.read);
+            if seen.read < depth && !refuted {
+                seen.known.insert(
+                    k.clone(),
+                    Verdict::Provisional { read: seen.read, t: t.clone() },
+                );
+                seen.pending.push((k, depth));
             } else {
                 seen.known.insert(k, Verdict::Decided(t.clone()));
             }
