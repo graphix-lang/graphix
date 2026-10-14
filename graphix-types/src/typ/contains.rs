@@ -56,7 +56,7 @@ pub(super) struct ContainsHist {
     /// pins both types so an address cannot be recycled under its key,
     /// and carries the `epoch` at insert: a committing call may bind a
     /// cell a verdict read, so the epoch bumps there.
-    probe_pairs: Lazy<AHashMap<(NormKey, NormKey), (u64, bool)>>,
+    probe_pairs: Lazy<AHashMap<(NormKey, NormKey, bool), (u64, bool)>>,
     probe_pins: Lazy<Vec<Type>>,
     /// A probe that depends on its own verdict claims nothing.
     distribution_probes_in_progress: SmallVec<[usize; 4]>,
@@ -105,16 +105,21 @@ impl ContainsHist {
         }
     }
 
-    /// Cached pure-probe verdict for `(t0, t1)`, if current.
-    fn probe_get(&self, t0: &Type, t1: &Type) -> Option<bool> {
-        let k = (probe_key(t0)?, probe_key(t1)?);
+    /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
+    /// or not, if current.
+    fn probe_get(&self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
+        let k = (probe_key(t0)?, probe_key(t1)?, rigid);
         let (epoch, r) = self.probe_pairs.get()?.get(&k).copied()?;
         (epoch == self.epoch).then_some(r)
     }
 
-    fn probe_put(&mut self, t0: &Type, t1: &Type, r: bool) {
+    fn probe_put(&mut self, rigid: bool, t0: &Type, t1: &Type, r: bool) {
         if let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1))
-            && self.probe_pairs.get_mut().insert((k0, k1), (self.epoch, r)).is_none()
+            && self
+                .probe_pairs
+                .get_mut()
+                .insert((k0, k1, rigid), (self.epoch, r))
+                .is_none()
         {
             let pins = self.probe_pins.get_mut();
             pins.push(t0.clone());
@@ -936,10 +941,12 @@ impl Type {
             hist.epoch += 1;
             return self.contains_dispatch(flags, env, hist, t);
         }
-        if !flags.is_empty() {
+        // a probe binds nothing: its verdict, rigid or not, is memoized
+        let rigid = flags == ContainsFlags::RigidCheck;
+        if !flags.is_empty() && !rigid {
             return self.contains_dispatch(flags, env, hist, t);
         }
-        if let Some(r) = hist.probe_get(self, t) {
+        if let Some(r) = hist.probe_get(rigid, self, t) {
             return Ok(r);
         }
         // Only a verdict that assumed no pair from further out holds
@@ -960,7 +967,7 @@ impl Type {
         // lower low_water (or set a taint flag), so the verdicts above it skip
         // probe_put. No program shown. (t-contains-11)
         if assumed >= height {
-            hist.probe_put(self, t, r);
+            hist.probe_put(rigid, self, t, r);
         }
         Ok(r)
     }
@@ -1789,6 +1796,12 @@ impl Type {
             .iter()
             .filter(|m| !is_unbound_tvar(m))
             .chain(s.iter().filter(|m| is_unbound_tvar(m)));
+        // the probe holds a rigid cell rigid wherever the decision will
+        let probe =
+            match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
+                true => BitFlags::from(ContainsFlags::RigidCheck),
+                false => BitFlags::empty(),
+            };
         let mut admitted = false;
         for m in members {
             // CR claude for claude: [bug/medium] This guiding probe runs with empty
@@ -1808,7 +1821,11 @@ impl Type {
             // bound, either by trying it on reset_tvars copies as the shares_bare_cell
             // path does, or by falling through to the residue in place_members. probe:
             // design/review-2026-10-12/repro/t-contains-04.sh (t-contains-04)
-            if m.contains_int(BitFlags::empty(), env, hist, t)? {
+            // 2026-10-14 claude: set_commit's probe is RigidCheck under a commit or a
+            // rigid check now (pin lang::types::rigid_cell_guides_the_member_probe);
+            // place_members, the Set ⊇ Set used-marking probe, the (t0, TVar) witness
+            // probe and leaving nothing bound after a failed member commit stand.
+            if m.contains_int(probe, env, hist, t)? {
                 admitted = true;
                 if flags.is_empty() || m.contains_int(flags, env, hist, t)? {
                     return Ok(Some(true));

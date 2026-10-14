@@ -2969,3 +2969,26 @@ run!(
         let result = f(("s", "t", v), 3)
     "#
 );
+
+// The member probe holds a declared variable rigid as the commit will:
+// the first member's 'a cannot take string, so y stays free for the
+// second.
+run!(
+    rigid_cell_guides_the_member_probe,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if a[..] == [Value::String(arcstr::literal!("str")), Value::String(arcstr::literal!("s"))]),
+    "/test.gx" => r#"
+        let f = |x: 'a, y| -> [(i64, 'a), ([i64, string], string)] (y, "s");
+        let result = f(1, "str")
+    "#
+);
+
+run!(
+    rigid_cell_guides_the_member_probe_two,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if a[..] == [Value::String(arcstr::literal!("str")), Value::String(arcstr::literal!("s"))]),
+    "/test.gx" => r#"
+        let f = |x: 'a, y| -> [(i64, 'a), (string, string)] (y, "s");
+        let result = f(1, "str")
+    "#
+);
