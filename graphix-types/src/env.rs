@@ -1248,21 +1248,14 @@ impl Env {
     /// declaration stays the entry of record and the implementation's
     /// methods proxy to it. Returns the fulfilled declaration.
     pub fn register_impl(&mut self, im: Arc<ImplDef>) -> Result<Option<Arc<ImplDef>>> {
-        // CR claude for claude: [perf/low] Registering an impl clones the trait's whole
-        // list and runs `heads_overlap` (two `reset_tvars` and two `contains` calls)
-        // against every existing impl. N impls of one trait therefore cost O(N^2) type
-        // walks: 800 abstract-type impls take 1.6 s to check. Two abstract heads with
-        // different ids never overlap, so decide that pair by id before calling
-        // `heads_overlap`, as `find_impl` already does when it skips a mismatched
-        // abstract id. Also push onto the list with `Arc::make_mut` instead of cloning
-        // it. If many abstract impls make the linear scan in `find_impl` show up as
-        // well, keep a map from abstract id to impl beside the list. probe:
-        // design/review-2026-10-12/repro/x-perf-compile-09-impls-quadratic.gx
-        // (x-perf-compile-09)
-        let mut list: Vec<Arc<ImplDef>> =
-            self.impls.get(&im.trait_id).map(|l| (**l).clone()).unwrap_or_default();
+        let empty = Arc::new(Vec::new());
+        let list = self.impls.get(&im.trait_id).cloned().unwrap_or(empty);
+        let id = self.head_abstract(&im.target);
         for other in list.iter() {
-            if self.heads_overlap(&other.target, &im.target)? {
+            let distinct_abstracts = id.is_some_and(|id| {
+                self.head_abstract(&other.target).is_some_and(|o| o != id)
+            });
+            if !distinct_abstracts && self.heads_overlap(&other.target, &im.target)? {
                 if other.declared
                     && !im.declared
                     && Path::dirname(&*other.scope) == Path::dirname(&*im.scope)
@@ -1281,8 +1274,9 @@ impl Env {
             }
         }
         let trait_id = im.trait_id;
-        list.push(im);
-        self.impls.insert(trait_id, Arc::new(list));
+        let mut list = list;
+        Arc::make_mut(&mut list).push(im);
+        self.impls.insert(trait_id, list);
         Ok(None)
     }
 
@@ -1294,6 +1288,19 @@ impl Env {
             self.impls.remove(&im.trait_id);
         } else {
             self.impls.insert(im.trait_id, Arc::new(list));
+        }
+    }
+
+    /// The abstract type an impl head names, through its typedef: two
+    /// heads of different abstract types never overlap.
+    fn head_abstract(&self, t: &Type) -> Option<AbstractId> {
+        match t {
+            Type::Abstract { id, .. } => Some(*id),
+            Type::Ref(_) => match t.lookup_ref(self).ok()? {
+                Type::Abstract { id, .. } => Some(id),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
