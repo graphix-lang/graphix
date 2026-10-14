@@ -2167,21 +2167,15 @@ impl Type {
                     env,
                     flags.contains(ContainsFlags::Commit),
                 )? {
-                    // CR claude for claude: [risk/low] After bind_ctor, this arm checks
-                    // the element covariantly (`a ⊇ last`), and so does the mirror arm
-                    // (`last ⊇ a`). An unknown constructor's parameter is invariant, as
-                    // the (None, None) arm treats it. So `'c<[i64, string]> ⊇
-                    // Cell<i64>` (Cell = Abstract<&mut 'a>) is true while 'c is open
-                    // and false once the type fills. Today only a later check of the
-                    // filled type refuses it. A path that asks only once would let a
-                    // string be written into an i64 cell. Fix: compare the element with
-                    // equal_int, or check the filled type (`Type::app(ctor, a)`) after
-                    // bind_ctor so the constructor's own variance decides. Probe:
-                    // GRAPHIX_DBG_BIND=1 on
-                    // design/review-2026-10-12/repro/t-contains-06.gx. (t-contains-13)
+                    // the filled type decides, by its constructor's variance
                     Some((ctor, last)) => {
                         Ok(Self::bind_ctor(c, &ctor, flags, env, hist)?
-                            && a.contains_int(flags, env, hist, &last)?)
+                            && match ctor.fill_hole(a) {
+                                Some(filled) => {
+                                    filled.contains_int(flags, env, hist, t1)?
+                                }
+                                None => a.equal_int(flags, env, hist, &last)?,
+                            })
                     }
                     None => Ok(false),
                 },
@@ -2196,7 +2190,12 @@ impl Type {
                 )? {
                     Some((ctor, last)) => {
                         Ok(Self::bind_ctor(c, &ctor, flags, env, hist)?
-                            && last.contains_int(flags, env, hist, a)?)
+                            && match ctor.fill_hole(a) {
+                                Some(filled) => {
+                                    t0.contains_int(flags, env, hist, &filled)?
+                                }
+                                None => last.equal_int(flags, env, hist, a)?,
+                            })
                     }
                     None => Ok(false),
                 },

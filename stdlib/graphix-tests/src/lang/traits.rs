@@ -1831,3 +1831,22 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+// An open constructor applied to a union holds a filled type only as the
+// constructor's variance allows: a Cell<i64> is no 'c<[i64, string]>,
+// whose writer could put a string in it.
+run!(
+    an_open_constructor_respects_the_filled_variance,
+    refused("Cell<[i64, string]> does not contain Cell<i64>"),
+    "/test.gx" => r#"
+        type Cell<'a> = Abstract<&mut 'a>;
+        type Other<'a> = Abstract<Array<'a>>;
+        trait Store { val put: fn(self<'a>, v: 'a) -> i64 };
+        impl Store for Cell<'_> { let put = |c, v| { let r = c.0; *r <- v; 0 } };
+        impl Store for Other<'_> { let put = |c, v| 1 };
+        let widen = 'c: Store |c: 'c<[i64, string]>| -> i64 Store::put(c, "oops");
+        let x: i64 = 1;
+        let c: Cell<i64> = Cell(&mut x);
+        let result = widen(c)
+    "#
+; FuseExpect::None);
