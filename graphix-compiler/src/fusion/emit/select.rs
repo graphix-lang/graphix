@@ -1801,39 +1801,25 @@ fn emit_variant_cond(
                 cond = cx.b.ins().band(cond, eq);
             }
             StructPatternNode::Literal(lit) => {
-                // The typed payload read is total: only the static type
-                // proves it faithful.
-                // CR claude for claude: [bug/high] The static-type guard proves nothing
-                // here. `elt` comes from `pred`, the arm's inferred predicate, and for
-                // a literal payload that is the literal's own type, so
-                // `scalar_prim(elt) == Some(prim)` always holds. The typed read from
-                // variant_payload_helper is total: a null, string or other-typed
-                // payload reads as 0/false and matches a `0`/`false` literal. So
-                // `Count(null) over `Count([i64, null]) takes a `Count(0) arm in the
-                // JIT, while the node-walk correctly takes `Count(_). This is a wrong
-                // answer from fusion on ordinary option-payload code. Fix: check `prim`
-                // against the payload's static type taken from the scrutinee's member
-                // for this tag, as the composite path does with `leaf.typ`, and de-fuse
-                // when it is not exactly `prim`. Alternatively, read the payload
-                // borrowed (graphix_variant_payload_borrowed) and AND a tag test
-                // against Typ::get(lit) with the compare, as the top-level
-                // Value-literal path does. The nested `Variant` case passes the same
-                // pred-derived `elt` down, so it needs the same treatment. probe:
-                // design/review-2026-10-12/repro/f-select-02.gx (f-select-02)
-                let prim = kernel_abi::scalar_prim_of_value(lit)
-                    .filter(|p| kernel_abi::scalar_prim(elt) == Some(*p))
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "emit_clif: variant payload literal {lit:?} over {elt:?} \
+                let prim = kernel_abi::scalar_prim_of_value(lit).ok_or_else(|| {
+                    anyhow!(
+                        "emit_clif: variant payload literal {lit:?} over {elt:?} \
                              not lowerable"
-                        )
-                    })?;
+                    )
+                })?;
                 let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
-                let call =
-                    cx.call_helper(variant_payload_helper(prim), &[v.0, v.1, idx_c])?;
-                let value = call[0];
+                let call = cx.call_helper(
+                    "graphix_variant_payload_borrowed",
+                    &[v.0, v.1, idx_c],
+                )?;
+                let (disc, payload) = (call[0], call[1]);
+                let disc = clean_disc(cx.b, disc);
+                let tag_matches =
+                    cx.b.ins().icmp_imm(IntCC::Equal, disc, Typ::get(lit) as i64);
+                let value = cast_u64_to_prim(cx.b, payload, prim);
                 let lit = compile_const(cx.b, lit, prim)?;
                 let eq = compile_cmp(cx.b, CmpOp::Eq, prim, value, lit);
+                let eq = cx.b.ins().band(tag_matches, eq);
                 cond = cx.b.ins().band(cond, eq);
             }
             StructPatternNode::Variant { tag, all: None, binds: nbinds } => {
