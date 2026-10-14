@@ -2,6 +2,7 @@ use crate::{
     PrintFlag,
     dbgenv::{graphix_dbg_bind, graphix_dbg_cycle_bt},
     env::{Env, ImplDef},
+    expr::ModPath,
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
@@ -12,7 +13,7 @@ use crate::{
     },
 };
 use ahash::AHashMap;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use enumflags2::{BitFlags, bitflags};
 use netidx_value::Typ;
 use nohash::{IntMap, IntSet};
@@ -68,6 +69,9 @@ pub(super) struct ContainsHist {
     /// Per definition, on this path: the size of the params its latest
     /// expansion took, and how many expansions in a row grew them.
     unfolding: Lazy<IntMap<usize, (usize, u32)>>,
+    /// A definition whose parameters grew past [`MAX_GROWTH`] under a
+    /// probe: the reason a refusal gives when the verdict needed it.
+    grew: Option<ModPath>,
 }
 
 /// How many expansions of one typedef in a row may take larger params. A
@@ -102,6 +106,7 @@ impl ContainsHist {
             low_water: usize::MAX,
             epoch: 0,
             unfolding: Lazy::new(),
+            grew: None,
         }
     }
 
@@ -765,22 +770,31 @@ fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
     })
 }
 
+/// The refusal of a comparison of two instances of `name` whose
+/// parameters grow at every level.
+fn growth_error(name: &ModPath) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot compare two instances of {name}: its parameters grow at every \
+         level of its recursion, so no comparison ends"
+    )
+}
+
 /// The deref/expansion steps [`Type::set_covers_by_distribution`] takes
 /// to reach a head constructor before giving up on a chain of aliases.
 const HEAD_CHAIN_LIMIT: usize = 64;
 
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
-        let ok = self.contains_int(
-            ContainsFlags::Commit.into(),
-            env,
-            &mut ContainsHist::new(),
-            t,
-        )?;
+        let mut hist = ContainsHist::new();
+        let ok = self.contains_int(ContainsFlags::Commit.into(), env, &mut hist, t)?;
         if graphix_dbg_bind() {
             eprintln!("CHK-CONTAINS {self} >= {t} -> {ok}");
         }
-        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
+        match (ok, hist.grew) {
+            (true, _) => Ok(()),
+            (false, Some(name)) => Err(growth_error(&name)),
+            (false, None) => Err(self.contains_mismatch(env, t)),
+        }
     }
 
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
@@ -1046,21 +1060,6 @@ impl Type {
             // (whatever each param's variance). Two filled cells can
             // hold different defs for one name; disagreement, like any
             // other pair, takes the expansion arm.
-            // CR claude for claude: [bug/medium] Two refs to one nested datatype that
-            // differ only in open cells fail the MAX_GROWTH guard: `N<'a> ⊇ N<i64>`
-            // with `type N<'a> = [null, ('a, N<Array<'a>>)]` is refused as "parameters
-            // grow". So `let g = |n: N<'a>| ..; g(n1)` and `let x: N<'b> = n1` are
-            // refused, which makes any generic function over a nested datatype
-            // unusable. The cause: this arm wants identical params, so the pair
-            // expands. The union then decides by a probe (`set_commit`), which binds
-            // nothing, so `N<Array<'a>>` never becomes `N<Array<i64>>` and grows until
-            // the `bail!`. That Err escapes the probe through `?`. Fix: for two refs to
-            // one definition with open cells, relate the params pairwise and
-            // invariantly first (bind under commit, decide on the cells under a probe),
-            // and expand with the growth guard only when that fails. The widening
-            // `N<[i64, string]> ⊇ N<i64>` should stay refused
-            // (`growing_typedef_refused`). Probe:
-            // design/review-2026-10-12/repro/x-fix-types-08.gx (x-fix-types-08)
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
@@ -1075,6 +1074,29 @@ impl Type {
                 Ok(true)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
+                // two instances of one definition whose parameters contain
+                // each other are one type: no expansion, which a parameter
+                // growing at each level would never end
+                if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
+                    && tr0.same_definition(tr1)
+                    && tr0.params.len() == tr1.params.len()
+                {
+                    let pairs = || tr0.params.iter().zip(tr1.params.iter());
+                    let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {
+                        for (a, b) in pairs() {
+                            if !a.contains_int(f, env, hist, b)?
+                                || !b.contains_int(f, env, hist, a)?
+                            {
+                                return Ok::<_, anyhow::Error>(false);
+                            }
+                        }
+                        Ok(true)
+                    };
+                    let probe = flags & !BitFlags::from(ContainsFlags::Commit);
+                    if equal(probe, hist)? && (!commit || equal(flags, hist)?) {
+                        return Ok(true);
+                    }
+                }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 // one entry per definition, at its larger params
                 let defs = match [t0, t1].map(|t| match t {
@@ -1109,31 +1131,19 @@ impl Type {
                     };
                     saved.push((*d, old));
                     hist.unfolding.get_mut().insert(*d, (*size, growth));
-                    // CR claude for claude: [bug/medium] This bails with a hard error
-                    // under probes too, and set_commit, place_members and the Tuple arm
-                    // all propagate it with `?`. A union member whose comparison grows
-                    // past MAX_GROWTH therefore aborts the whole check before its
-                    // siblings are tried. `|x: N<i64>| -> [N<string>, (Any, Any), null]
-                    // x` is refused with "cannot compare two instances of N", although
-                    // null and (Any, Any) cover every value. The Tuple arm keeps
-                    // walking positions after one is already false, so `N<i64>` against
-                    // `N<string>` also reports growth where a plain mismatch belongs
-                    // (t-contains-02b). Under a probe, growth past the limit should
-                    // answer false. Record it in the hist instead, and report it only
-                    // when a committing verdict actually depends on it, as
-                    // contains_mismatch already does for the infinite-type wording.
-                    // probe: design/review-2026-10-12/repro/t-contains-05-growth.gx
-                    // (t-contains-05)
                     if growth > MAX_GROWTH {
                         restore(hist, &saved);
+                        // a probe answers; a commit that grows past the limit
+                        // is an error the program sees
                         let name = match (t0, t1) {
                             (Self::Ref(tr), _) | (_, Self::Ref(tr)) => tr.name.clone(),
                             _ => unreachable!("a definition key is a reference's"),
                         };
-                        bail!(
-                            "cannot compare two instances of {name}: its parameters \
-                             grow at every level of its recursion, so no comparison ends"
-                        )
+                        if !commit {
+                            hist.grew = Some(name);
+                            return Ok(false);
+                        }
+                        return Err(growth_error(&name));
                     }
                 }
                 let r = hist.assuming(key, |hist| {

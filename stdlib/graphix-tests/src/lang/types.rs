@@ -3014,3 +3014,28 @@ run!(
         let result = g(1, true)
     "#
 ; FuseExpect::None);
+
+// Two instances of a nested datatype whose parameters are equal are one
+// type, open cells included: a generic function over it checks.
+run!(
+    nested_datatype_instances_relate_by_parameters,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        type N<'a> = [null, ('a, N<Array<'a>>)];
+        let n1: N<i64> = (1, ([2], null));
+        let g = |n: N<'a>| -> N<'a> n;
+        let result = select g(n1) { null => 0, (x, _) => x }
+    "#
+);
+
+// A union member whose comparison would grow without end is a member that
+// does not match; the others still cover the value.
+run!(
+    a_growing_member_is_a_miss,
+    |v: Result<&Value>| matches!(v, Ok(Value::Null)),
+    "/test.gx" => r#"
+        type N<'a> = [null, ('a, N<Array<'a>>)];
+        let f = |x: N<i64>| -> [N<string>, (Any, Any), null] x;
+        let result = f(null)
+    "#
+; FuseExpect::None);
