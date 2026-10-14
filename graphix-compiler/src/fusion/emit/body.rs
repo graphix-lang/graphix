@@ -363,49 +363,49 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// The per-instance state-buffer pointer (`I64`), loaded from wire
     /// slot 1. Only meaningful at offsets returned by
-    /// [`claim_state_word`](Self::claim_state_word); 0 when the kernel
+    /// [`claim_word`](Self::claim_word); 0 when the kernel
     /// claimed nothing (no claimed offset exists to read through it).
     pub fn state_ptr(&self) -> ClifValue {
         self.ctx.state.ptr
     }
 
-    /// Claim one `u64` of per-instance cross-invocation memory,
-    /// returning its byte offset from [`state_ptr`](Self::state_ptr);
-    /// `None` inside a scaffold loop or in a callee body, where the
-    /// caller must emit its stateless approximation. The buffer is
-    /// zero-initialized per instance, so store `value + 1` and read 0
-    /// as "no previous observation".
-    // CR claude for claude: [structure/low] `claim_state_word`, `claim_state_anchor`,
-    // `claim_site_word` and `claim_site_anchor` repeat the same `next.get();
-    // next.set(idx + 1); idx * 8` and differ only in the channel they refuse. Callers
-    // then try one channel and fall back to the other (`claim_block_run`,
-    // `claim_slot_tables`, `claim_callee_block`). A body always claims from exactly one
-    // channel, so the remaining `None` arms (`None => break` in `claim_slot_tables`,
-    // the `return 0` in `claim_callee_block`) cannot happen. They suggest a failure
-    // that does not exist. Give `StateChannel` one `claim() -> i32`, add `BodyCx`
-    // claims that use the body's own channel (returning a Sure or Guarded `StateWord`),
-    // keep the in-loop refusal only where it is a rule, and delete the dead arms. See
-    // also f-scaffold-body-01. (f-scaffold-body-06)
-    pub fn claim_state_word(&self) -> Option<i32> {
-        if self.ctx.claims != Channel::State || self.env.loop_depth > 0 {
-            return None;
-        }
-        let idx = self.ctx.state.next.get();
-        self.ctx.state.next.set(idx + 1);
-        Some((idx * 8) as i32)
+    /// Claim one word from this body's channel at its root level.
+    pub(crate) fn claim_word(&mut self) -> StateWord {
+        assert_eq!(self.env.loop_depth, 0, "a loop slot needs its own word");
+        let off = self.ctx.claims_channel().claim();
+        self.claimed_word(off)
     }
 
-    /// [`claim_state_word`](Self::claim_state_word) without the
-    /// in-loop refusal, for the word anchoring a per-slot heap chain
-    /// ([`open_slot_tables`](Self::open_slot_tables)): every iteration
-    /// reaches its own slot through it. Callee bodies still refuse.
-    pub fn claim_state_anchor(&self) -> Option<i32> {
-        if self.ctx.claims != Channel::State {
-            return None;
-        }
-        let idx = self.ctx.state.next.get();
-        self.ctx.state.next.set(idx + 1);
-        Some((idx * 8) as i32)
+    /// Address a claimed offset in this body's channel.
+    pub(crate) fn claimed_word(&mut self, off: i32) -> StateWord {
+        let base = self.ctx.claims_channel().ptr;
+        let addr = self.b.ins().iadd_imm(base, off as i64);
+        let word = match self.ctx.claims {
+            Channel::State => StateWord::Sure(addr),
+            Channel::Site => StateWord::Guarded { base, addr },
+        };
+        word.required_addr(self);
+        word
+    }
+
+    /// Claim and register an owning chain's anchor in this body's channel.
+    pub(crate) fn claim_anchor(
+        &mut self,
+        own_levels: u32,
+        leaf: Option<triomphe::Arc<kernel_abi::SiteLeaf>>,
+    ) -> (TruncAnchor, StateWord) {
+        let channel = self.ctx.claims_channel();
+        let off = channel.claim();
+        channel.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
+            rel: (off / 8) as u32,
+            own_levels,
+            leaf,
+        });
+        let anchor = match self.ctx.claims {
+            Channel::State => TruncAnchor::State(off),
+            Channel::Site => TruncAnchor::Site(off),
+        };
+        (anchor, self.claimed_word(off))
     }
 
     /// Open a scaffold loop's per-slot state-table frame; emit in the
@@ -467,58 +467,23 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         // len-0 epoch skips this preheader entirely.
         let mut pending: Vec<TruncRec> = Vec::new();
         for id in sites {
-            let anchor = if n_dirs == 0 {
-                self.claim_state_word()
-            } else {
-                self.claim_state_anchor()
-            };
-            let entry = match anchor {
-                Some(off) => {
-                    pending.push(TruncRec {
-                        anchor: TruncAnchor::State(off),
-                        n_dirs: n_dirs as u32,
-                        leaf: TruncLeaf::Table { stride: 1 },
-                    });
-                    self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
-                        rel: (off / 8) as u32,
-                        own_levels: n_dirs as u32,
-                        leaf: None,
-                    });
-                    let sp = self.state_ptr();
-                    let word_addr = self.b.ins().iadd_imm(sp, off as i64);
-                    let table =
-                        self.emit_slot_chain(word_addr, &enclosing, len, src_disc)?;
-                    Some((table, false))
-                }
-                // A callee body's loop anchors in the per-call-site
-                // block, behind its null guard: on a null base branch
-                // around the chain and hand the sites a 0 table.
-                None => match self.claim_site_anchor(n_dirs as u32, None) {
-                    Some(off) => {
-                        pending.push(TruncRec {
-                            anchor: TruncAnchor::Site(off),
-                            n_dirs: n_dirs as u32,
-                            leaf: TruncLeaf::Table { stride: 1 },
-                        });
-                        let base = self.site_ptr();
-                        let word_addr = self.b.ins().iadd_imm(base, off as i64);
-                        let zero = self.b.ins().iconst(types::I64, 0);
-                        let [table] = self.null_guarded(base, [zero], |cx| {
-                            Ok::<_, anyhow::Error>([
-                                cx.emit_slot_chain(word_addr, &enclosing, len, src_disc)?
-                            ])
-                        })?;
-                        Some((table, true))
-                    }
-                    None => None,
-                },
-            };
-            match entry {
-                Some((table, guarded)) => {
-                    tables.push(SlotTable { site: *id, base: table, guarded })
-                }
-                None => break,
-            }
+            let (anchor, word) = self.claim_anchor(n_dirs as u32, None);
+            pending.push(TruncRec {
+                anchor,
+                n_dirs: n_dirs as u32,
+                leaf: TruncLeaf::Table { stride: 1 },
+            });
+            let zero = self.b.ins().iconst(types::I64, 0);
+            let [table] = word.with_addr(self, [zero], |cx, addr| {
+                Ok::<_, anyhow::Error>([
+                    cx.emit_slot_chain(addr, &enclosing, len, src_disc)?
+                ])
+            })?;
+            tables.push(SlotTable {
+                site: *id,
+                base: table,
+                guarded: matches!(word, StateWord::Guarded { .. }),
+            });
         }
         Ok((tables, pending))
     }
@@ -713,52 +678,20 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         })
     }
 
-    /// Claim one word of per-call-site block memory (wire slot 2),
-    /// the callee-body twin of [`claim_state_word`](Self::claim_state_word).
-    /// Returns the byte offset; `None` outside callee bodies. The block
-    /// base is null only for a body that claims no site words; every
-    /// consumer null-guards it all the same ([`StateWord::Guarded`]).
-    pub(crate) fn claim_site_word(&self) -> Option<i32> {
-        if self.ctx.claims != Channel::Site {
-            return None;
-        }
-        let idx = self.ctx.site.next.get();
-        self.ctx.site.next.set(idx + 1);
-        Some((idx * 8) as i32)
-    }
-
     /// Claim the word that roots a self-call's per-activation block
     /// tree ([`kernel_abi::SelfBlock`]); one per self-call site, so
     /// sibling calls at the same depth get separate trees. Refused
     /// inside scaffold loops, where the root would alias every slot.
     pub(crate) fn claim_self_block_word(&self) -> Option<i32> {
-        if self.env.loop_depth > 0 {
+        if self.env.loop_depth > 0 || self.ctx.claims != Channel::Site {
             return None;
         }
-        let off = self.claim_site_word()?;
+        let off = self.ctx.site.claim();
         self.ctx.self_call_roots.borrow_mut().push(off);
         Some(off)
     }
 
-    /// [`claim_site_word`](Self::claim_site_word) for a word that
-    /// anchors a slot-table chain: registered on the kernel's
-    /// [`SiteLayout`] so the block's owner frees the chain.
-    pub(crate) fn claim_site_anchor(
-        &self,
-        own_levels: u32,
-        leaf: Option<triomphe::Arc<kernel_abi::SiteLeaf>>,
-    ) -> Option<i32> {
-        let off = self.claim_site_word()?;
-        self.ctx.site.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
-            rel: (off / 8) as u32,
-            own_levels,
-            leaf,
-        });
-        Some(off)
-    }
-
-    /// The per-call-site block base (`I64`, possibly 0 — see
-    /// [`claim_site_word`](Self::claim_site_word)).
+    /// The per-call-site block base (`I64`); null only if no words are claimed.
     pub(crate) fn site_ptr(&self) -> ClifValue {
         self.ctx.site.ptr
     }

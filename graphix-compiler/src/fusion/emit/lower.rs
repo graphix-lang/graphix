@@ -19,7 +19,7 @@ use anyhow::{Result, anyhow, bail};
 use cranelift_codegen::{
     ir::{
         AbiParam, Block, FuncRef, Function, InstBuilder, Signature, StackSlot,
-        StackSlotData, StackSlotKind, Value as ClifValue, types,
+        StackSlotData, StackSlotKind, TrapCode, Value as ClifValue, types,
     },
     isa::CallConv,
 };
@@ -312,6 +312,17 @@ pub(crate) enum StateWord {
 }
 
 impl StateWord {
+    /// A claimed word requires a non-null owner.
+    pub(super) fn required_addr(self, cx: &mut BodyCx) -> ClifValue {
+        match self {
+            StateWord::Sure(addr) => addr,
+            StateWord::Guarded { base, addr } => {
+                cx.b.ins().trapz(base, TrapCode::HEAP_OUT_OF_BOUNDS);
+                addr
+            }
+        }
+    }
+
     /// `f` over the word's address; a `Guarded` one behind its null
     /// guard, `fallback` on the null path.
     pub(super) fn with_addr<'a, 'f, 'c, const N: usize, E>(
@@ -424,6 +435,13 @@ pub(super) struct StateChannel {
 }
 
 impl StateChannel {
+    pub(super) fn claim(&self) -> i32 {
+        let index = self.next.get();
+        let offset = i32::try_from(index * 8).expect("state offset exceeds i32");
+        self.next.set(index + 1);
+        offset
+    }
+
     pub(super) fn new(ptr: ClifValue) -> Self {
         Self {
             ptr,

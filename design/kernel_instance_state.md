@@ -82,14 +82,13 @@ The kernel ABI's leading cycle-context words (`CTX_WIRE_SLOTS`,
 `kernel_abi.rs`) carry in slot 1 `state: *mut u64`, a pointer to a
 zeroed `Box<[u64]>` owned by the runtime `FusedKernel` node (null when the
 kernel claimed none). A root-body emission site claims the next index
-from a counter (`BodyCx::claim_state_word`) and emits loads/stores at
+from a counter (`BodyCx::claim_word`) and emits loads/stores at
 `state + 8*idx`; the final count is `KernelSig.state_words`. Claims are
 ordinary emission code — a context slot, not an IR. Only the region
-parent's ROOT body may claim: a callee is reached from arbitrarily many
-call sites whose claims would alias, and `claim_state_word` answers
-`None` there (and inside a scaffold loop, where one static word cannot
-hold per-slot memory). A caller that gets `None` MUST emit its
-stateless approximation.
+parent's ROOT body claims from this channel. A callee claims from its
+site channel, which separates call sites. `claim_word` requires depth
+zero: inside a scaffold loop, one static word cannot hold per-slot memory
+and the caller must address the current slot's word.
 
 ### Loop ordinal: per-slot chains behind one word
 
@@ -108,7 +107,7 @@ resize and grows only as an in-bounds guard.
 
 The trick RECURSES for arbitrary nesting: a directory table's entry is
 itself an owning word for the next level. A site at depth D gets one
-static anchor word (`claim_state_anchor`: a directory word
+static anchor word (`claim_anchor`: a directory word
 is per-instance, its per-slot content lives in the heap structure), and
 each enclosing frame contributes one directory ensure sized by that
 frame's `len`, gated by that frame's source taint, indexed by that
@@ -134,8 +133,8 @@ pointer, uniform on every kernel signature:
 
 - **The callee declares its layout.** A callee body claims from the
   site channel: prev-length words at its root level take words directly
-  (`claim_site_word`), and its loop chains ANCHOR in the block
-  (`claim_site_anchor`). The count, anchors and the words rooting
+  (`claim_word`), and its loop chains ANCHOR in the block
+  (`claim_anchor`). The count, anchors and the words rooting
   per-activation trees are the kernel's `SiteLayout`, recorded at
   definition. A region's fresh callee bodies are emitted in a
   depth-first postorder over their static call edges (`jit::def_order`:
@@ -157,9 +156,9 @@ pointer, uniform on every kernel signature:
 - **Channel ownership determines whether a base can be null.** The wrapper
   packs 0 in a region parent's site slot, which the parent never claims.
   A callee claiming site words receives an allocated block, including
-  self-call activations. `StateWord::Guarded` and the loop-chain guards
-  defensively skip access through a null base; such a base is valid only
-  when the body claims nothing.
+  self-call activations. Claiming a site word asserts that its base is
+  non-null. Loop firing always uses the instance's previous length; no
+  approximation without instance memory is valid.
 
 A region parent has no kernel caller and claims only state words, so its
 site block is always null.

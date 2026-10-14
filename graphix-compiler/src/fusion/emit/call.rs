@@ -30,10 +30,7 @@ use super::{
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     flow::emit_scope_drops,
-    lower::{
-        Channel, CtxWord, LowerCtx, SiteLayout, StateWord, TruncAnchor, TruncLeaf,
-        TruncRec,
-    },
+    lower::{CtxWord, LowerCtx, SiteLayout, TruncLeaf, TruncRec},
     nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
     record::KernelConst,
     scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
@@ -365,38 +362,24 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// of its own.
 fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     let word = match cx.env.loop_depth {
-        0 => match cx.ctx.claims {
-            Channel::State => cx.claim_state_word().map(|off| {
-                let sp = cx.state_ptr();
-                StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
-            }),
-            Channel::Site => cx.claim_site_word().map(|off| {
-                let base = cx.site_ptr();
-                let addr = cx.b.ins().iadd_imm(base, off as i64);
-                StateWord::Guarded { base, addr }
-            }),
-        },
+        0 => Some(cx.claim_word()),
         _ => cx.slot_word(site),
     };
     let init = cx.first_use(word);
     CtxWord { init, wake: cx.ctx.wake_flag }.encode(cx.b)
 }
 
-/// Claim a contiguous run of `layout.words` words from this body's own
-/// channel for a callee's block and rebase the callee's anchors and
-/// activation roots onto it; the run's address, `None` when this body
-/// claims nothing.
-fn claim_block_run(cx: &mut BodyCx, layout: &SiteLayout) -> Option<ClifValue> {
-    let claim = |cx: &BodyCx| match cx.ctx.claims {
-        Channel::State => cx.claim_state_word(),
-        Channel::Site => cx.claim_site_word(),
-    };
-    let first = claim(cx)?;
+/// Claim a contiguous run from this body's channel and rebase the callee's
+/// anchors and activation roots onto it.
+fn claim_block_run(cx: &mut BodyCx, layout: &SiteLayout) -> ClifValue {
+    assert!(layout.words > 0);
+    assert_eq!(cx.env.loop_depth, 0);
+    let chan = cx.ctx.claims_channel();
+    let first = chan.claim();
     for _ in 1..layout.words {
-        claim(cx).expect("contiguous claims can't fail mid-run");
+        chan.claim();
     }
     let rel0 = (first / 8) as u32;
-    let chan = cx.ctx.claims_channel();
     chan.self_blocks.borrow_mut().extend(
         layout.self_blocks.iter().map(|b| kernel_abi::SelfBlock {
             rel: rel0 + b.rel,
@@ -410,17 +393,7 @@ fn claim_block_run(cx: &mut BodyCx, layout: &SiteLayout) -> Option<ClifValue> {
             leaf: a.leaf.clone(),
         }
     }));
-    let base = chan.ptr;
-    let addr = cx.b.ins().iadd_imm(base, first as i64);
-    Some(match cx.ctx.claims {
-        Channel::State => addr,
-        // Our own block may be 0; forward 0, not a garbage offset.
-        Channel::Site => {
-            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-            let zero = cx.b.ins().iconst(types::I64, 0);
-            cx.b.ins().select(has, addr, zero)
-        }
-    })
+    cx.claimed_word(first).required_addr(cx)
 }
 
 /// Emit the per-call-site state block argument for a cross-kernel call
@@ -496,10 +469,7 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
         return Ok(cx.b.ins().iconst(types::I64, 0));
     }
     if cx.env.loop_depth == 0 {
-        return Ok(match claim_block_run(cx, &layout) {
-            Some(addr) => addr,
-            None => cx.b.ins().iconst(types::I64, 0),
-        });
+        return Ok(claim_block_run(cx, layout));
     }
     // In-loop call site: the chain runs per innermost iteration; the
     // ensures are idempotent after the first.
@@ -534,31 +504,10 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
             Some(l) => TruncLeaf::Blocks(l.clone()),
         },
     };
-    let anchor = match cx.claim_state_anchor() {
-        Some(off) => {
-            cx.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
-                rel: (off / 8) as u32,
-                own_levels: n_dirs as u32,
-                leaf: leaf_rt.clone(),
-            });
-            if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
-                f.pending.push(trunc_rec(TruncAnchor::State(off)));
-            }
-            let sp = cx.state_ptr();
-            StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
-        }
-        None => match cx.claim_site_anchor(n_dirs as u32, leaf_rt.clone()) {
-            Some(off) => {
-                if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
-                    f.pending.push(trunc_rec(TruncAnchor::Site(off)));
-                }
-                let base = cx.site_ptr();
-                let addr = cx.b.ins().iadd_imm(base, off as i64);
-                StateWord::Guarded { base, addr }
-            }
-            None => return Ok(cx.b.ins().iconst(types::I64, 0)),
-        },
-    };
+    let (trunc, anchor) = cx.claim_anchor(n_dirs as u32, leaf_rt.clone());
+    if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
+        f.pending.push(trunc_rec(trunc));
+    }
     let emit_chain = |cx: &mut BodyCx, word_addr: ClifValue| -> Result<ClifValue> {
         let leaf_ptr = match &leaf_rt {
             None => cx.b.ins().iconst(types::I64, 0),

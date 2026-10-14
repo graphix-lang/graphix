@@ -23,7 +23,6 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::Variable;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::convert::Infallible;
 
 pub(crate) use super::abi::LocalKind;
 use super::{
@@ -36,7 +35,6 @@ use super::{
         BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
     },
     call::{CompositeSource, emit_drop_local, finalize_valarray, open_value_buf},
-    lower::StateWord,
     outline,
     scalar::{prim_to_clif, scalar_to_payload_i64, valarray_get_helper, widen_to_i64},
 };
@@ -466,9 +464,8 @@ pub struct SlotFlags {
     /// The loop instance's prev-length word: `len + 1` after a run over
     /// a source, 0 before any; a bottom source sets [`FORGOT`] over it,
     /// forgetting the length (its return is a resize) but not the slots.
-    word: Option<StateWord>,
-    /// The slots the instance entered before this run (all, `u64::MAX`,
-    /// without a word): a slot at or past it is new.
+    word: ClifValue,
+    /// The slots the instance entered before this run: a slot at or past it is new.
     entered: ClifValue,
 }
 
@@ -479,40 +476,15 @@ impl SlotFlags {
     /// Emit in the loop's preheader: the instance's word is claimed
     /// (its state, its call-site block, or in a loop the enclosing
     /// slot's chain word) and read.
-    // CR claude for claude: [dead/low] `word` is never None here. A parent claims a
-    // state word at depth 0, a callee claims a site word, and in a loop `slot_word`
-    // always finds the site, because `slot_state_sites` lists every collection site and
-    // `open_slot_tables` always anchors through one of the two channels. A callee that
-    // claims site words is never handed a null block, so the `StateWord::Guarded` null
-    // branch of `guarded_exact_stale` is dead as well. That leaves `conservative_stale`
-    // unreachable, and if it were ever reached, its Fold rule would be wrong: it drops
-    // the source term, so a shrink under an unchanged acc chain would not fire, the
-    // under-fire design/kernel_instance_state.md calls worse than a duplicate fire.
-    // Make the word non-optional, assert a non-null base wherever a callee claims
-    // words, and delete `conservative_stale`, `guarded_exact_stale` and the stale
-    // "nested loop without a chain word" sentence in `apply`'s doc. Related:
-    // f-scaffold-body-06 (the claim Options) and f-scaffold-body-10 (the design doc's
-    // null back-edges). (f-scaffold-body-01)
     fn new(cx: &mut BodyCx, len: ClifValue, kind: LoopKind) -> Self {
         let accs = Accs::new(cx);
-        let word = match cx.claim_state_word() {
-            Some(off) => {
-                let sp = cx.state_ptr();
-                Some(StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
-            }
-            None => match cx.collection_site().and_then(|id| cx.slot_word(id)) {
-                Some(w) => Some(w),
-                // in the site block, behind its null guard
-                None if cx.env.loop_depth == 0 => cx.claim_site_word().map(|off| {
-                    let base = cx.site_ptr();
-                    StateWord::Guarded {
-                        base,
-                        addr: cx.b.ins().iadd_imm(base, off as i64),
-                    }
-                }),
-                None => None,
-            },
+        let word = if cx.env.loop_depth == 0 {
+            cx.claim_word()
+        } else {
+            let site = cx.collection_site().expect("a loop has a collection site");
+            cx.slot_word(site).expect("every collection site has a slot word")
         };
+        let word = word.required_addr(cx);
         let entered = |cx: &mut BodyCx, addr: ClifValue| {
             let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
             let lenp1 = cx.b.ins().band_imm(stored, !FORGOT);
@@ -521,24 +493,12 @@ impl SlotFlags {
             let zero = cx.b.ins().iconst(types::I64, 0);
             cx.b.ins().select(none, zero, len)
         };
-        let all = cx.b.ins().iconst(types::I64, -1);
-        let entered = match word {
-            None => all,
-            Some(w) => {
-                let Ok([e]) = w.with_addr(cx, [all], |cx, addr| {
-                    Ok::<_, Infallible>([entered(cx, addr)])
-                });
-                e
-            }
-        };
+        let entered = entered(cx, word);
         SlotFlags { accs, len, kind, word, entered }
     }
 
     /// Fold the accumulated flags and the source disc `src` into `r`'s
-    /// disc. Uses the exact firing rule when a prev-length word is
-    /// available (a state word, a call-site word, or in a loop the
-    /// enclosing slot's chain word); a nested loop without a chain word
-    /// falls back to the conservative source-or-slot rule.
+    /// disc, using the instance's previous length for the exact firing rule.
     pub fn apply(
         self,
         cx: &mut BodyCx,
@@ -563,15 +523,8 @@ impl SlotFlags {
         let fired_word = cx.b.ins().band_imm(acc, FIRE_TEST);
         let slots_wake = cx.b.ins().band_imm(acc, WAKE);
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
-        let (stale, src_counts) = match self.word {
-            None => self.conservative_stale(cx, fired_word, src_word),
-            Some(StateWord::Sure(addr)) => {
-                self.exact_stale(cx, addr, fired_word, src_word, src_taint)
-            }
-            Some(StateWord::Guarded { base, addr }) => {
-                self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
-            }
-        };
+        let (stale, src_counts) =
+            self.exact_stale(cx, self.word, fired_word, src_word, src_taint);
         // A fresh-tainted source is an event none of the firing terms
         // can see (no resize, quiet slots, not empty): fire it here.
         let tainted = cx.b.ins().icmp_imm(IntCC::NotEqual, src_taint, 0);
@@ -588,27 +541,6 @@ impl SlotFlags {
         let wake = cx.b.ins().band(slots_wake, src_wake);
         r.disc = cx.b.ins().bor(r.disc, wake);
         r
-    }
-
-    /// [`exact_stale`](Self::exact_stale) behind a null-guard on `base`
-    /// (the site block's); the conservative rule on the null path.
-    fn guarded_exact_stale(
-        &self,
-        cx: &mut BodyCx,
-        base: ClifValue,
-        addr: ClifValue,
-        fired_word: ClifValue,
-        src_word: ClifValue,
-        src_taint: ClifValue,
-    ) -> (ClifValue, ClifValue) {
-        // the conservative arm is pure: computed first, it is the fallback
-        let (stale, counts) = self.conservative_stale(cx, fired_word, src_word);
-        let Ok([stale, counts]) = cx.null_guarded(base, [stale, counts], |cx| {
-            let (stale, counts) =
-                self.exact_stale(cx, addr, fired_word, src_word, src_taint);
-            Ok::<_, Infallible>([stale, counts])
-        });
-        (stale, counts)
     }
 
     /// The exact firing rule's STALE contribution: fires iff resized, a
@@ -646,26 +578,6 @@ impl SlotFlags {
             src_counts
         };
         let fires = cx.b.ins().bor(src_counts, slot_fired);
-        let quiet = cx.b.ins().iconst(types::I64, STALE);
-        let zero = cx.b.ins().iconst(types::I64, 0);
-        (cx.b.ins().select(fires, zero, quiet), src_counts)
-    }
-
-    /// The conservative STALE contribution (no prev-length word): fired
-    /// when a slot or the source fired; and whether the source's fire
-    /// is one that made it.
-    fn conservative_stale(
-        &self,
-        cx: &mut BodyCx,
-        fired_word: ClifValue,
-        src_word: ClifValue,
-    ) -> (ClifValue, ClifValue) {
-        let src_counts = match self.kind {
-            LoopKind::Fold => cx.b.ins().iconst(types::I8, 0),
-            _ => cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0),
-        };
-        let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
-        let fires = cx.b.ins().bor(slot_fired, src_counts);
         let quiet = cx.b.ins().iconst(types::I64, STALE);
         let zero = cx.b.ins().iconst(types::I64, 0);
         (cx.b.ins().select(fires, zero, quiet), src_counts)
