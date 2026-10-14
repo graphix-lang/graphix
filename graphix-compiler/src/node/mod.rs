@@ -508,13 +508,14 @@ impl TypeDef {
         params: &Arc<[(TVar, Option<Type>)]>,
         body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
+        let (params, body) = Type::reset_typedef_tvars(params, body);
         let verdict = ctx
             .env
             .deftype(
                 &scope.lexical,
                 name,
-                params.clone(),
-                body,
+                params,
+                &body,
                 false,
                 None,
                 name.pos_or(spec.pos),

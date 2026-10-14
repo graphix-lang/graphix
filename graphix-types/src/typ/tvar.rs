@@ -2,7 +2,7 @@ use crate::{
     LambdaId,
     dbgenv::graphix_dbg_bind,
     env::Env,
-    expr::ModPath,
+    expr::{ModPath, TypeDefBody},
     image,
     stack::ensure_sufficient,
     typ::{PRINT_FLAGS, PrintFlag, Type, node_addr, setops::union_identical},
@@ -1044,16 +1044,6 @@ impl TVar {
         lower(&Type::TVar(other.clone()), level);
     }
 
-    // CR claude for claude: [risk/low] On every cold start, module compile tasks set
-    // frozen on type variables owned by task 0. The path is Module::compile_static ->
-    // bind_sig -> Env::deftype -> Type::alias_tvars -> freeze, and it happens even for
-    // the program `1`. GRAPHIX_TASK_AUDIT prints 15 foreign-write backtraces, so it
-    // cannot serve as a zero-report gate, and real elaboration foreign writes get lost
-    // in the noise. Frozen decides alias direction in contains' OpenPair::of, so a
-    // sibling task that reads the flag while another sets it may alias the other way.
-    // Fix: freeze an interface's named variables where the type is built, or have the
-    // task alias over its own copy. Then pin a zero foreign-write count in a test.
-    // (x-parallel-08)
     pub fn freeze(&self) {
         let mut l = self.write();
         if !l.frozen && !decided_of(l.task, "var") {
@@ -1712,6 +1702,31 @@ impl Type {
     pub fn reset_tvars(&self) -> Type {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Copy)
             .unwrap_or_else(|| self.clone())
+    }
+
+    /// A typedef's params and body over fresh cells this task owns, with
+    /// their alias topology: what [`crate::env::Env::deftype`] aliases and
+    /// freezes in place, so a definition built elsewhere is never written.
+    pub fn reset_typedef_tvars(
+        params: &[(TVar, Option<Type>)],
+        body: &TypeDefBody,
+    ) -> (Arc<[(TVar, Option<Type>)]>, TypeDefBody) {
+        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let mut copy = |t: &Type| {
+            t.reset_tvars_int(&mut known, Fresh::Copy).unwrap_or_else(|| t.clone())
+        };
+        let params = Arc::from_iter(params.iter().map(|(tv, bound)| {
+            let tv = match &copy(&Type::TVar(tv.clone())) {
+                Type::TVar(tv) => tv.clone(),
+                _ => unreachable!("a variable copies to a variable"),
+            };
+            (tv, bound.as_ref().map(&mut copy))
+        }));
+        let body = match body {
+            TypeDefBody::Alias(t) => TypeDefBody::Alias(copy(t)),
+            TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(rep.as_ref().map(copy)),
+        };
+        (params, body)
     }
 
     /// The freshening map is keyed by cell identity, not name, so an

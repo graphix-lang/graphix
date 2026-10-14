@@ -275,8 +275,13 @@ macro_rules! image_id {
 #[cfg(test)]
 mod tests {
     use netidx_core::pack::Pack;
+    use stray::Stray;
 
-    image_id!(Stray);
+    /// An id type no session lists; only what the test calls is used.
+    #[allow(dead_code)]
+    mod stray {
+        image_id!(Stray);
+    }
 
     /// An id type no session relocates is refused under one, never
     /// written or read raw.

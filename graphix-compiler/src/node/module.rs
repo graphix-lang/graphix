@@ -270,22 +270,12 @@ fn bind_sig_item(
             }
         }
         SigKind::TypeDef(td) => {
-            // CR claude for claude: [risk/low] Env::deftype aliases and freezes the
-            // type variables of the parsed interface's typedef in place (alias_tvars,
-            // TVar::freeze). Those vars were created at parse, outside this module's
-            // task, so every parameterized interface typedef is a real foreign write. A
-            // program of just `sys::exit(0)` prints 15 FOREIGN-WRITE backtraces under
-            // GRAPHIX_TASK_AUDIT, which drowns the statement-elaboration writes the
-            // audit exists to show. The writes are not refused: OwnWrites is not
-            // entered here, so decided_of lets them through. Hand deftype copies of the
-            // params and body made in this task (fresh cells, as the compile of a
-            // typedef statement would), so the AST's vars are never written. probe:
-            // design/review-2026-10-12/repro/c-lambda-08.gx (c-lambda-08)
+            let (params, body) = Type::reset_typedef_tvars(&td.params, &td.body);
             env.deftype(
                 &scope.lexical,
                 &td.name,
-                td.params.clone(),
-                &td.body,
+                params,
+                &body,
                 true,
                 si.doc.0.clone(),
                 td.name.pos_or(si.pos),
