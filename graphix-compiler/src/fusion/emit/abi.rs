@@ -191,12 +191,7 @@ pub(super) fn const_stale_gate(
 ) -> ClifValue {
     let not_init = b.ins().icmp_imm(IntCC::Equal, init_flag, 0);
     let staled = b.ins().bor_imm(disc, STALE);
-    // CR claude for claude: [readability/low] The shift 60 restates WAKE's bit
-    // position, which every other disc bit here derives from Tag. If Tag::WAKE_BIT
-    // moves, a woken arm's constants set the wrong disc bit in fused code only, and
-    // `<-` targets' wake reads diverge from the node-walk. Write `ishl_imm(wake_flag,
-    // WAKE.trailing_zeros() as i64)`. (f-jit-10)
-    let wake = b.ins().ishl_imm(wake_flag, 60);
+    let wake = b.ins().ishl_imm(wake_flag, WAKE.trailing_zeros() as i64);
     let fired = b.ins().bor(disc, wake);
     b.ins().select(not_init, staled, fired)
 }
