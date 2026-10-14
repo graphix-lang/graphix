@@ -8,7 +8,10 @@ use crate::{
     },
     print_as_written,
     stack::ensure_sufficient,
-    typ::fntyp::{Ret, write_bounds},
+    typ::{
+        Type,
+        fntyp::{Ret, write_bounds},
+    },
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
@@ -1407,16 +1410,6 @@ impl PrettyDisplay for ApplyExpr {
 
 impl Arg {
     /// `[#]pattern[: T]`, what stands before a default.
-    // CR claude for claude: [bug/low] An argument's `: T` is always written flat, as
-    // are `@args: T`, ` throws T`, `cast<T>(`, `never<T>`, `with(e: T)`, `catch(e: T)`
-    // and a select arm's `T as`. A long struct or union annotation therefore prints
-    // 109-117 columns at width 90, even though Type has a multi-line layout that
-    // pretty_returns already uses through Ret. A lambda whose only overflow is its
-    // `throws` clause also lists its arguments one per line, which shortens nothing.
-    // Route every annotation through one helper that writes the type flat when it fits,
-    // and otherwise uses fmt_pretty_inner + kill_newline with the Ret hug rule. The
-    // pretty path then needs a PrettyBuf variant of this head. probe:
-    // design/review-2026-10-12/repro/t-print-05.gx (t-print-05)
     fn write_head(&self, f: &mut impl Write) -> fmt::Result {
         if self.kind.is_labeled() {
             write!(f, "#")?;
@@ -1424,6 +1417,19 @@ impl Arg {
         write!(f, "{}", self.pattern)?;
         if let Some(t) = &self.constraint {
             write!(f, ": {t}")?
+        }
+        Ok(())
+    }
+
+    /// `write_head` with the type laid out over lines when it does not fit.
+    fn pretty_head(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        if self.kind.is_labeled() {
+            write!(buf, "#")?;
+        }
+        write!(buf, "{}", self.pattern)?;
+        if let Some(t) = &self.constraint {
+            write!(buf, ": ")?;
+            pretty_type(buf, t)?
         }
         Ok(())
     }
@@ -1470,7 +1476,7 @@ impl LambdaExpr {
     fn pretty_args(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let n = self.args.len() + self.vargs.is_some() as usize;
         for (i, a) in self.args.iter().enumerate() {
-            a.write_head(buf)?;
+            a.pretty_head(buf)?;
             if let Some(def) = a.kind.default() {
                 write!(buf, " =")?;
                 pretty_tail(buf, def)?;
@@ -1484,7 +1490,11 @@ impl LambdaExpr {
         match &self.vargs {
             None => Ok(()),
             Some(None) => writeln!(buf, "@args"),
-            Some(Some(typ)) => writeln!(buf, "@args: {typ}"),
+            Some(Some(typ)) => {
+                write!(buf, "@args: ")?;
+                pretty_type(buf, typ)?;
+                writeln!(buf)
+            }
         }
     }
 
@@ -1515,26 +1525,32 @@ impl fmt::Display for LambdaExpr {
 }
 
 impl LambdaExpr {
-    /// `write_returns` with the return type laid out over lines.
+    /// `write_returns` with the types laid out over lines where they do
+    /// not fit.
     fn pretty_returns(&self, buf: &mut PrettyBuf) -> fmt::Result {
         if let Some(rtype) = &self.rtype {
             let Ret { open, typ, close } = Ret::of(rtype, self.throws.is_some());
             write!(buf, " -> {open}")?;
-            typ.fmt_pretty_inner(buf)?;
+            typ.fmt_pretty(buf)?;
             buf.kill_newline();
             write!(buf, "{close}")?;
         }
         match &self.throws {
             None => Ok(()),
-            Some(t) => write!(buf, " throws {t}"),
+            Some(t) => {
+                write!(buf, " throws ")?;
+                pretty_type(buf, t)
+            }
         }
     }
 }
 
 /// The head gives way a step at a time: all of it on one line with what
 /// opens the body; else its arguments one to a line, closed by `| -> R`;
-/// else the body under that closing line; else the return type itself
-/// laid out over lines.
+/// else the body under that closing line; else the return and thrown
+/// types laid out over lines. Where that closing line would not fit
+/// either, listing the arguments shortens nothing: they stay on the head's
+/// line and the return and thrown types are laid out there.
 impl PrettyDisplay for LambdaExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let start = buf.mark();
@@ -1548,9 +1564,29 @@ impl PrettyDisplay for LambdaExpr {
             LambdaBody::Expr(_) => 2,
         };
         let has_args = !self.args.is_empty() || self.vargs.is_some();
+        let has_returns = self.rtype.is_some() || self.throws.is_some();
         let decorated_default =
             self.args.iter().any(|a| a.kind.default().is_some_and(decorated));
-        if (buf.col() + opener > buf.limit || decorated_default) && has_args {
+        let overflows = buf.col() + opener > buf.limit;
+        let mut laid_out = false;
+        if overflows && has_returns && !decorated_default {
+            buf.rollback(start);
+            let closing = buf.mark();
+            write!(buf, "|")?;
+            self.write_returns(buf)?;
+            let closing_fits = buf.indent + buf.width_since(closing) <= buf.limit;
+            buf.rollback(closing);
+            let col = buf.col();
+            self.write_constraints(buf)?;
+            write!(buf, "|")?;
+            self.write_args(buf, ", ", "")?;
+            write!(buf, "|")?;
+            self.pretty_returns(buf)?;
+            laid_out = !(has_args && closing_fits)
+                && fits_since(buf, start, col)
+                && buf.col() + opener <= buf.limit;
+        }
+        if !laid_out && (overflows || decorated_default) && has_args {
             buf.rollback(start);
             self.write_constraints(buf)?;
             writeln!(buf, "|")?;
@@ -1558,7 +1594,7 @@ impl PrettyDisplay for LambdaExpr {
             let closing = buf.mark();
             write!(buf, "|")?;
             self.write_returns(buf)?;
-            if buf.col() > buf.limit && self.rtype.is_some() {
+            if buf.col() > buf.limit && has_returns {
                 buf.rollback(closing);
                 write!(buf, "|")?;
                 self.pretty_returns(buf)?;
@@ -1609,7 +1645,8 @@ impl PrettyDisplay for SelectExpr {
             for (i, (pat, expr)) in arms.iter().enumerate() {
                 write_leading(buf, &expr.dec)?;
                 if let Some(tp) = &pat.type_predicate {
-                    write!(buf, "{tp} as ")?;
+                    pretty_type(buf, tp)?;
+                    write!(buf, " as ")?;
                 }
                 // the pattern stays flat only if its guard fits beside it too
                 let follows = match &pat.guard {
@@ -1778,7 +1815,11 @@ impl PrettyDisplay for ExprKind {
                 buf.kill_newline();
                 match &t.constraint {
                     None => write!(buf, " with({}) ", t.bind)?,
-                    Some(ty) => write!(buf, " with({}: {ty}) ", t.bind)?,
+                    Some(ty) => {
+                        write!(buf, " with({}: ", t.bind)?;
+                        pretty_type(buf, ty)?;
+                        write!(buf, ") ")?
+                    }
                 }
                 pretty_print_exprs(buf, &t.handler, "{", "}", ";", false)
             }
@@ -1814,7 +1855,9 @@ impl PrettyDisplay for ExprKind {
                 pretty_tail(buf, value)
             }
             TypeCast { expr, typ } => {
-                writeln!(buf, "cast<{typ}>(")?;
+                write!(buf, "cast<")?;
+                pretty_type(buf, typ)?;
+                writeln!(buf, ">(")?;
                 buf.nested(|buf| expr.fmt_pretty(buf))?;
                 writeln!(buf, ")")
             }
@@ -1839,9 +1882,11 @@ impl PrettyDisplay for ExprKind {
                 pretty_print_exprs(buf, args, "(", ")", ",", true)
             }
             Never { typ, args } => {
-                match typ {
-                    Some(t) => write!(buf, "never<{t}>")?,
-                    None => write!(buf, "never")?,
+                write!(buf, "never")?;
+                if let Some(t) = typ {
+                    write!(buf, "<")?;
+                    pretty_type(buf, t)?;
+                    write!(buf, ">")?
                 }
                 pretty_print_exprs(buf, args, "(", ")", ",", true)
             }
@@ -1896,7 +1941,11 @@ impl PrettyDisplay for ExprKind {
             Catch(c) => {
                 match &c.constraint {
                     None => write!(buf, "catch({})", c.bind)?,
-                    Some(t) => write!(buf, "catch({}: {t})", c.bind)?,
+                    Some(t) => {
+                        write!(buf, "catch({}: ", c.bind)?;
+                        pretty_type(buf, t)?;
+                        write!(buf, ")")?
+                    }
                 }
                 pretty_tail(buf, &c.handler)?;
                 if !matches!(c.role, CatchRole::User) {
@@ -2597,6 +2646,20 @@ fn pretty_prefixed(buf: &mut PrettyBuf, op: &str, e: &Expr) -> fmt::Result {
         true => pretty_parens(buf, e),
         false => e.fmt_pretty(buf),
     }
+}
+
+/// `t` where it stands on the line, flat when it fits, else laid out
+/// over lines; no newline after.
+fn pretty_type(buf: &mut PrettyBuf, t: &Type) -> fmt::Result {
+    t.fmt_pretty(buf)?;
+    buf.kill_newline();
+    Ok(())
+}
+
+/// Whether what was written since `m`, at column `col`, fits the width.
+fn fits_since(buf: &PrettyBuf, m: Mark, col: usize) -> bool {
+    col + buf.first_line_width(m) <= buf.limit
+        && buf.since(m).lines().skip(1).all(|l| l.chars().count() <= buf.limit)
 }
 
 /// An operand, in parens when `parens` says so.

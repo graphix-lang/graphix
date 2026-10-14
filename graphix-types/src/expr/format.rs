@@ -906,12 +906,56 @@ mod tests {
         );
         assert_eq!(
             fmt("let f = |a: i64| -> { first_field: string, second_field: string } 'b"),
-            "let f = |\n    a: i64\n| -> {\n    first_field: string,\n    second_field: string\n} 'b\n"
+            "let f = |a: i64| -> {\n    first_field: string,\n    second_field: string\n} 'b\n"
+        );
+        assert_eq!(
+            fmt("let g = |x| -> i64 throws [`Aaaaaaaaaaaa, `Bbbbbbbbbbbbbb] x"),
+            "let g = |x| -> i64 throws [\n    `Aaaaaaaaaaaa,\n    `Bbbbbbbbbbbbbb\n] x\n"
         );
         stable(
             Program,
             "let f = |a: i64| -> { first_field: string, second_field: string } 'b",
         );
+    }
+
+    // every type annotation lays its type out over lines when it does not fit
+    #[test]
+    fn a_long_annotation_breaks_the_type() {
+        use SourceKind::Program;
+        let cfg = FormatConfig { width: 40, indent: 4 };
+        let fmt = |src: &str| format_source(Program, src, &cfg).unwrap().to_string();
+        let t = "{ first_field: string, second: i64 }";
+        let laid = "{\n        first_field: string,\n        second: i64\n    }";
+        assert_eq!(
+            fmt(&format!("let r = cast<{t}>(y)")),
+            format!("let r =\n    cast<{laid}>(\n        y\n    )\n")
+        );
+        assert_eq!(
+            fmt(&format!("let n = never<{t}>()")),
+            format!("let n =\n    never<{laid}>()\n")
+        );
+        assert_eq!(
+            fmt(&format!("let f = |x: {t}| x")),
+            format!(
+                "let f = |\n    x: {{\n        first_field: string,\n        second: i64\n    }}\n| x\n"
+            )
+        );
+        let u = "[`Aaaaaaaaaaaaaa, `Bbbbbbbbbbbbbbbbb]";
+        assert_eq!(
+            fmt(&format!("{{ catch(e: {u}) e; x? }}")),
+            "{\n    catch(e: [\n        `Aaaaaaaaaaaaaa,\n        `Bbbbbbbbbbbbbbbbb\n    ]) e;\n    x?\n}\n"
+        );
+        assert_eq!(
+            fmt(&format!("let t = try {{ a; b }} with(e: {u}) {{ c; d }}")),
+            "let t = try {\n    a;\n    b\n} with(e: [\n    `Aaaaaaaaaaaaaa,\n    `Bbbbbbbbbbbbbbbbb\n]) {\n    c;\n    d\n}\n"
+        );
+        for src in [
+            format!("let r = cast<{t}>(y)"),
+            format!("{{ catch(e: {u}) e; x? }}"),
+            format!("select x {{ {t} as v => 1, _ => 0 }}"),
+        ] {
+            stable(Program, &src);
+        }
     }
 
     #[test]
