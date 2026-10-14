@@ -2922,3 +2922,36 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
     "/test.gx" => "use core::ErrChain as EC; let f = |e: Error<ErrChain<`A>>| 0; let h = |g: Error<EC<EC<`A>>>| f(g); let result = 0"
 );
+
+// An inline literal argument whose part two members of a union formal
+// admit is left to its own check wherever the union sits: behind an
+// alias, in a tuple, a struct field or a variant payload.
+run!(
+    union_formal_behind_an_alias,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => "type D = [Array<f64>, Array<string>]; let g = |x: D| 0; let result = g([\"a\"])"
+);
+
+run!(
+    union_formal_in_a_tuple,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => "let g = |x: (i64, [Array<f64>, Array<string>])| 0; let result = g((1, [\"a\"]))"
+);
+
+run!(
+    union_formal_in_a_struct,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => "let g = |x: {a: [Array<f64>, Array<string>]}| 0; let result = g({a: [\"a\"]})"
+);
+
+run!(
+    union_formal_in_a_variant,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => "let g = |x: [`A([Array<f64>, Array<string>]), `B]| 0; let result = g(`A([\"a\"]))"
+);
+
+run!(
+    union_formal_still_refuses_a_mismatch,
+    refused("Array<f64> does not contain Array<string>"),
+    "/test.gx" => "let g = |x: (i64, Array<f64>)| 0; let result = g((1, [\"a\"]))"
+; FuseExpect::None);

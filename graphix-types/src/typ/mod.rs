@@ -2085,61 +2085,85 @@ impl Type {
     /// unifies its parameter positions only; anything else whole.
     #[doc(hidden)]
     pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
-        let d = declared.deref_cloned();
-        let a = actual.deref_cloned();
-        match (&d, &a) {
-            (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
-            // a reference's referent pre-unifies as the referent would
-            (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a))) => {
-                Self::pre_unify_arg(env, d, a)
-            }
-            // a union formal two of whose members admit the argument leaves
-            // the choice to the argument's own check
-            // CR claude for claude: [bug/medium] The skip for a union formal with more
-            // than one admitting member fires only when the formal is itself a Set
-            // after deref_cloned. That deref does not expand a Type::Ref alias, and it
-            // does not look inside a tuple or struct. So `type D = [Array<f64>,
-            // Array<string>]; |x: D|` with `g(["a"])` falls to the `declared.contains`
-            // fallback. So does a formal `(i64, [Array<f64>, Array<string>])` with
-            // `g((1, ["a"]))`, and a struct field of that union. The fallback commits
-            // the inline literal's open element cell to Array<f64>, and the call is
-            // refused with "Array<f64> does not contain Array<string>". The bare union
-            // formal checks, and so does a let-bound argument. Fix: expand aliases
-            // before matching (lookup_ref, as contains does), and make the rule
-            // structural. Walk the formal and the argument together and commit nothing
-            // below a union position where more than one member admits the argument's
-            // part. Or commit only when a probe on a reset_tvars copy shows exactly one
-            // placement. probe: design/review-2026-10-12/repro/x-fix-types-06.gx
-            // (x-fix-types-06)
-            (Some(Type::Set(ms)), _) => {
-                let mut admit = 0;
-                for m in ms.iter() {
-                    if m.contains_with_flags(BitFlags::empty(), env, actual)? {
-                        admit += 1;
+        ensure_sufficient(|| {
+            let d = match declared.deref_cloned() {
+                Some(t @ Type::Ref(_)) => Some(t.lookup_ref(env)?),
+                d => d,
+            };
+            let a = actual.deref_cloned();
+            let each = |ds: &[Type], as_: &[Type]| {
+                ds.iter()
+                    .zip(as_.iter())
+                    .try_for_each(|(d, a)| Self::pre_unify_arg(env, d, a))
+            };
+            match (&d, &a) {
+                (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
+                // a part pre-unifies as the whole would
+                (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a)))
+                | (Some(Type::Array(d)), Some(Type::Array(a)))
+                | (Some(Type::List(d)), Some(Type::List(a))) => {
+                    Self::pre_unify_arg(env, d, a)
+                }
+                (Some(Type::Tuple(ds)), Some(Type::Tuple(as_)))
+                    if ds.len() == as_.len() =>
+                {
+                    each(ds, as_)
+                }
+                (Some(Type::Variant(t0, ds, _)), Some(Type::Variant(t1, as_, _)))
+                    if t0 == t1 && ds.len() == as_.len() =>
+                {
+                    each(ds, as_)
+                }
+                (Some(Type::Struct(ds)), Some(Type::Struct(as_)))
+                    if ds.len() == as_.len()
+                        && ds
+                            .iter()
+                            .zip(as_.iter())
+                            .all(|((n0, ..), (n1, ..))| n0 == n1) =>
+                {
+                    ds.iter().zip(as_.iter()).try_for_each(|((_, d, _), (_, a, _))| {
+                        Self::pre_unify_arg(env, d, a)
+                    })
+                }
+                // a union two of whose members admit the argument leaves
+                // the choice to the argument's own check
+                (Some(Type::Set(ms)), _) => {
+                    let mut admit: Option<&Type> = None;
+                    for m in ms.iter() {
+                        if m.contains_with_flags(BitFlags::empty(), env, actual)? {
+                            if admit.is_some() {
+                                return Ok(());
+                            }
+                            admit = Some(m);
+                        }
+                    }
+                    // the one admitting constructor holds the argument
+                    // whole: its parts pre-unify as the member's would
+                    let structural = |t: &Type| {
+                        t.with_deref(|t| {
+                            matches!(
+                                t,
+                                Some(
+                                    Type::Tuple(_)
+                                        | Type::Struct(_)
+                                        | Type::Variant(..)
+                                        | Type::Array(_)
+                                        | Type::List(_)
+                                        | Type::ByRef(..)
+                                )
+                            )
+                        })
+                    };
+                    match admit {
+                        Some(m) if structural(m) && structural(actual) => {
+                            Self::pre_unify_arg(env, m, actual)
+                        }
+                        _ => declared.contains(env, actual).map(|_| ()),
                     }
                 }
-                match admit {
-                    0 | 1 => declared.contains(env, actual).map(|_| ()),
-                    _ => Ok(()),
-                }
+                _ => declared.contains(env, actual).map(|_| ()),
             }
-            // CR claude for claude: [bug/medium] The rule "leave an ambiguous union to
-            // the argument's own check" applies only when the formal itself is a Set. A
-            // union nested in a struct field, tuple element or variant payload of the
-            // formal reaches this arm instead. Its `contains` commits an inline
-            // literal's open element cell to the first member in canonical order before
-            // the literal checks. So `g({a: ["a"]})` over `|x: {a: [Array<f64>,
-            // Array<string>]}|` is refused with "Array<f64> does not contain
-            // Array<string>". The tuple form `g((["a"], 1))` and the variant form
-            // ``g(`A(["a"]))`` are refused the same way, while the let-bound and
-            // annotated forms pass. Fix: recurse structurally, through Struct fields,
-            // Tuple elements, Variant payloads and other constructors, the way the
-            // ByRef arm already does. At any position where two members of a nested Set
-            // admit the argument's part, skip the commit. Add pins for the struct,
-            // tuple and variant forms beside the top-level union pin in lang/types.rs.
-            // probe: design/review-2026-10-12/repro/x-rerun-3-02.gx (x-rerun-3-02)
-            _ => declared.contains(env, actual).map(|_| ()),
-        }
+        })
     }
 
     /// The name of the element a constructor quantifier `q` is applied
