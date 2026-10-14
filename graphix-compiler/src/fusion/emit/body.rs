@@ -292,7 +292,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.owned_input_stack.borrow_mut().pop();
     }
 
-    /// FuncRef for a registered `emit_helpers` runtime helper.
     /// Call a registered helper with the call-site words `args` (a pair
     /// parameter is two), asserting the count against its registered
     /// signature: a mismatched call fails here, naming the helper, rather
@@ -303,34 +302,18 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         name: &str,
         args: &[ClifValue],
     ) -> Result<SmallVec<[ClifValue; 2]>> {
-        debug_assert_eq!(
-            self.ctx.helper_refs.arity(name),
-            Some(args.len()),
-            "helper `{name}` called with {} args",
-            args.len()
-        );
         self.ctx.call_helper(self.b, name, args)
+    }
+
+    /// The ABI kind a value of node type `t` has in the kernel: the one
+    /// classification producers and consumers share.
+    pub(crate) fn node_kind(&self, t: &Type) -> Option<AbiKind> {
+        freeze_node_typ(self.ctx, t).and_then(|t| kernel_abi::abi_kind(&t))
     }
 
     /// Nonzero on an init view (`I64`): the `event.init()` word from wire
     /// slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]), or in a loop body that
     /// or the slot's first iteration, as a new slot is a new instance.
-    /// The ABI kind a value of node type `t` has in the kernel: the one
-    /// classification producers and consumers share.
-    // CR claude for claude: [readability/low] The first three doc lines above
-    // `node_kind` ("Nonzero on an init view ...") belong to `init_flag`, which has no
-    // doc of its own. Hovers show the wrong text for `node_kind` and nothing for the
-    // function the scaffold's init-view rule depends on. Move them onto `init_flag`.
-    // `call_helper`'s doc opens with a stale "FuncRef for a registered `emit_helpers`
-    // runtime helper.": delete that line. Its arity check is a copy of what
-    // `HelperShape` already says (`HelperFuncIds::arity` is computed from the same
-    // params, and `HelperRefs::call` checks the count in every build, but as an Err
-    // that de-fuses). Have `HelperRefs::call` panic on a count mismatch, an emitter
-    // bug, and drop the `arity` table and the debug_assert. (f-scaffold-body-09)
-    pub(crate) fn node_kind(&self, t: &Type) -> Option<AbiKind> {
-        freeze_node_typ(self.ctx, t).and_then(|t| kernel_abi::abi_kind(&t))
-    }
-
     pub fn init_flag(&self) -> ClifValue {
         self.env.slot.map_or(self.ctx.init_flag, |s| s.init)
     }

@@ -643,11 +643,11 @@ impl<'a> HelperRefs<'a> {
             for t in *param {
                 let w = words
                     .next()
-                    .ok_or_else(|| anyhow!("helper `{name}`: too few args"))?;
+                    .unwrap_or_else(|| panic!("helper `{name}`: too few args"));
                 if let AbiTy::Pair = t {
                     let payload = words
                         .next()
-                        .ok_or_else(|| anyhow!("helper `{name}`: too few args"))?;
+                        .unwrap_or_else(|| panic!("helper `{name}`: too few args"));
                     let s = slot(b);
                     b.ins().stack_store(*w, s, 0);
                     b.ins().stack_store(*payload, s, 8);
@@ -657,9 +657,7 @@ impl<'a> HelperRefs<'a> {
                 }
             }
         }
-        if words.next().is_some() {
-            bail!("helper `{name}`: too many args")
-        }
+        assert!(words.next().is_none(), "helper `{name}`: too many args");
         let out = match shape.ret {
             [AbiTy::Pair] => {
                 let s = slot(b);
@@ -682,21 +680,12 @@ impl<'a> HelperRefs<'a> {
     pub(super) fn shape(&self, name: &str) -> Option<&HelperShape> {
         self.ids.shapes.get(name)
     }
-
-    /// The helper's wire-slot count, for [`BodyCx::call_helper`]'s debug
-    /// assert (cranelift reports an arity mismatch only as a whole-
-    /// function failure, a silent de-fuse).
-    pub(super) fn arity(&self, name: &str) -> Option<usize> {
-        self.ids.arity.get(name).copied()
-    }
 }
 
 /// Runtime-helper `FuncId`s, declared once per id table by `declare`;
 /// [`HelperRefs`] imports them into a function as it uses them.
 pub(super) struct HelperFuncIds {
     pub(super) ids: BTreeMap<&'static str, FuncId>,
-    /// See [`HelperRefs::arity`].
-    pub(super) arity: BTreeMap<&'static str, usize>,
     pub(super) shapes: BTreeMap<&'static str, HelperShape>,
 }
 
@@ -712,16 +701,13 @@ impl HelperFuncIds {
         mut declare: impl FnMut(&'static str, &Signature) -> Result<FuncId>,
     ) -> Result<Self> {
         let mut ids = BTreeMap::new();
-        let mut arity = BTreeMap::new();
         let mut shapes = BTreeMap::new();
         for h in all_helpers() {
             let sig = helper_signature(call_conv, &h);
             ids.insert(h.name, declare(h.name, &sig)?);
-            let words = |t: &AbiTy| if let AbiTy::Pair = t { 2 } else { 1 };
-            arity.insert(h.name, h.params.iter().flat_map(|p| p.iter()).map(words).sum());
             shapes.insert(h.name, HelperShape { params: h.params, ret: h.ret });
         }
-        Ok(Self { ids, arity, shapes })
+        Ok(Self { ids, shapes })
     }
 }
 
@@ -729,6 +715,29 @@ impl HelperFuncIds {
 mod tests {
     use super::*;
     use cranelift_frontend::FunctionBuilderContext;
+
+    #[test]
+    fn helper_argument_mismatches_are_compiler_errors() {
+        for count in [0, 5] {
+            let result = std::panic::catch_unwind(|| {
+                let mut names = Names::default();
+                let ids =
+                    HelperFuncIds::new(CallConv::SystemV, |_, sig| Ok(names.local(sig)))
+                        .unwrap();
+                let names = RefCell::new(&mut names);
+                let refs = HelperRefs::new(&ids, &names);
+                let mut func = Function::new();
+                let mut context = FunctionBuilderContext::new();
+                let mut b = FunctionBuilder::new(&mut func, &mut context);
+                let entry = b.create_block();
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let word = b.ins().iconst(types::I64, 1);
+                let _ = refs.call(&mut b, "graphix_value_add", &[word; 5][..count]);
+            });
+            assert!(result.is_err(), "accepted {count} argument words");
+        }
+    }
 
     #[test]
     fn helper_spill_space_is_bounded_by_one_call() -> Result<()> {
