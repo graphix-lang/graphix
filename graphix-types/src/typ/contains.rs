@@ -2013,26 +2013,25 @@ impl Type {
             if members.is_empty() {
                 members.push(first.clone())
             }
-            // CR claude for claude: [perf/medium] Each member of `first` recurses on
-            // its own, even when every member selects the same candidates. That happens
-            // whenever all candidates cover the position whole, and then the recursions
-            // are identical. A struct with k two-member fields (variants, `[T, null]`)
-            // costs 2^k: --check of a 20-field case takes about 2 s and doubles per
-            // field. Fix: recurse once per distinct `sub` candidate set, not once per
-            // member. The common case is a single recursion when every candidate's
-            // first argument covers `first` whole. Probe:
-            // design/review-2026-10-12/repro/t-contains-covers-by-parts-exponential.gx.
-            // (t-contains-09)
+            // members that select the same candidates ask the same question
+            // of the rest: it is asked once
+            let mut asked: SmallVec<[SmallVec<[usize; 8]>; 4]> = SmallVec::new();
             for m in members.iter() {
-                let mut sub: SmallVec<[&[Type]; 8]> = SmallVec::new();
-                for c in cands.iter() {
+                let mut picked: SmallVec<[usize; 8]> = SmallVec::new();
+                for (i, c) in cands.iter().enumerate() {
                     if c[0].contains_int(BitFlags::empty(), env, hist, m)? {
-                        sub.push(&c[1..])
+                        picked.push(i)
                     }
                 }
+                if asked.contains(&picked) {
+                    continue;
+                }
+                let sub: SmallVec<[&[Type]; 8]> =
+                    picked.iter().map(|i| &cands[*i][1..]).collect();
                 if !Self::covers_by_parts(env, hist, &sub, rest)? {
                     return Ok(false);
                 }
+                asked.push(picked);
             }
             Ok(true)
         })
