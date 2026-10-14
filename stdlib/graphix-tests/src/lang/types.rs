@@ -2837,3 +2837,12 @@ run!(primitive_union_no_bit_holds_bound, r#"{
     y <- 3;
     r
 }"#, refused("does not contain"); FuseExpect::None);
+
+// A typedef completed by a later one is refused when that one arrives,
+// before a later binding expands it.
+run!(forward_alias_refused_before_use, r#"{
+    type T = G<T>;
+    type G<'a> = 'a;
+    let x: T = 1;
+    x
+}"#, refused("refers back to itself"); FuseExpect::None);

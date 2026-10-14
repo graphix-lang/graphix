@@ -523,6 +523,13 @@ impl TypeDef {
             )
             .at(&spec)?;
         let name = name.name.clone();
+        // a typedef this one completes is refused now, before anything later
+        // in the run expands it
+        for p in ctx.pending_names.iter() {
+            if let crate::Pending::Contractive(scope, name, spec) = p {
+                ctx.env.check_contractive(scope, name).at(spec)?;
+            }
+        }
         if verdict == crate::typ::Unguarded::Unknown {
             ctx.pending_names.push(crate::Pending::Contractive(
                 scope.lexical.clone(),
