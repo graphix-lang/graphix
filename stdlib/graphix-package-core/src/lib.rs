@@ -3612,13 +3612,30 @@ impl<T: Send + 'static> std::ops::Deref for Reaped<T> {
     }
 }
 
+thread_local! {
+    /// Set while this thread reaps, or spawns a reap: a reap the value
+    /// holds drops in place. A spawn on a pool shutting down drops its
+    /// closure under the pool's lock, where a second spawn would deadlock.
+    static REAPING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with [`REAPING`] set, restoring it after.
+fn reaping<U>(f: impl FnOnce() -> U) -> U {
+    let outer = REAPING.replace(true);
+    let r = f();
+    REAPING.set(outer);
+    r
+}
+
 impl<T: Send + 'static> Drop for Reaped<T> {
     fn drop(&mut self) {
         // SAFETY: the value is not touched again
         let t = unsafe { std::mem::ManuallyDrop::take(&mut self.0) };
         match tokio::runtime::Handle::try_current() {
-            Ok(rt) => drop(rt.spawn_blocking(move || drop(t))),
-            Err(_) => drop(t),
+            Ok(rt) if !REAPING.get() => {
+                reaping(|| drop(rt.spawn_blocking(move || reaping(|| drop(t)))))
+            }
+            _ => drop(t),
         }
     }
 }
@@ -3626,5 +3643,27 @@ impl<T: Send + 'static> Drop for Reaped<T> {
 impl<T: Send + 'static> Debug for Reaped<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Reaped<{}>", std::any::type_name::<T>())
+    }
+}
+
+#[cfg(test)]
+mod reaped_test {
+    use super::Reaped;
+    use std::{sync::mpsc, thread, time::Duration};
+
+    /// A shut-down runtime cancels a blocking spawn inline, under its pool's
+    /// lock: a nested reap dropped by that cancel must not spawn again.
+    #[test]
+    fn nested_reap_at_shutdown() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt.handle().clone();
+        rt.shutdown_background();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _rt = handle.enter();
+            drop(Reaped::new(Reaped::new(Reaped::new(()))));
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(5)).expect("a nested reap deadlocked");
     }
 }
