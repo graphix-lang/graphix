@@ -1,7 +1,7 @@
 use crate::{
     PrintFlag,
     dbgenv::{graphix_dbg_bind, graphix_dbg_cycle_bt},
-    env::Env,
+    env::{Env, ImplDef},
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
@@ -2303,21 +2303,18 @@ impl Type {
                     r
                 }
             },
-            // CR claude for claude: [bug/high] Checking a trait over a recursive
-            // typedef never ends when a generic impl's bound leads back to it. This arm
-            // calls Env::find_impl, which matches the impl head through Type::contains
-            // with a fresh ContainsHist. Binding the head's 'a to the typedef then
-            // checks the bound `'a: Show` through cell_constraints_ok in that fresh
-            // history. The traits_in_progress guard in the Ref arm above is empty
-            // there, so the typedef expands again, forever. `type Json = [i64, string,
-            // Array<Json>]` with `impl<'a: Show> Show for Array<'a>` and
-            // `Show::show(j)` gets `--check` OOM-killed. So does `type L = Array<L>`.
-            // Fix: make the caller's hist reach find_impl's head containments, e.g. a
-            // find_impl variant that takes `&mut ContainsHist` and is called from
-            // trait_contains, so traits_in_progress and the ref-pair memo carry across
-            // impl matching. probe: design/review-2026-10-12/repro/t-contains-01-oom.gx
-            // (t-contains-01)
-            t => Ok(env.find_impl(tid, t)?.is_some()),
+            // An impl's bound can ask the question again of the expanded
+            // type: met again, it holds if the rest does.
+            t => {
+                let key = (hist.ref_id(t, env).unwrap_or(usize::MAX), tid);
+                if hist.traits_in_progress.contains(&key) {
+                    return Ok(true);
+                }
+                hist.traits_in_progress.push(key);
+                let r = find_impl_with(env, tid, t, hist);
+                hist.traits_in_progress.pop();
+                Ok(r?.is_some())
+            }
         }
     }
 
@@ -2414,4 +2411,56 @@ mod tests {
         let array = Type::Array(Arc::new(Type::TVar(a.clone())));
         assert!(Type::TVar(a).contains(&env, &array).unwrap());
     }
+}
+
+/// The impl of `trait_id` for `t`, its head matched in the caller's walk
+/// `hist`, so a trait question met again inside an impl's bound (a
+/// recursive typedef under a generic impl) reads as the one in progress.
+pub(super) fn find_impl_with(
+    env: &Env,
+    trait_id: TraitId,
+    t: &Type,
+    hist: &mut ContainsHist,
+) -> Result<Option<Arc<ImplDef>>> {
+    let Some(list) = env.impls_of(trait_id) else { return Ok(None) };
+    // An open cell inside `t` could still become anything.
+    if t.has_unbound() {
+        return Ok(None);
+    }
+    for im in list.iter() {
+        if let (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) =
+            (&im.target, t)
+            && a != b
+        {
+            continue;
+        }
+        let head = if im.params.is_empty() {
+            im.target.clone()
+        } else {
+            im.target.reset_tvars()
+        };
+        let (hc, tc) = (
+            head.contains_int(ContainsFlags::Commit.into(), env, hist, t)?,
+            t.contains_int(ContainsFlags::Commit.into(), env, hist, &head)?,
+        );
+        if graphix_dbg_bind() {
+            eprintln!("FIND-IMPL head={head:?} t={t:?} head>=t={hc} t>=head={tc}");
+        }
+        if hc && tc {
+            return Ok(Some(im.clone()));
+        }
+    }
+    if graphix_dbg_bind() {
+        eprintln!("FIND-IMPL none for {t:?}");
+    }
+    Ok(None)
+}
+
+/// [`Env::find_impl`]: [`find_impl_with`] in a walk of its own.
+pub(crate) fn find_impl(
+    env: &Env,
+    trait_id: TraitId,
+    t: &Type,
+) -> Result<Option<Arc<ImplDef>>> {
+    find_impl_with(env, trait_id, t, &mut ContainsHist::new())
 }

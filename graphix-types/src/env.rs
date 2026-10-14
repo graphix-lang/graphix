@@ -1,6 +1,5 @@
 use crate::{
     BindId, CFlag,
-    dbgenv::graphix_dbg_bind,
     expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
         FieldRefSite, Ide, IdeMode, ModuleRefSite, ReferenceSite, ScopeMapEntry,
@@ -1349,35 +1348,7 @@ impl Env {
     /// target matches by identity; any other head by unification
     /// against a fresh instantiation, then equivalence.
     pub fn find_impl(&self, trait_id: TraitId, t: &Type) -> Result<Option<Arc<ImplDef>>> {
-        let Some(list) = self.impls_of(trait_id) else { return Ok(None) };
-        // An open cell inside `t` could still become anything.
-        if t.has_unbound() {
-            return Ok(None);
-        }
-        for im in list.iter() {
-            if let (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) =
-                (&im.target, t)
-                && a != b
-            {
-                continue;
-            }
-            let head = if im.params.is_empty() {
-                im.target.clone()
-            } else {
-                im.target.reset_tvars()
-            };
-            let (hc, tc) = (head.contains(self, t)?, t.contains(self, &head)?);
-            if graphix_dbg_bind() {
-                eprintln!("FIND-IMPL head={head:?} t={t:?} head>=t={hc} t>=head={tc}");
-            }
-            if hc && tc {
-                return Ok(Some(im.clone()));
-            }
-        }
-        if graphix_dbg_bind() {
-            eprintln!("FIND-IMPL none for {t:?}");
-        }
-        Ok(None)
+        crate::typ::find_impl(self, trait_id, t)
     }
 
     /// Resolve the segments before a `use` item's last one, written in

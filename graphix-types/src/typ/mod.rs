@@ -37,6 +37,7 @@ pub use cast::{Indiscernible, IsAFlags, Open};
 mod contains;
 pub use contains::ContainsFlags;
 pub use contains::TypeMismatch;
+pub(crate) use contains::find_impl;
 pub mod fntyp;
 mod matches;
 mod normalize;

@@ -1744,3 +1744,40 @@ run!(
 }"#,
     |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["desc4", "desc5"]"#
 );
+
+// A generic impl whose bound leads back to a recursive typedef: the trait
+// question met again inside the bound is the one in progress.
+run!(
+    trait_over_recursive_typedef,
+    r#"{
+    trait Show { val show: fn(self) -> string };
+    impl Show for i64 { let show = |x| "i" };
+    impl Show for string { let show = |x| x };
+    impl<'a: Show> Show for Array<'a> { let show = |a| "arr" };
+    type Json = [i64, string, Array<Json>];
+    let j: Json = [1, "a"];
+    Show::show(j)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "arr")
+);
+
+run!(
+    trait_over_self_array,
+    r#"{
+    trait Show { val show: fn(self) -> string };
+    impl<'a: Show> Show for Array<'a> { let show = |a| "arr" };
+    type L = Array<L>;
+    let l: L = [];
+    Show::show(l)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "arr")
+);
+
+run!(trait_over_recursive_typedef_missing_impl, r#"{
+    trait Show { val show: fn(self) -> string };
+    impl Show for i64 { let show = |x| "i" };
+    impl<'a: Show> Show for Array<'a> { let show = |a| "arr" };
+    type Json = [i64, bool, Array<Json>];
+    let j: Json = 1;
+    Show::show(j)
+}"#, refused("Show"); FuseExpect::None);
