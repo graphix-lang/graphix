@@ -99,5 +99,8 @@ val checksum: fn(db: Db) -> Result<u32, `DbErr(string)>;
 /// Export all database contents to a file.
 val export: fn(db: Db, path: string) -> Result<null, `DbErr(string)>;
 
-/// Import previously exported data from a file. The database must be empty.
+/// Import previously exported data from a file in one transaction.
+/// Every imported key must be absent, including stored tree-type metadata:
+/// opening a typed tree creates metadata even when that tree has no entries.
+/// Malformed input and key collisions are refused without writing entries.
 val import: fn(db: Db, path: string) -> Result<null, `DbErr(string)>;

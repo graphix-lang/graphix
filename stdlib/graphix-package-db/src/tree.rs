@@ -1,5 +1,5 @@
 use ahash::AHashMap;
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
@@ -31,6 +31,7 @@ use crate::encoding::{
     ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
+use sled::transaction::{ConflictableTransactionError, TransactionError, Transactional};
 use tokio::sync::Notify;
 
 pub(crate) use graphix_package_core::Reaped;
@@ -683,12 +684,88 @@ db_name_op!(DbExportEv, DbExport, "db_export", |db, path: ArcStr| {
     Ok(Value::Null)
 });
 
+struct ImportTree {
+    name: Vec<u8>,
+    entries: LPooled<Vec<[Vec<u8>; 2]>>,
+}
+
+fn import_data(db: &sled::Db, data: ExportData) -> Result<()> {
+    if data.trees.is_empty() {
+        return Ok(());
+    }
+    let data = data
+        .trees
+        .into_iter()
+        .map(|tree| {
+            if tree.typ != b"tree" {
+                bail!("invalid import collection type")
+            }
+            let entries = tree
+                .entries
+                .into_iter()
+                .map(|entry| {
+                    entry.try_into().map_err(|_| {
+                        anyhow!("invalid import entry: expected key and value")
+                    })
+                })
+                .collect::<Result<LPooled<Vec<_>>>>()?;
+            Ok(ImportTree { name: tree.name, entries })
+        })
+        .collect::<Result<LPooled<Vec<_>>>>()?;
+    let mut order: LPooled<Vec<usize>> = (0..data.len()).collect();
+    order.sort_unstable_by(|&a, &b| data[a].name.cmp(&data[b].name));
+    if order.windows(2).any(|pair| data[pair[0]].name == data[pair[1]].name) {
+        bail!("duplicate import collection")
+    }
+    for tree in &*data {
+        order.clear();
+        order.extend(0..tree.entries.len());
+        order.sort_unstable_by(|&a, &b| tree.entries[a][0].cmp(&tree.entries[b][0]));
+        if order
+            .windows(2)
+            .any(|pair| tree.entries[pair[0]][0] == tree.entries[pair[1]][0])
+        {
+            bail!("duplicate import key")
+        }
+    }
+    let existing: LPooled<Vec<_>> = db.tree_names().into_iter().collect();
+    for tree in &*data {
+        if existing.iter().any(|name| name.as_ref() == tree.name) {
+            let dest = db.open_tree(&tree.name)?;
+            for [key, _] in &*tree.entries {
+                if dest.contains_key(key)? {
+                    bail!("import would overwrite an existing key")
+                }
+            }
+        }
+    }
+    let trees = data
+        .iter()
+        .map(|tree| db.open_tree(&tree.name))
+        .collect::<sled::Result<LPooled<Vec<_>>>>()?;
+    match trees.as_slice().transaction(|tx| {
+        for (src, dest) in data.iter().zip(tx) {
+            for [key, value] in &*src.entries {
+                if dest.get(key)?.is_some() {
+                    return Err(ConflictableTransactionError::Abort(anyhow!(
+                        "import would overwrite an existing key"
+                    )));
+                }
+                dest.insert(key.as_slice(), value.as_slice())?;
+            }
+        }
+        Ok(())
+    }) {
+        Ok(()) => Ok(()),
+        Err(TransactionError::Abort(e)) => Err(e),
+        Err(TransactionError::Storage(e)) => Err(e.into()),
+    }
+}
+
 db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {
     let buf = std::fs::read(&*path)?;
     let data = ExportData::decode(&mut buf.as_slice())?;
-    let collections: Vec<_> =
-        data.trees.into_iter().map(|t| (t.typ, t.name, t.entries.into_iter())).collect();
-    // CR claude for claude: [bug/medium] sled's `Db::import` panics instead of
+    // XCR claude for claude: [bug/medium] sled's `Db::import` panics instead of
     // returning errors. It asserts that no key it inserts already exists, it `expect`s
     // every insert and every entry's key and value, and it panics on a collection type
     // other than "tree". The export carries graphix's meta tree, so a database that has
@@ -703,7 +780,11 @@ db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {
     // key before writing anything, so a refused import writes nothing. Also state
     // precisely in the gxi what "empty" means. probe:
     // design/review-2026-10-12/repro/http-sqlite-db1-07.gx (http-sqlite-db1-07)
-    // CR claude for claude: [bug/medium] sled's `Db::import` asserts that no key it
+    // 2026-10-13 codex: Archive validation and collision checks precede tree creation; entries
+    // are then inserted in one sled transaction. Pins: malformed_import_leaves_database_unchanged
+    // and colliding_import_leaves_database_unchanged, plus db_export_import.
+    // Please review import validation and transaction behavior.
+    // XCR claude for claude: [bug/medium] sled's `Db::import` asserts that no key it
     // writes already exists, and it expects and panics on a malformed file (an entry
     // that is not [k, v], or a collection type other than "tree"). Here we call it on
     // whatever the file decodes to. An export carries the meta tree, so a destination
@@ -717,7 +798,11 @@ db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {
     // included, already holds a key the import would write. Alternatively, do the
     // inserts ourselves in one transaction so a refusal changes nothing. Then the
     // .gxi's "must be empty" should say what counts as empty. (db2-06)
-    db.import(collections);
+    // 2026-10-13 codex: Archive validation and collision checks precede tree creation; entries
+    // are then inserted in one sled transaction. Pins: malformed_import_leaves_database_unchanged
+    // and colliding_import_leaves_database_unchanged, plus db_export_import.
+    // Please review import validation and transaction behavior.
+    import_data(&db, data)?;
     Ok(Value::Null)
 });
 
@@ -913,6 +998,93 @@ pub(crate) mod test {
         let owner = weak.upgrade().expect("tree must retain the registered database");
         assert!(Arc::ptr_eq(&owner, &open_db(path.into()).await?));
         drop(tree);
+        Ok(())
+    }
+
+    fn exported(name: &[u8], entries: &[(&[u8], &[u8])]) -> ExportTree {
+        ExportTree {
+            typ: b"tree".to_vec(),
+            name: name.to_vec(),
+            entries: entries.iter().map(|(k, v)| vec![k.to_vec(), v.to_vec()]).collect(),
+        }
+    }
+
+    async fn import_result(db: Db, trees: Vec<ExportTree>) -> Value {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut buf: LPooled<Vec<u8>> = LPooled::take();
+        ExportData { trees }.encode(&mut *buf).unwrap();
+        std::fs::write(file.path(), &*buf).unwrap();
+        DbImportEv::eval((db, file.path().to_str().unwrap().into())).await
+    }
+
+    fn assert_import_error(value: Value) {
+        let Value::Error(e) = value else { panic!("expected DbErr, got {value}") };
+        let Value::Array(fields) = &*e else { panic!("expected tagged error") };
+        assert_eq!(fields[0], Value::from("DbErr"));
+        let Value::String(msg) = &fields[1] else { panic!("expected error text") };
+        assert!(!msg.contains("panicked"), "import panicked: {msg}");
+    }
+
+    #[tokio::test]
+    async fn import_accepts_empty_archives() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open_db(dir.path().to_str().unwrap().into()).await?;
+        let checksum = db.checksum()?;
+        assert_eq!(import_result(db.clone(), vec![]).await, Value::Null);
+        assert_eq!(db.checksum()?, checksum);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn malformed_import_leaves_database_unchanged() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open_db(dir.path().to_str().unwrap().into()).await?;
+        let checksum = db.checksum()?;
+        for invalid in [
+            ExportTree {
+                typ: b"unknown".to_vec(),
+                name: b"bad".to_vec(),
+                entries: vec![],
+            },
+            ExportTree {
+                typ: b"tree".to_vec(),
+                name: b"bad".to_vec(),
+                entries: vec![vec![b"key".to_vec()]],
+            },
+            exported(b"bad", &[(b"same", b"1"), (b"same", b"2")]),
+            exported(b"new", &[(b"other", b"value")]),
+        ] {
+            assert_import_error(
+                import_result(
+                    db.clone(),
+                    vec![exported(b"new", &[(b"k", b"v")]), invalid],
+                )
+                .await,
+            );
+            assert_eq!(db.checksum()?, checksum);
+            assert!(!db.tree_names().iter().any(|n| &**n == b"new"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn colliding_import_leaves_database_unchanged() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open_db(dir.path().to_str().unwrap().into()).await?;
+        db.open_tree(META_TREE)?.insert(b"existing", b"2\0string\0i64")?;
+        let checksum = db.checksum()?;
+        assert_import_error(
+            import_result(
+                db.clone(),
+                vec![
+                    exported(b"new", &[(b"k", b"v")]),
+                    exported(META_TREE, &[(b"existing", b"2\0string\0i64")]),
+                ],
+            )
+            .await,
+        );
+        assert_eq!(db.checksum()?, checksum);
+        assert!(!db.tree_names().iter().any(|n| &**n == b"new"));
         Ok(())
     }
 
