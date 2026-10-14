@@ -3115,7 +3115,7 @@ run!(
 run!(coverage_mixed_pool, r#"{
     let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A) => 1, (b, `B) => 2, (false, `A) => 3 };
     f((false, `B))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
 
 // The full grid of heads covers its product.
 run!(coverage_head_grid, r#"{
@@ -3123,7 +3123,7 @@ run!(coverage_head_grid, r#"{
         (`X, `A) => 1, (`X, `B) => 2, (`Y, `A) => 3, (`Y, `B) => 4
     };
     f((`Y, `B))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::Jit);
 
 // A nested or-pattern names a set of heads at its position.
 run!(coverage_nested_or, r#"{
