@@ -48,14 +48,6 @@ pub const DEF: u8 = 1;
 
 /// One value per relocated id domain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-// CR claude for claude: [structure/low] The relocated id domains are listed by hand
-// here, in `Relocations::install` and in `ImageDecoder::new`. An `image_id!` type
-// missing from these lists is written and read raw: the macro's decode falls through to
-// `Ok(Self(raw))` when no relocation is installed. A warm start would then hand out ids
-// that collide with ids the reader already minted, and nothing would fail. Generate
-// `PerDomain` and its install/reserve code from the one list of `image_id!`
-// invocations. Or make an id's `Pack` refuse when an image session is active and its
-// own relocation slot is `None`. (t-expr-core-06)
 pub struct PerDomain<T> {
     pub bind: T,
     pub lambda: T,
@@ -119,8 +111,11 @@ impl Pack for IdCounts {
 type Relocations = PerDomain<Option<IdRelocation>>;
 
 impl Relocations {
-    /// Install these relocations and return the ones they replace.
+    /// Install these relocations and return the ones they replace. Every
+    /// session installs one for each domain, so an id type with none under
+    /// a session refuses to be written or read (`ids::unrelocated`).
     fn install(self) -> Self {
+        crate::ids::set_in_session(self.bind.is_some());
         PerDomain {
             bind: BindId::set_relocation(self.bind),
             lambda: LambdaId::set_relocation(self.lambda),

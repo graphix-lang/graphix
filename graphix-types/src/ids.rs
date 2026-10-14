@@ -132,6 +132,25 @@ pub(crate) fn from_wire(wire: u64) -> Option<u64> {
     }
 }
 
+thread_local! {
+    /// Whether an image session's relocations are installed on this
+    /// thread: then every [`image_id!`] type must have one.
+    static IN_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark whether an image session's relocations are installed on this
+/// thread, returning the previous mark.
+pub(crate) fn set_in_session(on: bool) -> bool {
+    IN_SESSION.with(|s| s.replace(on))
+}
+
+/// An [`image_id!`] type with no relocation under an image session is
+/// missing from the session's domains: written or read raw, its ids would
+/// collide with the reader's.
+pub(crate) fn unrelocated(slot: Option<IdRelocation>) -> bool {
+    slot.is_none() && IN_SESSION.with(|s| s.get())
+}
+
 /// How an [`image_id!`] type is written while an image is encoded or
 /// decoded on this thread; `None` (the default) writes the id as is.
 #[derive(Debug, Clone, Copy)]
@@ -227,6 +246,9 @@ macro_rules! image_id {
                 &self,
                 buf: &mut impl bytes::BufMut,
             ) -> std::result::Result<(), netidx_core::pack::PackError> {
+                if $crate::ids::unrelocated(Self::relocation_slot().get()) {
+                    return Err(netidx_core::pack::PackError::InvalidFormat);
+                }
                 Ok(netidx_core::pack::encode_varint(self.wire(), buf))
             }
 
@@ -240,9 +262,33 @@ macro_rules! image_id {
                         .relocate(start, raw)
                         .map(Self)
                         .ok_or(netidx_core::pack::PackError::InvalidFormat),
+                    slot if $crate::ids::unrelocated(slot) => {
+                        Err(netidx_core::pack::PackError::InvalidFormat)
+                    }
                     _ => Ok(Self(raw)),
                 }
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use netidx_core::pack::Pack;
+
+    image_id!(Stray);
+
+    /// An id type no session relocates is refused under one, never
+    /// written or read raw.
+    #[test]
+    fn an_unrelocated_id_refuses_under_a_session() {
+        let id = Stray::new();
+        let mut buf = bytes::BytesMut::new();
+        id.encode(&mut buf).unwrap();
+        let prev = super::set_in_session(true);
+        assert!(id.encode(&mut bytes::BytesMut::new()).is_err());
+        assert!(Stray::decode(&mut &buf[..]).is_err());
+        super::set_in_session(prev);
+        assert_eq!(Stray::decode(&mut &buf[..]).unwrap(), id);
+    }
 }
