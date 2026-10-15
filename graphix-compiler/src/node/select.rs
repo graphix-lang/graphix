@@ -26,7 +26,7 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 use triomphe::Arc;
 
 /// Where an error in a pattern is placed: the pattern's text when it was
@@ -1562,32 +1562,26 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;
         // A partial struct pattern infers only its named fields;
         // complete each inferred predicate against the typed scrutinee
-        // before coverage or dispatch reads it.
-        // CR claude for claude: [bug/low] Every arm's partial struct pattern is
-        // completed against the whole scrutinee type, before Reach narrows anything.
-        // StructurePattern::unique_completion therefore counts members that an earlier
-        // unguarded arm has already consumed. Example: `select v { {x, y} => x, s@ {x,
-        // ..} => x + 10 }` over `[{x: i64, y: string}, {x: i64, z: f64}]` is refused
-        // with "matches more than one member", although only the second member reaches
-        // arm 2. The same happens in nested positions (`` `A({x, ..}) ``, `Q(s@ {x,
-        // ..})`), where the suggested `T as` annotation cannot be written. Fix:
-        // complete each arm against `reach.atype` as the walk reaches it. Reach::new
-        // reads every arm's type_predicate, so one way is to keep this pass, defer an
-        // arm whose completion is ambiguous here, and complete it again inside the arm
-        // loop against what reaches it. After that, reword the ambiguity rule in
-        // book/src/core/select.md to say "members that reach the arm". probe:
-        // design/review-2026-10-12/repro/t-parser-b-03.gx (t-parser-b-03)
+        // before coverage or dispatch reads it. One the scrutinee leaves
+        // ambiguous is completed again against what reaches its arm.
+        let mut deferred: SmallVec<[bool; 16]> = smallvec![false; self.arms.len()];
         if let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ().clone();
-            for ((pat, body), (spec_pat, _)) in self.arms.iter_mut().zip(se.arms.iter()) {
+            for (((pat, _), (spec_pat, _)), d) in
+                self.arms.iter_mut().zip(se.arms.iter()).zip(deferred.iter_mut())
+            {
                 if !pat.explicit_type_predicate {
-                    let t = spec_pat
-                        .structure_predicate
-                        .complete_type_predicate(&ctx.env, &pat.type_predicate, &scrut)
-                        .at(&pattern_site(spec_pat, body.spec()))?;
-                    if let Some(t) = t {
-                        pat.structure_predicate.realign(&ctx.env, &t)?;
-                        pat.type_predicate = t;
+                    match spec_pat.structure_predicate.complete_type_predicate(
+                        &ctx.env,
+                        &pat.type_predicate,
+                        &scrut,
+                    ) {
+                        Err(_) => *d = true,
+                        Ok(None) => (),
+                        Ok(Some(t)) => {
+                            pat.structure_predicate.realign(&ctx.env, &t)?;
+                            pat.type_predicate = t;
+                        }
                     }
                 }
             }
@@ -1605,6 +1599,18 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 Some((p, _)) => pattern_site(p, n.spec()),
                 None => n.spec().clone(),
             };
+            if deferred[i]
+                && let Some((spec_pat, _)) = spec_pats.get(i)
+            {
+                let t = spec_pat
+                    .structure_predicate
+                    .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
+                    .at(&site)?;
+                if let Some(t) = t {
+                    pat.structure_predicate.realign(&ctx.env, &t)?;
+                    pat.type_predicate = t;
+                }
+            }
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.

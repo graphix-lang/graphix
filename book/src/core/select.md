@@ -335,9 +335,10 @@ $ graphix test.gx
 
 This works at any nesting depth — a partial pattern inside a variant
 payload (`` `Event({id, ..}) ``) completes against that payload's type.
-The one case that still needs help is a scrutinee union in which
-SEVERAL struct members carry all the named fields: the pattern is
-ambiguous, and the compiler asks you to annotate the member you mean:
+The one case that still needs help is when SEVERAL struct members
+that reach the arm carry all the named fields (a member an earlier arm
+already matched does not count): the pattern is ambiguous, and the
+compiler asks you to annotate the member you mean:
 
 ```graphix,ignore
 S as {x, ..} if (x < 10) || (x > 50) => `VWall

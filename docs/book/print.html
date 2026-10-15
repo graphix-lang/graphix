@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4abef885.js";
+            window.path_to_searchindex_js = "searchindex-11e54a2b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -2053,9 +2053,10 @@ select a {
 </code></pre>
 <p>This works at any nesting depth — a partial pattern inside a variant
 payload (<code>`Event({id, ..})</code>) completes against that payload’s type.
-The one case that still needs help is a scrutinee union in which
-SEVERAL struct members carry all the named fields: the pattern is
-ambiguous, and the compiler asks you to annotate the member you mean:</p>
+The one case that still needs help is when SEVERAL struct members
+that reach the arm carry all the named fields (a member an earlier arm
+already matched does not count): the pattern is ambiguous, and the
+compiler asks you to annotate the member you mean:</p>
 <pre><code class="language-graphix ignore">S as {x, ..} if (x &lt; 10) || (x &gt; 50) =&gt; `VWall
 </code></pre>
 <p>Any type in scope (or an inline structural type,

@@ -3185,6 +3185,21 @@ run!(nested_constructor_tells_runtime_forms_apart, r#"{
     "[a] [b] [c] [d] [e] [g]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other other other other other S 4"); FuseExpect::Jit);
 
+// A partial struct pattern completes against the members that reach its
+// arm: one an earlier arm matched does not make it ambiguous.
+run!(partial_struct_completes_against_what_reaches, r#"{
+    let v: [{x: i64, y: string}, {x: i64, z: f64}] = {x: 2, z: 1.5};
+    let w: [`A({x: i64, y: string}), `A({x: i64, z: f64})] = `A({x: 3, z: 1.5});
+    let a = select v { {x, y} => x, s@ {x, ..} => x + 10 };
+    let b = select w { `A({x, y}) => x, `A({x, ..}) => x + 10 };
+    (a, b)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(12), Value::I64(13)]); FuseExpect::Jit);
+
+run!(partial_struct_ambiguous_at_its_arm, r#"{
+    let v: [{x: i64, y: string}, {x: i64, z: f64}] = {x: 2, z: 1.5};
+    select v { s@ {x, ..} => x, _ => 0 }
+}"#, refused("matches more than one member"); FuseExpect::None);
+
 // A partial struct pattern pools against the one member holding its
 // fields, its unnamed fields matching anything: arms naming different
 // fields pool together, a later bind narrows, a later arm can be dead.
