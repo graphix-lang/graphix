@@ -344,6 +344,7 @@ fn evaluate<R: Rt, E: UserEvent>(
             }
         }
         TrackedFires::restore(ctx.event, injected);
+        tracked.evaluated(&ctx.env, k, |r| step.refs(r));
         done
     })
 }

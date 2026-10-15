@@ -194,15 +194,16 @@ impl EmissionPlanes {
 /// catch-up deliveries scoped to it.
 fn evaluate_arm<R: Rt, E: UserEvent>(
     tracked: &mut TrackedFires,
-    arm: &mut Node<R, E>,
+    arm: &mut (PatternNode<R, E>, Node<R, E>),
     i: usize,
     ctx: &mut ExecCtx<'_, R, E>,
 ) -> (Tag, Option<Value>) {
     let injected = tracked.deliver(ctx, i);
-    let tv = arm.update(ctx);
+    let tv = arm.1.update(ctx);
     let t = tv.tag();
     let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
     TrackedFires::restore(ctx.event, injected);
+    tracked.evaluated(&ctx.env, i, |r| arm_refs(arm, r));
     (t, v)
 }
 
@@ -1290,7 +1291,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 return resident.set_bottom(planes.anyfire);
             }
             ChainOut::Quiet(i) => {
-                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx);
+                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) if *selected == Some(i) => {
@@ -1298,7 +1299,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     eprintln!("SELECT[{}] same-arm i={i} arg={v:?}", spec.pos);
                 }
                 arms[i].0.bind_event(ctx, v, arg_prod);
-                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx);
+                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) => {
@@ -1328,22 +1329,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // non-recursive arm, with nothing to pause, enters under
                 // `init` alone.
                 let view = if sleep_on_deselect[i] { View::Wake } else { View::Birth };
-                // CR claude for claude: [bug/medium] An arm's tracked inputs come from
-                // `TrackedFires::new` at the select's first update and are refreshed
-                // only in `deselect`. `Deref::refs` names its target only after the
-                // Deref's first update. So an arm selected for the first time reads
-                // `*r`'s target live without consuming that target's fire bit. The bit
-                // stays pending, and the other arm gets a phantom FIRED catch-up when
-                // it wakes. In the probe, cnt ticks at the wake although the false arm
-                // already read b. Fix: refresh the arm's tracked refs
-                // (`tracked.refresh(&ctx.env, i, ..)`) right after its first evaluation
-                // here, and do the same in seq_machine, which builds its tracker the
-                // same way. A moving reference that changes target later needs a
-                // refresh when a Deref's address moves, or its reads keyed under the
-                // reference's own cell. probe:
-                // design/review-2026-10-12/repro/c-bind-06.gx (c-bind-06)
                 let (t, v) =
-                    ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i].1, i, ctx));
+                    ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx));
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.

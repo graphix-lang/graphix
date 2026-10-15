@@ -29,6 +29,10 @@ pub(crate) struct TrackedFires {
     /// Sound fires no arm evaluation has consumed yet, each with its
     /// tag: a real event, or a wake's own fire.
     pending: IntMap<BindId, Tag>,
+    /// Per arm: its refs were collected again after its first
+    /// evaluation, which names what a node knows only once it ran (a
+    /// `Deref`'s target).
+    ran: Vec<bool>,
 }
 
 impl TrackedFires {
@@ -79,6 +83,7 @@ impl TrackedFires {
             consumes: (0..n).map(|_| IntSet::default()).collect(),
             all: IntSet::default(),
             pending: IntMap::default(),
+            ran: vec![false; n],
         };
         for i in 0..n {
             let mut r = Refs::default();
@@ -101,7 +106,7 @@ impl TrackedFires {
     // refresh. A dirty bit or generation that the arm's CallSites and collections bump
     // when they bind or resize would do it. (x-alloc-06)
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
-        let Self { per_arm, consumes, all, pending } = self;
+        let Self { per_arm, consumes, all, pending, ran: _ } = self;
         let mut r = Refs::default();
         fill(&mut r);
         Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
@@ -124,6 +129,33 @@ impl TrackedFires {
         all.clear();
         all.extend(per_arm.iter().flat_map(|m| m.keys().copied()));
         pending.retain(|id, _| all.contains(id));
+    }
+
+    /// Arm `i` was evaluated: the first time, add what its own nodes
+    /// name only once they ran (a `Deref`'s target), callees left out.
+    /// The arm read such an input live as it ran, so it consumes its fire.
+    pub(crate) fn evaluated(
+        &mut self,
+        env: &Env,
+        i: usize,
+        fill: impl FnOnce(&mut Refs),
+    ) {
+        if std::mem::replace(&mut self.ran[i], true) {
+            return;
+        }
+        let mut r = Refs::without_callees();
+        fill(&mut r);
+        let (mut inputs, mut consumed) = (IntMap::default(), IntSet::default());
+        Self::arm_refs(env, &r, &mut inputs, &mut consumed);
+        let Self { per_arm, consumes, all, pending, .. } = self;
+        for (id, ids) in inputs {
+            if let std::collections::hash_map::Entry::Vacant(e) = per_arm[i].entry(id) {
+                e.insert(ids);
+                all.insert(id);
+                pending.remove(&id);
+            }
+        }
+        consumes[i].extend(consumed);
     }
 
     /// Record this cycle's sound fires of tracked inputs. Runs before

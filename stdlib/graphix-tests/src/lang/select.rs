@@ -1256,6 +1256,32 @@ run!(
     FuseExpect::Jit
 );
 
+// A fire the taken arm reads, through a reference or directly, is spent:
+// the other arm's wake does not catch it up again. The reference's target
+// is an input of its arm from the arm's first evaluation.
+const WAKE_SPENT_THROUGH_A_REFERENCE: &str = r#"
+{
+  let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
+  let b = 10;
+  b <- select n { 2 => 20, _ => never() };
+  let r = &b;
+  let c = (n < 2) || (n >= 4);
+  let out = select c {
+    true => { let cnt = 0; cnt <- (*r) ~ cnt + 1; cnt },
+    false => READ + 100
+  };
+  array::group(out, |k, _| k == 7)
+}
+"#;
+
+run!(wake_spent_through_a_reference, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "*r"), |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 110, 120, 1, 1, 1])
+}; FuseExpect::Jit);
+
+run!(wake_spent_directly, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "b"), |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 110, 120, 1, 1, 1])
+}; FuseExpect::Jit);
+
 // An arm-local `<-` target persists across the arm's sleep: a wake
 // resumes the arm, so the written 11 survives.
 // findings/arm-local-bind-aug2026/
