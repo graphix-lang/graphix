@@ -22,6 +22,10 @@ pub struct LambdaFacts {
     pub effect: EffectKind,
     pub stateless: bool,
     pub io: bool,
+    /// It may raise, or write a binding it does not own: an event an arm
+    /// holding it delivers once, so the arm sleeps rather than re-run it
+    /// fresh at each selection.
+    pub event: bool,
 }
 
 /// Pure: facts only degrade, and nothing has yet.
@@ -32,18 +36,23 @@ impl Default for LambdaFacts {
 }
 
 impl LambdaFacts {
-    pub const PURE: Self = Self { effect: EffectKind::Sync, stateless: true, io: false };
+    pub const PURE: Self =
+        Self { effect: EffectKind::Sync, stateless: true, io: false, event: false };
     pub const ASYNC: Self =
-        Self { effect: EffectKind::Async, stateless: false, io: false };
+        Self { effect: EffectKind::Async, stateless: false, io: false, event: false };
     pub const STATEFUL: Self =
-        Self { effect: EffectKind::Sync, stateless: false, io: false };
-    pub const IO: Self = Self { effect: EffectKind::Sync, stateless: true, io: true };
+        Self { effect: EffectKind::Sync, stateless: false, io: false, event: false };
+    pub const IO: Self =
+        Self { effect: EffectKind::Sync, stateless: true, io: true, event: false };
+    pub const EVENT: Self =
+        Self { effect: EffectKind::Sync, stateless: true, io: false, event: true };
 
     pub fn join(self, other: Self) -> Self {
         Self {
             effect: self.effect.join(other.effect),
             stateless: self.stateless && other.stateless,
             io: self.io || other.io,
+            event: self.event || other.event,
         }
     }
 
@@ -55,7 +64,7 @@ impl LambdaFacts {
     /// Whether code with these facts must sleep with its arm: anything
     /// but pure computation.
     pub fn sleeps(self) -> bool {
-        !self.is_pure() || self.io
+        !self.is_pure() || self.io || self.event
     }
 }
 

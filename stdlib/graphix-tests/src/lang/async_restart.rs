@@ -347,6 +347,31 @@ async fn reentry_raises_once(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// The same through a called helper: an arm whose raise or outer write
+// happens in a callee sleeps too, and its re-entries raise and write
+// nothing new.
+async fn reentry_through_a_callee_once(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let s = array::iter([1, 2, 1, 2]);
+        let t = "x";
+        let n = 7;
+        let raised = 0;
+        let log: Array<i64> = [];
+        let g = |v: string| cast<i64>(v)? + 1;
+        let bump = |e: i64| { log <- [e]; 1 };
+        let out = {
+            catch(x) raised <- x ~ raised + 1;
+            select s { 1 => (g(t), bump(n)), _ => (0, 0) }
+        };
+        (raised, count(log))
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    let last = matches!(values.last(), Some(Value::Array(a))
+        if a[..] == [Value::I64(1), Value::I64(2)]);
+    assert!(last, "{values:?}");
+    Ok(())
+}
+
 // A range waits for a late bound instead of refusing it.
 async fn range_over_a_late_bound(mode: Mode) -> Result<()> {
     let code = r#"{
@@ -366,5 +391,6 @@ modes!(
     wake_restarts_quietly,
     wake_restarts_standing_timers,
     reentry_raises_once,
+    reentry_through_a_callee_once,
     range_over_a_late_bound
 );

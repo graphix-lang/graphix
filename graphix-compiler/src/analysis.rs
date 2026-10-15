@@ -634,11 +634,17 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         NodeView::Connect(c) => match own {
-            OwnTargets::Bound(local) if !local(c.id) => LambdaFacts::PURE,
+            OwnTargets::Bound(local) if !local(c.id) => LambdaFacts::EVENT,
             OwnTargets::Bound(_) | OwnTargets::All => LambdaFacts::STATEFUL,
         },
         NodeView::ConnectDeref(_) => LambdaFacts::STATEFUL,
-        NodeView::Qop(_) | NodeView::OrNever(_) => LambdaFacts::PURE,
+        // a body's raise goes to its caller's handler, which only a call knows
+        NodeView::Qop(q) => match own {
+            OwnTargets::Bound(_) => LambdaFacts::EVENT,
+            OwnTargets::All if q.raises_to_handler() => LambdaFacts::EVENT,
+            OwnTargets::All => LambdaFacts::PURE,
+        },
+        NodeView::OrNever(_) => LambdaFacts::PURE,
         NodeView::Module(m) if is_dynamic_module(m) => LambdaFacts::ASYNC,
         NodeView::Bind(_)
         | NodeView::Module(_)
@@ -1044,27 +1050,7 @@ fn arm_sleeps<R: Rt, E: UserEvent>(
                 let facts = node_facts(n, OwnTargets::All, &mut |cs| {
                     callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
                 });
-                // CR claude for claude: [bug/high] This decision misses events that a
-                // callee makes. raises_to_handler only sees a Qop written in the arm
-                // itself. callee_facts reports a callee's `?` as PURE, and node_facts
-                // under OwnTargets::Bound also reports a `<-` to a binding the lambda
-                // does not own as PURE. So an arm whose only raise or outer write
-                // happens inside a called helper is judged pure. It never sleeps and
-                // re-enters under View::Birth, which raises the standing error again or
-                // makes the write again on every re-selection. The inline form reads
-                // stale and does neither. Both engines agree on the wrong value: in the
-                // probe, `select s { 1 => (g(t), bump(n)), _ => (0, 0) }` prints (2,
-                // 3), while the same raise and write written inline print (1, 2).
-                // region_facts has the same gap for a fused arm: its `raises` looks
-                // only at the region's own Qops. Fix: give LambdaFacts an "event" bit,
-                // set by a handler-raising Qop and by a Connect to a non-own target
-                // under OwnTargets::Bound, and join it through callees and builtin
-                // callbacks the way io is joined. Then consult it here and in
-                // region_facts. Add callee-form pins next to
-                // lang::async_restart::reentry_raises_once. probe:
-                // design/review-2026-10-12/repro/x-fix-nodes-01.gx (x-fix-nodes-01)
-                *sleeps =
-                    facts.sleeps() || raises_to_handler(n) || calls_recursive(n, ctx);
+                *sleeps = facts.sleeps() || calls_recursive(n, ctx);
             }
         }
     });
@@ -1260,18 +1246,14 @@ pub(crate) fn region_facts<R: Rt, E: UserEvent>(
     let mut f = RegionFacts::default();
     fusion::for_each_node(n, &mut |x| {
         f.hooks |= runs_hooks(x, &ctx.env);
-        f.raises |= raises_to_handler(x);
         f.recurses |= calls_recursive(x, ctx);
-        f.io |= node_facts(x, OwnTargets::All, &mut |cs| {
+        let facts = node_facts(x, OwnTargets::All, &mut |cs| {
             callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
-        })
-        .io;
+        });
+        f.raises |= facts.event;
+        f.io |= facts.io;
     });
     f
-}
-
-fn raises_to_handler<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
-    matches!(n.view(), NodeView::Qop(q) if q.raises_to_handler())
 }
 
 fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) -> bool {
