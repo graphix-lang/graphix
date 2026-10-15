@@ -748,3 +748,44 @@ run!(written_through_a_reference, WRITTEN_THROUGH_A_REFERENCE, |v: Result<&Value
         _ => false,
     }
 }; FuseExpect::Jit);
+
+// A reborrow names what its reference names: a write through `&mut *r`,
+// here or in a callee, lands in `s`.
+run!(
+    reborrow_writes_the_referent,
+    r#"{
+    let s = 1;
+    let r = &mut s;
+    let p = &mut *r;
+    *p <- 5;
+    let bump = |c: &mut i64| { *c <- c ~ (*c + 10); null };
+    let k = r ~ bump(&mut *r);
+    array::group(s, |i, _| i == 3)
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:5, i64:11]"
+);
+
+// A place reference fires when its address moves, never at a write of
+// its root that leaves the address where it was.
+async fn place_reference_fires_on_a_move(mode: Mode) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(
+        r#"{
+    let n = 0;
+    n <- select n { k if k < 4 => k + 1, _ => never() };
+    let a = [1, 2, 3];
+    a <- n ~ [n, 2, 3];
+    let s = {a: 1, b: 2};
+    s <- n ~ {a: n, b: 2};
+    let i = 0;
+    i <- select n { 3 => 2, _ => never() };
+    (count(&a[1]), count(&s.b), count(&a[i]))
+}"#,
+        mode,
+    )
+    .await?;
+    let last = values.last().map(|v| format!("{v}"));
+    assert_eq!(last.as_deref(), Some("[i64:1, i64:1, i64:2]"), "{values:?}");
+    Ok(())
+}
+
+modes!(place_reference_fires_on_a_move);

@@ -1048,23 +1048,11 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     }
 
     /// The accessor chain of `expr` down to a variable or a
-    /// dereference, root first; `None` for anything else, a bare
-    /// variable included.
+    /// dereference, root first, a bare dereference (`*r`) included;
+    /// `None` for anything else, a bare variable included.
     fn of(expr: &Expr) -> Option<(Expr, Vec<PlaceSpec>)> {
         let (root, steps) = expr.place()?;
-        // CR claude for claude: [bug/medium] A dereference with no accessors (`&mut
-        // *r`, `&*r`) returns None here, so ByRef::compile treats it as "any other
-        // expression" and mints a fresh cell seeded with `*r`. The check accepts it as
-        // `&mut T`, and every write through it lands in that detached cell, never in
-        // the binding `r` names. A reborrow handed to a writing callee (`bump(&mut
-        // *r)`) therefore drops its writes silently, while `bump(r)` and `&mut (*r).f`
-        // write through. Make a zero-step place over a Deref root a place (root = the
-        // deref, empty path: the `*r` root check `r: &mut` already applies), or make
-        // `&mut *r` the reference `r` itself; never a fresh cell. Add a reborrow pin to
-        // lang/byref.rs. probe:
-        // design/review-2026-10-12/repro/x-engine-seq-errors-05.gx
-        // (x-engine-seq-errors-04)
-        if steps.is_empty() {
+        if steps.is_empty() && !matches!(root.unparen().kind, ExprKind::Deref(_)) {
             return None;
         }
         let specs = steps
@@ -1420,7 +1408,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let moved = match &mut self.referent {
+        // the reference fires when its address changes; a write of its
+        // root only refreshes the mirror
+        let retargeted = match &mut self.referent {
             Referent::Channel(n) => {
                 let tv = n.update(ctx).clone();
                 self.publish(ctx, tv);
@@ -1429,10 +1419,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             Referent::Place(place) => {
                 let Resolved { address, root, moved } = place.update(ctx);
                 let Some(Address { bind, path, steps }) = address else {
-                    if self.unregister(ctx) {
+                    let lost = self.unregister(ctx);
+                    if lost {
                         self.bottom_mirror(ctx);
                     }
-                    return self.resident.set_bottom(moved || ctx.event.init());
+                    return self.resident.set_bottom(lost || ctx.event.init());
                 };
                 let same = self
                     .registered
@@ -1464,24 +1455,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                         None => self.bottom_mirror(ctx),
                     }
                 }
-                moved
+                !same
             }
         };
-        // CR claude for claude: [bug/medium] A place reference fires its reference
-        // value at every write of its root. `Place::update` seeds `moved` with the
-        // root's fire, and that flag both refreshes the cell mirror and fires the
-        // resident here. So `&a[1]` and `&s.b` fire whenever any part of `a` or `s` is
-        // written, even though their paths are static and the element did not change;
-        // `&x` fires once. Every consumer of the reference re-triggers: a callee's `&`
-        // formal, a widget's `&` prop, `count`, a seq trigger. That contradicts
-        // design/place_references.md, which says a reference re-fires when it moves.
-        // Nothing needs this fire: `Deref` already has interest on the root binding.
-        // Fix: have `Place::update` return the root's fire apart from the address
-        // change (a key fired, or `!same`). Use root fire OR address change for the
-        // mirror refresh, and the address change alone for the resident. Add a byref.rs
-        // pin that counts a place reference's fires. probe:
-        // design/review-2026-10-12/repro/c-bind-04.gx (c-bind-04)
-        if ctx.event.init() || moved {
+        if ctx.event.init() || retargeted {
             self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
         } else {
             self.resident.ride()

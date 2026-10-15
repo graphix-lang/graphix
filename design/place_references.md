@@ -16,7 +16,9 @@ types). `*r` reads the root through the path. `*r <- v` PATCHES the
 root: the value is rebuilt along the path and delivered to the root. A
 dynamic key (`&vals[focus]`) makes a moving reference: it points at
 whatever the key names when it fires, reads and writes there, and
-re-fires its readers when the key moves.
+re-fires its readers when the key moves, never at a write of its root
+that leaves it where it was. A bare dereference is a place with an empty
+path: `&mut *r` names what `r` names, so a write through it lands there.
 
 Failures are runtime facts, as for indexing: a read of a place that
 does not exist bottoms (warned). A write to a key a map lacks inserts
