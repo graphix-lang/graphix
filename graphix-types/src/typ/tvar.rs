@@ -794,6 +794,12 @@ impl TVar {
         })))
     }
 
+    /// The same cell under another name.
+    pub fn renamed(&self, name: ArcStr) -> Self {
+        let (_, frozen, cell) = self.parts();
+        Self::from_parts(name, TVarId::new(), frozen, cell)
+    }
+
     /// The wrapper's id and frozen flag, and its cell.
     pub(crate) fn parts(&self) -> (TVarId, bool, Arc<RwLock<TCell>>) {
         let link = self.read();

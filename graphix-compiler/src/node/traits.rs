@@ -84,25 +84,37 @@ fn implements(env: &Env, declared: &FnType, implemented: &Type) -> Result<()> {
     }
 }
 
-/// The method signature instantiated at an implementation target:
-/// `self := target`, everything else fresh.
-// CR claude for claude: [bug/high] Only `self` is replaced here, so a method quantifier
-// with the same name as a variable of the impl target stays a separate cell under the
-// same name. Take `val conv: fn(self, x: 'a) -> 'a` against `impl<'a> Conv for
-// Box<'a>`. The result is `fn(self: Box<'a>, x: 'a) -> 'a` with two different 'a.
-// FnType::sig_matches compares variables by name, so Impl::typecheck0 refuses a valid
-// impl with "type variable usage mismatch: expected 'a: unbound, got 'a: unbound". The
-// same happens in a module when the .gxi trait's variable has the same name as the .gx
-// impl head's. 'a is the default name on both sides, so ordinary code hits this. Fix:
-// before replacing `self`, alpha-rename each method quantifier whose name appears among
-// the target's variables to a fresh name, and update the quantifier list and any
-// `throws` to match. Every caller (Impl::compile, Impl::typecheck0, the interface's
-// impl declaration in module.rs) then sees distinct names. Probe:
-// design/review-2026-10-12/repro/c-module-traits-01.gx (c-module-traits-01)
+/// The method signature, a fresh copy, instantiated at an
+/// implementation target: `self := target`, and a variable named like
+/// one of the target's renamed apart, so the two never read as one.
 pub(crate) fn method_sig_at(sig: &FnType, target: &Type) -> FnType {
+    let mut theirs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    target.collect_tvars(&mut theirs);
+    let mut ours: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    sig.collect_tvars(&mut ours);
     let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
+    let mut renames: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
+    for (name, tv) in ours.iter() {
+        let t = match theirs.contains_key(name) {
+            false => Type::TVar(tv.clone()),
+            true => {
+                let fresh = (1u64..)
+                    .map(|i| ArcStr::from(format_compact!("{name}{i}").as_str()))
+                    .find(|n| !theirs.contains_key(n) && !ours.contains_key(n))
+                    .unwrap();
+                renames.insert(name.clone(), fresh.clone());
+                Type::TVar(tv.renamed(fresh))
+            }
+        };
+        known.insert(name.clone(), t);
+    }
     known.insert(literal!("self"), target.clone());
-    sig.replace_tvars(&known)
+    let mut sig = sig.replace_tvars(&known);
+    if !renames.is_empty() {
+        sig.quantifiers =
+            sig.quantifiers.iter().map(|q| renames.get(q).unwrap_or(q).clone()).collect();
+    }
+    sig
 }
 
 /// Fill a method lambda's missing parameter and return annotations

@@ -1875,3 +1875,50 @@ run!(variadic_trait_param_is_one_type, r#"{
     let f = |@args: Eq| -> Any 'core_all;
     f(1, "s")
 }"#, refused("does not contain string"); FuseExpect::None);
+
+// A method's variable named like the impl target's is a variable of its
+// own: the two `'a`s are unrelated, in a file and across an interface.
+run!(
+    method_tvar_named_like_target_tvar,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s"),
+    "/test.gx" => r#"
+        trait Conv { val conv: fn(self, x: 'a) -> 'a };
+        type Box<'a> = Abstract<'a>;
+        impl<'a> Conv for Box<'a> { let conv = |b, x| x };
+        let result = Conv::conv(Box(1), "s")
+    "#
+    ; FuseExpect::Jit
+);
+
+run!(
+    method_tvar_named_like_target_tvar_interface,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s"),
+    "/test.gx" => r#"
+mod m;
+let result = m::Conv::conv(m::Box(1), "s")
+"#,
+    "/test/m.gxi" => r#"
+trait Conv { val conv: fn(self, x: 'a) -> 'a };
+type Box<'a> = Abstract<'a>;
+impl<'a> Conv for Box<'a>;
+"#,
+    "/test/m.gx" => r#"
+trait Conv { val conv: fn(self, x: 'a) -> 'a };
+type Box<'a> = Abstract<'a>;
+impl<'a> Conv for Box<'a> { let conv = |b, x| x };
+"#
+    ; FuseExpect::Jit
+);
+
+// The renamed method variable keeps its bound.
+run!(
+    method_tvar_renamed_keeps_its_bound,
+    refused("does not contain string"),
+    "/test.gx" => r#"
+        trait Conv { val conv: fn<'a: Number>(self, x: 'a) -> 'a };
+        type Box<'a> = Abstract<'a>;
+        impl<'a> Conv for Box<'a> { let conv = |b, x| x };
+        let result = Conv::conv(Box(1), "s")
+    "#
+    ; FuseExpect::None
+);
