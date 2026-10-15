@@ -714,8 +714,33 @@ impl Ref {
         })
     }
 
+    /// A reference to `name`, as a call's own function names it.
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut CompileCtx<R, E>,
+        spec: Arc<Expr>,
+        scope: &Scope,
+        top_id: ExprId,
+        name: &ModPath,
+    ) -> Result<Node<R, E>> {
+        Self::compile_as(ctx, None, spec, scope, top_id, name)
+    }
+
+    /// A value occurrence of `name`: a trait method named is its
+    /// eta-expansion, compiled under `flags`.
+    pub(crate) fn compile_value<R: Rt, E: UserEvent>(
+        ctx: &mut CompileCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Arc<Expr>,
+        scope: &Scope,
+        top_id: ExprId,
+        name: &ModPath,
+    ) -> Result<Node<R, E>> {
+        Self::compile_as(ctx, Some(flags), spec, scope, top_id, name)
+    }
+
+    fn compile_as<R: Rt, E: UserEvent>(
+        ctx: &mut CompileCtx<R, E>,
+        value: Option<BitFlags<CFlag>>,
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
@@ -739,6 +764,12 @@ impl Ref {
         match resolved {
             None => bailat!(spec, "{name} not defined"),
             Some((_, bind)) => {
+                if let Some(flags) = value
+                    && let Some(eta) =
+                        super::compiler::eta_dispatcher(ctx, &spec, name, bind)?
+                {
+                    return compile(ctx, flags, eta, scope, top_id);
+                }
                 let bind_id = bind.id;
                 let (typ, signature) = match ctx.env.poly_binds.contains(&bind_id) {
                     true => (Type::empty_tvar(), Signature::Pending),

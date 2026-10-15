@@ -522,10 +522,15 @@ fn compile_kind<R: Rt, E: UserEvent>(
         // ExprIds at every compile, so an instance's eta nodes find no DefTable row and
         // check themselves. Caching the eta Expr per binding and scope keeps the ids
         // stable. (c-data-map-07)
-        ExprKind::Ref { name } => match eta_dispatcher(ctx, scope, &spec, name)? {
-            Some(eta) => compile(ctx, flags, eta, scope, top_id),
-            None => Ref::compile(ctx, spec.clone(), scope, top_id, name),
-        },
+        // 2026-10-15 claude: Done: a reference resolves its name once; the trait-method
+        // test is in Ref::compile_value after that lookup (Ref::compile, for a call's
+        // own function, never eta-expands). Open: the eta Expr is still built with
+        // fresh ExprIds at each compile, so an instance's eta nodes find no DefTable
+        // row and check themselves; keeping the ids stable needs the expansion cached
+        // per binding and scope.
+        ExprKind::Ref { name } => {
+            Ref::compile_value(ctx, flags, spec.clone(), scope, top_id, name)
+        }
         ExprKind::TupleRef { source, field } => {
             TupleRef::compile(ctx, flags, spec.clone(), scope, top_id, source, field)
         }
@@ -619,15 +624,12 @@ fn compile_kind<R: Rt, E: UserEvent>(
 /// value, the call resolves by its receiver. A call's own function stays
 /// a reference. `None` for any other name; a variadic method has no
 /// expansion (a lambda cannot pass its rest on) and is refused.
-fn eta_dispatcher<R: Rt, E: UserEvent>(
+pub(super) fn eta_dispatcher<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
-    scope: &Scope,
     spec: &Expr,
     name: &ModPath,
+    bind: &crate::env::Bind,
 ) -> Result<Option<Expr>> {
-    let Some((_, bind)) = ctx.env.lookup_bind(&scope.lexical, name).ok().flatten() else {
-        return Ok(None);
-    };
     let Some(tm) = ctx.env.trait_methods.get(&bind.id) else { return Ok(None) };
     let Some(m) =
         ctx.env.trait_defs.get(&tm.trait_id).and_then(|d| d.methods.get(tm.index))
