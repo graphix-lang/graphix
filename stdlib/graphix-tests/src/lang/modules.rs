@@ -1058,6 +1058,22 @@ run!(
     FuseExpect::None
 );
 
+// A declared impl taking a trait default from a sibling module resolves
+// statically though the two modules check in one run of tasks.
+run!(
+    sibling_trait_default_resolves_statically,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "dflt"),
+    "/test.gx" => r#"
+        mod a;
+        mod b;
+        let result = #[native] a::Show::show(b::mk(1))
+    "#,
+    "/test/a.gxi" => r#"trait Show { val show: fn(self) -> string = |s| "dflt" };"#,
+    "/test/a.gx" => r#"trait Show { val show: fn(self) -> string = |s| "dflt" }"#,
+    "/test/b.gxi" => "use super::a::Show; type T; val mk: fn(x: i64) -> T; impl Show for T;",
+    "/test/b.gx" => "use super::a::Show; type T = Abstract<i64>; let mk = |x| T(x); impl Show for T"
+; FuseExpect::Jit);
+
 // An exported val is one variable: the module's own write and an outside
 // write in one cycle both land, the second a cycle later, as two writes to
 // any variable do.

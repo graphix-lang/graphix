@@ -1231,14 +1231,23 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
     siblings: &[ModPath],
     module: bool,
 ) -> Result<()> {
+    let mut run: LPooled<Vec<&mut Node<R, E>>> = run.collect();
     let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>, TaskId)>> =
-        run.map(|n| (n, ctx.fork(), current_task())).collect();
+        run.iter_mut().map(|n| (&mut **n, ctx.fork(), current_task())).collect();
     for (n, task, _) in work.iter_mut() {
         let own = module_path(n).expect("a run is of modules");
         task.env.hidden_impls =
             Arc::new(hide_siblings(&task.env.hidden_impls, siblings, &own));
     }
-    check_in_tasks(ctx, work, module, |n, task| n.typecheck0(task))
+    check_in_tasks(ctx, work, module, |n, task| n.typecheck0(task))?;
+    // an interface binding takes a sibling's definition only once the
+    // run's tasks joined: each task was forked before the others checked
+    for n in run.iter() {
+        if let NodeView::Module(m) = n.view() {
+            m.proxy_lambda_defs(ctx)
+        }
+    }
+    Ok(())
 }
 
 /// Run a runtime bind `f` as a compile task of its own, in a settle

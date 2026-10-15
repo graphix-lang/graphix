@@ -1137,7 +1137,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     /// Map each signature `BindId` to its impl binding's `LambdaDef` so
     /// cross-module calls resolve statically.
-    fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R, E>) {
+    pub(crate) fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R, E>) {
         for Proxy { inner, outer, .. } in self.proxy.iter() {
             let hit = ctx.bind_to_lambda.contains_key(inner);
             if crate::dbgenv::gxdbg_resolve() {
@@ -1392,19 +1392,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 })?;
             }
         }
-        // CR claude for claude: [perf/medium] proxy_lambda_defs runs inside this
-        // module's compile task. When the inner binding belongs to a sibling module of
-        // the same run, as with a declared impl that takes a trait default from the
-        // trait's module, typecheck0_modules forked this task before the sibling
-        // checked. The sibling's bind_to_lambda entry is missing here, so the outer id
-        // is never mapped. Calls through the impl then dispatch dynamically and do not
-        // fuse, and a `#[native]` around them fails. Putting any statement between the
-        // two `mod`s makes the call static. Moving the mapping into typecheck1 does not
-        // fix this, because statement elaboration is also forked before any statement
-        // runs. Redo the mapping for every module of the run after check_in_tasks joins
-        // in typecheck0_modules. probe:
-        // design/review-2026-10-12/repro/c-module-traits-02/ (main.gx vs main3.gx,
-        // GXDBG_RESOLVE / GXDBG_CS). (c-module-traits-03)
         self.proxy_lambda_defs(ctx);
         Ok(())
     }
