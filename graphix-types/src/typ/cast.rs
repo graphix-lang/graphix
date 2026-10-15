@@ -332,6 +332,16 @@ impl Type {
     /// function or an abstract type, which a cast never takes apart. A
     /// cast refuses such a source: a reference is not a number.
     #[doc(hidden)]
+    /// Whether a map type is written in this type, through the
+    /// definitions it names (an abstract's hidden one excepted).
+    pub fn holds_map(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Map { .. } => Some(true),
+            Type::Abstract { .. } => Some(false),
+            _ => None,
+        })
+    }
+
     pub fn holds_ref(&self, env: &Env) -> bool {
         self.holds(env, &mut Verdicts::new(), &|t| match t {
             Type::ByRef(..) => Some(true),

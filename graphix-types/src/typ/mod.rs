@@ -52,7 +52,7 @@ pub use tval::member_of;
 pub mod tvar;
 
 pub use fntyp::{FnArgKind, FnArgType, FnType, seed_conjuncts};
-pub use tval::{Naked, TVal};
+pub use tval::{Naked, NakedPrefix, TVal};
 pub use tvar::TVar;
 
 struct AndAc(bool);

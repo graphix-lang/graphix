@@ -128,7 +128,7 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
 }
 
 /// Bounded-prefix Display of a value, for diagnostics.
-pub(super) struct NakedPrefix<'a>(pub(super) &'a Value);
+pub struct NakedPrefix<'a>(pub &'a Value);
 
 impl fmt::Display for NakedPrefix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

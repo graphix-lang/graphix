@@ -1306,6 +1306,23 @@ pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
 /// Defer a judgment that only reads types to the check's settle of the
 /// current frame, a definition's body included: its open cells read as
 /// any type, and a later instance's types are its definition's.
+/// A map type written in `t`, which makes values of it out of others (a
+/// cast's target, a type test), takes keys of distinct runtime forms, as
+/// a literal's do: judged at the statement's settle. Every other map
+/// value comes from a producer judged already.
+pub(crate) fn defer_written_map_keys<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    t: &Type,
+    spec: &Arc<Expr>,
+) {
+    if t.holds_map(&ctx.env) {
+        let what = crate::Discerned::Keys;
+        let judgment =
+            PendingSettle::Discernible { typ: t.clone(), what, spec: spec.clone() };
+        defer_judgment(ctx, judgment)
+    }
+}
+
 pub(crate) fn defer_judgment<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     judgment: PendingSettle,
@@ -2078,6 +2095,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         if self.n.typ().holds_ref(&ctx.env) {
             bailat!(self.spec, "can't cast a reference")
         }
+        defer_written_map_keys(ctx, &self.target, &self.spec);
         Ok(())
     }
 

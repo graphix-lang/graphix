@@ -1612,6 +1612,9 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             _ => &[],
         };
         for (i, (pat, n)) in self.arms.iter_mut().enumerate() {
+            if checking && pat.explicit_type_predicate {
+                super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
+            }
             // a refusal about the pattern points at the pattern
             let site = match spec_pats.get(i) {
                 Some((p, _)) => pattern_site(p, n.spec()),

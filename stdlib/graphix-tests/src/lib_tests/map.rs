@@ -381,3 +381,29 @@ async fn iter_walks_a_user_ordered_map() -> Result<()> {
     }
     Ok(())
 }
+
+// A missing key is named in the error as a message prints it: an abstract
+// key by its Display impl, never by its packed bytes.
+run!(
+    missing_abstract_key_prints_its_display,
+    r#"{
+    type K = Abstract<i64>;
+    impl Display for K { let fmt = |k| "K#[k.0]" };
+    let m = {K(5) => "a"};
+    m{K(1)}
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()).contains("map key K#1 not found")
+);
+
+// A map type a cast or a type test makes values of takes keys of
+// distinct runtime forms, as a literal's do.
+run!(written_map_key_cast_refused, r#"{
+    let raw: Map<string, i64> = {"A" => 1};
+    let m = cast<Map<[string, `A], i64>>(raw)$;
+    m{`A}$
+}"#, refused("string and `A can't share a map key type"); FuseExpect::None);
+
+run!(written_map_key_type_test_refused, r#"{
+    let v: Any = {"A" => 1};
+    select v { Map<[string, `A], i64> as m => m{`A}$, _ => 0 }
+}"#, refused("string and `A can't share a map key type"); FuseExpect::None);
