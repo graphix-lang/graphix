@@ -2529,6 +2529,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
         .and_then(|()| check_pending_names(ctx))
         .and_then(|()| verify(ctx))
     {
+        let e = resite_pending_name(ctx, e);
         ctx.pending_settles.clear();
         ctx.pending_settles.push(Vec::new());
         ctx.pending_names.clear();
@@ -2617,6 +2618,28 @@ pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
         }
     }
     Ok(())
+}
+
+/// A check that failed on a type name a definition deferred (a later
+/// call expanded its signature first) is placed at the definition.
+pub(crate) fn resite_pending_name<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    e: anyhow::Error,
+) -> anyhow::Error {
+    use expr::At;
+    let Some(u) = e.downcast_ref::<typ::UnresolvableRef>() else { return e };
+    let deferred = ctx.pending_names.iter().find_map(|p| match p {
+        Pending::Name(tr, spec)
+            if tr.name == u.name && tr.scope == u.scope && tr.pos == u.pos =>
+        {
+            Some((tr, spec))
+        }
+        _ => None,
+    });
+    match deferred {
+        Some((tr, spec)) => typ::UnresolvableRef::error(tr, &ctx.env).at(spec),
+        None => e,
+    }
 }
 
 /// Refuse now each deferred typedef a declaration just completed (a

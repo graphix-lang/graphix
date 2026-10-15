@@ -1957,17 +1957,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         let spec: &Expr = &self.spec;
-        // CR claude for claude: [bug/low] An unresolved name in a type variable's bound
-        // (`'a: Nosuch`) is deferred here, and only `check_pending_names` at the end of
-        // the check reports it. A call to the definition in a later statement
-        // instantiates the signature first. The type walk then fails with
-        // `UnresolvableRef` under the call's spec, so the error is sited at the call.
-        // Across modules the LSP publishes it on the caller's file and nothing on the
-        // defining file. An unresolved argument type (`|x: Nosuch|`) is still sited at
-        // the definition. Fix: when a check fails with an `UnresolvableRef` whose ref
-        // is in `pending_names`, re-site it at that entry's spec. Alternatively, check
-        // the bounds a definition deferred before any later statement can call it.
-        // probe: design/review-2026-10-12/repro/x-errors-02.gx (x-errors-02)
         crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec);
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after

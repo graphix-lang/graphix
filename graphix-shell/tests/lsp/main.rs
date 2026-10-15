@@ -296,6 +296,15 @@ fn a_diagnostic_underlines_the_expression() {
     assert_eq!(c.underlined("a.gx"), ["str::len(\"four\") == 4"]);
 }
 
+/// An undefined name in a bound is reported at its definition, though a
+/// later call expands the signature first.
+#[test]
+fn an_undefined_bound_is_reported_at_its_definition() {
+    let mut c = Client::start(&[("a.gx", "let f = 'a: Nosuch |x: 'a| x;\nf(1)\n")]);
+    c.open("a.gx");
+    assert_eq!(c.underlined("a.gx"), ["'a: Nosuch |x: 'a| x"]);
+}
+
 /// A lambda's own refusals (duplicate parameters, a variadic) are placed
 /// at the lambda.
 #[test]

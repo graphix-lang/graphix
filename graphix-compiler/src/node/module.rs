@@ -1073,9 +1073,10 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         });
         (self.nodes, self.catches) = compiled?;
         if let Body::Dynamic { .. } = &self.body {
-            self.check_body(ctx)?;
-            crate::drain_pending_settles(ctx)?;
-            crate::check_pending_names(ctx)?;
+            self.check_body(ctx)
+                .and_then(|()| crate::drain_pending_settles(ctx))
+                .and_then(|()| crate::check_pending_names(ctx))
+                .map_err(|e| crate::resite_pending_name(ctx, e))?;
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
             crate::drain_pending_settles(ctx)?;
