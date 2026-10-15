@@ -1,9 +1,11 @@
 //! Wake catch-up fire tracking (`design/wake_catchup.md`), shared by
-//! the nodes that select among sleeping arms: `Select` and the seq
-//! machine.
+//! the nodes that pause bodies and wake them: `Select`, the seq machine,
+//! a collection whose source went bottom and a call whose function did.
 
 use super::{VarRead, read_var};
-use crate::{BindId, Event, ExecCtx, Refs, Rt, Tag, TagValue, UserEvent, env::Env};
+use crate::{
+    BindId, Event, ExecCtx, Refs, Rt, Tag, TagValue, UserEvent, branch::Prior, env::Env,
+};
 use nohash::{IntMap, IntSet};
 use smallvec::SmallVec;
 
@@ -37,6 +39,10 @@ pub(crate) struct TrackedFires {
     /// `Deref`'s target).
     ran: Vec<bool>,
 }
+
+/// The catch-up deliveries made for one evaluation, with what each
+/// overwrote, for [`TrackedFires::restore`].
+pub(crate) type Injected = SmallVec<[(BindId, Prior<TagValue>); 4]>;
 
 /// Record a fire of `id` in `bits`: a real one outranks a wake's own.
 fn join_bit(bits: &mut IntMap<BindId, Tag>, id: BindId, tag: Tag) {
@@ -225,8 +231,8 @@ impl TrackedFires {
         &mut self,
         ctx: &mut ExecCtx<'_, R, E>,
         i: usize,
-    ) -> SmallVec<[(BindId, Option<TagValue>); 4]> {
-        let mut injected: SmallVec<[(BindId, Option<TagValue>); 4]> = SmallVec::new();
+    ) -> Injected {
+        let mut injected = Injected::new();
         if self.pending.is_empty() {
             return injected;
         }
@@ -262,38 +268,17 @@ impl TrackedFires {
                     _ => None,
                 };
                 if let Some(v) = standing {
-                    let prev = ctx.event.variables.insert(id, TagValue::tagged(v, tag));
-                    injected.push((id, prev));
+                    let prior = ctx.event.variables.put(id, TagValue::tagged(v, tag));
+                    injected.push((id, prior));
                 }
             }
         }
         injected
     }
 
-    pub(crate) fn restore<E: UserEvent>(
-        event: &mut Event<E>,
-        injected: SmallVec<[(BindId, Option<TagValue>); 4]>,
-    ) {
-        for (id, prev) in injected {
-            match prev {
-                Some(tv) => {
-                    // CR claude for claude: [risk/low] In a forked branch, `deliver`'s
-                    // `prev` may be the parent layer's entry: `Layered::insert` returns
-                    // a clone of it. Re-inserting it here leaves the branch an own
-                    // entry that only copies the parent's. `merge_in_order` treats
-                    // every own id as a delivery, so if two sibling branches both catch
-                    // up the same id, the right one's copy is requeued as a write for
-                    // the next cycle, a phantom fire. The module's primes are removed
-                    // for the same reason. Fix: remember in `deliver` whether the
-                    // previous value was the layer's own, and in that case restore it
-                    // with `take_own` instead of re-inserting it. Not reproduced yet.
-                    // (c-analysis-branch-06)
-                    event.variables.insert(id, tv);
-                }
-                None => {
-                    event.variables.remove(&id);
-                }
-            }
+    pub(crate) fn restore<E: UserEvent>(event: &mut Event<E>, injected: Injected) {
+        for (id, prior) in injected {
+            event.variables.put_back(id, prior)
         }
     }
 }

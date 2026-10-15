@@ -375,6 +375,16 @@ const SHRINK_FLOOR: usize = 1024;
 /// A map a branch writes over its parent's: the parent's entries show
 /// through unless the branch wrote them or removed them (`removed`). A
 /// root map has no parent and no removals.
+/// What a layer held for an id before a [`Layered::put`].
+pub(crate) enum Prior<V> {
+    /// Its own entry.
+    Own(V),
+    /// Its parent's, which it sees through.
+    Inherited,
+    /// Nothing it sees.
+    Absent,
+}
+
 pub struct Layered<V> {
     map: IntMap<BindId, V>,
     removed: IntSet<BindId>,
@@ -447,6 +457,33 @@ impl<V: Clone> Layered<V> {
         }
         self.insert(id, v);
         Ok(())
+    }
+
+    /// Set `id` for a while: what [`Self::put_back`] needs to leave the
+    /// layer as it was.
+    pub(crate) fn put(&mut self, id: BindId, v: V) -> Prior<V> {
+        let own = self.map.contains_key(&id);
+        let inherited = !own && !self.removed.contains(&id) && self.parent().is_some();
+        match self.insert(id, v) {
+            Some(prev) if own => Prior::Own(prev),
+            Some(_) if inherited => Prior::Inherited,
+            _ => Prior::Absent,
+        }
+    }
+
+    /// Undo a [`Self::put`].
+    pub(crate) fn put_back(&mut self, id: BindId, prior: Prior<V>) {
+        match prior {
+            Prior::Own(v) => {
+                self.map.insert(id, v);
+            }
+            Prior::Inherited => {
+                self.map.remove(&id);
+            }
+            Prior::Absent => {
+                self.remove(&id);
+            }
+        }
     }
 
     /// Remove `id`, returning what it held.

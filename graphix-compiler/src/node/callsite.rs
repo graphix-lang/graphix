@@ -3129,12 +3129,12 @@ impl Absent {
         ctx: &mut ExecCtx<'_, R, E>,
         update: impl FnOnce(&mut ExecCtx<'_, R, E>) -> T,
     ) -> T {
-        let mut injected: SmallVec<[(BindId, Option<TagValue>); 4]> = SmallVec::new();
+        let mut injected = super::wake::Injected::new();
         for id in self.missed.drain(..) {
             let live = ctx.event.variables.get(&id).is_some_and(|tv| tv.tag().triggers());
             if !live && let Some((tv, _)) = ctx.rt.store_get(&id) {
                 let catch_up = TagValue::tagged(tv.value_cloned(), Tag::FIRED);
-                injected.push((id, ctx.event.variables.insert(id, catch_up)));
+                injected.push((id, ctx.event.variables.put(id, catch_up)));
             }
         }
         let captured = &mut self.captured;
