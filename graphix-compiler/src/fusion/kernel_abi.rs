@@ -233,6 +233,17 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             if all_variants {
                 return Some(AbiKind::Variant);
             }
+            // CR claude for claude: [perf/medium] Any other union has no ABI kind, so a
+            // function with a formal like `p: [(i64, string), (string, i64)]` gets no
+            // kernel ("formal `p` has no kernel encoding") and every call to it
+            // node-walks, though abstract types and primitive unions already ride as
+            // opaque 2-word values (AbiKind::Value). Classify such a Set as
+            // AbiKind::Value, and have the select emitter destructure an opaque
+            // scrutinee per member or refuse that select alone, so the rest of the
+            // body still fuses. probe: `let g = |p: [(i64, string), (string, i64)]|
+            // select p { (a, b) => 0, (c, d) => 1 }; #[native] g((1, "s"))` is refused
+            // by --expand. Pin: lang::select::coverage_all_bind_arms_cover_each_member
+            // (FuseExpect::None today). (abi-union-01)
             return None;
         }
         None

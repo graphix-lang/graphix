@@ -3111,6 +3111,24 @@ run!(
 // One walk decides what reaches each arm: binds narrow to it, an arm that
 // can match none of it is dead, and nothing may reach past the last arm.
 
+// An all-bind arm over a union of tuples narrows to one member, so it
+// covers that member alone: whether it matched anything before narrowing
+// decides nothing.
+run!(coverage_all_bind_narrows_to_a_member, r#"{
+    let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => 0 };
+    g((1, "s"))
+}"#, refused("no arm covers (string, i64)"); FuseExpect::None);
+
+run!(coverage_all_bind_struct_narrows_to_a_member, r#"{
+    let g = |p: [{x: i64, y: string}, {x: string, y: i64}]| select p { {x, y} => 0 };
+    g({x: 1, y: "s"})
+}"#, refused("no arm covers { x: string, y: i64 }"); FuseExpect::None);
+
+run!(coverage_all_bind_arms_cover_each_member, r#"{
+    let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => 0, (c, d) => 1 };
+    (g((1, "s")), g(("s", 1)))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(0), Value::I64(1)]); FuseExpect::None);
+
 // An irrefutable arm with a head pools with the literal arms.
 run!(coverage_mixed_pool, r#"{
     let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A) => 1, (b, `B) => 2, (false, `A) => 3 };

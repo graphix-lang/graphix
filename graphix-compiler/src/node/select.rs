@@ -389,19 +389,8 @@ impl Reach {
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Result<Self> {
         let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
-        // CR claude for claude: [bug/high] `wildcard` is decided here from
-        // `matches_every` on each arm's predicate before the arm loop in
-        // `Select::typecheck0_with` narrows it. An all-bind `(a, b)` over `[(i64,
-        // string), (string, i64)]` probes as matching everything. Its cells then narrow
-        // to (i64, string), but `Reach::exhausted` still accepts the select on the
-        // stale flag. At run time ("s", 1) matches no arm ("a coverage hole in the
-        // check") and the select is bottom, in both engines. `{x, y}` over two struct
-        // types does the same. Add a `null` member to the union and the same select is
-        // refused, so the verdict depends on the unnarrowed probe. Fix: set `wildcard`
-        // in `Reach::arm` from its post-narrowing `wild && unguarded`, and keep the
-        // Reach::new probe only for the settle decision. See also c-pattern-04, the
-        // narrowing to the first member. probe:
-        // design/review-2026-10-12/repro/c-pattern-05.gx (c-pattern-05)
+        // an arm that matches anything before narrowing steers only the
+        // settle: narrowing may bind its cells to one member
         let mut wildcard = false;
         for (pat, _) in arms.iter() {
             match pat.matches_every(env, scrut)? {
@@ -428,7 +417,7 @@ impl Reach {
             pool: LiteralPool::default(),
             bools: (false, false),
             covered: SmallVec::new(),
-            wildcard,
+            wildcard: false,
             guarded_slice: false,
             refutable_slice: false,
         })
@@ -476,6 +465,7 @@ impl Reach {
         }
         let wild = pat.matches_every(env, scrut)?;
         let unguarded = pat.guard.is_none();
+        self.wildcard |= wild && unguarded;
         if !unguarded {
             self.guarded_slice |= pat.structure_predicate.is_array_slice();
         }
