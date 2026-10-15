@@ -834,6 +834,25 @@ fn an_interface_alone_is_checked_with_its_implementation() {
     assert_eq!(c.files_with_diagnostics(), vec!["api.gx".to_string()]);
 }
 
+/// A script's interface val is one symbol with the script's binding, as a
+/// module's is: definition, references and its doc.
+#[test]
+fn a_script_interface_val_and_its_binding_are_one_symbol() {
+    let mut c = Client::start(&[
+        ("api.gx", "let double = |n: i64| -> i64 n * 2;\nlet four = double(2)\n"),
+        ("api.gxi", "/// twice n\nval double: fn(n: i64) -> i64;\n"),
+    ]);
+    c.open("api.gx");
+    c.open("api.gxi");
+    let val = c.site("api.gxi", "val |double");
+    let imp = c.site("api.gx", "let |double");
+    assert_eq!(c.definition("api.gxi", "val |double"), Some(imp.clone()));
+    let refs = c.references("api.gx", "let |double");
+    assert!(refs.contains(&val), "{refs:?}");
+    let h = c.hover("api.gxi", "val |double").unwrap();
+    assert!(h.contains("twice n"), "{h}");
+}
+
 #[test]
 fn a_shebang_script_checks() {
     let mut c =

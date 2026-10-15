@@ -776,32 +776,6 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
         };
         let missing = || at(anyhow!("sig item {si} is missing an implementation"));
         match &si.kind {
-            // CR claude for claude: [bug/low] When a .gx is checked as a root of its
-            // own (single-file mode, or any open file outside a project), its .gxi goes
-            // through check_script_sig, which records nothing for the IDE. Hover and
-            // definition on a `val` name in the .gxi then return nothing, while the
-            // same file in a workspace (the Module path, which records a SigImplLink
-            // through push_sig_link) answers with the type, the doc, and a jump to the
-            // `let`. Fix: when ctx.env.ide.is_lsp(), record a reference site at the
-            // val's name (its Name position in the .gxi) whose target is `bind.id`, so
-            // the query layer resolves it as it does any reference. Pin it with a hover
-            // and a definition on `val |double` in a graphix-shell/tests/lsp test that
-            // opens only api.gx and api.gxi without a workspace.
-            // an_interface_alone_is_checked_with_its_implementation asserts only that
-            // no diagnostics appear, so it also needs a mismatch case to show the .gxi
-            // is checked at all. Probe: design/review-2026-10-05/repro/lsp-05.py case 1
-            // (no workspace, hover on api.gxi `double` returns None). (x-rerun-4-05)
-            // CR claude for claude: [bug/medium] A script's interface `val` is checked
-            // here but never shown to the language server. No bind is recorded for it
-            // (no origin, position or doc) and no SigImplLink is pushed, which is
-            // different from the module path in Module's check. So in the LSP, hover
-            // and definition on a script's .gxi `val` return nothing, its `///` doc
-            // reaches no query, and references from the script leave out the val. A
-            // module and its .gxi answer all of these. Under `ctx.env.ide.is_lsp()`,
-            // record the val as an IDE bind with its origin, `Name` position and doc,
-            // and push `SigImplLink { sig_id, impl_id: bind.id }`. Add a script twin of
-            // the e2e pin `an_interface_val_and_its_implementation_are_one_symbol`.
-            // probe: design/review-2026-10-12/repro/x-lsp-probe-02.py (x-lsp-probe-02)
             SigKind::Bind(BindSig { name, typ: declared }) => {
                 let bind = ctx
                     .env
@@ -825,6 +799,28 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                         "val {name} is declared {declared} but implemented {typ}: {e:#}"
                     )
                     .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos }));
+                }
+                // the language server sees the val as a module's: a binding
+                // of its own, with its doc, linked to the script's
+                if ctx.env.ide.is_lsp() {
+                    let sig = crate::env::Bind {
+                        id: BindId::new(),
+                        typ: declared.clone(),
+                        doc: si.doc.0.clone(),
+                        scope: scope.clone(),
+                        name: name.name.as_str().into(),
+                        pos: name.pos_or(si.pos),
+                        ori: si.ori.clone().unwrap_or_default(),
+                        facet: None,
+                    };
+                    let link = SigImplLink {
+                        scope: scope.clone(),
+                        name: sig.name.clone(),
+                        sig_id: sig.id,
+                        impl_id: bind.id,
+                    };
+                    ctx.env.with_ide(|ide| ide.binds.push(sig));
+                    ctx.env.push_sig_link(link);
                 }
             }
             SigKind::Impl(im) => {
