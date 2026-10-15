@@ -1329,6 +1329,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // non-recursive arm, with nothing to pause, enters under
                 // `init` alone.
                 let view = if sleep_on_deselect[i] { View::Wake } else { View::Birth };
+                // CR claude for claude: [bug/medium] An arm's tracked inputs come from
+                // `TrackedFires::new` at the select's first update and are refreshed
+                // only in `deselect`. `Deref::refs` names its target only after the
+                // Deref's first update. So an arm selected for the first time reads
+                // `*r`'s target live without consuming that target's fire bit. The bit
+                // stays pending, and the other arm gets a phantom FIRED catch-up when
+                // it wakes. In the probe, cnt ticks at the wake although the false arm
+                // already read b. Fix: refresh the arm's tracked refs
+                // (`tracked.refresh(&ctx.env, i, ..)`) right after its first evaluation
+                // here, and do the same in seq_machine, which builds its tracker the
+                // same way. A moving reference that changes target later needs a
+                // refresh when a Deref's address moves, or its reads keyed under the
+                // reference's own cell. probe:
+                // design/review-2026-10-12/repro/c-bind-06.gx (c-bind-06)
+                // 2026-10-15 claude: done for a target a node names by its first
+                // evaluation: TrackedFires::evaluated adds it (callees left out) and
+                // its read consumes the fire, in a select and a seq step (5c66bda6a;
+                // pins lang::select::wake_spent_through_a_reference,
+                // wake_spent_directly). Open: a moving reference whose Deref changes
+                // target later is still tracked under its old one until a deselect
+                // refresh.
                 let (t, v) =
                     ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx));
                 planes.emit(t, v)
