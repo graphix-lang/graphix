@@ -2433,6 +2433,14 @@ run!(
     FuseExpect::None
 );
 
+// A write names the latest let of its name before it in the block: an
+// earlier let of the same name stays generic.
+run!(
+    write_to_a_later_let_leaves_the_earlier_generic,
+    r#"{ let f = |x| x; let a = f(1); let b = f("s"); let f = 0; f <- 1; (a, b) }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:1, "s"]"#
+);
+
 // A write to a name a nearer binding shadows leaves the outer let generic.
 run!(
     shadowed_write_leaves_the_let_generic,

@@ -264,7 +264,8 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         {
             let mut targets: SmallVec<[BindId; 4]> = SmallVec::new();
             pattern.ids(&mut |id| {
-                if ctx.env.by_id.get(&id).is_some_and(|b| written.contains(&b.name)) {
+                let name = ctx.env.by_id.get(&id).map(|b| b.name.clone());
+                if name.is_some_and(|n| written.contains(&(spec.id, n))) {
                     targets.push(id)
                 }
             });

@@ -1277,9 +1277,9 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// is per batch): `Bind::update` must not reseed a woken target that
     /// holds a value. `Bind::delete` removes its ids.
     pub connect_targets: TrackedSet<BindId>,
-    /// Per block being compiled, innermost last: the names its lets bind
-    /// that something in it writes ([`node::written_lets`]).
-    pub(crate) written_lets: Vec<AHashSet<CompactString>>,
+    /// Per block being compiled, innermost last: the lets something in
+    /// it writes, by statement and name ([`node::written_lets`]).
+    pub(crate) written_lets: Vec<AHashSet<(ExprId, CompactString)>>,
     /// Builtin metadata for `let foo = |...| 'builtin_name` bindings.
     /// Keyed by `(scope, name)` because a sig and its impl share the
     /// name but have distinct `BindId`s.

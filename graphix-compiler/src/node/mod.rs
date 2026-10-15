@@ -813,39 +813,53 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
 }
 
-/// The names the lets among a block's statements bind that a `<-` or a
-/// `&mut` in the block writes, lambda bodies included, where no nearer
-/// binding of the name stands between: such a let is never generalized,
-/// whatever the order of its uses and its writers.
-pub(crate) fn written_lets(exprs: &[&Expr]) -> AHashSet<CompactString> {
+/// The lets among a block's statements that a `<-` or a `&mut` in the
+/// block writes, lambda bodies included, each as its statement's id and
+/// the written name: a write names the latest let of the name before it
+/// (its own, for a `let rec`), where no nearer binding stands between.
+/// Such a let is never generalized, whatever the order of its uses and
+/// writers.
+pub(crate) fn written_lets(exprs: &[&Expr]) -> AHashSet<(ExprId, CompactString)> {
     let mut w = Writes::default();
     for e in exprs {
-        if let ExprKind::Bind(b) = &e.kind {
-            b.pattern.with_names(&mut |n| {
-                w.declared.insert(n.as_str().into());
-            });
+        let ExprKind::Bind(b) = &e.kind else {
+            w.expr(e);
+            continue;
+        };
+        if b.rec {
+            w.declare(e.id, &b.pattern);
+            w.expr(&b.value);
+        } else {
+            w.expr(&b.value);
+            w.declare(e.id, &b.pattern);
         }
-    }
-    if !w.declared.is_empty() {
-        exprs.iter().for_each(|e| w.expr(e));
     }
     w.written
 }
 
 #[derive(Default)]
 struct Writes {
-    declared: AHashSet<CompactString>,
+    /// The block's let of each name in scope at the walk's position.
+    declared: AHashMap<CompactString, ExprId>,
     /// The nearer bindings in scope at the walk's position.
     shadow: Vec<ArcStr>,
-    written: AHashSet<CompactString>,
+    written: AHashSet<(ExprId, CompactString)>,
 }
 
 impl Writes {
+    fn declare(&mut self, id: ExprId, p: &expr::StructurePattern) {
+        p.with_names(&mut |n| {
+            self.declared.insert(n.as_str().into(), id);
+        });
+    }
+
     fn target(&mut self, name: &ModPath) {
         let mut parts = netidx_core::path::Path::parts(&**name);
         let (Some(n), None) = (parts.next(), parts.next()) else { return };
-        if self.declared.contains(n) && !self.shadow.iter().any(|s| s == n) {
-            self.written.insert(n.into());
+        if let Some(id) = self.declared.get(n)
+            && !self.shadow.iter().any(|s| s == n)
+        {
+            self.written.insert((*id, n.into()));
         }
     }
 
