@@ -318,19 +318,12 @@ fn same_test(a: &StructPatternNode, b: &StructPatternNode) -> bool {
     })
 }
 
-/// A refutable atom that tests what an earlier unguarded one does, under
-/// the same type test, matches nothing new.
 fn type_test<R: Rt, E: UserEvent>(p: &PatternNode<R, E>) -> Option<&Type> {
     p.explicit_type_predicate.then_some(&p.type_predicate)
 }
 
-// CR claude for claude: [readability/low] The doc comment that states this function's
-// rule (a refutable atom that tests what an earlier unguarded one does, under the same
-// type test, matches nothing new) sits on `type_test` above, a one-line accessor for
-// the arm's written type test. `check_repeats` has no doc. A reader of `type_test` gets
-// a dead-arm rule, and the refusal is not explained where it is made. Move the comment
-// onto `check_repeats`. Either give `type_test` no comment (its body says what it does)
-// or inline it into its one caller here. (c-select-seq-03)
+/// Refuse a refutable atom that tests what an earlier unguarded one does,
+/// under the same type test: it matches nothing new.
 fn check_repeats<R: Rt, E: UserEvent>(
     env: &Env,
     arms: &[(PatternNode<R, E>, Node<R, E>)],
