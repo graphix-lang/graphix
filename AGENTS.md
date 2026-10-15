@@ -1015,7 +1015,8 @@ cycle, across workers; the compiler never pins threads.
 - **Native List** (`design/list_native.md`): `List<'a>` is a compiler
   constructor like `Array`; `[<1, 2>]` literals and `[<h, rest..>]`
   patterns (rest is the O(1) tail; the suffix form is refused); the rep
-  is private to `graphix-types/src/list.rs`.
+  is private to `graphix-types/src/list.rs`; a struct's and a variant's
+  forms are read only through `graphix-types/src/rep.rs`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere. Its
