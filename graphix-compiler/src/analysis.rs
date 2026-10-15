@@ -1967,23 +1967,6 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
     fusion::for_each_node(target, &mut |n| {
         forks = forks
             || match n.view() {
-                // CR claude for claude: [bug/medium] Every map counts as a fork here,
-                // but a map whose callback is a function value never forks. Its
-                // prototype has no static target, so each slot calls through the
-                // callback parameter (`CallKind::Slot(None)`), `CallSite::prebind`
-                // leaves that call unbound, and `analysis::independent` reads it as
-                // opaque. `SlotSite::decide_siblings` then marks the site Dependent for
-                // good, and the slots run in order even under #[parallel] or
-                // GRAPHIX_PAR=force. So `#[parallel] array::map(xs, cb)` compiles but
-                // never runs in parallel, which breaks the assertion's contract (a
-                // compile error where nothing forks). Fix: count a MapQ as forking only
-                // when its prototype call resolves statically, and refuse the others
-                // with a reason ("the callback is a function value the compiler cannot
-                // resolve"). The alternative is to let a function-value callback fork
-                // by deciding slot independence after the slots bind, and deciding it
-                // again when the callback value changes. probe:
-                // design/review-2026-10-12/repro/x-parallel-04.gx Also reported as
-                // (c-analysis-branch-05). (x-parallel-04)
                 NodeView::MapQ(_) => true,
                 NodeView::Block(b) => {
                     let forks =
