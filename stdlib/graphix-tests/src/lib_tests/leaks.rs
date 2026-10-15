@@ -239,26 +239,3 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
     assert_eq!(before.ref_var_total, after.ref_var_total);
     Ok(())
 }
-
-/// A builtin definition restored from an image rebuilds its check under
-/// the definition gate, which takes its catch binding with it.
-#[tokio::test(flavor = "current_thread")]
-async fn restored_builtin_check_leaves_no_binding() -> Result<()> {
-    let (tx, _rx) = mpsc::channel(64);
-    let (image_tx, image_rx) = oneshot::channel();
-    let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
-            .await?;
-    let image = image_rx.await??;
-    cold.shutdown().await;
-    let (tx, mut rx) = mpsc::channel(64);
-    let warm =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::load(image)).await?;
-    let (eid, _expr) = compile_one(&warm, "str::len(\"abc\") + str::len(\"de\")").await?;
-    await_update(&mut rx, eid, |v| matches!(v, Value::I64(5))).await?;
-    let env = warm.rt.get_env().await?;
-    let faux = env.by_id.into_iter().filter(|(_, b)| b.name == "faux").count();
-    warm.shutdown().await;
-    assert_eq!(faux, 0);
-    Ok(())
-}

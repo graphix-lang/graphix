@@ -4,8 +4,7 @@ use super::{
     compiler::compile,
     error::{Qop, join_open_raised, join_raised},
     lambda::{
-        BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, build_builtin_check,
-        same_parameters,
+        BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, same_parameters,
     },
     pattern::StructPatternNode,
     wake::TrackedFires,
@@ -414,50 +413,6 @@ fn printed_deref(t: &Type) -> String {
 /// type; a user definition has no check. The check is shared by every
 /// site, the last one's type wins. A definition restored from an image
 /// has none until its first site rebuilds it.
-// CR claude for claude: [dead/low] recheck_builtin runs a builtin definition's shared
-// check Apply at every unresolved site's type, and nothing reads that Apply afterwards.
-// analysis and GXLambda::typecheck0_instance ask only whether builtin_check() is Some,
-// which depends on the origin alone. The real instances get their types from their own
-// static typecheck1 or from init's BindMode::Dynamic view, and the only refusal any
-// builtin typecheck1 can make (queuefn's non-function third argument) is already
-// refused by its 'a: Function bound. The cost is a lock and a typecheck1 per site.
-// After a warm start, the first site per builtin also pays an init + typecheck0 in
-// build_builtin_check, and queuefn's init then registers a reference under a throwaway
-// ExprId. Fix: delete recheck_builtin and its two loops in typecheck1_resolve,
-// LambdaDef::check, build_builtin_check and the gate's retention in
-// GXLambda::typecheck0. Keep the predicate as an is_builtin() on the origin. The test
-// restored_builtin_check_leaves_no_binding then has nothing left to test.
-// (c-callsite-06)
-fn recheck_builtin<R: Rt, E: UserEvent>(
-    ctx: &mut CompileCtx<R, E>,
-    id: LambdaId,
-    resolved: &FnType,
-    spec: &TArc<Expr>,
-) -> Result<()> {
-    let _profile = profile::phase(Phase::LambdaFinalize);
-    let Some(val) = ctx.lambda_defs.get(&id).cloned() else { return Ok(()) };
-    let ldef = val
-        .downcast_ref::<LambdaDef<R, E>>()
-        .expect("failed to unwrap lambda for typecheck1");
-    let Some(check) = ldef.builtin_check() else { return Ok(()) };
-    // The definition keeps one check; a site that finds it out (restored
-    // from an image, or held by a concurrent site) builds its own.
-    let taken = check.lock().take();
-    let mut apply = match taken {
-        Some(apply) => apply,
-        None => build_builtin_check(ldef, ctx)?,
-    };
-    let res = apply.typecheck1(ctx, &mut [], resolved).at(&(**spec));
-    let mut slot = check.lock();
-    match slot.as_ref() {
-        None => *slot = Some(apply),
-        Some(_) => {
-            drop(slot);
-            ctx.discard_apply(apply)
-        }
-    }
-    res
-}
 
 fn compile_apply_args<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
@@ -1503,29 +1458,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn typecheck1_resolve(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
-        ftype: &FnType,
     ) -> Result<Option<Node<R, E>>> {
         if let Some(lowered) = self.try_static_resolve(ctx)? {
             return Ok(Some(lowered));
         }
         self.refresh_static_ftype();
-        let resolved = ftype.resolve_tvars();
-        let spec = self.spec.clone();
-        for id in ftype.lambda_ids.ids().iter().copied() {
-            recheck_builtin::<R, E>(ctx, id, &resolved, &spec)?;
-        }
-        // Callbacks reachable through a fn-typed argument. A callback still
-        // a scheme is checked by each call that picks its quantifiers.
-        let mut fts: LPooled<Vec<TArc<FnType>>> = LPooled::take();
-        for arg in resolved.args.iter() {
-            fts.clear();
-            collect_fn_arms(&arg.typ, &mut fts);
-            for ft in fts.iter().filter(|ft| !ft.has_open_quantifier()) {
-                for id in ft.lambda_ids.ids().iter().copied() {
-                    recheck_builtin::<R, E>(ctx, id, ft, &spec)?;
-                }
-            }
-        }
         Ok(None)
     }
 
@@ -3038,7 +2975,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // A settle frame for this site's re-drives; leftovers merge up and
         // drain only after this site's writers have run.
         ctx.pending_settles.push(Vec::new());
-        let res = self.typecheck1_resolve(ctx, &ftype);
+        let res = self.typecheck1_resolve(ctx);
         let leftover = ctx.pending_settles.pop().expect("settle frame");
         ctx.pending_settles.last_mut().expect("root settle frame").extend(leftover);
         if let Some(lowered) = res? {

@@ -554,9 +554,6 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub argspec: Arc<[Arg]>,
     pub typ: Arc<FnType>,
     pub init: InitFn<R, E>,
-    /// A builtin definition's check `Apply`, built by the definition gate
-    /// ([`Self::builtin_check`]).
-    pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
     /// What the definition's check settled, for its instances; shared
     /// with `init`, which hands it to each instance.
     pub table: SArc<DefTables>,
@@ -620,15 +617,9 @@ impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
         *f = f.join(facts);
     }
 
-    /// The check `Apply` of a builtin definition; `None` for any other.
-    /// It holds `None` until the definition gate builds it, and for a
-    /// definition restored from an image until its first call site
-    /// rebuilds it.
-    pub(crate) fn builtin_check(&self) -> Option<&Mutex<Option<Box<dyn Apply<R, E>>>>> {
-        match &self.origin {
-            DefOrigin::Source { body: DefBody::BuiltIn(_), .. } => Some(&self.check),
-            DefOrigin::Source { .. } | DefOrigin::Runtime => None,
-        }
+    /// Whether the definition is a Rust builtin's.
+    pub(crate) fn is_builtin(&self) -> bool {
+        matches!(&self.origin, DefOrigin::Source { body: DefBody::BuiltIn(_), .. })
     }
 }
 
@@ -1761,7 +1752,6 @@ impl Lambda {
             argspec,
             init,
             scope: scope.clone(),
-            check: Mutex::new(None),
             table,
             shared,
             facts: Mutex::new(facts),
@@ -1905,21 +1895,6 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
     }
 }
 
-/// A builtin's check `Apply` for a site whose definition holds none
-/// (restored from an image, or taken by a concurrent site): the builtin
-/// over a private copy of its checked signature, so no site writes the
-/// definition's cells.
-pub(crate) fn build_builtin_check<R: Rt, E: UserEvent>(
-    def: &LambdaDef<R, E>,
-    ctx: &mut CompileCtx<R, E>,
-) -> Result<Box<dyn Apply<R, E>>> {
-    let sig = def.typ.reset_tvars();
-    let mut args: LPooled<Vec<Node<R, E>>> =
-        sig.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
-    (def.init)(&def.scope, ctx, &mut args, BindMode::Dynamic(&sig), ExprId::new())
-        .and_then(|mut f| f.typecheck0(ctx, &mut args).map(|()| f))
-}
-
 /// The definition's check of its labeled defaults, under the gate:
 /// each default compiles in the def's scope and must fit its parameter.
 /// Against a declared tvar it must fit the tvar's constraints, not the
@@ -2061,12 +2036,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 let table = SArc::new(DefTable::record(&g.body, &g.env, &ctx.env, facts));
                 def.table.set(Tables { table, outer: None });
             }
-            // a builtin's check `Apply` is retained for `CallSite::typecheck1`;
-            // a user body is not re-checked per call site
-            match def.builtin_check() {
-                None => ctx.discard_apply(f),
-                Some(check) => *check.lock() = Some(f),
-            }
+            ctx.discard_apply(f);
             res?;
             let inferred_throws = gate.thrown(ctx).normalize();
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
@@ -2092,9 +2062,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .def
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
-        let tables = match def.builtin_check() {
-            None => types.lambda(self.spec.id),
-            Some(_) => None,
+        let tables = match def.is_builtin() {
+            false => types.lambda(self.spec.id),
+            true => None,
         };
         let Some(tables) = tables else { return self.typecheck0(ctx) };
         let level = def.level;

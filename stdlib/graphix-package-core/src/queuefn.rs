@@ -354,7 +354,6 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             argspec,
             typ: ftyp,
             init,
-            check: Mutex::new(None),
             table: Default::default(),
             shared: Default::default(),
             facts: Mutex::new(LambdaFacts::ASYNC),

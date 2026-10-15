@@ -755,7 +755,7 @@ fn calls_builtin<R: Rt, E: UserEvent>(
             v.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
         });
     match def {
-        Some(lid) => lambda_def(ctx, lid).is_some_and(|d| d.builtin_check().is_some()),
+        Some(lid) => lambda_def(ctx, lid).is_some_and(|d| d.is_builtin()),
         None => fref.and_then(|id| ctx.env.by_id.get(&id)).is_some_and(|b| {
             ctx.builtin_bindings.contains_key(&(b.scope.clone(), b.name.clone()))
         }),
