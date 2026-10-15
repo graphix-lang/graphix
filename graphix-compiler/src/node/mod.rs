@@ -24,7 +24,7 @@ use crate::{
     },
     typ::{
         Mutability, TVal, TVar, Type, TypeMismatch,
-        tvar::{AtLevel, InTask, current_level, new_task},
+        tvar::{AtLevel, InTask, TaskId, current_level, current_task, new_task},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1114,21 +1114,21 @@ fn statement_result<R: Rt, E: UserEvent>(
 /// the body's.
 fn check_in_tasks<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
-    mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>>,
+    mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>, TaskId)>>,
     module: bool,
     check: impl Fn(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()> + Sync,
 ) -> Result<()> {
     let level = current_level();
     let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
     work.par_iter_mut()
-        .map(|(n, task)| {
+        .map(|(n, task, id)| {
             let _level = AtLevel::enter(level);
-            let _task = InTask::enter(task.task);
+            let _task = InTask::enter(*id);
             let r = task.run_task(|task| check(n, task));
             statement_result(r, n, module)
         })
         .collect_into_vec(&mut results);
-    for (_, task) in work.drain(..) {
+    for (_, task, _) in work.drain(..) {
         ctx.join(task);
     }
     results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
@@ -1231,9 +1231,9 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
     siblings: &[ModPath],
     module: bool,
 ) -> Result<()> {
-    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> =
-        run.map(|n| (n, ctx.fork())).collect();
-    for (n, task) in work.iter_mut() {
+    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>, TaskId)>> =
+        run.map(|n| (n, ctx.fork(), current_task())).collect();
+    for (n, task, _) in work.iter_mut() {
         let own = module_path(n).expect("a run is of modules");
         task.env.hidden_impls =
             Arc::new(hide_siblings(&task.env.hidden_impls, siblings, &own));
@@ -1318,12 +1318,11 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
     }
     let mut slots: LPooled<Vec<Option<&mut Node<R, E>>>> =
         nodes.iter_mut().map(Some).collect();
-    let work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> = order
+    let work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>, TaskId)>> = order
         .iter()
         .map(|i| {
-            let mut task = ctx.fork();
-            task.task = new_task();
-            (slots[*i].take().expect("an order visits each once"), task)
+            let n = slots[*i].take().expect("an order visits each once");
+            (n, ctx.fork(), new_task())
         })
         .collect();
     check_in_tasks(ctx, work, module, typecheck1_settled)

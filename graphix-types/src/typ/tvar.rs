@@ -225,6 +225,12 @@ impl InTask {
     }
 }
 
+/// The compile task this thread runs.
+#[doc(hidden)]
+pub fn current_task() -> TaskId {
+    TASK.get()
+}
+
 impl Drop for InTask {
     fn drop(&mut self) {
         TASK.set(self.0)

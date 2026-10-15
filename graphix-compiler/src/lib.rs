@@ -49,7 +49,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{FnType, Indiscernible, Open, Type, tvar::TaskId},
+    typ::{FnType, Indiscernible, Open, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -1303,7 +1303,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     pub(crate) pending_settles: Vec<Vec<PendingSettle>>,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
-    /// at the end of [`compile_stmt`].
+    /// by `check_pending_imports`, from `compile_top` and a module's load.
     pub(crate) pending_imports: Vec<PendingImport>,
     /// What a check could not decide until it ends
     /// ([`check_pending_names`]).
@@ -1323,15 +1323,6 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     discarded: Vec<Discarded<R, E>>,
     /// The id of the concurrent compile task this one runs in
     /// ([`typ::tvar::InTask`]); 0 at the root.
-    // CR claude for claude: [structure/low] This field mirrors the InTask thread-local,
-    // but only typecheck1's task loop sets it. with_runtime_settles, compile_each,
-    // fuse_each and CxView forks all inherit the parent's value through fork, so it is
-    // stale there. check_in_tasks is its only reader. typecheck0_modules feeds it plain
-    // forks, so its workers enter whatever id the field inherited, not the caller's
-    // current task. Fix: delete the field. Carry the task id in check_in_tasks' work
-    // tuple: new_task() from typecheck1's loop, and the caller's current thread-local
-    // task from typecheck0_modules. (c-lib-06)
-    pub(crate) task: TaskId,
     /// This task's share of the compile's profile ([`profile::Task`]).
     profile: profile::Task,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
@@ -1475,7 +1466,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             attr_absorbed: Mutex::new(IntSet::default()),
             pending_refs: AHashMap::default(),
             discarded: Vec::new(),
-            task: self.task,
             profile: profile::Task::fork(),
             fusion: self.fusion.fork(),
         }
@@ -1519,7 +1509,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             attr_absorbed,
             pending_refs,
             discarded,
-            task: _,
             profile,
             fusion,
         } = fork;
@@ -1737,7 +1726,6 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 attr_absorbed: Mutex::new(IntSet::default()),
                 pending_refs: AHashMap::default(),
                 discarded: Vec::new(),
-                task: TaskId::OUTSIDE,
                 profile: profile::Task::default(),
                 fusion: fusion::FusionCtx::new(),
             },
@@ -1892,17 +1880,11 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Apply to the runtime what compiling deferred: delete what it
     /// discarded, whose unreplayed references cancel, then register
     /// every reference it recorded.
-    // CR claude for claude: [perf/low] apply_deferred, drop_deferred and
-    // delete_discarded reach pending_refs and discarded through CxView's DerefMut. In a
-    // forked branch with no compile fork yet, that builds one (CompileCtx::fork: env
-    // and tracked-map forks, rec_defs/def_gate_params clones, fresh scratch
-    // allocations), which is then joined at the merge, even when nothing was compiled.
-    // branch::fork_instances calls apply_deferred on every update of an http::serve or
-    // rpc handler, so a server in a forked sibling pays a fork and join every cycle. At
-    // the root, an empty drain() still clears the retained capacity's control bytes.
-    // Fix: start apply_deferred and drop_deferred with `if !self.deferred_pending() {
-    // return }`. That check reads through Deref, as unref_var already does. (c-lib-03)
     pub fn apply_deferred(&mut self) {
+        // through `Deref`: a branch view forks no compile for nothing
+        if !self.deferred_pending() {
+            return;
+        }
         self.delete_discarded();
         for ((id, top_id), n) in self.cx.pending_refs.drain() {
             for _ in 0..n {
@@ -1928,6 +1910,9 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     // so the counts no longer depend on who deletes what, and debug-assert in the
     // runtime's unref_var that the key is registered. (c-lib-04)
     pub fn drop_deferred(&mut self) {
+        if !self.deferred_pending() {
+            return;
+        }
         self.delete_discarded();
         self.cx.pending_refs.clear();
     }
@@ -2516,16 +2501,7 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
     PendingSettle::drain(&pending, &ctx.env, |spec, e| Err(e.at(&**spec)))
 }
 
-/// A written type name that did not resolve at its definition's check
-/// must name something once the check ends.
 /// A question a check leaves open until it ends.
-// CR claude for claude: [doc-drift/low] Pending's doc opens with two summaries. The
-// first ("A written type name that did not resolve ... once the check ends.") belongs
-// to check_pending_names, which has no doc of its own. Move it there. Also,
-// CompileCtx::pending_imports' doc says the deferred imports are re-checked at the end
-// of compile_stmt. They are actually re-checked by check_pending_imports, from
-// compile_top (statements and scripts) and from Module's load. Name that function.
-// (c-lib-07)
 pub(crate) enum Pending {
     /// A type name a definition's written types hold that did not
     /// resolve at its check (a `use` the interface defers may name it
@@ -2536,6 +2512,8 @@ pub(crate) enum Pending {
     Contractive(ModPath, ArcStr, Expr),
 }
 
+/// A written type name that did not resolve at its definition's check
+/// must name something once the check ends.
 pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
 ) -> Result<()> {
@@ -2743,7 +2721,6 @@ impl Saved {
             attr_absorbed: _,
             pending_refs: _,
             discarded: _,
-            task: _,
             profile: _,
             fusion: _,
         } = ctx;
