@@ -1595,14 +1595,23 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         let scrut = self.arg.node.typ().clone();
         let mut reach = Reach::new(&ctx.env, &scrut, &self.arms)?;
         let mut rtypes: LPooled<Vec<&Type>> = LPooled::take();
-        for (pat, n) in self.arms.iter_mut() {
+        let spec_pats: &[_] = match &self.spec.kind {
+            ExprKind::Select(se) => &se.arms,
+            _ => &[],
+        };
+        for (i, (pat, n)) in self.arms.iter_mut().enumerate() {
+            // a refusal about the pattern points at the pattern
+            let site = match spec_pats.get(i) {
+                Some((p, _)) => pattern_site(p, n.spec()),
+                None => n.spec().clone(),
+            };
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.
             let reaching = reach.atype.clone();
             let narrowed = pat.type_predicate.any_as_tvar();
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
-            pat.bind_narrowed(&ctx.env, &narrowed, checking).at(n.spec())?;
+            pat.bind_narrowed(&ctx.env, &narrowed, checking).at(&site)?;
             // a runtime test can't tell apart two types with one runtime form
             // CR claude for eric: [bug/medium] The one-runtime-form check runs only in
             // the definition's check, and Type::rep_collision reads an open cell as
@@ -1631,7 +1640,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                          where the scrutinee may hold Any: both have the same runtime form"
                     )
                 }))
-                .at(n.spec());
+                .at(&site);
             }
             if checking
                 && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate)
@@ -1644,16 +1653,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                          runtime form; wrap them in distinct variants"
                     )
                 }))
-                // CR claude for claude: [readability/low] This refusal is about the
-                // arm's pattern but is placed at the arm's body, so the CLI caret and
-                // the LSP diagnostic point at the body (`1`) and not at `&i64 as r`.
-                // The `pat.bind_narrowed(..).at(n.spec())` above has the same problem.
-                // Fix: zip the arms with `se.arms`, as the predicate-completion loop
-                // above does, and place both errors with `.at(&pattern_site(spec_pat,
-                // n.spec()))`. probe:
-                // design/review-2026-10-12/repro/x-typecheck-generics-09.gx
-                // (x-typecheck-generics-09)
-                .at(n.spec());
+                .at(&site);
             }
             // The guard typechecks after the narrowing so it sees the
             // arm's binds at their settled type; it must be bool.
@@ -1666,16 +1666,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
             wrap!(n, child(n, ctx))?;
             rtypes.push(n.typ());
-            // CR claude for claude: [readability/low] The site passed here is the arm's
-            // body, so every 'unreachable arm' and 'pattern ... will never match'
-            // refusal points at the body. In `select a { [x, tl..] => 1, [init.., y] =>
-            // 2, [] => 0 }` the error is at the `2`, and the LSP underlines that
-            // instead of the dead `[init.., y]`. The parsed expr::Pattern already
-            // records its `pos`/`end`. Fix: carry that span into PatternNode and use it
-            // as the error site for the dead-arm and never-match refusals, falling back
-            // to the body when the span is NOWHERE (an AST from a pack or an image).
-            // (book-core-17)
-            reach.arm(&ctx.env, &scrut, pat, n.spec(), checking)?;
+            reach.arm(&ctx.env, &scrut, pat, &site, checking)?;
         }
         self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
         drop(rtypes);

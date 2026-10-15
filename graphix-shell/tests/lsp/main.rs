@@ -297,6 +297,26 @@ fn a_diagnostic_underlines_the_expression() {
 }
 
 #[test]
+fn a_dead_arm_is_reported_at_its_pattern() {
+    let mut c = Client::start(&[(
+        "a.gx",
+        "let a = [1, 2];\nselect a { [x, tl..] => 1, [init.., y] => 2, [] => 0 }\n",
+    )]);
+    c.open("a.gx");
+    assert_eq!(c.underlined("a.gx"), ["[init.., y]"]);
+}
+
+#[test]
+fn a_runtime_form_refusal_is_reported_at_its_pattern() {
+    let mut c = Client::start(&[(
+        "a.gx",
+        "let s = \"a\";\nlet v: [&i64, &string] = &s;\nselect v { &i64 as r => 1, &string as q => 2 }\n",
+    )]);
+    c.open("a.gx");
+    assert_eq!(c.underlined("a.gx"), ["&i64 as r"]);
+}
+
+#[test]
 fn a_constructor_error_is_reported_at_the_constructor() {
     let mut c = Client::start(&[("a.gx", "type C = i64;\nlet c = C(5);\nc\n")]);
     c.open("a.gx");
