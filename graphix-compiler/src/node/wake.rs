@@ -177,19 +177,6 @@ impl TrackedFires {
         carried: Option<&IntSet<BindId>>,
     ) {
         let Self { all, pending, per_arm, .. } = self;
-        // CR claude for claude: [bug/medium] A destructuring let's siblings are tracked
-        // as one input under their representative (Env::facet_of, marked in
-        // Bind::compile), but only the let's own publish delivers them together. A `<-`
-        // or `&mut` write to one sibling fires that sibling alone. Writing the
-        // representative while the arm sleeps sets the group's bit, and deliver then
-        // injects FIRED into every sibling the woken arm reads, a phantom event.
-        // Writing a non-representative sibling is never observed, because only the
-        // representative is read here, so its catch-up is lost. With `let (a, b) = (0,
-        // 0)` the outputs differ from `let a = 0; let b = 0` in both directions (probe:
-        // design/review-2026-10-12/repro/c-bind-03.sh). Fix: in arm_refs, do not merge
-        // a sibling into its group when it is a write target (ctx.connect_targets), or
-        // observe each member id and set the group bit only for a joint publish. Add
-        // pins for both directions beside let_sibling_binds_spent. (c-bind-03)
         for id in all.iter() {
             // CR claude for claude: [bug/medium] A carried `let` fire is re-recorded as
             // pending even when the step evaluated this cycle read it live. Because

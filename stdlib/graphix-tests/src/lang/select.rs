@@ -2120,6 +2120,38 @@ const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
 
 run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, refused("unreachable arm"); FuseExpect::None);
 
+// A sibling of a destructuring `let` that a `<-` writes fires alone: a
+// woken arm catches up exactly what separate lets would give it, writing
+// either sibling.
+async fn written_let_sibling_fires_alone(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let program = |lets: &str, written: &str| {
+        format!(
+            "{{
+  let n = 0;
+  n <- select n {{ k if k < 7 => k + 1, _ => never() }};
+  {lets}
+  {written} <- select n {{ 2 => 7, _ => never() }};
+  let c = ((n < 2) || (n >= 4)) && ({written} >= 0);
+  select c {{
+    true => {{ let cnt = 0; cnt <- b ~ cnt + 1; cnt }},
+    false => n
+  }}
+}}"
+        )
+    };
+    for written in ["a", "b"] {
+        let (pair, _) =
+            run_delta(&program("let (a, b) = (0, 0);", written), mode).await?;
+        let (apart, _) =
+            run_delta(&program("let a = 0; let b = 0;", written), mode).await?;
+        assert_eq!(pair, apart, "writing {written}");
+    }
+    Ok(())
+}
+
+modes!(written_let_sibling_fires_alone);
+
 // A destructuring `let`'s siblings are facets of one delivery: arm 0
 // handles the pair through `a`, so `b` is spent.
 const LET_SIBLING_BINDS_SPENT: &str = r#"

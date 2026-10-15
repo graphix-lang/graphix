@@ -250,15 +250,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         if partial.is_none() && !pattern.covers(&ctx.env, &typ, false) {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
-        let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
-        pattern.ids(&mut |id| siblings.push(id));
-        if let Some(&rep) = siblings.first()
-            && siblings.len() > 1
-        {
-            for id in siblings {
-                ctx.env.mark_facet(id, rep);
-            }
-        }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
         if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
@@ -278,6 +269,22 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 }
             });
             targets.into_iter().for_each(|id| ctx.mark_connect_target(id));
+        }
+        // a destructuring let's siblings fire together, facets of one input,
+        // but for one something writes, which fires alone, its own facet
+        let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
+        pattern.ids(&mut |id| siblings.push(id));
+        if siblings.len() > 1 {
+            let rep = siblings.iter().find(|id| !ctx.connect_targets.contains(*id));
+            let rep = rep.copied();
+            for id in siblings {
+                match rep {
+                    Some(rep) if !ctx.connect_targets.contains(&id) => {
+                        ctx.env.mark_facet(id, rep)
+                    }
+                    _ => ctx.env.mark_facet(id, id),
+                }
+            }
         }
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
