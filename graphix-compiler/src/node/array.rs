@@ -655,8 +655,22 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         // Then add a timed pin. probe:
         // design/review-2026-10-12/repro/t-misc-03-array-chain.gx vs
         // t-misc-03-tuple-chain.gx (t-misc-03) (t-misc-03)
-        // a call through an element accepts each alike: functions meet
-        let rtype = match wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))? {
+        // a call through an element accepts each alike: functions meet;
+        // one element is its own union
+        // 2026-10-15 claude: Profiled: the union over [⊥, elem] walked the element
+        // type; a one-element literal now takes its element's type directly (quick
+        // build, --check of the chain: 1000/2000/4000 lets 0.25/1.03/4.14 s before,
+        // 0.23/0.48/1.64 s after). Still superlinear: binding the literal's fresh type
+        // cell runs the occurs check (would_cycle_seen_inner) over the whole element
+        // type, O(depth) per let. The cell is fresh and only the literal holds it, so
+        // it cannot occur in the element type, but the check cannot know that without a
+        // cached bound on what a bound cell reaches (or a bind entry for a cell nothing
+        // else holds yet).
+        let union = match &self.n[..] {
+            [one] => one.typ().clone(),
+            _ => wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?,
+        };
+        let rtype = match union {
             Type::Bottom => K::typ(Type::empty_tvar()),
             t => K::typ(t),
         };
