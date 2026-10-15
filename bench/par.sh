@@ -32,7 +32,8 @@ for prog in "$dir"/par_*.gx; do
     name=$(basename "$prog" .gx)
     flags=()
     # node-walk benches: fused, each is a few milliseconds in all
-    [[ "$name" == par_wide || "$name" == par_growth ]] && flags=(--no-fusion)
+    [[ "$name" == par_wide || "$name" == par_growth || "$name" == par_chain ]] &&
+        flags=(--no-fusion)
     s=$(run off 0-3 4 "$prog" "${flags[@]}")
     a4=$(run auto 0-3 4 "$prog" "${flags[@]}")
     a12=$(run auto 0-11 12 "$prog" "${flags[@]}")

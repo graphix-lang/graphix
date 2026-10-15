@@ -335,19 +335,6 @@ impl ForkSite {
         }
     }
 
-    // CR claude for claude: [perf/medium] Under the default Auto mode, the node-walk of
-    // a chain of N distinct functions, each calling the previous once, slows
-    // superlinearly. Depth 500 takes about 18x as long to its first value as Off, and
-    // depth 1000 about 100x. Force is only about 2x Off, and fixing GRAPHIX_PAR_T or
-    // setting GRAPHIX_EVAL_THREADS=1 changes nothing, so neither calibration nor
-    // forking is the cause. Compile time is the same in every mode, so the cost is in
-    // the first cycle's Auto-only path (this plan, Meter, or what the first dispatch of
-    // each fresh instance does under it). A single recursive function at the same depth
-    // is unaffected, so look at work redone per nested first dispatch. Profile the
-    // probe, bring Auto within a small constant factor of Off when nothing forks, and
-    // add a bench for the chain. probe:
-    // design/review-2026-10-12/repro/f-jit-01-deep-chain-par-auto.gx (f-jit-01.sh times
-    // each mode) (f-jit-01)
     fn plan_auto(&mut self, n: usize) -> Plan<'_> {
         let Some(cal) = calibration() else { return Plan::Serial };
         match &mut self.0 {

@@ -164,7 +164,10 @@ the cost model learns to fork, timed over its 60 cycles after the first;
 `par_growth` builds 20000 slots in one cycle, nearly all instance
 construction (both run `--no-fusion`: fused, each takes milliseconds);
 `par_mandel` is a fused `array::init` over 480000 pixels whose kernel
-loop forks as chunks, timed over the 10 cycles after the first. Quick
+loop forks as chunks, timed over the 10 cycles after the first. `par_chain`
+is a node-walked chain of 1000 distinct functions timed through its
+first cycle, where nothing pays for a fork: Auto must cost what serial
+does. Quick
 build, `max` mode, best of three (2026-10-04):
 
 | bench          | serial | auto P x4 | auto P+E x12 |

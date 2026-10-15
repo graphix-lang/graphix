@@ -1650,6 +1650,13 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // 17.7 s, debug). What remains is each site's collect_static_graph_of over
     // everything below it, still quadratic over a chain, and the warm first cycle;
     // both go with deciding these sites at analysis.
+    // a constant or a variable read publishes nothing and calls nothing,
+    // so beside at most one child that does there is nothing to decide
+    let inert =
+        |n: &&Node<R, E>| matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
+    if children.clone().filter(|n| !inert(n)).nth(1).is_none() {
+        return Some(true);
+    }
     let accesses = accesses(children.clone(), ctx);
     let mut published = Vars::default();
     let mut ordered = false;
