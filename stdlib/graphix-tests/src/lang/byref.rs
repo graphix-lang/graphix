@@ -258,6 +258,32 @@ run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:10, i64:20]"
 }; FuseExpect::Jit);
 
+// A key move a selected reader saw is read stale by an arm woken after it:
+// the woken arm's counter does not tick.
+async fn woken_deref_reads_a_seen_move_stale(mode: Mode) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(
+        r#"{
+    let n = 0;
+    n <- select n { k if k < 8 => k + 1, _ => never() };
+    let a = [10, 20];
+    let i = 0;
+    i <- select n { 4 => 1, _ => never() };
+    let r = &a[i];
+    let c = ((n >= 2) && (n < 4)) || (n >= 6);
+    select c {
+      true => { let cnt = 0; cnt <- (*r) ~ cnt + 1; cnt },
+      false => *r + 100
+    }
+}"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(values.last(), Some(&Value::I64(0)), "{values:?}");
+    Ok(())
+}
+
+modes!(woken_deref_reads_a_seen_move_stale);
+
 // A place's address is evaluated once: a key with an effect runs it
 // once per fire (`n` fires at its binding and once more, not twice
 // more), and the read sees that one evaluation.

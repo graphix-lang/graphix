@@ -1706,29 +1706,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             Some(mut tv) => {
                 // a move of the path is a new element, read fired
                 let t = match moved {
-                    // CR claude for claude: [bug/medium] A path move is promoted to a
-                    // real event even under a wake view. Tag::fresh clears STALE and
-                    // WAKE, so when an arm wakes after its moving place reference
-                    // (`&a[i]`) changed key during the sleep, the woken arm sees the
-                    // move as a new fire even though a selected reader already consumed
-                    // it. The result is that `~`, counters and `<-` targets tick at the
-                    // wake. A target move does not do this: it takes `join(addr)`, and
-                    // wake catch-up decides. ByRef::update already fires its cell on a
-                    // key move, so the child's tag (addr) carries the catch-up verdict.
-                    // Fix: promote with fresh() only outside a wake
-                    // (`!ctx.event.wake()`), otherwise use `tv.tag().join(addr)`. Give
-                    // the bottom arm below (`|| moved == Moved::Path`) the same guard.
-                    // Add a pin beside deref_fires_on_address. probe:
-                    // design/review-2026-10-12/repro/c-bind-05.gx (c-bind-05)
-                    Moved::Path => tv.tag().join(addr).fresh(),
-                    Moved::No | Moved::Target => tv.tag().join(addr),
+                    // at a wake, catch-up decides through the reference's fire
+                    Moved::Path if !ctx.event.wake() => tv.tag().join(addr).fresh(),
+                    Moved::Path | Moved::No | Moved::Target => tv.tag().join(addr),
                 };
                 tv.retag(t);
                 self.resident.set(tv)
             }
             // a moved address with nothing to read is bottom
             None if moved != Moved::No => {
-                self.resident.set_bottom(addr.triggers() || moved == Moved::Path)
+                let path = moved == Moved::Path && !ctx.event.wake();
+                self.resident.set_bottom(addr.triggers() || path)
             }
             None => self.resident.ride(),
         }
