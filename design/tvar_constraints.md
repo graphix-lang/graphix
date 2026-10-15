@@ -134,12 +134,19 @@ the definition gates:
   (`Fresh::Scheme`), so the call instantiates them.
 
 A binding something writes is not generalized (the value restriction,
-`CompileCtx::mark_connect_target`), unless an earlier compile already
-generalized it, which only a later input to the same runtime can see
-(the REPL, `GXHandle::compile`): its uses were checked against the
-scheme, so it stays one, a write is checked against a copy of it with
-every variable rigid (`Connect::typecheck0_with`), and a `&mut` of it
-is refused, since a reference cannot hold the variables rigid.
+`CompileCtx::mark_connect_target`): every function its value holds, a
+struct field's or a tuple element's included, is one instance its uses
+and writers share (`CompileCtx::monomorphic`). Its writers are known
+before its uses are checked: a block collects the names its lets bind
+that a `<-` or `&mut` in it writes, lambda bodies included, where no
+nearer binding of the name stands between (`node::written_lets`), and
+such a let is a `<-` target from its binding on. A binding an earlier
+compile already generalized, which only a later input to the same
+runtime can see (the REPL, `GXHandle::compile`), had its uses checked
+against the scheme, so it stays one: a write is checked against a copy
+of it with every variable rigid (`Connect::typecheck0_with`), and a
+`&mut` of it is refused, since a reference cannot hold the variables
+rigid.
 
 An image carries each cell's level and each definition's depth.
 

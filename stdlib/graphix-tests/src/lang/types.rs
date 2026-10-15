@@ -2405,6 +2405,41 @@ run!(
     FuseExpect::None
 );
 
+/// A written binding holding a function in a part, a struct field or a
+/// tuple element written through a place reference, shares one instance
+/// of it with its writers; so does a binding a lambda body writes. Each
+/// use comes before its writer.
+run!(
+    written_struct_holder_is_monomorphic,
+    r#"{ let s = {f: |x| x}; let n = s.f(41); let k = s.f("a");
+         s <- k ~ {f: |x| x + 1}; n }"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    written_through_a_place_is_monomorphic,
+    r#"{ let t = (|x| x, 1); let r = &mut t.0; let n = t.0(41);
+         *r <- |x| "oops"; n + 1 }"#,
+    refused("fn(x: i64) -> i64 does not contain fn(x: i64) -> string");
+    FuseExpect::None
+);
+
+run!(
+    written_in_a_lambda_is_monomorphic,
+    r#"{ let f = |x| x; let a = f("s"); let set = |g| f <- g;
+         set(|x: i64| x + 1); a }"#,
+    refused("fn(x: string) -> string does not contain fn(x: i64) -> i64");
+    FuseExpect::None
+);
+
+// A write to a name a nearer binding shadows leaves the outer let generic.
+run!(
+    shadowed_write_leaves_the_let_generic,
+    r#"{ let f = |x| x; let a = { let f = 0; f <- 1; f }; (f(1), f("s"), a) }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:1, "s", i64:0]"#
+);
+
 /// A binding an earlier input generalized stays generic, its uses having
 /// relied on it: a later write is held to its every instance, and a later
 /// `&mut` of it is refused.

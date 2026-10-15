@@ -317,6 +317,14 @@ impl FnType {
     }
 }
 
+impl Type {
+    /// [`FnType::reached_cells`] for a type.
+    #[doc(hidden)]
+    pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
+        reached_cells(self, out)
+    }
+}
+
 fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {

@@ -755,9 +755,10 @@ node graph IS the IR — there is no parallel typed IR
   state that decides firing; only a site's first-ever dispatch, and a
   loop slot's first iteration, is an init view.
 - **`let rec` is monomorphic-recursive**, and a binding something writes
-  (a `<-` target, a `&mut`'s referent) is not generalized: its uses and
-  writers share one instance of a function's signature (the value
-  restriction, `CompileCtx::monomorphic`), except one an earlier compile
+  (a `<-` target, a `&mut`'s referent; a writer anywhere in its block,
+  a lambda body's included, `node::written_lets`) is not generalized:
+  its uses and writers share one instance of each function it holds (the
+  value restriction, `CompileCtx::monomorphic`), except one an earlier compile
   generalized (a REPL input): it stays generic, a later write is held to
   a copy of its type with the variables rigid, and a later `&mut` of it
   is refused (`CompileCtx::generalized_earlier`); a def's declared tvars are

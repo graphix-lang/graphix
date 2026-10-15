@@ -2336,19 +2336,6 @@ const WRITTEN_CALLBACK_IS_ONE_INSTANCE: &str = r#"
 run!(written_callback_is_one_instance, WRITTEN_CALLBACK_IS_ONE_INSTANCE,
     refused("does not contain fn(x: i64) -> Array<i64>"); FuseExpect::None);
 
-// A binding generalized before its writer is seen takes only what is as
-// general as it: a function's parameter written to it would carry the
-// binding's variable out to each call of that function.
-run!(a_parameter_written_to_a_generic_binding, r#"
-{
-    let f = |x| x;
-    let a = f("s");
-    let set = |g| f <- g;
-    set(|x: i64| x + 1);
-    str::len(a)
-}
-"#, refused("must be as general"); FuseExpect::None);
-
 run!(a_generic_value_written_to_a_generic_binding, r#"
 {
     let f = |x| x;

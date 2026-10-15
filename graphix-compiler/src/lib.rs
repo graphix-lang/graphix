@@ -1303,6 +1303,9 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// is per batch): `Bind::update` must not reseed a woken target that
     /// holds a value. `Bind::delete` removes its ids.
     pub connect_targets: TrackedSet<BindId>,
+    /// Per block being compiled, innermost last: the names its lets bind
+    /// that something in it writes ([`node::written_lets`]).
+    pub(crate) written_lets: Vec<AHashSet<CompactString>>,
     /// Builtin metadata for `let foo = |...| 'builtin_name` bindings.
     /// Keyed by `(scope, name)` because a sig and its impl share the
     /// name but have distinct `BindId`s.
@@ -1491,6 +1494,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             bind_to_lambda: self.bind_to_lambda.fork(),
             batch_connect_targets: self.batch_connect_targets.fork(),
             connect_targets: self.connect_targets.fork(),
+            written_lets: self.written_lets.clone(),
             builtin_bindings: self.builtin_bindings.fork(),
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
@@ -1534,6 +1538,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             bind_to_lambda,
             batch_connect_targets,
             connect_targets,
+            written_lets: _,
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,
@@ -1611,32 +1616,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// type, which every value written takes (the value restriction). One
     /// an earlier compile generalized stays so, its uses having relied on
     /// it, and a write is held to its type (`Connect::typecheck0_with`).
-    // CR claude for claude: [bug/medium] A `<-` inside a lambda body is marked too
-    // late. Lambda bodies compile at check time, after the target's let has been
-    // checked and generalized, so `generalized_earlier` is already true and the write
-    // takes the REPL rule. With an unannotated parameter (`let set = |g| f <- g`), the
-    // rigid copy's variables become generic in `set`'s signature. `set(|x: i64| x + 1)`
-    // then checks while `f("s")` uses f at string. At run time the call site fails to
-    // rebind; the failure is logged under node::callsite and the program silently stops
-    // updating. With an annotated parameter, the same write is refused as "made generic
-    // by an earlier compile" in a single script, while the same write at top level is
-    // accepted. Fix: collect every `<-` and `&mut` target of a block, lambda bodies
-    // included, before its lets generalize (the dependency summaries already gather
-    // writes). Then generalized_earlier holds only for a real earlier compile, and the
-    // refusal in `Connect::typecheck0_with` is worded for that case alone. probe:
-    // design/review-2026-10-12/repro/x-fix-types-04.gx (x-fix-types-04)
-    // 2026-10-13 claude: Two more shapes of the use-before-write hole, found writing
-    // tests-functions-04. A forwarding let: `let g = |x| x; let t = g; let r = t("s"); t
-    // <- |x: i64| x + 1; r` checks and prints "s" (forwards() makes t generic before any
-    // writer is seen), and so does `let t = array::len; let r: i64 = t(tick ~ ["a"]); t
-    // <- select count(tick) { 2 => |a: Array<i64>| a[0]$, _ => never() }; r`, whose calls
-    // after the write produce nothing. With the write above the use both are refused.
-    // Separately, a written binding's uses do not share one instance when the cells come
-    // from a callee: `let t = |a| array::len(a); t <- never(); (t([1]), t(["s"]))`
-    // checks, while `let t = |x| [x, x]; t <- never()` used at i64 and string is refused
-    // (pinned as lang::functions::written_callback_is_one_instance). A concrete writer
-    // above the uses is still refused, so that one is a deviation from 'uses share one
-    // instance', not yet a hole.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
@@ -1646,45 +1625,26 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     }
 
     /// Whether `id` is a binding an earlier compile generalized: its
-    /// check already made its signature's variables generic.
+    /// check already made variables of a function it holds generic.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
-        self.env.poly_binds.contains(&id)
-            && self.env.by_id.get(&id).is_some_and(|b| {
-                b.typ.with_deref(|t| match t {
-                    Some(Type::Fn(ft)) => {
-                        let mut cells: LPooled<AHashMap<usize, typ::TVar>> =
-                            LPooled::take();
-                        ft.reached_cells(&mut cells);
-                        cells.values().any(|tv| tv.level() == typ::tvar::Level::GENERIC)
-                    }
-                    _ => false,
-                })
-            })
+        self.env.by_id.get(&id).is_some_and(|b| {
+            let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
+            b.typ.reached_cells(&mut cells);
+            cells.values().any(|tv| tv.level() == typ::tvar::Level::GENERIC)
+        })
     }
 
-    /// A value's type as a written binding holds it: a function's
-    /// generalized signature as one instance of it.
-    // CR claude for claude: [bug/high] The value restriction stops at a binding whose
-    // type IS a function: `monomorphic` and `generalized_earlier` look only at a
-    // top-level `Type::Fn`, so a written binding that HOLDS a generalized lambda (a
-    // struct field, a tuple or array element, a variant payload) keeps its generic
-    // cells and each use copies them. `let s = {f: |x| x}; let n = s.f(41); let k =
-    // s.f("a"); s <- clock ~ {f: |x| x + 1}` passes the check, then every mode fails
-    // the run-time bind of `s.f("a")` ("a run-time bind ... did not type", the
-    // compiler-bug path) and the program produces nothing; the same through `&mut t.0`
-    // on a tuple. Writing the `<-` above the use makes the check refuse it, so the
-    // verdict depends on statement order. Fix: walk the whole type and instantiate
-    // every function type (every generic cell) it reaches as one shared instance, in
-    // both `monomorphic` and `generalized_earlier`, and pin a struct field, a tuple
-    // element and a place reference with the use before the write next to
-    // `written_binding_is_monomorphic`. probe:
-    // design/review-2026-10-12/repro/tests-types-01.gx, tests-types-01b.gx
-    // (tests-types-01)
+    /// A value's type as a written binding holds it: each function's
+    /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
-        t.with_deref(|d| match d {
-            Some(Type::Fn(ft)) => Type::Fn(Arc::new(ft.instantiate(&self.rec_defs))),
-            _ => t.clone(),
-        })
+        fn instance(t: &Type, open: &nohash::IntSet<LambdaId>) -> Option<Type> {
+            crate::stack::ensure_sufficient(|| match t {
+                Type::TVar(tv) => tv.binding().map(|b| instance(&b, open).unwrap_or(b)),
+                Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate(open)))),
+                t => t.cow_children(&mut |c| instance(c, open)),
+            })
+        }
+        instance(t, &self.rec_defs).unwrap_or_else(|| t.clone())
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
@@ -1796,6 +1756,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 bind_to_lambda: TrackedMap::default(),
                 batch_connect_targets: TrackedSet::default(),
                 connect_targets: TrackedSet::default(),
+                written_lets: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
                 def_gate_params: nohash::IntSet::default(),
@@ -2801,6 +2762,7 @@ impl Saved {
             bind_to_lambda,
             batch_connect_targets,
             connect_targets,
+            written_lets: _,
             builtin_bindings,
             rec_defs: _,
             def_gate_params: _,

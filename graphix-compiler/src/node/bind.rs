@@ -266,6 +266,19 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 ctx.env.poly_binds.insert(id);
             });
         }
+        // a name its block writes, wherever the writer stands, is a `<-`
+        // target from its binding on
+        if let Some(written) = ctx.written_lets.last()
+            && !written.is_empty()
+        {
+            let mut targets: SmallVec<[BindId; 4]> = SmallVec::new();
+            pattern.ids(&mut |id| {
+                if ctx.env.by_id.get(&id).is_some_and(|b| written.contains(&b.name)) {
+                    targets.push(id)
+                }
+            });
+            targets.into_iter().for_each(|id| ctx.mark_connect_target(id));
+        }
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
         // every name the pattern rebinds forgets the builtin it named; a

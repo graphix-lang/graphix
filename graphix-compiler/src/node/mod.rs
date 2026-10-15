@@ -5,7 +5,9 @@ use crate::{
     branch::{fork_point, timed},
     cost::{ForkSite, Meter},
     defer_unresolved_names, env, errf,
-    expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody},
+    expr::{
+        self, At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody,
+    },
     format_with_flags,
     fusion::{
         self,
@@ -25,7 +27,7 @@ use crate::{
         tvar::{AtLevel, InTask, current_level, new_task},
     },
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
@@ -792,7 +794,8 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     let mut children: LPooled<Vec<Node<R, E>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
     let n = exprs.len();
-    for (i, e) in exprs.iter().copied().enumerate() {
+    ctx.written_lets.push(written_lets(&exprs));
+    let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
         }
@@ -800,11 +803,143 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         let (node, next) = compile_statement(ctx, flags, e, &scope, top_id, at)?;
         scope = next;
         children.push(node);
-    }
+        Ok::<_, anyhow::Error>(())
+    });
+    ctx.written_lets.pop();
+    compiled?;
     for n in children.iter() {
         defer_typedef_names(ctx, n);
     }
     Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
+}
+
+/// The names the lets among a block's statements bind that a `<-` or a
+/// `&mut` in the block writes, lambda bodies included, where no nearer
+/// binding of the name stands between: such a let is never generalized,
+/// whatever the order of its uses and its writers.
+pub(crate) fn written_lets(exprs: &[&Expr]) -> AHashSet<CompactString> {
+    let mut w = Writes::default();
+    for e in exprs {
+        if let ExprKind::Bind(b) = &e.kind {
+            b.pattern.with_names(&mut |n| {
+                w.declared.insert(n.as_str().into());
+            });
+        }
+    }
+    if !w.declared.is_empty() {
+        exprs.iter().for_each(|e| w.expr(e));
+    }
+    w.written
+}
+
+#[derive(Default)]
+struct Writes {
+    declared: AHashSet<CompactString>,
+    /// The nearer bindings in scope at the walk's position.
+    shadow: Vec<ArcStr>,
+    written: AHashSet<CompactString>,
+}
+
+impl Writes {
+    fn target(&mut self, name: &ModPath) {
+        let mut parts = netidx_core::path::Path::parts(&**name);
+        let (Some(n), None) = (parts.next(), parts.next()) else { return };
+        if self.declared.contains(n) && !self.shadow.iter().any(|s| s == n) {
+            self.written.insert(n.into());
+        }
+    }
+
+    fn bound(&mut self, p: &expr::StructurePattern) {
+        p.with_names(&mut |n| self.shadow.push(n.clone()));
+    }
+
+    fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
+        let len = self.shadow.len();
+        f(self);
+        self.shadow.truncate(len);
+    }
+
+    fn block(&mut self, exprs: &[Expr]) {
+        self.scoped(|w| {
+            for e in exprs {
+                w.expr(e);
+                if let ExprKind::Bind(b) = &e.kind {
+                    w.bound(&b.pattern)
+                }
+            }
+        })
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        crate::stack::ensure_sufficient(|| match &e.kind {
+            ExprKind::Connect { name, value, deref } => {
+                if !deref {
+                    self.target(name)
+                }
+                self.expr(value)
+            }
+            ExprKind::ByRef(Mutability::Mut, inner) => {
+                let root = match inner.unparen().place() {
+                    Some((root, _)) => root,
+                    None => inner.unparen(),
+                };
+                if let ExprKind::Ref { name } = &root.unparen().kind {
+                    self.target(name)
+                }
+                self.expr(inner)
+            }
+            ExprKind::Bind(b) if b.rec => self.scoped(|w| {
+                w.bound(&b.pattern);
+                w.expr(&b.value)
+            }),
+            ExprKind::Lambda(l) => self.scoped(|w| {
+                l.args.iter().for_each(|a| w.bound(&a.pattern));
+                e.for_each_child(&mut |c| w.expr(c))
+            }),
+            ExprKind::Block { exprs } => self.block(exprs),
+            ExprKind::Select(s) => {
+                self.expr(&s.arg);
+                for (p, body) in s.arms.iter() {
+                    self.scoped(|w| {
+                        w.bound(&p.structure_predicate);
+                        if let Some(g) = &p.guard {
+                            w.expr(g)
+                        }
+                        w.expr(body)
+                    })
+                }
+            }
+            ExprKind::Catch(c) => self.scoped(|w| {
+                w.shadow.push(c.bind.name.clone());
+                w.expr(&c.handler)
+            }),
+            ExprKind::TryWith(t) => {
+                self.block(&t.body);
+                self.scoped(|w| {
+                    w.shadow.push(t.bind.name.clone());
+                    w.block(&t.handler)
+                })
+            }
+            ExprKind::Seq(sq) => {
+                if let Some(a) = &sq.abort {
+                    self.expr(a)
+                }
+                self.scoped(|w| {
+                    match &sq.trigger {
+                        Some(expr::SeqTrigger::Bind(b)) => {
+                            w.expr(&b.value);
+                            w.bound(&b.pattern)
+                        }
+                        Some(expr::SeqTrigger::Expr(t)) => w.expr(t),
+                        None => (),
+                    }
+                    w.block(&sq.body)
+                })
+            }
+            ExprKind::Module { .. } => (),
+            _ => e.for_each_child(&mut |c| self.expr(c)),
+        })
+    }
 }
 
 /// Defer the names a type definition's body writes (`defer_unresolved_names`),
