@@ -1442,16 +1442,24 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
     let mut visiting: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
     visiting.push(g.instance_id());
     body_has_self_tail_call(g.body(), self_bind)
-        && claims_no_site_memory(g.body(), Some(self_bind), &mut visiting)
+        && claims_no_site_memory(
+            g.body(),
+            Some(self_bind),
+            &g.formal_ids(),
+            &mut visiting,
+        )
 }
 
 /// Whether a body holds no per-call-site memory a native tail loop's
 /// passes would share where the node-walk's activations each hold their
 /// own: a collection loop's words, a non-tail self-call's block root, a
-/// callee whose body holds any. Such a body recurses natively.
+/// handler-ful `?` that does not fire with the body's `formals` (an
+/// activation raises it at its birth, a pass never does), a callee whose
+/// body holds any. Such a body recurses natively.
 fn claims_no_site_memory<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     self_bind: Option<BindId>,
+    formals: &IntSet<BindId>,
     visiting: &mut LPooled<Vec<LambdaInstanceId>>,
 ) -> bool {
     let is_self = |cs: &CallSite<R, E>| {
@@ -1472,33 +1480,12 @@ fn claims_no_site_memory<R: Rt, E: UserEvent>(
     );
     let mut none = true;
     fusion::for_each_emitted_node(body, &mut |n| {
-        // CR claude for claude: [bug/high] f-call-flow-05 variant: native tail loop
-        // skips constant raises at newly reached depths (JIT != node-walk). The
-        // f-call-flow-05 fix (946b102a, "a fresh activation block is born") covers
-        // non-tail recursion only. The tail-recursive form that the old repro lists as
-        // "the same divergence" still diverges. `claims_no_site_memory` (lowering.rs)
-        // lets a self-tail-recursive body become one native loop when it has no
-        // collection loop, no non-tail self-call and no callee holding such memory. It
-        // ignores memory the init view carries: whether a constant-derived, handler-ful
-        // raise fires at an activation's birth. The node-walk gives every new depth a
-        // fresh activation, which raises `cast<i64>("x")?` once at birth. The fused
-        // loop runs its passes under one kernel's init word, so depths first reached
-        // after init never raise. f's kernel reports self_blocks=0
-        // (GRAPHIX_DBG_KERNELS=1). Failure: depth goes 2 -> 4. Node-walk: errors =
-        // 0,1,2,3,4,5 (3 raises at init, 2 for the new depths 3 and 4). JIT: 0,1,2,3.
-        // `graphix --no-cache` prints 0..3; `--no-fusion` prints 0..5. graphix-fuzz
-        // check: DIVERGENCE (interp != jit). The non-tail form (`f(n - 1) + 1`, the old
-        // repro) and the form with the raise under a select arm both AGREE now. Fix:
-        // Make the tail-loop gate refuse a body (or a callee body) whose productions
-        // depend on the activation's init view in a way a program can see. The minimum
-        // is the case entry_raise_blocker already identifies, a handler-ful `?` whose
-        // error derives from a constant, applied to a raise anywhere in the body and
-        // not only under a select arm. Such a body then recurses natively with
-        // per-activation blocks. Pin it beside the f-call-flow-05 pin in lang::fusion.
-        // Unverified: the reviewer's report, not checked by a verifier. (x-rerun-2-01)
         none = none
             && match n.view() {
                 NodeView::MapQ(_) | NodeView::FoldQ(_) => false,
+                NodeView::Qop(q) if q.handler().is_some() => {
+                    crate::analysis::fires_with(&q.n, formals)
+                }
                 NodeView::CallSite(cs) if is_self(cs) => {
                     tail_calls.contains(&n.spec().id)
                 }
@@ -1509,8 +1496,12 @@ fn claims_no_site_memory<R: Rt, E: UserEvent>(
                     }
                     Some(ApplyView::Lambda(g)) => {
                         visiting.push(g.instance_id());
-                        let none =
-                            claims_no_site_memory(g.body(), g.self_bind(), visiting);
+                        let none = claims_no_site_memory(
+                            g.body(),
+                            g.self_bind(),
+                            &g.formal_ids(),
+                            visiting,
+                        );
                         visiting.pop();
                         none
                     }

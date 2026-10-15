@@ -2003,6 +2003,32 @@ async fn fresh_depth_is_born(mode: graphix_package_core::testing::Mode) -> Resul
 
 modes!(fresh_depth_is_born);
 
+// The same in a tail recursion: a constant-derived raise keeps the body
+// from running as one native loop, whose passes are never born.
+async fn fresh_tail_depth_is_born(
+    mode: graphix_package_core::testing::Mode,
+) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(
+        r#"{
+            let errors = 0;
+            let depth = 2;
+            depth <- 4;
+            let rec f = |n: i64, acc: i64| -> i64 {
+                let bad = cast<i64>("x")?;
+                select n { 0 => acc + bad, n => f(n - 1, acc + 1) }
+            };
+            let r = { catch(e) errors <- e ~ errors + 1; f(depth, 0) };
+            errors
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(graphix_package_core::testing::as_i64s(&values).last(), Some(&5));
+    Ok(())
+}
+
+modes!(fresh_tail_depth_is_born);
+
 // A kernel-built abstract value carries its type's params resolved, as a
 // node-walked one does: one instantiation, so the user's Eq applies.
 const KERNEL_BUILT_ABSTRACT_EQ: &str = r#"

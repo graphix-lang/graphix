@@ -1575,7 +1575,10 @@ pub(crate) fn io_follows<R: Rt, E: UserEvent>(
 /// Whether `n` fires whenever one of `ids` does: a read of one of them,
 /// or a part that reads one, a select through its scrutinee only. A
 /// constant does not, and neither, here, does a function's result.
-fn fires_with<R: Rt, E: UserEvent>(n: &Node<R, E>, ids: &IntSet<BindId>) -> bool {
+pub(crate) fn fires_with<R: Rt, E: UserEvent>(
+    n: &Node<R, E>,
+    ids: &IntSet<BindId>,
+) -> bool {
     crate::stack::ensure_sufficient(|| match n.view() {
         NodeView::Ref(r) => ids.contains(&r.id),
         NodeView::Constant(_) => false,
