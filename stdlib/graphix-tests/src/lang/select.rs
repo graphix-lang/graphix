@@ -460,7 +460,7 @@ const SELECT_SLICE_HOLE: &str = r#"
 }
 "#;
 
-run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, refused("leave array length 1 uncovered"); FuseExpect::None);
+run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, refused("leave length 1 of Array<i64> uncovered"); FuseExpect::None);
 
 // Exact-length arms alone never cover every length.
 const SELECT_SLICE_NO_REST: &str = r#"
@@ -473,7 +473,17 @@ const SELECT_SLICE_NO_REST: &str = r#"
 }
 "#;
 
-run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, refused("cover finitely many lengths"); FuseExpect::None);
+run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, refused("cover finitely many lengths of Array<i64>"); FuseExpect::None);
+
+// The length hint names only a ladder slice arms claimed and that still
+// reaches past the last arm: type-test arms alone get none.
+run!(select_type_tested_collections_no_ladder_hint, r#"{
+  let x: [Array<i64>, i64, null] = null;
+  select x { Array<i64> as a => array::len(a), i64 as n => n }
+}"#, |v: Result<&Value>| matches!(v, Err(e) if {
+    let e = format!("{e:?}");
+    e.contains("no arm covers null") && !e.contains("lengths")
+}); FuseExpect::None);
 
 // A guarded arm claims no coverage.
 const SELECT_SLICE_GUARDED_REST: &str = r#"

@@ -596,38 +596,28 @@ impl Reach {
         if Type::union_exact(env, &covered)?.contains(env, scrut)? {
             return Ok(());
         }
-        // CR claude for claude: [readability/low] The hint comes from the first
-        // incomplete ladder, even one no slice arm ever claimed. With only type-test
-        // arms (`Array<i64> as x`, `Array<string> as y` over Array<[i64, string]>), the
-        // refusal still says "the slice arms cover finitely many lengths — ... also
-        // needs a rest pattern". Over [Array<i64>, Array<string>], where the `[x, ..]`
-        // arm was narrowed to Array<i64>, it asks for a rest pattern the select already
-        // has. Fix: give the hint only for a ladder that some arm claimed (non-empty
-        // exacts or a rest), and name that ladder's member in it, e.g. "the slice arms
-        // cover finitely many lengths of Array<string>". probe:
-        // design/review-2026-10-12/repro/x-typecheck-patterns-08.gx
-        // (x-typecheck-patterns-08)
-        // CR claude for claude: [bug/low] `open` takes the first incomplete ladder, but
-        // a ladder exists for every array or list member of the scrutinee, including
-        // one a type-test arm (`Array<i64> as a`) covers whole. So a select with no
-        // slice arm at all, missing only `null`, is refused with '(the slice arms cover
-        // finitely many lengths — ... needs a rest pattern or a wildcard)', which sends
-        // the user after patterns they never wrote. Fix: consider only a ladder some
-        // arm claimed (exacts or a rest) whose member the uncovered remainder
-        // `self.atype` can still match, and otherwise add no gap text. Probe:
-        // design/review-2026-10-12/repro/book-core-11.gx. Also reported as
-        // (x-rerun-5-07). (book-core-11)
-        let open = self.ladders.iter().find(|l| !l.complete()).map(|l| (l.rest, l.gap()));
+        // the hint names a ladder slice arms claimed, whose member still
+        // reaches past the last arm
+        let mut open = None;
+        for l in self.ladders.iter() {
+            let claimed = !l.exacts.is_empty() || l.rest.is_some();
+            if claimed && !l.complete() && l.member.could_match(env, &self.atype)? {
+                open = Some(l);
+                break;
+            }
+        }
         format_with_flags(PrintFlag::DerefTVars, || {
             let gap = match open {
                 None => format_compact!(""),
-                Some((None, _)) => format_compact!(
-                    " (the slice arms cover finitely many lengths — an array or list \
-                     scrutinee also needs a rest pattern or a wildcard)"
+                Some(l) if l.rest.is_none() => format_compact!(
+                    " (the slice arms cover finitely many lengths of {} — it also needs \
+                     a rest pattern or a wildcard)",
+                    l.member
                 ),
-                Some((Some(_), n)) => format_compact!(
-                    " (the slice arms leave array length {} uncovered)",
-                    n.unwrap_or(0)
+                Some(l) => format_compact!(
+                    " (the slice arms leave length {} of {} uncovered)",
+                    l.gap().unwrap_or(0),
+                    l.member
                 ),
             };
             let refutable = match self.refutable_slice {
