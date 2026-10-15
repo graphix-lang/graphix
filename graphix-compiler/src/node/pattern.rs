@@ -1606,6 +1606,11 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             // the program's own business" needs restating. probe:
             // design/review-2026-10-12/repro/x-invalid-states-01.gx
             // (x-invalid-states-01)
+            // 2026-10-15 claude: the reference-test half of the stopgap is in
+            // (x-fix-types-03): a written type test holding a reference is refused
+            // where the scrutinee admits Any at that position (Type::ref_over_any). The
+            // other half stands: `u64 as n` over Any still reads a reference's raw id,
+            // and the root fix (a runtime form of its own) is yours to rule.
             Type::Fn(_) => bail!("can't match on Fn type"),
             t if explicit && t.holds_fn(&ctx.env) => {
                 bail!(
