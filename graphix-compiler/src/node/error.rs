@@ -585,9 +585,18 @@ impl Strip {
         }
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         let null = Type::Primitive(Typ::Null.into());
-        if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
+        let holds = |t: &Type| typ.contains_with_flags(BitFlags::empty(), &ctx.env, t);
+        // an open member holds both: the strip is the one that takes a
+        // member out, the error form when neither does (`Any`)
+        let takes = |strip: Self| -> Result<bool> {
+            let rest = typ.diff(&ctx.env, &strip.removed())?;
+            Ok(!typ.diff(&ctx.env, &rest)?.is_uninhabited())
+        };
+        if holds(&err)? && holds(&null)? && !takes(Self::Error)? && takes(Self::Null)? {
+            Ok(Self::Null)
+        } else if holds(&err)? {
             Ok(Self::Error)
-        } else if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &null)? {
+        } else if holds(&null)? {
             Ok(Self::Null)
         } else {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -598,7 +607,12 @@ impl Strip {
         }
     }
 
-    fn removed(self) -> Type {
+    /// The strip a definition's check recorded as its removed type.
+    fn of_removed(t: &Type) -> Option<Self> {
+        [Self::Error, Self::Null].into_iter().find(|s| s.removed() == *t)
+    }
+
+    pub(crate) fn removed(self) -> Type {
         match self {
             Self::Error => Type::Primitive(Typ::Error.into()),
             Self::Null => Type::Primitive(Typ::Null.into()),
@@ -624,13 +638,18 @@ impl Strip {
 /// The typing `?` and `$` share: what `op` strips from `operand`, and
 /// the result type, `operand` less it. With no member left the result
 /// never produces: bottom, which a select absorbs, not an empty union
-/// no pattern could match.
+/// no pattern could match. An instance strips what its definition
+/// decided, whatever its operand became.
 fn strip_typ<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     op: char,
     operand: &Type,
+    decided: Option<Strip>,
 ) -> Result<(Strip, Type)> {
-    let strip = Strip::of(ctx, op, operand)?;
+    let strip = match decided {
+        Some(strip) => strip,
+        None => Strip::of(ctx, op, operand)?,
+    };
     let rtyp = operand.diff(&ctx.env, &strip.removed())?;
     Ok((strip, if rtyp.is_uninhabited() { Type::Bottom } else { rtyp }))
 }
@@ -1024,7 +1043,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    super::typed_by_row!();
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true, None)
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        let row = types.settle(self.spec.id, &self.typ);
+        let decided = types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0]));
+        self.typecheck0_with(
+            ctx,
+            &mut |n, ctx| n.typecheck0_instance(ctx, types),
+            !row,
+            decided,
+        )
+    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Qop(self)
@@ -1392,7 +1428,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    super::typed_by_row!();
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true, None)
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        let row = types.settle(self.spec.id, &self.typ);
+        let decided = types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0]));
+        self.typecheck0_with(
+            ctx,
+            &mut |n, ctx| n.typecheck0_instance(ctx, types),
+            !row,
+            decided,
+        )
+    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::OrNever(self)
@@ -1507,13 +1560,14 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
-    /// The strip and the raise joined into the handler's bind are state:
-    /// an instance computes them too.
+    /// The raise joined into the handler's bind is state: an instance
+    /// computes it too, over the strip its definition `decided`.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
         check: bool,
+        decided: Option<Strip>,
     ) -> Result<()> {
         wrap!(self.n, child(&mut self.n, ctx))?;
         let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
@@ -1530,7 +1584,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         if check && self.handler.is_none() {
             Self::check_unhandled(&ctx.env, self.flags, &self.spec, "error raised by ?")?;
         }
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ()))?;
+        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ(), decided))?;
         self.strip = strip;
         if check {
             wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
@@ -1548,22 +1602,11 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
                 // subtraction, or is refused with a message like the open-operand one
                 // in Strip::of ("the operand of ? has type Any, ...: annotate it").
                 // probe: design/review-2026-10-12/repro/x-rerun-1-14.gx (x-rerun-1-14)
-                // CR claude for claude: [bug/medium] Strip::of picks Strip::Error for
-                // an Any operand or a union with an open member (`['a, null]`), since
-                // both contain Error<_>. strip_typ's diff cannot split them, so the
-                // success type is the whole operand, the raised type computed here is
-                // the empty union, and fix_echain_typ refuses with "expected error not
-                // []". So `|x: ['a, null]| x?` is refused with a meaningless message,
-                // even though it follows the "annotate it" advice Strip::of gives. `let
-                // x: Any = ..; { catch(e) ..; x? }` is refused the same way. The strip
-                // is recomputed per instance, so the definition and its instances also
-                // disagree: under `$` the definition types `['a, null]` as keeping
-                // null, but the i64 instance strips it. Fix: compute the raised type
-                // positively (the operand's Error members, or Error<Any> for an
-                // Any/open operand), and have Strip::of choose Strip::Null when the
-                // only error candidate is an open cell beside a written null. At the
-                // least, refuse with Strip::of's annotate diagnostic. probe:
-                // design/review-2026-10-12/repro/c-error-op-04.gx (c-error-op-04)
+                // 2026-10-15 claude: Strip::of now takes the null where an open member
+                // beside a written null is all the error form could take
+                // (c-error-op-04), and an instance strips what its definition decided
+                // (the check table's aux row). An Any operand still takes the error
+                // form, so this CR's question stands.
                 Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
                 Strip::Null => NULL_ERR.clone(),
             };
@@ -1596,15 +1639,15 @@ impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> OrNever<R, E> {
-    /// The strip is state: an instance computes it too.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
         check: bool,
+        decided: Option<Strip>,
     ) -> Result<()> {
         wrap!(self.n, child(&mut self.n, ctx))?;
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ()))?;
+        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ(), decided))?;
         self.strip = strip;
         match check {
             true => wrap!(self, self.typ.check_contains(&ctx.env, &rtyp)),

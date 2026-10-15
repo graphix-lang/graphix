@@ -849,6 +849,22 @@ run!(
     "/test/m.gx" => "let g = |x: i64| -> Error<ErrChain<`A>> { catch(e) e; error(`A)? }"
 ; FuseExpect::Jit);
 
+// An open member beside a null cannot be split from the errors it may
+// hold: `?` and `$` take the null, and every instance strips what its
+// definition does, an error passing through.
+run!(
+    open_member_beside_null_strips_the_null,
+    |v: Result<&Value>| format!("{}", v.unwrap())
+        == r#"[[i64:3, error:"E", i64:4], ["NullError", "x"]]"#,
+    "/test.gx" => r#"
+        let f = |x: ['a, null]| x$;
+        let g = |x: ['a, null]| x?;
+        let out = never();
+        let r = { catch(e) out <- e ~ ((f(3), f(error(`E)), g(4)), (e.0).error); g(null) };
+        let result = out
+    "#
+; FuseExpect::Jit);
+
 // A comment is not syntax: the text of a `?`'s NullError is the same with
 // one above the operand.
 run!(

@@ -61,7 +61,7 @@ pub struct DefTable {
     ftypes: AHashMap<ExprId, FnType>,
     /// What a node derives beside its own type, in the order the node
     /// lists it: a select's arm predicates and pattern binds, a catch's
-    /// error binds.
+    /// error binds, what a `?` or `$` strips.
     aux: AHashMap<ExprId, Box<[Type]>>,
     /// The table of each lambda literal of the body, by its id.
     lambdas: AHashMap<ExprId, SArc<DefTable>>,
@@ -165,6 +165,12 @@ impl DefTable {
                 }
                 NodeView::Catch(c) => {
                     table.aux.insert(id, c.aux_types(checked));
+                }
+                NodeView::Qop(q) => {
+                    table.aux.insert(id, Box::new([q.strip.removed()]));
+                }
+                NodeView::OrNever(o) => {
+                    table.aux.insert(id, Box::new([o.strip.removed()]));
                 }
                 _ => (),
             }
