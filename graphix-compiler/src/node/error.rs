@@ -832,7 +832,7 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
                 let mut wrapped: LPooled<Vec<Type>> = LPooled::take();
                 for m in members.iter() {
                     match is_chain_type(&ctx.env, m)? {
-                        true => chains.push(Type::Error(Arc::new(m.clone()))),
+                        true => chains.push(m.clone()),
                         false => wrapped.push(m.clone()),
                     }
                 }
@@ -843,22 +843,12 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
                     [one] => one.clone(),
                     _ => Type::Set(Arc::from_iter(wrapped.drain(..))),
                 };
-                let wrap = Type::Error(Arc::new(typ_echain(rest)));
-                match chains.is_empty() {
-                    true => Ok(wrap),
-                    // CR claude for claude: [bug/low] A union payload with both chain
-                    // and non-chain members comes out as a set of separate Error types,
-                    // [Error<chain>, Error<ErrChain<rest>>]. Two separate raises of the
-                    // same payloads join into one Error<[..]>. So a handler that reads
-                    // `e.0` works for separate raises but is refused for the union
-                    // raise: tuple_field_type has no arm for a set of Errors, and the
-                    // error is "expected tuple not [Error<..>, Error<..>]". Fix: build
-                    // one Error over the union of the payloads, Error<[chain members..,
-                    // ErrChain<rest>]>. Delivery wraps per value, so that type holds
-                    // every delivered value. probe:
-                    // design/review-2026-10-12/repro/x-rerun-1-10.gx (x-rerun-1-10)
-                    false => Ok(Type::Set(Arc::from_iter(chains.drain(..).chain([wrap])))),
-                }
+                let wrap = typ_echain(rest);
+                let payload = match chains.is_empty() {
+                    true => wrap,
+                    false => Type::Set(Arc::from_iter(chains.drain(..).chain([wrap]))),
+                };
+                Ok(Type::Error(Arc::new(payload)))
             }
         }),
         Some(Type::Set(elts)) => {

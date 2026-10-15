@@ -865,6 +865,22 @@ run!(
     "#
 ; FuseExpect::Jit);
 
+// A raise whose payload is a chain or not by value is one Error over
+// both, as two raises join: its handler reads the payload.
+run!(
+    mixed_chain_payload_is_one_error,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "A"),
+    "/test.gx" => r#"
+        type MyChain = ErrChain<`A>;
+        let saved: Error<MyChain> = never();
+        let r = { catch(e) saved <- e; error(`A)? };
+        let p: [`B, MyChain] = saved.0;
+        let out = never();
+        let u = { catch(e) out <- e.0; error(p)? };
+        let result = select out { ErrChain<`B> as _ => "B", MyChain as c => c.error }
+    "#
+; FuseExpect::Jit);
+
 // A comment is not syntax: the text of a `?`'s NullError is the same with
 // one above the operand.
 run!(
