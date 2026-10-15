@@ -51,6 +51,9 @@ fn typ_echain(param: Type) -> Type {
 // ErrChain's field types (cause: [ErrChain<_>, null], ori: Ori, pos: Pos), or chains
 // need a nominal marker (see c-error-op-01) that both the check and chain_error use.
 // probe: design/review-2026-10-12/repro/c-error-op-02.gx (c-error-op-02)
+// 2026-10-15 claude: same root as tests-lang-rest-a-01 (for eric, just below
+// is_echain_shape), whose fix is a language-rule choice: decide chain-ness by type and
+// value shape together, or make chains nominal. Waiting on that ruling.
 // CR claude for eric: [bug/high] A struct counts as a chain here when its field names
 // are cause, error, ori and pos, whatever their types. `Type::chain_type` and
 // `chain_error` use the same name-only test. When it matches, `fix_echain_typ` keeps
@@ -142,10 +145,7 @@ pub struct Catch<R: Rt, E: UserEvent> {
     pub handler: Node<R, E>,
     pub(crate) action: Option<CatchAction<R, E>>,
     own_handler: ErrorHandler,
-    /// Raises of `own_handler` acknowledged: delivered, a seq's abort
-    /// event, or given up when the catch sleeps or goes away.
-    received: u64,
-    last_cycle: Option<u64>,
+    receipts: Receipts,
     constraint: Option<Type>,
     /// Throws unioned into the bind before `catch(e: T)` ascribes `T`
     /// onto it. Coverage is this snapshot, not the bind after ascription.
@@ -295,8 +295,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             handler,
             action,
             own_handler,
-            received: 0,
-            last_cycle: None,
+            receipts: Receipts::default(),
             constraint,
             thrown,
             bind_id,
@@ -368,8 +367,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             handler,
             action,
             own_handler: covered.dynamic.handler().unwrap(),
-            received: 0,
-            last_cycle: None,
+            receipts: Receipts::default(),
             constraint: c.constraint.clone(),
             thrown: None,
             bind_id,
@@ -378,13 +376,8 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         Ok((node, covered))
     }
 
-    /// Acknowledge the raises whose deliveries this catch will not see,
-    /// so no enclosing handler waits on them.
     fn give_up_in_flight(&mut self) {
-        while self.received != self.own_handler.generation() {
-            self.received = self.received.wrapping_add(1);
-            self.own_handler.handled();
-        }
+        self.receipts.give_up(&self.own_handler)
     }
 }
 
@@ -431,49 +424,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let _ = self.handler.update(ctx);
-        let cycle = ctx.rt.cycle();
         let capture = self
             .action
             .as_ref()
             .and_then(|a| a.capture().filter(|_| a.pending.is_none()));
-        // a delivery whose raise was given up while asleep is not counted again
-        // CR claude for claude: [bug/high] `received != generation()` is supposed to
-        // reject a delivery whose raise give_up_in_flight already acknowledged. A seq
-        // abort also advances generation (ErrorHandler::abort), and then the test lets
-        // the stale delivery through. When it happens: a run raises several errors in
-        // one cycle, so their deliveries queue one per cycle. The arm sleeps while they
-        // are still arriving, and give_up_in_flight acknowledges them all. After the
-        // wake, abort(..) fires in a cycle where an old delivery still arrives. What
-        // follows: - The stale delivery is counted, and its handled() decrements the
-        // enclosing handlers' `nested` with no raise behind it. Debug builds panic with
-        // "unraised nested error". In release `nested` wraps, so the enclosing
-        // handler's action never runs again. - The manual abort fire then pushes
-        // `received` one past `generation`. The machine's action never runs, so the seq
-        // stays busy and drops every trigger. - The next sleep's give_up_in_flight loop
-        // spins about 2^64 times. Probe:
-        // design/review-2026-10-12/repro/x-invalid-states-03.sh. Fix: count raises and
-        // aborts separately (a raise cursor that only raise() moves, which
-        // give_up_in_flight and handled() follow). Also recognize a delivery from
-        // before a give-up by an epoch rather than by counter equality: today the
-        // Rethrow handler still re-raises those stale errors to the outer catch, and a
-        // `try` can capture an error from a given-up run. Catch::update and
-        // ErrorRelay::update carry copies of the same cursor logic. Make it one struct
-        // that both use. (x-invalid-states-03)
-        let delivered = match read_var(ctx, &self.bind_id) {
-            Some(VarRead::Delivered(tv))
-                if self.last_cycle != Some(cycle)
-                    && tv.tag().is_fired()
-                    && self.received != self.own_handler.generation() =>
-            {
-                Some(capture.map(|cap| (cap, tv.value_cloned())))
-            }
-            _ => None,
-        };
-        if let Some(captured) = delivered {
-            self.last_cycle = Some(cycle);
-            self.received = self.received.wrapping_add(1);
-            self.own_handler.handled();
-            if let Some((cap, v)) = captured {
+        if let Some(v) = self.receipts.take(ctx, &self.own_handler) {
+            if let Some(cap) = capture {
                 ctx.rt.set_var(cap, v);
             }
             let stamp = self.run_stamp();
@@ -485,11 +441,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             if let Some(manual) = abort.manual_mut()
                 && manual.update(ctx).is_fired()
             {
-                self.received = self.received.wrapping_add(1);
                 abort.pending.get_or_insert(0);
             }
             if let Some(stamp) = abort.pending
-                && self.received == self.own_handler.generation()
+                && self.receipts.settled(&self.own_handler)
                 && !self.own_handler.has_nested_errors()
             {
                 abort.pending = None;
@@ -806,6 +761,9 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
 // at `?` any other struct with those four names, because `chain_error` would rewrite
 // it. The alternative is to make run-time chain recognition nominal. probe:
 // design/review-2026-10-12/repro/t-typ-mod-02.gx (t-typ-mod-02)
+// 2026-10-15 claude: same root as tests-lang-rest-a-01 (for eric, just below
+// is_echain_shape), whose fix is a language-rule choice: decide chain-ness by type and
+// value shape together, or make chains nominal. Waiting on that ruling.
 fn fix_echain_typ<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     etyp: &Type,
@@ -1670,21 +1628,69 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 /// it tells the builtin when the function raised, and passes each error
 /// on to the handler covering the builtin, or logs it where none does.
 #[derive(Debug)]
-// CR claude for claude: [structure/low] ErrorRelay copies Catch's raise-receipt
-// protocol. Both have the same handler/received/last_cycle fields, the same delivery
-// guard (not taken this cycle, fired, generation outstanding) followed by `received +=
-// 1; handled()`, and an identical give_up_in_flight. A change to the rule in one, such
-// as how a delivery given up while asleep is counted, will not reach the other, and
-// http/rpc handler errors would then be acknowledged differently from in-language
-// catches. Fix: one struct holding the ErrorHandler, `received` and `last_cycle`, with
-// `take(ctx) -> Option<TagValue>` and `give_up_in_flight()`, owned by both Catch and
-// ErrorRelay. (c-error-op-06)
 pub struct ErrorRelay {
     handler: ErrorHandler,
-    received: u64,
-    /// The cycle whose delivery was taken: a later raise that cycle
-    /// arrives the next.
+    receipts: Receipts,
+}
+
+/// The receipt of a handler's raises by the catch that reads them: each
+/// raise's error arrives in raise order, one a cycle, and is taken once;
+/// one whose raise was given up (the catch asleep or gone) is passed over
+/// when it arrives. Aborts are not raises.
+#[derive(Debug, Default)]
+struct Receipts {
+    /// Deliveries arrived, taken or passed over.
+    arrived: u64,
+    /// Raises acknowledged to the enclosing handlers: taken, or given up.
+    acked: u64,
+    /// The cycle a delivery arrived in: a later raise that cycle arrives
+    /// the next.
     last_cycle: Option<u64>,
+}
+
+impl Receipts {
+    /// This cycle's error, when one of `handler`'s raises arrived and was
+    /// not given up.
+    fn take<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        handler: &ErrorHandler,
+    ) -> Option<Value> {
+        let (bind_id, _) = handler.id();
+        let cycle = ctx.rt.cycle();
+        let v = match read_var(ctx, &bind_id) {
+            Some(VarRead::Delivered(tv))
+                if self.last_cycle != Some(cycle)
+                    && tv.tag().is_fired()
+                    && self.arrived < handler.raised() =>
+            {
+                tv.value_cloned()
+            }
+            _ => return None,
+        };
+        self.last_cycle = Some(cycle);
+        self.arrived += 1;
+        if self.arrived <= self.acked {
+            return None;
+        }
+        self.acked += 1;
+        handler.handled();
+        Some(v)
+    }
+
+    /// Acknowledge every raise not taken yet, so no enclosing handler
+    /// waits on them; their deliveries are passed over.
+    fn give_up(&mut self, handler: &ErrorHandler) {
+        while self.acked < handler.raised() {
+            self.acked += 1;
+            handler.handled();
+        }
+    }
+
+    /// Every raise to `handler` is acknowledged.
+    fn settled(&self, handler: &ErrorHandler) -> bool {
+        self.acked == handler.raised()
+    }
 }
 
 impl ErrorRelay {
@@ -1713,7 +1719,7 @@ impl ErrorRelay {
         ctx.record_ref(bind_id, top_id);
         let covered = scope.with_catch((bind_id, top_id), false);
         let handler = covered.dynamic.handler().unwrap();
-        (Self { handler, received: 0, last_cycle: None }, covered)
+        (Self { handler, receipts: Receipts::default() }, covered)
     }
 
     /// The error the function raised this cycle, which also goes on.
@@ -1721,21 +1727,7 @@ impl ErrorRelay {
         &mut self,
         ctx: &mut ExecCtx<'_, R, E>,
     ) -> Option<Value> {
-        let (bind_id, _) = self.handler.id();
-        let cycle = ctx.rt.cycle();
-        let e = match read_var(ctx, &bind_id) {
-            Some(VarRead::Delivered(tv))
-                if self.last_cycle != Some(cycle)
-                    && tv.tag().is_fired()
-                    && self.received != self.handler.generation() =>
-            {
-                tv.value_cloned()
-            }
-            _ => return None,
-        };
-        self.last_cycle = Some(cycle);
-        self.received = self.received.wrapping_add(1);
-        self.handler.handled();
+        let e = self.receipts.take(ctx, &self.handler)?;
         match self.handler.parent().handler() {
             Some(parent) => {
                 parent.raise();
@@ -1750,10 +1742,7 @@ impl ErrorRelay {
     /// Raises in flight when the function sleeps or is deleted are
     /// acknowledged, so no enclosing handler waits on them.
     pub fn give_up_in_flight(&mut self) {
-        while self.received != self.handler.generation() {
-            self.received = self.received.wrapping_add(1);
-            self.handler.handled();
-        }
+        self.receipts.give_up(&self.handler)
     }
 
     pub fn delete<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -1774,6 +1763,6 @@ impl ErrorRelay {
         let handler = image::handler_decode(buf)?;
         let (bind_id, top_id) = handler.id();
         ctx.record_ref(bind_id, top_id);
-        Ok(Self { handler, received: 0, last_cycle: None })
+        Ok(Self { handler, receipts: Receipts::default() })
     }
 }

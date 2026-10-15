@@ -2314,7 +2314,10 @@ struct DynNode {
     machine: bool,
     /// One past the cycle of the last `abort(..)`; zero before any.
     aborted: AtomicU64,
+    /// Raises to this handler.
     raised: AtomicU64,
+    /// `abort(..)`s of this (seq machine's) handler.
+    aborts: AtomicU64,
     /// Raised to descendant handlers and not yet processed by them.
     nested: AtomicU64,
     /// The handler that reads the error was checked: a raise compiled
@@ -2355,7 +2358,7 @@ impl ErrorHandler {
 
     /// A seq's `abort(..)` fired: the run fails with no error in flight.
     pub(crate) fn abort(&self, cycle: u64) {
-        self.0.raised.fetch_add(1, Ordering::Relaxed);
+        self.0.aborts.fetch_add(1, Ordering::Relaxed);
         self.0.aborted.store(cycle.wrapping_add(1), Ordering::Relaxed);
     }
 
@@ -2371,7 +2374,14 @@ impl ErrorHandler {
         self.0.aborted.load(Ordering::Relaxed)
     }
 
+    /// Changes at every raise and every `abort(..)`: a run that began
+    /// under one generation and sees another failed.
     pub(crate) fn generation(&self) -> u64 {
+        self.raised().wrapping_add(self.0.aborts.load(Ordering::Relaxed))
+    }
+
+    /// The raises to this handler.
+    pub(crate) fn raised(&self) -> u64 {
         self.0.raised.load(Ordering::Relaxed)
     }
 
@@ -2436,6 +2446,7 @@ impl DynScope {
             machine,
             aborted: AtomicU64::new(0),
             raised: AtomicU64::new(0),
+            aborts: AtomicU64::new(0),
             nested: AtomicU64::new(0),
             sealed: AtomicBool::new(false),
             parent: self.clone(),

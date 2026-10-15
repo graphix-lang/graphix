@@ -259,6 +259,42 @@ async fn nested_abort_reads_live(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A run raises 30 errors at once, so their deliveries queue a cycle each;
+// its arm sleeps while they drain, giving them up. An abort after the wake,
+// in a cycle one of them still arrives in, neither counts that stale
+// delivery as a raise (the enclosing catch would lose one it waits on) nor
+// leaves the machine busy: a later trigger starts a run.
+async fn abort_after_given_up_errors(mode: Mode) -> Result<()> {
+    let code = r#"{
+  let n = 0;
+  n <- select n { x if x < 60 => x + 1, _ => never() };
+  let xs = array::init(30, |i| i);
+  let trig = filter(n, |x| (x == 3) || (x == 14) || (x == 40));
+  let ab = filter(n, |x| x == 18);
+  let out = select n {
+    x if (x >= 8) && (x < 12) => -1,
+    _ => {
+      catch(e) println("outer [n]");
+      seq let t = trig; abort(ab) {
+        println("run [t]");
+        let r = select t {
+          3 => array::map(xs, |x| (x /? (x - x))?),
+          40 => [1, 2],
+          _ => never<Array<i64>>()
+        };
+        array::len(r)
+      }
+    }
+  };
+  select n { 60 => out, _ => never() }
+}"#;
+    let (values, out) = run_delta(code, mode).await?;
+    assert!(out.contains("run 40"), "the trigger after the abort started no run: {out}");
+    assert_eq!(as_i64s(&values), [2]);
+    Ok(())
+}
+
+modes!(abort_after_given_up_errors);
 modes!(abort_ends_run);
 modes!(idle_fire_is_dropped);
 modes!(entry_fire_is_not_an_abort);
