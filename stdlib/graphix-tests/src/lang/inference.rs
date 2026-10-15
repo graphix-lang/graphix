@@ -155,6 +155,20 @@ const WRITER_WIDER_THAN_TVAR: &str = r#"{
     f(1)
 }"#;
 
+/// A name a destructuring let binds is declared by the pattern's type.
+const WRITER_WIDER_THAN_A_PATTERN_NAME: &str = r#"{
+    let (a, b) = (1, 2);
+    a <- "s";
+    a + b
+}"#;
+
+/// What that advice says to write checks.
+const WRITER_PATTERN_DECLARED: &str = r#"{
+    let (a, b): ([i64, string], i64) = (1, 2);
+    a <- "s";
+    b
+}"#;
+
 #[tokio::test(flavor = "current_thread")]
 async fn annotations_the_checker_asks_for() -> Result<()> {
     for (src, refusal) in [
@@ -172,6 +186,11 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
             "x is i64 and cannot hold string; declare x: [i64, string] where it is bound",
         ),
         (WRITER_WIDER_THAN_TVAR, "x is 'a: unbound within Number and cannot hold string"),
+        (
+            WRITER_WIDER_THAN_A_PATTERN_NAME,
+            "a is i64 and cannot hold string; annotate the let's pattern type with a's \
+             position as [i64, string]",
+        ),
         (STRIP_OVER_AN_OPEN_OPERAND, "the operand of $ has type"),
         (RAISE_OVER_AN_OPEN_OPERAND, "the operand of ? has type"),
     ] {
@@ -189,6 +208,7 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
         (MIXED_ARMS_DECLARED, 3),
         (EMPTY_ARRAY_ARM, 0),
         (WRITER_TARGET_DECLARED, 1),
+        (WRITER_PATTERN_DECLARED, 2),
     ] {
         let v =
             eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;

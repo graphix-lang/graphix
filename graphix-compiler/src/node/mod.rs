@@ -1582,14 +1582,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
 /// and the declaration that would hold both.
-// CR claude for claude: [readability/low] The advice "declare {name}: {both} where it
-// is bound" cannot be followed for a name a destructuring let binds. After `let (a, b)
-// = (1, 2); a <- "s"` it says to declare `a: [i64, string]` at the pattern, and `let
-// (a: [i64, string], b) = ..` is a parse error. What checks is an annotation on the
-// whole pattern (`let (a, b): ([i64, string], i64)`). A struct pattern has the same
-// problem. When the bind is one facet of a pattern (Env::facet_of /
-// Env::pattern_inputs), say to annotate the let's pattern type with this position
-// widened, or drop the "declare" clause and give only the position. (c-node-mod-04)
 fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow::Error {
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
@@ -1611,10 +1603,17 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
         true => format_compact!(""),
         false => format_compact!(" {}", bind.ori),
     };
+    // a name a destructuring let binds is declared by the pattern's type
+    let declare = match bind.facet {
+        Some(env::Facet::Let(_)) => format_compact!(
+            "annotate the let's pattern type with {name}'s position as {both}"
+        ),
+        _ => format_compact!("declare {name}: {both} where it is bound"),
+    };
     format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
         anyhow!(
-            "{name} is {held}{inferred} and cannot hold {written}; declare \
-             {name}: {both} where it is bound (line {line}, column {col}{file})"
+            "{name} is {held}{inferred} and cannot hold {written}; {declare} \
+             (line {line}, column {col}{file})"
         )
     })
 }
