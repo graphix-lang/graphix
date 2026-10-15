@@ -70,7 +70,7 @@ pub enum StructPatternNode {
         bind: Box<StructPatternNode>,
     },
     /// Or-alternatives share alternative 0's BindIds, so the id walks
-    /// (`ids`, `unbind`, `delete`) visit alternative 0 only; `is_match`
+    /// (`ids`, `fresh_ids`, `delete`) visit alternative 0 only; `is_match`
     /// is any-of and `bind` delivers the first matching alternative.
     Or {
         alts: Box<[StructPatternNode]>,
@@ -1267,7 +1267,6 @@ impl StructPatternNode {
         }
         let shape = expand(env, typ);
         let shaped = match (self, &shape) {
-            (Self::Bind(_) | Self::Ignore, _) => return true,
             (
                 // CR claude for eric: [bug/low] covers returns false for every Or,
                 // whatever the type. A nested or-pattern in a let or a lambda parameter
@@ -1314,17 +1313,9 @@ impl StructPatternNode {
     }
 
     /// True when the pattern matches any value of the scrutinee's type:
-    /// `Select`'s wildcard test. Not `!is_refutable()`: a variant
-    /// pattern with an all-bind payload is irrefutable given its tag
-    /// matched, but its inferred predicate still carries the tag test.
-    // CR claude for claude: [doc-drift/low] This doc says "Not `!is_refutable()`", but
-    // no is_refutable exists. Drop that sentence; the variant-pattern explanation after
-    // it stands on its own. The StructPatternNode::Or variant doc lists `unbind` among
-    // the id walks, and no such walk exists: the walks are ids, fresh_ids and delete.
-    // design/or_patterns.md says the same, and also gives `is_refutable(Or) = true`:
-    // fix both to name the real functions. covers_inner returns early for Bind and
-    // Ignore and then matches `(Self::Bind(_) | Self::Ignore, _)` again as the first
-    // arm of its match. That second arm is unreachable; delete it. (c-pattern-07)
+    /// `Select`'s wildcard test. A variant pattern with an all-bind
+    /// payload is irrefutable given its tag matched, but its inferred
+    /// predicate still carries the tag test.
     pub fn matches_anything(&self) -> bool {
         crate::stack::ensure_sufficient(|| self.matches_anything_inner())
     }

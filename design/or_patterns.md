@@ -97,9 +97,9 @@ never itself an `Or` (the grammar cannot spell one). The printer emits
 
 `StructPatternNode::Or { alts }` on the node side (`node/pattern.rs`).
 `is_match(Or)` = any; `bind(Or)` = bind of the FIRST matching
-alternative; `ids`/`unbind`/`delete` walk alternative 0 only (the
+alternative; `ids`/`fresh_ids`/`delete` walk alternative 0 only (the
 others share its ids — walking all would double-visit);
-`is_refutable(Or)` = true; `matches_anything(Or)` = false: an
+`covers(Or)` = false (refutable wherever it stands); `matches_anything(Or)` = false: an
 alternative matches anything of its own member only, which the
 select's walk judges per alternative.
 `binds_uniq` applies within one alternative — the SAME name across
