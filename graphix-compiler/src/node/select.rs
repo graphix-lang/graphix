@@ -98,6 +98,11 @@ impl LazyArmFacts {
             // has the same root. probe:
             // design/review-2026-10-12/repro/x-engine-firing-03.sh (fuzz-schedule form:
             // x-engine-firing-01.gx) (x-engine-firing-03)
+            // 2026-10-15 claude: same root as tests-lang-rest-b-02 (wake.rs, for eric),
+            // which asks for the mechanism (a per-variable fire epoch, or seeding from
+            // the function value's definition refs); waiting on that ruling.
+            // TrackedFires::evaluated (5c66bda6a) does not cover it: it walks the arm
+            // without callees, and the lost fire predates the first dispatch.
             tracked: TrackedFires::new(&ctx.env, arms.len(), |i, r| {
                 arm_refs(&arms[i], r)
             }),
