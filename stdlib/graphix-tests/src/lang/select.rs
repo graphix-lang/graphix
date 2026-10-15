@@ -2659,6 +2659,36 @@ run!(wake_constant_keeps_target, WAKE_CONSTANT_KEEPS_TARGET, |v: Result<&Value>|
             [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
 });
 
+// A target that holds a value is held at its arm's wake even when its
+// initializer never published: a bottom initializer whose value arrived
+// during the sleep, read by the other arm, leaves the last write.
+async fn wake_keeps_target_of_unpublished_let(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+  let n = 0;
+  n <- select n { k if k < 6 => k + 1, _ => never() };
+  let y: i64 = never();
+  y <- select n { 2 => 1, _ => never() };
+  let c = (n < 2) || (n >= 4);
+  select c {
+    true => {
+      let x = y;
+      x <- select n { 1 => 5, _ => never() };
+      x
+    },
+    false => y + 100
+  }
+}"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(as_i64s(&values), vec![101, 5, 5, 5]);
+    Ok(())
+}
+
+modes!(wake_keeps_target_of_unpublished_let);
+
 // A restart builtin passing a wake's own constant emits a wake's fire, so
 // a `<-` target it initialises resumes after the wake as one a constant
 // initialises does (`base`).

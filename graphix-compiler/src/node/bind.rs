@@ -420,59 +420,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        // CR claude for claude: [readability/low] The comments in this function are
-        // five overlapping fragments interleaved with the code ('At a wake the
-        // initializer's constants fire', 'under a wake view…', 'A stale RHS is already
-        // served by the store…', 'the ids whose last write a wake keeps', 'After a
-        // sleep the store entry may lag…'). They restate each other, and the rule
-        // itself is never written down in one place: which ids a wake holds (`held`),
-        // and when a production that does not trigger still publishes (`publish`,
-        // `wake_refresh`, `ever_published`). That makes the code hard to check against
-        // design/wake_catchup.md. Replace them with one invariant of at most three
-        // lines above the `held`/`publish` computation, e.g. 'a woken `<-` target keeps
-        // its last write unless its initializer delivered a real event; after a sleep a
-        // non-triggering production republishes quietly', and delete the rest.
-        // (c-bind-07)
         let woke = self.slept.take();
-        // At a wake the initializer's constants fire; the fire is the wake's,
-        // not an event's, unless one of its inputs fired too.
         let tv = self.node.update(ctx);
         let tag = tv.tag();
-        // under a wake, a production that is no real event leaves a `<-`
-        // target's last write
-        let wake_phantom = (woke || ctx.event.wake()) && !tag.is_event();
-        // A stale RHS is already served by the store, except before the
-        // first publish, which goes out whatever its tag. A fresh bottom
-        // persists in the store. A connect target's value is its last
-        // write: a wake's fire republishes nothing over it, nor does a
-        // standing bottom (`let x = never()`).
-        // the ids whose last write a wake keeps: a destructuring let's
-        // other ids recompute
+        // At a wake a `<-` target holding a value keeps it unless the
+        // initializer delivered a real event; otherwise a production
+        // publishes when it fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        // CR claude for claude: [bug/medium] Whether this let published before is the
-        // wrong test for holding a `<-` target at a wake. Take a let whose initializer
-        // was bottom until the arm slept, while a `<-` had written its target. If the
-        // initializer gains a value during the sleep and another selected arm consumes
-        // that fire, the wake delivers it STALE and WAKE. `held` stays empty, and the
-        // `!self.ever_published` publish writes the stale value over the target's last
-        // write. wake_catchup.md says a target holding a value is held back from
-        // everything but a real fire of its initializer. The probe prints 1 where `let
-        // y: i64 = 0` keeps 5. Fix: hold a connect-target id when it already holds a
-        // value (`ctx.rt.store_get(&id)` is a non-bottom entry), not when
-        // `ever_published`. Pin it beside `lang::select::wake_constant_keeps_target`.
-        // probe: design/review-2026-10-12/repro/c-bind-02.gx (c-bind-02)
-        if wake_phantom && (self.ever_published || tag.is_bottom()) {
+        if (woke || ctx.event.wake()) && !tag.is_event() {
             self.pattern.ids(&mut |id| {
-                if ctx.connect_targets.contains(&id) {
+                let holds =
+                    || ctx.rt.store_get(&id).is_some_and(|(tv, _)| !tv.tag().is_bottom());
+                if ctx.connect_targets.contains(&id) && (tag.is_bottom() || holds()) {
                     held.push(id)
                 }
             });
         }
-        // After a sleep the store entry may lag a stale recompute;
-        // re-publish quietly (design/wake_catchup.md).
-        let wake_refresh = woke && !tag.triggers();
-        let publish =
-            tag.triggers() || (!self.ever_published && !tag.is_bottom()) || wake_refresh;
+        let publish = tag.triggers()
+            || (!self.ever_published && !tag.is_bottom())
+            || (woke && !tag.triggers());
         if dbgenv::gxdbg_letbind() {
             eprintln!(
                 "LETBIND {} tag={tag:?} val={:?} ever_published={} held={held:?} publishing={publish}",
