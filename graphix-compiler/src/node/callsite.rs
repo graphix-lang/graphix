@@ -1921,24 +1921,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// This site's instantiation identity ([`FnArgIdentity`]): per
-    /// argument, the source lambda it resolves to (a literal is its own
-    /// source; a `Ref` goes through `bind_to_lambda`; a `<-` target is
-    /// dynamic).
-    // CR claude for claude: [risk/low] The identity depends on how far the site's
-    // defaults have got. CallSite::typecheck0 computes it before fill_omitted, so
-    // omitted defaults are absent. resolve_static computes it over the placeholders,
-    // where they are (key, None). build_bound computes it after prepare_bind, where a
-    // lambda-literal default is Some(source). ctx.resolving compares identities
-    // exactly, so one call gets unequal identities. A self-call that omits a default
-    // misses the active instance in typecheck0 (reached under GRAPHIX_NO_SUBST or a
-    // missing table row), and a run-time bind with a lambda-literal default is not
-    // matched by its body's self-call, which binds an extra instance. Defaults belong
-    // to the definition, not to the site: skip every arg whose stage is_default() here,
-    // so all three points agree. (c-callsite-08)
+    /// written argument, the source lambda it resolves to (a literal is
+    /// its own source; a `Ref` goes through `bind_to_lambda`; a `<-`
+    /// target is dynamic). A default is the definition's, not the site's,
+    /// so it is left out wherever the bind has got to.
     fn fn_arg_identity(&self, ctx: &CompileCtx<R, E>) -> FnArgIdentity {
         let mut identity: FnArgIdentity = self
             .args
             .iter()
+            .filter(|(_, arg)| !arg.stage.is_default())
             .map(|(key, arg)| {
                 let source = arg.node.as_ref().and_then(|node| match node.view() {
                     _ if let Some(l) = lambda_literal(node) => Some(l.source_id()),
