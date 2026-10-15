@@ -160,19 +160,34 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     composite_plumbing!(Struct);
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let (vals, tag) = gathered!(self, ctx, Value::Array(ValArray::from([])));
-        // CR claude for claude: [perf/low] Whenever any field fires, this allocates a
-        // new `[name, value]` array for every field plus the outer array. A field that
-        // did not fire has the same value its pair in the resident already holds. A
-        // 10-field UI state record with one changing field allocates 11 arrays per
-        // event where 2 would do. Fix: when the node did not wake and the resident
-        // holds a value, reuse the resident's pair (an Arc bump) for each field whose
-        // production did not trigger, and allocate pairs only for the fields that
-        // fired. gather already returns each field's TagValue. (x-alloc-08)
-        let iter = self.names.iter().zip(vals).map(|(name, v)| {
-            let name = Value::String(name.clone());
-            Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
-        });
+        if self.n.is_empty() {
+            return super::produce_constant(ctx.event, &mut self.resident, || {
+                Value::Array(ValArray::from([]))
+            });
+        }
+        let fields = self.n.len();
+        let (tag, prods) = super::gather(ctx, &mut self.n, &mut self.fork);
+        let woke = self.slept.take();
+        dense_gate!(self.resident, tag, tag.is_bottom(), woke);
+        // a field that did not fire holds what its pair in the resident
+        // holds, unless a wake recomputed it
+        let held = match self.resident.is_bottom() || woke {
+            true => None,
+            false => self.resident.with_value(|v| match v {
+                Value::Array(a) if a.len() == fields => Some(a.clone()),
+                _ => None,
+            }),
+        };
+        let iter =
+            self.names.iter().zip(prods).enumerate().map(|(i, (name, tv))| match &held {
+                Some(held) if !tv.tag().triggers() => held[i].clone(),
+                _ => {
+                    let name = Value::String(name.clone());
+                    Value::Array(ValArray::from_iter_exact(
+                        [name, tv.value_cloned()].into_iter(),
+                    ))
+                }
+            });
         let v = Value::Array(ValArray::from_iter_exact(iter));
         self.resident.set(TagValue::tagged(v, tag))
     }
