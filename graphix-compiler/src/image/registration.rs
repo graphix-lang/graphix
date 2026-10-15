@@ -299,6 +299,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         image: Bytes,
     ) -> Result<Registration<R, E>, PackError> {
         let saved = Saved::take(self);
+        let mark = self.fusion.restored_mark();
         let mut nodes = Vec::new();
         match self.decode_registration(image, &mut nodes) {
             Ok((dec, scope, program)) => {
@@ -312,21 +313,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
                     n.delete(self);
                 }
                 self.drop_deferred();
-                // CR claude for claude: [risk/low] This rollback does not cover fusion.
-                // `Saved::take` skips it, and `Jit::load_wrapped` pushes each restored
-                // wrapper onto `restored` during decode. A program entry that fails
-                // after its first fused region leaves those records queued, and the
-                // registration entry's restore then links them through
-                // `install_restored` for nodes that no longer exist.
-                // `CallSite::materialize`'s error path leaves them queued the same way.
-                // Separately, `CallSite::image_decode` registers its refs directly with
-                // `rt.ref_var`, and a node decoded inside a parent that then fails is
-                // dropped without `delete`, so those refs stay registered. The rule
-                // that a failed read leaves the session untouched does not hold. Fix:
-                // note the length of the JIT's `restored` before decode and truncate it
-                // on failure, and register decode-time refs through `record_ref` so
-                // `drop_deferred` cancels them. No trigger is reachable today because
-                // the checksum guards the input. (x-image-06)
+                self.fusion.forget_restored_since(mark);
                 saved.restore(self);
                 Err(e)
             }

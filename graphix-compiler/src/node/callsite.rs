@@ -2398,6 +2398,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 anyhow!("no image to decode instance {instance:?} from")
             })?;
         let mut dec = shared.lock();
+        let mark = ctx.fusion.restored_mark();
         let at = dec
             .ext_ref::<image::Restored>()
             .and_then(|r| r.instances.get(&instance).copied());
@@ -2412,24 +2413,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     GXLambda::image_decode(ctx, &mut sub)
                         .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
                 })
-                // CR claude for claude: [risk/low] When install_restored fails here,
-                // the decoded GXLambda is dropped without delete. drop_deferred unwinds
-                // only the deferred refs, so the variables the decode registered
-                // directly with ctx.rt.ref_var (the CallSite imaged refs, builtins
-                // re-registering ids) keep scheduling a statement nothing will delete.
-                // A decode that fails partway is worse: the wrappers
-                // WrappedKernel::image_decode already pushed onto Jit::restored stay
-                // queued, because read_registration's Saved does not cover fusion. The
-                // next install_restored, for example the registration entry read after
-                // a failed program entry, links those orphans, and their code lives for
-                // the session with no owner. Fix: have both error paths truncate
-                // Jit::restored to its length when the decode started. Delete the
-                // decoded apply when its install fails. Route decode-time ref_var
-                // registrations through record_ref so drop_deferred unwinds them.
-                // (c-image-06)
-                .and_then(|apply| ctx.fusion.install_restored().map(|()| apply))
             }
         };
+        // an instance whose kernels do not install is deleted, not dropped
+        let decoded = decoded.and_then(|mut g| match ctx.fusion.install_restored() {
+            Ok(()) => Ok(g),
+            Err(e) => {
+                Apply::delete(&mut g, ctx);
+                Err(e)
+            }
+        });
         drop(dec);
         let apply: Box<dyn Apply<R, E>> = match decoded {
             Ok(g) => {
@@ -2439,6 +2432,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 Box::new(g)
             }
             Err(e) => {
+                ctx.fusion.forget_restored_since(mark);
                 ctx.drop_deferred();
                 return Err(e);
             }

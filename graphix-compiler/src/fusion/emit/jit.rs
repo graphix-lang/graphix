@@ -1509,18 +1509,6 @@ impl Jit {
         meets_abstract: bool,
     ) -> Result<WrappedKernel> {
         let entry = Arc::new(OnceLock::new());
-        // CR claude for claude: [perf/low] Only install_restored drains this queue, and
-        // a decode that fails after some kernels were decoded never reaches it. That
-        // happens on decode_registration's early returns, and in CallSite::materialize
-        // when GXLambda::image_decode errs. read_registration's Saved restore does not
-        // cover `fusion`, so the orphaned wrappers stay queued. The next successful
-        // install_restored (the registration entry after a failed program entry, or a
-        // later lazy materialize) compiles them into the arena, and Generation::loaded
-        // keeps them, though nothing can call them. So a failed read does not leave the
-        // session untouched. Fix: clear the queue on every decode-failure path (a
-        // Jit::drop_restored called from read_registration's Err arm and materialize's
-        // Err arm), or have the decode session own the list and hand it to
-        // install_restored. (f-jit-07)
         self.restored.push((wrapper.clone(), entry.clone()));
         Ok(WrappedKernel {
             entry,
@@ -1529,6 +1517,16 @@ impl Jit {
             state_self_blocks,
             meets_abstract,
         })
+    }
+
+    /// How many restored wrappers wait for their install: a decode notes
+    /// it first and, failing, forgets what it queued since.
+    pub(crate) fn restored_mark(&self) -> usize {
+        self.restored.len()
+    }
+
+    pub(crate) fn forget_restored_since(&mut self, mark: usize) {
+        self.restored.truncate(mark)
     }
 
     /// Install every wrapper an image decode restored, under one

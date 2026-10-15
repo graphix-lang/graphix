@@ -442,6 +442,21 @@ impl FusionCtx {
         .map_err(|_| anyhow::anyhow!("fusion is unavailable"))
     }
 
+    /// [`emit::jit::Jit::restored_mark`], 0 before the JIT is built.
+    pub(crate) fn restored_mark(&self) -> usize {
+        match &*self.jit.lock() {
+            JitSlot::Built(jit) => jit.restored_mark(),
+            JitSlot::Unbuilt | JitSlot::Unavailable => 0,
+        }
+    }
+
+    /// Forget the restored kernels a failed decode queued after `mark`.
+    pub(crate) fn forget_restored_since(&self, mark: usize) {
+        if let JitSlot::Built(jit) = &mut *self.jit.lock() {
+            jit.forget_restored_since(mark)
+        }
+    }
+
     /// Install the kernels an image decode session restored; the session
     /// ends with this, before anything runs.
     pub(crate) fn install_restored(&self) -> anyhow::Result<()> {
