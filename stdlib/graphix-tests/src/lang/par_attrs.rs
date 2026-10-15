@@ -312,3 +312,51 @@ async fn bound_queuefn_calls_stay_ordered() -> Result<()> {
     }
     Ok(())
 }
+
+// A reference publishes its cell, and a moving place its path, in the
+// cycle it fires: a later sibling reading it through `*r` is not
+// independent of it, as a call's argument or a tuple's field.
+#[tokio::test(flavor = "current_thread")]
+async fn a_reference_and_its_reader_stay_ordered() -> Result<()> {
+    for code in [
+        r#"{
+            let i = array::iter([1, 2, 3, 4, 5, 6]);
+            let held: [&i64, null] = null;
+            let pair = |r: &i64, v: i64| (r, v);
+            let t = pair(&(i * 10), select held { null as _ => -1, r => *r });
+            held <- once(t.0);
+            t.1
+        }"#,
+        r#"{
+            let a = [10, 20, 30, 40];
+            let i = 0;
+            i <- select i { 6 => never(), _ => i + 1 };
+            let r = &a[0];
+            let t = ({ r <- &a[i % 4]; i }, *r);
+            t.1
+        }"#,
+    ] {
+        let serial = run_par(code, ParMode::Off).await?;
+        assert!(serial.values.len() > 3, "{code}");
+        for _ in 0..3 {
+            assert_eq!(
+                run_par(code, ParMode::Force).await?.values,
+                serial.values,
+                "{code}"
+            );
+        }
+    }
+    let err = refusal(
+        r#"{
+            let a = [10, 20, 30, 40];
+            let i = array::iter([0, 1, 2, 3]);
+            let held: [&i64, null] = null;
+            let t = #[parallel] (&a[i], select held { null as _ => -1, r => *r });
+            held <- t.0;
+            t.1
+        }"#,
+    )
+    .await;
+    assert!(err.contains("#[parallel] has nothing to run in parallel"), "{err}");
+    Ok(())
+}

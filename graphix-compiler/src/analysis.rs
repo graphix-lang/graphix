@@ -1585,6 +1585,23 @@ fn plan_blocks<R: Rt, E: UserEvent>(
     }
 }
 
+/// What a statement or sibling publishes for later ones to read: the
+/// ids it binds, and each reference's cell, which a reference (and a
+/// moving place its path) publishes in the cycle it fires for a later
+/// `*r` to read.
+fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
+    let mut refs = Refs::without_callees();
+    n.refs(&mut refs);
+    refs.with_bound(|id| {
+        published.ids.insert(id);
+    });
+    fusion::for_each_node(n, &mut |x| {
+        if let NodeView::ByRef(b) = x.view() {
+            published.ids.insert(b.id);
+        }
+    });
+}
+
 /// Whether siblings forked at a fork point other than a block's (a
 /// constructor's fields, a call's arguments, an operator's operands, a
 /// collection's slots) compute in parallel what they do in order: none
@@ -1592,13 +1609,6 @@ fn plan_blocks<R: Rt, E: UserEvent>(
 /// A call not resolved yet, or through an application nothing names, is
 /// opaque and ordered; a call site decides its arguments again at each
 /// bind (`CallSite::clear_prepared_bind`).
-// CR claude for claude: [structure/low] independent and plan_runs each build the set of
-// what an earlier sibling publishes with their own copy of the same loop, and the
-// copies already differ. plan_runs also publishes every ByRef cell in the statement (a
-// later `*r` reads it), and independent publishes only the bound ids. No program found
-// today where the difference changes a fork decision, but the next change to what
-// counts as published will land in one copy only. Extract one `published(n, &mut Vars)`
-// (bound ids plus ByRef cells) and call it from both. (x-fix-nodes-05)
 // CR claude for claude: [bug/high] The premise on this doc ("a call not resolved yet is
 // opaque, so this is decided before binds") is false for collection slots. update_slots
 // asks this after the slots are bound, and local_summary follows
@@ -1642,37 +1652,7 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
         if access.reads.meeting(&published).is_some() || (access.ordered && ordered) {
             return false;
         }
-        // CR claude for claude: [bug/medium] `independent` publishes only the ids
-        // `Refs::with_bound` reports. plan_runs also publishes each ByRef node's cell,
-        // because a moving place changes its path in the cycle it fires and a later
-        // `*r` reads that path. So a field or argument holding `&a[i]` and a later
-        // sibling that reads `*r` count as independent and fork. The forked reader then
-        // sees the old path for one cycle: the tuple `({ r <- &a[i % 4]; i }, *r)`
-        // prints (1, 10) where the serial node-walk prints (1, 20), and graphix-fuzz
-        // check reports a parallel divergence. Fix: write the "what a statement
-        // publishes" rule once (bound ids plus ByRef cells) as a helper that both
-        // plan_runs and independent call. probe:
-        // design/review-2026-10-12/repro/c-analysis-branch-02.gx (c-analysis-branch-02)
-        let mut refs = Refs::without_callees();
-        n.refs(&mut refs);
-        // CR claude for claude: [bug/high] `published` here holds only bound ids.
-        // `plan_runs` also counts every `NodeView::ByRef` cell in the statement,
-        // because a reference publishes its cell, and a moving place its path, in the
-        // cycle it fires. Because of this, a call argument, constructor field, operand
-        // or slot holding `&e` is judged independent of a later sibling whose `*r`
-        // reads that cell, and the fork reads a stale cell or path. Under
-        // GRAPHIX_PAR=force, `pair(&(i * 10), select held { .. r => *r })` prints -1
-        // and then nothing, where serial prints -1 10 20 ... 60. GRAPHIX_PAR_AUDIT
-        // panics, and graphix-fuzz check reports a parallel DIVERGENCE. The place form
-        // `#[parallel] (&a[i], .. *held)` reads the old path under the default auto
-        // mode. Fix: compute a statement's publications in one function that both
-        // `plan_runs` and `independent` call (bound ids plus every ByRef cell), and pin
-        // the call-argument and tuple shapes with `run!` fixtures. probe:
-        // design/review-2026-10-12/repro/x-parallel-01.gx (place form:
-        // x-parallel-01b-byref-place.gx) (x-parallel-01)
-        refs.with_bound(|id| {
-            published.ids.insert(id);
-        });
+        publishes(n, &mut published);
         ordered |= access.ordered;
     }
     true
@@ -1751,18 +1731,7 @@ fn plan_runs<R: Rt, E: UserEvent>(
             published = Vars::default();
             run_ordered = false;
         }
-        let mut refs = Refs::without_callees();
-        n.refs(&mut refs);
-        refs.with_bound(|id| {
-            published.ids.insert(id);
-        });
-        // a reference publishes its cell (and a moving place its path)
-        // in the cycle it fires, which a later `*r` reads
-        fusion::for_each_node(n, &mut |x| {
-            if let NodeView::ByRef(b) = x.view() {
-                published.ids.insert(b.id);
-            }
-        });
+        publishes(n, &mut published);
         run_ordered |= access.ordered;
         after_module = module;
     }
