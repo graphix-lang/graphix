@@ -399,17 +399,12 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
         field_name: &ArcStr,
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
-        let (typ, sorted_field_idx) = match &source.typ() {
-            Type::Struct(flds) => {
-                flds.iter()
-                    .enumerate()
-                    .find_map(|(i, (n, t, _))| {
-                        if field_name == n { Some((t.clone(), Some(i))) } else { None }
-                    })
-                    .unwrap_or_else(|| (Type::empty_tvar(), None))
-            }
-            _ => (Type::empty_tvar(), None),
-        };
+        // what the source's type says now; the check decides the rest
+        let (typ, sorted_field_idx) =
+            match struct_field_type(ctx, source.typ(), field_name) {
+                Ok((i, t)) => (t, Some(i)),
+                Err(_) => (Type::empty_tvar(), None),
+            };
         let field_name = field_name.clone();
         Ok(Node::new(Self {
             spec,
@@ -969,27 +964,9 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
-        // CR claude for claude: [structure/low] This match repeats tuple_field_type's
-        // rule (tuple field, error payload, visible abstract payload) by hand, without
-        // its deref. StructRef::compile repeats struct_field_type the same way. The
-        // compile-time guess and the check's answer therefore differ for a named or
-        // variable source type, and a new payload-bearing kind must be added in two
-        // places per node. Fix: call tuple_field_type(ctx, &scope.lexical,
-        // source.typ(), field) and fall back to Type::empty_tvar() on Err (likewise
-        // struct_field_type for StructRef, keeping its index), or start from a fresh
-        // tvar and let typecheck0 bind it. (c-data-map-10)
-        let typ = match &source.typ() {
-            Type::Tuple(ts) => {
-                ts.get(field).map(|t| t.clone()).unwrap_or_else(Type::empty_tvar)
-            }
-            Type::Error(t) => (**t).clone(),
-            Type::Abstract { id, params } if field == 0 => ctx
-                .env
-                .abstract_rep(*id, &scope.lexical)
-                .map(|r| r.instantiate_with(params))
-                .unwrap_or_else(Type::empty_tvar),
-            _ => Type::empty_tvar(),
-        };
+        // what the source's type says now; the check decides the rest
+        let typ = tuple_field_type(ctx, &scope.lexical, source.typ(), field)
+            .unwrap_or_else(|_| Type::empty_tvar());
         let scope = scope.lexical.clone();
         Ok(Node::new(Self {
             spec,
@@ -1121,19 +1098,9 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
-        // Clone the type out of `with_deref` before unifying: the closure
-        // holds TVar read guards that the writes below would deadlock on.
-        // CR claude for claude: [readability/low] The comment above names a
-        // `with_deref` closure and TVar read guards that this function no longer has:
-        // struct_field_type takes and releases its own guard. A Type clone of a TVar
-        // shares the cell, so the clone is not a snapshot either. The '// a clone: no
-        // guard is held across the child's check' line below only restates that
-        // struct_field_type returns an owned Type. Delete both comments.
-        // (c-data-map-11)
         let styp = self.source.typ().clone();
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {
-                // a clone: no guard is held across the child's check
                 let (i, typ) = struct_field_type(ctx, &styp, &rep.name)?;
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
                 if check {
