@@ -203,18 +203,20 @@ fn bind_sig(
             env.modules.insert_cow(scope.append(name).lexical);
         }
     }
-    for si in sig.items.iter() {
+    for (i, si) in sig.items.iter().enumerate() {
         let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
-        bind_sig_item(env, pending, scope, si, &ori)
+        bind_sig_item(env, pending, scope, i, si, &ori)
             .map_err(|e| e.context(ParserContext { ori, pos: si.pos }))?;
     }
     Ok(())
 }
 
+/// Bind the interface's item `si`, the `item`th.
 fn bind_sig_item(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
     scope: &Scope,
+    item: usize,
     si: &SigItem,
     si_ori: &Arc<Origin>,
 ) -> Result<()> {
@@ -322,16 +324,9 @@ fn bind_sig_item(
                     im.trait_name
                 )
             }
-            // CR claude for claude: [risk/low] This ExprId is minted only to name the
-            // scope `impl{N}`. It is never written through `Pack`, so the image's
-            // minted span (`IdSpans`) does not count it. A warm reader's counter is
-            // lifted only past the written ids (`ids::reserve_above`), so the reader
-            // can mint N again. That breaks `reserve_above`'s promise that a new id
-            // never spells an id in the image's text. `lower_over_operands`' `op` scope
-            // has the same shape. Name these scopes from an id the image writes (the
-            // spec's or the item's id), or narrow the claim in `reserve_above`'s doc.
-            // (t-expr-core-05)
-            let bscope = scope.append_block("impl", ExprId::new().inner());
+            // named by its place in the interface, which every load of
+            // the module, an image's included, gives it alike
+            let bscope = scope.append_block("impl", item as u64);
             let mut methods: Map<CompactString, BindId> = Map::new();
             for d in trait_def.methods.iter() {
                 let typ = Type::Fn(Arc::new(traits::method_sig_at(
