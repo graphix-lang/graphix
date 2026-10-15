@@ -341,14 +341,9 @@ impl MapCollection for IndexRange {
     }
 }
 
-/// A slot's last production.
-#[derive(Debug, Default)]
 /// A slot's last production. A fresh slot is bottom until its first
 /// run, which precedes every read of it.
-// CR claude for claude: [readability/low] The doc block above this enum says 'A slot's
-// last production.' twice, once before and once after #[derive(Debug, Default)], so
-// rustdoc renders the sentence twice. Delete the first line and keep the doc block
-// together above the derive. (c-collection-08)
+#[derive(Debug, Default)]
 enum SlotState {
     Value(Value),
     #[default]
@@ -390,6 +385,31 @@ struct Callback {
 }
 
 impl Callback {
+    /// The source's bind and the callback of an intrinsic whose formals
+    /// are `args`: the source first, the callback last.
+    fn of_args(
+        scope: &Scope,
+        top_id: ExprId,
+        typ: &FnType,
+        args: &[StructPatternNode],
+    ) -> Result<(BindId, Self)> {
+        let name = |p: &StructPatternNode, what: &str| {
+            p.single_bind_id()
+                .ok_or_else(|| anyhow!("collection {what} argument must be a name"))
+        };
+        let (Some(source), Some(callback)) = (args.first(), args.last()) else {
+            bail!("a collection intrinsic takes a source and a callback")
+        };
+        let typ = match typ.args.last().map(|a| &a.typ) {
+            Some(Type::Fn(ft)) => ft.clone(),
+            Some(t) => bail!("collection callback must be a function, got {t}"),
+            None => bail!("a collection intrinsic takes a callback"),
+        };
+        let id = name(callback, "callback")?;
+        let cb = Self { scope: scope.clone(), id, typ, top_id, share: None };
+        Ok((name(source, "source")?, cb))
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         scope_encode(&self.scope, buf)?;
         self.id.encode(buf)?;
@@ -429,6 +449,15 @@ impl Callback {
         genn::bind(ctx, &self.scope.lexical, name, typ.clone(), self.top_id)
     }
 
+    /// The callback parameter as written, the source a slot's call of a
+    /// resolved definition reports.
+    fn spec<R: Rt, E: UserEvent>(&self, ctx: &CompileCtx<R, E>) -> Arc<Expr> {
+        match ctx.env.by_id.get(&self.id) {
+            Some(b) => Arc::new(genn::name_spec(&b.name, b.pos, b.ori.clone())),
+            None => NOP.clone(),
+        }
+    }
+
     /// A call of the callback over `args`: the prototype, whose dispatch
     /// the typecheck resolves, or a slot, which calls the definition the
     /// prototype resolved to when it resolved one.
@@ -445,24 +474,10 @@ impl Callback {
                 let function = genn::reference(ctx, *id, fty, *top_id);
                 genn::apply_prototype(function, scope.clone(), args, typ, *top_id)
             }
-            // CR claude for claude: [structure/low] This arm repeats genn::apply_value
-            // (Constant::new over the def, then genn::apply). Call genn::apply_value
-            // and set `share` on the result. MapQ::new and FoldQ::new also repeat the
-            // same argument parsing: single_bind_id with ok_or_else for the source and
-            // the callback, the Type::Fn match on the callback type, and the Callback
-            // literal. One helper that returns the Callback and the source bind id,
-            // given the callback's argument index, would serve both. (c-collection-09)
             CallKind::Slot(Some(def)) => {
-                // CR claude for claude: [bug/low] A slot's call of a resolved callback
-                // is built over NOP, the compiler's placeholder expression. A builtin
-                // that reports its call site shows that placeholder: `array::map([1, 2,
-                // 3], dbg)` logs `line: 1, column: 1 dbg("nop"): 1`, and so does any
-                // error a builtin wraps with its call's spec. Fix: give the constant
-                // and the call the spec of the callback argument (or of the collection
-                // call), as the prototype path gets one through genn::reference. probe:
-                // design/review-2026-10-12/repro/x-rerun-1-11.gx (x-rerun-1-11)
-                let function = super::Constant::new(def, fty, NOP.clone());
-                let mut call = genn::apply(function, scope.clone(), args, typ, *top_id);
+                let spec = self.spec(ctx);
+                let mut call =
+                    genn::apply_constant(def, spec, scope.clone(), args, typ, *top_id);
                 if let Some(cs) =
                     call.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
                 {
@@ -832,23 +847,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
         if typ.args.len() != 2 || args.len() != 2 {
             bail!("collection map intrinsic requires two arguments")
         }
-        let source_id = args[0]
-            .single_bind_id()
-            .ok_or_else(|| anyhow!("collection source argument must be a name"))?;
-        let id = args[1]
-            .single_bind_id()
-            .ok_or_else(|| anyhow!("collection callback argument must be a name"))?;
-        let callback_type = match &typ.args[1].typ {
-            Type::Fn(ft) => ft.clone(),
-            t => bail!("collection callback must be a function, got {t}"),
-        };
-        let callback = Callback {
-            scope: scope.clone(),
-            id,
-            typ: callback_type,
-            top_id,
-            share: None,
-        };
+        let (source_id, callback) = Callback::of_args(scope, top_id, typ, args)?;
         let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let prototype = Slot::new(ctx, &callback, &element_type, CallKind::Prototype);
@@ -1432,26 +1431,10 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
         if typ.args.len() != 3 || args.len() != 3 {
             bail!("collection fold intrinsic requires three arguments")
         }
-        let source_id = args[0]
-            .single_bind_id()
-            .ok_or_else(|| anyhow!("collection source argument must be a name"))?;
+        let (source_id, callback) = Callback::of_args(scope, top_id, typ, args)?;
         let init_id = args[1]
             .single_bind_id()
             .ok_or_else(|| anyhow!("collection init argument must be a name"))?;
-        let id = args[2]
-            .single_bind_id()
-            .ok_or_else(|| anyhow!("collection callback argument must be a name"))?;
-        let callback_type = match &typ.args[2].typ {
-            Type::Fn(ft) => ft.clone(),
-            t => bail!("collection callback must be a function, got {t}"),
-        };
-        let callback = Callback {
-            scope: scope.clone(),
-            id,
-            typ: callback_type,
-            top_id,
-            share: None,
-        };
         let acc_type = typ.args[1].typ.clone();
         let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);

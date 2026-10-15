@@ -6,7 +6,7 @@ use super::{
 use crate::SourcePosition;
 use crate::{
     BindId, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
-    expr::{ApplyExpr, ExprId, ExprKind, ModPath, Origin},
+    expr::{ApplyExpr, Expr, ExprId, ExprKind, ModPath, Origin},
     typ::{FnType, Type},
 };
 use anyhow::Result;
@@ -40,7 +40,16 @@ pub fn bind<R: Rt, E: UserEvent>(
             SYNTHETIC.clone(),
         )
         .id;
-    (id, reference(ctx, id, typ, top_id))
+    let spec = name_spec(name, SourcePosition::default(), SYNTHETIC.clone());
+    (id, Ref::new(ctx, id, typ, top_id, spec))
+}
+
+/// `name` as a reference written at `pos` in `ori`: what a generated
+/// node reports as its source.
+pub(crate) fn name_spec(name: &str, pos: SourcePosition, ori: Arc<Origin>) -> Expr {
+    let mut spec = ExprKind::Ref { name: ModPath::from([name]) }.to_expr(pos);
+    spec.ori = ori;
+    spec
 }
 
 /// generate a reference to a bind id
@@ -79,7 +88,19 @@ pub fn apply_value<R: Rt, E: UserEvent>(
     typ: &Arc<FnType>,
     top_id: ExprId,
 ) -> Node<R, E> {
-    let fnode = Constant::new(f, Type::Fn(typ.clone()), NOP.clone());
+    apply_constant(f, NOP.clone(), scope, args, typ, top_id)
+}
+
+/// [`apply_value`], the function reporting `spec` as its source.
+pub(crate) fn apply_constant<R: Rt, E: UserEvent>(
+    f: Value,
+    spec: Arc<Expr>,
+    scope: Scope,
+    args: SmallVec<[Node<R, E>; 2]>,
+    typ: &Arc<FnType>,
+    top_id: ExprId,
+) -> Node<R, E> {
+    let fnode = Constant::new(f, Type::Fn(typ.clone()), spec);
     apply(fnode, scope, args, typ, top_id)
 }
 
@@ -119,12 +140,13 @@ fn apply_inner<R: Rt, E: UserEvent>(
         ),
         function: Arc::new(fnode.spec().clone()),
     })
-    .to_expr_nopos();
+    .to_expr(fnode.spec().pos);
     spec.ori = fnode.spec().ori.clone();
     let args: ArgMap<R, E> = ArgKey::of_formals(&typ.args)
         .zip(args)
         .map(|(key, node)| {
-            (key, Arg::new(BindId::new(), Some(node), ArgStage::Given, NOP.clone()))
+            let spec = Arc::new(node.spec().clone());
+            (key, Arg::new(BindId::new(), Some(node), ArgStage::Given, spec))
         })
         .collect();
     Node::new(CallNode::Call(CallSite::unbound(
