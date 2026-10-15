@@ -648,9 +648,12 @@ node graph IS the IR — there is no parallel typed IR
   computation only, and the `Effect::Io` calls gated on their trigger's
   fire. A builtin fuses iff its `Effect::Stateless` carries a `FastCall`
   or its `Effect::Io` an `IoCall`; one that performs under a select arm
-  fuses there only when its trigger fires at every entry (it reads the
-  scrutinee or the arm's binds, and no arm has a guard,
-  `lowering::arm_io_blocker`); `?` fuses with or without a covering catch (a handler-ful
+  fuses there only when its trigger fires at every entry (it fires with
+  the scrutinee or the arm's binds, through a nested select's scrutinee
+  only and never a function's result; a performing callee performs only
+  on its formals, `analysis::io_follows`; and no arm has a guard,
+  `lowering::arm_io_blocker`), and a tail recursion is one native loop
+  only when its Io follows its formals; `?` fuses with or without a covering catch (a handler-ful
   raise is queued and delivered after the run through the same path
   `Qop` uses), except a handler-ful `?` reachable under a select arm,
   callee bodies included: its raise may be owed to a fire the arm

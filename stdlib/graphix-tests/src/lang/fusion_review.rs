@@ -2,6 +2,9 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx_value::Value;
 
+// A callee first dispatched late, under an arm, prints its constant at
+// that dispatch, once. The arm node-walks: its callee's print does not
+// follow the arm's entry, which a kernel could not re-fire at a re-entry.
 #[tokio::test]
 async fn late_callee_dispatch_primes_constants() -> Result<()> {
     use arcstr::literal;
@@ -18,7 +21,6 @@ async fn late_callee_dispatch_primes_constants() -> Result<()> {
             ctx.libstate.set(sink.clone());
         })
         .await?;
-        ctx.rt.control().reset_invocations();
         let result = ctx
             .rt
             .compile(literal!(
@@ -27,7 +29,7 @@ async fn late_callee_dispatch_primes_constants() -> Result<()> {
                     k <- select k < 6 { true => k + 1, false => never() };
                     let g = |n: i64| -> i64 { println("first"); n };
                     let f = |s: i64| -> i64 select s { 0 => 0, n => g(n) };
-                    #[native] f(select k < 3 { true => 0, false => k })
+                    f(select k < 3 { true => 0, false => k })
                 }"#
             ))
             .await?;
@@ -40,7 +42,6 @@ async fn late_callee_dispatch_primes_constants() -> Result<()> {
         .await?;
         assert_eq!(values, [0, 0, 0, 3, 4, 5, 6].map(Value::I64), "{mode:?}");
         assert_eq!(sink.take(), "first\n", "{mode:?}");
-        assert!(mode.node_walk() || ctx.rt.control().invocations().1 > 0);
         ctx.shutdown().await;
     }
     Ok(())

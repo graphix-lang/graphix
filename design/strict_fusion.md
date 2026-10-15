@@ -27,9 +27,13 @@ each through the builtin's `BuiltIn::perform`, in execution order, a
 forked loop's chunks in slot order. A kernel derives its selection
 fresh each run, so under a select arm a call that performs (an `Io`
 builtin's, or a function's that reaches one) fuses only when each
-argument that can trigger it fires at every entry to the arm: it reads
-the scrutinee or one of the arm's binds, at every select over it, and
-no arm has a guard (`lowering::arm_io_blocker`). Elsewhere a fire the
+trigger fires at every entry to the arm: an `Io` builtin's trigger fires
+with the scrutinee or one of the arm's binds (a read of one, or a part
+that reads one: a nested select through its scrutinee only, never a
+function's result), a performing function is called with arguments that
+each do and performs only on its own formals, recursively
+(`analysis::io_follows`), and no arm has a guard
+(`lowering::arm_io_blocker`). Elsewhere a fire the
 arm missed asleep, which the node-walk re-delivers at entry, or a
 constant, which fires at the arm's wake, would print on one engine
 only. A tail recursion that prints by its formals is one native loop.

@@ -221,23 +221,6 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
 /// (a guard re-enters an arm under a standing scrutinee) and the
 /// argument reads the scrutinee or one of the arm's binds, at every
 /// select it sits under. `selects` are the region's selects.
-// CR claude for claude: [bug/high] Reading the scrutinee or an arm bind does not make a
-// trigger fire at every entry to the arm, so a fused performing call under an arm loses
-// prints that the node-walk makes. Three cases get through. The read can sit in an
-// untaken arm of a nested select whose taken arm is a constant. The read can be an
-// argument the callee ignores (`g = |a, b| b`), while a fire the arm missed asleep is
-// what the node-walk re-delivers. And performing_args takes every argument of a
-// performing callee as a trigger, even though the callee may print its own constant
-// (`println("hi")`). In each case the node-walk prints at every entry and the kernel
-// prints once, and `graphix-fuzz check` reports DIVERGENCE. Fix: refuse any performing
-// call (an Io builtin's site, or a call whose call_facts say io) reachable under a
-// select arm, as arm_raise_blocker does for a handler-ful `?`, or share one blocker for
-// both. A finer rule would have to prove the fire. It would walk only fire-preserving
-// nodes down to the scrutinee or a bind, stop at nested selects, guards and calls, and
-// take a callee's triggers from its own analysis. Update the strict-fusion rule in
-// CLAUDE.md/AGENTS.md and design/strict_fusion.md to match. Probe:
-// design/review-2026-10-12/repro/x-fix-fusion-01.gx (variants 01b, 01c).
-// (x-fix-fusion-01)
 fn arm_io_blocker<R: Rt, E: UserEvent>(
     selects: &[&Node<R, E>],
     ctx: &CompileCtx<R, E>,
@@ -251,62 +234,34 @@ fn arm_io_blocker<R: Rt, E: UserEvent>(
             _ => None,
         };
         for (pat, body) in sel.arms.iter() {
-            let mut binds: LPooled<IntSet<BindId>> = LPooled::take();
+            // every performing call fires whenever the arm is entered: its
+            // trigger fires with the scrutinee or the arm's binds
+            let mut entry: LPooled<IntSet<BindId>> = LPooled::take();
+            entry.extend(scrutinee);
             pat.structure_predicate.ids(&mut |id| {
-                binds.insert(id);
+                entry.insert(id);
             });
-            // CR claude for claude: [bug/high] `entered` does not test whether a
-            // trigger fires at every entry. It only tests whether some Ref under the
-            // trigger names the scrutinee or an arm bind. Also, performing_args returns
-            // every argument of a lambda call as a trigger, ignoring what really
-            // triggers the Io call inside the callee. Three shapes fuse that should
-            // not: a read in an untaken nested arm (`dbg(select y { 0 => s, _ => 7
-            // })`), a read passed to a function that ignores it (`dbg(g(s))` with `g =
-            // |v| 7`), and a callee whose print has a constant trigger (`h(s)` with `h
-            // = |v| { print("c"); v + 1 }`). In each one the node-walk performs at
-            // every entry of the arm, because a constant fires at the arm's wake, while
-            // the kernel performs only once. Fix: replace the scan with a firing test.
-            // A Ref to the scrutinee or a bind passes and a constant fails. A select
-            // passes only through its own scrutinee, never through its arms. Operators,
-            // constructors, fast calls and casts pass if a child passes. A lambda call
-            // passes only if its result is shown to derive from that argument. For a
-            // performing lambda, require that every Io trigger in the callee derives
-            // from its formals, or refuse it under an arm. Correct
-            // design/strict_fusion.md and CLAUDE.md to match, and pin all three shapes
-            // with run! fixtures. probe:
-            // design/review-2026-10-12/repro/f-mod-lowering-01.gx (f-mod-lowering-01)
-            // 2026-10-14 claude: the firing test this asks for exists now for the
-            // tail-loop gate (analysis::io_follows / fires_with, f-call-flow-02): a
-            // read of the given ids fires, a constant does not, a select fires through
-            // its scrutinee only, a lambda call's result is not assumed to, and a
-            // performing callee must be reached with arguments that fire and itself
-            // follow its formals. arm_io_blocker can take it with the scrutinee and the
-            // arm's binds as the ids.
-            let entered = |n: &Node<R, E>| {
-                let mut reads = false;
-                fusion::for_each_emitted_node(n, &mut |x| {
-                    if let NodeView::Ref(r) = x.view() {
-                        reads |= Some(r.id) == scrutinee || binds.contains(&r.id);
-                    }
-                });
-                reads
-            };
-            fusion::for_each_emitted_node(body, &mut |n| {
-                if found.is_some() {
-                    return;
-                }
-                let NodeView::CallSite(cs) = n.view() else { return };
-                let Some(triggers) = performing_args(cs, ctx) else { return };
-                if guarded || !triggers.iter().all(|t| entered(t)) {
-                    found = Some(n)
-                }
-            });
+            let follows =
+                || crate::analysis::io_follows(body, &entry, ctx, &mut IntSet::default());
+            if guarded && performs(body, ctx) || !guarded && !follows() {
+                found = Some(body);
+            }
             if found.is_some() {
                 return found.map(io_blocker);
             }
         }
     }
     None
+}
+
+/// Whether `n` makes a performing call.
+fn performs<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) -> bool {
+    let mut performs = false;
+    fusion::for_each_emitted_node(n, &mut |x| {
+        performs = performs
+            || matches!(x.view(), NodeView::CallSite(cs) if performing_args(cs, ctx).is_some());
+    });
+    performs
 }
 
 fn io_blocker<R: Rt, E: UserEvent>(n: &Node<R, E>) -> FusionBlocker {

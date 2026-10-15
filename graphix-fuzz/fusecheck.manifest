@@ -462,7 +462,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 4	tail-loop-internal-connect-aug2026/01_campaign_witness.gx
 3	tail-loop-internal-connect-aug2026/02_inlined_twin.gx
 2	tail-loop-internal-connect-aug2026/03_nontail_twin.gx
-4	tail-loop-io-oct2026/01_callee_constant_io.gx
+5	tail-loop-io-oct2026/01_callee_constant_io.gx
 1	tail-quiet-poll-rederivation-aug2026/00_iter_fed_const_loop.gx
 abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 2	tail-scrut-fire-jul2026/01_const_base_arm_framed.gx

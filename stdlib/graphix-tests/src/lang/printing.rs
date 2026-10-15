@@ -226,3 +226,42 @@ async fn arm_entry_prints_a_constant(mode: Mode) -> Result<()> {
 }
 
 modes!(arm_entry_prints_a_constant);
+
+// A print under a select arm prints at every entry to the arm, fused or
+// not: its trigger fires there only through the scrutinee or the arm's
+// binds, never through an untaken nested arm, an argument a function
+// ignores, or a callee's own constant.
+async fn arm_entry_prints_every_time(mode: Mode) -> Result<()> {
+    for (code, prints) in [
+        (
+            r#"{
+                let step = 0;
+                step <- select step { s if s < 8 => s + 1, _ => never() };
+                let f = |x: i64, y: i64| select x {
+                    0 => dbg(#dest: `Stdout, select y { 0 => "zero", _ => "[x]" }),
+                    _ => "other"
+                };
+                f(step % 2, 0)
+            }"#,
+            5,
+        ),
+        (
+            r#"{
+                let step = 0;
+                step <- select step { s if s < 8 => s + 1, _ => never() };
+                let p = |x: i64| { println("hi"); x + 1 };
+                let f = |s: i64| select s { 0 => p(s), _ => -1 };
+                f(step % 2)
+            }"#,
+            5,
+        ),
+    ] {
+        let (_, out) = run_delta(code, mode).await?;
+        let (_, walked) = run_delta(code, Mode::Interp).await?;
+        assert_eq!(out, walked, "{code}");
+        assert_eq!(out.lines().count(), prints, "{code}\n{out}");
+    }
+    Ok(())
+}
+
+modes!(arm_entry_prints_every_time);
