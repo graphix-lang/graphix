@@ -415,6 +415,9 @@ fn head_sig(im: &ImplDef) -> FnType {
     }
 }
 
+/// Check the implementation against `sig`, adding the proxies it links;
+/// their references are recorded once every item matched, and a refused
+/// check adds none.
 fn check_sig<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     top_id: ExprId,
@@ -426,6 +429,25 @@ fn check_sig<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let _profile = profile::phase(Phase::ModuleSignature);
     let first_proxy = proxy.len();
+    if let Err(e) = check_sig_items(ctx, proxy, scope, sig, nodes, body_env) {
+        proxy.truncate(first_proxy);
+        return Err(e);
+    }
+    for Proxy { inner, outer, .. } in proxy[first_proxy..].iter() {
+        ctx.record_ref(*inner, top_id);
+        ctx.record_ref(*outer, top_id);
+    }
+    Ok(())
+}
+
+fn check_sig_items<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    proxy: &mut Vec<Proxy>,
+    scope: &Scope,
+    sig: &Sig,
+    nodes: &[Node<R, E>],
+    body_env: &Env,
+) -> Result<()> {
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     // a name a later `let` shadows is not the one the interface exports
@@ -719,10 +741,6 @@ fn check_sig<R: Rt, E: UserEvent>(
         if missing {
             return Err(at(anyhow!("sig item {si} is missing an implementation")));
         }
-    }
-    for Proxy { inner, outer, .. } in proxy[first_proxy..].iter() {
-        ctx.record_ref(*inner, top_id);
-        ctx.record_ref(*outer, top_id);
     }
     Ok(())
 }

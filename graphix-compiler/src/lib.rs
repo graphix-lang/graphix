@@ -1885,12 +1885,14 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         if !self.deferred_pending() {
             return;
         }
-        self.delete_discarded();
+        // registered first, so each discard's delete reaches the runtime,
+        // whether it was registered before this batch or in it
         for ((id, top_id), n) in self.cx.pending_refs.drain() {
             for _ in 0..n {
                 self.rt.ref_var(id, top_id);
             }
         }
+        self.delete_discarded();
     }
 
     /// Undo what a failed compile deferred: delete what it discarded and
@@ -1909,6 +1911,17 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     // from fresh ones (a Discarded variant whose delete unrefs straight to the runtime)
     // so the counts no longer depend on who deletes what, and debug-assert in the
     // runtime's unref_var that the key is registered. (c-lib-04)
+    // 2026-10-15 claude: apply_deferred now registers the batch's references before it
+    // deletes its discards, so every delete reaches the runtime and the counts no
+    // longer depend on who deletes what on that path; GXRt::unref_var debug-asserts the
+    // key is registered. The assertion found a real imbalance at once: check_sig pushed
+    // proxies as it matched items and recorded their references only when all matched,
+    // so a refused interface left proxies clear_compiled unref'd unregistered
+    // (lang::modules::impl_narrower_than_declared and four more); check_sig now drops a
+    // refused check's proxies. What remains is drop_deferred: a failed build's leftover
+    // references must be cleared, not registered, so a registered discard in that batch
+    // whose key a fresh build also holds still cancels the fresh count. Not reachable
+    // while a run-time body fails only on a compiler bug.
     pub fn drop_deferred(&mut self) {
         if !self.deferred_pending() {
             return;
@@ -2795,20 +2808,24 @@ fn compile_top<R: Rt, E: UserEvent>(
     // An attribute the fusion walk neither dispatched nor absorbed
     // would silently assert nothing; a check runs no fusion walk and
     // leaves the attributes to a build.
-    // CR claude for claude: [bug/low] This census check ignores whether fusion actually
-    // ran. check_and_fuse_inner skips the fusion walk when `!ctx.fusion.available()`,
-    // which happens when the JIT failed to build: a bad GRAPHIX_JIT_ARENA, a tight
-    // address-space limit, or an ISA Cranelift lacks. In that case no attribute is
-    // dispatched, and every one is reported as "attribute in a position the fusion pass
-    // cannot check", which blames the program for a host problem. Gate this check on
-    // fusion having run. A `#[native]` that could not be checked because fusion is
-    // unavailable should then get its own error that carries the JIT build error kept
-    // by FusionCtx::jit, or be waived on purpose. probe:
-    // design/review-2026-10-12/repro/f-mod-lowering-04.gx (run with
-    // GRAPHIX_JIT_ARENA=1000000000000000) (f-mod-lowering-04)
     if fusion_on(flags) && !flags.contains(CFlag::CheckOnly) {
         let census = ctx.attr_census.lock();
-        if !census.is_empty() {
+        // with no JIT no walk ran: `#[native]` cannot hold, the others
+        // assert nothing
+        if !census.is_empty()
+            && let Err(e) = ctx.fusion.jit().map(|_| ())
+        {
+            let native = <Native as Attribute<R, E>>::NAME;
+            let spec = census.iter().find(|spec| {
+                let attrs = spec.dec.as_ref().map(|d| &*d.attrs).unwrap_or(&[]);
+                attrs.iter().any(|a| a.name == native)
+            });
+            if let Some(spec) = spec {
+                let e = expr::At::at(e.context("#[native] cannot hold"), spec);
+                drop(census);
+                return Err(abandon_stmt(ctx, node, saved, e));
+            }
+        } else if !census.is_empty() {
             let dispatched = ctx.attr_dispatched.lock();
             let absorbed = ctx.attr_absorbed.lock();
             for spec in census.iter() {

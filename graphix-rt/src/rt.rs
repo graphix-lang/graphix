@@ -291,8 +291,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
         }
-        if let Some(readers) = self.by_ref.get_mut(&id) {
-            if let Some(i) = readers.iter().position(|(e, _)| *e == ref_by) {
+        let readers = self.by_ref.get_mut(&id);
+        let i = readers.as_ref().and_then(|r| r.iter().position(|(e, _)| *e == ref_by));
+        debug_assert!(i.is_some(), "unref_var of an unregistered {id:?} by {ref_by:?}");
+        if let Some(readers) = readers {
+            if let Some(i) = i {
                 readers[i].1 -= 1;
                 if readers[i].1 == 0 {
                     readers.swap_remove(i);

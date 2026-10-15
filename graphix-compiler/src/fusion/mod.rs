@@ -326,8 +326,8 @@ pub(crate) type KernelCacheKey =
 enum JitSlot {
     Unbuilt,
     Built(emit::Jit),
-    /// The build failed: the context runs unfused.
-    Unavailable,
+    /// The build failed, for this reason: the context runs unfused.
+    Unavailable(ArcStr),
 }
 
 enum EmissionSlot {
@@ -415,22 +415,29 @@ impl FusionCtx {
                 Ok(j) => JitSlot::Built(j),
                 Err(e) => {
                     log::warn!("fusion is unavailable, the program runs unfused: {e:#}");
-                    JitSlot::Unavailable
+                    JitSlot::Unavailable(
+                        compact_str::format_compact!("{e:#}").as_str().into(),
+                    )
                 }
             }
         }
         MutexGuard::try_map(jit, |jit| match jit {
             JitSlot::Built(j) => Some(j),
-            JitSlot::Unbuilt | JitSlot::Unavailable => None,
+            JitSlot::Unbuilt | JitSlot::Unavailable(_) => None,
         })
-        .map_err(|_| anyhow::anyhow!("fusion is unavailable"))
+        .map_err(|jit| match &*jit {
+            JitSlot::Unavailable(reason) => {
+                anyhow::anyhow!("fusion is unavailable: {reason}")
+            }
+            _ => anyhow::anyhow!("fusion is unavailable"),
+        })
     }
 
     /// [`emit::jit::Jit::restored_mark`], 0 before the JIT is built.
     pub(crate) fn restored_mark(&self) -> usize {
         match &*self.jit.lock() {
             JitSlot::Built(jit) => jit.restored_mark(),
-            JitSlot::Unbuilt | JitSlot::Unavailable => 0,
+            JitSlot::Unbuilt | JitSlot::Unavailable(_) => 0,
         }
     }
 
@@ -446,7 +453,7 @@ impl FusionCtx {
     pub(crate) fn install_restored(&self) -> anyhow::Result<()> {
         match &mut *self.jit.lock() {
             JitSlot::Built(jit) => jit.install_restored(),
-            JitSlot::Unbuilt | JitSlot::Unavailable => Ok(()),
+            JitSlot::Unbuilt | JitSlot::Unavailable(_) => Ok(()),
         }
     }
 
