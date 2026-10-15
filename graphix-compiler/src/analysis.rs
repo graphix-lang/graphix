@@ -1645,6 +1645,11 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // warm. Deciding these sites at analysis and imaging the verdict, as proposed
     // here, also closes that first cycle; pin to extend:
     // lang::image::warm_fork_point_decides_once_its_callees_bind.
+    // 2026-10-15 claude: after b4e2e7312 (instance summaries drop own binds, one SCC
+    // pass) this probe's first value takes 2.2 s under auto against 0.8 s off (was
+    // 17.7 s, debug). What remains is each site's collect_static_graph_of over
+    // everything below it, still quadratic over a chain, and the warm first cycle;
+    // both go with deciding these sites at analysis.
     let accesses = accesses(children.clone(), ctx);
     let mut published = Vars::default();
     let mut ordered = false;
