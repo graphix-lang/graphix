@@ -41,6 +41,21 @@ run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     _ => false,
 });
 
+// Checked decimal arithmetic names each cause, as an integer's does.
+run!(
+    checked_decimal_names_its_cause,
+    r#"{
+    let f = |n: i64| {
+        let d = cast<decimal>(n)$;
+        let max = decimal:79228162514264337593543950335.0;
+        (max +? d, d /? decimal:0.0, d %? decimal:0.0, max *? d)
+    };
+    f(3)
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap())
+        == r#"[error:["ArithError", "attempt to add with overflow"], error:["ArithError", "attempt to divide by zero"], error:["ArithError", "attempt to calculate the remainder with a divisor of zero"], error:["ArithError", "attempt to multiply with overflow"]]"#
+);
+
 // `x % -1` is 0 for every x, MIN included, checked or not; `%` fails
 // only on a zero divisor. The divisor is a parameter, so the kernel
 // guards it at run time.
