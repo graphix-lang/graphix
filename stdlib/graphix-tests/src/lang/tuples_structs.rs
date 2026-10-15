@@ -474,6 +474,25 @@ run!(
     FuseExpect::None
 );
 
+// A field read over a union of structs of one shape, or of tuples of one
+// arity, reads the field every member holds at one index: a typedef and
+// its expansion, records differing in a variant field.
+run!(
+    field_read_over_a_union_of_one_shape,
+    r#"{
+    type Dom = {name: string};
+    let o: [i64, null] = null;
+    let a: {d: Dom} = {d: {name: "x"}};
+    let b = {d: {name: "y"}};
+    let r = select o { null as _ => b, _ => a };
+    let xs = [{act: `A, n: 1}, {act: `B, n: 2}];
+    let ts = [(1, "a"), (2, `B)];
+    (r.d.name, array::map(xs, |x| x.n), xs[0]$.act, ts[1]$.0)
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap())
+        == r#"["y", [i64:1, i64:2], "A", i64:2]"#
+);
+
 // A source typed by a typedef name is a struct or an abstract like any
 // other: a functional update and a payload read go through the name.
 run!(

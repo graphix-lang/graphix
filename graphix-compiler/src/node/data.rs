@@ -822,6 +822,20 @@ pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
     source: &Type,
     field: usize,
 ) -> Result<Type> {
+    // tuples of one arity: the field's type is each one's
+    if let Some(members) = union_of(ctx, source, |t| match t {
+        Type::Tuple(flds) => Some(flds.clone()),
+        _ => None,
+    })? && members.windows(2).all(|w| w[0].len() == w[1].len())
+    {
+        let ts = members
+            .iter()
+            .map(|flds| flds.get(field).cloned())
+            .collect::<Option<LPooled<Vec<Type>>>>()
+            .ok_or_else(|| anyhow!("in tuple, no such field {}", field))?;
+        let ts: LPooled<Vec<&Type>> = ts.iter().collect();
+        return Type::union(&ctx.env, &ts);
+    }
     deref_typ!("tuple", ctx, source,
         Some(Type::Tuple(flds)) => flds
             .get(field)
@@ -855,30 +869,63 @@ pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
     source: &Type,
     name: &ArcStr,
 ) -> Result<(usize, Type)> {
-    // CR claude for claude: [bug/medium] A field read over a union whose members are
-    // all structs with the same field names is refused with "expected struct not [..]".
-    // `deref_typ!` only tries the env-less `Type::normalize` on a Set, and that
-    // collapses neither common shape. The first is a typedef ref and its own expansion
-    // (`{d: Dom}` vs `{d: {name: string}}`): merge gives up on a Ref paired with a
-    // non-Ref. The second is records that differ in one variant field (`[{act: `A, n:
-    // 1}, {act: `B, n: 2}]`): `A and `B do not merge. As a result `array::map(xs, |r|
-    // r.n)`, `xs[0]$.n` and reads after a select that joins a named type with a literal
-    // are all refused, though structural typing accepts them. `tuple_field_type` has
-    // the same gap for tuples of equal arity. Fix: accept a Set whose members all deref
-    // (through lookup_ref) to Struct with identical field names, or to Tuple with the
-    // same arity. Return the shared sorted index and the union of the members' field
-    // types; the runtime read is by that index, so it agrees for every member. Then
-    // drop the two matching annotation gotchas from the graphix-lang skill. probe:
-    // design/review-2026-10-12/repro/lang-skill-01.gx (and lang-skill-02.gx)
-    // (lang-skill-01)
-    deref_typ!("struct", ctx, source,
-        Some(Type::Struct(flds)) => {
-            match flds.iter().enumerate().find(|(_, (n, _, _))| n == name) {
-                Some((i, (_, t, _))) => Ok((i, t.clone())),
-                None => bail!("in struct, unknown field {name}"),
-            }
+    let field = |flds: &[(ArcStr, Type, WrittenAt)]| match flds
+        .iter()
+        .enumerate()
+        .find(|(_, (n, _, _))| n == name)
+    {
+        Some((i, (_, t, _))) => Ok((i, t.clone())),
+        None => bail!("in struct, unknown field {name}"),
+    };
+    // structs of one shape: the field sits at one index in each
+    if let Some(members) = union_of(ctx, source, |t| match t {
+        Type::Struct(flds) => Some(flds.clone()),
+        _ => None,
+    })? && members.windows(2).all(|w| same_names(&w[0], &w[1]))
+    {
+        let mut index = 0;
+        let mut ts: LPooled<Vec<Type>> = LPooled::take();
+        for flds in members.iter() {
+            let (i, t) = field(flds)?;
+            index = i;
+            ts.push(t);
         }
+        let ts: LPooled<Vec<&Type>> = ts.iter().collect();
+        return Ok((index, Type::union(&ctx.env, &ts)?));
+    }
+    deref_typ!("struct", ctx, source,
+        Some(Type::Struct(flds)) => field(flds)
     )
+}
+
+/// The members of `t`, a union once expanded, each expanded and taken
+/// apart by `part`, when every one of them is that.
+fn union_of<R: Rt, E: UserEvent, T>(
+    ctx: &CompileCtx<R, E>,
+    t: &Type,
+    part: impl Fn(&Type) -> Option<T>,
+) -> Result<Option<LPooled<Vec<T>>>> {
+    let expand = |t: &Type| -> Result<Option<Type>> {
+        let mut t = t.with_deref(|t| t.cloned());
+        while let Some(r @ Type::Ref(_)) = &t {
+            t = Some(r.lookup_ref(&ctx.env)?);
+        }
+        Ok(t)
+    };
+    let set = expand(t)?;
+    let Some(Type::Set(members)) = &set else { return Ok(None) };
+    let mut out: LPooled<Vec<T>> = LPooled::take();
+    for m in members.iter() {
+        match expand(m)?.as_ref().and_then(&part) {
+            Some(p) => out.push(p),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+fn same_names(a: &[(ArcStr, Type, WrittenAt)], b: &[(ArcStr, Type, WrittenAt)]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|((n0, _, _), (n1, _, _))| n0 == n1)
 }
 
 #[derive(Debug)]
