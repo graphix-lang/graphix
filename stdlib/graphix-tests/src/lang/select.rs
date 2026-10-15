@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, as_i64s, eval, refused},
+    testing::{FuseExpect, Mode, as_i64s, eval, refused},
 };
 use netidx::publisher::Value;
 
@@ -1255,6 +1255,34 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     FuseExpect::Jit
 );
+
+// A bottom initializer that only an arm's wake fired, through `$`, a cast
+// or a select arm, is the wake's own fire: the `<-` target keeps its
+// written value, as with `never()`.
+async fn wake_bottom_initializers_keep_the_written_value(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let run = |init: &str| {
+        format!(
+            "{{
+  let sw = 0;
+  sw <- select sw {{ n if n < 8 => n + 1, _ => never() }};
+  let r = select sw % 3 {{
+     0 => {{ let t: i64 = {init}; t <- sw ~ (100 + sw); t }},
+     _ => -1
+  }};
+  (sw, r)
+}}"
+        )
+    };
+    let (expected, _) = run_delta(&run("never()"), mode).await?;
+    for init in ["error(`E)$", "cast<i64>(\"x\")$", "select 1 { 1 => 1 / 0, _ => 2 }"] {
+        let (values, _) = run_delta(&run(init), mode).await?;
+        assert_eq!(values, expected, "{init}");
+    }
+    Ok(())
+}
+
+modes!(wake_bottom_initializers_keep_the_written_value);
 
 // A banked `~` paid when its argument first arrives is that arrival, a
 // real event: the sleeping arm catches `q` up to it at the wake, as it does

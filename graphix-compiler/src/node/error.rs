@@ -650,19 +650,8 @@ fn strip_production<'a>(
         return resident.ride();
     }
     tv.with_value(sink);
-    // CR claude for claude: [bug/medium] A stripped error becomes a bare FRESH bottom
-    // here, which drops the input tag's WAKE bit. Arithmetic bottoms with
-    // `set_bottom_as(tag)` and keeps it. At an arm's wake, a constant `error(`E)` fires
-    // with WAKE only. After `$` or `?`, the `<-` target's `let` takes it as a real fire
-    // of its initializer and forgets its written value. With `1 / 0`, `never()` or `5`
-    // as the initializer the value survives, as the wake catch-up rule requires. Fix:
-    // return `resident.set_bottom_as(tv.tag())`. SelectCtx::emit has the same loss: its
-    // bottom arm is a bare `Tag::FRESH_BOTTOM` while a value gets WAKE_FIRED, so with
-    // the initializer `select 1 { 1 => 1 / 0, _ => 2 }` the node-walk forgets the value
-    // and the JIT keeps it. The SeqGuard `set_bottom(true)` sites in this file have the
-    // same shape. Add a pin that compares these initializers under a wake. probe:
-    // design/review-2026-10-12/repro/c-error-op-03.gx (c-error-op-03)
-    resident.set_bottom(true)
+    // a wake's own fire stays one: the bottom keeps the input's tag
+    resident.set_bottom_as(tv.tag())
 }
 
 /// The payload a `?` raises for a null operand: `NullError` naming the

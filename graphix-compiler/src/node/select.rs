@@ -196,7 +196,9 @@ impl EmissionPlanes {
             }
             Some(v) => TagValue::stale(v),
             None if t.triggers() || self.sound => {
-                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
+                let real = self.real || (t.triggers() && !t.is_wake());
+                let wake = Tag::from_raw(Tag::TAINT_BIT | Tag::WAKE_BIT);
+                TagValue::tagged(Value::Null, if real { Tag::FRESH_BOTTOM } else { wake })
             }
             None => TagValue::tagged(Value::Null, Tag::STALE_BOTTOM),
         }

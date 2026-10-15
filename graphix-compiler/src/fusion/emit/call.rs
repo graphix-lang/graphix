@@ -308,8 +308,9 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
                     (cx.b.ins().bor(base, tagbits), raw1)
                 }
-                // `raw0` is the real Value disc with the tag already in-band.
-                _ => (raw0, raw1),
+                // `raw0` is the real Value disc with the tag already in-band,
+                // but for the wake's own fire, which only the args know
+                _ => (cx.b.ins().bor(raw0, wake_fold), raw1),
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
         }
