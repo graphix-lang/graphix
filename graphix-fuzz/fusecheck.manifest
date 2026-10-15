@@ -538,7 +538,7 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 7	wake-connect-target-sep2026/01_never_let.gx
 6	wake-connect-target-sep2026/02_arm_value.gx
 4	wake-stale-bottom-sep2026/00_plain_select.gx
-22	wake-stale-bottom-sep2026/01_seq_step.gx
+21	wake-stale-bottom-sep2026/01_seq_step.gx
 4	wake-stale-bottom-sep2026/02_let.gx
 4	wake-stale-bottom-sep2026/03_call.gx
 5	wake-stale-bottom-sep2026/04_map_source.gx
