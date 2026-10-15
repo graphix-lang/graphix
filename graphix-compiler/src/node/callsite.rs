@@ -868,8 +868,21 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
 
 /// What an imaged instance's body answers `refs` with before it is
 /// decoded.
+// CR claude for claude: [perf/medium] Each imaged site writes its callee's whole
+// transitive reference summary, so a chain of n distinct functions (`let fi = |x|
+// f{i-1}(x) * 2 + i`) images O(n^2) ids: 50 MB at n=2000, 187 MB at n=4000. A warm
+// start then decodes each level's summary at its first dispatch and unrefs it before
+// registering the decoded body's (equal) refs, so the warm first cycle is O(n^2) too:
+// at n=4000 (debug) the warm run takes 3.5 s wall against 1.8 s cold, its first cycle
+// 3.3 s against 0.02 s. Fix: write a summary once per instance as a shared image
+// object holding the body's own refs and the imaged callees it reaches, flattened only
+// where a registration needs it (the top statement's), and skip the unref/ref churn
+// at materialize when the decoded body's refs are the summary's by construction.
+// probe: bench/par_chain.gx run twice (the second run is warm) prints elapsed_s
+// 0.0035 cold against 0.09 warm at n=1000. (image-refs-01)
 #[derive(Debug, Clone, netidx_derive::Pack)]
 pub(crate) struct RefsSummary {
+    // each sorted
     refed: Vec<BindId>,
     triggering: Vec<BindId>,
     bound: Vec<BindId>,
@@ -2370,8 +2383,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// summary.
     fn imaged_refs(&self, mut f: impl FnMut(BindId)) {
         if let Callee::Imaged { summary, .. } = &self.callee {
-            for id in summary.refed.iter().filter(|id| !summary.bound.contains(id)) {
-                f(*id)
+            let mut bound = summary.bound.iter().peekable();
+            for id in summary.refed.iter() {
+                while bound.next_if(|b| *b < id).is_some() {}
+                if bound.peek() != Some(&id) {
+                    f(*id)
+                }
             }
         }
     }
