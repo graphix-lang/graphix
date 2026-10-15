@@ -18,6 +18,7 @@ use graphix_compiler::{
     expr::{Expr, ExprId},
     image::{self, ImageBuf},
     node::{coretraits, genn},
+    rep,
     typ::{FnType, TVal, Type},
 };
 use graphix_rt::GXRt;
@@ -26,7 +27,7 @@ use netidx_core::{
     pack::{Pack, PackError, decode_varint, encode_varint},
     utils::Either,
 };
-use netidx_value::{FromValue, ValArray};
+use netidx_value::FromValue;
 use poolshark::local::LPooled;
 use std::{
     any::Any,
@@ -414,32 +415,6 @@ pub fn map_key(k: &Value) -> String {
     }
 }
 
-/// Check if a Value is a struct-shaped array: non-empty, every element is
-/// a 2-element array with a string first element, keys sorted ascending.
-pub fn is_struct(arr: &ValArray) -> bool {
-    if arr.is_empty() {
-        return false;
-    }
-    let mut prev: Option<&ArcStr> = None;
-    for v in arr.iter() {
-        match v {
-            Value::Array(pair) if pair.len() == 2 => match &pair[0] {
-                Value::String(k) => {
-                    if let Some(p) = prev {
-                        if k <= p {
-                            return false;
-                        }
-                    }
-                    prev = Some(k);
-                }
-                _ => return false,
-            },
-            _ => return false,
-        }
-    }
-    true
-}
-
 /// How a writer serializes a value: an object's entries or a sequence's
 /// elements, each with the type that directs it, or a leaf; or a
 /// reference, which is not data and no writer writes.
@@ -544,15 +519,9 @@ fn constructor(env: &Env, t: &Type) -> Option<Type> {
 
 fn untyped_shape(v: &Value) -> Shape {
     match v {
-        Value::Array(a) if is_struct(a) => Shape::Object(
+        Value::Array(a) if rep::is_struct(a) => Shape::Object(
             a.iter()
-                .filter_map(|f| match f {
-                    Value::Array(p) => match &p[..] {
-                        [Value::String(k), v] => Some((k.clone(), v.clone(), None)),
-                        _ => None,
-                    },
-                    _ => None,
-                })
+                .filter_map(|f| rep::field(f).map(|(k, v)| (k.clone(), v.clone(), None)))
                 .collect(),
             Keys::Fields,
         ),

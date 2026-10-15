@@ -6,6 +6,7 @@ use crate::{
     expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt},
     format_with_flags,
     node::{Held, compiler, list},
+    rep,
     typ::{AbstractId, IsAFlags, Type},
 };
 use ahash::AHashMap;
@@ -206,11 +207,6 @@ pub(super) struct Leaf {
     pub(super) id: BindId,
     pub(super) typ: Type,
     pub(super) fresh: bool,
-}
-
-/// Whether `pair` is a struct's `[name, value]` field named `name`.
-fn is_field(pair: &[Value], name: &ArcStr) -> bool {
-    matches!(pair, [Value::String(n), _] if n == name)
 }
 
 impl StructPatternNode {
@@ -1099,13 +1095,12 @@ impl StructPatternNode {
                 if let Some(id) = all {
                     f(*id, v.clone())
                 }
-                match v {
-                    Value::Array(a) if a.len() == binds.len() + 1 => {
-                        for (j, n) in binds.iter().enumerate() {
-                            n.bind(&a[j + 1], f)
-                        }
+                if let Some((_, payload)) = rep::variant(v)
+                    && payload.len() == binds.len()
+                {
+                    for (n, v) in binds.iter().zip(payload) {
+                        n.bind(v, f)
                     }
-                    _ => (),
                 }
             }
             Self::SlicePrefix { list: false, all, prefix, tail } => match v {
@@ -1161,10 +1156,10 @@ impl StructPatternNode {
                         f(*id, v.clone())
                     }
                     for (name, i, n) in binds.iter() {
-                        if let Some(Value::Array(a)) = a.get(*i)
-                            && is_field(a, name)
+                        if let Some((field, v)) = rep::field_at(a, *i)
+                            && field == name
                         {
-                            n.bind(&a[1], f)
+                            n.bind(v, f)
                         }
                     }
                 }
@@ -1199,20 +1194,13 @@ impl StructPatternNode {
             Self::Slice { kind: SliceKind::List, all: _, binds } => {
                 list::zip_prefix(v, binds, |b, h| b.is_match(h)).is_some_and(list::is_nil)
             }
-            Self::Variant { tag, all: _, binds } if binds.len() == 0 => match v {
-                Value::String(s) => tag == s,
-                _ => false,
-            },
-            Self::Variant { tag, all: _, binds } => match v {
-                Value::Array(a) => {
-                    a.len() == binds.len() + 1
-                        && match &a[0] {
-                            Value::String(s) => s == tag,
-                            _ => false,
-                        }
-                        && binds.iter().zip(a[1..].iter()).all(|(b, v)| b.is_match(v))
+            Self::Variant { tag, all: _, binds } => match rep::variant(v) {
+                Some((t, payload)) => {
+                    t == tag
+                        && payload.len() == binds.len()
+                        && binds.iter().zip(payload).all(|(b, v)| b.is_match(v))
                 }
-                _ => false,
+                None => false,
             },
             Self::SlicePrefix { list: false, all: _, prefix, tail: _ } => match v {
                 Value::Array(a) => {
@@ -1239,10 +1227,8 @@ impl StructPatternNode {
             Self::Struct { all: _, binds } => match v {
                 Value::Array(a) => {
                     a.len() >= binds.len()
-                        && binds.iter().all(|(name, i, p)| match a.get(*i) {
-                            Some(Value::Array(a)) if is_field(a, name) => {
-                                p.is_match(&a[1])
-                            }
+                        && binds.iter().all(|(name, i, p)| match rep::field_at(a, *i) {
+                            Some((field, v)) if field == name => p.is_match(v),
                             _ => false,
                         })
                 }

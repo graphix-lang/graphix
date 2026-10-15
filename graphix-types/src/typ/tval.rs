@@ -144,9 +144,8 @@ pub(super) fn has_form(t: &Type, v: &Value) -> bool {
         (Type::List(_), v) => list::is_list(v),
         (Type::Tuple(ts), Value::Array(a)) => a.len() == ts.len(),
         (Type::Struct(fs), Value::Array(a)) => a.len() == fs.len(),
-        (Type::Variant(tag, ps, _), Value::String(s)) => ps.is_empty() && s == tag,
-        (Type::Variant(tag, ps, _), Value::Array(a)) => {
-            a.len() == ps.len() + 1 && matches!(&a[0], Value::String(s) if s == tag)
+        (Type::Variant(tag, ps, _), v @ (Value::String(_) | Value::Array(_))) => {
+            crate::rep::is_variant(v, tag, ps.len())
         }
         (Type::Map { .. }, Value::Map(_))
         | (Type::Error(_), Value::Error(_))
@@ -310,11 +309,11 @@ impl<'a> TVal<'a> {
                 write!(f, "{{")?;
                 for (i, ((n, et, _), v)) in flds.iter().zip(a.iter()).enumerate() {
                     write!(f, "{n}: ")?;
-                    match v {
-                        Value::Array(a) if a.len() == 2 => {
-                            Self { typ: et, env: self.env, v: &a[1] }.fmt_int(f, hist)?
+                    match crate::rep::field(v) {
+                        Some((_, v)) => {
+                            Self { typ: et, env: self.env, v }.fmt_int(f, hist)?
                         }
-                        _ => write!(f, "err")?,
+                        None => write!(f, "err")?,
                     }
                     if i < flds.len() - 1 {
                         write!(f, ", ")?

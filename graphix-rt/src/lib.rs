@@ -198,17 +198,8 @@ impl<X: GXExt> Ref<X> {
 #[doc(hidden)]
 pub fn field_id(v: &Value, name: &str) -> Result<u64> {
     match v {
-        Value::Array(fields) => fields
-            .iter()
-            .find_map(|f| match f {
-                Value::Array(kv)
-                    if kv.len() == 2
-                        && matches!(&kv[0], Value::String(s) if s == name) =>
-                {
-                    kv[1].clone().cast_to::<u64>().ok()
-                }
-                _ => None,
-            })
+        Value::Array(fields) => graphix_compiler::rep::field_named(fields, name)
+            .and_then(|(_, v)| v.clone().cast_to::<u64>().ok())
             .ok_or_else(|| anyhow!("no field {name}")),
         _ => bail!("expected a struct with the field {name}, got {v}"),
     }

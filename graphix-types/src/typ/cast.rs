@@ -3,7 +3,7 @@ use crate::{
     env::Env,
     errf,
     expr::{ModPath, WrittenAt},
-    format_with_flags, list,
+    format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
         Type, TypeRef, params_size,
@@ -786,7 +786,7 @@ impl Type {
                     return Err(self.cast_fail("struct size mismatch", v));
                 }
                 let mut fields: SmallVec<[(&ArcStr, &Value); 8]> =
-                    match elts.iter().map(struct_field).collect::<Option<_>>() {
+                    match elts.iter().map(rep::field).collect::<Option<_>>() {
                         Some(f) => f,
                         None => {
                             return Err(self.cast_fail("expected an array of pairs", v));
@@ -844,8 +844,7 @@ impl Type {
                         Some(c) => c[i].clone(),
                         None => (*fv).clone(),
                     };
-                    let pair = [Value::String((*n).clone()), fv];
-                    out.push(Value::Array(ValArray::from_iter_exact(pair.into_iter())));
+                    out.push(rep::make_field((*n).clone(), fv));
                 }
                 Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
             }
@@ -866,11 +865,12 @@ impl Type {
                 let payload = |i: usize| ss.map(|ss| &ss[i]);
                 match v {
                     Value::Array(elts) if elts.len() == ts.len() + 1 => {
-                        if !matches!(&elts[0], Value::String(s) if s == tag) {
+                        let Some((_, elts)) = rep::variant(v).filter(|(t, _)| *t == tag)
+                        else {
                             return Err(self.cast_fail("variant tag mismatch", v));
-                        }
+                        };
                         Ok(cast_elts(
-                            &elts[1..],
+                            elts,
                             |v| v,
                             |i, el| ts[i].cast_int(env, cx, payload(i), el),
                         )?
@@ -1158,35 +1158,27 @@ impl Type {
             Type::Struct(ts) => match v {
                 Value::Array(elts) => {
                     elts.len() == ts.len()
-                        && ts.iter().zip(elts.iter()).all(|((n, t, _), v)| match v {
-                            Value::Array(a) if a.len() == 2 => match &a[..] {
-                                [Value::String(key), v] => {
+                        && ts.iter().zip(elts.iter()).all(|((n, t, _), v)| {
+                            match rep::field(v) {
+                                Some((key, v)) => {
                                     n == key && t.is_a_int(env, hist, flags, v)
                                 }
-                                _ => false,
-                            },
-                            _ => false,
+                                None => false,
+                            }
                         })
                 }
                 _ => false,
             },
-            Type::Variant(tag, ts, _) if ts.len() == 0 => match &v {
-                Value::String(s) => s == tag,
-                _ => false,
-            },
-            Type::Variant(tag, ts, _) => match &v {
-                Value::Array(elts) => {
-                    ts.len() + 1 == elts.len()
-                        && match &elts[0] {
-                            Value::String(s) => s == tag,
-                            _ => false,
-                        }
+            Type::Variant(tag, ts, _) => match rep::variant(v) {
+                Some((t, payload)) => {
+                    t == tag
+                        && payload.len() == ts.len()
                         && ts
                             .iter()
-                            .zip(elts[1..].iter())
+                            .zip(payload)
                             .all(|(t, v)| t.is_a_int(env, hist, flags, v))
                 }
-                _ => false,
+                None => false,
             },
             Type::TVar(tv) => match tv.binding() {
                 None => !flags.contains(IsAFlags::Strict),
@@ -1318,17 +1310,6 @@ fn shapes_collide(t: &Type, env: &Env, seen: &mut LPooled<Vec<usize>>) -> bool {
             })
             .is_break(),
     })
-}
-
-/// A struct value's `[name, value]` pair.
-fn struct_field(v: &Value) -> Option<(&ArcStr, &Value)> {
-    match v {
-        Value::Array(a) if a.len() == 2 => match &a[0] {
-            Value::String(n) => Some((n, &a[1])),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// A flattened union member's runtime footprint. Variants, tuples,
@@ -2228,14 +2209,11 @@ fn map_refs(
                 let mut vs: LPooled<Vec<Value>> = fs
                     .iter()
                     .zip(x.iter())
-                    .map(|((_, t, _), field)| match field {
-                        Value::Array(nv) if nv.len() == 2 => {
-                            Value::Array(ValArray::from_iter_exact(
-                                [nv[0].clone(), map_refs(env, holds, t, &nv[1], f)]
-                                    .into_iter(),
-                            ))
+                    .map(|((_, t, _), field)| match rep::field(field) {
+                        Some((n, v)) => {
+                            rep::make_field(n.clone(), map_refs(env, holds, t, v, f))
                         }
-                        v => v.clone(),
+                        None => field.clone(),
                     })
                     .collect();
                 Value::Array(ValArray::from_iter_exact(vs.drain(..)))

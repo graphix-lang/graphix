@@ -94,30 +94,9 @@ fn index_of(len: usize, i: i64) -> Result<usize> {
         .ok_or_else(|| anyhow!("index {i} out of range for length {len}"))
 }
 
-/// A struct value is an array of `[name, value]` pairs: the position
-/// and value of the pair named `name`.
-// CR claude for claude: [structure/low] The struct representation (an array of `[name,
-// value]` pairs) is read by hand here, in graphix-rt's field_id, error.rs, data.rs,
-// core's is_struct and the JIT's struct_field. The variant representation (a bare
-// string, or `[tag, ..payload]`) is read by hand in StructurePattern's is_match,
-// emit_helpers' variant tests and payload reads, tval and cast. The readers already
-// disagree on malformed input: this one requires a pair of length 2, struct_field takes
-// `kv.get(1)`. A representation change has eight places to find in three crates. Give
-// struct and variant one owner the way list.rs owns List: a `graphix_types::rep` with
-// struct_field (by name and by sorted index), is_struct and variant_tag ->
-// Option<(&str, &[Value])>, and route these sites through it. (x-dup-12)
+/// The position and value of the struct field `name`.
 fn field_of<'a>(pairs: &'a ValArray, name: &str) -> Result<(usize, &'a Value)> {
-    pairs
-        .iter()
-        .enumerate()
-        .find_map(|(i, p)| match p {
-            Value::Array(kv) if kv.len() == 2 => match &kv[0] {
-                Value::String(n) if &**n == name => Some((i, &kv[1])),
-                _ => None,
-            },
-            _ => None,
-        })
-        .ok_or_else(|| anyhow!("no field {name}"))
+    crate::rep::field_named(pairs, name).ok_or_else(|| anyhow!("no field {name}"))
 }
 
 /// The value at `path` inside `root`. A map step compares keys, so the

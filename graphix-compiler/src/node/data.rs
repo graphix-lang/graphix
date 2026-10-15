@@ -329,12 +329,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             let Value::Array(src) = src else { unreachable!("gated on the shape") };
             let mut fields: LPooled<Vec<Value>> = src.iter().cloned().collect();
             for (i, v) in index.iter().zip(vals.iter()) {
-                if let Some(Value::Array(kv)) = i.and_then(|i| fields.get_mut(i))
-                    && kv.len() == 2
+                if let Some(i) = *i
+                    && let Some((name, _)) = crate::rep::field_at(src, i)
                 {
-                    *kv = ValArray::from_iter_exact(
-                        [kv[0].clone(), v.value_cloned()].into_iter(),
-                    );
+                    fields[i] = crate::rep::make_field(name.clone(), v.value_cloned());
                 }
             }
             Value::Array(ValArray::from_iter_exact(fields.drain(..)))
@@ -457,10 +455,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         let res = tv.with_value(|v| match (v, self.sorted_field_idx) {
-            (Value::Array(a), Some(i)) => a.get(i).and_then(|v| match v {
-                Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
-                _ => None,
-            }),
+            (Value::Array(a), Some(i)) => {
+                crate::rep::field_at(a, i).map(|(_, v)| v.clone())
+            }
             _ => None,
         });
         match res {

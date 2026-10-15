@@ -102,12 +102,10 @@ fn chain_error(e: &Value) -> Option<Value> {
     }
     let mut error = None;
     for (f, name) in fields.iter().zip(NAMES) {
-        match f {
-            Value::Array(kv)
-                if kv.len() == 2 && matches!(&kv[0], Value::String(n) if n == name) =>
-            {
+        match crate::rep::field(f) {
+            Some((n, v)) if n == name => {
                 if name == "error" {
-                    error = Some(kv[1].clone())
+                    error = Some(v.clone())
                 }
             }
             _ => return None,

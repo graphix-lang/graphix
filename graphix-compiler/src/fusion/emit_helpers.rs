@@ -26,6 +26,7 @@ use crate::{
         map::map_get,
         op::{ArithOp, arith, neg},
     },
+    rep,
     typ::{IsAFlags, Type},
 };
 use netidx_value::{ValArray, Value};
@@ -834,10 +835,7 @@ fn variant_payload_read<T: Default>(
     payload_idx: usize,
     read: impl Fn(&Value) -> T,
 ) -> T {
-    v.with_value(|v| match v {
-        Value::Array(a) => a.get(payload_idx + 1).map(&read).unwrap_or_default(),
-        _ => T::default(),
-    })
+    v.with_value(|v| rep::payload(v, payload_idx).map(&read).unwrap_or_default())
 }
 
 /// The j-th spine cell of a list value; `None` on a short or malformed chain.
@@ -1049,40 +1047,22 @@ unsafe fn graphix_variant_tag_eq(
     expected: *const arcstr::ArcStr,
     arity: usize,
 ) -> u8 {
-    let r = v.with_value(|v| {
-        let exp = unsafe { &*expected };
-        match v {
-            Value::String(s) => (arity == 0 && s.as_str() == exp.as_str()) as u8,
-            Value::Array(a) => match a.get(0) {
-                Some(Value::String(tag)) => (arity > 0
-                    && a.len() == arity + 1
-                    && tag.as_str() == exp.as_str()) as u8,
-                _ => 0,
-            },
-            _ => 0,
-        }
-    });
-    r
+    let exp = unsafe { &*expected };
+    v.with_value(|v| rep::is_variant(v, exp, arity) as u8)
 }
 
 /// Owned clone of a variant payload slot as a Value; a shape mismatch
 /// yields the drop-safe `Value::Null`.
 safe fn graphix_variant_payload_value(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
-    let r = v.with_value(|v| match v {
-        Value::Array(a) => a.get(payload_idx + 1).cloned().unwrap_or(Value::Null),
-        _ => Value::Null,
-    });
+    let r = v.with_value(|v| rep::payload(v, payload_idx).cloned().unwrap_or(Value::Null));
     TagValue::fired(r)
 }
 
 /// Owned `ArcStr` clone of a string variant payload slot; mismatch
 /// yields the static empty string.
 safe fn graphix_variant_payload_string(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
-    let r = v.with_value(|v| match v {
-        Value::Array(a) => match a.get(payload_idx + 1) {
-            Some(Value::String(s)) => s.clone(),
-            _ => arcstr::ArcStr::new(),
-        },
+    let r = v.with_value(|v| match rep::payload(v, payload_idx) {
+        Some(Value::String(s)) => s.clone(),
         _ => arcstr::ArcStr::new(),
     });
     arcstr_bits(r)
@@ -1097,14 +1077,11 @@ safe fn graphix_variant_payload_string(v: ManuallyDrop<TagValue>, payload_idx: u
 /// variant is alive and is never dropped or passed to a consuming
 /// helper.
 unsafe fn graphix_variant_payload_borrowed(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
-    let r = v.with_value(|v| match v {
-        Value::Array(a) => match a.get(payload_idx + 1) {
-            // SAFETY: a bitwise alias of the slot; the kernel never drops
-            // it, so the parent keeps the only ownership.
-            Some(p) => TagValue::fired(unsafe { std::ptr::read(p) }),
-            None => TagValue::fired(Value::Null),
-        },
-        _ => TagValue::fired(Value::Null),
+    let r = v.with_value(|v| match rep::payload(v, payload_idx) {
+        // SAFETY: a bitwise alias of the slot; the kernel never drops
+        // it, so the parent keeps the only ownership.
+        Some(p) => TagValue::fired(unsafe { std::ptr::read(p) }),
+        None => TagValue::fired(Value::Null),
     });
     r
 }
@@ -1187,11 +1164,8 @@ safe fn graphix_list_tail(v: ManuallyDrop<TagValue>, k: usize) -> TagValue {
 /// Owned `ValArray` bits of a composite variant payload slot; the
 /// empty array on mismatch.
 safe fn graphix_variant_payload_array(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
-    let r = v.with_value(|v| match v {
-        Value::Array(a) => match a.get(payload_idx + 1) {
-            Some(Value::Array(inner)) => inner.clone(),
-            _ => EMPTY_ARR.clone(),
-        },
+    let r = v.with_value(|v| match rep::payload(v, payload_idx) {
+        Some(Value::Array(inner)) => inner.clone(),
         _ => EMPTY_ARR.clone(),
     });
     va_bits(r)
@@ -1550,13 +1524,10 @@ unsafe fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     }
 }
 
-/// The value of struct field `sorted_idx` (`arr[sorted_idx]` is a
-/// `[name, value]` pair); `None` on OOB or a non-pair slot.
+/// The value of struct field `sorted_idx`; `None` past the end or
+/// where no field is.
 fn struct_field(p: &ValArray, sorted_idx: usize) -> Option<&Value> {
-    match p.get(sorted_idx)? {
-        Value::Array(kv) => kv.get(1),
-        _ => None,
-    }
+    rep::field_at(p, sorted_idx).map(|(_, v)| v)
 }
 
 /// The returned words borrow the slot; no consumer may drop them or outlive it.

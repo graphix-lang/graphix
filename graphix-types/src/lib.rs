@@ -19,6 +19,7 @@ pub mod image;
 pub mod list;
 #[doc(hidden)]
 pub mod profile;
+pub mod rep;
 pub mod shared_map;
 #[doc(hidden)]
 pub mod stack;
