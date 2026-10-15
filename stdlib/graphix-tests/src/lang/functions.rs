@@ -2603,6 +2603,19 @@ run!(
     |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[[i64:1], ["s"]]"#
 );
 
+// A default that calls its own function and omits its own label is
+// checked and built once: its inner call binds at run time, if it is
+// ever taken.
+run!(
+    self_calling_default_checks_once,
+    r#"{
+    let n = 0;
+    let rec f = |#a = select n > 0 { true => f(1), false => 0 }, b: i64| -> i64 a + b;
+    f(1)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
 // An alias a `<-` writes stays a dynamic call and follows the write.
 const LAMBDA_ALIAS_WRITTEN: &str = r#"
 {

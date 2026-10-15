@@ -60,6 +60,42 @@ use std::{
 };
 use triomphe::Arc as TArc;
 
+thread_local! {
+    /// The (definition, label) defaults this thread is checking, innermost
+    /// last.
+    static DEFAULTS_IN_CHECK: std::cell::RefCell<SmallVec<[(LambdaId, ArcStr); 4]>> =
+        const { std::cell::RefCell::new(SmallVec::new_const()) };
+}
+
+/// A default of a definition's label being checked or elaborated: the
+/// guard takes it off.
+struct DefaultInCheck(LambdaId, ArcStr);
+
+impl DefaultInCheck {
+    /// `None` when the pair's check is already in progress.
+    fn enter(id: LambdaId, label: &ArcStr) -> Option<Self> {
+        DEFAULTS_IN_CHECK.with(|s| {
+            let mut s = s.borrow_mut();
+            if s.iter().any(|(i, l)| *i == id && l == label) {
+                return None;
+            }
+            s.push((id, label.clone()));
+            Some(Self(id, label.clone()))
+        })
+    }
+}
+
+impl Drop for DefaultInCheck {
+    fn drop(&mut self) {
+        DEFAULTS_IN_CHECK.with(|s| {
+            let mut s = s.borrow_mut();
+            if let Some(i) = s.iter().rposition(|(i, l)| *i == self.0 && *l == self.1) {
+                s.remove(i);
+            }
+        })
+    }
+}
+
 /// Reject a direct call to a sync variadic builtin with no positional
 /// arguments (`str::concat()`, `sum()`): the node has no data inputs and
 /// can never fire. Only a direct `Ref` to the builtin is checkable.
@@ -1337,19 +1373,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     known = false;
                     continue;
                 };
-                // CR claude for claude: [bug/medium] Checking an omitted default
-                // compiles and typechecks the default expression. When that expression
-                // calls the same function and also omits this label (`let rec f = |#a =
-                // f(1), b| b`), its CallSite reaches check_omitted_defaults again and
-                // compiles the default again, without end. The check (--check, the LSP
-                // on every edit, and the build before a run) grows memory until it is
-                // killed. It does this even when the run would never take the recursive
-                // call, for example when the call sits in an untaken select arm. Fix:
-                // keep a stack of the (definition, label) defaults being checked. When
-                // a site meets a pair already on the stack, treat that default as not
-                // known here (return false, so defaults_open holds and the run-time
-                // bind narrows), as the definition's own check effectively does. probe:
-                // design/review-2026-10-12/repro/x-fix-tools-04.gx (x-fix-tools-04)
+                // a default that reaches its own label's check again (`let
+                // rec f = |#a = f(1), b| b`) is not known here: the run-time
+                // bind narrows it
+                let Some(_checking) = DefaultInCheck::enter(f.id, name) else {
+                    known = false;
+                    continue;
+                };
                 let node = self.checked_default(
                     ctx,
                     flags,
@@ -1737,6 +1767,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if matches!(self.callee, Callee::Static { .. }) || self.static_target.is_some() {
             return Ok(());
         }
+        // a site its own omitted default's elaboration reaches stays
+        // dynamic: elaborating it would elaborate that default again
+        let mut elaborating: SmallVec<[DefaultInCheck; 2]> = SmallVec::new();
+        for label in self.omitted_labels(def) {
+            match DefaultInCheck::enter(def.id, &label) {
+                Some(g) => elaborating.push(g),
+                None => return Ok(()),
+            }
+        }
         // A site reached while an instantiation with the same fn-arg
         // identity is resolving is a self-call and shares that instance;
         // a different identity is a fresh instantiation.
@@ -1763,6 +1802,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let _p = profile::phase(Phase::TaskJoin);
         ctx.join(task);
         res
+    }
+
+    /// The labels of `def` with a default this site does not pass.
+    fn omitted_labels(&self, def: &LambdaDef<R, E>) -> SmallVec<[ArcStr; 2]> {
+        def.typ
+            .args
+            .iter()
+            .zip(def.argspec.iter())
+            .filter_map(|(farg, spec)| {
+                let name = farg.label()?;
+                spec.kind.default()?;
+                match self.args.get(&ArgKey::Named(name.clone())) {
+                    Some(a) if !a.stage.is_default() => None,
+                    _ => Some(name.clone()),
+                }
+            })
+            .collect()
     }
 
     /// Build and check this site's instance of `def`, whose fn-arg
