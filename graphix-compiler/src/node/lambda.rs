@@ -1565,43 +1565,38 @@ impl Lambda {
         if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
             bail!("a variadic argument (`@args`) is for builtins only")
         }
-        let vargs = match l.vargs.as_ref() {
-            None => None,
-            Some(None) => Some(None),
-            // CR claude for claude: [bug/low] A variadic's type goes through `written`
-            // alone, so the trait-as-parameter-type rewrite (`|s: Read|` ≡ `'s: Read
-            // |s: 's|`), which the positional args below get, never applies to it.
-            // `|@args: Eq| -> Any 'core_all` is refused with "trait Eq used as a type
-            // ... write it as a parameter's type (`fn(x: Eq)`)", and that is what the
-            // author wrote. `'a: Eq |@args: 'a|` is accepted. Fix: give the variadic
-            // the same rewrite (one fresh quantifier joined to trait_quantifiers), or
-            // refuse it with a message that names variadics and points at the
-            // quantifier form. probe: design/review-2026-10-12/repro/x-rerun-1-12.gx
-            // (x-rerun-1-12)
-            Some(Some(t)) => Some(Some(written(&ctx.env, t)?)),
-        };
-        let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
-        let throws = l.throws.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
         // a trait as a parameter's type is a fresh bounded quantifier
         // (`|s: Read|` ≡ `'s: Read |s: 's|`), joined to the declared ones
         // so the def gate holds it rigid
         let mut trait_quantifiers: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        let mut param = |env: &Env, name: ArcStr, typ: &Type| -> Result<Type> {
+            match &typ.scope_refs(&scope.lexical) {
+                t @ Type::Ref(tr) if env.trait_of_ref(tr).is_some() => {
+                    let tv = TVar::empty_named(name);
+                    trait_quantifiers.push((tv.clone(), t.clone()));
+                    Ok(Type::trait_param(env, tv, tr))
+                }
+                _ => written(env, typ),
+            }
+        };
+        let vargs = match l.vargs.as_ref() {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(t)) => Some(Some(param(&ctx.env, arcstr::literal!("#args"), t)?)),
+        };
+        let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
+        let throws = l.throws.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
         let mut argspec: LPooled<Vec<Arg>> = LPooled::take();
         for (i, a) in l.args.iter().enumerate() {
             let constraint = match &a.constraint {
                 None => None,
-                Some(typ) => match &typ.scope_refs(&scope.lexical) {
-                    t @ Type::Ref(tr) if ctx.env.trait_of_ref(tr).is_some() => {
-                        let name: ArcStr = match a.pattern.single_bind() {
-                            Some(n) => format_compact!("#{n}").as_str().into(),
-                            None => format_compact!("#arg{i}").as_str().into(),
-                        };
-                        let tv = TVar::empty_named(name);
-                        trait_quantifiers.push((tv.clone(), t.clone()));
-                        Some(Type::trait_param(&ctx.env, tv, tr))
-                    }
-                    _ => Some(written(&ctx.env, typ)?),
-                },
+                Some(typ) => {
+                    let name: ArcStr = match a.pattern.single_bind() {
+                        Some(n) => format_compact!("#{n}").as_str().into(),
+                        None => format_compact!("#arg{i}").as_str().into(),
+                    };
+                    Some(param(&ctx.env, name, typ)?)
+                }
             };
             argspec.push(Arg {
                 kind: a.kind.clone(),

@@ -1850,3 +1850,15 @@ run!(
         let result = widen(c)
     "#
 ; FuseExpect::None);
+
+// A trait as a variadic's type is a bounded quantifier, as it is for a
+// positional parameter: one type across the arguments.
+run!(variadic_trait_param, r#"{
+    let f = |@args: Eq| -> Any 'core_all;
+    f(1, 1)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+
+run!(variadic_trait_param_is_one_type, r#"{
+    let f = |@args: Eq| -> Any 'core_all;
+    f(1, "s")
+}"#, refused("does not contain string"); FuseExpect::None);
