@@ -116,6 +116,10 @@ impl std::error::Error for ErrorSite {}
 /// Record that an error passed through the expression `spec`.
 pub trait At {
     fn at(self, spec: &Expr) -> Self;
+
+    /// Place an error that has no site at `spec`, adding no frame to one
+    /// that has.
+    fn sited(self, spec: &Expr) -> Self;
 }
 
 impl At for anyhow::Error {
@@ -136,11 +140,24 @@ impl At for anyhow::Error {
         };
         self.context(ErrorContext(spec.clone(), frames))
     }
+
+    fn sited(self, spec: &Expr) -> Self {
+        match self.downcast_ref::<ErrorSite>().is_some()
+            || self.downcast_ref::<ErrorContext>().is_some()
+        {
+            true => self,
+            false => self.context(ErrorSite(ErrorContext(spec.clone(), 0))),
+        }
+    }
 }
 
 impl<T> At for anyhow::Result<T> {
     fn at(self, spec: &Expr) -> Self {
         self.map_err(|e| e.at(spec))
+    }
+
+    fn sited(self, spec: &Expr) -> Self {
+        self.map_err(|e| e.sited(spec))
     }
 }
 

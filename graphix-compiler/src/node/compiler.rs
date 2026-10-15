@@ -262,7 +262,8 @@ fn compile_inner<R: Rt, E: UserEvent>(
     }
     if !def_asserts.is_empty() {
         let shared = ctx.shared_spec(spec.clone());
-        let node = compile_kind(ctx, flags, &shared, scope, top_id, statement)?;
+        let node =
+            compile_kind(ctx, flags, &shared, scope, top_id, statement).sited(&shared)?;
         let Some(id) = annotated_lambda(&node) else {
             bailat!(spec, "#[{}] annotates a function definition", def_asserts[0].name());
         };
@@ -279,7 +280,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
         return Ok(node);
     }
     let spec = ctx.shared_spec(spec);
-    compile_kind(ctx, flags, &spec, scope, top_id, statement)
+    compile_kind(ctx, flags, &spec, scope, top_id, statement).sited(&spec)
 }
 
 /// Compile a `mod` declaration, from statement position (a block or

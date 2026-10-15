@@ -296,6 +296,20 @@ fn a_diagnostic_underlines_the_expression() {
     assert_eq!(c.underlined("a.gx"), ["str::len(\"four\") == 4"]);
 }
 
+/// A lambda's own refusals (duplicate parameters, a variadic) are placed
+/// at the lambda.
+#[test]
+fn a_lambda_refusal_is_reported_at_the_lambda() {
+    for (src, lambda) in [
+        ("let f = |x, x| x;\nf(1, 2)\n", "|x, x| x"),
+        ("let f = |@args: i64| args;\nf(1)\n", "|@args: i64| args"),
+    ] {
+        let mut c = Client::start(&[("a.gx", src)]);
+        c.open("a.gx");
+        assert_eq!(c.underlined("a.gx"), [lambda], "{src}");
+    }
+}
+
 #[test]
 fn a_dead_arm_is_reported_at_its_pattern() {
     let mut c = Client::start(&[(

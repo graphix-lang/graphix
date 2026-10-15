@@ -1535,21 +1535,6 @@ impl Lambda {
         s.sort();
         s.dedup();
         if len != s.len() {
-            // CR claude for claude: [bug/medium] This refusal and the other bare
-            // `bail!`s in `Lambda::compile` (the variadic, unknown-builtin, NoBuiltins
-            // and builtin-annotation refusals) leave without an `ErrorSite`, and
-            // neither `compile_kind` nor `compile_inner` adds one. So `graphix --check`
-            // prints the message with no line or column. Inside a block, the error is
-            // placed at the enclosing lambda. In a module, the LSP (`error_location`
-            // finds no site) publishes it at 0:0 of the root file, not in the module
-            // file that holds the lambda. Root fix: in `compile_inner`, give an error
-            // that leaves `compile_kind` without an `ErrorSite` a site at `spec`. That
-            // needs a site-only variant of `At::at`, so no extra frame is printed per
-            // level. With that, every bare `bail!` in a node's compile is placed at its
-            // own expression. At minimum, make these `bailat!(spec, ..)`. Add a pin
-            // beside the LSP placement tests covering `|x, x|`, `|@args: i64|` and an
-            // unknown builtin. probe: design/review-2026-10-12/repro/x-errors-01.sh
-            // (x-errors-01)
             bail!("arguments must have unique names");
         }
         let id = LambdaId::new();
