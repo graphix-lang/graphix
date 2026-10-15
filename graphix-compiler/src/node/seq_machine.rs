@@ -42,8 +42,8 @@ use triomphe::Arc;
 pub(crate) struct Step<R: Rt, E: UserEvent> {
     label: ArcStr,
     until: bool,
-    /// The statement's items: its handlers, the `let` of its value, then
-    /// what completion writes.
+    /// The statement's items: its handlers, a lambda a step's `let`
+    /// names, the `let` of its value, then what completion writes.
     pub(crate) nodes: Box<[Node<R, E>]>,
     catches: Box<[usize]>,
     /// The index of the value's `let` in `nodes`.
@@ -62,45 +62,24 @@ impl<R: Rt, E: UserEvent> Step<R, E> {
         }
     }
 
+    /// A step whose value is the `let` at `value`, after every handler.
     fn new(
         label: ArcStr,
         until: bool,
         nodes: Box<[Node<R, E>]>,
         catches: Box<[usize]>,
+        value: usize,
         next: Option<usize>,
         same_cycle: bool,
     ) -> Result<Self> {
-        // CR claude for claude: [structure/low] The value's index is guessed as
-        // `catches.len()`. That assumes the items are exactly [handlers, value let,
-        // writes], and the lowering already breaks this. For a step `let f = |x| ..`,
-        // `Machine::bound_lambda`'s let is inserted at items[0], before the `seqv` let,
-        // so `value` is the lambda's let and the real value let becomes a completion
-        // write gated on `done`. This works only because a lambda literal's let fires
-        // at every entry, as the value does. Any future prefix item that does not fire
-        // at entry would stall the step, and a decoded image is trusted the same way.
-        // `SeqStep::value` already names the value's binding and nothing here reads it.
-        // Locate the value let by that name (or carry its index from the lowering), and
-        // refuse a step whose catches are not the prefix before it. Then fix the
-        // `nodes` doc on `Step` to match. (c-select-seq-04)
-        // CR claude for claude: [bug/low] A step's value is not always at
-        // `catches.len()`. For `let f = <lambda>`, the seq lowering's `lower_stmt`
-        // inserts the lambda's bind ahead of the value's `let`, so `value_id` is f's
-        // binding. `evaluate` then completes the step on f's fire and never consults
-        // the value's `SeqGuard`. In a cycle where `abort(..)` fires and the step is
-        // entered, the step completes anyway and the machine advances into the next
-        // step, breaking the rule that the abort wins its cycle. Today the next step's
-        // own guard fails, so no output changes. If a lambda let ever stops firing at
-        // entry, the step stalls. probe:
-        // design/review-2026-10-12/repro/x-invalid-states-02.sh. Fix: find the value
-        // node by the name `SeqStep.value` carries, or keep the lambda bind after the
-        // value's `let`. Make `Step::new` refuse a node at the value index that does
-        // not bind that name. (x-invalid-states-02)
-        let value = catches.len();
         let value_id = match nodes.get(value).map(|n| n.view()) {
             Some(NodeView::Bind(b)) => b.pattern.single_bind_id(),
             _ => None,
         };
         let Some(value_id) = value_id else { bail!("BUG: a seq step without its value") };
+        if catches.iter().any(|c| *c > value) {
+            bail!("BUG: a seq step's handler after its value")
+        }
         Ok(Self {
             label,
             until,
@@ -238,7 +217,17 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
             let (nodes, catches) =
                 compile_block_children(ctx, flags, scope, top_id, false, s.items.iter())?;
             let next = s.next.map(|n| n as usize);
-            steps.push(Step::new(s.label.clone(), s.until, nodes, catches, next, false)?);
+            // the value's let, by the name the lowering gave it
+            let value = s.items.iter().position(|e| match &e.kind {
+                crate::expr::ExprKind::Bind(b) => {
+                    b.pattern.single_bind().is_some_and(|n| *n == s.value)
+                }
+                _ => false,
+            });
+            let Some(value) = value else { bail!("BUG: a seq step without its value") };
+            let step =
+                Step::new(s.label.clone(), s.until, nodes, catches, value, next, false)?;
+            steps.push(step);
         }
         Ok(Node::new(Self {
             spec,
@@ -267,9 +256,10 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
             let until = bool::decode(buf)?;
             let nodes = decode_nodes(ctx, buf)?.into_boxed_slice();
             let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
+            let value = u64::decode(buf)? as usize;
             let next = Option::<u64>::decode(buf)?.map(|n| n as usize);
             let same_cycle = bool::decode(buf)?;
-            let step = Step::new(label, until, nodes, catches, next, same_cycle)
+            let step = Step::new(label, until, nodes, catches, value, next, same_cycle)
                 .map_err(|_| PackError::InvalidFormat)?;
             steps.push(step);
         }
@@ -383,6 +373,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
             s.until.encode(buf)?;
             encode_nodes(&s.nodes, buf)?;
             image::slice_encode(&s.catches, buf)?;
+            (s.value as u64).encode(buf)?;
             s.next.map(|n| n as u64).encode(buf)?;
             s.same_cycle.load(Relaxed).encode(buf)?;
         }
