@@ -1690,7 +1690,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    /// The O(1) shallow discriminator for this arm's inferred predicate
+    /// The O(1) shallow discriminator for this arm's predicate
     /// against the select's scrutinee type ([`Type::shallow_discriminant`]);
     /// `None` = run the full `is_a` walk. Read once every tvar in the
     /// predicate is settled, at the select's first consult.
@@ -1699,7 +1699,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         env: &Env,
         scrutinee: &Type,
     ) -> Option<Type> {
-        if self.explicit_type_predicate {
+        if self.explicit_type_predicate && !self.covers_what_it_meets(env, scrutinee) {
             return None;
         }
         let shallow = self.type_predicate.shallow_discriminant(env, scrutinee);
@@ -1710,6 +1710,28 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             }
         }
         shallow
+    }
+
+    /// Whether a written predicate holds the whole of every member of
+    /// `scrutinee` it could match, so telling the members apart decides
+    /// it: `Array<i64> as a` over `Array<[i64, string]>` tests elements.
+    fn covers_what_it_meets(&self, env: &Env, scrutinee: &Type) -> bool {
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        if crate::expr::union_members(env, scrutinee, &mut members).is_err() {
+            return false;
+        }
+        let pred = &self.type_predicate;
+        !members.is_empty()
+            && members.iter().all(|m| match pred.could_match(env, m) {
+                Ok(false) => true,
+                Ok(true) => {
+                    !m.has_unbound()
+                        && pred
+                            .contains_with_flags(BitFlags::empty(), env, m)
+                            .unwrap_or(false)
+                }
+                Err(_) => false,
+            })
     }
 
     /// Whether the arm's type and structure predicates admit `v`, given
@@ -1726,35 +1748,19 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // tuple and an array are the same `Value::Array` at runtime. An
         // inferred predicate is checked permissively (an abstract's
         // hidden rep cannot be verified); an explicit one strictly.
-        // CR claude for claude: [perf/medium] For an explicit type predicate
-        // (`Array<i64> as a`), this runs a full structural is_a on every match: every
-        // element of an array, every node of a recursive type. Only an inferred
-        // predicate gets the O(1) shallow discriminator, because shallow_discriminant
-        // returns None when explicit_type_predicate is set. A guarded arm also pays
-        // this twice per update: Select::update's guard-tick loop calls shape_matches,
-        // and the chain calls it again through arm_match. probe:
-        // design/review-2026-10-12/repro/x-alloc-02-explicit.gx takes 1.41 s and
-        // x-alloc-02-inferred.gx 0.29 s (3000 cycles over 20000 elements). Fix: build a
-        // shallow discriminator for an explicit predicate too when the scrutinee's type
-        // fully determines the member (no Any, no open variable, no abstract whose rep
-        // it cannot see). In Select::update, keep each arm's shape_matches result from
-        // the guard-tick loop and reuse it in the chain. (x-alloc-03)
+        let t = shallow.unwrap_or(&self.type_predicate);
         let typed = if self.explicit_type_predicate {
-            self.type_predicate.is_a(env, v)
+            t.is_a(env, v)
         } else {
-            let t = shallow.unwrap_or(&self.type_predicate);
             t.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         };
         typed && self.structure_predicate.is_match(v)
     }
 
-    pub(super) fn arm_match(
-        &self,
-        env: &Env,
-        shallow: Option<&Type>,
-        v: &Value,
-    ) -> ArmMatch {
-        if !self.shape_matches(env, shallow, v) {
+    /// The arm's verdict over a value whose shape test gave `shaped`
+    /// ([`Self::shape_matches`]).
+    pub(super) fn arm_match(&self, shaped: bool) -> ArmMatch {
+        if !shaped {
             return ArmMatch::NoStruct;
         }
         match &self.guard {

@@ -1207,14 +1207,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // design/activation_state.md says so. probe:
         // design/review-2026-10-12/repro/c-select-seq-01.gx (and c-select-seq-01b.gx
         // with --no-fusion). (c-select-seq-01)
+        // a guarded arm's shape test, which the chain below reuses
+        let mut shaped: SmallVec<[Option<bool>; 16]> = smallvec![None; arms.len()];
         for &i in guarded.iter() {
             let (pat, shallow) = (&mut arms[i].0, &shallow[i]);
             let saved = match arg.value.as_ref() {
-                Some(v)
-                    if !arg.tag.is_bottom()
-                        && pat.shape_matches(&ctx.env, shallow.as_ref(), v) =>
-                {
-                    Some(pat.bind_tentative(ctx, v, arg_prod))
+                Some(v) if !arg.tag.is_bottom() => {
+                    let s = pat.shape_matches(&ctx.env, shallow.as_ref(), v);
+                    shaped[i] = Some(s);
+                    s.then(|| pat.bind_tentative(ctx, v, arg_prod))
                 }
                 _ => None,
             };
@@ -1263,7 +1264,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 for (i, ((pat, _), shallow)) in
                     arms.iter().zip(shallow.iter()).enumerate()
                 {
-                    match pat.arm_match(&ctx.env, shallow.as_ref(), v) {
+                    let s = shaped[i].unwrap_or_else(|| {
+                        pat.shape_matches(&ctx.env, shallow.as_ref(), v)
+                    });
+                    match pat.arm_match(s) {
                         ArmMatch::NoStruct => (),
                         ArmMatch::GuardFalse => consulted_guard_mask.set(i),
                         ArmMatch::GuardBottom => {
