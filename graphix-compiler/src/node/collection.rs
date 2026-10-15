@@ -899,23 +899,10 @@ fn update_slots<R: Rt, E: UserEvent>(
     site: &mut SlotSite,
     old_len: usize,
 ) -> Option<Option<Tag>> {
-    // CR claude for claude: [perf/high] decide_siblings records its answer permanently,
-    // but the first cycle that has two slots usually has slot 1 still unbound:
-    // build_fresh prebinds only what its ProbeSite plan touches (slot 0 while
-    // uncalibrated, nothing for a Serial rest). analysis::independent reads an unbound
-    // CallSite as opaque, so the site becomes Dependent for the rest of the run. Any
-    // collection that is non-empty in an early cycle, the common UI case, then never
-    // forks under Auto. probe: design/review-2026-10-12/repro/c-collection-01a.gx
-    // (serial, ~30 s) vs c-collection-01b.gx (identical except an empty first source:
-    // forks, ~9 s). Fix: decide only once slots 0 and 1 have a resolved callee and run
-    // in order until then, or prebind both before deciding. ForkSite::decide_siblings
-    // in gather makes the same once-only decision over possibly unbound calls; apply
-    // the same rule there. See c-collection-02 for the dynamic-callback case.
-    // (c-collection-01)
     site.decide_siblings(ctx, slots.len(), || {
         crate::analysis::independent(slots.iter().take(2).map(|s| &s.call), ctx)
     });
-    if site.dependent() {
+    if site.in_order() {
         return update_slots_in_order(ctx, slots, 0, old_len);
     }
     let (standing, fresh) = slots.split_at_mut(old_len.min(slots.len()));

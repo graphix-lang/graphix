@@ -554,6 +554,34 @@ async fn program_image_restores_nested_fork_control() -> Result<()> {
     Ok(())
 }
 
+/// A fork point whose callees a warm start has not decoded yet decides
+/// its siblings once they are bound: the tuple forks at every cycle after
+/// the first, as it does cold.
+#[tokio::test]
+async fn warm_fork_point_decides_once_its_callees_bind() -> Result<()> {
+    let program = r#"
+        let f = |n: i64| n * 2;
+        let g = |n: i64| n + 1;
+        let k = 0;
+        let r = (f(k), g(k));
+        k <- r ~ select k { k if k < 6 => k + 1, _ => never() };
+        r
+    "#;
+    let (_, cold_values, image, _, cold_forks) =
+        session(program, None, ParMode::Force).await?;
+    let image = image.expect("the cold run wrote its image");
+    let (_, warm_values, _, restored, warm_forks) =
+        session(program, Some(image), ParMode::Force).await?;
+    assert!(restored, "the warm runtime compiled cold");
+    assert_eq!(cold_values, warm_values);
+    // the warm tuple runs its first cycle in order; image-fork-01 is one more
+    assert!(
+        warm_forks + 2 >= cold_forks,
+        "the warm tuple stopped forking: {warm_forks} warm, {cold_forks} cold"
+    );
+    Ok(())
+}
+
 /// An image whose instance table points outside its heap is refused when
 /// it is read, so the session runs cold rather than fail a first call.
 #[tokio::test]

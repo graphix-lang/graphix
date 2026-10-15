@@ -1180,6 +1180,8 @@ struct Summary {
     reads: Vars,
     writes: Vars,
     ordered: bool,
+    /// It calls a site not bound yet (opaque until it is).
+    unbound: bool,
 }
 
 impl Summary {
@@ -1201,7 +1203,9 @@ impl Summary {
         let r = self.reads.union(&other.reads);
         let o = !self.ordered && other.ordered;
         self.ordered |= other.ordered;
-        self.writes.union(&other.writes) || r || o
+        let u = !self.unbound && other.unbound;
+        self.unbound |= other.unbound;
+        self.writes.union(&other.writes) || r || o || u
     }
 }
 
@@ -1325,18 +1329,6 @@ fn local_summary<R: Rt, E: UserEvent>(
         // a comparison or a print of an abstract value runs its core-trait
         // impl, whose reads no summary holds
         _ if runs_hooks(x, &ctx.env) => s.opaque(),
-        // CR claude for claude: [perf/medium] After a warm image start, a child call's
-        // callee is still `Callee::Imaged` when a gather, argument, operator or slot
-        // site first updates. Its instance is not in the graph and `resolved_apply` is
-        // None, so this arm makes the call opaque. `ForkSite::decide_siblings` and
-        // `SlotSite::decide_siblings` then fix the site Dependent for the life of the
-        // program. The same program forks cold and never forks warm. Block plans avoid
-        // this only because `plan_blocks` runs at analysis and `Block::planned` is
-        // imaged. Fix: summarize an Imaged callee from the reference summary it carries
-        // (or its definition's check table), or keep the site Undecided while any child
-        // callee is still Imaged. Probe:
-        // design/review-2026-10-12/repro/c-analysis-branch-04.sh (cold prints "g 1"
-        // first, warm prints "f ..." first). (c-analysis-branch-03)
         NodeView::CallSite(cs) => {
             if let Some(t) = cs.static_target()
                 && graph.instances.contains_key(&t.instance)
@@ -1384,6 +1376,7 @@ fn local_summary<R: Rt, E: UserEvent>(
                     }
                 );
             }
+            s.unbound |= cs.resolved_apply().is_none();
             s.opaque()
         }
         _ => (),
@@ -1640,9 +1633,11 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// constructor's fields, a call's arguments, an operator's operands, a
 /// collection's slots) compute in parallel what they do in order: none
 /// reads what an earlier one publishes, and no two make ordered calls.
-/// A call not resolved yet, or through an application nothing names, is
-/// opaque and ordered; a call site decides its arguments again at each
-/// bind (`CallSite::clear_prepared_bind`).
+/// A call through an application nothing names is opaque and ordered; a
+/// call not bound yet (a warm start's imaged callee, a slot not prebound)
+/// is too, and `None` is the answer when the children depend only through
+/// one, to ask again once it is bound. A call site decides its arguments
+/// again at each bind (`CallSite::clear_prepared_bind`).
 // CR claude for claude: [bug/high] The premise on this doc ("a call not resolved yet is
 // opaque, so this is decided before binds") is false for collection slots. update_slots
 // asks this after the slots are bound, and local_summary follows
@@ -1665,7 +1660,7 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
-) -> bool {
+) -> Option<bool> {
     // CR claude for claude: [perf/medium] Every fork site that is not a block (an
     // operator's operands, a call's arguments, a constructor's fields, a collection's
     // slots) runs `independent` at its first update. Each run rebuilds
@@ -1679,17 +1674,28 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // `plan_blocks` decides blocks, and the decision rides the image. probe:
     // design/review-2026-10-12/repro/x-perf-compile-03-independent-first-cycle.gx
     // (compare GRAPHIX_PAR=auto with off) (x-perf-compile-03)
+    // 2026-10-15 claude: a verdict that rests on a callee not bound yet (a warm
+    // start's imaged callee, a slot not prebound) now leaves the site Undecided,
+    // serial, and asks again at its next update (Siblings::of, Summary::unbound). So a
+    // warm start forks from its second cycle on but not in its first:
+    // design/review-2026-10-12/repro/c-analysis-branch-04.sh still prints f before g
+    // warm. Deciding these sites at analysis and imaging the verdict, as proposed
+    // here, also closes that first cycle; pin to extend:
+    // lang::image::warm_fork_point_decides_once_its_callees_bind.
     let accesses = accesses(children.clone(), ctx);
     let mut published = Vars::default();
     let mut ordered = false;
     for (n, access) in children.zip(accesses.iter()) {
         if access.reads.meeting(&published).is_some() || (access.ordered && ordered) {
-            return false;
+            return match accesses.iter().any(|a| a.unbound) {
+                true => None,
+                false => Some(false),
+            };
         }
         publishes(n, &mut published);
         ordered |= access.ordered;
     }
-    true
+    Some(true)
 }
 
 /// Why a block plan starts a new run at a statement.
@@ -1913,7 +1919,7 @@ fn forks_two<'a, R: Rt, E: UserEvent>(
     ns: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
 ) -> bool {
-    ns.clone().filter(|n| is_work(n)).count() >= 2 && independent(ns, ctx)
+    ns.clone().filter(|n| is_work(n)).count() >= 2 && independent(ns, ctx) == Some(true)
 }
 
 /// `#[parallel]`'s assertion: something within `node`, callees excluded,

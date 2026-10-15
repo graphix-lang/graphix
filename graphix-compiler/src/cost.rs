@@ -270,13 +270,23 @@ pub enum Plan<'a> {
 pub struct ForkSite(Site, Siblings);
 
 /// Whether a fork point's children may run in parallel at all, decided
-/// once ([`crate::analysis::independent`]).
+/// once ([`crate::analysis::independent`]); undecided runs them in order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Siblings {
     #[default]
     Undecided,
     Independent,
     Dependent,
+}
+
+impl Siblings {
+    fn of(independent: Option<bool>) -> Self {
+        match independent {
+            None => Siblings::Undecided,
+            Some(true) => Siblings::Independent,
+            Some(false) => Siblings::Dependent,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -318,28 +328,10 @@ impl ForkSite {
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         n: usize,
-        independent: impl FnOnce() -> bool,
+        independent: impl FnOnce() -> Option<bool>,
     ) {
-        // CR claude for claude: [perf/high] The sibling verdict is fixed at the first
-        // update that may fork, before the children update. A child call that is still
-        // unbound at that point (a warm start's Callee::Imaged, a slot the uncalibrated
-        // probe did not prebind, a function-value callback as in x-parallel-04) is
-        // opaque in analysis::local_summary. So the site goes Dependent and never forks
-        // again. Under GRAPHIX_PAR=force a tuple of four calls forks on a cold start
-        // and prints abcd 9/9 cycles on a warm one, and under auto a collection grown
-        // before calibration stays serial for good. Values are right, but whether
-        // parallelism happens depends on cache state and startup timing. Fix: do not
-        // cache a Dependent verdict that rests on an unresolved callee; stay Undecided
-        // until the children's first update, or summarize Callee::Imaged from the
-        // reference summary the image carries. SlotSite::decide_siblings needs the same
-        // fix: decide from the prototype's definition. probe:
-        // design/review-2026-10-12/repro/x-parallel-05-warm-fields-never-fork.gx,
-        // x-parallel-03-slots-before-calibration.gx (x-parallel-03)
         if self.1 == Siblings::Undecided && n >= 2 && ctx.fork_mode() != ParMode::Off {
-            self.1 = match independent() {
-                true => Siblings::Independent,
-                false => Siblings::Dependent,
-            }
+            self.1 = Siblings::of(independent())
         }
     }
 
@@ -352,7 +344,7 @@ impl ForkSite {
     ) -> Plan<'_> {
         match ctx.fork_mode() {
             ParMode::Off => Plan::Serial,
-            _ if n < 2 || self.1 == Siblings::Dependent => Plan::Serial,
+            _ if n < 2 || self.1 != Siblings::Independent => Plan::Serial,
             ParMode::Force => Plan::Fork(Splits::Halves),
             ParMode::Auto => self.plan_auto(n),
         }
@@ -625,22 +617,20 @@ impl SlotSite {
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         n: usize,
-        independent: impl FnOnce() -> bool,
+        independent: impl FnOnce() -> Option<bool>,
     ) {
         if self.siblings == Siblings::Undecided
             && n >= 2
             && ctx.fork_mode() != ParMode::Off
         {
-            self.siblings = match independent() {
-                true => Siblings::Independent,
-                false => Siblings::Dependent,
-            }
+            self.siblings = Siblings::of(independent())
         }
     }
 
-    /// Whether the slots must run in order.
-    pub fn dependent(&self) -> bool {
-        self.siblings == Siblings::Dependent
+    /// Whether the slots must run in order: they are not known to be
+    /// independent.
+    pub fn in_order(&self) -> bool {
+        self.siblings != Siblings::Independent
     }
 
     /// The plan for the `n` standing slots.
@@ -652,7 +642,7 @@ impl SlotSite {
     ) -> SlotPlan {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
-            _ if n < 2 || self.siblings == Siblings::Dependent => SlotPlan::Serial,
+            _ if n < 2 || self.siblings != Siblings::Independent => SlotPlan::Serial,
             ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
             ParMode::Auto => self.plan_auto(n),
         }

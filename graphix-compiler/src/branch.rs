@@ -908,7 +908,7 @@ where
     let fork = items.len() >= 2 && ctx.fork_mode() != ParMode::Off && {
         let calls: LPooled<Vec<&Node<R, E>>> =
             items.iter_mut().map(|i| &*call(i)).collect();
-        crate::analysis::independent(calls.iter().copied(), ctx)
+        crate::analysis::independent(calls.iter().copied(), ctx) == Some(true)
     };
     match fork {
         true => fork_each(ctx, items.iter_mut(), |c, item| f(c, item)),
