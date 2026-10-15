@@ -1218,11 +1218,13 @@ impl Type {
 }
 
 /// Whether `t` or a part of it is a union two of whose members share a
-/// shape (`arr_overlap`).
-fn shapes_collide(t: &Type, env: &Env, seen: &mut LPooled<Vec<RefKey>>) -> bool {
+/// shape (`arr_overlap`). A typedef is expanded once, whatever its
+/// parameters: a non-regular one's grow at every level, and what they
+/// hold is walked at the first.
+fn shapes_collide(t: &Type, env: &Env, seen: &mut LPooled<Vec<usize>>) -> bool {
     ensure_sufficient(|| match t {
         Type::Ref(tr) => {
-            let Some(key) = ref_key(tr) else { return false };
+            let Some(key) = tr.def_key() else { return false };
             let Ok(x) = t.lookup_ref(env) else { return false };
             if seen.contains(&key) {
                 return false;
