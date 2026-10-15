@@ -9,7 +9,7 @@ use crate::{
         kernel_abi::{self, AbiKind, PrimType},
         lowering::{self},
     },
-    node::op::{BinOp, BoolOp, CmpOp},
+    node::op::{ArithOp, BoolOp, CmpOp},
     typ::Type,
 };
 use anyhow::{Result, anyhow, bail};
@@ -208,7 +208,7 @@ fn widen_to_declared_repr(
 /// varint) through the Value helpers.
 pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    op: BinOp,
+    op: ArithOp,
     out_typ: &Type,
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
@@ -229,7 +229,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         })?;
     let base = scalar_disc(cx.b, prim);
     // Cranelift has no `frem`: a float `%` is Rust's, the node-walk's.
-    if matches!(op, BinOp::Mod) && prim.is_float() {
+    if matches!(op, ArithOp::Mod) && prim.is_float() {
         let helper = match prim {
             PrimType::F32 => "graphix_f32_rem",
             _ => "graphix_f64_rem",
@@ -244,7 +244,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             CompiledExpr::new(disc, value),
         ));
     }
-    if matches!(op, BinOp::Div | BinOp::Mod)
+    if matches!(op, ArithOp::Div | ArithOp::Mod)
         && prim.is_integer()
         && node_int_div_may_bottom(lhs, rhs)
     {
@@ -252,7 +252,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         // `x % -1` is `x % 1`, 0, without the MIN ÷ -1 the hardware traps on
         let (bad, divisor_one) = match (prim.is_signed(), op) {
             (false, _) => (is_zero, is_zero),
-            (true, BinOp::Mod) => {
+            (true, ArithOp::Mod) => {
                 let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
                 (is_zero, cx.b.ins().bor(is_zero, is_neg1))
             }
@@ -362,7 +362,7 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 /// bottom.
 pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    op: BinOp,
+    op: ArithOp,
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
@@ -372,23 +372,23 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
 /// `lhs op rhs` through the Value helpers, which borrow both operands.
 fn emit_value_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    op: BinOp,
+    op: ArithOp,
     checked: bool,
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
     let (l, r) = emit_value_pair(cx, lhs, rhs)?;
     let helper = match (op, checked) {
-        (BinOp::Add, false) => "graphix_value_add",
-        (BinOp::Sub, false) => "graphix_value_sub",
-        (BinOp::Mul, false) => "graphix_value_mul",
-        (BinOp::Div, false) => "graphix_value_div",
-        (BinOp::Mod, false) => "graphix_value_rem",
-        (BinOp::Add, true) => "graphix_value_checked_add",
-        (BinOp::Sub, true) => "graphix_value_checked_sub",
-        (BinOp::Mul, true) => "graphix_value_checked_mul",
-        (BinOp::Div, true) => "graphix_value_checked_div",
-        (BinOp::Mod, true) => "graphix_value_checked_rem",
+        (ArithOp::Add, false) => "graphix_value_add",
+        (ArithOp::Sub, false) => "graphix_value_sub",
+        (ArithOp::Mul, false) => "graphix_value_mul",
+        (ArithOp::Div, false) => "graphix_value_div",
+        (ArithOp::Mod, false) => "graphix_value_rem",
+        (ArithOp::Add, true) => "graphix_value_checked_add",
+        (ArithOp::Sub, true) => "graphix_value_checked_sub",
+        (ArithOp::Mul, true) => "graphix_value_checked_mul",
+        (ArithOp::Div, true) => "graphix_value_checked_div",
+        (ArithOp::Mod, true) => "graphix_value_checked_rem",
     };
     let call =
         cx.call_helper(helper, &[l.cv.disc, l.cv.payload, r.cv.disc, r.cv.payload])?;

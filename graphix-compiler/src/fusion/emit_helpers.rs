@@ -24,7 +24,7 @@ use crate::{
         error::{QopSite, report_failure, report_ignored, unhandled_msg},
         list,
         map::map_get,
-        op::{BinOp, arith, neg},
+        op::{ArithOp, arith, neg},
     },
     typ::{IsAFlags, Type},
 };
@@ -855,7 +855,7 @@ fn list_walk(v: &Value, j: usize) -> Option<&Value> {
 /// `l op r` over operands with no register form, borrowed: unchecked, a
 /// failure is bottom as the node-walk's; checked, the catchable
 /// `ArithError` value.
-fn value_arith(op: BinOp, checked: bool, l: &TagValue, r: &TagValue) -> TagValue {
+fn value_arith(op: ArithOp, checked: bool, l: &TagValue, r: &TagValue) -> TagValue {
     match l.with_value(|a| r.with_value(|b| arith(op, checked, a.clone(), b.clone()))) {
         Value::Error(_) if !checked => TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
         v => TagValue::fired(v),
@@ -959,43 +959,43 @@ unsafe fn graphix_inferred_type_matches(v: ManuallyDrop<TagValue>, typ: *const T
 }
 
 safe fn graphix_value_add(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Add, false, &l, &r)
+    value_arith(ArithOp::Add, false, &l, &r)
 }
 
 safe fn graphix_value_sub(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Sub, false, &l, &r)
+    value_arith(ArithOp::Sub, false, &l, &r)
 }
 
 safe fn graphix_value_mul(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Mul, false, &l, &r)
+    value_arith(ArithOp::Mul, false, &l, &r)
 }
 
 safe fn graphix_value_div(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Div, false, &l, &r)
+    value_arith(ArithOp::Div, false, &l, &r)
 }
 
 safe fn graphix_value_rem(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Mod, false, &l, &r)
+    value_arith(ArithOp::Mod, false, &l, &r)
 }
 
 safe fn graphix_value_checked_add(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Add, true, &l, &r)
+    value_arith(ArithOp::Add, true, &l, &r)
 }
 
 safe fn graphix_value_checked_sub(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Sub, true, &l, &r)
+    value_arith(ArithOp::Sub, true, &l, &r)
 }
 
 safe fn graphix_value_checked_mul(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Mul, true, &l, &r)
+    value_arith(ArithOp::Mul, true, &l, &r)
 }
 
 safe fn graphix_value_checked_div(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Div, true, &l, &r)
+    value_arith(ArithOp::Div, true, &l, &r)
 }
 
 safe fn graphix_value_checked_rem(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> TagValue {
-    value_arith(BinOp::Mod, true, &l, &r)
+    value_arith(ArithOp::Mod, true, &l, &r)
 }
 
 /// `l` against `r` in the total order of values: -1, 0 or 1. Borrows
@@ -2076,7 +2076,7 @@ mod tests {
     #[test]
     fn value_arithmetic_borrows_operands() {
         let input = TagValue::fired("decimal:1.5".parse().unwrap());
-        let result = value_arith(BinOp::Add, false, &input, &input);
+        let result = value_arith(ArithOp::Add, false, &input, &input);
         assert_eq!(result.value_cloned(), "decimal:3.0".parse::<Value>().unwrap());
         assert_eq!(input.value_cloned(), "decimal:1.5".parse::<Value>().unwrap());
     }

@@ -4,7 +4,7 @@
 
 use crate::{
     fusion::kernel_abi::{self, AbiKind, PrimType},
-    node::op::{BinOp, CmpOp},
+    node::op::{ArithOp, CmpOp},
     typ::Type,
 };
 use anyhow::{Result, anyhow};
@@ -256,24 +256,24 @@ pub(super) fn zero_const(b: &mut FunctionBuilder, p: PrimType) -> ClifValue {
 
 pub(super) fn compile_bin(
     b: &mut FunctionBuilder,
-    op: BinOp,
+    op: ArithOp,
     typ: PrimType,
     l: ClifValue,
     r: ClifValue,
 ) -> Result<ClifValue> {
     Ok(if typ.is_integer() {
         match op {
-            BinOp::Add => b.ins().iadd(l, r),
-            BinOp::Sub => b.ins().isub(l, r),
-            BinOp::Mul => b.ins().imul(l, r),
-            BinOp::Div => {
+            ArithOp::Add => b.ins().iadd(l, r),
+            ArithOp::Sub => b.ins().isub(l, r),
+            ArithOp::Mul => b.ins().imul(l, r),
+            ArithOp::Div => {
                 if typ.is_signed() {
                     b.ins().sdiv(l, r)
                 } else {
                     b.ins().udiv(l, r)
                 }
             }
-            BinOp::Mod => {
+            ArithOp::Mod => {
                 if typ.is_signed() {
                     b.ins().srem(l, r)
                 } else {
@@ -283,11 +283,11 @@ pub(super) fn compile_bin(
         }
     } else {
         match op {
-            BinOp::Add => b.ins().fadd(l, r),
-            BinOp::Sub => b.ins().fsub(l, r),
-            BinOp::Mul => b.ins().fmul(l, r),
-            BinOp::Div => b.ins().fdiv(l, r),
-            BinOp::Mod => {
+            ArithOp::Add => b.ins().fadd(l, r),
+            ArithOp::Sub => b.ins().fsub(l, r),
+            ArithOp::Mul => b.ins().fmul(l, r),
+            ArithOp::Div => b.ins().fdiv(l, r),
+            ArithOp::Mod => {
                 return Err(anyhow!("compile_bin: a float `%` emits through its helper"));
             }
         }

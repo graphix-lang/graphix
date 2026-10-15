@@ -28,6 +28,18 @@ pub enum BinOp {
 }
 
 impl BinOp {
+    /// A checked arithmetic operator (`+?` and the like).
+    pub fn is_checked(self) -> bool {
+        matches!(
+            self,
+            Self::CheckedAdd
+                | Self::CheckedSub
+                | Self::CheckedMul
+                | Self::CheckedDiv
+                | Self::CheckedMod
+        )
+    }
+
     /// Every operator, a token before any token it is a prefix of.
     pub const ALL: [BinOp; 20] = [
         BinOp::Eq,

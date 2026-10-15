@@ -28,16 +28,8 @@ use netidx_value::{Typ, ValArray, Value};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-// CR claude for claude: [structure/low] This module's `BinOp` has the same name as
-// `expr::BinOp`, the parser's operator table, and fusion/emit imports it as plain
-// `BinOp`, so readers have to check which one is meant. arith_rule takes
-// `crate::expr::BinOp::$name` and also a separate `checked` bool. The expr op already
-// says Add or CheckedAdd, so a call can pass a pair that disagrees, and the message
-// would then name a different operator from the one checked. Fix: rename this enum
-// `ArithOp`. Have arith_rule take only the expr op and derive `checked` from it, for
-// example through an `expr::BinOp::arith(self) -> Option<(ArithOp, bool)>` that
-// arith_op! also uses. (c-error-op-09)
-pub enum BinOp {
+/// An arithmetic operator, checked or not as its node says.
+pub enum ArithOp {
     Add,
     Sub,
     Mul,
@@ -673,21 +665,21 @@ const REM_ZERO: ArcStr =
 /// Unchecked `+ - *` wrap, matching the JIT; `x % -1` is 0; any other
 /// overflow and a zero divisor are an error value naming the failure.
 /// `None` for every other shape.
-fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
+fn int_arith(op: ArithOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
     macro_rules! int {
         ($va:ident, $a:expr, $b:expr) => {{
             let (a, b) = ($a, $b);
             let v = match (op, checked) {
-                (BinOp::Add, false) => Ok(a.wrapping_add(b)),
-                (BinOp::Sub, false) => Ok(a.wrapping_sub(b)),
-                (BinOp::Mul, false) => Ok(a.wrapping_mul(b)),
-                (BinOp::Add, true) => a.checked_add(b).ok_or(ADD_OVERFLOW),
-                (BinOp::Sub, true) => a.checked_sub(b).ok_or(SUB_OVERFLOW),
-                (BinOp::Mul, true) => a.checked_mul(b).ok_or(MUL_OVERFLOW),
-                (BinOp::Div, _) if b == 0 => Err(DIV_ZERO),
-                (BinOp::Div, _) => a.checked_div(b).ok_or(DIV_OVERFLOW),
-                (BinOp::Mod, _) if b == 0 => Err(REM_ZERO),
-                (BinOp::Mod, _) => Ok(a.wrapping_rem(b)),
+                (ArithOp::Add, false) => Ok(a.wrapping_add(b)),
+                (ArithOp::Sub, false) => Ok(a.wrapping_sub(b)),
+                (ArithOp::Mul, false) => Ok(a.wrapping_mul(b)),
+                (ArithOp::Add, true) => a.checked_add(b).ok_or(ADD_OVERFLOW),
+                (ArithOp::Sub, true) => a.checked_sub(b).ok_or(SUB_OVERFLOW),
+                (ArithOp::Mul, true) => a.checked_mul(b).ok_or(MUL_OVERFLOW),
+                (ArithOp::Div, _) if b == 0 => Err(DIV_ZERO),
+                (ArithOp::Div, _) => a.checked_div(b).ok_or(DIV_OVERFLOW),
+                (ArithOp::Mod, _) if b == 0 => Err(REM_ZERO),
+                (ArithOp::Mod, _) => Ok(a.wrapping_rem(b)),
             };
             Some(match v {
                 Ok(v) => Value::$va(v),
@@ -714,20 +706,20 @@ fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
 
 /// A checked `l op r` of two decimals, its failure naming its cause as
 /// an integer's does. `None` for every other shape and unchecked op.
-fn decimal_checked(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
+fn decimal_checked(op: ArithOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
     let (Value::Decimal(a), Value::Decimal(b)) = (l, r) else { return None };
     if !checked {
         return None;
     }
     let (a, b) = (**a, **b);
     let v = match op {
-        BinOp::Add => a.checked_add(b).ok_or(ADD_OVERFLOW),
-        BinOp::Sub => a.checked_sub(b).ok_or(SUB_OVERFLOW),
-        BinOp::Mul => a.checked_mul(b).ok_or(MUL_OVERFLOW),
-        BinOp::Div if b.is_zero() => Err(DIV_ZERO),
-        BinOp::Div => a.checked_div(b).ok_or(DIV_OVERFLOW),
-        BinOp::Mod if b.is_zero() => Err(REM_ZERO),
-        BinOp::Mod => a.checked_rem(b).ok_or(DIV_OVERFLOW),
+        ArithOp::Add => a.checked_add(b).ok_or(ADD_OVERFLOW),
+        ArithOp::Sub => a.checked_sub(b).ok_or(SUB_OVERFLOW),
+        ArithOp::Mul => a.checked_mul(b).ok_or(MUL_OVERFLOW),
+        ArithOp::Div if b.is_zero() => Err(DIV_ZERO),
+        ArithOp::Div => a.checked_div(b).ok_or(DIV_OVERFLOW),
+        ArithOp::Mod if b.is_zero() => Err(REM_ZERO),
+        ArithOp::Mod => a.checked_rem(b).ok_or(DIV_OVERFLOW),
     };
     Some(match v {
         Ok(v) => Value::Decimal(triomphe::Arc::new(v)),
@@ -751,22 +743,22 @@ fn decimal_checked(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Val
 // each cause; pin lang::errors::checked_decimal_names_its_cause,
 // x-engine-collections-06). What stands is the float rule: checked f32/f64 division
 // and remainder by zero still follow IEEE (inf, NaN) with no error.
-pub(crate) fn arith(op: BinOp, checked: bool, l: Value, r: Value) -> Value {
+pub(crate) fn arith(op: ArithOp, checked: bool, l: Value, r: Value) -> Value {
     let v = match int_arith(op, checked, &l, &r)
         .or_else(|| decimal_checked(op, checked, &l, &r))
     {
         Some(v) => v,
         None => match (op, checked) {
-            (BinOp::Add, false) => l + r,
-            (BinOp::Sub, false) => l - r,
-            (BinOp::Mul, false) => l * r,
-            (BinOp::Div, false) => l / r,
-            (BinOp::Mod, false) => l % r,
-            (BinOp::Add, true) => l.checked_add(r),
-            (BinOp::Sub, true) => l.checked_sub(r),
-            (BinOp::Mul, true) => l.checked_mul(r),
-            (BinOp::Div, true) => l.checked_div(r),
-            (BinOp::Mod, true) => l.checked_rem(r),
+            (ArithOp::Add, false) => l + r,
+            (ArithOp::Sub, false) => l - r,
+            (ArithOp::Mul, false) => l * r,
+            (ArithOp::Div, false) => l / r,
+            (ArithOp::Mod, false) => l % r,
+            (ArithOp::Add, true) => l.checked_add(r),
+            (ArithOp::Sub, true) => l.checked_sub(r),
+            (ArithOp::Mul, true) => l.checked_mul(r),
+            (ArithOp::Div, true) => l.checked_div(r),
+            (ArithOp::Mod, true) => l.checked_rem(r),
         },
     };
     if checked { wrap_arith_error(v) } else { v }
@@ -775,12 +767,12 @@ pub(crate) fn arith(op: BinOp, checked: bool, l: Value, r: Value) -> Value {
 macro_rules! arith_emit_clif {
     (false, $base:ident) => {
         fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-            emit_arith_node(cx, BinOp::$base, &self.typ, &self.lhs, &self.rhs)
+            emit_arith_node(cx, ArithOp::$base, &self.typ, &self.lhs, &self.rhs)
         }
     };
     (true, $base:ident) => {
         fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-            emit_checked_arith_node(cx, BinOp::$base, &self.lhs, &self.rhs)
+            emit_checked_arith_node(cx, ArithOp::$base, &self.lhs, &self.rhs)
         }
     };
 }
@@ -790,13 +782,13 @@ macro_rules! arith_emit_clif {
 pub(crate) fn arith_rule(
     env: &Env,
     op: crate::expr::BinOp,
-    checked: bool,
     lt: &Type,
     rt: &Type,
     out: &Type,
 ) -> Result<()> {
     // A declared `'a: Number` formal is rigid while its def gate is
     // open: `x + f64:0.` must reject, not bind 'a.
+    let checked = op.is_checked();
     let Some(t) = operand_type(env, lt, rt)? else {
         return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             bail!(
@@ -854,7 +846,7 @@ macro_rules! arith_op {
                 let (l, r, trig, tag) = gated_operands!(self, ctx);
                 let v = l.with_value(|lv| {
                     r.with_value(|rv| {
-                        arith(BinOp::$base, $checked, lv.clone(), rv.clone())
+                        arith(ArithOp::$base, $checked, lv.clone(), rv.clone())
                     })
                 });
                 match v {
@@ -879,7 +871,6 @@ macro_rules! arith_op {
                     arith_rule(
                         &ctx.env,
                         crate::expr::BinOp::$name,
-                        $checked,
                         lt,
                         rt,
                         &self.typ
