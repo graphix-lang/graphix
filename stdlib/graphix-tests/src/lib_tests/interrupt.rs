@@ -100,3 +100,88 @@ async fn abort_unblocks_pending_commands() -> Result<()> {
     drain.abort();
     Ok(())
 }
+
+/// The next value of the root `id`, within `wait`.
+async fn value_of(
+    rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+    id: graphix_compiler::expr::ExprId,
+    wait: Duration,
+) -> Option<netidx::publisher::Value> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let batch = tokio::time::timeout_at(deadline, rx.recv()).await.ok()??;
+        for e in batch.iter() {
+            if let GXEvent::Updated(eid, v) = e
+                && *eid == id
+            {
+                return Some(v.clone());
+            }
+        }
+    }
+}
+
+/// An interrupt that lands inside a recursion, fused or not, leaves its
+/// value riding the last result (`GXHandle::interrupt`): a sample taken
+/// after it reads that result, never a bottom.
+async fn interrupted_recursion_rides(flags: BitFlags<CFlag>) -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = init_flags(tx, flags).await?;
+    let rep = |s: &str| {
+        format!(
+            r#"str::replace(#pat: "a", #rep: "aaaaaaaaaa", str::replace(#pat: "a", #rep: "aaaaaaaaaa", {s}))"#
+        )
+    };
+    let setup = [
+        r#"let rec f = |n: i64, s: string| -> i64 select n { 0 => 0, n => select str::contains(#part: "b[n]", s) { true => 2, false => 1 } + f(n - 1, s) }"#.to_string(),
+        format!("let s0 = \"{}\"", "a".repeat(100)),
+        format!("let s1 = {}", rep("s0")),
+        format!("let s = {}", rep("s1")),
+        "let r = f(15000, s)".to_string(),
+    ];
+    // a compiled input lives while its result is held
+    let mut held = Vec::new();
+    for stmt in setup.iter() {
+        held.push(ctx.rt.compile(ArcStr::from(stmt.as_str())).await?);
+    }
+    let started = tokio::time::Instant::now();
+    held.push(ctx.rt.compile(ArcStr::from("r")).await?);
+    let r = held.last().unwrap().exprs[0].id;
+    let Some(first) = value_of(&mut rx, r, Duration::from_secs(60)).await else {
+        bail!("r never produced")
+    };
+    let took = started.elapsed();
+    // run the recursion again and interrupt it halfway
+    held.push(
+        ctx.rt
+            .compile(ArcStr::from(
+                r#"s <- sys::time::timer(duration:10.ms, false) ~ str::concat(s, "b7")"#,
+            ))
+            .await?,
+    );
+    tokio::time::sleep(Duration::from_millis(10) + took / 2).await;
+    ctx.rt.interrupt();
+    held.push(
+        ctx.rt
+            .compile(ArcStr::from("sys::time::timer(duration:100.ms, false) ~ r"))
+            .await?,
+    );
+    let after = held.last().unwrap().exprs[0].id;
+    let rode = value_of(&mut rx, after, Duration::from_secs(10) + took * 2).await;
+    drop(held);
+    ctx.shutdown().await;
+    match rode {
+        Some(v) if v == first => Ok(()),
+        Some(v) => bail!("after the interrupt r is {v}, not its last result {first}"),
+        None => bail!("after the interrupt r is bottom, not its last result {first}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupted_recursion_rides_interp() -> Result<()> {
+    interrupted_recursion_rides(CFlag::FusionDisabled.into()).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupted_recursion_rides_fused() -> Result<()> {
+    interrupted_recursion_rides(BitFlags::empty()).await
+}

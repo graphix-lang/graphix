@@ -737,16 +737,14 @@ fn marshal_args<R: Rt, E: UserEvent>(
 
 /// A self-call inside the stack red zone re-enters on a fresh segment
 /// through the spill thunk; the same check carries the cooperative
-/// interrupt, which skips the dispatch with a tainted placeholder of
-/// `placeholder` to `dmerge`. The call's result pair goes to `rmerge`.
-/// Only self-calls need it: cross-kernel edges are acyclic.
+/// interrupt and the stack budget, which abort the run. The call's
+/// result pair goes to `rmerge`. Only self-calls need it: cross-kernel
+/// edges are acyclic.
 fn emit_self_dispatch(
     cx: &mut BodyCx,
     func_ref: FuncRef,
     clif_args: &[ClifValue],
-    drops: &[OwnedDrop],
-    placeholder: &Type,
-    (dmerge, rmerge): (Block, Block),
+    rmerge: Block,
     fn_name: &str,
 ) -> Result<()> {
     let abort_bl = cx.b.create_block();
@@ -763,48 +761,12 @@ fn emit_self_dispatch(
     cx.b.ins().brif(direct, call_bl, &[], grow_bl, &[]);
     cx.b.switch_to_block(abort_bl);
     cx.b.seal_block(abort_bl);
-    // CR claude for claude: [risk/low] The interrupt skip here never sets KERNEL_ABORT,
-    // so the comment below is false. The run goes on with a fresh tainted placeholder,
-    // and FusedKernel::update sets the kernel's resident to a fresh bottom that fires
-    // downstream. An interrupt at a loop head (emit_kernel_abort), a forked loop's
-    // abort and an aborted callee each set the flag instead, and the kernel then rides
-    // its last result, as GXHandle::interrupt documents. Fix: in abort_bl, call
-    // graphix_abort_set and jump to rmerge with the zero pair, dropping nothing here.
-    // The `r0 == 0` pending path after rmerge already drops `drops` and runs
-    // emit_pending_cleanup, so keeping emit_owned_drops here would drop the args twice.
-    // emit_self_dispatch then no longer needs its `placeholder` and `dmerge` arguments.
-    // (f-call-flow-05)
-    // CR claude for claude: [bug/medium] When graphix_stack_check returns 0 (an
-    // interrupt, or the stack budget), this path continues the run with a fresh bottom
-    // placeholder, and nothing sets KERNEL_ABORT. The run is therefore not discarded,
-    // whatever the comment below says. FusedKernel::update sees no pending abort and
-    // sets the resident to bottom instead of riding it. It also reclaims every
-    // activation below the interrupted call, because the reach count of a run that
-    // stopped part-way is taken as a shrink. An interrupt that lands at a loop head
-    // (emit_interrupt_check -> emit_kernel_abort) rides correctly, so the JIT handles
-    // the same interrupt two ways depending on where it lands, and it diverges from the
-    // node-walk's CallSite::update, which rides. Fix: take the same path as
-    // emit_kernel_abort here (graphix_abort_set, emit_pending_cleanup, jump to
-    // pending_exit_block), or set KERNEL_ABORT inside graphix_stack_check before it
-    // returns 0. Then add a pin that interrupts a fused non-tail recursion through
-    // GXHandle::interrupt and asserts that its value rides. Probe:
-    // design/review-2026-10-12/repro/f-helpers-01.py (REPL on a pty; the JIT reports
-    // tag=Tag(64) pending=false and loses r, the node-walk keeps r=15000).
-    // (f-helpers-01)
-    emit_owned_drops(cx.b, cx.ctx, drops)?;
-    // The abort discards the whole run, so no trigger fold.
-    // CR claude for claude: [doc-drift/low] The comment above ("The abort discards the
-    // whole run") is false. This path neither sets KERNEL_ABORT nor jumps to
-    // pending_exit. The run completes, and the interrupted self-call's bottom becomes
-    // the kernel's result, which matches the node-walk: an interrupted fib binding
-    // reads bottom in both engines. An interrupt seen first at a loop head goes through
-    // emit_kernel_abort instead, and the kernel rides its old resident. Which of the
-    // two happens depends on which check sees the flag first. Fix: rewrite the comment
-    // to say the interrupted call bottoms and the run goes on. Pin the
-    // interrupted-recursion result with a test, and make the loop-head path agree with
-    // it, or document why it differs. (x-unsafe-03)
-    let ph = emit_bottom_placeholder(cx, placeholder, &[])?;
-    cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
+    // an interrupt or the stack budget aborts the run, which rides its
+    // last result as the node-walk's interrupted dispatch does: the zero
+    // pair takes the pending path after `rmerge`, which drops the args
+    cx.call_helper("graphix_abort_set", &[])?;
+    let zero = cx.b.ins().iconst(types::I64, 0);
+    cx.b.ins().jump(rmerge, &[BlockArg::Value(zero), BlockArg::Value(zero)]);
     cx.b.switch_to_block(call_bl);
     cx.b.seal_block(call_bl);
     let inst = cx.b.ins().call(func_ref, clif_args);
@@ -880,16 +842,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx.b.append_block_param(rmerge, types::I64);
     cx.b.append_block_param(rmerge, types::I64);
     if is_self {
-        let placeholder = if widen { node_typ } else { ret };
-        emit_self_dispatch(
-            cx,
-            func_ref,
-            &clif_args,
-            &drops,
-            placeholder,
-            (dmerge, rmerge),
-            fn_name,
-        )?;
+        emit_self_dispatch(cx, func_ref, &clif_args, rmerge, fn_name)?;
     } else {
         let inst = cx.b.ins().call(func_ref, &clif_args);
         let (r0, r1) = callee_results(cx, inst, fn_name)?;
