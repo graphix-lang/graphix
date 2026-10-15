@@ -1866,7 +1866,7 @@ impl Type {
         })
     }
 
-    fn rename_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
+    pub(super) fn rename_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match tv.binding() {
                 Some(t) => Some(t.rename_int(known).unwrap_or(t)),

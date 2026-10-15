@@ -92,6 +92,17 @@ impl DefTable {
         self.types.values().chain(self.aux.values().flat_map(|ts| ts.iter()))
     }
 
+    /// Every type the table holds: its rows, then each function type's
+    /// parts, with whether the part is a constraint.
+    fn for_each_type(&self, f: &mut impl FnMut(&Type, bool)) {
+        for t in self.rows() {
+            f(t, false)
+        }
+        for ft in self.ftypes.values() {
+            ft.for_each_part(&mut |t, constraint| f(t, constraint));
+        }
+    }
+
     /// Bind to ⊥ every open cell of the table's that `owner`'s gate
     /// created, but its signature (`exempt`) does not reach: nothing
     /// bounded it, and an instance reads the table as the check left it.
@@ -102,25 +113,11 @@ impl DefTable {
         exempt: &AHashSet<usize>,
     ) -> Result<()> {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        // CR claude for claude: [structure/low] This rows-then-ftype-parts walk is
-        // written out three times: here, in DefTable::record and in
-        // DefTable::own_typedefs. Only this copy skips constraint parts, and a new row
-        // kind has to be threaded through all three. Add one DefTable::for_each_type(f:
-        // FnMut(&Type, bool)) taking the constraint flag, and use it in all three
-        // places. rename_fn and InstanceTypes::ftype also wrap a FnType in
-        // Type::Fn(Arc::new(ft.clone())) to rename or instantiate it, which allocates
-        // and needs an unreachable arm. Rename through FnType::cow_walk over
-        // Type::rename_int, then call FnType::instantiate_with directly. (c-lambda-07)
-        for t in self.rows() {
-            crate::typ::settle::position_cells(t, &mut cells);
-        }
-        for ft in self.ftypes.values() {
-            ft.for_each_part(&mut |t, constraint| {
-                if !constraint {
-                    crate::typ::settle::position_cells(t, &mut cells)
-                }
-            });
-        }
+        self.for_each_type(&mut |t, constraint| {
+            if !constraint {
+                crate::typ::settle::position_cells(t, &mut cells)
+            }
+        });
         for (addr, tv) in cells.iter() {
             if !exempt.contains(addr)
                 && !tv.is_bound()
@@ -179,14 +176,9 @@ impl DefTable {
             table.aux.remove(&id);
         }
         let mut seen: LPooled<IntSet<usize>> = LPooled::take();
-        for t in table.rows() {
+        table.for_each_type(&mut |t, _| {
             t.seed_refs_seen(env, &mut seen);
-        }
-        for ft in table.ftypes.values() {
-            ft.for_each_part(&mut |t, _| {
-                t.seed_refs_seen(env, &mut seen);
-            });
-        }
+        });
         table.own_typedefs();
         table
     }
@@ -194,12 +186,7 @@ impl DefTable {
     fn own_typedefs(&mut self) {
         let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
         let mut defs: LPooled<AHashMap<usize, SArc<ResolvedRef>>> = LPooled::take();
-        for t in self.rows() {
-            t.named_defs(&mut cells, &mut defs);
-        }
-        for ft in self.ftypes.values() {
-            ft.for_each_part(&mut |t, _| t.named_defs(&mut cells, &mut defs));
-        }
+        self.for_each_type(&mut |t, _| t.named_defs(&mut cells, &mut defs));
         self.typedefs.clear();
         self.typedefs.extend(defs.drain().map(|(_, r)| r));
     }
@@ -227,7 +214,7 @@ impl DefTable {
                 ftypes: self
                     .ftypes
                     .iter()
-                    .map(|(id, ft)| (*id, rename_fn(ft, known)))
+                    .map(|(id, ft)| (*id, ft.rename_with(known)))
                     .collect(),
                 aux: self
                     .aux
@@ -329,13 +316,6 @@ impl DefTable {
             },
             |b| Self::image_decode(b),
         )
-    }
-}
-
-fn rename_fn(ft: &FnType, known: &AHashMap<usize, TVar>) -> FnType {
-    match &Type::Fn(Arc::new(ft.clone())).rename_with(known) {
-        Type::Fn(ft) => (**ft).clone(),
-        _ => unreachable!("a renamed function type is a function type"),
     }
 }
 
@@ -470,10 +450,11 @@ impl InstanceTypes {
     /// The signature the definition's check settled for the call at `id`.
     pub(crate) fn ftype(&mut self, id: ExprId) -> Option<FnType> {
         let ft = self.tables.table.ftypes.get(&id)?;
-        match self.instance_of(&Type::Fn(Arc::new(ft.clone()))) {
-            Type::Fn(ref ft) => Some((**ft).clone()),
-            _ => None,
-        }
+        let ft = match &self.tables.outer {
+            Some(outer) => ft.rename_with(&outer.lock()),
+            None => ft.clone(),
+        };
+        Some(ft.instantiate_with(&mut self.known.lock(), &self.open))
     }
 
     /// The tables of the lambda literal at `id` of this instance's body.

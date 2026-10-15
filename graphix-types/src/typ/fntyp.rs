@@ -714,6 +714,12 @@ impl FnType {
         self.instantiate_how(known, Fresh::Instantiate(open))
     }
 
+    /// [`Type::rename_with`] over the signature.
+    #[doc(hidden)]
+    pub fn rename_with(&self, known: &AHashMap<usize, TVar>) -> Self {
+        self.cow_walk(|t| t.rename_int(known)).unwrap_or_else(|| self.clone())
+    }
+
     /// [`Self::instantiate_with`] copying every open cell, whoever owns
     /// it: an instance's own copy of its definition's signature, which its
     /// check then binds without writing a cell outside the instance.
