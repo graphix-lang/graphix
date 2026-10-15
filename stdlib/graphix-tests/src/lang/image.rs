@@ -478,6 +478,18 @@ async fn a_restored_interface_keeps_its_positions() -> Result<()> {
     Ok(())
 }
 
+/// A restored catch keeps the handler type its check sealed: a dynamic
+/// module's later raise of another error is refused warm as cold.
+#[tokio::test]
+async fn a_restored_catch_stays_sealed() -> Result<()> {
+    let program = r#"{ let caught = "none"; catch(e) caught <- select e.0.error { `A => "a" }; let a = select caught { "none" => error(`A)?, _ => 0 }; let status = mod foo dynamic { sandbox unrestricted; sig { val y: i64 }; source r"let x = error(`B)?; let y = 1" }; status }"#;
+    let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
+    let refused = cold.last().expect("the module refused its body");
+    assert!(format!("{refused}").contains("this error reaches a catch"), "{refused}");
+    assert_eq!(cold, warm);
+    Ok(())
+}
+
 /// `#[parallel]` and `#[serial]` restore with the program, on an
 /// expression, a `let` and a definition alike.
 #[tokio::test]
