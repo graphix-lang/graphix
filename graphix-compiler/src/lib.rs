@@ -911,15 +911,6 @@ pub struct Native;
 impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
     const NAME: &str = "native";
 
-    // CR claude for claude: [readability/low] `#[native]` on a `<-` right side is
-    // refused with a reason that does not apply. `{ let x = 0; x <- #[native] (x + 1);
-    // x }` says "a declaration or a bare variable read has nothing to fuse", and
-    // without the parens (`x <- #[native] x + 1`, or `x <- #[native] array::len([x,
-    // k])`) the refusal is a bare "did not fully fuse" with no reason. The same
-    // computation bound by a let (`let n = #[native] (x + 1); x <- n`) fuses. Either
-    // fuse a connect's right side as a region like a let initializer, or name the rule
-    // that stops it (a connect node-walks, and a part that calls no function only
-    // descends). Found writing tests-lib-b2-01, 2026-10-13. (native-connect-01)
     fn check_target(_attr: &Attr, node: &Node<R, E>) -> Result<()> {
         if let Type::Fn(_) = node.typ() {
             crate::bailat!(
@@ -958,18 +949,6 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
             use std::fmt::Write;
             let _ = write!(reasons, "\n  - {}", failure.reason);
         }
-        // CR claude for claude: [readability/low] A destructuring `let` under #[native]
-        // is refused with no reason. The "non-single-bind let pattern not supported"
-        // failure from emitting the block is recorded under the specs of the regions
-        // that contain the let, and native_residue's leaf-most filter reports none of
-        // them, so this branch prints a bare "did not fully fuse". The cause shows only
-        // under GXDBG_NATIVE_ALL. Probe: `let f = |x: {bar: f64, baz: f64}| #[native] {
-        // let { bar, baz } = x; bar + baz }; f({bar: 42.0, baz: 84.0})`. Record the
-        // let-pattern failure at the Bind child's spec, or, when native_residue finds
-        // no leaf failure, fall back to the innermost failure recorded under `node`
-        // rather than listing nothing. Other regions satisfy the bindstruct fixture's
-        // FuseExpect::Jit, so the de-fuse of destructuring lets is not pinned either
-        // (select destructuring fuses). (tests-lang-rest-b-09)
         if reasons.is_empty() {
             crate::bailat!(
                 node.spec(),
@@ -1000,15 +979,14 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
         }
         return;
     }
-    // Report only the leaf-most failures whose subtree contains no
-    // fused region: `try_fuse` records a failure for every region
-    // root it tries, containers included.
+    // Report only the leaf-most failures: `try_fuse` records a failure
+    // for every region root it tries, containers included. One whose
+    // parts fused is residue for its own reason.
     let before = report.len();
     fusion::for_each_node(node, &mut |n| {
         let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
             return;
         };
-        let mut subtree_fused = false;
         let mut has_failed_desc = false;
         let mut root = true;
         fusion::for_each_node(n, &mut |desc| {
@@ -1016,23 +994,9 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
                 root = false;
                 return;
             }
-            subtree_fused |= ctx.fusion.stats.source_fused(desc.spec());
             has_failed_desc |= ctx.fusion.stats.failure_for_source(desc.spec()).is_some();
         });
-        // CR claude for claude: [bug/medium] When a fused descendant exists, this skips
-        // a node's own recorded failure. A call whose callee does not lower but whose
-        // argument fused (`#[native] simplify(deriv(..))`) then reports nothing.
-        // `check` bails with a bare 'did not fully fuse to native code' and no reason,
-        // while `#[native] run_one(seed)` over the same callee names the blocker.
-        // Probe: design/review-2026-10-12/repro/examples-rest-05.gx (`--no-cache
-        // --expand`). Drop the `!subtree_fused` condition. A node that failed and has
-        // no failed descendant is residue for its own reason, whatever fused under it.
-        // `!has_failed_desc` already keeps containers from repeating a descendant's
-        // failure. (examples-rest-05)
-        if !subtree_fused
-            && !has_failed_desc
-            && !report.iter().any(|prior| prior.id == failure.id)
-        {
+        if !has_failed_desc && !report.iter().any(|prior| prior.id == failure.id) {
             report.push(failure);
         }
     });

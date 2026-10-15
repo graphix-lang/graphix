@@ -120,29 +120,18 @@ pub struct FusionStats {
     /// one, and its ~256MB arena is freed when the last kernel compiled
     /// into it drops.
     pub jit_generations: usize,
-    /// Region roots that fused. Distinguishes a structural `failed`
-    /// entry (a block whose value fused in a sub-region) from a real
-    /// blocker with nothing fused beneath it.
-    fused_sources: Vec<FusionSource>,
 }
 
 impl FusionStats {
     /// Add a compile task's counts after this one's.
     fn join(&mut self, other: Self) {
-        let Self {
-            attempted,
-            fused,
-            rejected_before_emit,
-            failed,
-            jit_generations,
-            fused_sources,
-        } = other;
+        let Self { attempted, fused, rejected_before_emit, failed, jit_generations } =
+            other;
         self.attempted += attempted;
         self.fused += fused;
         self.rejected_before_emit += rejected_before_emit;
         self.failed.extend(failed);
         self.jit_generations += jit_generations;
-        self.fused_sources.extend(fused_sources);
     }
 
     fn record_failure(&mut self, spec: &Expr, reason: &str) {
@@ -153,17 +142,12 @@ impl FusionStats {
         });
     }
 
-    fn record_fused(&mut self, spec: &Expr) {
+    fn record_fused(&mut self) {
         self.fused += 1;
-        self.fused_sources.push(FusionSource::new(spec));
     }
 
     pub(crate) fn failure_for_source(&self, spec: &Expr) -> Option<&FusionFailure> {
         self.failed.iter().rev().find(|failure| failure.matches(spec))
-    }
-
-    pub(crate) fn source_fused(&self, spec: &Expr) -> bool {
-        self.fused_sources.iter().any(|source| source.matches(spec))
     }
 }
 
@@ -1091,7 +1075,11 @@ pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
     ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
     fuse_each(ctx, parts, |part, ctx| {
-        if calls_a_function(part) { fuse(part, ctx) } else { descend(part, ctx) }
+        if calls_a_function(part) || asserted_native(part) {
+            fuse(part, ctx)
+        } else {
+            descend(part, ctx)
+        }
     })?;
     Ok(None)
 }
@@ -1186,6 +1174,14 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
 
 /// Does the subtree call a lambda or run a collection operation, the
 /// computations that can loop?
+/// A part `#[native]` decorates is a region of its own, as a `let`
+/// initializer is, whatever it calls.
+fn asserted_native<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let native = <crate::Native as crate::Attribute<R, E>>::NAME;
+    let attrs = node.spec().dec.as_ref().map(|d| &*d.attrs).unwrap_or(&[]);
+    attrs.iter().any(|a| a.name == native)
+}
+
 fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut calls = false;
     for_each_node(node, &mut |n| {
@@ -1401,7 +1397,7 @@ fn build_region<R: Rt, E: UserEvent>(
             );
         }
     }
-    ctx.fusion.stats.record_fused(node.spec());
+    ctx.fusion.stats.record_fused();
     if ctx.fusion.unlinked() >= LINK_BATCH {
         ctx.fusion.link_batch();
     }

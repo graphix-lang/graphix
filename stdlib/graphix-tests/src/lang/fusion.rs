@@ -9,7 +9,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     run,
-    testing::{Events, FuseExpect, init_with_flags_and_setup, next_update},
+    testing::{Events, FuseExpect, init_with_flags_and_setup, next_update, refused},
 };
 use graphix_rt::EnvStats;
 use netidx::publisher::Value;
@@ -2190,3 +2190,24 @@ run!(large_region_fuses_whole, {
     }
     matches!(v, Ok(Value::I64(r)) if *r == x.wrapping_add(2))
 }; FuseExpect::Jit);
+
+// A `#[native]` refusal names the blocker that stopped the region, a
+// destructuring let, though the call's argument fused beneath it.
+run!(native_names_the_blocker_over_a_fused_argument, r#"{
+    let g = |x: f64| x + 1.0;
+    let f = |p: {a: f64, b: f64}| { let {a, b} = p; a + b };
+    let x = 1.0;
+    #[native] f({a: g(x), b: g(x)})
+}"#, refused("non-single-bind let pattern not supported"); FuseExpect::None; jit_only);
+
+// `#[native]` on a `<-` right side makes it a region of its own, as on a
+// let initializer, whatever it calls.
+run!(native_on_a_connect_right_side, r#"{
+    let t = array::iter([1, 2, 3]);
+    let x = 0;
+    x <- #[native] (t * 2);
+    let y = 0;
+    y <- #[native] array::len([x, t]);
+    array::group((x, y), |n, _| n == 3)
+}"#, |v: Result<&Value>| format!("{}", v.unwrap())
+    == "[[i64:0, i64:0], [i64:2, i64:2], [i64:4, i64:2]]"; FuseExpect::Jit);
