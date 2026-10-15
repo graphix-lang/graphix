@@ -655,6 +655,30 @@ run!(byref_uniq_compares_targets, BYREF_UNIQ_COMPARES_TARGETS, |v: Result<&Value
     matches!(v, Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(2)])
 }; FuseExpect::Jit);
 
+// A moving place held by a variable that does not fire again writes where
+// its key names at the write, as a read through it reads there.
+async fn held_moving_place_writes_where_its_key_names(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let code = r#"{
+  let a = [10, 20, 30, 40];
+  let i = 0;
+  let step = array::iter([1, 2, 3, 4]);
+  i <- select step { 2 => 2, _ => never() };
+  let held = once(&mut a[i]);
+  *held <- select step { 4 => 99, _ => never() };
+  (i, *held, a)
+}"#;
+    let (values, _) = run_delta(code, mode).await?;
+    let last = values.last().map(|v| format!("{v}"));
+    assert_eq!(
+        last.as_deref(),
+        Some("[i64:2, i64:99, [i64:10, i64:20, i64:99, i64:40]]")
+    );
+    Ok(())
+}
+
+modes!(held_moving_place_writes_where_its_key_names);
+
 // A write through a reference to a value lands in the reference's own
 // cell: `&mut e` is a fresh variable holding `e`.
 const WRITE_THROUGH_A_VALUE_REFERENCE: &str = r#"

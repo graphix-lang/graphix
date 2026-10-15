@@ -1649,7 +1649,9 @@ pub struct ConnectDeref<R: Rt, E: UserEvent> {
     pub(crate) spec: Arc<Expr>,
     pub(super) rhs: Node<R, E>,
     pub(crate) src_id: BindId,
-    pub(super) target: Option<WriteTarget>,
+    /// The reference's cell; where it writes is resolved at each write,
+    /// so a moving place writes where its key names then.
+    pub(super) cell: Option<BindId>,
     pub(super) top_id: ExprId,
     /// The RHS fired while no target took its value: the next target
     /// resolved lands it.
@@ -1671,7 +1673,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             spec,
             rhs,
             src_id,
-            target: None,
+            cell: None,
             top_id,
             pending: false,
             slept: WakeBit::default(),
@@ -1706,7 +1708,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             spec,
             rhs,
             src_id,
-            target: None,
+            cell: None,
             top_id,
             pending: false,
             slept: WakeBit::default(),
@@ -1726,12 +1728,11 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     // from writes. Add one `ref_cell(&TagValue) -> Option<BindId>` beside `ref_target`,
     // use it at all three sites, and build `WriteTarget` here from `ref_target`'s
     // result. (c-bind-08)
-    fn resolve(ctx: &ExecCtx<'_, R, E>, tv: &TagValue) -> Option<WriteTarget> {
-        let cell = tv.with_value(|v| match v {
+    fn cell(tv: &TagValue) -> Option<BindId> {
+        tv.with_value(|v| match v {
             Value::U64(id) => Some(BindId::from(*id)),
             _ => None,
-        })?;
-        Some(ctx.write_target(cell))
+        })
     }
 }
 
@@ -1746,7 +1747,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
 
     /// `target` is resolved at update: a resolved one is runtime state.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if self.target.is_some() || self.pending {
+        if self.cell.is_some() || self.pending {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         put_tag(NodeTag::ConnectDeref, buf);
@@ -1765,34 +1766,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             let t = tv.tag();
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
-        // CR claude for claude: [bug/medium] The write target is resolved only when
-        // `src_id` is delivered, when there is no target yet, or after a wake. A moving
-        // place reference keeps its cell and re-registers its path through
-        // `Rt::set_ref_path` without re-delivering the variable that holds it. So when
-        // a variable holds the reference without re-firing (`held <- once(r)`, `click ~
-        // r`), `*h <- v` patches the old path while `Deref` (which calls `ref_target`
-        // on every update) reads the new one. Both engines give the same wrong value,
-        // so the fuzzer cannot see it. design/place_references.md says a moving
-        // reference reads and writes where the key names now. Fix: store the cell
-        // rather than the resolved `WriteTarget`, and resolve it at write time
-        // (`ref_target`/`ref_path` on the cell when a pending value lands), as
-        // `Deref::address` does. probe: design/review-2026-10-12/repro/x-parallel-02.gx
-        // (x-parallel-02)
         if let crate::branch::RtView::Fork(f) = &ctx.rt {
             f.note_read(self.src_id);
         }
         if let Some(tv) = ctx.event.variables.get(&self.src_id) {
             // a reference delivered without a target (a place whose
             // address is undetermined) has nowhere to write
-            self.target = Self::resolve(ctx, tv);
-        } else if self.target.is_none() || woke {
+            self.cell = Self::cell(tv);
+        } else if self.cell.is_none() || woke {
             // an instance created after the reference value was
             // delivered, or woken after it moved, finds it standing
             if let Some(read) = read_var(ctx, &self.src_id) {
                 let tv = match read {
                     VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
                 };
-                self.target = Self::resolve(ctx, tv);
+                self.cell = Self::cell(tv);
             }
         }
         // CR claude for eric: [risk/medium] A write that fires while the reference has
@@ -1817,12 +1805,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.pending |= rhs_fired;
         if self.pending
             && let Some(v) = rhs_val
-            && let Some(target) = &self.target
+            && let Some(cell) = self.cell
         {
-            match target {
-                WriteTarget::Bind(id) => ctx.rt.set_var(*id, v),
+            match ctx.write_target(cell) {
+                WriteTarget::Bind(id) => ctx.rt.set_var(id, v),
                 WriteTarget::Place(root, path) => {
-                    ctx.rt.patch_var(*root, path.clone(), v, Some(self.spec.clone()))
+                    ctx.rt.patch_var(root, path, v, Some(self.spec.clone()))
                 }
             }
             self.pending = false;
