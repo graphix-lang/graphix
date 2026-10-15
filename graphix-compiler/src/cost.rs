@@ -197,16 +197,6 @@ impl Hist {
     }
 
     /// The bucket holding the 75th percentile.
-    // CR claude for claude: [risk/low] An empty histogram returns 15, so Meter::done
-    // adds about 8T to `prefix` for any child the meter never timed.
-    // update_args_in_order skips Placeholder and Compiled defaults, so while a dynamic
-    // call's callee is still bottom, each omitted default looks like an 8T child.
-    // Splits::Weighted then forks around no-ops. With two placeholders, `pays` stays
-    // true whatever the given arguments cost, so the site never turns serial. Fix:
-    // estimate an untimed child (`n == 0`) at 0. Also, `Meter::done` settles on
-    // `hist[0]` alone, while design/parallel_eval.md says a site is unsettled until
-    // each child has four samples. Settle on every child that has samples (`h.n == 0 ||
-    // h.n >= SETTLE`). (c-cost-misc-05)
     fn p75(&self) -> u8 {
         let want = (self.n as u32 * 3).div_ceil(4).max(1);
         let mut seen = 0u32;
@@ -456,9 +446,11 @@ impl<'a> Meter<'a> {
                     let b = h.p75();
                     changed |= m.p75[i] != b;
                     m.p75[i] = b;
-                    m.prefix[i + 1] = m.prefix[i] + cal.floor(b);
+                    // a child the meter never timed (an omitted default) costs nothing
+                    let est = if h.n == 0 { 0 } else { cal.floor(b) };
+                    m.prefix[i + 1] = m.prefix[i] + est;
                 }
-                m.settled = m.hist[0].n >= SETTLE || m.settled;
+                m.settled |= m.hist.iter().all(|h| h.n == 0 || h.n >= SETTLE);
                 m.sampler.sampled(m.settled, changed);
                 let pays = Splits::Weighted { prefix: &m.prefix, t: cal.t }
                     .split(0, n)

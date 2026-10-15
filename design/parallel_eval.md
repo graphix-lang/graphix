@@ -358,15 +358,16 @@ fades. A collection keeps one histogram for its standing slots' per-slot
 cost, not one per slot, and its growth two `ProbeSite`s (below). A fork
 point that is a chain stores nothing.
 
-**When it is measured.** Every update while a site is unsettled (each
-child has fewer than four samples); then one update in N, with N
+**When it is measured.** Every update while a site is unsettled (a
+child it times has fewer than four samples); then one update in N, with N
 doubling while the estimates hold (to 1 in 256) and reset when one
 moves (`cost::Sampler`). Sampling keeps the steady-state overhead to a
 branch and a counter.
 
 **What is decided.** A child's estimate is the floor of its
 histogram's p75 bucket (a child that is usually cheap but sometimes
-huge should still fork). A site cuts its children into contiguous
+huge should still fork); a child the site never times (an omitted
+default) is estimated at nothing. A site cuts its children into contiguous
 ranges (`Splits::split`, `Splits::ranges`): a range of estimated total
 `2T` or more splits at its weighted midpoint when both halves reach
 `T`, and recursively; each final range is a sibling branch
