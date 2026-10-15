@@ -1171,26 +1171,6 @@ impl Vars {
             }
         }
     }
-
-    // CR claude for claude: [structure/low] `meets` repeats `meeting`'s unknown and
-    // small-into-large logic line for line. A change made to one copy only would make
-    // seq step planning (`plan_machines` uses `meets`) disagree with block and fork
-    // planning (which use `meeting`). Fix: make the body
-    // `self.meeting(other).is_some()`. (c-analysis-branch-09)
-    fn meets(&self, other: &Vars) -> bool {
-        match (self.unknown(), other.unknown()) {
-            (true, _) => !other.is_empty(),
-            (_, true) => !self.is_empty(),
-            _ => {
-                let (small, large) = if self.ids.len() <= other.ids.len() {
-                    (&self.ids, &other.ids)
-                } else {
-                    (&other.ids, &self.ids)
-                };
-                small.iter().any(|id| large.contains(id))
-            }
-        }
-    }
 }
 
 /// What code reads and writes, following statically resolved calls,
@@ -1868,8 +1848,8 @@ fn plan_machines<R: Rt, E: UserEvent>(
                     let mut out = Vars::default();
                     out.union(&pending[k]);
                     out.union(&access[k].writes);
-                    let same =
-                        !out.meets(&access[n].reads) && !out.meets(&access[n].writes);
+                    let same = out.meeting(&access[n].reads).is_none()
+                        && out.meeting(&access[n].writes).is_none();
                     if same {
                         pending[n].union(&out);
                     }
