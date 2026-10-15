@@ -1058,6 +1058,27 @@ run!(
     FuseExpect::None
 );
 
+// A catch that saw no raise at its check takes none later: the refusal
+// names the annotation that would take it.
+run!(
+    dynamic_raise_names_the_catch_annotation,
+    r##"{
+    let r = {
+        catch(e) never(e);
+        mod foo dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "let v = 1; let w = error(\"hello\")?"
+        }
+    };
+    r
+}"##,
+    |v: Result<&Value>| matches!(v, Ok(v @ Value::Error(_))
+        if format!("{v}").contains("saw no error when it was checked")
+            && format!("{v}").contains("`catch(e: Error<ErrChain<string>>)`"));
+    FuseExpect::None
+);
+
 /// The seq lowerings a program leaves once `code` settles on `last`.
 async fn lowerings_kept(code: &str, last: Value) -> Result<usize> {
     use graphix_package_core::testing::{

@@ -218,14 +218,18 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
         {
             return Ok(());
         }
-        // CR claude for claude: [readability/low] A catch that saw no raise at its own
-        // check seals at bottom. Every later raise compiled under it, such as a later
-        // REPL input or a dynamic module's body, is then refused with "handler was
-        // checked to take _". The `_` names nothing, and the message does not mention
-        // the cure. Example: in the REPL, `catch(e) println("caught [e]")` then `let v
-        // = error(41)?`. When the sealed type is bottom (or still open), say that this
-        // catch saw no error when it was checked and must be annotated with the error
-        // type it should take (`catch(e: Error<..>)`). (x-rerun-1-07)
+        Some(t)
+            if handler.sealed()
+                && !etyp.has_unbound()
+                && t.with_deref(|t| matches!(t, None | Some(Type::Bottom))) =>
+        {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "this error reaches a catch that saw no error when it was checked: \
+                     annotate the catch with the errors it takes, `catch(e: {etyp})`"
+                )
+            })?
+        }
         Some(t) if handler.sealed() && !etyp.has_unbound() => bail!(
             "this error reaches a catch whose handler was checked to take {t}, \
              which does not contain {etyp}"
