@@ -890,18 +890,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         ctx: &mut CompileCtx<R, E>,
         args: &mut [Node<R, E>],
     ) -> Result<()> {
-        // CR claude for claude: [perf/medium] An instance of a tui package function
-        // (tui::barchart::bar, tui::table::cell) spends about 25x the InstanceCheck
-        // time of an identical function in a user module over the same tui types: 1024
-        // `bar` instances take 847 ms self here against 35 ms for the copy (debug,
-        // GRAPHIX_PAR=off). Under GRAPHIX_PAR=auto the program takes about 3x its
-        // serial wall time, which points to contention between parallel instance
-        // checks. A chart of a few thousand bars no longer draws in seconds. Find what
-        // differs for a package-root definition in `instance_types`, the
-        // `with_restored` env swap, or the `DefTable` substitution
-        // (GRAPHIX_PROFILE_INSTANCES on one instance of each), and remove it. probe:
-        // design/review-2026-10-12/repro/x-rerun-7-04-tui-instance-cost.gx vs
-        // x-rerun-7-04-local/main.gx (x-rerun-7-04)
         let mut p = profile::phase(Phase::InstanceCheck);
         profile::instance(&mut p, self.instance_id, self.id, self.body.spec());
         elab_audit::enter();

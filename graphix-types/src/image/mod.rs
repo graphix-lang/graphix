@@ -818,7 +818,9 @@ pub fn resolved_decode(buf: &mut impl Buf) -> Result<Resolved, PackError> {
     }
 }
 
-fn resolved_decode_weak(buf: &mut impl Buf) -> Result<Weak<ResolvedRef>, PackError> {
+/// A typedef's definition, or the weak half of one still being decoded.
+#[doc(hidden)]
+pub fn resolved_decode_weak(buf: &mut impl Buf) -> Result<Weak<ResolvedRef>, PackError> {
     Ok(match resolved_read(buf)? {
         ResolvedRead::Built(r) => sync::Arc::downgrade(&r),
         ResolvedRead::Building(w) => w,

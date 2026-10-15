@@ -422,6 +422,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
+    body_env: &Env,
 ) -> Result<()> {
     let _profile = profile::phase(Phase::ModuleSignature);
     let first_proxy = proxy.len();
@@ -487,6 +488,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                 && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
                 && let Some(sig_td) = defs.get(&CompactString::from(td.name.as_str()))
             {
+                let exported = sig_td.clone();
                 let sig_td = TypeDefExpr {
                     name: td.name.clone(),
                     params: sig_td.params().clone(),
@@ -580,6 +582,15 @@ fn check_sig<R: Rt, E: UserEvent>(
                                 sig_td,
                                 td
                             )
+                        }
+                        // one type: a reference to the interface's is one to
+                        // the implementation's wherever identity decides
+                        if let Some(body_td) = body_env
+                            .typedefs
+                            .get(&scope.lexical)
+                            .and_then(|m| m.get(&CompactString::from(td.name.as_str())))
+                        {
+                            exported.link_same(body_td)
                         }
                     }
                 }
@@ -1094,9 +1105,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             super::typecheck0_statements(ctx, nodes, catches, false)
         })?;
         match body {
-            Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, nodes),
+            Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, nodes, env),
             Body::Dynamic { sig_env, .. } => ctx.with_restored_mut(sig_env, |ctx| {
-                check_sig(ctx, *top_id, proxy, scope, sig, nodes)
+                check_sig(ctx, *top_id, proxy, scope, sig, nodes, env)
             }),
         }
     }
