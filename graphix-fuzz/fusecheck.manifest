@@ -117,7 +117,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	dyncall-jun2026/02_dead_pend_discard_position.gx
 0	dyncall-key0-stateful-aug2026/00_count_in_callee_fold.gx
 1	dyncall-layout-jul2026/01_shared_callee_stale_layout.gx
-20	dyncall-loop-stale-ride-aug2026/00_map_filter_refire_rides_shared_cache.gx
+19	dyncall-loop-stale-ride-aug2026/00_map_filter_refire_rides_shared_cache.gx
 1	dyncall-partial-args-jul2026/00_window_bottom_val.gx
 1	dyncall-partial-args-jul2026/01_window_scalar_bottom_val.gx
 1	dyncall-pending-taint-jul2026/01_pad_guard_unconsumed_bind.gx
@@ -158,8 +158,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	fold-bottom-body-acc-aug2026/02_connect_body_string_acc.gx
 1	fold-midchain-fired-aug2026/00_fold_midchain_acc_fire.gx
 3	fold-midchain-fired-aug2026/01_group_guard_select_fold.gx
-8	fold-phantom-callback-aug2026/00_skip_fed_callback.gx
-8	fold-phantom-callback-aug2026/01_filter_fed_callback.gx
+7	fold-phantom-callback-aug2026/00_skip_fed_callback.gx
+7	fold-phantom-callback-aug2026/01_filter_fed_callback.gx
 3	fold-standing-init-refire-aug2026/00_guard_flip_eaten.gx
 6	fold-standing-init-resize-aug2026/00_div0_init_push_fold.gx
 6	fold-standing-init-resize-aug2026/01_window_form.gx
@@ -177,8 +177,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 4	frame-formal-init-view-aug2026/01_count_observes_fires.gx
 3	frame-state-cross-cycle-jul2026/00_resumed_recursion.gx
 2	frame-state-cross-cycle-jul2026/01_capture_fed_rec_refire.gx
-4	frame-taint-exit-jul2026/01_rec_bottom_sample_debt.gx
-6	frame-taint-exit-jul2026/02_original.gx
+3	frame-taint-exit-jul2026/01_rec_bottom_sample_debt.gx
+5	frame-taint-exit-jul2026/02_original.gx
 2	framed-arg-stale-formal-aug2026/00_fold_go_retrigger.gx
 1	framed-formal-seed-aug2026/01_fold_in_rec_arm_one_step.gx
 1	framed-formal-seed-aug2026/02_found_form_min_element.gx
@@ -200,9 +200,9 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	hof-once-latch-jul2026/01_map_dirs_callback.gx
 2	hof-pass-through-deps-aug2026/00_filter_elem_update.gx
 2	hof-pass-through-deps-aug2026/01_find_through_select.gx
-9	hof-pass-through-deps-aug2026/02_qop_stale_chain_m1.gx
+8	hof-pass-through-deps-aug2026/02_qop_stale_chain_m1.gx
 5	hof-pass-through-deps-aug2026/03_qop_stale_chain_m2.gx
-7	hof-pass-through-deps-aug2026/04_dynmod_reload_find.gx
+6	hof-pass-through-deps-aug2026/04_dynmod_reload_find.gx
 1	hold-async-clock-aug2026/00_hold_stderr_clock.gx
 1	hold-relatch-jul2026/01_hold_relatch_per_clock.gx
 0	homogeneous-arith-jul2026/01_mixed_acc_map_instance.gx
@@ -228,7 +228,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 9	kernel-result-bottom-persists-aug2026/01_guard_arm_epoch3.gx
 4	kernel-result-bottom-persists-aug2026/02_block_connect_qop.gx
 11	kernel-result-bottom-persists-aug2026/03_catch_qop_select.gx
-6	kernel-tainted-source-fire-aug2026/00_window_div0_fold.gx
+5	kernel-tainted-source-fire-aug2026/00_window_div0_fold.gx
 3	key0-dyncall-stale-fold-aug2026/00_refwrite_guard_echo.gx
 1	labeled-callback-param-aug2026/00_labeled_defaults_before_element.gx
 0	labeled-callback-param-aug2026/01_labeled_default_read.gx
@@ -257,7 +257,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
 1	narrow-int-abi-jul2026/03_bool_in_string_interp.gx
 2	neg-standing-bottom-aug2026/00_byref_write_stomped.gx
-6	neg-standing-bottom-aug2026/01_dynmod_dispatch_repoisoned.gx
+5	neg-standing-bottom-aug2026/01_dynmod_dispatch_repoisoned.gx
 0	nested-bind-stmt-dead-elim-aug2026/00_array_literal_selfconnect.gx
 0	nested-bind-stmt-dead-elim-aug2026/01_array_literal_multi_ref.gx
 0	nested-bind-stmt-dead-elim-aug2026/02_struct_literal_field.gx
@@ -283,8 +283,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	qop-bare-error-jul2026/01_bare_error_dollar_garbage.gx
 3	qop-deliver-dyncall-arity-aug2026/00_handler_ful_qop_defuses.gx
 2	qop-nested-union-jul2026/01_string_union_elem_index_qop.gx
-4	qop-scalar-error-leak-aug2026/00_handler_less_qop_leaks.gx
-3	qop-tailloop-frame-swallow-aug2026/00_qop_raise_inside_tail_loop.gx
+3	qop-scalar-error-leak-aug2026/00_handler_less_qop_leaks.gx
+2	qop-tailloop-frame-swallow-aug2026/00_qop_raise_inside_tail_loop.gx
 2	quiesce-verdict-jul2026/01_ref_echo_const_result.gx
 1	quiet-frame-init-view-aug2026/00_dyncall_first_in_frame.gx
 1	quiet-frame-init-view-aug2026/01_dyncall_scrutinee_in_frame_group.gx
@@ -314,8 +314,8 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	ref-cast-sep2026/00_cast_of_a_reference.gx
 6	ref-print-id-oct2026/00_interpolated_ref.gx
 0	refparam-occurs-aug2026/00_flatmap_typedef_wedge.gx
-30	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
-4	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
+29	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
+3	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx
 1	result-union-nullable-abi-aug2026/01_string_predicate_wrong_arm.gx
 6	review-fusion-oct2026/01_lazy_guard_fires.gx
@@ -342,7 +342,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 2	select-guard-shortcircuit-aug2026/01_guard_cache_ride_wrong_arm.gx
 3	select-guard-shortcircuit-aug2026/02_guard_effect_skipped.gx
 2	select-guard-taint-jul2026/00_tainted_init_skips_guard_tick.gx
-11	select-guard-taint-jul2026/01_guarded_select_over_tainted_fold.gx
+8	select-guard-taint-jul2026/01_guarded_select_over_tainted_fold.gx
 1	select-jun2026/01_nullable_pred_arm_order.gx
 1	select-jun2026/02_bottom_scrut_last_arm_trap.gx
 1	select-lit-leaf-union-slot-aug2026/00_u8_underflow_tuple_lit.gx
@@ -358,7 +358,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 3	select-quiet-scrutinee-aug2026/00_quiet_scrutinee_body_fire.gx
 3	select-quiet-scrutinee-aug2026/01_const_arm_body_quiet.gx
 3	select-quiet-scrutinee-aug2026/02_placeholder_wrong_arm.gx
-5	select-quiet-scrutinee-aug2026/03_guard_flip_requiet_rematch.gx
+4	select-quiet-scrutinee-aug2026/03_guard_flip_requiet_rematch.gx
 3	select-quiet-scrutinee-aug2026/04_bind_rides_cached_scrutinee.gx
 2	select-slot-memory-jul2026/00_guard_only_unchanged_selection.gx
 2	select-slot-memory-jul2026/01_minimized_single_event.gx
@@ -367,7 +367,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 5	select-strict-rule-aug2026/00_refire_ride_witness.gx
 5	select-strict-rule-aug2026/01_starved_fold_arm.gx
 3	select-strict-rule-aug2026/02_live_fold_two_cycle.gx
-7	select-strict-rule-aug2026/03_filter_select_qop.gx
+6	select-strict-rule-aug2026/03_filter_select_qop.gx
 5	select-wake-rematch-sep2026/00_arm_local_counter.gx
 0	set-eq-drops-cell-link-aug2026/00_list_fold_map_fn.gx
 1	settle-order-jul2026/01_firstclass_hof_occurs_flap.gx
@@ -420,9 +420,9 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	soak-jul2026/31_list_enumerate_key_type.gx
 2	soak-jul2026/32_connect_as_hof_source.gx
 6	soak-jul2026/33_arm_wake_replay_ref_write.gx
-12	soak-jul2026/34_arm_wake_replay_ref_write_b.gx
+11	soak-jul2026/34_arm_wake_replay_ref_write_b.gx
 3	soak-jul2026/35_per_slot_lift_aliasing.gx
-11	soak-jul2026/36_slot_prime_cached_replay.gx
+10	soak-jul2026/36_slot_prime_cached_replay.gx
 0	soak-jul2026/37_nested_select_rtype_orphan.gx
 2	soak-jul2026/38_queuefn_clone_ftyp_lost.gx
 0	soak-jul2026/39_nullable_callback_return.gx
@@ -477,10 +477,10 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
 4	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
 1	taint-cache-callee-jul2026/00_callee_interior_bottom.gx
-8	taint-cache-callee-jul2026/01_float_cache_block_param.gx
+5	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 2	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx
 2	transient-rebind-init-jul2026/00_capture_wake_const_body.gx
-24	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
+23	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
 abort	trip-poison-extent-aug2026/01_ride_too_narrow_residue_trip.gx
 abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 0	trycatch-rtype-orphan-aug2026/01_struct_add_admission.gx
@@ -539,7 +539,7 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 7	wake-connect-target-sep2026/01_never_let.gx
 6	wake-connect-target-sep2026/02_arm_value.gx
 4	wake-stale-bottom-sep2026/00_plain_select.gx
-21	wake-stale-bottom-sep2026/01_seq_step.gx
+19	wake-stale-bottom-sep2026/01_seq_step.gx
 4	wake-stale-bottom-sep2026/02_let.gx
 4	wake-stale-bottom-sep2026/03_call.gx
 5	wake-stale-bottom-sep2026/04_map_source.gx

@@ -290,19 +290,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.image_encode(buf)
     }
 
-    // CR claude for claude: [perf/low] ExplicitParens::fuse sends its interior through
-    // fusion::fuse, which tries it as a region of its own. Every other wrapper ends in
-    // fusion::fuse_parts, which only descends into a part that calls no function. So `y
-    // <- t ~ (x * 2 + 1)` builds a kernel for the arithmetic (fused=3) and `y <- t ~ x
-    // * 2 + 1` does not (fused=2): parentheses that mean nothing decide a region and
-    // the fusecheck counts. Use `fusion::fuse_parts([&mut self.n], ctx)` so the parens
-    // are transparent. If `#[native] (e)` must stay a region root, keep the fuse call
-    // only when self.spec.dec carries an attribute. Then delete the boundary comment
-    // and bless the manifest. (c-node-mod-03)
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // parens are a fusion boundary: the interior gets its own region pass
-        fuse(&mut self.n, ctx)?;
-        Ok(None)
+        // parens mean nothing to fusion, unless an attribute they carry
+        // names the expression a region (`#[native] (e)`)
+        match self.spec.dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
+            true => fuse(&mut self.n, ctx).map(|()| None),
+            false => fusion::fuse_parts([&mut self.n], ctx),
+        }
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
