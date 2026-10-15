@@ -1153,21 +1153,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(Node::new(CallNode::Call(site)))
     }
 
-    // CR claude for claude: [bug/medium] A dynamic call's argument set changes at every
-    // bind, but its fork decision does not follow it. On the first update, update_args
-    // has ForkSite::decide_siblings decide independence over the arguments as they
-    // stand. An omitted default is then still fill_omitted's Nop placeholder. The
-    // default that prepare_bind compiles in its place can reach the same ORDERED
-    // builtin (a queuefn wrapper) as a given argument. The stale Siblings::Independent
-    // then forks the two, and the queue's order changes under GRAPHIX_PAR=force (and
-    // under Auto when the arguments cost enough). A static call or a written-out
-    // default keeps the order. Fix: reset self.fork to Undecided (and drop its stale
-    // histograms) here, so every rebind decides again over the compiled defaults.
-    // Probe: design/review-2026-10-12/repro/c-cost-misc-02.sh (c-cost-misc-02)
     fn clear_prepared_bind(&mut self, ctx: &mut CompileCtx<R, E>) {
         if let Some(apply) = self.callee.take_apply() {
             ctx.discard_apply(apply);
         }
+        // the arguments change: whether they may fork is decided again
+        self.fork = ForkSite::default();
         for n in self.arg_refs.drain(..) {
             ctx.discard(n);
         }
@@ -1875,7 +1866,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.setup_static_bind(ctx, &scope, self.flags, def)?;
         let instance = match apply.view() {
             ApplyView::Lambda(g) => Some(g.instance_id()),
-            ApplyView::BuiltIn(_) => None,
+            ApplyView::BuiltIn(_) | ApplyView::Opaque => None,
         };
         if let Some(instance) = instance {
             self.static_target = Some(StaticCallTarget {
@@ -1981,6 +1972,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 // when the fnode delivers a different one. Pin it with a multi-compile
                 // test that reads the value. probe:
                 // design/review-2026-10-12/repro/c-callsite-04.sh (c-callsite-04)
+                // 2026-10-14 claude: the node-walk half (Callee::Static rebinding when
+                // its fnode delivers another definition) is not enough: a kernel that
+                // absorbed the call calls its static target inline and would keep the
+                // old function, so the engines would diverge where today they agree on
+                // the wrong answer. A fix has to reach earlier batches' fused regions
+                // too (the static target's binding as a kernel input that de-fuses on
+                // change, or recompiling the sites a later batch's mark_connect_target
+                // invalidates). Not started.
                 if ctx.batch_connect_targets.contains(&r.id) {
                     None
                 } else {
@@ -2275,6 +2274,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 Some(a) => match a.view() {
                     ApplyView::Lambda(_) => "lambda",
                     ApplyView::BuiltIn(_) => "builtin",
+                    ApplyView::Opaque => "opaque",
                 },
             };
             eprintln!(
@@ -2443,6 +2443,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Callee::Static { apply, .. } => match apply.view() {
                 ApplyView::Lambda(_) => Ok(CALLEE_INSTANCE),
                 ApplyView::BuiltIn(_) => Ok(CALLEE_BUILTIN),
+                ApplyView::Opaque => Err(PackError::Application(image::NOT_IMAGED)),
             },
             Callee::Imaged { .. } => Err(PackError::Application(image::NOT_IMAGED)),
         }
@@ -3297,19 +3298,6 @@ fn update_args<R: Rt, E: UserEvent>(
     pass: Pass,
 ) -> ArgsOut {
     let n = args.len();
-    // CR claude for claude: [bug/medium] ForkSite::decide_siblings decides once, at the
-    // first update. For a dynamic site, that update sees the written arguments plus Nop
-    // placeholders, because the bind compiles the defaults later. The decision is never
-    // revisited after prepare_bind adds default nodes or a rebind replaces them. A
-    // default that reaches an ORDERED builtin then forks beside a written argument that
-    // reaches the same one. The result breaks the rule that such siblings stay serial,
-    // and a forked cycle stops computing what the serial node-walk does. With h bound
-    // at run time to |#d = q(1000 + n), x| ..., h(q(n)) under GRAPHIX_PAR=force
-    // reorders the shared queue's calls on some runs. Writing #d at the call, or
-    // calling the function statically, keeps the serial order. probe:
-    // design/review-2026-10-12/repro/c-callsite-09.gx. Fix: reset the site's sibling
-    // decision whenever a bind changes self.args (prepare_bind / clear_prepared_bind),
-    // so the next update decides over the arguments it actually runs. (c-callsite-09)
     site.decide_siblings(ctx, n, || {
         crate::analysis::independent(args.values().filter_map(|a| a.node.as_ref()), ctx)
     });

@@ -1295,7 +1295,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     /// Fusion sees the wrapped builtin's own view, named.
     fn view(&self) -> ApplyView<'_, R, E> {
         match self.apply.view() {
-            ApplyView::BuiltIn(_) => ApplyView::BuiltIn(&self.name),
+            ApplyView::BuiltIn(_) | ApplyView::Opaque => ApplyView::BuiltIn(&self.name),
             v => v,
         }
     }

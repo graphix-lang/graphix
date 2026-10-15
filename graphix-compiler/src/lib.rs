@@ -450,9 +450,9 @@ pub type InitFn<R, E> = sync::Arc<
 /// A function application. Its arguments are owned by the `CallSite`,
 /// so the function can change at runtime without recompiling them.
 pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
-    /// Typed view for analysis code. The default is `BuiltIn` (opaque).
+    /// Typed view for analysis code. The default is `Opaque`.
     fn view(&self) -> ApplyView<'_, R, E> {
-        ApplyView::BuiltIn("")
+        ApplyView::Opaque
     }
 
     /// Same borrowed-production contract as [`Update::update`]: the
@@ -541,9 +541,12 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 /// lambda with a walkable body, or an opaque builtin.
 pub enum ApplyView<'a, R: Rt, E: UserEvent> {
     Lambda(&'a GXLambda<R, E>),
-    /// A builtin, by its registered name (empty below the wrapper that
-    /// knows it).
+    /// A builtin, by its registered name.
     BuiltIn(&'a str),
+    /// An application nothing names (a builtin below the wrapper that
+    /// names it, a runtime-made apply): analysis assumes it may do
+    /// anything, an ordered builtin's call included.
+    Opaque,
 }
 
 /// Exhaustive typed view of the compiled node graph, one variant per

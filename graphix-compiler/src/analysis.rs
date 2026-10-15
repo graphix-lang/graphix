@@ -1357,26 +1357,10 @@ fn local_summary<R: Rt, E: UserEvent>(
                 // without a builtin. Add a seqq pin to seq_steps.rs with a reference
                 // argument and an unwritten capture. probe:
                 // design/review-2026-10-12/repro/tests-seq-01.gx (tests-seq-01)
-                // CR claude for claude: [bug/high] An unnamed apply reads as a harmless
-                // builtin here. `Apply::view` defaults to `ApplyView::BuiltIn("")`, and
-                // `builtin_ordered("")` is false. So a bound queuefn wrapper call
-                // (`WrapperApply` does not override `view`) is neither ordered nor
-                // opaque, and the call to `f` inside it is never summarized.
-                // `independent` claims "a call not resolved yet is opaque, so this is
-                // decided before binds". That holds for `ForkSite`/`SlotSite`, which
-                // decide once, but `branch::fork_instances` prebinds and then calls
-                // `independent` on every update over instances that already ran. Two
-                // http::serve request handlers that both call a queuefn wrapper are
-                // then forked, and their queue pushes and `pop_count` hand-off race:
-                // GRAPHIX_PAR=off prints one fixed A/B order per tick, while
-                // force/auto/default flip it between ticks and runs. Fix: summarize an
-                // unnamed `BuiltIn("")` as opaque, and give `WrapperApply` a `view`
-                // that reads as ordered, or better, carry ORDERED on `ApplyView` itself
-                // so a wrapper cannot drop it. Then correct the doc on `independent`
-                // and add a pin for server instances. The existing ORDERED pins cover
-                // only siblings and slots. probe:
-                // design/review-2026-10-12/repro/c-analysis-branch-01.gx
-                // (c-analysis-branch-01)
+                Some(ApplyView::Opaque) => {
+                    s.ordered = true;
+                    return s.opaque();
+                }
                 Some(ApplyView::BuiltIn(name)) => {
                     s.ordered |= ordered(name);
                     let reaches = cs
@@ -1408,6 +1392,7 @@ fn local_summary<R: Rt, E: UserEvent>(
                     match cs.resolved_apply() {
                         Some(ApplyView::Lambda(_)) => "lambda",
                         Some(ApplyView::BuiltIn(_)) => "builtin",
+                        Some(ApplyView::Opaque) => "opaque",
                         None => "none",
                     }
                 );
@@ -1604,7 +1589,9 @@ fn plan_blocks<R: Rt, E: UserEvent>(
 /// constructor's fields, a call's arguments, an operator's operands, a
 /// collection's slots) compute in parallel what they do in order: none
 /// reads what an earlier one publishes, and no two make ordered calls.
-/// A call not resolved yet is opaque, so this is decided before binds.
+/// A call not resolved yet, or through an application nothing names, is
+/// opaque and ordered; a call site decides its arguments again at each
+/// bind (`CallSite::clear_prepared_bind`).
 // CR claude for claude: [structure/low] independent and plan_runs each build the set of
 // what an earlier sibling publishes with their own copy of the same loop, and the
 // copies already differ. plan_runs also publishes every ByRef cell in the statement (a
@@ -1626,6 +1613,11 @@ fn plan_blocks<R: Rt, E: UserEvent>(
 // counts as opaque even while it is bound. The other is to have a rebind of a slot's or
 // a call's callee reset the owning site's Siblings to Undecided. The second also covers
 // c-cost-misc-02's Nop-default case. (c-cost-misc-01)
+// 2026-10-14 claude: a call site's own argument decision is reset at every bind now
+// (CallSite::clear_prepared_bind, for c-cost-misc-02 / c-callsite-09), and an apply
+// nothing names (the queuefn wrapper) summarizes as opaque and ordered
+// (c-analysis-branch-01); a collection's SlotSite still keeps its first verdict when
+// its callback rebinds, so this probe stands for slots.
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,

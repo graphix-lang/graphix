@@ -289,3 +289,26 @@ async fn parallel_refuses_ordered_siblings() {
         assert!(err.contains("#[parallel] has nothing to run in parallel"), "{e}: {err}");
     }
 }
+
+// A call through a bound queuefn wrapper is ordered at run time too: a
+// dynamic call's written argument and the default its bind compiles both
+// call the wrapper, so forking keeps the serial queue order.
+#[tokio::test(flavor = "current_thread")]
+async fn bound_queuefn_calls_stay_ordered() -> Result<()> {
+    let code = r#"{
+        let n = 0;
+        n <- select n { x if x < 12 => x + 1, _ => never() };
+        let args: Array<i64> = [];
+        let q = queuefn(#trigger: n, |x: i64| -> i64 { args <- x ~ array::push(args, x); x });
+        let f = |#d: i64 = q(1000 + n), a: i64, b: i64| -> i64 a + b + d;
+        let g = select n { x if x < 0 => f, _ => f };
+        let s = g(q(n), 2);
+        select n { 12 => args, _ => never() }
+    }"#;
+    let serial = run_par(code, ParMode::Off).await?;
+    for _ in 0..4 {
+        let forked = run_par(code, ParMode::Force).await?;
+        assert_eq!(forked.values, serial.values);
+    }
+    Ok(())
+}
