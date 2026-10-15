@@ -530,17 +530,20 @@ pub struct SlotSite {
 
 #[derive(Debug)]
 enum Slots {
-    Probe { left: u8 },
-    // CR claude for claude: [perf/medium] Serial stores no threshold, and `plan_auto`
-    // ignores `n` while it counts down. Both ways into Serial are decisions about the
-    // slot count at that moment: a cheap probe total, or `measured`'s `est * n < 2T`. A
-    // collection judged serial at a few slots that then grows to 100k expensive slots
-    // updates its standing slots in order for up to RECHECK updates. The `fresh`
-    // ProbeSite forks only the growth cycle's new slots. LoopSite handles the same case
-    // with `below`. Fix: carry `below = 2T / est` in Serial (for a probe, est = total /
-    // n) and re-probe at once when `n >= below`. (c-cost-misc-04)
-    Serial { countdown: u16 },
-    Measured { hist: Hist, sampler: Sampler, est: u64 },
+    Probe {
+        left: u8,
+    },
+    /// In order until `countdown` runs out or the slots reach `below`,
+    /// the count their estimate would pay a fork at.
+    Serial {
+        countdown: u16,
+        below: usize,
+    },
+    Measured {
+        hist: Hist,
+        sampler: Sampler,
+        est: u64,
+    },
 }
 
 impl Default for Slots {
@@ -586,6 +589,11 @@ pub enum SlotPlan {
     Fork {
         grain: usize,
     },
+}
+
+/// The slot count at which slots of `est` ticks each reach `2T`.
+fn serial_below(cal: &Calibration, est: u64) -> usize {
+    usize::try_from((2 * cal.t).div_ceil(est.max(1))).unwrap_or(usize::MAX)
 }
 
 impl SlotSite {
@@ -634,15 +642,21 @@ impl SlotSite {
     }
 
     fn plan_auto(&mut self, n: usize) -> SlotPlan {
-        let Some(cal) = calibration() else { return SlotPlan::Serial };
+        match calibration() {
+            None => SlotPlan::Serial,
+            Some(cal) => self.plan_with(cal, n),
+        }
+    }
+
+    fn plan_with(&mut self, cal: &Calibration, n: usize) -> SlotPlan {
         match &mut self.standing {
             Slots::Probe { .. } => SlotPlan::Measure(ticks()),
-            Slots::Serial { countdown } => match countdown.checked_sub(1) {
-                Some(c) => {
+            Slots::Serial { countdown, below } => match countdown.checked_sub(1) {
+                Some(c) if n < *below => {
                     *countdown = c;
                     SlotPlan::Serial
                 }
-                None => {
+                _ => {
                     self.standing = Slots::Probe { left: PROBES };
                     SlotPlan::Measure(ticks())
                 }
@@ -662,8 +676,12 @@ impl SlotSite {
     /// A measured update of `n` standing slots that started at tick `t0`
     /// is over.
     pub fn measured(&mut self, t0: u64, n: usize) {
-        let Some(cal) = calibration() else { return };
-        let total = ticks_since(t0);
+        if let Some(cal) = calibration() {
+            self.measured_with(cal, ticks_since(t0), n)
+        }
+    }
+
+    fn measured_with(&mut self, cal: &Calibration, total: u64, n: usize) {
         match &mut self.standing {
             Slots::Probe { left } => {
                 if total >= 2 * cal.t {
@@ -673,7 +691,8 @@ impl SlotSite {
                         est: 0,
                     };
                 } else if *left <= 1 {
-                    self.standing = Slots::Serial { countdown: RECHECK };
+                    let below = serial_below(cal, total / n.max(1) as u64);
+                    self.standing = Slots::Serial { countdown: RECHECK, below };
                 } else {
                     *left -= 1;
                 }
@@ -686,7 +705,8 @@ impl SlotSite {
                 sampler.sampled(settled, e != *est);
                 *est = e;
                 if settled && e.saturating_mul(n as u64) < 2 * cal.t {
-                    self.standing = Slots::Serial { countdown: RECHECK };
+                    self.standing =
+                        Slots::Serial { countdown: RECHECK, below: serial_below(cal, e) };
                 }
             }
         }
@@ -958,6 +978,23 @@ mod tests {
         drop(guard);
         l.until.store(ticks(), Ordering::Relaxed);
         assert!(!l.untimed(3), "a stretch over, the site probes again");
+    }
+
+    #[test]
+    fn serial_slots_reprobe_when_they_grow() {
+        let cal = Calibration { t: 1 << 10, shift: 4 };
+        let mut site = SlotSite::default();
+        // four slots at T/8 each: half of 2T, serial until twice as many
+        for _ in 0..PROBES {
+            assert!(matches!(site.plan_with(&cal, 4), SlotPlan::Measure(_)));
+            site.measured_with(&cal, 4 * (cal.t / 8), 4);
+        }
+        assert!(matches!(site.plan_with(&cal, 4), SlotPlan::Serial));
+        assert!(matches!(site.plan_with(&cal, 15), SlotPlan::Serial));
+        assert!(
+            matches!(site.plan_with(&cal, 16), SlotPlan::Measure(_)),
+            "a serial site that grew to pay for a fork probes again at once"
+        );
     }
 
     #[test]
