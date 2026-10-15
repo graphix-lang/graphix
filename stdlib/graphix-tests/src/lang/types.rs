@@ -2417,7 +2417,12 @@ async fn written_after_generalized_is_held_to_it() -> Result<()> {
     let _f = ctx.rt.compile(ArcStr::from("let f = |x| x")).await?;
     let _s = ctx.rt.compile(ArcStr::from("let s = f(\"s\")")).await?;
     let narrow = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 1")).await.unwrap_err();
-    assert!(format!("{narrow:#}").contains("what is written to it must be as general"));
+    let narrow = format!("{narrow:#}");
+    assert!(narrow.contains("what is written to it must be as general"), "{narrow}");
+    // the type it is held to names its one variable once: fn(x: 'a) -> 'a
+    let held = narrow.split("f is fn(x: ").nth(1).expect("the held type is printed");
+    let (arg, rest) = held.split_once(") -> ").expect("a function type");
+    assert!(rest.starts_with(arg), "{narrow}");
     let _w = ctx.rt.compile(ArcStr::from("f <- |x| x")).await?;
     let r = ctx.rt.compile(ArcStr::from("let r = &mut f")).await.unwrap_err();
     assert!(format!("{r:#}").contains("made generic by an earlier compile"));

@@ -2486,23 +2486,14 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             self,
             held.check_contains(&ctx.env, written).map_err(|e| {
                 match e.downcast_ref::<TypeMismatch>() {
-                    // CR claude for claude: [readability/low] The refusal for a write
-                    // to a binding an earlier compile generalized prints `bind.typ`
-                    // under DerefTVars, and one type variable comes out under two
-                    // names. `let f = |x| x` then `f <- |y| "k"` reports 'f is fn(x:
-                    // '_7563: unbound) -> '_7564: unbound', which reads as fn('a) ->
-                    // 'b, while the REPL shows f as fn(x: '_7563) -> '_7563. The user
-                    // cannot see why the write is not as general. Print the type the
-                    // check held the write to (`held`, the rigid copy), or print the
-                    // scheme so that one variable has one name. (x-fix-nodes-08)
                     Some(_) if generic => format_with_flags(
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                         || {
                             anyhow!(
-                                "{} is {}, made generic by an earlier compile, so what \
-                                 is written to it must be as general, and {written} is not",
-                                bind.name,
-                                bind.typ
+                                "{} is {held}, made generic by an earlier compile, so \
+                                 what is written to it must be as general, and {written} \
+                                 is not",
+                                bind.name
                             )
                         },
                     ),
