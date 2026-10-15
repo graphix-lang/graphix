@@ -619,7 +619,7 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
 unsafe fn graphix_qop_raise_null(site: u64) {
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const QopSite) };
-    let e = Value::Error(crate::node::error::null_error(&site.spec).into());
+    let e = Value::Error(site.values.null_error(&site.spec).into());
     DEFERRED.with(|q| q.borrow_mut().raises.push((site, e)));
 }
 

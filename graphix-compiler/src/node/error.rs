@@ -26,7 +26,10 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{fmt, sync::LazyLock};
+use std::{
+    fmt,
+    sync::{LazyLock, OnceLock},
+};
 use triomphe::Arc;
 
 pub(super) static ECHAIN: LazyLock<ModPath> =
@@ -113,30 +116,41 @@ fn chain_error(e: &Value) -> Option<Value> {
     error
 }
 
-// CR claude for claude: [perf/low] Every raise rebuilds the parts of the chain that
-// depend only on the site: the `pos` pair array and `spec.ori.to_value()` (for a file
-// origin: the path string, its parent chain and the pair arrays). A `?` on null also
-// calls null_error per raise, in the node-walk and in the JIT helper alike, and
-// null_error pretty-prints the operand Expr through format_compact! each time. A
-// program that uses `?` on lookups as normal control flow pays roughly ten allocations
-// per miss, plus a print of the operand (the reviewer measured about 50 µs per raise
-// for a long operand). Fix: cache the site's constant parts lazily, built on first
-// raise: the `ori` and `pos` values and the NullError payload, held on Qop and on the
-// JIT's QopSite. wrap_error then allocates only the four-field chain. (x-alloc-04)
-pub(crate) fn wrap_error(spec: &Expr, e: Value) -> Value {
-    let pos: Value =
-        [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
-    let (cause, error) = match chain_error(&e) {
-        Some(error) => (e, error),
-        None => (Value::Null, e),
-    };
-    [
-        (literal!("cause"), cause),
-        (literal!("error"), error),
-        (literal!("ori"), spec.ori.to_value()),
-        (literal!("pos"), pos),
-    ]
-    .into()
+/// What every raise at one `?` site writes alike, built at its first
+/// raise: the chain link's `ori` and `pos`, and the site's `NullError`.
+#[derive(Debug, Default)]
+pub(crate) struct SiteValues(OnceLock<[Value; 3]>);
+
+impl SiteValues {
+    fn get(&self, spec: &Expr) -> &[Value; 3] {
+        self.0.get_or_init(|| {
+            let pos = [
+                (literal!("column"), spec.pos.column),
+                (literal!("line"), spec.pos.line),
+            ];
+            [spec.ori.to_value(), pos.into(), null_error(spec)]
+        })
+    }
+
+    pub(crate) fn null_error(&self, spec: &Expr) -> Value {
+        self.get(spec)[2].clone()
+    }
+
+    /// `e` raised at `spec`, as the next link of its chain.
+    fn wrap_error(&self, spec: &Expr, e: Value) -> Value {
+        let [ori, pos, _] = self.get(spec);
+        let (cause, error) = match chain_error(&e) {
+            Some(error) => (e, error),
+            None => (Value::Null, e),
+        };
+        [
+            (literal!("cause"), cause),
+            (literal!("error"), error),
+            (literal!("ori"), ori.clone()),
+            (literal!("pos"), pos.clone()),
+        ]
+        .into()
+    }
 }
 
 #[derive(Debug)]
@@ -742,10 +756,11 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     handler: &ErrorHandler,
     own_top: ExprId,
     spec: &Expr,
+    values: &SiteValues,
     e: Value,
 ) {
     let (id, handler_top) = handler.id();
-    let e = wrap_error(spec, e);
+    let e = values.wrap_error(spec, e);
     let v = Value::Error(e.into());
     if handler_top != own_top {
         ctx.rt.set_var(id, v)
@@ -893,13 +908,19 @@ pub struct QopSite {
     pub(crate) handler: ErrorHandler,
     pub own_top: ExprId,
     pub spec: Arc<Expr>,
+    pub(crate) values: SiteValues,
 }
 
 /// Where a `?` or `$` sends what it strips.
 #[derive(Debug)]
 pub(crate) enum QopMode {
     /// `?`: to the handler covering it, else logged as unhandled.
-    Raise { handler: Option<ErrorHandler>, top_id: ExprId, flags: BitFlags<CFlag> },
+    Raise {
+        handler: Option<ErrorHandler>,
+        top_id: ExprId,
+        flags: BitFlags<CFlag>,
+        values: SiteValues,
+    },
     /// `$`: an error logged as ignored, a null dropped.
     Ignore,
 }
@@ -915,11 +936,11 @@ impl QopMode {
         };
         let top_id = ExprId::decode(buf)?;
         let flags = image::flags_decode(buf)?;
-        Ok(Self::Raise { handler, top_id, flags })
+        Ok(Self::Raise { handler, top_id, flags, values: SiteValues::default() })
     }
 
     fn encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        let Self::Raise { handler, top_id, flags } = self else {
+        let Self::Raise { handler, top_id, flags, .. } = self else {
             return false.encode(buf);
         };
         true.encode(buf)?;
@@ -968,7 +989,12 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let mode = match spec.kind {
             ExprKind::OrNever(_) => QopMode::Ignore,
-            _ => QopMode::Raise { handler: scope.dynamic.handler(), top_id, flags },
+            _ => QopMode::Raise {
+                handler: scope.dynamic.handler(),
+                top_id,
+                flags,
+                values: SiteValues::default(),
+            },
         };
         let typ = Type::empty_tvar();
         let strip = Strip::Error;
@@ -1037,15 +1063,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         let tv = self.n.update(ctx);
         let (spec, mode) = (&self.spec, &self.mode);
         strip_production(self.strip, tv, &mut self.resident, |v| match mode {
-            QopMode::Raise { handler, top_id, .. } => {
+            QopMode::Raise { handler, top_id, values, .. } => {
                 let e = match v {
                     Value::Error(e) => (**e).clone(),
-                    _ => null_error(spec),
+                    _ => values.null_error(spec),
                 };
                 match handler {
                     Some(handler) => {
                         handler.raise();
-                        deliver_error(ctx, handler, *top_id, spec, e);
+                        deliver_error(ctx, handler, *top_id, spec, values, e);
                     }
                     None => report_failure!(&unhandled_msg(&diagnostic_site(spec), &e)),
                 }
@@ -1115,6 +1141,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     handler: handler.clone(),
                     own_top: *top_id,
                     spec: self.spec.clone(),
+                    values: SiteValues::default(),
                 })?;
                 match strip {
                     Strip::Error => QopSink::Deliver(site),

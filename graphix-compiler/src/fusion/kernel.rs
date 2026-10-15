@@ -440,6 +440,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                     handler,
                     top,
                     &site.spec,
+                    &site.values,
                     (*e).clone(),
                 );
             }

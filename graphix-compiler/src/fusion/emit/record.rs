@@ -517,6 +517,7 @@ impl Pack for KernelConst {
                     handler,
                     own_top,
                     spec: Arc::new(spec),
+                    values: Default::default(),
                 }))
             }
             tag::IO_SITE => {
