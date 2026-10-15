@@ -43,6 +43,13 @@ pub fn ticks() -> u64 {
     }
 }
 
+/// The ticks since `t0`; a counter that reads backwards (a thread moved
+/// between unsynchronised TSCs) reads as none.
+#[inline(always)]
+pub fn ticks_since(t0: u64) -> u64 {
+    ticks().saturating_sub(t0)
+}
+
 /// The fork threshold `t`: a side of a fork must be estimated at `t`
 /// ticks or more. Buckets are `log2(ticks) - shift`, with `t` in bucket
 /// [`T_BUCKET`].
@@ -415,15 +422,7 @@ impl<'a> Meter<'a> {
     pub fn time<T>(&mut self, i: usize, f: impl FnOnce() -> T) -> T {
         let t0 = ticks();
         let r = f();
-        // CR claude for claude: [risk/low] `wrapping_sub` turns a tick counter that
-        // reads backwards into a dt near 2^64, and that can happen on x86_64 hosts with
-        // unsynchronised TSCs, such as some VMs, when the thread migrates mid-child.
-        // `self.total += dt` then overflows: a panic in dev and test builds, a wrapped
-        // total in release. SlotSite::measured, ProbeSite::run and the kernel-loop
-        // probes in fusion/par_loop.rs take the same wrapping deltas, while `calibrate`
-        // uses `saturating_sub`. Fix: one `ticks_since(t0)` helper in cost.rs that
-        // saturates, used by every caller. (c-cost-misc-07)
-        let dt = ticks().wrapping_sub(t0);
+        let dt = ticks_since(t0);
         self.total += dt;
         if let Site::Measured(m) = &mut self.site.0 {
             m.hist[i].add(self.cal, dt);
@@ -684,7 +683,7 @@ impl SlotSite {
     /// is over.
     pub fn measured(&mut self, t0: u64, n: usize) {
         let Some(cal) = calibration() else { return };
-        let total = ticks().wrapping_sub(t0);
+        let total = ticks_since(t0);
         match &mut self.standing {
             Slots::Probe { left } => {
                 if total >= 2 * cal.t {
@@ -805,7 +804,7 @@ impl ProbeSite {
                 (first, items) = items.split_at_mut(1);
                 let (t0, started) = (ticks(), Instant::now());
                 let r = probe(ctx, &mut first[0], at)?;
-                let (dt, took) = (ticks().wrapping_sub(t0), started.elapsed());
+                let (dt, took) = (ticks_since(t0), started.elapsed());
                 acc = join(acc, r);
                 at += 1;
                 match calibration_for(items.len(), took) {
@@ -825,7 +824,7 @@ impl ProbeSite {
                 for item in probed {
                     let t0 = ticks();
                     let r = probe(ctx, item, at)?;
-                    self.probed(cal, ticks().wrapping_sub(t0));
+                    self.probed(cal, ticks_since(t0));
                     acc = join(acc, r);
                     at += 1;
                 }

@@ -195,7 +195,7 @@ pub(crate) unsafe fn run(
                     let mut r = Run::new(0, 1, find);
                     let (t0, started) = (cost::ticks(), Instant::now());
                     unsafe { run_here(chunk, frame, &mut r) };
-                    let (dt, took) = (cost::ticks().wrapping_sub(t0), started.elapsed());
+                    let (dt, took) = (cost::ticks_since(t0), started.elapsed());
                     let aborted = r.aborted;
                     runs.push(r);
                     if aborted {
@@ -233,7 +233,7 @@ pub(crate) unsafe fn run(
                 let mut r = Run::new(at, at + k, find);
                 let t0 = cost::ticks();
                 unsafe { run_here(chunk, frame, &mut r) };
-                let each = cost::ticks().wrapping_sub(t0) / k as u64;
+                let each = cost::ticks_since(t0) / k as u64;
                 probes.extend((0..k).map(|_| each));
                 let aborted = r.aborted;
                 runs.push(r);
