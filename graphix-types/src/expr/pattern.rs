@@ -82,6 +82,16 @@ impl StructurePattern {
         }
     }
 
+    /// Whether a struct pattern that leaves fields out (`{x, ..}`) is
+    /// here or in a sub-pattern.
+    pub fn has_partial_struct(&self) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            let mut partial = matches!(self, Self::Struct { exhaustive: false, .. });
+            self.for_each_sub(&mut |p| partial |= p.has_partial_struct());
+            partial
+        })
+    }
+
     pub fn single_bind(&self) -> Option<&ArcStr> {
         match self {
             Self::Bind(s) => Some(s),

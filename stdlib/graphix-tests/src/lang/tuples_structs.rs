@@ -449,6 +449,31 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
 );
 
+// The value's type need not be known when the let compiles: a call's
+// result completes at the check, nested too.
+run!(
+    let_partial_struct_over_a_call,
+    r#"{
+    let g = |a: i64| {x: a, y: a + 1};
+    let v = g(1);
+    let {y, ..} = v;
+    let (k, {y: z, ..}) = (1, g(7));
+    (y, k, z)
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:2, i64:1, i64:8]"
+);
+
+run!(
+    let_partial_struct_missing_field,
+    r#"{
+    let g = |a: i64| {x: a, y: a + 1};
+    let {w, ..} = g(1);
+    w
+}"#,
+    refused("can't be matched by");
+    FuseExpect::None
+);
+
 // A source typed by a typedef name is a struct or an abstract like any
 // other: a functional update and a payload read go through the name.
 run!(

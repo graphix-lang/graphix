@@ -2609,6 +2609,13 @@ run!(lambda_alias_native, LAMBDA_ALIAS_NATIVE, |v: Result<&Value>| matches!(
     Ok(Value::I64(5))
 ));
 
+// An alias of a generalized function stays generic, parenthesized or not.
+run!(
+    parenthesized_alias_stays_generic,
+    r#"{ let g = |x| x; let f = (g); (array::map([1], f), array::map(["s"], f)) }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[[i64:1], ["s"]]"#
+);
+
 // An alias a `<-` writes stays a dynamic call and follows the write.
 const LAMBDA_ALIAS_WRITTEN: &str = r#"
 {

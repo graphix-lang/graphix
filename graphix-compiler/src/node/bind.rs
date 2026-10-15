@@ -48,6 +48,10 @@ pub struct Bind<R: Rt, E: UserEvent> {
     pub(crate) spec: Arc<Expr>,
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
+    /// The predicate of a pattern that leaves struct fields out, over a
+    /// value whose type the compile did not know: completed against the
+    /// value at the check, as a select arm's against its scrutinee.
+    partial: Option<Type>,
     pub(crate) node: Node<R, E>,
     ever_published: bool,
 }
@@ -91,6 +95,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             typ,
             pattern,
             node,
+            partial: None,
             ever_published: false,
             slept: WakeBit::default(),
         }));
@@ -167,6 +172,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             StructPatternNode::compile(ctx, typ, pat, scope, spec.pos, spec.ori.clone())
                 .at(&spec)
         };
+        let mut partial = None;
         let (node, pattern, typ) = if *rec {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
@@ -184,7 +190,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             let pattern = compile_pattern(ctx, &typ)?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
-            if !typ.contains(&ctx.env, ntyp)? {
+            if !typ.contains(&ctx.env, ntyp).at(&spec)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bailat!(spec, "match error {ntyp} can't be matched by {typ}")
                 })?
@@ -206,40 +212,20 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     // a shape check: its cells lower nothing they bind; a
                     // partial struct pattern completes against the value, as
                     // a select arm's does against its scrutinee
-                    // CR claude for claude: [bug/low] The partial struct completion
-                    // runs here, at compile, against node.typ(). It therefore only
-                    // works when the value is already a struct before typecheck, e.g. a
-                    // literal. Over a call's result, or a let bound to one, the type is
-                    // still an open cell. StructPatternNode then refuses `let {y, ..} =
-                    // g(1)` with 'non exhaustive struct matches require type
-                    // annotations', although `select g(1) { {y, ..} => y }` is
-                    // accepted. Fix: defer the completion to the bind's typecheck, once
-                    // the value's type is known, as Select completes its arms against
-                    // its scrutinee. probe:
-                    // design/review-2026-10-12/repro/x-rerun-8-11.gx (x-rerun-8-11)
-                    let ptyp = {
+                    let (ptyp, completed) = {
                         let _generic = AtLevel::enter(Level::GENERIC);
                         let ptyp = pat.infer_type_predicate(&ctx.env, &scope.lexical)?;
                         match pat
                             .complete_type_predicate(&ctx.env, &ptyp, &typ)
                             .at(&spec)?
                         {
-                            Some(t) => t,
-                            None => ptyp,
+                            Some(t) => (t, true),
+                            None => (ptyp, false),
                         }
                     };
-                    // CR claude for claude: [bug/low] The `?` on this `contains` (and
-                    // on the `typ.contains(&ctx.env, ntyp)?` of the `let rec` branch
-                    // above) returns a contains error without the bind's site. So `let
-                    // x = never<Num<string>>()` with `type Num<'a: Number> = 'a` is
-                    // refused with only 'type mismatch Number does not contain string',
-                    // no line or column, and the LSP cannot place it. The annotated
-                    // form and a bare `never<Num<string>>()` both carry a position.
-                    // Attach the spec: `ptyp.contains(&ctx.env, &typ).at(&spec)?`, and
-                    // the same on the rec branch. probe:
-                    // design/review-2026-10-12/repro/x-rerun-7-06-never-bound-no-position.gx
-                    // (x-rerun-7-06)
-                    if !ptyp.contains(&ctx.env, &typ)? {
+                    if !completed && pat.has_partial_struct() {
+                        partial = Some(ptyp);
+                    } else if !ptyp.contains(&ctx.env, &typ).at(&spec)? {
                         let part = ptyp.could_match(&ctx.env, &typ)?;
                         format_with_flags(PrintFlag::DerefTVars, || match part {
                             true => bailat!(
@@ -258,10 +244,10 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     typ
                 }
             };
-            let pattern = compile_pattern(ctx, &typ)?;
+            let pattern = compile_pattern(ctx, partial.as_ref().unwrap_or(&typ))?;
             (node, pattern, typ)
         };
-        if !pattern.covers(&ctx.env, &typ, false) {
+        if partial.is_none() && !pattern.covers(&ctx.env, &typ, false) {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
         let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
@@ -299,9 +285,37 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             typ,
             pattern,
             node,
+            partial,
             ever_published: false,
             slept: WakeBit::default(),
         }))
+    }
+
+    /// Complete a [`Self::partial`] pattern against the value's type,
+    /// which must be known by now.
+    fn complete_partial(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        let Some(ptyp) = self.partial.take() else { return Ok(()) };
+        let ExprKind::Bind(b) = &self.spec.kind else { return Ok(()) };
+        let spec = &self.spec;
+        let t = b.pattern.complete_type_predicate(&ctx.env, &ptyp, &self.typ).at(spec)?;
+        let Some(t) = t else {
+            if self.typ.with_deref(|t| t.is_none()) {
+                bailat!(spec, "non exhaustive struct matches require type annotations")
+            }
+            return format_with_flags(PrintFlag::DerefTVars, || {
+                bailat!(spec, "match error {} can't be matched by {ptyp}", self.typ)
+            });
+        };
+        if !t.contains(&ctx.env, &self.typ).at(spec)? {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bailat!(spec, "match error {} can't be matched by {t}", self.typ)
+            })?
+        }
+        self.pattern.realign(&ctx.env, &t).at(spec)?;
+        if !self.pattern.covers(&ctx.env, &self.typ, false) {
+            bailat!(spec, "refutable patterns are not allowed in let");
+        }
+        Ok(())
     }
 
     /// The binding holds its value's type, unless it forwards it.
@@ -396,6 +410,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             typ,
             pattern,
             node,
+            partial: None,
             ever_published: false,
             slept: WakeBit::default(),
         }))
@@ -560,6 +575,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         }
         wrap!(self.node, self.node.typecheck0(ctx))?;
         self.check_value(ctx)?;
+        self.complete_partial(ctx)?;
         self.publish(ctx);
         Ok(())
     }
@@ -573,6 +589,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         if !types.settle(self.spec.id, &self.typ) {
             self.check_value(ctx)?;
         }
+        self.complete_partial(ctx)?;
         self.publish(ctx);
         Ok(())
     }
@@ -627,17 +644,7 @@ fn forwards<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
 ) -> bool {
     b.typ.is_none()
-        && match node.view() {
-            // CR claude for claude: [bug/medium] `forwards` matches only a bare
-            // `NodeView::Ref` and does not look through `NodeView::ExplicitParens`,
-            // which `lambda_value` does. So `let f = g` over a generalized `g`
-            // generalizes, but `let f = (g)` stays monomorphic, and a second value use
-            // of `f` at another type is refused ("fn(x: 'a: string) -> .. does not
-            // contain fn(x: i64) -> i64"). Parentheses are only grouping, and typemorph
-            // grades parens-wrap as sound. Fix: strip the parens with one helper shared
-            // by `lambda_value` and `forwards`, used by both `Bind::compile` and
-            // `check_value`, and pin the parenthesized case next to the forwarding pin.
-            // probe: design/review-2026-10-12/repro/fuzz-mutate-06.gx (fuzz-mutate-06)
+        && match ungrouped(node) {
             NodeView::Ref(r) => env.poly_binds.contains(&r.id),
             _ => false,
         }
@@ -964,14 +971,19 @@ enum PlaceSpec {
 fn lambda_value<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
 ) -> Option<&super::lambda::Lambda> {
-    let mut view = node.view();
-    loop {
-        view = match view {
-            NodeView::ExplicitParens(p) => p.n.view(),
-            NodeView::Lambda(l) => return Some(l),
-            _ => return None,
-        }
+    match ungrouped(node) {
+        NodeView::Lambda(l) => Some(l),
+        _ => None,
     }
+}
+
+/// What `node` is under its grouping parentheses.
+fn ungrouped<R: Rt, E: UserEvent>(node: &Node<R, E>) -> NodeView<'_, R, E> {
+    let mut view = node.view();
+    while let NodeView::ExplicitParens(p) = view {
+        view = p.n.view();
+    }
+    view
 }
 
 /// Where a place resolved to this cycle.
