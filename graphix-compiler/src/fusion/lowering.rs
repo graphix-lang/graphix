@@ -275,6 +275,13 @@ fn arm_io_blocker<R: Rt, E: UserEvent>(
             // design/strict_fusion.md and CLAUDE.md to match, and pin all three shapes
             // with run! fixtures. probe:
             // design/review-2026-10-12/repro/f-mod-lowering-01.gx (f-mod-lowering-01)
+            // 2026-10-14 claude: the firing test this asks for exists now for the
+            // tail-loop gate (analysis::io_follows / fires_with, f-call-flow-02): a
+            // read of the given ids fires, a constant does not, a select fires through
+            // its scrutinee only, a lambda call's result is not assumed to, and a
+            // performing callee must be reached with arguments that fire and itself
+            // follow its formals. arm_io_blocker can take it with the scrutinee and the
+            // arm's binds as the ids.
             let entered = |n: &Node<R, E>| {
                 let mut reads = false;
                 fusion::for_each_emitted_node(n, &mut |x| {
