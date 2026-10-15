@@ -366,12 +366,12 @@ impl<'a, R: Rt> RtView<'a, R> {
     }
 }
 
-/// A map a branch writes over its parent's: the parent's entries show
-/// through unless the branch wrote them or removed them (`removed`). A
-/// root map has no parent and no removals.
 /// A layer's capacity worth keeping whatever a cycle used.
 const SHRINK_FLOOR: usize = 1024;
 
+/// A map a branch writes over its parent's: the parent's entries show
+/// through unless the branch wrote them or removed them (`removed`). A
+/// root map has no parent and no removals.
 pub struct Layered<V> {
     map: IntMap<BindId, V>,
     removed: IntSet<BindId>,

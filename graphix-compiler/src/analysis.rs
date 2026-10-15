@@ -41,6 +41,9 @@ struct StaticEdge<'a, R: Rt, E: UserEvent> {
     site: &'a CallSite<R, E>,
 }
 
+/// The instance a node belongs to; `None` outside every instance.
+type Holder = Option<LambdaInstanceId>;
+
 /// The instances reachable from an analysis root, the statically
 /// resolved calls between them, and, per bind a resolved call names
 /// its callee through, the instances it reached: the back-edge table
@@ -49,16 +52,6 @@ struct StaticEdge<'a, R: Rt, E: UserEvent> {
 /// the `seqq` captures by the id of their machine and the instance that
 /// holds them (every instance of a definition shares the machine's id),
 /// with the bind each is the value of.
-/// The instance a node belongs to; `None` outside every instance.
-// CR claude for claude: [readability/low] Five doc comments sit on the wrong item. The
-// paragraph above, "The instances reachable from an analysis root...", is
-// `StaticCallGraph`'s, which has no doc. `call_facts`'s doc begins with
-// `callee_facts`'s paragraph. `runs_hooks`'s doc begins with `local_summary`'s
-// paragraph. `is_work`'s doc begins with `check_parallel`'s paragraph. In branch.rs,
-// `Layered`'s paragraph sits on `SHRINK_FLOOR`. Move each paragraph onto the item it
-// describes. (c-analysis-branch-08)
-type Holder = Option<LambdaInstanceId>;
-
 struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R, E>>>,
     edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
@@ -700,10 +693,6 @@ fn node_facts<R: Rt, E: UserEvent>(
     }
 }
 
-/// The facts a call contributes: a callee instance of `graph` is still
-/// being inferred, so it goes to `pending` and contributes nothing here;
-/// an instance outside the analysis contributes its definition's stored
-/// facts, a builtin its declared `EFFECT`, anything else `Async`.
 /// A call's facts, its callee's joined with every function argument's.
 pub(crate) fn call_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
@@ -712,6 +701,12 @@ pub(crate) fn call_facts<R: Rt, E: UserEvent>(
     callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
 }
 
+/// The facts a call contributes: a callee instance of `graph` is still
+/// being inferred, so it goes to `pending` and contributes nothing here;
+/// an instance outside the analysis contributes its definition's stored
+/// facts, a builtin its declared `EFFECT` joined with its function
+/// arguments' facts (`callback_facts`), an unresolved callee
+/// `unresolved.facts`.
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     graph: Option<&StaticCallGraph<'_, R, E>>,
@@ -1153,21 +1148,9 @@ impl Summary {
     }
 }
 
-/// `n`'s own reads and writes into `s`, and the instances its calls
-/// reach into `callees`. A write or read through a reference, a call
-/// with no static target, a dynamic module, and a builtin handed a
-/// function or a reference touch every variable.
 /// Whether `n` itself may run a core-trait impl (`Eq`, `Ord`,
 /// `Display`): a comparison or a print of a value that can hold an
 /// abstract one, or a kernel whose region holds one.
-// CR claude for claude: [doc-drift/low] Three items carry another item's doc paragraph
-// stacked on their own, and the item it belongs to has none. local_summary's doc sits
-// over runs_hooks. callee_facts' doc sits over call_facts. In node/callsite.rs,
-// update_args' doc sits over `type Published`. rustdoc and hovers show the wrong text.
-// Move each paragraph down to its own item. While moving callee_facts' doc, fix its
-// last clause. An unresolved callee contributes `unresolved.facts` (PURE under
-// def_body_facts), not `Async`, and a builtin call also joins its function arguments'
-// facts (callback_facts). (x-fix-nodes-04)
 fn runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
     let holds = |n: &Node<R, E>| n.typ().holds_abstract(env);
     match n.view() {
@@ -1249,6 +1232,10 @@ fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) 
         .is_some_and(|d| *d.recursion.lock() != RecursionKind::NotRecursive)
 }
 
+/// `n`'s own reads and writes into `s`, and the instances its calls
+/// reach into `callees`. A write or read through a reference, a call
+/// with no static target, a dynamic module, and a builtin handed a
+/// function or a reference touch every variable.
 fn local_summary<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     graph: &StaticCallGraph<'_, R, E>,
@@ -1872,11 +1859,6 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>, env: &E
     }
 }
 
-/// `#[parallel]`'s assertion: something within `node`, callees excluded,
-/// can run beside something else. A block (the decorated expression, or
-/// a `let`'s value) needs a run of two statements, and the error names
-/// why its first break was made; anything else needs a fork point with
-/// two children that are more than a constant or a variable read.
 /// Whether `n` is work to run beside something else: not a constant, a
 /// variable read, a function literal or a declaration.
 fn is_work<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
@@ -1903,6 +1885,11 @@ fn forks_two<'a, R: Rt, E: UserEvent>(
     ns.clone().filter(|n| is_work(n)).count() >= 2 && independent(ns, ctx)
 }
 
+/// `#[parallel]`'s assertion: something within `node`, callees excluded,
+/// can run beside something else. A block (the decorated expression, or
+/// a `let`'s value) needs a run of two statements, and the error names
+/// why its first break was made; anything else needs a fork point with
+/// two children that are more than a constant or a variable read.
 pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
     spec: &crate::expr::Expr,
     node: &Node<R, E>,
