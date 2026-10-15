@@ -961,15 +961,8 @@ pub(crate) fn evaluation_order(
 pub(crate) type Child<'a, R, E> =
     dyn FnMut(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()> + 'a;
 
-/// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
-/// body's errors also carry each statement's origin, the file it is in.
 /// A statement's check result: its errors carry the statement, and in a
 /// module's body the module's origin.
-// CR claude for claude: [doc-drift/low] The first two sentences of this doc ("Run a
-// typecheck `pass` over `nodes` in [`evaluation_order`]. A module body's errors also
-// carry each statement's origin...") describe typecheck_in_order, not statement_result.
-// typecheck_in_order has no doc. Move those sentences onto typecheck_in_order and keep
-// only the "A statement's check result..." sentence here. (c-node-mod-05)
 fn statement_result<R: Rt, E: UserEvent>(
     r: Result<()>,
     n: &Node<R, E>,
@@ -1007,6 +1000,8 @@ fn check_in_tasks<R: Rt, E: UserEvent>(
     results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
 }
 
+/// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
+/// body's errors also carry each statement's origin, the file it is in.
 pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     nodes: &mut [Node<R, E>],
