@@ -150,6 +150,32 @@ run!(sync_on_async_builtin_callback, r#"{
     g(1)
 }"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
+// A builtin's callback literal that calls a function nothing resolves at
+// its definition (a local bound to a call's result, a parameter the
+// builtin supplies from data, one captured from the enclosing function
+// and handed an async argument) may be async.
+run!(sync_on_an_unresolved_callback_call, r#"{
+    let pick = |b: bool| select b {
+        true => |x: i64| sys::time::after_idle(duration:10.ms, x > 0),
+        false => |x: i64| x > 0
+    };
+    #[sync]
+    let g = |v: i64| filter(v, |x| { let k = pick(x > 0); k(x) });
+    g(3)
+}"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
+run!(sync_on_a_data_supplied_callback, r#"{
+    #[sync]
+    let h = |m: [fn(x: i64) -> i64, null]| opt::map(m, |g| g(3));
+    h(|v| v)
+}"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
+run!(sync_on_a_captured_async_callback, r#"{
+    #[sync]
+    let f = |y: [i64, null], k: fn(v: i64) -> i64| opt::map(y, |v| k(v));
+    f(3, |v| sys::time::after_idle(duration:10.ms, v))
+}"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
+
 run!(sync_on_async_filter_callback, r#"{
     #[sync]
     let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms, x > 0));

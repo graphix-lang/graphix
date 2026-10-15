@@ -568,6 +568,9 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// `Effect::Stateless`, no `<-` targets its own binding, every callee
     /// is stateless); a tail loop reuses one activation only then.
     pub facts: Mutex<LambdaFacts>,
+    /// The function parameters its body calls that its check could not
+    /// resolve.
+    pub param_calls: Mutex<ParamCalls>,
     /// How this lambda recurses, computed by `analysis::analyze`. The
     /// operational tail-loop gate is `GXLambda::tail_loop`, not this.
     pub recursion: Mutex<RecursionKind>,
@@ -608,6 +611,16 @@ impl DefBody {
             },
         }
     }
+}
+
+/// The function parameters a definition's body calls that its check could
+/// not resolve: its own, which a caller passes, or a builtin it is handed
+/// supplies from data, and its enclosing definitions', which each instance
+/// resolves (`CompileCtx::fn_forward_resolutions`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, netidx_derive::Pack)]
+pub struct ParamCalls {
+    pub own: bool,
+    pub captured: SmallVec<[BindId; 2]>,
 }
 
 impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
@@ -1766,6 +1779,7 @@ impl Lambda {
             table,
             shared,
             facts: Mutex::new(facts),
+            param_calls: Mutex::new(ParamCalls::default()),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
             origin: DefOrigin::Source { body, flags, spec: (*spec).clone() },
@@ -2042,8 +2056,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             if res.is_ok()
                 && let ApplyView::Lambda(g) = f.view()
             {
-                let facts = crate::analysis::def_body_facts(g, ctx);
+                let (facts, calls) = crate::analysis::def_body_facts(g, ctx);
                 def.join_facts(facts);
+                *def.param_calls.lock() = calls;
                 let table = SArc::new(DefTable::record(&g.body, &g.env, &ctx.env, facts));
                 def.table.set(Tables { table, outer: None });
             }

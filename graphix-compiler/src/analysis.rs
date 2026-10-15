@@ -19,7 +19,7 @@ use crate::{
         Block,
         callsite::CallSite,
         fork_control::{ForkControl, ForkKind},
-        lambda::{GXLambda, LambdaDef},
+        lambda::{GXLambda, LambdaDef, ParamCalls},
         module::Module,
         seq_machine::{SeqCapture, SeqMachine},
     },
@@ -510,7 +510,7 @@ fn body_facts<R: Rt, E: UserEvent>(
 pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     ctx: &CompileCtx<R, E>,
-) -> LambdaFacts {
+) -> (LambdaFacts, ParamCalls) {
     let mut params: LPooled<IntSet<BindId>> = LPooled::take();
     for p in g.args().iter() {
         p.ids(&mut |id| {
@@ -518,25 +518,52 @@ pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
         });
     }
     let own = |id: BindId| params.contains(&id);
-    // CR claude for claude: [bug/medium] Every call this definition check cannot
-    // resolve counts as PURE, not only a `let rec`'s own call. Take `let k = pick(x);
-    // k(x)`, a call through a local bound to a call's result: nothing later corrects
-    // its facts for a callback literal that only a builtin calls (filter, opt::map),
-    // because infer_effects never reaches that literal. callback_facts then joins these
-    // optimistic def facts into the builtin call. The result is that `#[sync] let g =
-    // |v: i64| filter(v, |x| { let k = pick(x > 0); k(x) })` is accepted while its
-    // result lands a timer reply later. The same body written without filter is
-    // refused. The same wrong facts also feed arm_sleeps and the `stateless` bit. Fix:
-    // keep PURE only for the definition's own parameters and its recursive self-binds,
-    // and give any other unresolved call `LambdaFacts::ASYNC`. The doc comment on
-    // call_facts ("anything else `Async`") would then be true again. This is the same
-    // root cause as c-lambda-01 (parameters); fix them together. probe:
-    // design/review-2026-10-12/repro/x-fix-nodes-02.gx (x-fix-nodes-02)
-    let unresolved = Unresolved { params: &own, facts: LambdaFacts::PURE };
-    walk_body(g, &mut |cs| match cs.fnode().view() {
-        NodeView::Ref(r) if own(r.id) => LambdaFacts::PURE,
-        _ => callee_facts(cs, None, ctx, &unresolved, &mut |_| ()),
-    })
+    // a call through one of the definition's own parameters is the
+    // caller's to judge, and a recursive call (to a definition whose check
+    // is open) an instance's analysis judges; any other call it cannot
+    // resolve may be async
+    let recursive = |cs: &CallSite<R, E>| {
+        cs.fnode().typ().with_deref(|t| match t {
+            Some(Type::Fn(ft)) => {
+                ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id))
+            }
+            _ => false,
+        })
+    };
+    let unresolved = Unresolved { params: &own, facts: LambdaFacts::ASYNC };
+    let mut calls = ParamCalls::default();
+    let param = |id: BindId, calls: &mut ParamCalls| {
+        if own(id) {
+            calls.own = true;
+            true
+        } else if ctx.def_gate_params.contains(&id) {
+            if !calls.captured.contains(&id) {
+                calls.captured.push(id)
+            }
+            true
+        } else {
+            false
+        }
+    };
+    let facts = walk_body(g, &mut |cs| match cs.fnode().view() {
+        NodeView::Ref(r) if param(r.id, &mut calls) => LambdaFacts::PURE,
+        // a trait method resolves by its receiver at typecheck1
+        NodeView::Ref(r) if ctx.env.trait_methods.contains_key(&r.id) => {
+            LambdaFacts::PURE
+        }
+        _ if recursive(cs) => LambdaFacts::PURE,
+        _ => {
+            if calls_builtin(cs, ctx) {
+                for a in cs.arg_nodes() {
+                    if let NodeView::Ref(r) = a.view() {
+                        param(r.id, &mut calls);
+                    }
+                }
+            }
+            callee_facts(cs, None, ctx, &unresolved, &mut |_| ())
+        }
+    });
+    (facts, calls)
 }
 
 /// One body's facts, nested lambda bodies excluded, a call's from
@@ -772,24 +799,28 @@ fn callback_facts<R: Rt, E: UserEvent>(
 ) -> LambdaFacts {
     let function = |n: &Node<R, E>| -> LambdaFacts {
         let lid = match n.view() {
-            // CR claude for claude: [bug/medium] A lambda literal handed to a builtin
-            // is judged here by its definition's facts alone. `def_body_facts` counts
-            // every call it cannot resolve as PURE: a parameter captured from the
-            // enclosing function, and the literal's own function parameters, which the
-            // builtin supplies from data. No instance analysis ever sees the literal's
-            // body, because the builtin instantiates it at run time. So `#[sync] |y, k|
-            // opt::map(y, |v| k(v))` and `#[sync] |m| opt::map(m, |g| g(3))` are
-            // accepted with an async `k` or `g`, while `opt::map(y, k)` and `k(y)` are
-            // correctly refused. Fix: for a literal argument, walk its checked body
-            // with `Unresolved::ASYNC`. Resolve captured function parameters through
-            // `fn_forward_resolutions` as `callee_own_facts` does, and count the
-            // literal's own function-typed parameters as unresolved. Alternatively,
-            // record in the definition whether its body made an unresolved call, and
-            // join ASYNC here when it did. Add pins for both shapes beside
-            // `sync_on_async_builtin_callback`. Probe:
-            // design/review-2026-10-12/repro/c-lambda-01.gx (c-lambda-01)
             NodeView::Lambda(l) => {
-                l.def_value().downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
+                let Some(d) = l.def_value().downcast_ref::<LambdaDef<R, E>>() else {
+                    return unresolved.facts;
+                };
+                let calls = d.param_calls.lock();
+                // the builtin supplies the literal's own parameters from data;
+                // an enclosing definition's resolve per instance, or are its
+                // caller's to judge
+                let captured = |id: &BindId| match (unresolved.params)(*id) {
+                    true => LambdaFacts::PURE,
+                    false => ctx
+                        .fn_forward_resolutions
+                        .get(id)
+                        .and_then(|lid| lambda_def(ctx, *lid))
+                        .map_or(unresolved.facts, def_facts),
+                };
+                let own = match calls.own {
+                    true => LambdaFacts::ASYNC,
+                    false => LambdaFacts::PURE,
+                };
+                let base = def_facts(d).join(own);
+                return calls.captured.iter().map(captured).fold(base, |a, f| a.join(f));
             }
             NodeView::Ref(r) if (unresolved.params)(r.id) => return LambdaFacts::PURE,
             NodeView::Ref(r) => ctx

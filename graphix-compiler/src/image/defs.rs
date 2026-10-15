@@ -65,6 +65,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         table,
         shared: _,
         facts,
+        param_calls,
         recursion,
         source,
         origin,
@@ -80,6 +81,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
     argspec.encode(buf)?;
     typ.encode(buf)?;
     facts.lock().encode(buf)?;
+    param_calls.lock().encode(buf)?;
     recursion.lock().encode(buf)?;
     source.encode(buf)?;
     level.encode(buf)?;
@@ -100,6 +102,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let argspec: Arc<[Arg]> = Pack::decode(buf)?;
     let typ: Arc<FnType> = Pack::decode(buf)?;
     let facts = LambdaFacts::decode(buf)?;
+    let param_calls = super::super::node::lambda::ParamCalls::decode(buf)?;
     let recursion = Pack::decode(buf)?;
     let source = Pack::decode(buf)?;
     let level = Pack::decode(buf)?;
@@ -143,6 +146,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         table,
         shared,
         facts: Mutex::new(facts),
+        param_calls: Mutex::new(param_calls),
         recursion: Mutex::new(recursion),
         source,
         origin: DefOrigin::Source { body, flags, spec },

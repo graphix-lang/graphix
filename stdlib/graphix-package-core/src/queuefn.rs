@@ -356,6 +356,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             init,
             table: Default::default(),
             shared: Default::default(),
+            param_calls: Default::default(),
             facts: Mutex::new(LambdaFacts::ASYNC),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: self.top_id,
