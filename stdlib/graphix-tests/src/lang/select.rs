@@ -1256,6 +1256,39 @@ run!(
     FuseExpect::Jit
 );
 
+// An arm that slept through a let's real fire catches it up as real even
+// when, in the cycle it wakes, the enclosing arm's wake republished that
+// let as a wake's own: its `<-` target takes the value.
+async fn wake_over_a_republished_let_catches_up(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 5 => n + 1, _ => never() };
+  let in0 = 0;
+  in0 <- select ep { 3 => 1, 4 => 0, _ => never() };
+  let in1 = 0;
+  in1 <- select ep { 2 => 7, _ => never() };
+  let in3 = 1;
+  in3 <- select ep { 1 => 0, 4 => 1, _ => never() };
+  let f = |c, a, d, e| select c {
+    0 => {
+      let v = a * 1;
+      select d { 0 => -5, _ => { let t = v + 0; t <- e ~ 99; t } }
+    },
+    _ => -1
+  };
+  f(in0, in1, in3, 0)
+}"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(values.last(), Some(&Value::I64(7)), "{values:?}");
+    Ok(())
+}
+
+modes!(wake_over_a_republished_let_catches_up);
+
 // A bottom initializer that only an arm's wake fired, through `$`, a cast
 // or a select arm, is the wake's own fire: the `<-` target keeps its
 // written value, as with `never()`.

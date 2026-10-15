@@ -249,23 +249,14 @@ impl TrackedFires {
             self.pending.remove(&key);
             for id in set[&key].iter().copied() {
                 let standing = match read_var(ctx, &id) {
-                    // CR claude for claude: [bug/high] A live delivery tagged
-                    // WAKE_FIRED also passes `triggers()`, so a pending real fire
-                    // (Tag::FIRED) is spent here without being delivered as real. This
-                    // happens when an enclosing arm's wake republishes a `let` that one
-                    // of its constants fired over a stale input, in the same cycle this
-                    // select wakes the arm that slept through that let's real fire. A
-                    // `<-` target under the arm then keeps its last write, and the
-                    // event is lost. The same event is caught up when the outer arm did
-                    // not sleep, or when the let has no constant. Fix: skip the
-                    // injection only when the live tag is at least as strong as the
-                    // pending one. When the live tag is a wake's own and the pending
-                    // one is FIRED, inject the live value as Tag::FIRED and record it
-                    // for restore. Pin it in lang::select beside the wake pins. Probe:
-                    // design/review-2026-10-12/repro/x-engine-firing-01.sh. In the
-                    // sleep variant t stays 99; the awake and no-constant twins give 7
-                    // and 14. (x-engine-firing-01)
-                    Some(VarRead::Delivered(tv)) if tv.tag().triggers() => None,
+                    // a live fire as strong as the pending one delivers it; a
+                    // wake's own over a real fire is caught up as real
+                    Some(VarRead::Delivered(tv))
+                        if tv.tag().triggers()
+                            && (!tv.tag().is_wake() || tag.is_wake()) =>
+                    {
+                        None
+                    }
                     Some(VarRead::Delivered(tv) | VarRead::Standing(tv))
                         if !tv.tag().is_bottom() =>
                     {
