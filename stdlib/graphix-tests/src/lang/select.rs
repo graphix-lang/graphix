@@ -1256,6 +1256,25 @@ run!(
     FuseExpect::Jit
 );
 
+// A banked `~` paid when its argument first arrives is that arrival, a
+// real event: the sleeping arm catches `q` up to it at the wake, as it does
+// a plain fire of `v`.
+run!(banked_sample_payment_is_a_real_fire, r#"{
+  let k = array::iter([0, 1, 2, 3, 4, 5, 6]);
+  let v = never<i64>();
+  v <- select k { 3 => 42, _ => never() };
+  let t = once(k);
+  let p = t ~ v;
+  let w = 0;
+  let on = true;
+  on <- select k { 2 => false, 4 => true, _ => never() };
+  let r = select on {
+    true => { let q = any(p, w); q <- select k { 1 => 7, _ => never() }; q },
+    false => -1
+  };
+  select k { 6 => r, _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))); FuseExpect::Jit);
+
 // A fire the taken arm reads, through a reference or directly, is spent:
 // the other arm's wake does not catch it up again. The reference's target
 // is an input of its arm from the arm's first evaluation.

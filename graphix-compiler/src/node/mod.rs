@@ -2368,19 +2368,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx);
         let fired = t.tag().is_fired();
-        // CR claude for claude: [bug/medium] `fire` comes from the trigger's tag, but
-        // the immediate debt answer (`answered`) is given in a cycle where the trigger
-        // did not fire. A STALE trigger tag goes through `fresh_or_wake` to WAKE_FIRED,
-        // so paying a banked `~` when its argument first arrives is tagged as a wake's
-        // own fire. A sleeping arm's TrackedFires then records it as a wake, and at the
-        // wake a `<-` target's `let` keeps its last write (`Bind::update`'s
-        // `wake_phantom`). The same payment made through the debt variable `id` is
-        // delivered FIRED, so whether a woken target catches up depends on how many
-        // fires were banked. Fix: when the trigger did not fire, take the answer's tag
-        // from the argument (`self.arg.tag.fresh_or_wake()`), and pin the repro as a
-        // test. Probe: design/review-2026-10-12/repro/c-node-mod-02.sh. With `let t =
-        // once(k); let p = t ~ v` q stays 7; with `take(#n: 2, k)` or with `let p = v`
-        // q becomes 42. (c-node-mod-02)
         let fire = t.tag().fresh_or_wake();
         self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
@@ -2429,7 +2416,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
         match (answered, var) {
             (Some(_), _) if self.arg.tag.is_bottom() => self.resident.set_bottom(true),
-            (Some(v), _) => self.resident.set(TagValue::tagged(v.clone(), fire)),
+            // paid in a cycle the trigger did not fire: the argument's
+            // arrival is the event
+            (Some(v), _) => {
+                let tag = if fired { fire } else { self.arg.tag.fresh_or_wake() };
+                self.resident.set(TagValue::tagged(v.clone(), tag))
+            }
             (None, Some(tv)) => self.resident.set(tv),
             (None, None) => self.resident.ride(),
         }
