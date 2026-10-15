@@ -124,30 +124,18 @@ pub fn fix_calibration(t: u64) {
 /// stolen.
 fn calibrate() -> Calibration {
     let pool = eval_pool();
-    // CR claude for claude: [perf/medium] A sample that never finds an idle pool within
-    // IDLE_TRIES keeps its initial 0. After the sort, the lower quartile `wakes[2]` is
-    // then 0 once three samples starve, so T falls to its `1 << T_BUCKET` floor (a few
-    // microseconds of work) for the life of the process, and every Auto site forks work
-    // that cannot pay for the fork. A busy pool is what makes samples starve: a
-    // `#[parallel]` loop re-run every cycle, a Force-mode runtime in the same process,
-    // a loaded http::serve. A probe printed `wakes [0, 19099, ...]`. Fix: keep only
-    // measured samples. When too few are measured, use the contended ones, since
-    // contention only raises T and so errs conservative, or keep retrying. Never let a
-    // 0 stand. Then make design/parallel_eval.md say what happens when the pool never
-    // goes idle. (c-cost-misc-03)
     let mut wakes = [0u64; 9];
     for w in wakes.iter_mut() {
         // a wake measures an idle pool: a sample taken while a part ran
-        // measures the part, so it is taken again
+        // measures the part, so it is taken again, and one that never finds
+        // the pool idle keeps its last, which only raises T
         for _ in 0..IDLE_TRIES {
             // let the workers park
             std::thread::sleep(Duration::from_millis(2));
-            if !pool_idle() {
-                continue;
-            }
+            let idle = pool_idle();
             let t0 = ticks();
             *w = pool.install(ticks).saturating_sub(t0);
-            if pool_idle() {
+            if idle && pool_idle() {
                 break;
             }
         }
