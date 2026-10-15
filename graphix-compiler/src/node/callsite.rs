@@ -2508,17 +2508,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         site.recursive_edge = AtomicBool::new(recursive_edge);
         // an imaged body's reads schedule this statement before the body
         // decodes, as a cold compile's registrations do
-        // CR claude for claude: [risk/low] This registers the imaged body's reads with
-        // the runtime directly. Every other decoded reference is recorded with
-        // record_ref, which apply_deferred applies and drop_deferred cancels. If a
-        // decode fails after this site decoded but before its enclosing node finished,
-        // read_registration deletes only the finished top-level nodes, and materialize
-        // only calls drop_deferred. This site is dropped without delete and its
-        // registrations stay. The session is then not left as it was, and a statement
-        // stays scheduled on variables that no node reads. Fix: record these with
-        // ctx.record_ref(id, top_id) so both outcomes settle them; materialize's
-        // unref_var after apply_deferred keeps working. (c-callsite-10)
-        site.imaged_refs(|id| ctx.rt.ref_var(id, top_id));
+        // deferred like every decoded reference, so a failed read unwinds it
+        site.imaged_refs(|id| ctx.record_ref(id, top_id));
         Ok(Node::new(CallNode::Call(site)))
     }
 }
