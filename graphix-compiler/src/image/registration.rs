@@ -15,10 +15,10 @@ use super::{
     Restored, SharedDecoder, defs, nodes, scope_decode, scope_encode,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CompileCtx, ExecCtx, ExecState, LambdaId, LambdaInstanceId,
-    Node, Rt, Saved, Scope, UserEvent,
+    BindId, BuiltinBindInfo, CompileCtx, DefAssertion, DefAssertionKind, ExecCtx,
+    ExecState, LambdaId, LambdaInstanceId, Node, Rt, Saved, Scope, UserEvent,
     env::Env,
-    expr::{ExprId, ModPath},
+    expr::{Expr, ExprId, ModPath},
     image,
     node::lambda::LambdaDef,
     profile::{self, Phase},
@@ -34,7 +34,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 57;
+pub const REGISTRATION_FORMAT: u8 = 58;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -79,17 +79,6 @@ pub struct Registration<R: Rt, E: UserEvent> {
 
 /// The context's tables that registration fills and later compiles
 /// read; each is a plain list on the wire.
-// CR claude for claude: [bug/medium] The image does not carry
-// CompileCtx::def_assertions, and write_registration's quiescence check ignores it. A
-// #[sync] stays pending forever, because check_def_assertions never retires one, and
-// analysis::analyze_bound_callee re-checks it at every run-time bind. After a warm
-// start the list is empty, so a run-time bind that makes a #[sync] function async is
-// never reported. The cold run and --no-cache log "#[sync]: this function is async"; a
-// warm run logs nothing. Fix: add the pending assertions to Tables as (LambdaId, kind,
-// spec), with the spec as a shared Expr object, and push them back into
-// ctx.def_assertions in restore_tables. Refusing NOT_QUIESCENT while any are pending
-// would turn off the cache for every program that uses #[sync]. probe:
-// design/review-2026-10-12/repro/c-lib-02.gx (c-lib-02)
 struct Tables<'a, R: Rt, E: UserEvent> {
     defs: Vec<&'a LambdaDef<R, E>>,
     bind_to_lambda: Vec<(BindId, LambdaId)>,
@@ -98,6 +87,8 @@ struct Tables<'a, R: Rt, E: UserEvent> {
     connect_targets: Vec<BindId>,
     batch_connect_targets: Vec<BindId>,
     tags: Vec<ArcStr>,
+    /// The `#[sync]` assertions a later run-time bind still checks.
+    def_assertions: Vec<DefAssertion>,
 }
 
 impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
@@ -137,6 +128,7 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
         batch_connect_targets.sort();
         let mut tags: Vec<_> = ctx.tags.iter().cloned().collect();
         tags.sort();
+        let def_assertions = ctx.def_assertions.lock().clone();
         Ok(Tables {
             defs,
             bind_to_lambda,
@@ -145,6 +137,7 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
             connect_targets,
             batch_connect_targets,
             tags,
+            def_assertions,
         })
     }
 
@@ -158,7 +151,14 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
         self.fn_forward_resolutions.encode(buf)?;
         self.connect_targets.encode(buf)?;
         self.batch_connect_targets.encode(buf)?;
-        self.tags.encode(buf)
+        self.tags.encode(buf)?;
+        encode_varint(self.def_assertions.len() as u64, buf);
+        for DefAssertion { id, kind, spec } in &self.def_assertions {
+            id.encode(buf)?;
+            kind.encode(buf)?;
+            spec.encode(buf)?;
+        }
+        Ok(())
     }
 }
 
@@ -184,6 +184,14 @@ fn restore_tables<R: Rt, E: UserEvent>(
     ctx.connect_targets.extend(<Vec<BindId> as Pack>::decode(buf)?);
     ctx.batch_connect_targets.extend(<Vec<BindId> as Pack>::decode(buf)?);
     ctx.tags.extend(<Vec<ArcStr> as Pack>::decode(buf)?);
+    let n = decode_varint(buf)? as usize;
+    let mut pending = ctx.def_assertions.lock();
+    for _ in 0..n {
+        let id = LambdaId::decode(buf)?;
+        let kind = DefAssertionKind::decode(buf)?;
+        let spec = Expr::decode(buf)?;
+        pending.push(DefAssertion { id, kind, spec });
+    }
     Ok(())
 }
 

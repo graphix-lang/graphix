@@ -46,3 +46,30 @@ fn bound_callee_assertion_is_checked() {
     assert!(stderr.contains(msg), "no assertion failure on stderr:\n{stderr}");
     assert!(log.contains(msg), "no assertion failure in the log:\n{log}");
 }
+
+/// A pending assertion travels in the session image: a warm start's
+/// run-time bind reports it as the cold start's does.
+#[test]
+fn bound_callee_assertion_survives_the_image() {
+    let dir =
+        std::env::temp_dir().join(format!("gx-bound-assert-warm-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("tempdir");
+    let path = dir.join("bound.gx");
+    fs::write(&path, PROGRAM).expect("write program");
+    let run = || {
+        let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
+            .arg("--no-netidx")
+            .arg(&path)
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .stdin(Stdio::null())
+            .output()
+            .expect("run graphix");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let (cold, warm) = (run(), run());
+    let _ = fs::remove_dir_all(&dir);
+    let msg = "#[sync]: this function is async";
+    assert!(cold.contains(msg), "no assertion failure cold:\n{cold}");
+    assert!(warm.contains(msg), "no assertion failure warm:\n{warm}");
+}

@@ -860,7 +860,7 @@ pub type AttributeTargetFn<R, E> = fn(&Attr, &Node<R, E>) -> Result<()>;
 /// A definition assertion (`#[tail_recursive]` / `#[sync]` /
 /// `#[async]`), verified at the tail of `analysis::analyze` once the
 /// definition is reached; until then it stays pending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub enum DefAssertionKind {
     Sync,
     Async,
