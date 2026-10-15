@@ -329,6 +329,9 @@ fn evaluate<R: Rt, E: UserEvent>(
 ) -> bool {
     let view = if entered { View::Wake } else { View::Cycle };
     ctx.under(view, |ctx| {
+        if entered {
+            tracked.enter(k)
+        }
         let injected = tracked.deliver(ctx, k);
         let mut done = false;
         for i in evaluation_order(step.nodes.len(), &step.catches) {

@@ -121,6 +121,20 @@ async fn let_fire_reaches_a_later_cycle(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A let's fire a step read live at its own entry is not raised again to
+// that step in a later cycle: `a` fires once, so `count(a)` stays 1 and
+// the `until` never completes.
+async fn let_fire_read_live_is_not_raised_again(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 8 => n + 1, _ => never() };
+        let go = select step { 2 => step, _ => never() };
+        seq go { let a = go; until count(a) >= 2; a }
+    }"#;
+    assert_eq!(run(code, mode).await?, Vec::<i64>::new());
+    Ok(())
+}
+
 // `until` starts a cycle after a write it reads: it sees `false`, and
 // the run waits.
 async fn until_sees_the_write_before_it(mode: Mode) -> Result<()> {
@@ -152,6 +166,7 @@ modes!(
     entry_reraises_an_earlier_fire,
     until_true_at_entry,
     let_fire_reaches_a_later_cycle,
+    let_fire_read_live_is_not_raised_again,
     until_sees_the_write_before_it,
     try_sees_the_write_before_it,
 );

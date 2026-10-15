@@ -29,10 +29,21 @@ pub(crate) struct TrackedFires {
     /// Sound fires no arm evaluation has consumed yet, each with its
     /// tag: a real event, or a wake's own fire.
     pending: IntMap<BindId, Tag>,
+    /// A seq step's `let` fires, the entry of the first later step to
+    /// read them: only an entered step takes them.
+    carried: IntMap<BindId, Tag>,
     /// Per arm: its refs were collected again after its first
     /// evaluation, which names what a node knows only once it ran (a
     /// `Deref`'s target).
     ran: Vec<bool>,
+}
+
+/// Record a fire of `id` in `bits`: a real one outranks a wake's own.
+fn join_bit(bits: &mut IntMap<BindId, Tag>, id: BindId, tag: Tag) {
+    let t = bits.entry(id).or_insert(tag);
+    if !tag.is_wake() {
+        *t = Tag::FIRED
+    }
 }
 
 impl TrackedFires {
@@ -83,6 +94,7 @@ impl TrackedFires {
             consumes: (0..n).map(|_| IntSet::default()).collect(),
             all: IntSet::default(),
             pending: IntMap::default(),
+            carried: IntMap::default(),
             ran: vec![false; n],
         };
         for i in 0..n {
@@ -106,7 +118,7 @@ impl TrackedFires {
     // refresh. A dirty bit or generation that the arm's CallSites and collections bump
     // when they bind or resize would do it. (x-alloc-06)
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
-        let Self { per_arm, consumes, all, pending, ran: _ } = self;
+        let Self { per_arm, consumes, all, pending, carried, ran: _ } = self;
         let mut r = Refs::default();
         fill(&mut r);
         Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
@@ -129,6 +141,7 @@ impl TrackedFires {
         all.clear();
         all.extend(per_arm.iter().flat_map(|m| m.keys().copied()));
         pending.retain(|id, _| all.contains(id));
+        carried.retain(|id, _| all.contains(id));
     }
 
     /// Arm `i` was evaluated: the first time, add what its own nodes
@@ -176,34 +189,31 @@ impl TrackedFires {
         evaluated: &[usize],
         carried: Option<&IntSet<BindId>>,
     ) {
-        let Self { all, pending, per_arm, .. } = self;
+        let Self { all, pending, carried: carried_bits, per_arm, .. } = self;
         for id in all.iter() {
-            // CR claude for claude: [bug/medium] A carried `let` fire is re-recorded as
-            // pending even when the step evaluated this cycle read it live. Because
-            // TrackedFires::deliver runs on every evaluation of the current step, not
-            // only at entry, a step that read the fire at its same-cycle entry and did
-            // not complete gets it again next cycle as a phantom FIRED delivery. In the
-            // probe, `a` fires once, but `until count(a) >= 2` completes one cycle
-            // later, and `until a ~ (step > 3)` completes on step 4. This breaks the
-            // "consumed by whichever step reads it, re-raised at its entry" rule of
-            // design/seq_blocks.md §6.4. Fix: keep carried fires apart from ordinary
-            // pending bits, for example a carried set that only a step being ENTERED
-            // consumes (pass `entered` from seq_machine::evaluate into deliver), so the
-            // step that read the fire live never sees it again. Pin the probe beside
-            // seq_steps::let_fire_reaches_a_later_cycle. probe:
-            // design/review-2026-10-12/repro/c-select-seq-02.gx (c-select-seq-02)
-            if (carried.is_some_and(|c| c.contains(id))
-                || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
+            let carry = carried.is_some_and(|c| c.contains(id));
+            if (carry || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
                 && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
                 && tv.tag().is_fired()
             {
                 let tag = tv.tag().fresh_or_wake();
-                let t = pending.entry(*id).or_insert(tag);
-                if !tag.is_wake() {
-                    *t = Tag::FIRED
-                }
+                let bits = if carry { &mut *carried_bits } else { &mut *pending };
+                join_bit(bits, *id, tag);
             }
         }
+    }
+
+    /// Arm `i` is entered: the carried fires it reads are its entry's.
+    pub(crate) fn enter(&mut self, i: usize) {
+        let Some(set) = self.per_arm.get(i) else { return };
+        let Self { carried, pending, .. } = self;
+        carried.retain(|id, tag| {
+            let read = set.contains_key(id);
+            if read {
+                join_bit(pending, *id, *tag)
+            }
+            !read
+        });
     }
 
     /// Consume the bits arm `i` reads, injecting one catch-up FIRED
