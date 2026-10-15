@@ -2461,13 +2461,13 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,
 ) -> Result<()> {
-    check_and_fuse_inner(ctx, flags, node, &|_| Ok(()))?;
+    check_and_fuse_inner(ctx, flags, node, &|_, _| Ok(()))?;
     ctx.apply_deferred();
     Ok(())
 }
 
 /// What `verify` asks of the checked program, before it elaborates.
-type Verify<'a, R, E> = &'a dyn Fn(&CompileCtx<R, E>) -> Result<()>;
+type Verify<'a, R, E> = &'a dyn Fn(&CompileCtx<R, E>, &Node<R, E>) -> Result<()>;
 
 fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
@@ -2482,7 +2482,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
         .typecheck0(ctx)
         .and_then(|()| drain_pending_settles(ctx))
         .and_then(|()| check_pending_names(ctx))
-        .and_then(|()| verify(ctx))
+        .and_then(|()| verify(ctx, node))
     {
         let e = resite_pending_name(ctx, e);
         ctx.pending_settles.clear();
@@ -2645,7 +2645,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<(Node<R, E>, Scope)> {
-    compile_top(ctx, flags, spec, &|_| Ok(()), |ctx, spec, top_id| {
+    compile_top(ctx, flags, spec, &|_, _| Ok(()), |ctx, spec, top_id| {
         let (n, scope) = node::compile_statement(
             ctx,
             flags,
@@ -2672,9 +2672,12 @@ pub fn compile_script<R: Rt, E: UserEvent>(
     exprs: &Arc<[Expr]>,
     sig: Option<&expr::Sig>,
 ) -> Result<Node<R, E>> {
-    let verify = |cx: &CompileCtx<R, E>| match sig {
-        Some(sig) => check_script_sig(cx, sig, &scope.lexical),
-        None => Ok(()),
+    let verify = |cx: &CompileCtx<R, E>, block: &Node<R, E>| match (sig, block.view()) {
+        (Some(sig), NodeView::Block(b)) => {
+            check_script_sig(cx, sig, &scope.lexical, &b.children)
+        }
+        (Some(_), _) => bail!("BUG: a script compiled to no block"),
+        (None, _) => Ok(()),
     };
     compile_top(ctx, flags, spec, &verify, |ctx, spec, top_id| {
         let n = node::Block::compile(

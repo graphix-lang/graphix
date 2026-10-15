@@ -18,7 +18,7 @@ use crate::{
     node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
     typ::{
-        FnArgKind, FnArgType, FnType, Type,
+        FnArgKind, FnArgType, FnType, TVar, Type,
         tvar::{AtLevel, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
@@ -405,14 +405,133 @@ struct Proxy {
 /// head's variables, so a declaration and its implementation compare by
 /// [`FnType::sig_matches`]: shape, variables and bounds.
 fn head_sig(im: &ImplDef) -> FnType {
+    impl_sig(&im.target, &im.params)
+}
+
+/// [`head_sig`] of a head `impl<params> .. for target`.
+fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     FnType {
         args: Arc::from_iter([FnArgType {
             kind: FnArgKind::Positional { name: None },
-            typ: im.target.clone(),
+            typ: target.clone(),
         }]),
-        quantifiers: Arc::from_iter(im.params.iter().map(|tv| tv.name.clone())),
+        quantifiers: Arc::from_iter(params.iter().map(|tv| tv.name.clone())),
         ..FnType::default()
     }
+}
+
+/// An implementation's definition `td` of a type its interface declares
+/// as `sig_td` (scoped, its parameters too) agrees with it: a hidden type
+/// is an abstract with the declared parameters, any other one the same
+/// type.
+fn check_typedef_decl<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    scope: &ModPath,
+    sig_td: &TypeDefExpr,
+    td: &TypeDefExpr,
+) -> Result<()> {
+    let impl_params = scope_params(&td.params, scope);
+    if let TypeDefBody::Abstract(None) = &sig_td.body {
+        for (tv0, con0) in impl_params.iter() {
+            match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
+                Some((_, con1)) if con0 != con1 => {
+                    let con0 = match con0 {
+                        None => "missing",
+                        Some(t) => &format_compact!("{t}"),
+                    };
+                    let con1 = match con1 {
+                        None => "missing",
+                        Some(t) => &format_compact!("{t}"),
+                    };
+                    bail!(
+                        "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
+                        td.name,
+                        tv0.name
+                    )
+                }
+                None => bail!(
+                    "signature mismatch in {}, missing parameter {}",
+                    sig_td.name,
+                    tv0.name
+                ),
+                Some(_) => (),
+            }
+        }
+        if !matches!(&td.body, TypeDefBody::Abstract(_)) {
+            bail!(
+                "{} is hidden by the interface, so its definition must be \
+                 `type {} = Abstract<..>` (a Rust-backed type declares \
+                 `type {};`)",
+                td.name,
+                td.name,
+                td.name
+            )
+        }
+        return Ok(());
+    }
+    let impl_body = match &td.body {
+        TypeDefBody::Alias(t) => TypeDefBody::Alias(t.scope_refs(scope)),
+        TypeDefBody::Abstract(rep) => {
+            TypeDefBody::Abstract(rep.as_ref().map(|r| r.scope_refs(scope)))
+        }
+    };
+    // a ground union has several normal forms: one type is one by
+    // mutual containment
+    let one_type = |t0: &Type, t1: &Type| {
+        let f = BitFlags::empty();
+        !t0.has_unbound()
+            && !t1.has_unbound()
+            && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
+            && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
+    };
+    let same_body = sig_td.body == impl_body
+        || match (&sig_td.body, &impl_body) {
+            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => one_type(t0, t1),
+            _ => false,
+        };
+    if sig_td.name != td.name || sig_td.params != impl_params || !same_body {
+        bail!("signature mismatch in {}, expected {}, found {}", td.name, sig_td, td)
+    }
+    Ok(())
+}
+
+/// The implementation's own re-declarations of a trait its interface
+/// declares as `t` agree with it.
+fn check_trait_decl<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    scope: &ModPath,
+    si: &crate::expr::SigItem,
+    t: &crate::expr::TraitExpr,
+    nodes: &[Node<R, E>],
+) -> Result<()> {
+    let ori = si.ori.clone().unwrap_or_default();
+    let tref = traits::trait_ref(scope, &t.name, si.pos, &ori);
+    let method =
+        |m: &crate::expr::TraitMethod| traits::method_sig(&ctx.env, &m.typ, &tref, scope);
+    for n in nodes {
+        if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
+            && t2.name == t.name
+        {
+            let agree = t2.methods.len() == t.methods.len()
+                && t2.methods.iter().zip(t.methods.iter()).all(|(a, b)| {
+                    a.name == b.name
+                        && a.self_index == b.self_index
+                        && a.default.is_some() == b.default.is_some()
+                        && match (method(b), method(a)) {
+                            (Ok(b), Ok(a)) => b.sig_matches(&ctx.env, &a).is_ok(),
+                            _ => false,
+                        }
+                });
+            if !agree {
+                bail!(
+                    "trait {} is declared by the interface as {t}; the \
+                     implementation's {t2} does not match",
+                    t.name
+                )
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Check the implementation against `sig`, adding the proxies it links;
@@ -521,92 +640,14 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                         (typ, _) => TypeDefBody::Alias(typ.clone()),
                     },
                 };
-                let impl_params = scope_params(&td.params, &scope.lexical);
+                check_typedef_decl(ctx, &scope.lexical, &sig_td, td)?;
                 match &sig_td.body {
                     TypeDefBody::Abstract(None) => {
-                        for (tv0, con0) in impl_params.iter() {
-                            match sig_td
-                                .params
-                                .iter()
-                                .find(|(tv1, _)| tv0.name == tv1.name)
-                            {
-                                Some((_, con1)) if con0 != con1 => {
-                                    let con0 = match con0 {
-                                        None => "missing",
-                                        Some(t) => &format_compact!("{t}"),
-                                    };
-                                    let con1 = match con1 {
-                                        None => "missing",
-                                        Some(t) => &format_compact!("{t}"),
-                                    };
-                                    bail!(
-                                        "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
-                                        td.name,
-                                        tv0.name
-                                    )
-                                }
-                                None => bail!(
-                                    "signature mismatch in {}, missing parameter {}",
-                                    sig_td.name,
-                                    tv0.name
-                                ),
-                                Some(_) => (),
-                            }
-                        }
-                        let TypeDefBody::Abstract(_) = &td.body else {
-                            bail!(
-                                "{} is hidden by the interface, so its definition must be \
-                             `type {} = Abstract<..>` (a Rust-backed type declares \
-                             `type {};`)",
-                                td.name,
-                                td.name,
-                                td.name
-                            )
-                        };
                         defined_abstracts.insert(td.name.name.clone());
                     }
+                    // one type: a reference to the interface's is one to the
+                    // implementation's wherever identity decides
                     _ => {
-                        let impl_body = match &td.body {
-                            TypeDefBody::Alias(t) => {
-                                TypeDefBody::Alias(t.scope_refs(&scope.lexical))
-                            }
-                            TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
-                                rep.as_ref().map(|r| r.scope_refs(&scope.lexical)),
-                            ),
-                        };
-                        // a ground union has several normal forms: one type is
-                        // one by mutual containment
-                        let one_type = |t0: &Type, t1: &Type| {
-                            let f = BitFlags::empty();
-                            !t0.has_unbound()
-                                && !t1.has_unbound()
-                                && t0
-                                    .contains_with_flags(f, &ctx.env, t1)
-                                    .unwrap_or(false)
-                                && t1
-                                    .contains_with_flags(f, &ctx.env, t0)
-                                    .unwrap_or(false)
-                        };
-                        let same_body = sig_td.body == impl_body
-                            || match (&sig_td.body, &impl_body) {
-                                (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => {
-                                    one_type(t0, t1)
-                                }
-                                _ => false,
-                            };
-                        if sig_td.name != td.name
-                            || sig_td.params != impl_params
-                            || !same_body
-                        {
-                            bail!(
-                                "signature mismatch in {}, expected {}, found {}",
-                                td.name,
-                                sig_td,
-                                td
-                            )
-                        }
-                        // one type: a reference to the interface's is one to
-                        // the implementation's wherever identity decides
                         if let Some(body_td) = body_env
                             .typedefs
                             .get(&scope.lexical)
@@ -690,36 +731,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                 }
             }
             SigKind::Trait(t) => {
-                // an implementation's own re-declaration must agree
-                // with the interface
-                let ori = si.ori.clone().unwrap_or_default();
-                let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, &ori);
-                let method = |m: &crate::expr::TraitMethod| {
-                    traits::method_sig(&ctx.env, &m.typ, &tref, &scope.lexical)
-                };
-                for n in nodes {
-                    if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
-                        && t2.name == t.name
-                    {
-                        let agree = t2.methods.len() == t.methods.len()
-                            && t2.methods.iter().zip(t.methods.iter()).all(|(a, b)| {
-                                a.name == b.name
-                                    && a.self_index == b.self_index
-                                    && a.default.is_some() == b.default.is_some()
-                                    && match (method(b), method(a)) {
-                                        (Ok(b), Ok(a)) => b.sig_matches(&ctx.env, &a).is_ok(),
-                                        _ => false,
-                                    }
-                            });
-                        if !agree {
-                            bail!(
-                                "trait {} is declared by the interface as {t}; the \
-                                 implementation's {t2} does not match",
-                                t.name
-                            )
-                        }
-                    }
-                }
+                check_trait_decl(ctx, &scope.lexical, si, t, nodes)?;
                 false
             }
             SigKind::TypeDef(TypeDefExpr {
@@ -745,28 +757,17 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// A script's interface over its names at `scope`, once it compiled:
-/// each `val` is the binding of its name there, of a type that matches
-/// the declaration, and each declared impl is implemented. The
-/// interface's other items were spliced into the script.
-// CR claude for claude: [bug/medium] This is a weaker second copy of check_sig. It
-// checks only that each `val` matches and that some impl with an overlapping head
-// exists anywhere (`impl_entry(..).is_some()`). TypeDef and Trait items are skipped.
-// add_interface_modules splices a sig typedef or trait only when the script does not
-// define one, so a script definition that contradicts its .gxi is never compared. A
-// declared impl's bounds are never compared either (check_sig uses
-// `head_sig(..).sig_matches` against an Impl node the module holds). A script with
-// `type T = string` under a .gxi with `type T = i64; val x: T` runs, and so do a trait
-// whose method returns string where the .gxi says i64 and `impl<'a> Show for Array<'a>`
-// under a declared `impl<'a: Show>`. --check accepts all three, while the same pair
-// compiled as `mod m` is refused. Fix: give both paths one checker. Run check_sig's
-// typedef, trait and impl comparisons over the script block's compiled statements, and
-// keep only the val lookup by scope as script-specific. probe:
-// design/review-2026-10-12/repro/c-module-traits-04.sh (c-module-traits-04)
+/// A script's interface over its names at `scope` and its statements
+/// `nodes`, once it compiled: each `val` is the binding of its name
+/// there, of a type that matches the declaration; each declared impl is
+/// implemented, under the declared head; and the script's own types and
+/// traits agree with the declared ones, as a module's do (the
+/// interface's others were spliced into the script).
 pub fn check_script_sig<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     sig: &Sig,
     scope: &ModPath,
+    nodes: &[Node<R, E>],
 ) -> Result<()> {
     for si in sig.items.iter() {
         let at = |e: anyhow::Error| {
@@ -828,21 +829,53 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
             }
             SigKind::Impl(im) => {
                 let target = im.target.scope_refs(scope);
-                let implemented = match ctx.env.lookup_trait(scope, &im.trait_name) {
-                    Ok(Some(tid)) => {
-                        ctx.env.impl_entry(tid, &target).map_err(at)?.is_some()
-                    }
-                    Ok(None) => false,
+                let tid = match ctx.env.lookup_trait(scope, &im.trait_name) {
+                    Ok(Some(tid)) => tid,
+                    Ok(None) => return Err(missing()),
                     Err(e) => return Err(at(e)),
                 };
-                if !implemented {
+                let Some(entry) = ctx.env.impl_entry(tid, &target).map_err(at)? else {
                     return Err(missing());
+                };
+                let trait_def = ctx.env.trait_def(tid).cloned().expect("a trait's def");
+                let (st, sp) = traits::impl_head(&ctx.env, scope, &trait_def, im, true)
+                    .map_err(at)?;
+                impl_sig(&st, &sp).sig_matches(&ctx.env, &head_sig(&entry)).map_err(
+                    |e| {
+                        at(anyhow!(
+                            "impl {} for {} does not implement the declared impl {} for \
+                         {target}: {e:#}",
+                            im.trait_name,
+                            entry.target,
+                            im.trait_name
+                        ))
+                    },
+                )?;
+            }
+            SigKind::TypeDef(sig_td) => {
+                let defined = nodes.iter().find_map(|n| match &n.spec().kind {
+                    ExprKind::TypeDef(td) if td.name == sig_td.name => Some(td),
+                    _ => None,
+                });
+                if let Some(td) = defined {
+                    let body = match &sig_td.body {
+                        TypeDefBody::Alias(t) => TypeDefBody::Alias(t.scope_refs(scope)),
+                        TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
+                            rep.as_ref().map(|r| r.scope_refs(scope)),
+                        ),
+                    };
+                    let scoped = TypeDefExpr {
+                        name: sig_td.name.clone(),
+                        params: scope_params(&sig_td.params, scope),
+                        body,
+                    };
+                    check_typedef_decl(ctx, scope, &scoped, td).map_err(at)?
                 }
             }
-            SigKind::Module(_)
-            | SigKind::Use { .. }
-            | SigKind::TypeDef(_)
-            | SigKind::Trait(_) => (),
+            SigKind::Trait(t) => {
+                check_trait_decl(ctx, scope, si, t, nodes).map_err(at)?
+            }
+            SigKind::Module(_) | SigKind::Use { .. } => (),
         }
     }
     Ok(())
