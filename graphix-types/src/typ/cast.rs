@@ -340,6 +340,61 @@ impl Type {
         })
     }
 
+    /// Whether a reference this type test holds sits where `reaching`
+    /// admits `Any`: there the test would take any number for a reference.
+    pub fn ref_over_any(&self, env: &Env, reaching: &Type) -> bool {
+        fn go(
+            env: &Env,
+            seen: &mut LPooled<Vec<(usize, usize)>>,
+            p: &Type,
+            r: &Type,
+        ) -> bool {
+            ensure_sufficient(|| {
+                let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
+                    return false;
+                };
+                if let (Type::Ref(pt), Type::Ref(rt)) = (&p, &r) {
+                    let key = (pt.def_key().unwrap_or(0), rt.def_key().unwrap_or(0));
+                    if seen.contains(&key) {
+                        return false;
+                    }
+                    seen.push(key);
+                }
+                let expand = |t: &Type| match t {
+                    Type::Ref(_) => t.lookup_ref(env).ok(),
+                    t => Some(t.clone()),
+                };
+                let (Some(p), Some(r)) = (expand(&p), expand(&r)) else { return false };
+                match (&p, &r) {
+                    (_, Type::Any) => p.holds_ref(env),
+                    (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
+                    (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
+                    (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
+                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                    }
+                    (Type::Array(p), Type::Array(r))
+                    | (Type::List(p), Type::List(r))
+                    | (Type::Error(p), Type::Error(r))
+                    | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
+                    (Type::Struct(ps), Type::Struct(rs)) => ps.iter().any(|(n, p, _)| {
+                        rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
+                    }),
+                    (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
+                        if pt == rt && ps.len() == rs.len() =>
+                    {
+                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                    }
+                    (
+                        Type::Map { key: pk, value: pv },
+                        Type::Map { key: rk, value: rv },
+                    ) => go(env, seen, pk, rk) || go(env, seen, pv, rv),
+                    _ => false,
+                }
+            })
+        }
+        self.holds_ref(env) && go(env, &mut LPooled::take(), self, reaching)
+    }
+
     /// Whether the type holds `Any` or an open cell anywhere: a part a
     /// value-level predicate cannot be decided of.
     pub(crate) fn holds_unknown(&self, env: &Env) -> bool {

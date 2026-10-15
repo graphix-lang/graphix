@@ -1510,6 +1510,18 @@ const TRAIT_BESIDE_WITNESS: &str = r#"{
   g([], [])
 }"#;
 
+// A reference type test over `Any` would take any number for a writable
+// reference.
+const REF_TEST_OVER_ANY: &str = r#"{
+  let n = u64:42;
+  let b: Any = n;
+  select b { &mut string as q => { *q <- "boom"; 1 }, _ => 7 }
+}"#;
+const REF_TEST_OVER_ANY_NESTED: &str = r#"{
+  let b: Any = u64:42;
+  select (b, 0) { (&mut string, i64) as (q, _) => { *q <- "boom"; 1 }, _ => 7 }
+}"#;
+
 #[tokio::test(flavor = "current_thread")]
 async fn unsound_acceptances_are_refused() -> Result<()> {
     for (src, refusal) in [
@@ -1535,6 +1547,8 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
+        (REF_TEST_OVER_ANY, "can't tell the reference in &mut string from a number"),
+        (REF_TEST_OVER_ANY_NESTED, "can't tell the reference"),
         (ABSTRACT_PATTERN_OVER_A_UNION, "patterns can't match"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),

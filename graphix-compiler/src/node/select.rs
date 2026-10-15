@@ -1627,26 +1627,19 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // interface vals. probe:
             // design/review-2026-10-12/repro/x-typecheck-patterns-04.gx
             // (x-typecheck-patterns-04)
-            // CR claude for claude: [bug/high] The checker accepts a type test that
-            // names a reference over an `Any` scrutinee. In `let b: Any = n; select b {
-            // &mut string as q => *q <- "boom", _ => .. }`, any u64 passes the test and
-            // becomes a writable reference to whatever variable has that id. The probe
-            // writes a string into `x: i64`. The JIT then panics in kernel.rs ("runtime
-            // String does not match the compiled Scalar(I64) slot") and the runtime
-            // dies. The node-walk keeps running with an i64 binding that holds a
-            // string. The cause is that is_a's ByRef arm only checks for a U64/V64, and
-            // this rep_collision check never fires when the rest is `Any`, because
-            // rep_head(Any) is None and the walk runs under Open::Benign. The same arm
-            // over `[u64, &mut string]` is correctly refused. Fix: refuse an explicit
-            // predicate that holds a reference (Type::holds_ref) wherever the reaching
-            // type can hold `Any` at that position, with the "same runtime form"
-            // wording. Keep allowing a reference test over a scrutinee whose type
-            // already pins the reference (the byref_pattern pin and the `[&mut T,
-            // null]` optional-argument idiom), so do not refuse every reference
-            // predicate the way pattern.rs refuses functions. Pin it beside
-            // unsound_acceptances_are_refused, with both the top-level form and the
-            // form nested in a tuple. Same root as x-invalid-states-01. probe:
-            // design/review-2026-10-12/repro/x-fix-types-03.gx (x-fix-types-03)
+            if checking
+                && pat.explicit_type_predicate
+                && pat.type_predicate.ref_over_any(&ctx.env, &reaching)
+            {
+                let t = &pat.type_predicate;
+                return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                    anyhow!(
+                        "this pattern can't tell the reference in {t} from a number \
+                         where the scrutinee may hold Any: both have the same runtime form"
+                    )
+                }))
+                .at(n.spec());
+            }
             if checking
                 && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate)
                 && let Some((a, b)) = pat.type_predicate.rep_collision(&ctx.env, &rest)
