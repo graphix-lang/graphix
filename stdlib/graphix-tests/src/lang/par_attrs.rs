@@ -94,6 +94,22 @@ async fn parallel_on_a_definition_forks_its_instances() -> Result<()> {
     Ok(())
 }
 
+// Parentheses around the definition are grouping: the attribute still
+// reaches its body.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_on_a_parenthesized_definition_forks() -> Result<()> {
+    let code = r#"{
+        let g = |x: i64| x * 2;
+        let h = #[parallel] (|x: i64| (g(x), g(x + 1)));
+        let (a, b) = h(3);
+        a + b
+    }"#;
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(14)));
+    assert!(ran.forks > 0, "#[parallel] on the definition forked nothing");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn serial_reaches_callees() -> Result<()> {
     let code = |attr: &str| {

@@ -381,7 +381,8 @@ value is its eta-expansion at the method's signature
 written ones are), an ordinary function value that can be passed,
 stored, written and called polymorphically. A variadic method has no
 expansion (a lambda cannot pass its rest on) and is refused as a
-value.
+value, and so is one with an optional label: its default is each
+impl's, which no expansion can give.
 
 **A value occurrence is a call site.** A reference to a GENERALIZED
 binding — a let-bound lambda, an interface `val`, a trait dispatcher,

@@ -163,18 +163,8 @@ fn fork_on_body(spec: &Expr) -> Option<Expr> {
             spec.dec = None;
             spec
         }
-        // CR claude for claude: [bug/low] fork_on_body moves a fork-control attribute
-        // onto a lambda's body only when the spec is a bare Lambda. `#[parallel] (|x|
-        // ..)` is ExplicitParens, so it returns None and the lambda value is wrapped in
-        // a ForkControl instead. The build then refuses with '#[parallel] has nothing
-        // to run in parallel', where the same lambda without parens forks every
-        // instance's body. The check accepts both, so only the build refuses. The same
-        // path makes `#[native] let f = #[serial] (|x| ..)` fail annotated_lambda. Fix:
-        // match `ExprKind::Lambda(_) | ExprKind::ExplicitParens(_)` here.
-        // fork_on_lambda already sees through parens and returns None when they hold no
-        // lambda, so other parens still take the wrapper path. probe:
-        // design/review-2026-10-12/repro/c-data-map-02.gx (c-data-map-03)
-        ExprKind::Lambda(_) => {
+        // parens are grouping: fork_on_lambda sees through them
+        ExprKind::Lambda(_) | ExprKind::ExplicitParens(_) => {
             let mut bare = spec.clone();
             bare.dec = None;
             fork_on_lambda(&bare, &fork)?
@@ -654,6 +644,19 @@ fn eta_dispatcher<R: Rt, E: UserEvent>(
              not used as a value"
         )
     }
+    // the default of an optional label is each impl's, which no value of
+    // the method can give
+    if let Some(label) = ft.args.iter().find_map(|a| match &a.kind {
+        crate::typ::FnArgKind::Labeled { name, has_default: true } => Some(name),
+        _ => None,
+    }) {
+        bailat!(
+            spec,
+            "{name} takes the optional label #{label}, whose default each impl gives: \
+             a trait method with an optional label can be called, not used as a value \
+             (wrap the call in a lambda)"
+        )
+    }
     // the signature over variables of its own, as an annotation writes
     // it; `self` would name an impl's receiver
     let mut tvs: AHashMap<ArcStr, TVar> = AHashMap::new();
@@ -676,19 +679,6 @@ fn eta_dispatcher<R: Rt, E: UserEvent>(
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
     for (i, a) in ft.args.iter().enumerate() {
         let (kind, label, var) = match a.label() {
-            // CR claude for claude: [bug/medium] An optional labeled formal (`?#n`)
-            // becomes a required label in the eta lambda, because no default is given
-            // and the eta body has none to give: the default lives in each impl. So
-            // `let g = Show::show; g(4)` is refused with "missing required argument n",
-            // even though `Show::show(4)` compiles. And `array::map([1, 2],
-            // Show::show)` is refused as a type mismatch, while an ordinary `|#n = 1,
-            // i| ..` is accepted in the same position. Fix options: keep the
-            // optionality, so the eta takes the label as an internal "absent" default
-            // and its dispatcher call omits the label when it is absent. Or refuse an
-            // optional-labeled method as a value up front, like the variadic case in
-            // eta_dispatcher, with a message naming the label. Add a pin beside
-            // trait_method_value_flows. probe:
-            // design/review-2026-10-12/repro/c-data-map-02.sh (c-data-map-02)
             Some(l) => (ArgKind::Labeled, Some(l.clone()), l.clone()),
             None => (ArgKind::Positional, None, arcstr::format!("eta{i}")),
         };

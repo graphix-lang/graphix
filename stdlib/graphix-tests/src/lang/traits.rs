@@ -1695,6 +1695,19 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
 );
 
+// A trait method with an optional label is called, never used as a value:
+// its default is each impl's, which a value of the method cannot give.
+run!(
+    optional_labeled_method_value_refused,
+    r#"{
+    trait Show { val show: fn(?#n: i64, self) -> string };
+    impl Show for i64 { let show = |#n = 1, i| "i[i * n]" };
+    array::map([1, 2], Show::show)
+}"#,
+    refused("Show::show takes the optional label #n");
+    FuseExpect::None
+);
+
 // A trait method named as a value is its eta-expansion: an ordinary
 // function, passed to a collection, forwarded through a parameter,
 // stored, and polymorphic.
