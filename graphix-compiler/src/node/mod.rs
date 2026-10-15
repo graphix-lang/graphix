@@ -303,17 +303,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.update(ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    typed_by_row!(children);
 
     fn spec(&self) -> &Expr {
         &self.spec
@@ -445,13 +435,10 @@ pub(crate) use dense_gate;
 /// and judges its own type only when `check`: an instance takes the type
 /// from its row and judges it only where its definition's check recorded
 /// none (an id two nodes share).
-// CR claude for claude: [structure/low] This macro covers one shape of the
-// typecheck0/typecheck0_instance pair. About thirteen nodes write the other two shapes
-// by hand. One is the source-typed form (array.rs, map.rs, error.rs and several here),
-// whose instance passes `false` with no row. The other is the children-only form with a
-// 2-argument typecheck0_with (several here and in error.rs). Changing the instance
-// contract means editing those hand copies one by one. Add `(source)` and `(children)`
-// arms to this macro and use them at those nodes. (x-dup-13)
+/// An `Update`'s `typecheck0`/`typecheck0_instance` pair over its
+/// `typecheck0_with`: by the instance's row (no argument), with the
+/// instance judging nothing (`source`: its types come from its source),
+/// or over its children alone (`children`).
 macro_rules! typed_by_row {
     () => {
         fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -469,6 +456,36 @@ macro_rules! typed_by_row {
                 &mut |n, ctx| n.typecheck0_instance(ctx, types),
                 !row,
             )
+        }
+    };
+    (source) => {
+        fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+            self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
+        }
+
+        fn typecheck0_instance(
+            &mut self,
+            ctx: &mut CompileCtx<R, E>,
+            types: &mut $crate::node::lambda::InstanceTypes,
+        ) -> Result<()> {
+            self.typecheck0_with(
+                ctx,
+                &mut |n, ctx| n.typecheck0_instance(ctx, types),
+                false,
+            )
+        }
+    };
+    (children) => {
+        fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+            self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        }
+
+        fn typecheck0_instance(
+            &mut self,
+            ctx: &mut CompileCtx<R, E>,
+            types: &mut $crate::node::lambda::InstanceTypes,
+        ) -> Result<()> {
+            self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
         }
     };
 }
@@ -1414,17 +1431,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         fusion::fuse_parts(self.args.iter_mut(), ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    typed_by_row!(children);
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
@@ -1551,19 +1558,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         fusion::fuse_parts([&mut self.node], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
-    }
-
-    /// The target's type is its binding's row: the write was judged in
-    /// the check.
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
+    // The target's type is its binding's row: the write was judged in
+    // the check.
+    typed_by_row!(source);
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Connect(self)
@@ -1803,19 +1800,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.sleep(ctx);
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
-    }
-
-    /// The target's type is its binding's row: the write was judged in
-    /// the check.
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
+    // The target's type is its binding's row: the write was judged in
+    // the check.
+    typed_by_row!(source);
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::ConnectDeref(self)
@@ -2413,17 +2400,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.refs(refs);
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    typed_by_row!(children);
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Sample(self)

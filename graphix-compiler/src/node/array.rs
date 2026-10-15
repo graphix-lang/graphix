@@ -211,19 +211,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
-    }
-
-    /// The element cell binds from the source as in the check; the
-    /// index needs no judging.
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
+    // The element cell binds from the source as in the check; the
+    // index needs no judging.
+    super::typed_by_row!(source);
 
     fn typ(&self) -> &Type {
         &self.typ
@@ -353,19 +343,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
-    }
-
-    /// The element cell binds from the source as in the check; the
-    /// index needs no judging.
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
+    // The element cell binds from the source as in the check; the
+    // index needs no judging.
+    super::typed_by_row!(source);
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
