@@ -72,6 +72,8 @@ struct LazyArmFacts {
     shallow: Vec<Option<Type>>,
     /// A value no arm matched was logged: once per select.
     logged_no_match: bool,
+    /// The arms with a guard, in order.
+    guarded: SmallVec<[usize; 4]>,
 }
 
 impl LazyArmFacts {
@@ -115,6 +117,12 @@ impl LazyArmFacts {
                 .map(|(pat, _)| pat.shallow_discriminant(&ctx.env, scrut))
                 .collect(),
             logged_no_match: false,
+            guarded: arms
+                .iter()
+                .enumerate()
+                .filter(|(_, (pat, _))| pat.guard.is_some())
+                .map(|(i, _)| i)
+                .collect(),
         }
     }
 }
@@ -155,7 +163,7 @@ struct EmissionPlanes {
 
 impl EmissionPlanes {
     /// `arg_prod` is a non-bottom scrutinee production.
-    fn new(guard_tags: &[Option<Tag>], arg_prod: Tag, mask: &ArmMask) -> Self {
+    fn new(guard_tags: &[(usize, Tag)], arg_prod: Tag, mask: &ArmMask) -> Self {
         let mut planes = EmissionPlanes {
             guard_fire: false,
             sound: arg_prod.triggers(),
@@ -163,8 +171,8 @@ impl EmissionPlanes {
             anyfire: arg_prod.triggers(),
             consulted_bottom: false,
         };
-        let consulted = guard_tags.iter().enumerate().filter(|(i, _)| mask.get(*i));
-        for t in consulted.filter_map(|(_, t)| *t) {
+        let consulted = guard_tags.iter().filter(|(i, _)| mask.get(*i));
+        for t in consulted.map(|(_, t)| *t) {
             if t.triggers() {
                 planes.guard_fire = true;
                 planes.anyfire = true;
@@ -1161,24 +1169,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             slept,
             arm_facts,
         } = self;
-        let LazyArmFacts { tracked, sleep_on_deselect, shallow, logged_no_match } =
-            arm_facts.as_mut().expect("arm facts built above");
+        let LazyArmFacts {
+            tracked,
+            sleep_on_deselect,
+            shallow,
+            logged_no_match,
+            guarded,
+        } = arm_facts.as_mut().expect("arm facts built above");
         let woke = slept.take();
-        // Per-arm guard production tags; `None` = unguarded. Only guards
-        // the chain consults contribute fires or bottomness.
-        // CR claude for claude: [perf/low] guard_tags spills to the heap on every
-        // update of a select with more than 32 arms. Then every arm's pat.update runs,
-        // which returns None for an unguarded arm, and EmissionPlanes::new walks the
-        // result again. All of this happens on quiet cycles too, so a large keymap or
-        // state-machine select pays O(arms) plus an allocation per event. An idle
-        // 1600-arm unguarded select costs about 107 us per unrelated cycle against 22
-        // us at 100 arms (probe: design/review-2026-10-12/repro/x-perf-runtime-05.py
-        // with `s`). Precompute the guarded arms' indices in LazyArmFacts and tick only
-        // those. Record their tags sparsely or as bitsets beside consulted_guard_mask,
-        // so an all-unguarded select does no guard work and allocates nothing.
-        // (x-perf-runtime-05)
-        let mut guard_tags: SmallVec<[Option<Tag>; 32]> =
-            SmallVec::with_capacity(arms.len());
+        // The guarded arms' production tags. Only guards the chain
+        // consults contribute fires or bottomness.
+        let mut guard_tags: SmallVec<[(usize, Tag); 4]> = SmallVec::new();
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
         // Guards are live nodes and tick every cycle, even under a
@@ -1204,25 +1205,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // design/activation_state.md says so. probe:
         // design/review-2026-10-12/repro/c-select-seq-01.gx (and c-select-seq-01b.gx
         // with --no-fusion). (c-select-seq-01)
-        for ((pat, _), shallow) in arms.iter_mut().zip(shallow.iter()) {
+        for &i in guarded.iter() {
+            let (pat, shallow) = (&mut arms[i].0, &shallow[i]);
             let saved = match arg.value.as_ref() {
                 Some(v)
                     if !arg.tag.is_bottom()
-                        && pat.guard.is_some()
                         && pat.shape_matches(&ctx.env, shallow.as_ref(), v) =>
                 {
                     Some(pat.bind_tentative(ctx, v, arg_prod))
                 }
                 _ => None,
             };
-            guard_tags.push(pat.update(ctx));
+            if let Some(t) = pat.update(ctx) {
+                guard_tags.push((i, t));
+            }
             if let Some(saved) = saved {
                 pat.retract(ctx, saved);
             }
         }
         // Any guard fire drives a re-match; whether it affects the
         // emission is decided by the consulted set below.
-        let pat_up = guard_tags.iter().any(|t| t.is_some_and(|t| t.triggers()));
+        let pat_up = guard_tags.iter().any(|(_, t)| t.triggers());
         // A bottom scrutinee bottoms the select; it consults no guards.
         // A window with no arm (a bottom scrutinee, an undecidable guard)
         // pauses the selected arm as a deselect does, so it resumes with
