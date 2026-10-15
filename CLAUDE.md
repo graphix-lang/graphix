@@ -768,7 +768,9 @@ cycle, across workers; the compiler never pins threads.
   a later writer must fit it, and a refused one is told the declaration
   that holds both (`node/mod.rs::write_mismatch`).
 - **Sets and coverage**: one walk (`select.rs::Reach`) decides what
-  reaches each arm: its binds narrow to it, an arm that can match none of
+  reaches each arm: its binds narrow to it (over a union, each to the
+  union of its parts over every member the arm can match, never to the
+  first member's), an arm that can match none of
   it, or that tests what an earlier unguarded arm tests, is dead, and the
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member;

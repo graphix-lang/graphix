@@ -442,7 +442,7 @@ impl Reach {
         checking: bool,
     ) -> Result<()> {
         let empty = Type::Primitive(BitFlags::empty());
-        if checking && self.atype == empty {
+        if checking && (self.wildcard || self.atype == empty) {
             bailat!(
                 site,
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
@@ -1608,53 +1608,15 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // walk.
             let reaching = reach.atype.clone();
             let narrowed = pat.type_predicate.any_as_tvar();
-            // CR claude for claude: [bug/high] When what reaches an arm is a union of
-            // several members with the same shape, this containment binds an inferred
-            // predicate's open cells to ONE member. Example: `(x, y)` over `[(i64,
-            // string), (string, i64)]` becomes `(i64, string)`. `Reach::new` has
-            // already counted the arm as a wildcard (`matches_every` over the unbound
-            // predicate), so the check accepts the select, but the runtime type test
-            // admits only that member. The other member's values match no arm in both
-            // engines ("no arm matches ... a coverage hole in the check"), and an
-            // enclosing `array::map` produces nothing. The struct form `{x, y}` fails
-            // the same way. The variant form `` `A(x, y) `` and abstract and slice
-            // patterns are refused instead, with a wrong "missing match cases" message.
-            // Fix: narrow an inferred predicate whose structure matches anything to the
-            // union of the reaching members its shape covers, not to one unified
-            // member. Then compute the wildcard from the narrowed predicate in
-            // `Reach::arm`, so coverage and the runtime test read the same type. probe:
-            // design/review-2026-10-12/repro/x-typecheck-patterns-02.gx
-            // (x-typecheck-patterns-02)
-            // CR claude for claude: [bug/high] Over a scrutinee that is a union of
-            // collections or tuples, this contains binds a slice's element cells, or a
-            // tuple's position cells, to the first reaching member. Those cells are
-            // shared with the arm's run-time type predicate, so the arm then rejects
-            // every other member. `[x]` over [Array<i64>, Array<string>] sends ["s"] to
-            // the next arm in both engines (`[_]` matches it). `[h, rest..]`/`[]`, the
-            // List analogue, and `(a, b)` with a null arm are refused as
-            // non-exhaustive, because Reach::arm's ladder claim and coverage see only
-            // the first member. Fix: bind each element/position cell to the union of
-            // its parts over every reaching member the pattern's shape matches, keep
-            // the run-time predicate admitting all of them, and make Reach::arm claim
-            // every matching member's ladder. Same cause as the capture finding
-            // c-pattern-03. probe: design/review-2026-10-12/repro/c-pattern-04.gx
-            // (c-pattern-04)
-            // CR claude for claude: [bug/high] When `reaching` is a union, `Set ⊇
-            // narrowed` commits the predicate's cells to the first member that admits
-            // them (`set_commit`). So the arm's binds are typed from one member while
-            // its run-time test admits every member. Over `p: [(i64, string), (string,
-            // i64)]`, `q@ (_, _) => q.0` gives q the type (i64, string). `let r: i64 =
-            // g(("s", 1))` then checks, the node-walk yields "s" and the JIT yields 0
-            // (probe: design/review-2026-10-12/repro/c-pattern-03.gx; with `q.0 + 1`,
-            // graphix-fuzz check reports a DIVERGENCE). The same commit hits a cell
-            // inside the arm's own predicate: `(a, _) => a` over that union passes the
-            // exhaustiveness check, but its run-time predicate becomes (i64, _), and
-            // ("s", 1) reaches "no arm matches: a coverage hole in the check". Fix:
-            // narrow per reaching member. For each member the predicate could match,
-            // compute that member's part on a copy, then bind each capture and each
-            // predicate cell to the union of those parts, instead of letting one
-            // `contains` over the Set commit to a single member. (c-pattern-03)
-            reaching.contains(&ctx.env, &narrowed)?;
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            union_members(&ctx.env, &reaching, &mut members)?;
+            members.retain(|m| narrowed.could_match(&ctx.env, m).unwrap_or(true));
+            match members.len() {
+                0 | 1 => {
+                    reaching.contains(&ctx.env, &narrowed)?;
+                }
+                _ => narrowed.narrow_per_member(&ctx.env, &members)?,
+            }
             pat.bind_narrowed(&ctx.env, &narrowed, checking).at(n.spec())?;
             // a runtime test can't tell apart two types with one runtime form
             // CR claude for claude: [bug/high] x-unsafe-03/c-pattern-02 still open:

@@ -1696,6 +1696,68 @@ impl Type {
         go(self, rigid, &mut LPooled::take())
     }
 
+    /// `members ⊇ self` for a select arm's predicate over what reaches the
+    /// arm, `members` being the members of that union it can match: each
+    /// open cell of self takes the union of its parts over every member and
+    /// each alternative of self that matches it, where containment against
+    /// the union commits it to the first member. A cell a matching
+    /// alternative leaves open stays open.
+    pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
+        fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => {
+                    if seen.insert(tv.cell_addr()) {
+                        match tv.binding() {
+                            Some(b) => open(&b, seen, out),
+                            None => out.push(tv.clone()),
+                        }
+                    }
+                }
+                t => t.for_each_child(&mut |c| open(c, seen, out)),
+            })
+        }
+        let mut cells: SmallVec<[TVar; 8]> = SmallVec::new();
+        open(self, &mut LPooled::take(), &mut cells);
+        let mut parts: SmallVec<[Option<SmallVec<[Type; 4]>>; 8]> =
+            cells.iter().map(|_| Some(SmallVec::new())).collect();
+        let mut alts: SmallVec<[Type; 8]> = SmallVec::new();
+        crate::expr::union_members(env, self, &mut alts)?;
+        if alts.is_empty() {
+            alts.push(self.clone())
+        }
+        for m in members {
+            for alt in alts.iter() {
+                if !alt.could_match(env, m)? {
+                    continue;
+                }
+                let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                let copy = alt
+                    .reset_tvars_int(&mut known, Fresh::Copy)
+                    .unwrap_or_else(|| alt.clone());
+                if !m.contains(env, &copy)? {
+                    continue;
+                }
+                for (c, p) in cells.iter().zip(parts.iter_mut()) {
+                    let Some(f) = known.get(&c.cell_addr()) else { continue };
+                    match (f.binding(), p.as_mut()) {
+                        (Some(t), Some(p)) => p.push(t.resolve_tvars()),
+                        (None, _) => *p = None,
+                        (Some(_), None) => (),
+                    }
+                }
+            }
+        }
+        for (c, p) in cells.iter().zip(parts.iter()) {
+            if let Some(p) = p
+                && !p.is_empty()
+            {
+                let p: LPooled<Vec<&Type>> = p.iter().collect();
+                Type::union_exact(env, &p)?.contains(env, &Type::TVar(c.clone()))?;
+            }
+        }
+        Ok(())
+    }
+
     /// A copy of self with fresh type variable cells: unbound cells
     /// freshen unbound, a bound cell freshens to a fresh cell bound to
     /// the reset of its binding. self is not modified.

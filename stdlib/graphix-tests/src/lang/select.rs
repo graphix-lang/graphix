@@ -3121,23 +3121,36 @@ run!(
 // One walk decides what reaches each arm: binds narrow to it, an arm that
 // can match none of it is dead, and nothing may reach past the last arm.
 
-// An all-bind arm over a union of tuples narrows to one member, so it
-// covers that member alone: whether it matched anything before narrowing
-// decides nothing.
-run!(coverage_all_bind_narrows_to_a_member, r#"{
-    let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => 0 };
-    g((1, "s"))
-}"#, refused("no arm covers (string, i64)"); FuseExpect::None);
-
-run!(coverage_all_bind_struct_narrows_to_a_member, r#"{
-    let g = |p: [{x: i64, y: string}, {x: string, y: i64}]| select p { {x, y} => 0 };
-    g({x: 1, y: "s"})
-}"#, refused("no arm covers { x: string, y: i64 }"); FuseExpect::None);
-
-run!(coverage_all_bind_arms_cover_each_member, r#"{
-    let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => 0, (c, d) => 1 };
+// An all-bind arm over a union narrows each bind to the union of its parts
+// over every member it can match: it covers them all, its binds hold either
+// member's part, and a second such arm is dead.
+run!(coverage_all_bind_covers_every_member, r#"{
+    let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => "[a] [b]" };
     (g((1, "s")), g(("s", 1)))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(0), Value::I64(1)]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("1 s"), Value::from("s 1")]); FuseExpect::None);
+
+run!(coverage_all_bind_struct_covers_every_member, r#"{
+    let g = |p: [{x: i64, y: string}, {x: string, y: i64}]| select p { {x, y} => "[x] [y]" };
+    (g({x: 1, y: "s"}), g({x: "s", y: 1}))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("1 s"), Value::from("s 1")]); FuseExpect::None);
+
+run!(coverage_all_bind_second_arm_dead, r#"{
+    let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => 0, (c, d) => 1 };
+    g((1, "s"))
+}"#, refused("unreachable arm"); FuseExpect::None);
+
+run!(coverage_all_bind_part_is_a_union, r#"{
+    let g = |p: [(i64, string), (string, i64)]| select p { q@ (_, _) => q.0 };
+    let r: i64 = g(("s", 1));
+    r
+}"#, refused("i64 does not contain [i64, string]"); FuseExpect::None);
+
+run!(coverage_slice_bind_covers_every_member, r#"{
+    let f = |p: [Array<i64>, Array<string>]| select p { [x] => "one", _ => "other" };
+    let h = |p: [Array<i64>, Array<string>]| select p { [h, rest..] => 1, [] => 0 };
+    let l = |p: [List<i64>, List<string>]| select p { [<h, rest..>] => 1, [<>] => 0 };
+    (f(["s"]), h(["s"]), l([<"s">]))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("one"), Value::I64(1), Value::I64(1)]); FuseExpect::None);
 
 // A partial struct pattern pools against the one member holding its
 // fields, its unnamed fields matching anything: arms naming different
