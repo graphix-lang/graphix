@@ -823,18 +823,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             }
             Typing::Substituted(table, def) => (table, def),
         };
-        // CR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST the instance checks
-        // its body again, and that check refuses `let len = |l| select l { [] => 0, [_,
-        // ..] => 1 }; len([1, 2])` with 'no arm covers Array<Any> (the slice arms leave
-        // array length 0 uncovered)'. The same program is accepted without the knob,
-        // and the arms cover every length. The A/B is meant to show where typing by
-        // substitution goes wrong, but it currently fails on ordinary generic code, so
-        // a divergence it reports means nothing. Find why the re-checked `[]` pattern
-        // no longer covers the instance's scrutinee; a pattern predicate left over from
-        // the definition's check is a likely suspect. Then add a test that runs a few
-        // generic fixtures under the knob, or drop the knob and its CLAUDE.md row.
-        // probe: design/review-2026-10-12/repro/x-typecheck-generics-10.gx
-        // (x-typecheck-generics-10)
         if dbgenv::graphix_no_subst() {
             return Ok(None);
         }
