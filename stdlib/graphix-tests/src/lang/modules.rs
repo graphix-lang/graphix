@@ -1058,6 +1058,23 @@ run!(
     FuseExpect::None
 );
 
+// An exported val is one variable: the module's own write and an outside
+// write in one cycle both land, the second a cycle later, as two writes to
+// any variable do.
+run!(
+    exported_val_takes_both_writes,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:0, i64:1, i64:100]",
+    "/test.gx" => r#"
+        mod m;
+        let go = 1;
+        m::t <- go ~ 5;
+        m::x <- m::t ~ 100;
+        let result = array::group(m::x, |n, _| n == 3)
+    "#,
+    "/test/m.gxi" => "val x: i64; val t: i64;",
+    "/test/m.gx" => "let t = never(); let x = 0; x <- t ~ 1"
+; FuseExpect::Jit);
+
 // A catch that saw no raise at its check takes none later: the refusal
 // names the annotation that would take it.
 run!(

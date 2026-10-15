@@ -1293,21 +1293,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
         let view = if compiled { View::Birth } else { View::Cycle };
         ctx.under(view, |ctx| {
-            // CR claude for claude: [bug/high] An exported val is one variable with two
-            // BindIds. When the module body's own write (to inner) and an outside write
-            // (to outer) land in the same cycle, this copy replaces the inner event and
-            // its store value with the outer one. The inner write is silently lost,
-            // never queued. A single variable would deliver both writes, the second one
-            // cycle later. Probe: design/review-2026-10-12/repro/c-module-traits-02.sh
-            // prints 0, 100 for the module program and 0, 1, 100 for the same program
-            // without a module. Fix: when inner already has an event this cycle, queue
-            // one of the two writes for the next cycle through the runtime as a second
-            // write to one variable is queued (rt.set_var), instead of overwriting. The
-            // root fix is to make the interface binding an alias of the
-            // implementation's so there is only one id. (c-module-traits-02)
+            // the interface binding and the implementation's are one
+            // variable: a write to each in one cycle delivers the body's
+            // now and queues the outside's, as a second write is queued
             for Proxy { inner, outer, private_inner } in &self.proxy {
                 if *private_inner && let Some(tv) = ctx.event.variables.get(outer) {
                     let tv = tv.clone();
+                    if ctx.event.variables.contains_key(inner) && !tv.tag().is_bottom() {
+                        ctx.rt.set_var(*inner, tv.value());
+                        continue;
+                    }
                     store_production(ctx, *inner, &tv);
                     ctx.event.variables.insert(*inner, tv);
                 }
