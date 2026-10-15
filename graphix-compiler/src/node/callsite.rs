@@ -2960,8 +2960,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an
         // annotation could narrow it unsoundly. Its writers are not checked
-        // yet, so a ⊥-fed cell is not ⊥ here. A quantifier of a function
-        // type the signature holds is its callers' to pick.
+        // yet, so a ⊥-fed cell is not ⊥ here. A quantifier, the callee's own
+        // or of a function type the signature holds, is its callers' to pick.
         {
             let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
             ftype.inner_quantifiers(&mut quantifiers);
@@ -2977,28 +2977,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let mut rt_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             ftype.rtype.collect_tvars(&mut rt_tvs);
             ftype.throws.collect_tvars(&mut rt_tvs);
-            for (_, tv) in rt_tvs.drain() {
+            for (name, tv) in rt_tvs.drain() {
                 let addr = tv.cell_addr();
-                // CR claude for claude: [bug/medium] This eager settle also catches the
-                // callee's own declared quantifiers (those named in
-                // FnType::quantifiers) when only the return or throws type holds them.
-                // A declared bound is a witness, so the call decides 'b := Number (or
-                // Any) before any annotation is seen. As a result `'b: Number +
-                // Concrete |s: string| -> Result<'b, E> str::parse(s)` with `let r:
-                // Result<i64, E> = f("12")` is refused, yet the same program with `'b:
-                // Concrete` alone is accepted and runs. Likewise `'b: Any |s| ->
-                // Array<'b> []` refuses `let r: Array<i64>`, while the unbounded `|s|
-                // -> Array<'b> []` is accepted. The definition's check holds these
-                // cells rigid, so the body cannot have produced a concrete type into
-                // them. Narrowing them at the caller is sound, and the derived-cell
-                // argument for this settle (design/tvar_constraints.md, Settling) does
-                // not apply to them. Fix: exempt the instantiated cells of ftype's
-                // declared quantifiers here, as inner quantifiers already are, and let
-                // the annotation or the statement's terminal settle decide them. Update
-                // the design doc's Settling bullet to match. probe:
-                // design/review-2026-10-12/repro/x-typecheck-generics-07.gx
-                // (x-typecheck-generics-07)
-                if !arg_cells.contains(&addr) && !quantifiers.contains_key(&addr) {
+                // the callee's declared quantifiers were rigid in its check, so
+                // its body produced nothing into them: the caller narrows them
+                let declared = ftype.quantifiers.contains(&name);
+                if !arg_cells.contains(&addr)
+                    && !quantifiers.contains_key(&addr)
+                    && !declared
+                {
                     wrap!(self, tv.settle_witness(&ctx.env))?;
                 }
             }

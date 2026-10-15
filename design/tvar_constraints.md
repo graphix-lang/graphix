@@ -153,7 +153,10 @@ An image carries each cell's level and each definition's depth.
   is the conjunction's narrowest member, a derived cell whose def-time
   fact was `i64` settles to `i64`, not wide. Arg-reachable cells stay
   open through typecheck0: annotations narrow them and the actual
-  arguments enforce the narrowing.
+  arguments enforce the narrowing. So do the cells of the callee's
+  own declared quantifiers (`'b: Any |s| -> Array<'b> []`): its check
+  held them rigid, so its body produced nothing into them, and the
+  caller's annotation or the terminal settle decides them.
 - An OMITTED labeled default is checked at its site by the check
   (`CallSite::check_omitted_defaults`): the default of every definition
   the callee's `lambda_ids` names is compiled as the site sees it,

@@ -3078,3 +3078,23 @@ run!(
         let result = app2(|x| x)
     "#
 ; FuseExpect::None);
+
+// A callee's own declared quantifier that only its return holds is the
+// caller's to narrow: its check held it rigid, so the body produced
+// nothing into it.
+run!(declared_quantifier_in_the_return_narrows, r#"
+{
+    let f = 'b: Any |s: string| -> Array<'b> [];
+    let r: Array<i64> = f("1");
+    array::len(r)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
+
+run!(declared_bound_quantifier_in_the_return_narrows, r#"
+{
+    type E = `ParseError(string);
+    let f = 'b: Number + Concrete |s: string| -> Result<'b, E> str::parse(s);
+    let r: Result<i64, E> = f("12");
+    r$ + 1
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(13))); FuseExpect::Jit);
