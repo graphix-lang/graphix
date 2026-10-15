@@ -8,6 +8,7 @@ use super::{
         same_parameters,
     },
     pattern::StructPatternNode,
+    wake::TrackedFires,
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
@@ -808,7 +809,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// they reach stay open for the bind.
     defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
-    callee_absent: bool,
+    absent: Option<Absent>,
     fork: ForkSite,
 }
 
@@ -842,7 +843,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             resident: TagValue::phantom(),
             share: None,
             defaults_open: true,
-            callee_absent: false,
+            absent: None,
             fork: ForkSite::default(),
         }
     }
@@ -2127,15 +2128,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             (tag, (!static_callee && !tag.is_bottom()).then(|| tv.value_cloned()))
         };
         if fnode_tag.is_bottom() && !static_callee {
-            for id in set.drain(..) {
-                ctx.event.variables.remove(&id);
-            }
             // a bound instance sleeps while its callee is bottom, so it wakes
             // with catch-up when the same function returns
             if let Some(f) = self.callee.apply_mut() {
+                let absent = self.absent.get_or_insert_with(|| Absent {
+                    missed: SmallVec::new(),
+                    captured: TrackedFires::new(&ctx.env, 1, |_, r| f.refs(r)),
+                });
+                absent.observe(ctx, &set);
                 f.sleep(ctx);
                 self.slept.set();
-                self.callee_absent = true;
+            }
+            for id in set.drain(..) {
+                ctx.event.variables.remove(&id);
             }
             return self.resident.set_bottom(fnode_tag.triggers() || arg_fired);
         }
@@ -2186,25 +2191,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.spec,
             );
         }
+        let absent = self.absent.take();
+        let returned = absent.is_some();
         let res = match self.callee.apply_mut() {
             None => None,
-            // CR claude for claude: [bug/high] While the call's function value is
-            // bottom, the bound instance is put to sleep. When the same def returns, it
-            // is updated here under View::Cycle, not View::Wake, and nothing re-raises
-            // the argument fires that `update_call` removed from the event during the
-            // window. As a result the body's constants re-fire, and a `<-` target's
-            // `let` takes its initializer again: sleep is reset, not pause. A sampler
-            // in the body also never sees an argument that moved while the callee was
-            // absent. The select-arm twin of the same body keeps its state and catches
-            // the fire up. Fix: when `callee_absent` is set and the def is unchanged,
-            // run the update under `ctx.under(View::Wake, ..)`. Record which argument
-            // ids fired during the window (one fire bit per argument, as the select's
-            // tracked fires do) and re-deliver those fires once with the WAKE tag. Add
-            // a pin with a stateful callee next to
-            // dense_deltas::callee_back_from_bottom. probe:
-            // design/review-2026-10-12/repro/c-callsite-01.gx Also reported as
-            // (x-rerun-7-02). (c-callsite-01)
-            Some(f) if !bound => Some(f.update(ctx, &mut self.arg_refs).clone()),
+            Some(f) if !bound => {
+                let arg_refs = &mut self.arg_refs;
+                match absent {
+                    None => Some(f.update(ctx, arg_refs).clone()),
+                    // the same function back: its instance wakes, caught up
+                    Some(absent) => {
+                        Some(absent.wake(ctx, |ctx| f.update(ctx, arg_refs).clone()))
+                    }
+                }
+            }
             Some(f) => {
                 // A fresh bind dispatches under the init view.
                 let arg_refs = &mut self.arg_refs;
@@ -2224,7 +2224,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         match res {
             // a function back from bottom fires the call with its current
             // value, as a scrutinee back from bottom fires its select
-            Some(tv) if mem::take(&mut self.callee_absent) => {
+            Some(tv) if returned => {
                 let tag = tv.tag().fresh();
                 self.resident.set(tv);
                 self.resident.retag(tag)
@@ -3133,6 +3133,58 @@ struct ArgsOut {
     fired: bool,
     prods: SmallVec<[(BindId, TagValue); 4]>,
     set: Published,
+}
+
+/// A bound instance asleep while its function is bottom: what fired that
+/// it did not see, caught up when the same function returns, as a
+/// deselected arm is at its wake.
+#[derive(Debug)]
+struct Absent {
+    /// The arguments that fired meanwhile.
+    missed: SmallVec<[BindId; 2]>,
+    /// The inputs the instance captures.
+    captured: TrackedFires,
+}
+
+impl Absent {
+    /// Record this cycle's fires: the arguments published in `set`, and
+    /// the captured inputs.
+    fn observe<R: Rt, E: UserEvent>(&mut self, ctx: &ExecCtx<'_, R, E>, set: &Published) {
+        for id in set.iter() {
+            let fired = ctx.event.variables.get(id).is_some_and(|tv| tv.tag().triggers());
+            if fired && !self.missed.contains(id) {
+                self.missed.push(*id);
+            }
+        }
+        self.captured.observe(ctx);
+    }
+
+    /// Run `update` under the wake view with one catch-up fire for each
+    /// argument and captured input that fired unseen and is not delivered
+    /// live this cycle, at its current value.
+    fn wake<R: Rt, E: UserEvent, T>(
+        mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        update: impl FnOnce(&mut ExecCtx<'_, R, E>) -> T,
+    ) -> T {
+        let mut injected: SmallVec<[(BindId, Option<TagValue>); 4]> = SmallVec::new();
+        for id in self.missed.drain(..) {
+            let live = ctx.event.variables.get(&id).is_some_and(|tv| tv.tag().triggers());
+            if !live && let Some((tv, _)) = ctx.rt.store_get(&id) {
+                let catch_up = TagValue::tagged(tv.value_cloned(), Tag::FIRED);
+                injected.push((id, ctx.event.variables.insert(id, catch_up)));
+            }
+        }
+        let captured = &mut self.captured;
+        let r = ctx.under(View::Wake, |ctx| {
+            let caught_up = captured.deliver(ctx, 0);
+            let r = update(ctx);
+            TrackedFires::restore(ctx.event, caught_up);
+            r
+        });
+        TrackedFires::restore(ctx.event, injected);
+        r
+    }
 }
 
 /// Which quiet productions an update pass keeps for a bind to read.

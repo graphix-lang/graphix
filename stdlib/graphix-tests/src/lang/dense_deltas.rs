@@ -151,6 +151,37 @@ async fn callee_back_from_bottom(mode: Mode) -> Result<()> {
 
 modes!(callee_back_from_bottom);
 
+// A stateful callee whose function value is bottom for a while pauses as
+// the select-arm twin's body does: its `<-` state survives, and the
+// argument that fired meanwhile is caught up once at the wake.
+fn callee_pauses_program(call: &str) -> String {
+    format!(
+        r#"{{
+  let ep = 0;
+  ep <- select ep {{ n if n < 6 => n + 1, _ => never() }};
+  let in0 = 1;
+  in0 <- select ep {{ 2 => 2, 4 => 3, _ => never() }};
+  let in1 = 0;
+  in1 <- select ep {{ 1 => 1, 3 => 0, _ => never() }};
+  let f = |x: i64| -> i64 {{ let c = 0; c <- x ~ c + 1; x + c * 1000 }};
+  {call}
+}}"#
+    )
+}
+
+async fn callee_back_from_bottom_pauses(mode: Mode) -> Result<()> {
+    for call in [
+        "let cb: [fn(x: i64) -> i64, null] = select in1 { 0 => f, _ => null };\n  cb$(in0)",
+        "select in1 { 0 => f(in0), _ => never() }",
+    ] {
+        let (values, _) = run_delta(&callee_pauses_program(call), mode).await?;
+        assert_eq!(as_i64s(&values), vec![1, 1001, 1002, 2003, 3003], "{call}");
+    }
+    Ok(())
+}
+
+modes!(callee_back_from_bottom_pauses);
+
 // A write through a moving reference lands once, where the reference
 // points when its value fires: a retarget writes nothing already
 // written, and a write after its arm wakes goes where the reference

@@ -442,6 +442,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // fixes the reset but not the lost fire. Same root as c-callsite-01,
         // c-node-mod-01/02, c-bind-03 and x-engine-firing-05. probe:
         // design/review-2026-10-12/repro/x-engine-firing-02.sh (x-engine-firing-02)
+        // 2026-10-14 claude: the dynamic call is done (c-callsite-01): an instance
+        // whose function was bottom resumes under View::Wake with its missed argument
+        // fires and a TrackedFires over what it captures (callsite::Absent); this
+        // probe's dyn row now gives the select's 210/310, pinned by
+        // lang::dense_deltas::callee_back_from_bottom_pauses. The array::map and
+        // array::fold slots still resume under View::Cycle and give 10.
         let wake_phantom = ctx.event.wake() && !tag.is_event();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
