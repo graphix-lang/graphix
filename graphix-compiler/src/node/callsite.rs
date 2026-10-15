@@ -634,7 +634,36 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
         .filter(|(name, _)| ft.quantifiers.contains(*name))
         .map(|(name, tv)| (name.clone(), tv.cell_addr()))
         .collect();
-    let own: SmallVec<[LambdaId; 2]> = match arg.deref_cloned() {
+    if let Some((q, tv)) = carried_out(&quantified, arg) {
+        // CR claude for claude: [readability/low] This refusal formats tv.name
+        // directly, so a generated cell prints as `'_4611686018427395427`. TVar's
+        // Display would print the short name (`'_7517`) used in every other
+        // message. The unsatisfiable-constraints bail in TVar::settle
+        // (typ/settle.rs) has the same problem with self.name. Fix: print the cell
+        // through TVar's Display (or make ShortName usable here) at both sites.
+        // Then give inferred_cell_prints_its_binding, or a new pin, a message that
+        // actually holds an open cell, and assert the short form. Today's pin
+        // asserts "i64 does not contain string", which has no cell in it, so it
+        // passes however a cell prints. probe:
+        // design/review-2026-10-12/repro/tests-types-03.gx (tests-types-05)
+        bail!(
+            "the argument is not polymorphic in '{q}: its type holds '{}, a variable \
+             of its environment, which would carry '{q} out",
+            tv.name
+        )
+    }
+    Ok(())
+}
+
+/// The first of the `quantified` cells (name, cell address) that a
+/// variable of `value`'s environment reaches, with that variable: a
+/// cell at the top level or another definition's, never one the
+/// lambdas `value` holds own. Such a value is not general in that cell.
+pub(crate) fn carried_out(
+    quantified: &[(ArcStr, usize)],
+    value: &Type,
+) -> Option<(ArcStr, TVar)> {
+    let own: SmallVec<[LambdaId; 2]> = match value.deref_cloned() {
         Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
         _ => SmallVec::new(),
     };
@@ -653,7 +682,7 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
     }
     let mut foreign: SmallVec<[TVar; 4]> = SmallVec::new();
     walk(
-        arg,
+        value,
         &mut |tv| match tv.level() {
             Level::Top => foreign.push(tv.clone()),
             Level::Def { owner, .. } if !own.contains(&owner) => foreign.push(tv.clone()),
@@ -661,7 +690,7 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
         },
         &mut AHashSet::new(),
     );
-    for tv in foreign.iter() {
+    foreign.into_iter().find_map(|tv| {
         let mut reached = None;
         walk(
             &Type::TVar(tv.clone()),
@@ -673,26 +702,8 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
             },
             &mut AHashSet::new(),
         );
-        if let Some(q) = reached {
-            // CR claude for claude: [readability/low] This refusal formats tv.name
-            // directly, so a generated cell prints as `'_4611686018427395427`. TVar's
-            // Display would print the short name (`'_7517`) used in every other
-            // message. The unsatisfiable-constraints bail in TVar::settle
-            // (typ/settle.rs) has the same problem with self.name. Fix: print the cell
-            // through TVar's Display (or make ShortName usable here) at both sites.
-            // Then give inferred_cell_prints_its_binding, or a new pin, a message that
-            // actually holds an open cell, and assert the short form. Today's pin
-            // asserts "i64 does not contain string", which has no cell in it, so it
-            // passes however a cell prints. probe:
-            // design/review-2026-10-12/repro/tests-types-03.gx (tests-types-05)
-            bail!(
-                "the argument is not polymorphic in '{q}: its type holds '{}, a variable \
-                 of its environment, which would carry '{q} out",
-                tv.name
-            )
-        }
-    }
-    Ok(())
+        reached.map(|q| (q, tv))
+    })
 }
 
 /// Every type variable under `t` by name, with whether each occurrence

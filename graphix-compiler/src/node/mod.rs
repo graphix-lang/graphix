@@ -2578,6 +2578,22 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                 }
             })
         )?;
+        // as general as the binding: the written value may not carry one of
+        // its variables into the environment, as a function's parameter would
+        let quantified: LPooled<Vec<(ArcStr, usize)>> =
+            rigid.iter().map(|(n, tv)| (n.clone(), tv.cell_addr())).collect();
+        if generic && callsite::carried_out(&quantified, self.node.typ()).is_some() {
+            return format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                Err(anyhow!(
+                    "{} is {}, made generic by an earlier compile, so what is written to \
+                     it must be as general, and {written} is not: it holds a type variable \
+                     of the code around the write",
+                    bind.name,
+                    bind.typ
+                ))
+            })
+            .map_err(|e| e.at(&self.spec));
+        }
         let scope = Scope::root();
         wrap!(
             self,
