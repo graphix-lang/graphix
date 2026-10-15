@@ -585,21 +585,6 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
 /// fresh instance of `f`'s signature whose other parameters take the
 /// arguments of a copy of the site's, so a variable the site fixes
 /// through another parameter fixes this one.
-// CR claude for claude: [bug/medium] x-typecheck-generics-F7 variant: a let or struct
-// field that hides a default's label goes unchecked. Eric's fix checks a defaulted
-// label hidden by a fn type only where the function is passed as an argument
-// (callee_param / checked_default_at, callsite.rs and 1042). Coercing it through a let
-// annotation or a struct field is a different containment site and is not checked. The
-// check passes, then elaboration refuses the program. In the struct shape both pass,
-// and the call is bottom forever; only a log line explains it. Failure: `let g = |#x =
-// 1, y| x + y; let h: fn(y: f64) -> f64 = g; h(f64:2.5)`: --check exits 0, the build
-// fails 'type mismatch f64 does not contain i64' at the default 1, and graphix-fuzz
-// check reports DIVERGENCE (the check accepted what the build refused). The same holds
-// with `#x = 4096` under `fn(y: string) -> bool`. Fix: Move the hidden-default judgment
-// into FnType containment, used by every site where a function value meets a fn type
-// that omits or retypes a defaulted label (let annotations, struct fields, array
-// elements, returns), instead of handling it in callee_param alone. Unverified: the
-// reviewer's report, not checked by a verifier. (x-rerun-8-06)
 fn callee_param<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     f: &LambdaDef<R, E>,
