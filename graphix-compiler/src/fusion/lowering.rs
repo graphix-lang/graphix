@@ -314,7 +314,7 @@ fn io_blocker<R: Rt, E: UserEvent>(n: &Node<R, E>) -> FusionBlocker {
 /// When `cs` performs, the arguments whose fire can make it perform:
 /// an `Effect::Io` builtin's trigger, or every argument of a function
 /// that reaches one.
-fn performing_args<'a, R: Rt, E: UserEvent>(
+pub(crate) fn performing_args<'a, R: Rt, E: UserEvent>(
     cs: &'a CallSite<R, E>,
     ctx: &CompileCtx<R, E>,
 ) -> Option<SmallVec<[&'a Node<R, E>; 4]>> {

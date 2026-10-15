@@ -900,31 +900,17 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         let tail = component.size == 1
             && !tail_calls.sites.is_empty()
             && !tail_calls.misses_one(g.body(), *instance);
-        let pure = facts
-            .get(instance)
-            .copied()
-            .unwrap_or_else(|| {
-                lambda_def(ctx, g.id()).map_or(LambdaFacts::ASYNC, def_facts)
-            })
-            .is_pure();
-        // CR claude for claude: [bug/high] The tail-loop gate admits a body that
-        // reaches an Io builtin through a callee: `is_pure` does not exclude `io`, and
-        // `structural_tail_loop` / `claims_no_site_memory` only refuse collection loops
-        // and non-tail self-calls. The native loop then runs every pass under the
-        // kernel's one init view. In the node-walk, a depth first reached on a later
-        // cycle, or reached again after a shrink deleted it, is a fresh activation, and
-        // its callee's constant-triggered Io fires there. In the loop it never fires:
-        // dbg(7) prints once in the JIT and once per cycle in the node-walk. The
-        // non-tail native recursion handles this with the child block's fresh bit. Per
-        // tail_calls_are_calls.md, a loop that answers differently must recurse
-        // natively instead. So refuse `looped` when the body, transitively through
-        // callees, holds an Io call whose trigger does not derive from the formals, or
-        // OR a reached-depth high-water mark into each pass's init view. A related
-        // divergence, an Io in a callee under a select arm losing its entry/wake fire
-        // in a kernel even without recursion (`select n { 0 => g(n), n => n + 1 }`),
-        // may share the fix if arm_io_blocker looks through callees. probe:
-        // design/review-2026-10-12/repro/f-call-flow-02.gx (f-call-flow-02)
-        let looped = pure
+        let body = facts.get(instance).copied().unwrap_or_else(|| {
+            lambda_def(ctx, g.id()).map_or(LambdaFacts::ASYNC, def_facts)
+        });
+        // one native loop runs every pass under the kernel's init view: an
+        // Io call a depth reached afresh would fire at its birth does not,
+        // so a body whose Io does not follow its formals recurses natively,
+        // each depth a fresh block
+        let loopable = body.is_pure()
+            && (!body.io
+                || io_follows(g.body(), &g.formal_ids(), ctx, &mut IntSet::default()));
+        let looped = loopable
             && self_bind.is_some_and(|self_bind| {
                 lowering::structural_tail_loop(g, self_bind, ctx)
             });
@@ -1565,6 +1551,56 @@ fn plan_blocks<R: Rt, E: UserEvent>(
         let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
         let _ = b.planned.set(plan);
     }
+}
+
+/// Whether every Io call `body` reaches fires whenever one of `formals`
+/// fires: an Io builtin's trigger fires with them, and a function called
+/// with arguments that each do performs only Io that follows its own
+/// formals. A native loop's pass, which runs under the kernel's one init
+/// view, then performs as the node-walk's fresh activation does.
+pub(crate) fn io_follows<R: Rt, E: UserEvent>(
+    body: &Node<R, E>,
+    formals: &IntSet<BindId>,
+    ctx: &CompileCtx<R, E>,
+    seen: &mut IntSet<LambdaInstanceId>,
+) -> bool {
+    let mut follows = true;
+    fusion::for_each_emitted_node(body, &mut |n| {
+        let NodeView::CallSite(cs) = n.view() else { return };
+        if !follows {
+            return;
+        }
+        let Some(triggers) = lowering::performing_args(cs, ctx) else { return };
+        follows = triggers.iter().all(|t| fires_with(t, formals))
+            && match cs.resolved_apply() {
+                Some(ApplyView::Lambda(g)) => {
+                    !seen.insert(g.instance_id())
+                        || io_follows(g.body(), &g.formal_ids(), ctx, seen)
+                }
+                _ => true,
+            };
+    });
+    follows
+}
+
+/// Whether `n` fires whenever one of `ids` does: a read of one of them,
+/// or a part that reads one, a select through its scrutinee only. A
+/// constant does not, and neither, here, does a function's result.
+fn fires_with<R: Rt, E: UserEvent>(n: &Node<R, E>, ids: &IntSet<BindId>) -> bool {
+    crate::stack::ensure_sufficient(|| match n.view() {
+        NodeView::Ref(r) => ids.contains(&r.id),
+        NodeView::Constant(_) => false,
+        NodeView::Select(s) => fires_with(&s.arg.node, ids),
+        NodeView::CallSite(cs) => {
+            !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_)))
+                && cs.arg_nodes().any(|a| fires_with(a, ids))
+        }
+        _ => {
+            let mut fires = false;
+            n.for_each_child(&mut |c| fires = fires || fires_with(c, ids));
+            fires
+        }
+    })
 }
 
 /// What a statement or sibling publishes for later ones to read: the

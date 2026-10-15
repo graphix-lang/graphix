@@ -462,6 +462,7 @@ trace	tail-loop-internal-connect-aug2026/00_internal_connect_in_tail_arm.gx
 trace	tail-loop-internal-connect-aug2026/01_campaign_witness.gx
 trace	tail-loop-internal-connect-aug2026/02_inlined_twin.gx
 trace	tail-loop-internal-connect-aug2026/03_nontail_twin.gx
+trace	tail-loop-io-oct2026/01_callee_constant_io.gx
 trace	tail-quiet-poll-rederivation-aug2026/00_iter_fed_const_loop.gx
 contained	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 trace	tail-scrut-fire-jul2026/01_const_base_arm_framed.gx
