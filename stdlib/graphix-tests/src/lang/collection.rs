@@ -540,8 +540,34 @@ async fn bottom_source_runs_no_slot(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// The slots a bottom source paused wake caught up when it returns: an
+// event a slot reads that fired meanwhile is raised again, so a standing
+// slot answers as a fresh one does.
+async fn bottom_source_slots_wake_caught_up(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+            let a = 0;
+            let n = 0;
+            n <- select n { k if k < 12 => k + 1, _ => never() };
+            a <- select n { 6 => 7, _ => never() };
+            let xs = select n { 2 => [n], 9 => [n, n], _ => never() };
+            (array::map(xs, |x| a ~ x), array::fold(xs, 0, |acc, x| acc + (a ~ x)))
+        }"#,
+        mode,
+    )
+    .await?;
+    let pair = |m: &[i64], f| {
+        let m = Value::Array(m.iter().map(|i| Value::I64(*i)).collect());
+        Value::Array([m, Value::I64(f)].into())
+    };
+    assert_eq!(values, vec![pair(&[2], 2), pair(&[9, 9], 18)]);
+    Ok(())
+}
+
 modes!(
     collection_fires_on_a_stale_resize,
     collection_refs_reach_its_slots,
-    bottom_source_runs_no_slot
+    bottom_source_runs_no_slot,
+    bottom_source_slots_wake_caught_up
 );

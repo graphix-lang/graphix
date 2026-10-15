@@ -54,6 +54,13 @@ separates the two channels.
 The invariant: **a select's output is always a function of the present
 world; events influence it exactly once.**
 
+Two other sites pause a body and wake it the same way, as a one-arm
+select: a collection whose source turns bottom pauses its slots
+(`collection::SourceSeen::Paused`), and a call whose function value
+turns bottom pauses its instance (`callsite::Absent`). Each tracks the
+fires of what the paused body reads and, when the source or function
+returns, runs it under the wake view with those fires caught up.
+
 Outside the mechanism: the scrutinee and guards (their own consult
 machinery); pattern binds of THIS select and of every enclosing select
 — a pattern bind is a facet of its arm's scrutinee delivery, which that

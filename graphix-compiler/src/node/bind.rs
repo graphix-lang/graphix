@@ -438,35 +438,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // not an event's, unless one of its inputs fired too.
         let tv = self.node.update(ctx);
         let tag = tv.tag();
-        // under a wake view, a production that is no real event leaves a
-        // `<-` target's last write
-        // CR claude for claude: [bug/high] A `<-` target keeps its last write only
-        // under a View::Wake, but `wake_refresh` republishes the initializer whenever
-        // this node's own `slept` bit is set. Only Select and the seq machine resume
-        // under View::Wake. Collection slots resumed by
-        // take_source/update_slots_in_order after a bottom source, and a CallSite
-        // instance resumed after its callee was bottom (`callee_absent`), resume under
-        // View::Cycle. Their `<-` targets are therefore overwritten by the initializer.
-        // Neither site has a TrackedFires, so a captured input that fired during the
-        // pause is never caught up. This contradicts "slots pause as a deselected arm
-        // does and wake, caught up" and the callee_absent comment. The same body `{let
-        // t = 0; t <- a ~ t + 1; t*100 + x}` resumes at 210 then 310 under a select,
-        // but at 10 under array::map, array::fold and a dynamic call, in both engines.
-        // Rows of `array::map(rows$, ..)` lose their local state whenever `rows` is
-        // null for a cycle. Fix: run both resume sites under `ctx.under(View::Wake,
-        // ..)` and give MapQ/FoldQ slots and the callee-absent CallSite a TrackedFires
-        // over what they capture, as Select does. Pin the select/map/fold/dynamic-call
-        // quartet with one shared body. Keying `wake_phantom` on `woke` here alone
-        // fixes the reset but not the lost fire. Same root as c-callsite-01,
-        // c-node-mod-01/02, c-bind-03 and x-engine-firing-05. probe:
-        // design/review-2026-10-12/repro/x-engine-firing-02.sh (x-engine-firing-02)
-        // 2026-10-14 claude: the dynamic call is done (c-callsite-01): an instance
-        // whose function was bottom resumes under View::Wake with its missed argument
-        // fires and a TrackedFires over what it captures (callsite::Absent); this
-        // probe's dyn row now gives the select's 210/310, pinned by
-        // lang::dense_deltas::callee_back_from_bottom_pauses. The array::map and
-        // array::fold slots still resume under View::Cycle and give 10.
-        let wake_phantom = ctx.event.wake() && !tag.is_event();
+        // under a wake, a production that is no real event leaves a `<-`
+        // target's last write
+        let wake_phantom = (woke || ctx.event.wake()) && !tag.is_event();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
         // persists in the store. A connect target's value is its last

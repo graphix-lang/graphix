@@ -151,9 +151,10 @@ async fn callee_back_from_bottom(mode: Mode) -> Result<()> {
 
 modes!(callee_back_from_bottom);
 
-// A stateful callee whose function value is bottom for a while pauses as
-// the select-arm twin's body does: its `<-` state survives, and the
-// argument that fired meanwhile is caught up once at the wake.
+// A stateful callee whose function value is bottom for a while, or a
+// collection slot whose source is, pauses as the select-arm twin's body
+// does: its `<-` state survives, and the input that fired meanwhile is
+// caught up once at the wake.
 fn callee_pauses_program(call: &str) -> String {
     format!(
         r#"{{
@@ -173,6 +174,8 @@ async fn callee_back_from_bottom_pauses(mode: Mode) -> Result<()> {
     for call in [
         "let cb: [fn(x: i64) -> i64, null] = select in1 { 0 => f, _ => null };\n  cb$(in0)",
         "select in1 { 0 => f(in0), _ => never() }",
+        "array::map(select in1 { 0 => [0], _ => never() }, |_| f(in0))[0]$",
+        "array::fold(select in1 { 0 => [0], _ => never() }, 0, |acc, _| acc + f(in0))",
     ] {
         let (values, _) = run_delta(&callee_pauses_program(call), mode).await?;
         assert_eq!(as_i64s(&values), vec![1, 1001, 1002, 2003, 3003], "{call}");

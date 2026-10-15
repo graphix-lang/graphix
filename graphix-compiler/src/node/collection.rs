@@ -6,6 +6,7 @@ use super::{
     lambda::GXLambda,
     list,
     pattern::StructPatternNode,
+    wake::TrackedFires,
 };
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
@@ -545,8 +546,23 @@ struct Sourced<C> {
     resized: bool,
     /// The source returned from bottom.
     back: bool,
+    /// The slots it paused, which wake with what they missed.
+    paused: Option<TrackedFires>,
     /// Its elements moved: it fired, or the collection woke.
     moved: bool,
+}
+
+/// The source as the slots last saw it.
+#[derive(Debug, Default)]
+enum SourceSeen {
+    /// Never read, or bottom with no slot: its length is forgotten, so
+    /// its return changes the result.
+    #[default]
+    Absent,
+    /// Bottom while slots stood: they are paused, and this tracks the
+    /// fires of what they read meanwhile.
+    Paused(TrackedFires),
+    Present,
 }
 
 /// What a collection's slots are to [`take_source`].
@@ -562,14 +578,14 @@ struct SlotKind<R: Rt, E: UserEvent, S> {
 /// deliver each slot its element: a fresh slot always, any slot when the
 /// elements moved. A bottom source forgets the length; the slots stay,
 /// paused when it turns bottom (`kind.call`'s sleep, as a deselected arm's)
-/// and run again, caught up, when it returns.
+/// and woken, caught up, when it returns ([`SourceSeen::Paused`]).
 #[allow(clippy::too_many_arguments)]
 fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
     ctx: &mut ExecCtx<'_, R, E>,
     source: &mut Node<R, E>,
     prototype: &Node<R, E>,
     slots: &mut Vec<S>,
-    src_bottom: &mut bool,
+    seen: &mut SourceSeen,
     woke: bool,
     build: &mut ProbeSite,
     kind: SlotKind<R, E, S>,
@@ -583,39 +599,35 @@ fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
     };
     let moved = tag.triggers() || woke;
     let source = sval.and_then(|value| C::select(value, tag.triggers()));
-    // CR claude for claude: [bug/high] A bottom source puts every slot to sleep, but
-    // when the source returns nothing catches the slots up. MapQ and FoldQ keep no
-    // TrackedFires, so a variable the callback reads as an event (`a ~ x`, or a
-    // stateful builtin's edge) that fired during the pause is never raised again. An
-    // old slot keeps its stale production while a fresh slot reads the current value:
-    // `array::map(xs, |x| a ~ x)` yields [2, 9] where the woken slots should give [9,
-    // 9]. The fold twin yields 11 instead of 18. Both engines do this. That breaks the
-    // CLAUDE.md promise that the slots "wake, caught up, when it returns", which the
-    // select-arm twin keeps. Fix: give MapQ/FoldQ a one-arm TrackedFires over the
-    // slots' refs, record fires while src_bottom is set, and hand them to the slots on
-    // `back` as Select's wake does. Also pin the missing half next to
-    // bottom_source_runs_no_slot. Probe:
-    // design/review-2026-10-12/repro/tests-lang-rest-b-01.gx. Also reported as
-    // (x-engine-collections-02). (tests-lang-rest-b-01)
     let Some(source) = source else {
-        if !std::mem::replace(src_bottom, true) {
-            for slot in slots.iter_mut() {
-                // CR claude for claude: [readability/low] The deselecting_arm(true)
-                // wrapper changes nothing. Its only reader, CallSite::sleep, deletes
-                // the callee of a recursive edge, but a slot's CallSite is never marked
-                // as one: mark_recursion sees only graphs built over for_each_child,
-                // which for MapQ/FoldQ never visits slots. GXLambda::sleep also resets
-                // the flag for the callee body. A reader concludes that recursion
-                // through a collection is deleted on a bottom source, but it pauses,
-                // which is the documented rule, and MapQ::sleep/FoldQ::sleep sleep the
-                // same slots without the wrapper. Call `(kind.call)(slot).sleep(ctx)`
-                // directly. (c-collection-05)
-                super::deselecting_arm(true, || (kind.call)(slot).sleep(ctx));
+        match seen {
+            SourceSeen::Paused(missed) => missed.observe(ctx),
+            _ if slots.is_empty() => *seen = SourceSeen::Absent,
+            _ => {
+                for slot in slots.iter_mut() {
+                    (kind.call)(slot).sleep(ctx);
+                }
+                let mut missed = TrackedFires::new(&ctx.env, 1, |_, r| {
+                    slots.iter_mut().for_each(|slot| (kind.call)(slot).refs(r))
+                });
+                missed.observe(ctx);
+                *seen = SourceSeen::Paused(missed);
             }
         }
-        return Sourced { tag, source: None, resized: false, back: false, moved };
+        return Sourced {
+            tag,
+            source: None,
+            resized: false,
+            back: false,
+            paused: None,
+            moved,
+        };
     };
-    let back = std::mem::take(src_bottom);
+    let (back, paused) = match std::mem::replace(seen, SourceSeen::Present) {
+        SourceSeen::Absent => (true, None),
+        SourceSeen::Paused(missed) => (true, Some(missed)),
+        SourceSeen::Present => (false, None),
+    };
     // what a slot calls, decided once a slot is added
     let mut call_kind = None;
     let resized = resize(ctx, slots, source.len(), kind.delete, |ctx| {
@@ -628,7 +640,7 @@ fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
     for (slot, value) in slots[from..].iter().zip(source.values().skip(from)) {
         deliver(ctx, (kind.element)(slot), TagValue::tagged(value, tag));
     }
-    Sourced { tag, source: Some(source), resized, back, moved }
+    Sourced { tag, source: Some(source), resized, back, paused, moved }
 }
 
 #[derive(Debug)]
@@ -786,9 +798,7 @@ struct MapQ<R: Rt, E: UserEvent, C: MapCollection> {
     callback: Callback,
     slots: LPooled<Vec<Slot<R, E>>>,
     current: C,
-    /// The source was bottom (or never read): its length is forgotten,
-    /// so its return changes the result.
-    src_bottom: bool,
+    seen: SourceSeen,
     resident: TagValue,
     fork: SlotSite,
 }
@@ -801,7 +811,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
             callback,
             slots: LPooled::take(),
             current: C::default(),
-            src_bottom: true,
+            seen: SourceSeen::Absent,
             resident: TagValue::phantom(),
             fork: SlotSite::default(),
         })
@@ -899,41 +909,39 @@ fn update_slots<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     slots: &mut [Slot<R, E>],
     site: &mut SlotSite,
-    old_len: usize,
+    views: SlotViews,
     rebound: bool,
 ) -> Option<Option<Tag>> {
     if rebound {
         site.redecide();
-        return update_slots_in_order(ctx, slots, 0, old_len);
+        return update_slots_in_order(ctx, slots, 0, views);
     }
     site.decide_siblings(ctx, slots.len(), || {
         crate::analysis::independent(slots.iter().take(2).map(|s| &s.call), ctx)
     });
     if site.in_order() {
-        return update_slots_in_order(ctx, slots, 0, old_len);
+        return update_slots_in_order(ctx, slots, 0, views);
     }
-    let (standing, fresh) = slots.split_at_mut(old_len.min(slots.len()));
+    let (standing, fresh) = slots.split_at_mut(views.old_len.min(slots.len()));
     let n = standing.len();
     let production = match site.plan(ctx, n) {
-        SlotPlan::Serial => update_slots_in_order(ctx, standing, 0, old_len)?,
+        SlotPlan::Serial => update_slots_in_order(ctx, standing, 0, views)?,
         SlotPlan::Measure(t0) => {
-            let r = update_slots_in_order(ctx, standing, 0, old_len)?;
+            let r = update_slots_in_order(ctx, standing, 0, views)?;
             site.measured(t0, n);
             r
         }
-        SlotPlan::Fork { grain } => update_ranges(ctx, standing, 0, old_len, grain)?,
+        SlotPlan::Fork { grain } => update_ranges(ctx, standing, 0, views, grain)?,
     };
     site.fresh.run(
         ctx,
         fresh,
         n,
         production,
-        |ctx, slot, at| {
-            update_slots_in_order(ctx, std::slice::from_mut(slot), at, old_len)
-        },
+        |ctx, slot, at| update_slots_in_order(ctx, std::slice::from_mut(slot), at, views),
         |ctx, slots, at, grain| match grain {
-            None => update_slots_in_order(ctx, slots, at, old_len),
-            Some(grain) => update_ranges(ctx, slots, at, old_len, grain),
+            None => update_slots_in_order(ctx, slots, at, views),
+            Some(grain) => update_ranges(ctx, slots, at, views, grain),
         },
         merge_tags,
     )
@@ -946,26 +954,62 @@ fn merge_tags(a: Option<Tag>, b: Option<Tag>) -> Option<Tag> {
     }
 }
 
+/// Run `update` over a collection's slots, `old_len` of them standing:
+/// when the source `paused` them, they wake with one catch-up fire for
+/// each input they read that fired meanwhile.
+fn woken_slots<R: Rt, E: UserEvent, T>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    old_len: usize,
+    paused: Option<TrackedFires>,
+    update: impl FnOnce(&mut ExecCtx<'_, R, E>, SlotViews) -> T,
+) -> T {
+    let Some(mut missed) = paused else {
+        return update(ctx, SlotViews { old_len, standing: View::Cycle });
+    };
+    let caught_up = missed.deliver(ctx, 0);
+    let r = update(ctx, SlotViews { old_len, standing: View::Wake });
+    TrackedFires::restore(ctx.event, caught_up);
+    r
+}
+
+/// The view each slot updates under: a fresh slot's birth, a standing
+/// one's cycle, or its wake when the source came back from bottom.
+#[derive(Clone, Copy)]
+struct SlotViews {
+    old_len: usize,
+    standing: View,
+}
+
+impl SlotViews {
+    fn fresh(self, i: usize) -> bool {
+        i >= self.old_len
+    }
+
+    fn of(self, i: usize) -> View {
+        if self.fresh(i) { View::Birth } else { self.standing }
+    }
+}
+
 /// Update `slots`, the first at index `at`, in sibling branches of
 /// `grain` slots each.
 fn update_ranges<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     slots: &mut [Slot<R, E>],
     at: usize,
-    old_len: usize,
+    views: SlotViews,
     grain: usize,
 ) -> Option<Option<Tag>> {
     let n = slots.len();
     let grain = grain.max(1);
     if n < 2 * grain {
-        return update_slots_in_order(ctx, slots, at, old_len);
+        return update_slots_in_order(ctx, slots, at, views);
     }
     let ranges = ranges(n, grain);
     let parts = crate::branch::cut(slots, &ranges);
     let parts = parts.into_iter().zip(ranges.iter().map(|r| at + r.0));
     let mut production = None;
     for p in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
-        update_slots_in_order(c, p, at, old_len)
+        update_slots_in_order(c, p, at, views)
     }) {
         production = merge_tags(production, p?);
     }
@@ -1025,7 +1069,7 @@ fn update_slots_in_order<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     slots: &mut [Slot<R, E>],
     at: usize,
-    old_len: usize,
+    views: SlotViews,
 ) -> Option<Option<Tag>> {
     let mut production = None;
     for (j, slot) in slots.iter_mut().enumerate() {
@@ -1033,30 +1077,13 @@ fn update_slots_in_order<R: Rt, E: UserEvent>(
         if ctx.interrupted() {
             return None;
         }
-        // CR claude for claude: [bug/high] Slots paused by a bottom source are updated
-        // under View::Cycle when the source comes back (`back` from take_source), not
-        // as a wake. Inside a slot, a woken Bind sees `ctx.event.wake()` false, so
-        // `held` stays empty and `wake_refresh` republishes the let's initializer over
-        // its `<-` target. `array::map(s, |x| { let acc = 0; acc <- clock ~ acc + x;
-        // acc })` drops every slot's counter back to 0 after `s` is bottom for one
-        // cycle, while the same body in a sleeping select arm keeps it. FoldQ::update
-        // picks its view the same way, and nothing re-raises the fires the slots slept
-        // through (c-node-mod-02.gx), which breaks "wake, caught up, when it returns".
-        // Fix: thread `back` into update_slots and use View::Wake for surviving slots
-        // when it is set, in FoldQ::update too. Give the paused slots the select's
-        // catch-up: track the fires of the callback's free refs while the source is
-        // bottom. Bind should also keep a connect target on its own `woke` bit, not
-        // only on the view. Pin both repros in both engines. probe:
-        // design/review-2026-10-12/repro/c-node-mod-01.gx Also reported as (c-bind-01).
-        // (c-node-mod-01)
-        let view = if i >= old_len { View::Birth } else { View::Cycle };
-        let tv = ctx.under(view, |ctx| slot.call.update(ctx));
+        let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx));
         let tag = tv.tag();
         if gxdbg_slot() {
             eprintln!(
                 "SLOT call[{i}] produced tag={} fresh={}",
                 tag.bits(),
-                i >= old_len
+                views.fresh(i)
             );
         }
         // Only triggering productions fold into the firing decision.
@@ -1105,12 +1132,17 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         let old_len = self.slots.len();
         let mut production = None;
         let (callback, element_type) = (&self.callback, &self.base.element_type);
-        let Sourced { tag, source, resized, back, moved } = take_source::<_, _, C, _>(
+        let Sourced { tag, source, resized, back, paused, moved } = take_source::<
+            _,
+            _,
+            C,
+            _,
+        >(
             ctx,
             &mut self.base.source,
             &self.base.prototype,
             &mut self.slots,
-            &mut self.src_bottom,
+            &mut self.seen,
             woke,
             &mut self.fork.build,
             SlotKind { delete: Slot::delete, call: |s| &mut s.call, element: |s| s.id },
@@ -1169,7 +1201,9 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         // read nothing that fired. This changes the node-walk's dense update model, so
         // it needs your decision on whether and where to gate. (x-alloc-01)
         let rebound = ctx.event.variables.contains_key(&self.callback.id);
-        let slots = update_slots(ctx, &mut self.slots, &mut self.fork, old_len, rebound);
+        let slots = woken_slots(ctx, old_len, paused, |ctx, views| {
+            update_slots(ctx, &mut self.slots, &mut self.fork, views, rebound)
+        });
         match slots {
             None => return self.resident.ride(),
             Some(Some(tag)) => production = merge_tag(production, tag),
@@ -1362,9 +1396,7 @@ struct FoldQ<R: Rt, E: UserEvent, C: MapCollection> {
     callback: Callback,
     acc_type: Type,
     slots: LPooled<Vec<FoldSlot<R, E>>>,
-    /// The source was bottom (or never read): its length is forgotten,
-    /// so its return changes the result.
-    src_bottom: bool,
+    seen: SourceSeen,
     collection: PhantomData<C>,
     resident: TagValue,
     build: ProbeSite,
@@ -1378,7 +1410,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
             callback,
             acc_type,
             slots: LPooled::take(),
-            src_bottom: true,
+            seen: SourceSeen::Absent,
             collection: PhantomData,
             resident: TagValue::phantom(),
             build: ProbeSite::default(),
@@ -1526,21 +1558,22 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         let old_len = self.slots.len();
         let (callback, acc, elt) =
             (&self.callback, &self.acc_type, &self.base.element_type);
-        let Sourced { tag, source, resized, back, moved: _ } = take_source::<_, _, C, _>(
-            ctx,
-            &mut self.base.source,
-            &self.base.prototype,
-            &mut self.slots,
-            &mut self.src_bottom,
-            woke,
-            &mut self.build,
-            SlotKind {
-                delete: FoldSlot::delete,
-                call: |s| &mut s.call,
-                element: |s| s.element_id,
-            },
-            |ctx, kind| FoldSlot::new(ctx, callback, acc, elt, kind),
-        );
+        let Sourced { tag, source, resized, back, paused, moved: _ } =
+            take_source::<_, _, C, _>(
+                ctx,
+                &mut self.base.source,
+                &self.base.prototype,
+                &mut self.slots,
+                &mut self.seen,
+                woke,
+                &mut self.build,
+                SlotKind {
+                    delete: FoldSlot::delete,
+                    call: |s| &mut s.call,
+                    element: |s| s.element_id,
+                },
+                |ctx, kind| FoldSlot::new(ctx, callback, acc, elt, kind),
+            );
         // A bottom init is a poisoned delivery to slot 0's acc, not a
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
@@ -1570,52 +1603,56 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         if resized || back {
             prod = merge_tag(prod, tag.as_fire());
         }
-        for i in 0..self.slots.len() {
-            if ctx.interrupted() {
-                return self.resident.ride();
-            }
-            // A fresh slot's first dispatch runs under the birth view, its
-            // acc seeded with the chain's state as it stands.
-            let view = if i >= old_len { View::Birth } else { View::Cycle };
-            if i >= old_len {
-                let seed = match i {
-                    0 if init.tag().is_bottom() => {
-                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
-                    }
-                    0 => TagValue::fired(init.value_cloned()),
-                    _ => match &self.slots[i - 1].state {
-                        SlotState::Bottom => {
+        let slots = &mut self.slots;
+        let prod = woken_slots(ctx, old_len, paused, |ctx, views| {
+            for i in 0..slots.len() {
+                if ctx.interrupted() {
+                    return None;
+                }
+                // A fresh slot's first dispatch runs under the birth view, its
+                // acc seeded with the chain's state as it stands.
+                if views.fresh(i) {
+                    let seed = match i {
+                        0 if init.tag().is_bottom() => {
                             TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
                         }
-                        SlotState::Value(v) => TagValue::fired(v.clone()),
-                    },
-                };
-                deliver(ctx, self.slots[i].acc_id, seed);
+                        0 => TagValue::fired(init.value_cloned()),
+                        _ => match &slots[i - 1].state {
+                            SlotState::Bottom => {
+                                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
+                            }
+                            SlotState::Value(v) => TagValue::fired(v.clone()),
+                        },
+                    };
+                    deliver(ctx, slots[i].acc_id, seed);
+                }
+                let slot = &mut slots[i];
+                let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx).clone());
+                prod = merge_tag(prod, tv.tag());
+                slot.state.set(&tv);
+                // The production, a bottom included, travels the acc chain.
+                if let Some(next) = slots.get(i + 1) {
+                    // CR claude for claude: [perf/medium] The acc chain is delivered on
+                    // every update, here and for init into slot 0. Each delivery is a
+                    // store_insert plus an insert into the cycle's event map, and clones
+                    // the value, even when the production is stale and the store already
+                    // holds it. An idle fold of N makes 2N hash writes per unrelated cycle
+                    // and grows the event by N entries, and in fork mode all of it goes
+                    // through the layered overlay and the merge. A node-walk fold of 2000
+                    // elements costs about 2x an equal map per unrelated tick (probe:
+                    // design/review-2026-10-12/repro/x-perf-runtime-04.gx against
+                    // -04-control.gx, FLAGS=--no-fusion). Follow CallSite's
+                    // publish_production rule (QuietAtRoot::Skip): deliver an acc only when
+                    // the production triggers, the slot is fresh, or the source moved, woke
+                    // or came back. Where a wake refresh can leave the store behind a quiet
+                    // value, use a store-only standing write rather than an event entry.
+                    // (x-perf-runtime-04)
+                    deliver(ctx, next.acc_id, tv);
+                }
             }
-            let slot = &mut self.slots[i];
-            let tv = ctx.under(view, |ctx| slot.call.update(ctx).clone());
-            prod = merge_tag(prod, tv.tag());
-            slot.state.set(&tv);
-            // The production, a bottom included, travels the acc chain.
-            if let Some(next) = self.slots.get(i + 1) {
-                // CR claude for claude: [perf/medium] The acc chain is delivered on
-                // every update, here and for init into slot 0. Each delivery is a
-                // store_insert plus an insert into the cycle's event map, and clones
-                // the value, even when the production is stale and the store already
-                // holds it. An idle fold of N makes 2N hash writes per unrelated cycle
-                // and grows the event by N entries, and in fork mode all of it goes
-                // through the layered overlay and the merge. A node-walk fold of 2000
-                // elements costs about 2x an equal map per unrelated tick (probe:
-                // design/review-2026-10-12/repro/x-perf-runtime-04.gx against
-                // -04-control.gx, FLAGS=--no-fusion). Follow CallSite's
-                // publish_production rule (QuietAtRoot::Skip): deliver an acc only when
-                // the production triggers, the slot is fresh, or the source moved, woke
-                // or came back. Where a wake refresh can leave the store behind a quiet
-                // value, use a store-only standing write rather than an event entry.
-                // (x-perf-runtime-04)
-                deliver(ctx, next.acc_id, tv);
-            }
-        }
+            Some(prod)
+        });
+        let Some(prod) = prod else { return self.resident.ride() };
         // An interior slot's poison bottoms the fold only if a downstream
         // callback consumes it; only the last slot's state is the result.
         let prod = prod.unwrap_or(Tag::STALE);
