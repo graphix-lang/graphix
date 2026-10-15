@@ -381,8 +381,7 @@ fn call_hook_over<R: Rt, E: UserEvent>(
     let s = &mut loan.site;
     for (id, g) in s.call.args.iter().zip(args.iter()) {
         let v = as_value(g);
-        ctx.rt.store_insert(*id, TagValue::fired(v.clone()));
-        ctx.event.variables.insert(*id, TagValue::fired(v));
+        ctx.deliver(*id, TagValue::fired(v));
     }
     let view =
         if std::mem::replace(&mut s.first, false) { View::Birth } else { View::Cycle };

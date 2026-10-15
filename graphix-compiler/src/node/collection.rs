@@ -160,6 +160,11 @@ trait MapCollection: Debug + Clone + Default + Send + Sync + 'static {
     /// The element type the callback takes, from the intrinsic's
     /// signature.
     fn element_type(ft: &FnType) -> Result<Type>;
+    /// The elements `keep` keeps, as this collection is under `flavor`.
+    fn kept(&self, flavor: Flavor, keep: impl Iterator<Item = bool>) -> Value {
+        let kept = self.values().zip(keep).filter_map(|(v, k)| k.then_some(v));
+        flavor.build(&mut kept.collect())
+    }
 }
 
 /// The intrinsic's source argument type, dereferenced.
@@ -245,6 +250,12 @@ impl MapCollection for ValueMap {
 
     fn values(&self) -> impl Iterator<Item = Value> {
         self.into_iter().map(|(k, v)| make_pair(k, v))
+    }
+
+    /// The kept entries are the source's, already a map's: no pairs.
+    fn kept(&self, _: Flavor, keep: impl Iterator<Item = bool>) -> Value {
+        let kept = self.into_iter().zip(keep).filter(|(_, k)| *k);
+        Value::Map(CMap::from_iter(kept.map(|((k, v), _)| (k.clone(), v.clone()))))
     }
 
     fn select(value: Value, _: bool) -> Option<Self> {
@@ -653,7 +664,7 @@ fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
     build_fresh(ctx, &mut slots[fresh..], build, kind.call);
     let from = if moved { 0 } else { fresh };
     for (slot, value) in slots[from..].iter().zip(source.values().skip(from)) {
-        deliver(ctx, (kind.element)(slot), TagValue::tagged(value, tag));
+        ctx.deliver((kind.element)(slot), TagValue::tagged(value, tag));
     }
     Sourced { tag, source: Some(source), resized, back, paused, moved }
 }
@@ -770,19 +781,7 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
         let kept = |v: &&Value| !matches!(v, Value::Null);
         let mut elems: LPooled<Vec<Value>> = match self.op {
             MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
-            // CR claude for claude: [perf/low] For a CMap source this arm builds a
-            // two-element ValArray pair for every entry through source.values(),
-            // including the ones the predicate drops. MapQBase::finish then hands the
-            // kept pairs to pairs_to_map, which splits them, clones keys and values
-            // again and sorts them back into a map. The kept entries are already sorted
-            // and unique, being a subsequence of the source. Fix: for CMap Filter, zip
-            // slots with the source's (k, v) entries and build the result map directly
-            // from the kept ones, with no pair values and no sort. (c-collection-06)
-            MapOp::Filter => slots
-                .iter()
-                .zip(source.values())
-                .filter_map(|(s, v)| taken(s).then_some(v))
-                .collect(),
+            MapOp::Filter => return source.kept(self.flavor, slots.iter().map(taken)),
             MapOp::FilterMap => {
                 slots.iter().map(Slot::value).filter(kept).cloned().collect()
             }
@@ -1480,26 +1479,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
 /// Deliver `tv` to a callback argument this cycle and stand it in the
 /// store, a bottom as a stale bottom.
-// CR claude for claude: [structure/low] This is the only bottom-aware "deliver a value
-// to a binding this cycle", and it is private. The pair `rt.store_insert(id, fired(v));
-// event.variables.insert(id, ..)` is copied in core Filter, array Group, opt's feed,
-// handler.rs, queuefn, coretraits, sys::net and graphix-rt's GXRt set path. Some copies
-// put the production's tag in the event and others always put FIRED, so a change to how
-// a delivery is stamped has a dozen places to miss. Make this a public ExecCtx method
-// and route those sites through it. Separately, pattern.rs's restore and branch.rs's
-// restore both match a saved (TagValue, stamp) back into store_insert or
-// store_insert_standing. A `Rt::store_put(id, Option<(TagValue, u64)>)` that restores
-// an entry exactly would replace both. (x-dup-06)
-fn deliver<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, tv: TagValue) {
-    let standing = if tv.tag().is_bottom() {
-        TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
-    } else {
-        tv.clone()
-    };
-    ctx.rt.store_insert(id, standing);
-    ctx.event.variables.insert(id, tv);
-}
-
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         f(&self.base.source);
@@ -1565,7 +1544,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
             return self.resident.set_bottom_as(tag);
         }
         if let Some(slot) = self.slots.first() {
-            deliver(ctx, slot.acc_id, init.clone());
+            ctx.deliver(slot.acc_id, init.clone());
         }
         if self.slots.is_empty() {
             // a resize or a return is a new result whatever the source's
@@ -1607,7 +1586,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                             SlotState::Value(v) => TagValue::fired(v.clone()),
                         },
                     };
-                    deliver(ctx, slots[i].acc_id, seed);
+                    ctx.deliver(slots[i].acc_id, seed);
                 }
                 let slot = &mut slots[i];
                 let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx).clone());
@@ -1630,7 +1609,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                     // or came back. Where a wake refresh can leave the store behind a quiet
                     // value, use a store-only standing write rather than an event entry.
                     // (x-perf-runtime-04)
-                    deliver(ctx, next.acc_id, tv);
+                    ctx.deliver(next.acc_id, tv);
                 }
             }
             Some(prod)

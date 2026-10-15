@@ -116,8 +116,7 @@ fn feed<R: Rt, E: UserEvent>(
     prod: Option<(Value, Tag)>,
 ) {
     if let Some((v, tag)) = prod {
-        ctx.rt.store_insert(id, TagValue::fired(v.clone()));
-        ctx.event.variables.insert(id, TagValue::tagged(v, tag));
+        ctx.deliver(id, TagValue::tagged(v, tag));
     }
 }
 

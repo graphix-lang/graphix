@@ -294,10 +294,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.ready = false;
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
-                ctx.rt.store_insert(self.nid, TagValue::fired(len.clone()));
-                ctx.event.variables.insert(self.nid, TagValue::fired(len));
-                ctx.rt.store_insert(self.xid, TagValue::fired($v.clone()));
-                ctx.event.variables.insert(self.xid, TagValue::fired($v));
+                ctx.deliver(self.nid, TagValue::fired(len));
+                ctx.deliver(self.xid, TagValue::fired($v));
             }};
         }
         let x = from[0].update(ctx);
@@ -306,10 +304,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             self.queue.push_back(tv.value_cloned());
         }
         if let Some(tv) = seam_value(from[1].update(ctx)) {
-            let tag = tv.tag();
-            let v = tv.value_cloned();
-            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            ctx.event.variables.insert(self.pid, TagValue::tagged(v, tag));
+            ctx.deliver(self.pid, tv.clone());
         }
         if self.ready && self.queue.len() > 0 {
             let v = self.queue.pop_front().unwrap();

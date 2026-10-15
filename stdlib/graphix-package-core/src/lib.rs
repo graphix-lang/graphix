@@ -2442,10 +2442,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         if let Some(tv) = seam_value(from[1].update(ctx)) {
-            let tag = tv.tag();
-            let v = tv.value_cloned();
-            ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
-            ctx.event.variables.insert(self.fid, TagValue::tagged(v, tag));
+            ctx.deliver(self.fid, tv.clone());
         }
         let x = from[0].update(ctx);
         let x_tag = x.tag();

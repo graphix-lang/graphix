@@ -262,6 +262,16 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
+    /// See [`Rt::store_put`].
+    pub fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>) {
+        match self {
+            Self::Root(r) => r.store_put(id, entry),
+            Self::Fork(f) => {
+                f.store.insert(id, entry);
+            }
+        }
+    }
+
     #[inline]
     pub fn store_remove(&mut self, id: &BindId) {
         match self {
@@ -327,13 +337,8 @@ impl<'a, R: Rt> RtView<'a, R> {
                 f.log.extend(log);
             }
             Self::Root(r) => {
-                let cycle = r.cycle();
                 for (id, e) in store {
-                    match e {
-                        None => r.store_remove(&id),
-                        Some((tv, stamp)) if stamp == cycle => r.store_insert(id, tv),
-                        Some((tv, _)) => r.store_insert_standing(id, tv),
-                    }
+                    r.store_put(id, e);
                 }
                 for (cell, e) in ref_paths {
                     match e {

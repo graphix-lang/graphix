@@ -179,8 +179,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     /// Take the function's value when its argument fires.
     pub fn set_fn(&mut self, ctx: &mut ExecCtx<'_, R, E>, f: Option<Value>, fired: bool) {
         if fired && let Some(v) = f {
-            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            ctx.event.variables.insert(self.pid, TagValue::fired(v));
+            ctx.deliver(self.pid, TagValue::fired(v));
         }
     }
 
@@ -203,8 +202,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
                     &self.scope,
                     self.top_id,
                 );
-                ctx.rt.store_insert(r.x, TagValue::fired(req.clone()));
-                ctx.event.variables.insert(r.x, TagValue::fired(req));
+                ctx.deliver(r.x, TagValue::fired(req));
                 self.running.push((r, q));
             }
         }

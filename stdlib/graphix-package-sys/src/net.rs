@@ -809,8 +809,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         let (pathv, path_fired) = seam_arg(ctx, &mut from[1]);
         let (val, val_fired) = seam_arg(ctx, &mut from[2]);
         if f_fired && let Some(v) = fv {
-            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            ctx.event.variables.insert(self.pid, TagValue::fired(v));
+            ctx.deliver(self.pid, TagValue::fired(v));
         }
         // a path that moved drops the publication even while the value is
         // bottom, so the next value goes to the new path
@@ -846,8 +845,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                             reply.send(v)
                         }
                     } else {
-                        ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
-                        ctx.event.variables.insert(self.x, TagValue::fired(v));
+                        ctx.deliver(self.x, TagValue::fired(v));
                     }
                 }
             }

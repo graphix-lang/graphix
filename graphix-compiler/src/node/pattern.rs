@@ -1708,14 +1708,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         saved: SmallVec<[(BindId, Option<(TagValue, u64)>); 4]>,
     ) {
-        let cycle = ctx.rt.cycle();
         for (id, prev) in saved {
             ctx.event.variables.remove(&id);
-            match prev {
-                None => ctx.rt.store_remove(&id),
-                Some((tv, at)) if at == cycle => ctx.rt.store_insert(id, tv),
-                Some((tv, _)) => ctx.rt.store_insert_standing(id, tv),
-            }
+            ctx.rt.store_put(id, prev);
         }
     }
 

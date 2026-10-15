@@ -1071,6 +1071,16 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// same-cycle reader never sees it as delivered.
     fn store_insert_standing(&mut self, id: BindId, tv: TagValue);
 
+    /// Put back an entry [`Self::store_get`] read: absent, delivered this
+    /// cycle or standing, as it was.
+    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>) {
+        match entry {
+            None => self.store_remove(&id),
+            Some((tv, stamp)) if stamp == self.cycle() => self.store_insert(id, tv),
+            Some((tv, _)) => self.store_insert_standing(id, tv),
+        }
+    }
+
     /// The current cycle number.
     fn cycle(&self) -> u64;
 
@@ -1864,6 +1874,18 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
     /// cancelled, any other unregistered.
+    /// Deliver `tv` to the binding `id` this cycle: into the event, and
+    /// into the store, where a bottom stands as a stale one.
+    pub fn deliver(&mut self, id: BindId, tv: TagValue) {
+        let standing = if tv.tag().is_bottom() {
+            TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
+        } else {
+            tv.clone()
+        };
+        self.rt.store_insert(id, standing);
+        self.event.variables.insert(id, tv);
+    }
+
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
         // read through the view first: a branch that compiled nothing
         // must not fork its compile view to find nothing pending
