@@ -711,8 +711,24 @@ impl FnType {
         known: &mut AHashMap<usize, TVar>,
         open: &IntSet<LambdaId>,
     ) -> Self {
+        self.instantiate_how(known, Fresh::Instantiate(open))
+    }
+
+    /// [`Self::instantiate_with`] copying every open cell, whoever owns
+    /// it: an instance's own copy of its definition's signature, which its
+    /// check then binds without writing a cell outside the instance.
+    #[doc(hidden)]
+    pub fn instantiate_owned(&self, known: &mut AHashMap<usize, TVar>) -> Self {
+        self.instantiate_how(known, Fresh::Copy)
+    }
+
+    pub(super) fn instantiate_how(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        how: Fresh<'_>,
+    ) -> Self {
         let mut fresh = self
-            .cow_walk(|t| t.instantiate_int(known, open))
+            .cow_walk(|t| t.instantiate_int(known, how))
             .unwrap_or_else(|| self.clone());
         fresh.lambda_ids = self.lambda_ids.instantiate();
         fresh

@@ -48,6 +48,20 @@ run!(rank2_formal_applied_at_a_number, RANK2_FORMAL_APPLIED_AT_A_NUMBER, |v: Res
     matches!(v, Ok(Value::I64(2)))
 });
 
+// A lambda returned through a rank-2 formal stays generic at run time:
+// its first bind, at i64, decides nothing for a later one at string.
+run!(
+    rank2_returned_lambda_binds_at_each_type,
+    r#"{
+  let app = |f: fn<'b: Any>(x: 'b) -> 'b| f;
+  let g = app(|x| x);
+  let a = g(1);
+  let b = g("s");
+  "[a] [b]"
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s")
+);
+
 const TWO_RIGID_VARS_INDEPENDENT: &str = r#"
 {
   let pair = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ('a, 'b) (x, y);

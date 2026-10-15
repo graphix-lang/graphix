@@ -1836,7 +1836,8 @@ impl Type {
         known: &mut AHashMap<usize, TVar>,
         open: &IntSet<LambdaId>,
     ) -> Type {
-        self.instantiate_int(known, open).unwrap_or_else(|| self.clone())
+        self.instantiate_int(known, Fresh::Instantiate(open))
+            .unwrap_or_else(|| self.clone())
     }
 
     /// Self with every open cell `known` maps replaced by its image and
@@ -1879,23 +1880,23 @@ impl Type {
     }
 
     /// `None` when no TVar is beneath.
+    /// The bindings resolved, each open cell freshened as `how` says.
     pub(super) fn instantiate_int(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        open: &IntSet<LambdaId>,
+        how: Fresh<'_>,
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => Some(match tv.binding() {
-                Some(t) => t.instantiate_int(known, open).unwrap_or(t),
-                None => Type::TVar(tv.freshen(
-                    known,
-                    &mut (),
-                    Fresh::Instantiate(open),
-                    |t, k, ()| t.instantiate_int(k, open),
-                )),
-            }),
-            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate_with(known, open)))),
-            t => t.cow_children(&mut |c| c.instantiate_int(known, open)),
+            Type::TVar(tv) => {
+                Some(match tv.binding() {
+                    Some(t) => t.instantiate_int(known, how).unwrap_or(t),
+                    None => Type::TVar(tv.freshen(known, &mut (), how, |t, k, ()| {
+                        t.instantiate_int(k, how)
+                    })),
+                })
+            }
+            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate_how(known, how)))),
+            t => t.cow_children(&mut |c| c.instantiate_int(known, how)),
         })
     }
 

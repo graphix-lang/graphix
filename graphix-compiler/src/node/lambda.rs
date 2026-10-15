@@ -428,23 +428,10 @@ impl InstanceTypes {
     ) -> Option<Self> {
         let open = ctx.rec_defs.clone();
         let mut known = AHashMap::default();
-        let def = def.instantiate_with(&mut known, &open);
-        // CR claude for claude: [bug/high] This commits into every signature cell
-        // `instantiate_with` kept, including cells the definition does not own. Take a
-        // lambda literal checked against a rank-2 formal (`app(|x| x)` with `f: fn<'b:
-        // Any>(x: 'b) -> 'b`). Its signature cells are the call site's generic copy of
-        // 'b, which nothing settles. The first run-time bind through the returned value
-        // (`g(1)`) binds them to i64 for good. Every later bind at another type
-        // (`g("s")`) then fails "an instance at .. of a definition typed ..", and that
-        // call stays bottom while the check accepted the program. Which call wins
-        // depends on bind order. GRAPHIX_NO_SUBST=1 and the named-lambda form `app(id)`
-        // both work. Fix: never commit into cells the definition does not own. Either
-        // copy the open cells reachable from `def` that no closed gate owns into
-        // `known` as well, or check them as a probe. Also, the bail in
-        // `GXLambda::instance_types` prints `def` without PrintFlag::DerefTVars, which
-        // hides the binding that causes the refusal. probe:
-        // design/review-2026-10-12/repro/x-typecheck-generics-01.gx
-        // (x-typecheck-generics-01)
+        // every open cell of the signature is the instance's own copy, a
+        // cell no closed gate owns (a rank-2 formal's copy) included, so
+        // the check below binds nothing another instance reads
+        let def = def.instantiate_owned(&mut known);
         instance.check_contains(&ctx.env, &def).ok()?;
         Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
     }
@@ -859,7 +846,9 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, &self.typ) {
             Some(types) => Ok(Some(types)),
-            None => bail!("an instance at {} of a definition typed {def}", self.typ),
+            None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+                bail!("an instance at {} of a definition typed {def}", self.typ)
+            }),
         }
     }
 }
