@@ -1697,24 +1697,10 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         }))
     }
 
-    /// Resolve a reference value (the cell a `&` minted) to where a
-    /// write lands: a place, when the cell stands for one, else the
-    /// referent through the byref chain, else the cell itself (`&(a +
-    /// b)` is a fresh variable holding `a + b`).
-    // CR claude for claude: [structure/low] This repeats `bind::ref_target` (registered
-    // place, else the byref chain, else the cell itself) instead of calling it. It also
-    // decodes the reference value on its own and accepts only `Value::U64`, while
-    // `Deref::update` and `ExecCtx::ref_targets` accept `U64 | V64`. Only `ByRef` mints
-    // a reference cell, always as U64, and a cast to a reference type is refused, so
-    // the three decoders agree today. A change to one rule would quietly split reads
-    // from writes. Add one `ref_cell(&TagValue) -> Option<BindId>` beside `ref_target`,
-    // use it at all three sites, and build `WriteTarget` here from `ref_target`'s
-    // result. (c-bind-08)
+    /// The cell a delivered reference value names; where a write lands
+    /// is resolved from it at the write (`ExecCtx::write_target`).
     fn cell(tv: &TagValue) -> Option<BindId> {
-        tv.with_value(|v| match v {
-            Value::U64(id) => Some(BindId::from(*id)),
-            _ => None,
-        })
+        tv.with_value(bind::ref_cell)
     }
 }
 

@@ -1868,27 +1868,24 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         node::bind::ref_target(self, cell)
     }
 
+    /// Where a write through the reference cell `cell` lands: its
+    /// registered place, else what [`Self::ref_target`] names.
+    pub fn write_target(&self, cell: BindId) -> WriteTarget {
+        match self.rt.ref_path(&cell) {
+            Some((root, path)) => WriteTarget::Place(*root, path.clone()),
+            None => WriteTarget::Bind(self.ref_target(cell).0),
+        }
+    }
+
     /// `v`, a value of `t`, with each reference a comparison meets
     /// replaced by what it names, `[root, step..]` (a reference's value
     /// is its own cell): equal results mean equal values, references
     /// equal when they name one place.
-    /// Where a write through the reference cell `cell` lands: its
-    /// registered place, else the binding its byref chain ends at, else
-    /// the cell itself.
-    pub fn write_target(&self, cell: BindId) -> WriteTarget {
-        match self.rt.ref_path(&cell) {
-            Some((root, path)) => WriteTarget::Place(*root, path.clone()),
-            None => WriteTarget::Bind(
-                self.env.byref_chain.get(&cell).copied().unwrap_or(cell),
-            ),
-        }
-    }
-
     pub fn ref_targets(&self, t: &Type, v: &Value) -> Value {
         use node::place::Step;
-        t.map_refs(&self.env, v, &mut |r| match r {
-            Value::U64(cell) | Value::V64(cell) => {
-                let (root, path) = node::bind::ref_target(self, BindId::from(*cell));
+        t.map_refs(&self.env, v, &mut |r| match node::bind::ref_cell(r) {
+            Some(cell) => {
+                let (root, path) = node::bind::ref_target(self, cell);
                 let steps = path.iter().map(|s| match s {
                     Step::Index(i) => Value::I64(*i),
                     Step::Field(f) => Value::String(f.clone()),
@@ -1897,7 +1894,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                 let target = std::iter::once(Value::U64(root.inner())).chain(steps);
                 Value::Array(ValArray::from_iter(target))
             }
-            r => r.clone(),
+            None => r.clone(),
         })
     }
 

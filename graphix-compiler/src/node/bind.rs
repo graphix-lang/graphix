@@ -1420,6 +1420,14 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 }
 
+/// The cell a reference value names.
+pub(crate) fn ref_cell(v: &Value) -> Option<BindId> {
+    match v {
+        Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
+        _ => None,
+    }
+}
+
 /// What the reference `cell` names: its registered place, else the
 /// binding at the end of its byref chain, else the cell itself (a
 /// chainless reference's own cell is its only storage).
@@ -1735,10 +1743,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         let addr = tv.tag();
         let cell = match addr.is_bottom() {
             true => None,
-            false => tv.with_value(|v| match v {
-                Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
-                _ => None,
-            }),
+            false => tv.with_value(ref_cell),
         };
         let Some(cell) = cell else {
             self.release(ctx);
