@@ -1213,22 +1213,8 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             first_dispatch: true,
             env,
             typing: Typing::Restored,
-            // CR claude for claude: [bug/medium] An instance decoded here stands for
-            // one the cold compile built before any cycle, and that one was never
-            // charged. CallSite::materialize decodes it lazily, on its first dispatch
-            // inside a cycle, so activation_born charges it to the runtime's activation
-            // budget. The charge is never released, because the instance lives as long
-            // as the program. The result is that a warm start uses up
-            // GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget faster than a
-            // cold run of the same program, so the cache decides whether the runtime
-            // aborts. In the probe, the cold run needs a budget of 30 and the warm run
-            // needs 72; at 60 the warm run aborts after two values. Fix: decode with
-            // `charged: None`, since an image only holds compile-time instances. Check
-            // that nothing else materialize reaches charges the cycle, such as stack
-            // segments grown during the decode, and add a pin that runs one program
-            // cold and then warm under a tight budget. probe:
-            // design/review-2026-10-12/repro/c-image-02.gx (c-image-02)
-            charged: crate::stack::activation_born(),
+            // an image holds compile-time instances, which no cycle charged
+            charged: None,
         })
     }
 }

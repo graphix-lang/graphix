@@ -311,6 +311,16 @@ async fn session(
     image: Option<Bytes>,
     par: ParMode,
 ) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
+    session_with(program, image, par, None).await
+}
+
+/// [`session`] under an activation budget, when given.
+async fn session_with(
+    program: &str,
+    image: Option<Bytes>,
+    par: ParMode,
+    budget: Option<u64>,
+) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
     let (tx, mut rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
@@ -333,7 +343,12 @@ async fn session(
         src,
         prog_tx,
         None,
-        move |ctx| ctx.control.set_par_mode(par),
+        move |ctx| {
+            ctx.control.set_par_mode(par);
+            if let Some(b) = budget {
+                ctx.control.set_activation_budget(b)
+            }
+        },
     )
     .await?;
     let written = match prog_rx.await {
@@ -579,6 +594,32 @@ async fn warm_fork_point_decides_once_its_callees_bind() -> Result<()> {
         warm_forks + 2 >= cold_forks,
         "the warm tuple stopped forking: {warm_forks} warm, {cold_forks} cold"
     );
+    Ok(())
+}
+
+/// A warm start charges the activation budget what the cold run did: the
+/// instances an image holds were built at compile time, uncharged, and
+/// decoding one at its first dispatch charges nothing either.
+#[tokio::test]
+async fn warm_start_charges_the_budget_as_cold() -> Result<()> {
+    let gs: String =
+        (0..40).map(|i| format!("let g{i} = |x: i64| -> i64 x + {i};\n")).collect();
+    let sum: Vec<String> = (0..40).map(|i| format!("g{i}(depth)")).collect();
+    let program = format!(
+        "let rec f = |n: i64| -> i64 select n {{ 0 => 0, k => k + f(k - 1) }};\n{gs}\
+         let depth = 0;\n\
+         depth <- select depth {{ d if d < 30 => d + 10, _ => never() }};\n\
+         (f(depth), {})\n",
+        sum.join(" + ")
+    );
+    let (_, cold, image, _, _) =
+        session_with(&program, None, ParMode::Off, Some(30)).await?;
+    let image = image.expect("the cold run wrote its image");
+    let (_, warm, _, restored, _) =
+        session_with(&program, Some(image), ParMode::Off, Some(30)).await?;
+    assert!(restored, "the warm runtime compiled cold");
+    assert_eq!(cold.len(), 4, "the cold run fits the budget: {cold:?}");
+    assert_eq!(cold, warm);
     Ok(())
 }
 
