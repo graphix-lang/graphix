@@ -1520,7 +1520,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         let old_len = self.slots.len();
         let (callback, acc, elt) =
             (&self.callback, &self.acc_type, &self.base.element_type);
-        let Sourced { tag, source, resized, back, paused, moved: _ } =
+        let Sourced { tag, source, resized, back, paused, moved } =
             take_source::<_, _, C, _>(
                 ctx,
                 &mut self.base.source,
@@ -1543,8 +1543,18 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         if source.is_none() {
             return self.resident.set_bottom_as(tag);
         }
+        // a quiet acc is news to no slot: it only stands, unless the
+        // slots read their accs anew
+        let anew = moved || woke || back;
+        let pass_acc = |ctx: &mut ExecCtx<'_, R, E>, id, tv: TagValue, fresh: bool| {
+            if tv.tag().triggers() || fresh || anew {
+                ctx.deliver(id, tv)
+            } else {
+                ctx.rt.store_insert_standing(id, tv)
+            }
+        };
         if let Some(slot) = self.slots.first() {
-            ctx.deliver(slot.acc_id, init.clone());
+            pass_acc(ctx, slot.acc_id, init.clone(), old_len == 0);
         }
         if self.slots.is_empty() {
             // a resize or a return is a new result whatever the source's
@@ -1594,22 +1604,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                 slot.state.set(&tv);
                 // The production, a bottom included, travels the acc chain.
                 if let Some(next) = slots.get(i + 1) {
-                    // CR claude for claude: [perf/medium] The acc chain is delivered on
-                    // every update, here and for init into slot 0. Each delivery is a
-                    // store_insert plus an insert into the cycle's event map, and clones
-                    // the value, even when the production is stale and the store already
-                    // holds it. An idle fold of N makes 2N hash writes per unrelated cycle
-                    // and grows the event by N entries, and in fork mode all of it goes
-                    // through the layered overlay and the merge. A node-walk fold of 2000
-                    // elements costs about 2x an equal map per unrelated tick (probe:
-                    // design/review-2026-10-12/repro/x-perf-runtime-04.gx against
-                    // -04-control.gx, FLAGS=--no-fusion). Follow CallSite's
-                    // publish_production rule (QuietAtRoot::Skip): deliver an acc only when
-                    // the production triggers, the slot is fresh, or the source moved, woke
-                    // or came back. Where a wake refresh can leave the store behind a quiet
-                    // value, use a store-only standing write rather than an event entry.
-                    // (x-perf-runtime-04)
-                    ctx.deliver(next.acc_id, tv);
+                    pass_acc(ctx, next.acc_id, tv, views.fresh(i + 1));
                 }
             }
             Some(prod)
