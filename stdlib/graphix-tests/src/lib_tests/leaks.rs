@@ -2,16 +2,16 @@
 // goes when the thing it was made for does: a long session (REPL,
 // dynamic modules, a regrowing map) holds what is live, not its history.
 
-use crate::{TEST_REGISTER, init};
+use crate::init;
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::expr::ExprId;
-use graphix_package_core::testing::{TestCtx, init_with_registration};
-use graphix_rt::{GXEvent, RegistrationImage};
+use graphix_package_core::testing::TestCtx;
+use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use poolshark::global::GPooled;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 type Events = mpsc::Receiver<GPooled<Vec<GXEvent>>>;
 type Compiled = graphix_rt::CompRes<graphix_rt::NoExt>;
