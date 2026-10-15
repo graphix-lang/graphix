@@ -966,7 +966,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     let raises = |n: &Node<R, E>| {
         let mut any = false;
         for_each_reachable_node(n, &mut |n| {
-            any |= matches!(n.view(), NodeView::Qop(q) if q.handler.is_some())
+            any |= matches!(n.view(), NodeView::Qop(q) if q.handler().is_some())
         });
         any
     };

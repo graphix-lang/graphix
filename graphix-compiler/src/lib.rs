@@ -576,7 +576,6 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     SeqMachine(&'a node::seq_machine::SeqMachine<R, E>),
     SeqCapture(&'a node::seq_machine::SeqCapture<R, E>),
     Qop(&'a node::error::Qop<R, E>),
-    OrNever(&'a node::error::OrNever<R, E>),
     ExplicitParens(&'a node::ExplicitParens<R, E>),
     ForkControl(&'a node::fork_control::ForkControl<R, E>),
     TypeCast(&'a node::TypeCast<R, E>),

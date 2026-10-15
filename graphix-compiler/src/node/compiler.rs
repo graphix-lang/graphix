@@ -24,7 +24,6 @@ use crate::{
     ide::{ModuleRefSite, ScopeMapEntry},
     node::{
         ExplicitParens, Nop,
-        error::OrNever,
         map::{Map, MapRef},
         op::{CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub},
     },
@@ -497,7 +496,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             Bind::compile(ctx, flags, spec.clone(), scope, top_id, b)
         }
         ExprKind::Bind(_) => not_an_expression(spec, "a let binding"),
-        ExprKind::Qop { arg: e, .. } | ExprKind::Rethrow(e) => {
+        ExprKind::Qop { arg: e, .. } | ExprKind::Rethrow(e) | ExprKind::OrNever(e) => {
             Qop::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
         ExprKind::SeqGuard(e) => {
@@ -511,9 +510,6 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::SeqCapture(c) => {
             SeqCapture::compile(ctx, flags, spec.clone(), scope, top_id, c)
-        }
-        ExprKind::OrNever(e) => {
-            OrNever::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
         ExprKind::Catch(_) => {
             bailat!(

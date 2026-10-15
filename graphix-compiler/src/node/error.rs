@@ -891,18 +891,53 @@ pub struct QopSite {
     pub spec: Arc<Expr>,
 }
 
+/// Where a `?` or `$` sends what it strips.
+#[derive(Debug)]
+pub(crate) enum QopMode {
+    /// `?`: to the handler covering it, else logged as unhandled.
+    Raise { handler: Option<ErrorHandler>, top_id: ExprId, flags: BitFlags<CFlag> },
+    /// `$`: an error logged as ignored, a null dropped.
+    Ignore,
+}
+
+impl QopMode {
+    fn decode(buf: &mut &[u8]) -> Result<Self, PackError> {
+        if !bool::decode(buf)? {
+            return Ok(Self::Ignore);
+        }
+        let handler = match bool::decode(buf)? {
+            true => Some(image::handler_decode(buf)?),
+            false => None,
+        };
+        let top_id = ExprId::decode(buf)?;
+        let flags = image::flags_decode(buf)?;
+        Ok(Self::Raise { handler, top_id, flags })
+    }
+
+    fn encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        let Self::Raise { handler, top_id, flags } = self else {
+            return false.encode(buf);
+        };
+        true.encode(buf)?;
+        handler.is_some().encode(buf)?;
+        if let Some(h) = handler {
+            image::handler_encode(h, buf)?;
+        }
+        top_id.encode(buf)?;
+        image::flags_encode(*flags, buf)
+    }
+}
+
+/// `?` and `$`: the operand less what `strip` takes, which goes where
+/// `mode` says.
 #[derive(Debug)]
 pub struct Qop<R: Rt, E: UserEvent> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,
-    /// The resolved handler: its error-variable bind and the top the
-    /// handler node lives under.
-    pub(crate) handler: Option<ErrorHandler>,
-    pub(crate) top_id: ExprId,
     pub n: Node<R, E>,
     pub(crate) strip: Strip,
+    pub(crate) mode: QopMode,
     resident: TagValue,
-    flags: BitFlags<CFlag>,
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
@@ -912,24 +947,10 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
-        let handler = match bool::decode(buf)? {
-            true => Some(image::handler_decode(buf)?),
-            false => None,
-        };
-        let top_id = ExprId::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         let strip = Strip::decode(buf)?;
-        let flags = image::flags_decode(buf)?;
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            handler,
-            top_id,
-            n,
-            strip,
-            resident: TagValue::phantom(),
-            flags,
-        }))
+        let mode = QopMode::decode(buf)?;
+        Ok(Node::new(Self { spec, typ, n, strip, mode, resident: TagValue::phantom() }))
     }
 
     pub(crate) fn compile(
@@ -941,18 +962,13 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         e: &Expr,
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
-        let handler = scope.dynamic.handler();
+        let mode = match spec.kind {
+            ExprKind::OrNever(_) => QopMode::Ignore,
+            _ => QopMode::Raise { handler: scope.dynamic.handler(), top_id, flags },
+        };
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            handler,
-            top_id,
-            n,
-            strip: Strip::Error,
-            resident: TagValue::phantom(),
-            flags,
-        }))
+        let strip = Strip::Error;
+        Ok(Node::new(Self { spec, typ, n, strip, mode, resident: TagValue::phantom() }))
     }
 
     pub(crate) fn check_unhandled(
@@ -972,12 +988,26 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }
         Ok(())
     }
-}
 
-impl<R: Rt, E: UserEvent> Qop<R, E> {
-    /// Whether a raise here goes to a handler (an event), not to the log.
-    pub(crate) fn raises_to_handler(&self) -> bool {
-        self.handler.is_some()
+    /// Whether a stripped value is raised (`?`), not ignored (`$`).
+    pub(crate) fn raises(&self) -> bool {
+        matches!(self.mode, QopMode::Raise { .. })
+    }
+
+    /// The handler a raise here goes to, an event, not the log.
+    pub(crate) fn handler(&self) -> Option<&ErrorHandler> {
+        match &self.mode {
+            QopMode::Raise { handler, .. } => handler.as_ref(),
+            QopMode::Ignore => None,
+        }
+    }
+
+    /// The handler a raise here goes to and the top this node lives under.
+    pub(crate) fn raise_site(&self) -> Option<(&ErrorHandler, ExprId)> {
+        match &self.mode {
+            QopMode::Raise { handler: Some(h), top_id, .. } => Some((h, *top_id)),
+            _ => None,
+        }
     }
 }
 
@@ -994,29 +1024,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         put_tag(NodeTag::Qop, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        self.handler.is_some().encode(buf)?;
-        if let Some(h) = &self.handler {
-            image::handler_encode(h, buf)?;
-        }
-        self.top_id.encode(buf)?;
         self.n.image_encode(buf)?;
         self.strip.encode(buf)?;
-        image::flags_encode(self.flags, buf)
+        self.mode.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let tv = self.n.update(ctx);
-        strip_production(self.strip, tv, &mut self.resident, |v| {
-            let e = match v {
-                Value::Error(e) => (**e).clone(),
-                _ => null_error(&self.spec),
-            };
-            match &self.handler {
-                Some(handler) => {
-                    handler.raise();
-                    deliver_error(ctx, handler, self.top_id, &self.spec, e);
+        let (spec, mode) = (&self.spec, &self.mode);
+        strip_production(self.strip, tv, &mut self.resident, |v| match mode {
+            QopMode::Raise { handler, top_id, .. } => {
+                let e = match v {
+                    Value::Error(e) => (**e).clone(),
+                    _ => null_error(spec),
+                };
+                match handler {
+                    Some(handler) => {
+                        handler.raise();
+                        deliver_error(ctx, handler, *top_id, spec, e);
+                    }
+                    None => report_failure!(&unhandled_msg(&diagnostic_site(spec), &e)),
                 }
-                None => report_failure!(&unhandled_msg(&diagnostic_site(&self.spec), &e)),
+            }
+            QopMode::Ignore => {
+                // a null is not a failure
+                if let Value::Error(e) = v {
+                    report_ignored!(&diagnostic_site(spec), e)
+                }
             }
         })
     }
@@ -1057,20 +1091,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let sink = match (self.handler.as_ref(), self.strip) {
-            (None, Strip::Error) => QopSink::Log {
+        let sink = match (&self.mode, self.strip) {
+            (QopMode::Ignore, Strip::Error) => QopSink::Log {
+                site: cx.interned_str(&diagnostic_site(&self.spec))?,
+                unhandled: false,
+            },
+            (QopMode::Ignore, Strip::Null) => QopSink::DropNull,
+            (QopMode::Raise { handler: None, .. }, Strip::Error) => QopSink::Log {
                 site: cx.interned_str(&diagnostic_site(&self.spec))?,
                 unhandled: true,
             },
-            (None, Strip::Null) => {
+            (QopMode::Raise { handler: None, .. }, Strip::Null) => {
                 let e = null_error(&self.spec);
                 let msg = unhandled_msg(&diagnostic_site(&self.spec), &e);
                 QopSink::UnhandledNull(cx.interned_str(&msg)?)
             }
-            (Some(handler), strip) => {
+            (QopMode::Raise { handler: Some(handler), top_id, .. }, strip) => {
                 let site = cx.interned_qop_site(QopSite {
                     handler: handler.clone(),
-                    own_top: self.top_id,
+                    own_top: *top_id,
                     spec: self.spec.clone(),
                 })?;
                 match strip {
@@ -1334,125 +1373,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
     }
 }
 
-#[derive(Debug)]
-// CR claude for claude: [structure/low] OrNever repeats Qop almost whole: the fields,
-// the image codec, compile, the strip choice in typecheck0_with, the strip_production
-// update and emit_qop_node emission. The two differ only in where a stripped error goes
-// (`?`: raise to a handler or log as unhandled; `$`: log as ignored, or drop a null). A
-// rule change to `?`'s strip or typing has to be made twice, or `$` drifts. Fix: one
-// node whose sink is an enum (`Raise { handler: Option<ErrorHandler>, top_id, flags }`
-// or `Ignore`), with one typecheck that joins into the handler only for Raise, and the
-// sink mapped straight onto QopSink. The two NodeTags can stay if the image format
-// wants them. (c-error-op-07)
-pub struct OrNever<R: Rt, E: UserEvent> {
-    pub(crate) spec: Arc<Expr>,
-    pub typ: Type,
-    pub n: Node<R, E>,
-    pub(crate) strip: Strip,
-    resident: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> OrNever<R, E> {
-    pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
-        let spec = Arc::new(Expr::decode(buf)?);
-        let typ = Type::decode(buf)?;
-        let n = decode_node(ctx, buf)?;
-        let strip = Strip::decode(buf)?;
-        Ok(Node::new(Self { spec, typ, n, strip, resident: TagValue::phantom() }))
-    }
-
-    pub(crate) fn compile(
-        ctx: &mut CompileCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        spec: Arc<Expr>,
-        scope: &Scope,
-        top_id: ExprId,
-        e: &Expr,
-    ) -> Result<Node<R, E>> {
-        let n = compile(ctx, flags, e.clone(), scope, top_id)?;
-        let typ = Type::empty_tvar();
-        let strip = Strip::Error;
-        Ok(Node::new(Self { spec, typ, n, strip, resident: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
-    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
-        f(&self.n)
-    }
-
-    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
-        f(&mut self.n)
-    }
-
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        put_tag(NodeTag::OrNever, buf);
-        self.spec.encode(buf)?;
-        self.typ.encode(buf)?;
-        self.n.image_encode(buf)?;
-        self.strip.encode(buf)
-    }
-
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let tv = self.n.update(ctx);
-        strip_production(self.strip, tv, &mut self.resident, |v| {
-            // a null is not a failure
-            if let Value::Error(e) = v {
-                report_ignored!(&diagnostic_site(&self.spec), e)
-            }
-        })
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        fusion::fuse_parts([&mut self.n], ctx)
-    }
-
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true, None)
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        let row = types.settle(self.spec.id, &self.typ);
-        let decided = types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0]));
-        self.typecheck0_with(
-            ctx,
-            &mut |n, ctx| n.typecheck0_instance(ctx, types),
-            !row,
-            decided,
-        )
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::OrNever(self)
-    }
-
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let sink = match self.strip {
-            Strip::Error => QopSink::Log {
-                site: cx.interned_str(&diagnostic_site(&self.spec))?,
-                unhandled: false,
-            },
-            Strip::Null => QopSink::DropNull,
-        };
-        emit_qop_node(cx, &self.n, &self.typ, sink)
-    }
-}
-
 impl<R: Rt, E: UserEvent> Catch<R, E> {
     /// The error bind, then a `try` arm's capture cell.
     fn bind_ids(&self) -> impl Iterator<Item = BindId> + use<R, E> {
@@ -1571,15 +1491,16 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }
         // warned once, at the definition's check: an instance compiles
         // under its call site's handlers, which raise_throws judges
-        if check && self.handler.is_none() {
-            Self::check_unhandled(&ctx.env, self.flags, &self.spec, "error raised by ?")?;
+        if check && let QopMode::Raise { handler: None, flags, .. } = &self.mode {
+            Self::check_unhandled(&ctx.env, *flags, &self.spec, "error raised by ?")?;
         }
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ(), decided))?;
+        let op = if self.raises() { '?' } else { '$' };
+        let (strip, rtyp) = wrap!(self, strip_typ(ctx, op, self.n.typ(), decided))?;
         self.strip = strip;
         if check {
             wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         }
-        if let Some(handler) = &self.handler {
+        if let Some(handler) = self.handler() {
             let etyp = match self.strip {
                 // CR claude for eric: [bug/low] The raised type is the operand minus
                 // what passes through. For an operand typed Any (or [Any, null]),
@@ -1625,24 +1546,6 @@ impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
         child: &mut super::Child<'_, R, E>,
     ) -> Result<()> {
         child(&mut self.n, ctx)
-    }
-}
-
-impl<R: Rt, E: UserEvent> OrNever<R, E> {
-    fn typecheck0_with(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
-        check: bool,
-        decided: Option<Strip>,
-    ) -> Result<()> {
-        wrap!(self.n, child(&mut self.n, ctx))?;
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ(), decided))?;
-        self.strip = strip;
-        match check {
-            true => wrap!(self, self.typ.check_contains(&ctx.env, &rtyp)),
-            false => Ok(()),
-        }
     }
 }
 

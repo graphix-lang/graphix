@@ -39,7 +39,7 @@ use super::{
 };
 
 /// True only when no node in the subtree could carry an effect or
-/// diagnostic. CallSite, Qop and OrNever keep their statements live.
+/// diagnostic. CallSite and Qop (`?` and `$`) keep their statements live.
 // CR claude for eric: [bug/medium] A handler-less `?` counts as effect-free here, so
 // block_live drops a non-tail statement that holds one (`e?;` or an unused `let k =
 // e?;`). The kernel then never logs the unhandled error, but the node-walk evaluates
@@ -58,10 +58,7 @@ use super::{
 pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| {
-        let delivers = matches!(
-            n.view(),
-            NodeView::CallSite(_) | NodeView::Qop(_) | NodeView::OrNever(_)
-        );
+        let delivers = matches!(n.view(), NodeView::CallSite(_) | NodeView::Qop(_));
         ok &= !delivers && fusion::effect_blocker(n).is_none();
     });
     ok

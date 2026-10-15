@@ -35,7 +35,7 @@ node_tags! {
     ListLit, Tuple, Variant, ExplicitParens, StringInterpolate, Connect,
     ConnectDeref, TypeCast, Any, Sample, ArrayRef, ArraySlice, StructWith,
     StructRef, Construct, TupleRef, ByRef, Deref, Map, MapRef, Catch, Qop,
-    SeqGuard, OrNever, CallSite, Select, Collection, Fused, SeqAbort, SeqMachine,
+    SeqGuard, CallSite, Select, Collection, Fused, SeqAbort, SeqMachine,
     SeqCapture, ForkControl,
 }
 
@@ -115,7 +115,7 @@ fn decode_tagged<R: Rt, E: UserEvent>(
         bind::{Bind, ByRef, Deref, Ref},
         callsite::CallSite,
         data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-        error::{Catch, OrNever, Qop, SeqAbort, SeqGuard},
+        error::{Catch, Qop, SeqAbort, SeqGuard},
         lambda::Lambda,
         map::{Map, MapRef},
         module::Module,
@@ -201,7 +201,6 @@ fn decode_tagged<R: Rt, E: UserEvent>(
             crate::node::seq_machine::SeqCapture::image_decode(ctx, buf)
         }
         NodeTag::SeqAbort => SeqAbort::image_decode(ctx, buf),
-        NodeTag::OrNever => OrNever::image_decode(ctx, buf),
         NodeTag::CallSite => CallSite::image_decode(ctx, buf),
         NodeTag::Select => Select::image_decode(ctx, buf),
         NodeTag::Collection => {

@@ -39,8 +39,8 @@ impl RegionPrint {
                 }
             }
             NodeView::Qop(q) => {
-                if let Some(h) = &q.handler {
-                    print.raises.push((h.clone(), q.top_id, q.spec.id))
+                if let Some((h, top_id)) = q.raise_site() {
+                    print.raises.push((h.clone(), top_id, q.spec.id))
                 }
             }
             _ => (),

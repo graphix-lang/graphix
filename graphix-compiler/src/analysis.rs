@@ -682,11 +682,11 @@ fn node_facts<R: Rt, E: UserEvent>(
         NodeView::ConnectDeref(_) => LambdaFacts::STATEFUL,
         // a body's raise goes to its caller's handler, which only a call knows
         NodeView::Qop(q) => match own {
+            _ if !q.raises() => LambdaFacts::PURE,
             OwnTargets::Bound(_) => LambdaFacts::EVENT,
-            OwnTargets::All if q.raises_to_handler() => LambdaFacts::EVENT,
+            OwnTargets::All if q.handler().is_some() => LambdaFacts::EVENT,
             OwnTargets::All => LambdaFacts::PURE,
         },
-        NodeView::OrNever(_) => LambdaFacts::PURE,
         NodeView::Module(m) if is_dynamic_module(m) => LambdaFacts::ASYNC,
         NodeView::Bind(_)
         | NodeView::Module(_)

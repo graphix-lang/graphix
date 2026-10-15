@@ -175,7 +175,7 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
     selects: &[&Node<R, E>],
 ) -> Option<FusionBlocker> {
     let raises =
-        |n: &Node<R, E>| matches!(n.view(), NodeView::Qop(q) if q.handler.is_some());
+        |n: &Node<R, E>| matches!(n.view(), NodeView::Qop(q) if q.handler().is_some());
     let mut any = false;
     if !selects.is_empty() {
         fusion::for_each_reachable_node(root, &mut |n| any |= raises(n));
@@ -1016,7 +1016,7 @@ fn body_fingerprint<R: Rt, E: UserEvent>(
     let mut cov = QopCoverage::new();
     let mut res = FnResolutions::new();
     fusion::for_each_emitted_node(body, &mut |n| match n.view() {
-        NodeView::Qop(q) => match q.handler.as_ref().map(|h| h.id()) {
+        NodeView::Qop(q) if q.raises() => match q.handler().map(|h| h.id()) {
             Some((bind, top)) => {
                 cov.push(bind.inner());
                 cov.push(top.inner());

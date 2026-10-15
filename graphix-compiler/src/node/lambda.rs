@@ -169,9 +169,6 @@ impl DefTable {
                 NodeView::Qop(q) => {
                     table.aux.insert(id, Box::new([q.strip.removed()]));
                 }
-                NodeView::OrNever(o) => {
-                    table.aux.insert(id, Box::new([o.strip.removed()]));
-                }
                 _ => (),
             }
         });
