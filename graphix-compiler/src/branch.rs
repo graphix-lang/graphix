@@ -894,7 +894,9 @@ where
             cs.prebind(ctx)
         }
     }
-    ctx.apply_deferred();
+    if ctx.deferred_pending() {
+        ctx.apply_deferred();
+    }
     // CR claude for claude: [perf/medium] Each server-handler update does two expensive
     // things. It reruns `analysis::independent` over every running request instance,
     // which rebuilds the static call graph and every instance summary. It also calls
@@ -905,6 +907,12 @@ where
     // once, when it binds, and combine the cached summaries here (or decide each pair
     // once). Call `apply_deferred` only when `deferred_pending()` is true. Also
     // reported as (x-parallel-06). (c-analysis-branch-04)
+    // 2026-10-15 claude: apply_deferred now runs only when deferred_pending(). The
+    // independent half stands: it is cheaper since b4e2e7312 (instance summaries drop
+    // own binds, so two requests' summaries no longer carry each other's ids), but it
+    // still collects every running request's graph at each update; deciding once needs
+    // state the callers (http::serve, the rpc server) would hold, as SlotSite does for
+    // slots.
     let fork = items.len() >= 2 && ctx.fork_mode() != ParMode::Off && {
         let calls: LPooled<Vec<&Node<R, E>>> =
             items.iter_mut().map(|i| &*call(i)).collect();
