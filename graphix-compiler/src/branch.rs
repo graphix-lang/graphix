@@ -92,19 +92,14 @@ impl<R: Rt> ForkRt<R> {
         self.log.insert(0, RtOp::SetVar(id, v));
     }
 
-    /// A branch forked from `parent`, which must not be used until the
-    /// branch has merged back.
-    // CR claude for claude: [risk/low] ForkRt::new, ForkCx::new and Layered::fork are
-    // safe fns. Each keeps a raw pointer to its parent, with the lifetime erased to
-    // 'static in ForkRt and ForkCx, and safe methods later dereference it. Code in this
-    // crate that uses or mutates the parent before the child merges (a new fork point,
-    // or an audit over branches after merge_in_order) reaches undefined behaviour
-    // without writing `unsafe`. The doc's "must not be used until the branch has merged
-    // back" is the real precondition, and nothing enforces it. Fix: make the three
-    // constructors `unsafe fn` with that contract as a `# Safety` section, so the fork
-    // site has to state it. Carrying a `'p` lifetime would be the type-checked fix, but
-    // it spreads into Event and ExecState. (x-unsafe-06)
-    pub(crate) fn new(parent: &RtView<'_, R>) -> Self {
+    /// A branch forked from `parent`.
+    ///
+    /// # Safety
+    ///
+    /// The parent is read through a pointer whose lifetime is erased: it
+    /// must outlive this branch and must not be used, by its owner or
+    /// another branch's merge, until this branch has merged back.
+    pub(crate) unsafe fn new(parent: &RtView<'_, R>) -> Self {
         Self {
             parent: parent as *const RtView<'_, R> as *const RtView<'static, R>,
             cycle: parent.cycle(),
@@ -493,9 +488,14 @@ impl<V: Clone> Layered<V> {
         self.removed.clear();
     }
 
-    /// A layer over this one, which must not be used until the layer has
-    /// merged back.
-    pub(crate) fn fork(&self) -> Self {
+    /// A layer over this one.
+    ///
+    /// # Safety
+    ///
+    /// The parent is read through a pointer whose lifetime is erased: it
+    /// must outlive this branch and must not be used, by its owner or
+    /// another branch's merge, until this branch has merged back.
+    pub(crate) unsafe fn fork(&self) -> Self {
         Self { map: IntMap::default(), removed: IntSet::default(), parent: self }
     }
 
@@ -523,9 +523,14 @@ pub struct ForkCx<R: Rt, E: UserEvent> {
 unsafe impl<R: Rt + Sync, E: UserEvent + Sync> Send for ForkCx<R, E> {}
 
 impl<R: Rt, E: UserEvent> ForkCx<R, E> {
-    /// A branch forked from `parent`, which must not be used until the
-    /// branch has merged back.
-    pub(crate) fn new(parent: &CxView<'_, R, E>) -> Self {
+    /// A branch forked from `parent`.
+    ///
+    /// # Safety
+    ///
+    /// The parent is read through a pointer whose lifetime is erased: it
+    /// must outlive this branch and must not be used, by its owner or
+    /// another branch's merge, until this branch has merged back.
+    pub(crate) unsafe fn new(parent: &CxView<'_, R, E>) -> Self {
         Self {
             parent: parent as *const CxView<'_, R, E> as *const CxView<'static, R, E>,
             own: None,
@@ -707,11 +712,21 @@ struct Branch<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Branch<R, E> {
-    fn new(ctx: &ExecCtx<'_, R, E>) -> Self {
-        Branch {
-            cx: ForkCx::new(&ctx.cx),
-            rt: ForkRt::new(&ctx.rt),
-            event: ctx.event.fork(),
+    /// A branch forked from `ctx`.
+    ///
+    /// # Safety
+    ///
+    /// The parent is read through a pointer whose lifetime is erased: it
+    /// must outlive this branch and must not be used, by its owner or
+    /// another branch's merge, until this branch has merged back.
+    unsafe fn new(ctx: &ExecCtx<'_, R, E>) -> Self {
+        // SAFETY: the caller's contract is each view's
+        unsafe {
+            Branch {
+                cx: ForkCx::new(&ctx.cx),
+                rt: ForkRt::new(&ctx.rt),
+                event: ctx.event.fork(),
+            }
         }
     }
 }
@@ -839,7 +854,9 @@ where
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
     let mut branches: Vec<Part<R, E, P, T>> = parts
         .into_iter()
-        .map(|p| Part { branch: Branch::new(ctx), part: Some(p), out: None })
+        // SAFETY: `ctx` is borrowed for this call and used again only after
+        // every branch merged, in order, below
+        .map(|p| Part { branch: unsafe { Branch::new(ctx) }, part: Some(p), out: None })
         .collect();
     let shared = Shared::of(ctx);
     let control = ctx.control;
@@ -970,7 +987,9 @@ where
     RB: Send,
 {
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
-    let (mut left, mut right) = (Branch::new(ctx), Branch::new(ctx));
+    // SAFETY: `ctx` is borrowed for this call and used again only after
+    // both branches merged, in order, below
+    let (mut left, mut right) = unsafe { (Branch::new(ctx), Branch::new(ctx)) };
     let shared = Shared::of(ctx);
     let control = ctx.control;
     control.forked();

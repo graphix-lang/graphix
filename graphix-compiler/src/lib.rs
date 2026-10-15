@@ -227,10 +227,17 @@ impl<E: UserEvent> Event<E> {
     }
 
     /// The event a branch forked from this one runs over.
-    pub(crate) fn fork(&self) -> Self {
+    ///
+    /// # Safety
+    ///
+    /// The parent is read through a pointer whose lifetime is erased: it
+    /// must outlive this branch and must not be used, by its owner or
+    /// another branch's merge, until this branch has merged back.
+    pub(crate) unsafe fn fork(&self) -> Self {
         Event {
             view: self.view,
-            variables: self.variables.fork(),
+            // SAFETY: the caller's contract
+            variables: unsafe { self.variables.fork() },
             custom: self.custom.clone(),
             user: self.user.clone(),
         }
