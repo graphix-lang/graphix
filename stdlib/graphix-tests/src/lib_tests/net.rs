@@ -480,7 +480,7 @@ fn write_error_program(path: &str) -> LPooled<String> {
 
 run!(net_write_invalid_path_error_tag, write_error_program("relative/path"), |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.contains("invalid path") && s.contains("relative/path"))
-}, timeout: 2; FuseExpect::None);
+}, timeout: 2; FuseExpect::Jit);
 
 #[tokio::test]
 async fn net_write_config_error_tag() -> Result<()> {

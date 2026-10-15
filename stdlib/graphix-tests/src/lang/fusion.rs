@@ -2211,3 +2211,12 @@ run!(native_on_a_connect_right_side, r#"{
     array::group((x, y), |n, _| n == 3)
 }"#, |v: Result<&Value>| format!("{}", v.unwrap())
     == "[[i64:0, i64:0], [i64:2, i64:2], [i64:4, i64:2]]"; FuseExpect::Jit);
+
+// An error's payload `.0` fuses as an abstract's payload does.
+run!(native_error_payload_read, r#"{
+    let f = |x: i64| -> i64 #[native] {
+        let e = error(`E(x));
+        select e.0 { `E(n) => n + 1 }
+    };
+    f(3)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::Jit);

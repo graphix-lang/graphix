@@ -929,18 +929,18 @@ unsafe fn graphix_abstract_wrap(
 }
 
 safe fn graphix_abstract_get_arcstr(tv: ManuallyDrop<TagValue>) -> u64 {
-    let r = tv.with_value(|v| slot_arcstr(crate::abstract_value::payload(v)));
+    let r = tv.with_value(|v| slot_arcstr(payload_of(v)));
     arcstr_bits(r)
 }
 
 safe fn graphix_abstract_get_array(tv: ManuallyDrop<TagValue>) -> u64 {
-    let r = tv.with_value(|v| va_bits(slot_array(crate::abstract_value::payload(v)).clone()));
+    let r = tv.with_value(|v| va_bits(slot_array(payload_of(v)).clone()));
     r
 }
 
 safe fn graphix_abstract_get_value(tv: ManuallyDrop<TagValue>) -> TagValue {
     let r = tv.with_value(|v| {
-        TagValue::fired(crate::abstract_value::payload(v).cloned().unwrap_or(Value::Null))
+        TagValue::fired(payload_of(v).cloned().unwrap_or(Value::Null))
     });
     r
 }
@@ -1319,8 +1319,16 @@ unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
 
 /// Borrowed read of an abstract value's payload (`.0`); a non-abstract
 /// value reads as the shape's placeholder.
+/// The payload `.0` reads: an abstract value's, or an error's.
+fn payload_of(v: &Value) -> Option<&Value> {
+    match v {
+        Value::Error(e) => Some(e),
+        v => crate::abstract_value::payload(v),
+    }
+}
+
 fn abstract_payload_read<T: Default>(tv: &TagValue, f: fn(&Value) -> T) -> T {
-    tv.with_value(|v| crate::abstract_value::payload(v).map(f).unwrap_or_default())
+    tv.with_value(|v| payload_of(v).map(f).unwrap_or_default())
 }
 
 macro_rules! slot_readers {

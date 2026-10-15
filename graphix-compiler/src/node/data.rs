@@ -1036,20 +1036,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         NodeView::TupleRef(self)
     }
 
-    // CR claude for claude: [perf/low] TupleRef reads three source kinds (tuple, Error
-    // payload, abstract payload). update and tuple_field_type handle all three, but
-    // emit_clif sends an Error source to emit_field_ref_node with FieldOf::Tuple, which
-    // refuses it ('accessor source of type .. isn't Tuple'). So every region that reads
-    // an error's payload with `e.0` node-walks. Fix: add an Error branch that reads the
-    // payload through a borrowed, taint-guarded helper as emit_abstract_ref_node does,
-    // or extend emit_abstract_ref_node to cover Value::Error. Pin it with a
-    // FuseExpect::Jit fixture. probe (graphix-fuzz run):
-    // design/review-2026-10-12/repro/c-data-map-04.gx (c-data-map-05)
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let abstract_source =
-            crate::fusion::emit::resolve_node_typ(cx.ctx, self.source.typ())
-                .with_deref(|t| matches!(t, Some(Type::Abstract { .. })));
-        if abstract_source {
+        // an abstract's payload and an error's read alike
+        let payload_source =
+            crate::fusion::emit::resolve_node_typ(cx.ctx, self.source.typ()).with_deref(
+                |t| matches!(t, Some(Type::Abstract { .. } | Type::Error(_))),
+            );
+        if payload_source {
             emit_abstract_ref_node(cx, &self.source, &self.typ)
         } else {
             emit_field_ref_node(cx, &self.source, self.field, &self.typ, FieldOf::Tuple)

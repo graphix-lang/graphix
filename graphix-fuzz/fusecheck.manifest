@@ -60,7 +60,7 @@ abort	abort-seam-jul2026/01_depth_trip_settled_taint.gx
 1	cast-wire-jul2026/02_narrow_cast_saturation.gx
 3	catch-callsite-coverage-aug2026/00_shared_kernel_ignores_coverage.gx
 0	catch-stmt-aug2026/00_constraint_too_narrow.gx
-4	catch-stmt-aug2026/01_shadowing_rethrow.gx
+5	catch-stmt-aug2026/01_shadowing_rethrow.gx
 4	catch-stmt-aug2026/02_toplevel_file_catch.gx
 2	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
 2	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
@@ -400,8 +400,8 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	soak-jul2026/11_fold_slot_taint_recovery.gx
 1	soak-jul2026/12_fold_body_div0_recovery.gx
 0	soak-jul2026/13_marshal_shape_mismatch_survives.gx
-4	soak-jul2026/14_phantom_error_delivery.gx
-3	soak-jul2026/15_phantom_error_delivery_min.gx
+5	soak-jul2026/14_phantom_error_delivery.gx
+4	soak-jul2026/15_phantom_error_delivery_min.gx
 4	soak-jul2026/16_sample_clone_wake_root.gx
 0	soak-jul2026/17_sample_clone_wake_root_min.gx
 1	soak-jul2026/18_value_qop_live_chain.gx
@@ -424,7 +424,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 3	soak-jul2026/35_per_slot_lift_aliasing.gx
 10	soak-jul2026/36_slot_prime_cached_replay.gx
 0	soak-jul2026/37_nested_select_rtype_orphan.gx
-2	soak-jul2026/38_queuefn_clone_ftyp_lost.gx
+3	soak-jul2026/38_queuefn_clone_ftyp_lost.gx
 0	soak-jul2026/39_nullable_callback_return.gx
 0	soak-jul2026/40_heterogeneous_callback_return.gx
 0	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx

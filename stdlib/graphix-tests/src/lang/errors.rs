@@ -734,7 +734,7 @@ run!(raise_chains_by_shape, RAISE_CHAINS_BY_SHAPE, |v: Result<&Value>| {
 run!(error_literal_has_its_payload_type, r#"{
     let f = |e: Error<string>| e.0;
     f(error:"boom")
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "boom"); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "boom"); FuseExpect::Jit);
 
 // A call through a `throws 'e` parameter raises 'e: the definition
 // infers `throws 'e`, so the caller's catch is checked against what the
@@ -832,7 +832,7 @@ run!(
           out
         }
     "#
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     module_returned_chain_joins_a_fresh_raise,
