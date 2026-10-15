@@ -2,21 +2,14 @@
 //! output lands on the cycle of its trigger and `Async` otherwise.
 //! Builtin effects are declared via `BuiltIn::EFFECT`; user-function
 //! effects are inferred. Fusion admits only `Effect::Stateless` with a
-//! `FastCall` (`design/strict_fusion.md`): a `Sync` builtin keeps state
-//! and node-walks like an `Async` one.
+//! `FastCall` and `Effect::Io` with an `IoCall` (`design/strict_fusion.md`):
+//! a `Sync` builtin keeps state and node-walks like an `Async` one.
 
 /// The facts the fixpoint infers per lambda from an optimistic start:
 /// `effect` (`Sync` degrading to `Async`), `stateless` (no
 /// per-activation state: every builtin reached is `Effect::Stateless`
 /// or `Effect::Io`, no `<-` targets an own binding, every callee is
 /// stateless) and `io` (it reaches an `Effect::Io` builtin).
-// CR claude for claude: [doc-drift/low] The module doc above says fusion admits only
-// Effect::Stateless with a FastCall. An Effect::Io builtin with an IoCall fuses too
-// (Effect::fastcall). It should read 'Effect::Stateless with a FastCall and Effect::Io
-// with an IoCall'. The LambdaDef::facts doc in node/lambda.rs has the same gap: its
-// stateless definition should say 'every builtin it reaches is Effect::Stateless or
-// Effect::Io', as LambdaFacts here and Effect::facts already do. DefGate::thrown's doc
-// has two summary lines; drop the first. (c-lambda-05)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub struct LambdaFacts {
     pub effect: EffectKind,

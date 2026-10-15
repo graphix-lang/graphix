@@ -533,8 +533,9 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// joins its HOF instance's; a call through an unresolved parameter
     /// is async), so they only degrade. Stateless: the body holds no
     /// per-activation state (every builtin it reaches is
-    /// `Effect::Stateless`, no `<-` targets its own binding, every callee
-    /// is stateless); a tail loop reuses one activation only then.
+    /// `Effect::Stateless` or `Effect::Io`, no `<-` targets its own
+    /// binding, every callee is stateless); a tail loop reuses one
+    /// activation only then.
     pub facts: Mutex<LambdaFacts>,
     /// The function parameters its body calls that its check could not
     /// resolve.
@@ -1761,7 +1762,6 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         }
     }
 
-    /// The error type the body raised to the gate's catch.
     /// What the body raised: ⊥ when nothing joined the faux catch; an
     /// open callback's `throws 'e` stays the cell.
     fn thrown(&self, ctx: &CompileCtx<R, E>) -> Type {
