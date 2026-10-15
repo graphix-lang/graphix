@@ -397,12 +397,14 @@ struct Callback {
 
 impl Callback {
     /// The source's bind and the callback of an intrinsic whose formals
-    /// are `args`: the source first, the callback last.
+    /// are `args`: the source first, the callback last, taking `arity`
+    /// arguments.
     fn of_args(
         scope: &Scope,
         top_id: ExprId,
         typ: &FnType,
         args: &[StructPatternNode],
+        arity: usize,
     ) -> Result<(BindId, Self)> {
         let name = |p: &StructPatternNode, what: &str| {
             p.single_bind_id()
@@ -416,6 +418,13 @@ impl Callback {
             Some(t) => bail!("collection callback must be a function, got {t}"),
             None => bail!("a collection intrinsic takes a callback"),
         };
+        if typ.args.len() != arity {
+            let s = if arity == 1 { "" } else { "s" };
+            bail!(
+                "this collection's callback takes {arity} argument{s}, but its type {typ} takes {}",
+                typ.args.len()
+            )
+        }
         let id = name(callback, "callback")?;
         let cb = Self { scope: scope.clone(), id, typ, top_id, share: None };
         Ok((name(source, "source")?, cb))
@@ -480,27 +489,31 @@ impl Callback {
     ) -> Node<R, E> {
         let (Self { scope, id, typ, top_id, share }, fty) =
             (self, Type::Fn(self.typ.clone()));
-        match kind {
+        let call = match kind {
             CallKind::Prototype => {
                 let function = genn::reference(ctx, *id, fty, *top_id);
                 genn::apply_prototype(function, scope.clone(), args, typ, *top_id)
             }
             CallKind::Slot(Some(def)) => {
                 let spec = self.spec(ctx);
-                let mut call =
-                    genn::apply_constant(def, spec, scope.clone(), args, typ, *top_id);
-                if let Some(cs) =
-                    call.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
-                {
-                    cs.share = share.clone();
-                }
-                call
+                genn::apply_constant(def, spec, scope.clone(), args, typ, *top_id).map(
+                    |mut call| {
+                        if let Some(cs) = call
+                            .downcast_mut::<CallNode<R, E>>()
+                            .and_then(CallNode::call_mut)
+                        {
+                            cs.share = share.clone();
+                        }
+                        call
+                    },
+                )
             }
             CallKind::Slot(None) => {
                 let function = genn::reference(ctx, *id, fty, *top_id);
                 genn::apply(function, scope.clone(), args, typ, *top_id)
             }
-        }
+        };
+        call.expect("of_args held the callback to the intrinsic's arity")
     }
 }
 
@@ -846,7 +859,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
         if typ.args.len() != 2 || args.len() != 2 {
             bail!("collection map intrinsic requires two arguments")
         }
-        let (source_id, callback) = Callback::of_args(scope, top_id, typ, args)?;
+        let (source_id, callback) = Callback::of_args(scope, top_id, typ, args, 1)?;
         let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let prototype = Slot::new(ctx, &callback, &element_type, CallKind::Prototype);
@@ -1430,7 +1443,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
         if typ.args.len() != 3 || args.len() != 3 {
             bail!("collection fold intrinsic requires three arguments")
         }
-        let (source_id, callback) = Callback::of_args(scope, top_id, typ, args)?;
+        let (source_id, callback) = Callback::of_args(scope, top_id, typ, args, 2)?;
         let init_id = args[1]
             .single_bind_id()
             .ok_or_else(|| anyhow!("collection init argument must be a name"))?;

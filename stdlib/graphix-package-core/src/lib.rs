@@ -2402,7 +2402,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
                     smallvec::smallvec![xn],
                     &ptyp,
                     top_id,
-                );
+                )?;
                 Ok(Box::new(Self {
                     pred,
                     pending: None,

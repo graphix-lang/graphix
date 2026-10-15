@@ -520,7 +520,7 @@ fn build_wrapper_apply<R: Rt, E: UserEvent>(
         arg_nodes.push(n);
     }
     let fnode = genn::reference(ctx, fid, Type::Fn(ftyp.clone()), tid);
-    let pred = genn::apply(fnode, scope, arg_nodes, &ftyp, tid);
+    let pred = genn::apply(fnode, scope, arg_nodes, &ftyp, tid)?;
     Ok(Box::new(WrapperApply {
         site: SiteId::new(),
         state,

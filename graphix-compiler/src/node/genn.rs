@@ -9,7 +9,7 @@ use crate::{
     expr::{ApplyExpr, Expr, ExprId, ExprKind, ModPath, Origin},
     typ::{FnType, Type},
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Value;
@@ -74,7 +74,7 @@ pub fn apply<R: Rt, E: UserEvent>(
     args: SmallVec<[Node<R, E>; 2]>,
     typ: &FnType,
     top_id: ExprId,
-) -> Node<R, E> {
+) -> Result<Node<R, E>> {
     let ftype = typ.instantiate(&nohash::IntSet::default());
     apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
 }
@@ -87,7 +87,7 @@ pub fn apply_value<R: Rt, E: UserEvent>(
     args: SmallVec<[Node<R, E>; 2]>,
     typ: &Arc<FnType>,
     top_id: ExprId,
-) -> Node<R, E> {
+) -> Result<Node<R, E>> {
     apply_constant(f, NOP.clone(), scope, args, typ, top_id)
 }
 
@@ -99,7 +99,7 @@ pub(crate) fn apply_constant<R: Rt, E: UserEvent>(
     args: SmallVec<[Node<R, E>; 2]>,
     typ: &Arc<FnType>,
     top_id: ExprId,
-) -> Node<R, E> {
+) -> Result<Node<R, E>> {
     let fnode = Constant::new(f, Type::Fn(typ.clone()), spec);
     apply(fnode, scope, args, typ, top_id)
 }
@@ -110,7 +110,7 @@ pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
     args: SmallVec<[Node<R, E>; 2]>,
     typ: &FnType,
     top_id: ExprId,
-) -> Node<R, E> {
+) -> Result<Node<R, E>> {
     apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id)
 }
 
@@ -122,16 +122,15 @@ fn apply_inner<R: Rt, E: UserEvent>(
     ftype: Option<FnType>,
     rtype: Type,
     top_id: ExprId,
-) -> Node<R, E> {
-    // CR claude for claude: [bug/medium] A user program reaches this assert: `let g =
-    // |a: i64, f: fn() -> i64| -> i64 'array_group;` binds the collection intrinsic with
-    // a callback whose arity is not the one the intrinsic calls, and checking it panics
-    // here ("left: 2, right: 0"). The check now answers the panic as an error and the
-    // runtime survives (lsp-02's fix), but a run still aborts. Refuse a marker lambda
-    // whose callback signature is not the intrinsic's, with a message, where the marker
-    // body is recognized (node/collection.rs), so no generated call is ever built
-    // short. probe: design/review-2026-10-12/repro/lsp-02.py (genn-arity-01)
-    assert_eq!(args.len(), typ.args.len(), "a generated call supplies every formal");
+) -> Result<Node<R, E>> {
+    if args.len() != typ.args.len() {
+        let s = if args.len() == 1 { "" } else { "s" };
+        bail!(
+            "this function is called with {} argument{s}, but its type {typ} takes {}",
+            args.len(),
+            typ.args.len()
+        )
+    }
     let mut spec = ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter(
             args.iter()
@@ -149,7 +148,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
             (key, Arg::new(BindId::new(), Some(node), ArgStage::Given, spec))
         })
         .collect();
-    Node::new(CallNode::Call(CallSite::unbound(
+    Ok(Node::new(CallNode::Call(CallSite::unbound(
         Arc::new(spec),
         ftype,
         rtype,
@@ -158,7 +157,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         scope,
         BitFlags::empty(),
         top_id,
-    )))
+    ))))
 }
 
 /// A static call to the function binding `bind` over argument bindings
@@ -190,7 +189,16 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
             nodes.push(n);
         }
         let fnode = reference(ctx, bind, Type::Fn(ftype.clone()), top_id);
-        let site = apply(fnode, scope.clone(), nodes, ftype, top_id);
+        let site = match apply(fnode, scope.clone(), nodes, ftype, top_id) {
+            Ok(site) => site,
+            Err(e) => {
+                for id in args {
+                    ctx.env.unbind_variable(id);
+                    ctx.discard_stored(id);
+                }
+                return Err(e);
+            }
+        };
         let mut call = Self { site, args };
         match call.site.typecheck0(ctx).and_then(|()| call.site.typecheck1(ctx)) {
             Ok(()) => Ok(call),

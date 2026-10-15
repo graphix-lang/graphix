@@ -124,7 +124,8 @@ impl<R: Rt, E: UserEvent> Request<R, E> {
                 genn::apply(fnode, scope, args, ftyp, top_id)
             }
             Err(f) => genn::apply_value(f, scope, args, ftyp, top_id),
-        };
+        }
+        .expect("Handler::new held the function to one argument");
         Self { f, relay, x }
     }
 

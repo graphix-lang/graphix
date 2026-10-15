@@ -233,7 +233,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
                 let pid = BindId::new();
                 let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
                 let pred =
-                    genn::apply(fnode, scope, smallvec::smallvec![n, x], &mftyp, top_id);
+                    genn::apply(fnode, scope, smallvec::smallvec![n, x], &mftyp, top_id)?;
                 Ok(Box::new(Self {
                     queue: VecDeque::new(),
                     buf: smallvec![],

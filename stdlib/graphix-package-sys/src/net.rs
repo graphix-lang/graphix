@@ -722,7 +722,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                 );
                 let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
                 let on_write =
-                    genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
+                    genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id)?;
                 let wid = BindId::new();
                 ctx.record_ref(wid, top_id);
                 Ok(Box::new(Publish {

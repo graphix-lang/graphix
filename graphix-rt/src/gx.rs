@@ -1172,7 +1172,7 @@ impl<X: GXExt> GX<X> {
             })
             .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
-        let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid);
+        let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid)?;
         self.ctx.view().open_compile_frame(eid);
         if let Err(e) =
             graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)

@@ -2405,10 +2405,10 @@ run!(
     FuseExpect::None
 );
 
-/// A written binding holding a function in a part, a struct field or a
-/// tuple element written through a place reference, shares one instance
-/// of it with its writers; so does a binding a lambda body writes. Each
-/// use comes before its writer.
+// A written binding holding a function in a part, a struct field or a
+// tuple element written through a place reference, shares one instance
+// of it with its writers; so does a binding a lambda body writes. Each
+// use comes before its writer.
 run!(
     written_struct_holder_is_monomorphic,
     r#"{ let s = {f: |x| x}; let n = s.f(41); let k = s.f("a");

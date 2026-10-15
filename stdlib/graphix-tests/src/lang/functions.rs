@@ -3183,3 +3183,15 @@ run!(declared_bound_quantifier_in_the_return_narrows, r#"
     r$ + 1
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::I64(13))); FuseExpect::Jit);
+
+// A builtin or collection intrinsic bound with a callback type of
+// another arity than it calls is refused, never built short.
+run!(builtin_callback_arity_refused, r#"{
+    let g = |a: i64, f: fn() -> bool| -> Array<i64> 'array_group;
+    g(1, || true)
+}"#, refused("this function is called with 2 arguments, but its type fn() -> bool takes 0"); FuseExpect::None);
+
+run!(intrinsic_callback_arity_refused, r#"{
+    let g = |a: Array<i64>, f: fn() -> bool| -> Array<i64> 'array_filter;
+    g([1], || true)
+}"#, refused("this collection's callback takes 1 argument, but its type fn() -> bool takes 0"); FuseExpect::None);

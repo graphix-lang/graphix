@@ -196,7 +196,7 @@ impl<W: Fallback, R: Rt, E: UserEvent> BuiltIn<R, E> for OrElse<W, R, E> {
         let fid = BindId::new();
         let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
         let inner =
-            genn::apply(fnode, scope.clone(), smallvec::smallvec![], &ptyp, top_id);
+            genn::apply(fnode, scope.clone(), smallvec::smallvec![], &ptyp, top_id)?;
         Ok(Box::new(Self {
             inner,
             fid,
