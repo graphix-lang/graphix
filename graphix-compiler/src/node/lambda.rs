@@ -1834,23 +1834,17 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         );
         let scope = def.scope.with_catch((faux_id, ExprId::new()), false);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        // CR claude for claude: [bug/medium] The rigid set is collected by name, first
-        // cell wins, and `Type::collect_tvars` descends into a rank-2 formal's own
-        // quantifiers without scoping them. When a formal's quantifier shadows a
-        // declared variable (`|g: fn<'a: Number>(x: 'a) -> 'a, y: 'a|`), only the cell
-        // met first in signature order is opened rigid. The body may then bind the
-        // other one. `f` with g listed first is accepted at fn(g, y: i64) -> i64, and
-        // `k` with y listed first accepts a monomorphic callback for its fn<'b: Number>
-        // formal. The same bodies in the other parameter order are refused. Fix:
-        // collect the declared cells by identity and scope each nested fn type's
-        // quantifiers as `Type::alias_tvars` does, so both cells are opened rigid. Then
-        // audit the other name-keyed `collect_tvars` callers (the `Widening` helpers in
-        // callsite.rs, `FnType`'s own uses) for the same shadowing, and add pins in
-        // both parameter orders. probe: design/review-2026-10-12/repro/c-lambda-02.gx
-        // (c-lambda-02)
         def.typ.collect_tvars(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
-        let rigid = named.values().map(|tv| tv.open_rigid()).collect();
+        // a rank-2 formal's own quantifiers are held too: a use of the
+        // formal in the body takes an instance of it, never binds them
+        let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        def.typ.inner_quantifiers(&mut quantifiers);
+        let rigid = named
+            .values()
+            .map(|tv| tv.open_rigid())
+            .chain(quantifiers.values().map(|tv| tv.open_quantifier_rigid()))
+            .collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
         ctx.pending_settles.push(Vec::new());

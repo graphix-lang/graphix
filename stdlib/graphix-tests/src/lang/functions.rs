@@ -48,6 +48,30 @@ run!(rank2_formal_applied_at_a_number, RANK2_FORMAL_APPLIED_AT_A_NUMBER, |v: Res
     matches!(v, Ok(Value::I64(2)))
 });
 
+// A rank-2 formal's quantifier is held in the body, whatever the order
+// of the parameters or a declared variable of the same name: a use at
+// i64 takes an instance of the formal, so a callback must still be
+// polymorphic.
+run!(
+    rank2_formal_used_at_a_type_stays_polymorphic,
+    r#"{
+  let k = |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| { let h: fn(x: i64) -> i64 = g; h(1) + g(2) };
+  let j = |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| { let h: fn(x: i64) -> i64 = g; (h(1), g(f64:2.5), y) };
+  "[k("s", |x| x)] [j(|x| x, "s")]"
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "3 (1, 2.5, \"s\")")
+);
+
+run!(rank2_formal_used_at_a_type_refuses_a_monomorphic_callback, r#"{
+  let k = |y: 'b, g: fn<'b: Number>(x: 'b) -> 'b| { let h: fn(x: i64) -> i64 = g; h(1) };
+  k("s", |x: i64| x + 1)
+}"#, refused("does not contain fn(x: i64) -> i64"); FuseExpect::None);
+
+run!(rank2_formal_listed_first_refuses_a_monomorphic_callback, r#"{
+  let k = |g: fn<'b: Number>(x: 'b) -> 'b, y: 'b| { let h: fn(x: i64) -> i64 = g; h(1) };
+  k(|x: i64| x + 1, "s")
+}"#, refused("does not contain fn(x: i64) -> i64"); FuseExpect::None);
+
 // A lambda returned through a rank-2 formal stays generic at run time:
 // its first bind, at i64, decides nothing for a later one at string.
 run!(
