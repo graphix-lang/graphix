@@ -1608,15 +1608,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // walk.
             let reaching = reach.atype.clone();
             let narrowed = pat.type_predicate.any_as_tvar();
-            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-            union_members(&ctx.env, &reaching, &mut members)?;
-            members.retain(|m| narrowed.could_match(&ctx.env, m).unwrap_or(true));
-            match members.len() {
-                0 | 1 => {
-                    reaching.contains(&ctx.env, &narrowed)?;
-                }
-                _ => narrowed.narrow_per_member(&ctx.env, &members)?,
-            }
+            reaching.narrow_pattern(&ctx.env, &narrowed)?;
             pat.bind_narrowed(&ctx.env, &narrowed, checking).at(n.spec())?;
             // a runtime test can't tell apart two types with one runtime form
             // CR claude for eric: [bug/medium] The one-runtime-form check runs only in

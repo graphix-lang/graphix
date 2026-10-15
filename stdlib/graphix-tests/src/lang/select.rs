@@ -3152,6 +3152,23 @@ run!(coverage_slice_bind_covers_every_member, r#"{
     (f(["s"]), h(["s"]), l([<"s">]))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("one"), Value::I64(1), Value::I64(1)]); FuseExpect::None);
 
+// Under a written union, a constructor pattern's binds take the union of
+// their parts over every member it matches, as under an inferred one.
+run!(written_union_binds_every_member, r#"{
+    type P = [(i64, string), (string, i64)];
+    let f = |a: [P, null]| select a { P as (x, y) => "[x] [y]", null => "none" };
+    let v: P = ("s", 1);
+    let w: P = (2, "t");
+    "[f(v)] [f(w)] [f(null)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s 1 2 t none"); FuseExpect::Jit);
+
+run!(written_union_bind_is_a_union, r#"{
+    type P = [(i64, string), (string, i64)];
+    let f = |a: [P, null]| select a { P as (x, y) => x + 1, null => 0 };
+    let v: P = ("s", 1);
+    f(v)
+}"#, refused("cannot compute [i64, string] + i64"); FuseExpect::None);
+
 // A constructor pattern nested in an array, tuple, struct, list or payload
 // tells apart members of one runtime form by their parts, as at the top:
 // ("S", "x") is not `S(i64).

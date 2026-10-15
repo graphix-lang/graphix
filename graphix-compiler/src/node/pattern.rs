@@ -656,7 +656,7 @@ impl StructPatternNode {
                 None => shape,
             };
             let shape = shape.any_as_tvar();
-            // CR claude for claude: [bug/critical] Under a written union,
+            // XCR claude for eric: [bug/critical] Under a written union,
             // check_contains binds the pattern's cells to the FIRST member that fits,
             // but the runtime test still admits every member the constructor matches.
             // With `P = [(i64, string), (string, i64)]`, `P as (x, y)` types x as i64
@@ -672,7 +672,19 @@ impl StructPatternNode {
             // that matches. probe:
             // design/review-2026-10-12/repro/x-typecheck-patterns-01.gx
             // (x-typecheck-patterns-01)
-            type_predicate.check_contains(env, &shape)?;
+            // 2026-10-15 claude: narrowed per member now (Type::narrow_pattern, the
+            // same rule as an inferred predicate since 2943b591e): P as (x, y) over
+            // [(i64, string), (string, i64)] types x [i64, string] and y [string, i64],
+            // its run-time test admits both members, and x + 1 is refused. Pins:
+            // lang::select::written_union_binds_every_member,
+            // written_union_bind_is_a_union. Eric's 10-13 question stands and is yours:
+            // today `A(x, y) over [`A(i64, string), `A(string, i64)] is accepted the
+            // same way (x [i64, string]; a probe prints ("1 s", "t 2")); refusing it
+            // would be a new rule beside the one-runtime-form rule, which this match
+            // does not break since it tells nothing apart.
+            if !type_predicate.narrow_pattern(env, &shape)? {
+                type_predicate.check_contains(env, &shape)?;
+            }
             let node = Self::compile_int_inner(ctx, cx, &shape, spec, mode)?;
             let env = &ctx.env;
             if let Ok(rest) = type_predicate.diff(env, &shape)

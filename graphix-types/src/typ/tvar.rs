@@ -1696,6 +1696,19 @@ impl Type {
         go(self, rigid, &mut LPooled::take())
     }
 
+    /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
+    /// a union, by member ([`Self::narrow_per_member`]). Whether some
+    /// member, or `self`, contains it.
+    pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        crate::expr::union_members(env, self, &mut members)?;
+        members.retain(|m| pred.could_match(env, m).unwrap_or(true));
+        match members.len() {
+            0 | 1 => self.contains(env, pred),
+            _ => pred.narrow_per_member(env, &members).map(|()| true),
+        }
+    }
+
     /// `members ⊇ self` for a select arm's predicate over what reaches the
     /// arm, `members` being the members of that union it can match: each
     /// open cell of self takes the union of its parts over every member and
