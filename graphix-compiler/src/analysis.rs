@@ -1637,26 +1637,8 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// call not bound yet (a warm start's imaged callee, a slot not prebound)
 /// is too, and `None` is the answer when the children depend only through
 /// one, to ask again once it is bound. A call site decides its arguments
-/// again at each bind (`CallSite::clear_prepared_bind`).
-// CR claude for claude: [bug/high] The premise on this doc ("a call not resolved yet is
-// opaque, so this is decided before binds") is false for collection slots. update_slots
-// asks this after the slots are bound, and local_summary follows
-// CallSite::resolved_apply, which is whatever instance the callback holds right now.
-// SlotSite::decide_siblings and ForkSite::decide_siblings keep the answer forever. So
-// when a dynamic callback changes from one that calls nothing ordered to one that calls
-// a queuefn wrapper, the slots keep forking, and the queue sees the calls out of order:
-// GRAPHIX_PAR=force (also auto with GRAPHIX_PAR_T=1) prints [301, 304, ..] where the
-// serial run prints [303, 304, ..]. Probe:
-// design/review-2026-10-12/repro/c-cost-misc-01.gx. There are two possible fixes. One
-// is to make the answer invariant under rebinding: here, a call with no static_target
-// counts as opaque even while it is bound. The other is to have a rebind of a slot's or
-// a call's callee reset the owning site's Siblings to Undecided. The second also covers
-// c-cost-misc-02's Nop-default case. (c-cost-misc-01)
-// 2026-10-14 claude: a call site's own argument decision is reset at every bind now
-// (CallSite::clear_prepared_bind, for c-cost-misc-02 / c-callsite-09), and an apply
-// nothing names (the queuefn wrapper) summarizes as opaque and ordered
-// (c-analysis-branch-01); a collection's SlotSite still keeps its first verdict when
-// its callback rebinds, so this probe stands for slots.
+/// again at each bind (`CallSite::clear_prepared_bind`), a collection its
+/// slots once they are bound to a new callback (`update_slots`).
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,

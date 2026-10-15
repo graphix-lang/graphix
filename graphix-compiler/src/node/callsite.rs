@@ -1560,19 +1560,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if !matches!(self.callee, Callee::DynamicUnbound) {
             return;
         }
-        // CR claude for claude: [perf/medium] prebind binds only a Constant fnode, so a
-        // collection slot that calls through the callback parameter
-        // (CallKind::Slot(None)) is never prebound. When its SlotSite decides siblings,
-        // both sampled slots are opaque, and the site becomes Dependent permanently,
-        // even under GRAPHIX_PAR=force. Such slots never fork, so the fuzzer's
-        // Pair::Par lane never tests them forked. probe:
-        // design/review-2026-10-12/repro/c-collection-02.gx under GRAPHIX_PAR=force
-        // prints in slot order, while c-collection-02-control.gx (static callback)
-        // prints shuffled. Fix: bind from the parameter's stored value here, or decide
-        // siblings only after the first update has bound the slots (see
-        // c-collection-01). The decision must then be redone when the callback value
-        // changes to another definition, since that one may reach an ORDERED builtin.
-        // (c-collection-02)
         let NodeView::Constant(c) = self.fnode.view() else { return };
         let fv = c.value.clone();
         let Some(f) = fv.downcast_ref::<LambdaDef<R, E>>() else { return };

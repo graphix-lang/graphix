@@ -892,13 +892,20 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 /// Update `slots`, in order or forked where the site's plans say: the
 /// join of their triggering productions, or `None` when an interrupt
 /// stopped the loop. A slot at `old_len` or past it is fresh, and its
-/// first dispatch runs under a forced init view.
+/// first dispatch runs under a forced init view. The slots run in order
+/// when `rebound`, the cycle their callback changes, and are decided again
+/// once they are bound to it.
 fn update_slots<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     slots: &mut [Slot<R, E>],
     site: &mut SlotSite,
     old_len: usize,
+    rebound: bool,
 ) -> Option<Option<Tag>> {
+    if rebound {
+        site.redecide();
+        return update_slots_in_order(ctx, slots, 0, old_len);
+    }
     site.decide_siblings(ctx, slots.len(), || {
         crate::analysis::independent(slots.iter().take(2).map(|s| &s.call), ctx)
     });
@@ -1161,7 +1168,8 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         // custom deliveries. The same gate would apply to any CallSite whose instance
         // read nothing that fired. This changes the node-walk's dense update model, so
         // it needs your decision on whether and where to gate. (x-alloc-01)
-        let slots = update_slots(ctx, &mut self.slots, &mut self.fork, old_len);
+        let rebound = ctx.event.variables.contains_key(&self.callback.id);
+        let slots = update_slots(ctx, &mut self.slots, &mut self.fork, old_len, rebound);
         match slots {
             None => return self.resident.ride(),
             Some(Some(tag)) => production = merge_tag(production, tag),

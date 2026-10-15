@@ -2796,6 +2796,31 @@ run!(ordered_slots_stay_serial, ORDERED_SLOTS_STAY_SERIAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; FuseExpect::Jit);
 
+// Slots whose callback changes to one that calls an ordered builtin run
+// in order from the cycle it changes: the queue sees its calls in slot
+// order.
+const ORDERED_SLOTS_AFTER_A_CALLBACK_CHANGE: &str = r#"
+{
+    let clk = sys::time::timer(duration:1.ms, true);
+    let n = 0;
+    n <- clk ~ n + 1;
+    let got: Array<i64> = [];
+    let q = queuefn(#trigger: clk, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+    let g1 = |x: i64| -> i64 x;
+    let g2 = |x: i64| -> i64 q(x);
+    let f = select n { k if k < 3 => g1, _ => g2 };
+    let r = array::map(array::init(8, |j| j + 100 * n), f);
+    select n {
+        k if k > 12 => array::find(array::init(9, |j| j), |j| got[j + 1]$ < got[j]$),
+        _ => never()
+    }
+}
+"#;
+
+run!(ordered_slots_after_a_callback_change, ORDERED_SLOTS_AFTER_A_CALLBACK_CHANGE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+}; FuseExpect::Jit);
+
 // A lambda two definitions deep reads the outermost one's cells renamed
 // through every enclosing instance.
 const NESTED_TWO_DEEP: &str = r#"

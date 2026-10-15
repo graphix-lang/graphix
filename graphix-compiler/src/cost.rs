@@ -627,6 +627,12 @@ impl SlotSite {
         }
     }
 
+    /// Decide the siblings again at the next update: the slots' callee
+    /// changed.
+    pub fn redecide(&mut self) {
+        self.siblings = Siblings::Undecided
+    }
+
     /// Whether the slots must run in order: they are not known to be
     /// independent.
     pub fn in_order(&self) -> bool {
