@@ -853,15 +853,7 @@ pub struct LoopSite {
     until: AtomicU64,
 }
 
-/// A loop's probes: their count, then their ticks.
-// CR claude for claude: [doc-drift/low] The doc says 'their count, then their ticks',
-// but no count is stored: each element is one probed slot's ticks (fusion/par_loop.rs,
-// LoopSite::grain). On par_loop's uncalibrated path, the first item's dt is pushed
-// before `LoopSite::probes` is asked, and the histogram has not seen that sample, so up
-// to SETTLE more follow. That is SETTLE+1 elements: the SmallVec spills to the heap,
-// and the loop takes one probe more than ProbeSite::run, which records its first sample
-// before asking. Fix the doc, and count the first sample before asking for more, as
-// ProbeSite::run does (or size the SmallVec SETTLE+1). (c-cost-misc-08)
+/// A loop's probes: each probed slot's ticks.
 pub(crate) type Probes = SmallVec<[u64; SETTLE as usize]>;
 
 impl LoopSite {

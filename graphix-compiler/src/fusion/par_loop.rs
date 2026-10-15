@@ -222,7 +222,9 @@ pub(crate) unsafe fn run(
             // large enough to amortize the run's cost (as the unsettled path does with
             // `each = total / k`), or feed the measured time of a whole in-order run
             // back into the estimate when the loop does not fork. (x-rerun-1-05)
-            let Some(k) = site.probes(len - at) else {
+            // the first slot an uncalibrated loop timed is one of the probes
+            let Some(k) = site.probes(len - at).map(|k| k.saturating_sub(probes.len()))
+            else {
                 if at == 0 {
                     return unsafe { in_order(chunk, frame, len, find, out) };
                 }
