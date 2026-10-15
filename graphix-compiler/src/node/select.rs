@@ -884,15 +884,14 @@ fn pooled_leaves(
                 Type::Abstract { id: t, .. },
             ) if id == t => at(0, bind, rep),
             (StructPatternNode::Struct { all: _, binds }, Type::Struct(fs)) => {
-                for (name, _, p) in binds.iter() {
-                    let Some(i) = fs.iter().position(|(n, _, _)| n == name) else {
-                        return Ok(false);
-                    };
-                    if !at(i, p, &fs[i].1)? {
+                for (i, (name, t, _)) in fs.iter().enumerate() {
+                    let p = binds.iter().find(|(n, _, _)| n == name);
+                    let p = p.map_or(&StructPatternNode::Ignore, |(_, _, p)| p);
+                    if !at(i, p, t)? {
                         return Ok(false);
                     }
                 }
-                Ok(true)
+                Ok(binds.iter().all(|(n, _, _)| fs.iter().any(|(f, _, _)| n == f)))
             }
             _ => Ok(false),
         }
@@ -922,20 +921,6 @@ impl Shape {
             StructPatternNode::Variant { tag, all: _, binds } => {
                 Some(Shape::Variant(tag.clone(), binds.len()))
             }
-            // CR claude for claude: [bug/low] Shape::Struct holds only the pattern's
-            // named fields, and Shape::fits needs them to equal the member's full field
-            // list. So a partial struct pattern (`{a: true, ..}`) finds no member and
-            // LiteralPool::claim returns Unpooled. `{a: true, ..}` and `{a: false, ..}`
-            // over {a: bool, b: i64} are refused with "missing match cases", although
-            // CLAUDE.md says bool literals pool per position inside composite patterns.
-            // The same arms with every field named are accepted, and so are variant
-            // heads in the partial pattern. Fix: key a struct group by the scrutinee
-            // member it fits, where fits means the pattern's names are a subset of the
-            // member's fields. Then arms naming different subsets share one group.
-            // pooled_leaves::children already places each named field by its index in
-            // the member. probe:
-            // design/review-2026-10-12/repro/x-typecheck-patterns-06.gx
-            // (x-typecheck-patterns-06)
             StructPatternNode::Struct { all: _, binds } => {
                 let mut names: SmallVec<[ArcStr; 8]> =
                     binds.iter().map(|(n, _, _)| n.clone()).collect();
@@ -954,45 +939,36 @@ impl Shape {
                 tag == t && *n == ts.len()
             }
             (Shape::Struct(names), Type::Struct(fs)) => {
-                names.len() == fs.len()
-                    && names.iter().zip(fs.iter()).all(|(n, (f, _, _))| n == f)
+                names.iter().all(|n| fs.iter().any(|(f, _, _)| n == f))
             }
             (Shape::Abstract(id), Type::Abstract { id: t, .. }) => id == t,
             _ => false,
-            // CR claude for claude: [bug/medium] c-select-seq-06 still reproduces for
-            // partial struct patterns: they count for exhaustiveness only. fe898ea9 says
-            // one walk (Reach) decides narrowing, dead arms and exhaustiveness. For partial
-            // struct patterns the three still disagree. `Shape::of` keys a struct pattern
-            // by its bound field names (select.rs), and `Shape::fits` (886-890) requires
-            // those names to equal the member's full field list. So `{d: `A, ..}` over `{c:
-            // string, d: [`A, `B]}` never pools (Claim::Unpooled), and `Reach.atype` keeps
-            // the struct member. `Reach::exhausted` still passes through its second test,
-            // `union_exact(covered).contains(scrut)`, which the arms' `sp.covers` atoms
-            // satisfy. Net effect: the select is exhaustive, but a later bind is not
-            // narrowed, and an arm after full coverage is not reported dead. This is the
-            // struct case the old c-select-seq-06 repro lists. Writing every field (`{d:
-            // `A, c}`) works. Failure: `type S = {c: string, d: [`A, `B]}; let s: [i64, S]
-            // = 3; select s { {d: `A, ..} => 10, {d: `B, ..} => 20, n => n + 1 }` is
-            // refused with "cannot compute [i64, S] + i64": n is not narrowed. `select s {
-            // {d: `A, ..} => 10, {d: `B, ..} => 20 }` over `s: S` is accepted as
-            // exhaustive, yet appending `_ => 0` is accepted too, not refused as
-            // unreachable (the tuple analogue is refused). Over `[S, null]`, `v => select v
-            // { null => 0 }` after the two arms is refused: "no arm covers S". Fix: Make
-            // Shape::Struct for a partial pattern fit any member that has its named fields:
-            // pool against the member and add Ignore leaves for the unnamed fields.
-            // Alternatively, have `Reach::cover` subtract what `covered` proves, so
-            // exhaustiveness, narrowing and dead arms read one set. Add a
-            // lang::select::coverage_* pin with a partial struct pool followed by a bind.
-            // Unverified: the reviewer's report, not checked by a verifier. (x-rerun-2-04)
         }
     }
 
     /// The scrutinee's member of this shape: the type a complete pool
-    /// group covers.
+    /// group covers. A struct pattern names some of its fields, so it pools
+    /// only where one member has them all.
     fn member(&self, env: &Env, scrut: &Type) -> Result<Option<Type>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, scrut, &mut members)?;
-        Ok(members.into_iter().find(|m| self.fits(m)))
+        let mut fits = members.into_iter().filter(|m| self.fits(m));
+        let m = fits.next();
+        Ok(match self {
+            Shape::Struct(_) if fits.next().is_some() => None,
+            _ => m,
+        })
+    }
+
+    /// The shape that keys `m`'s pool group: a struct's by all of its
+    /// fields, so arms naming different ones pool together.
+    fn of_member(self, m: &Type) -> Shape {
+        match (self, m) {
+            (Shape::Struct(_), Type::Struct(fs)) => {
+                Shape::Struct(fs.iter().map(|(n, _, _)| n.clone()).collect())
+            }
+            (shape, _) => shape,
+        }
     }
 }
 
@@ -1040,6 +1016,7 @@ impl LiteralPool {
     ) -> Result<Claim> {
         let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
         let Some(m) = shape.member(env, scrut)? else { return Ok(Claim::Unpooled) };
+        let shape = shape.of_member(&m);
         // under a type test that does not hold the member, the atom covers
         // none of it
         if let Some(t) = explicit

@@ -3129,6 +3129,38 @@ run!(coverage_all_bind_arms_cover_each_member, r#"{
     (g((1, "s")), g(("s", 1)))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(0), Value::I64(1)]); FuseExpect::None);
 
+// A partial struct pattern pools against the one member holding its
+// fields, its unnamed fields matching anything: arms naming different
+// fields pool together, a later bind narrows, a later arm can be dead.
+run!(coverage_partial_struct_pool, r#"{
+    let f = |s: {a: bool, b: i64}| select s { {a: true, ..} => 1, {a: false, ..} => 2 };
+    f({a: false, b: 3})
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+run!(coverage_partial_struct_subsets, r#"{
+    let f = |v: {a: bool, b: [`X, `Y]}| select v {
+        {a: true, ..} => 1, {b: `X, ..} => 2, {a: false, b: `Y} => 3
+    };
+    (f({a: true, b: `Y}), f({a: false, b: `X}), f({a: false, b: `Y}))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::I64(2), Value::I64(3)]); FuseExpect::Jit);
+
+run!(coverage_partial_struct_narrows, r#"{
+    type S = {c: string, d: [`A, `B]};
+    let s: [i64, S] = 3;
+    select s { {d: `A, ..} => 10, {d: `B, ..} => 20, n => n + 1 }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::Jit);
+
+run!(coverage_partial_struct_dead, r#"{
+    type S = {c: string, d: [`A, `B]};
+    let s: S = {c: "x", d: `A};
+    select s { {d: `A, ..} => 10, {d: `B, ..} => 20, _ => 0 }
+}"#, refused("unreachable arm"); FuseExpect::None);
+
+run!(coverage_partial_struct_open, r#"{
+    let f = |s: {a: bool, b: i64}| select s { {a: true, ..} => 1 };
+    f({a: true, b: 3})
+}"#, refused("missing match cases"); FuseExpect::None);
+
 // An irrefutable arm with a head pools with the literal arms.
 run!(coverage_mixed_pool, r#"{
     let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A) => 1, (b, `B) => 2, (false, `A) => 3 };

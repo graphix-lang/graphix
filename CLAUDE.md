@@ -777,7 +777,8 @@ cycle, across workers; the compiler never pins threads.
   covers, since a mixed one that fails it may still hold a `T`;
   bool literals, variant heads
   (payload irrefutable) and or-patterns of them pool per position
-  inside composite patterns, keyed by path, and an arm under a type
+  inside composite patterns, keyed by path (a partial struct pattern
+  against the one member holding its fields, the rest any value), and an arm under a type
   test pools only a member the test holds; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over
   a scrutinee its shape covers; set coverage distributes over product
