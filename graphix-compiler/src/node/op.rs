@@ -19,7 +19,7 @@ use crate::{
     typ::{ContainsFlags, Type},
     wrap,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
@@ -791,7 +791,20 @@ pub(crate) fn arith_rule(
     // The operands are one type now, so one bound covers both. A known
     // operand must be numeric at typecheck0; the def-time acceptance gate
     // for a lambda body runs only there.
-    constrain_operand(env, &Type::Primitive(Typ::number()), t)?;
+    constrain_operand(env, &Type::Primitive(Typ::number()), t).with_context(|| {
+        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            let join = match t.with_deref(
+                |t| matches!(t, Some(Type::Primitive(p)) if *p == Typ::String),
+            ) {
+                true => " (to join strings, interpolate: \"[a][b]\")",
+                false => "",
+            };
+            format_compact!(
+                "cannot compute {lt} {} {rt}: arithmetic takes numbers{join}",
+                op.token()
+            )
+        })
+    })?;
     refuse_mixed_numeric(env, t)?;
     t.narrow_singleton(env)?;
     match checked {

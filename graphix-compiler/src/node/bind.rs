@@ -1899,7 +1899,15 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         });
         let typ = match typ {
             Some(t) => t,
-            None => bail!("expected reference"),
+            None => match self.child.typ().deref_cloned() {
+                None => bail!(
+                    "dereferencing needs the reference's type known here: annotate \
+                     the binding"
+                ),
+                Some(t) => format_with_flags(PrintFlag::DerefTVars, || {
+                    bail!("expected a reference not {t}")
+                })?,
+            },
         };
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
         Ok(())

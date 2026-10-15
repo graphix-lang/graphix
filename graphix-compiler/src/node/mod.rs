@@ -148,22 +148,10 @@ macro_rules! deref_typ {
                     Some(t) => $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,
-                    // CR claude for claude: [readability/low] The None arm of
-                    // `deref_typ!` says only 'type must be known, annotations needed',
-                    // although it has `$name`: `let f = |p| p.x + 1` reports that at
-                    // `p.x` and never says a struct's type is needed or what to
-                    // annotate. Say 'reading a {$name} needs its type known here:
-                    // annotate the binding'. Two siblings have the same problem.
-                    // `Deref::typecheck` bails a bare 'expected reference' both for
-                    // `*2` and for an untyped parameter `|r| *r + 1`, which needs an
-                    // annotation; it should name the type, or say an annotation is
-                    // needed when the type is unknown. In `arith_rule`, a failed
-                    // `constrain_operand` surfaces as raw 'type mismatch Number does
-                    // not contain string' (`"x" + "y"`, `true + false`), while every
-                    // other arithmetic refusal gets the 'cannot compute A + B: ...'
-                    // text. Wrap that failure the same way, and for strings point at
-                    // interpolation. (x-errors-08)
-                    None => anyhow::bail!("type must be known, annotations needed")
+                    None => anyhow::bail!(
+                        "reading a {} needs its type known here: annotate the binding",
+                        $name
+                    )
                 }
             }
         })
