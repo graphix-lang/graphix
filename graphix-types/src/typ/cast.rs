@@ -20,7 +20,7 @@ use immutable_chunkmap::map::Map;
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{borrow::Cow, fmt, mem};
+use std::{borrow::Cow, fmt, mem, ops::ControlFlow};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -1150,13 +1150,29 @@ impl Type {
     /// predicate: `self` with every payload position replaced by `Any`,
     /// when the outermost shape alone tells `self`'s values apart from
     /// the other members of `scrutinee`. `None` keeps the full walk
-    /// (members not enumerable, two share a shape, or no payload).
-    /// Sound only for inferred predicates, which typecheck unified
-    /// against their member; explicit `x as T` stays strict.
+    /// (members not enumerable, two share a shape, a union below the top
+    /// whose members share one, which a nested structure test cannot tell
+    /// apart, or no payload). Sound only for inferred predicates, which
+    /// typecheck unified against their member; explicit `x as T` stays
+    /// strict.
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
         let mut scrut: LPooled<Vec<Type>> = LPooled::take();
         let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
         flatten_union_members(scrutinee, env, &mut scrut, &mut seen)?;
+        let below = |m: &Type| {
+            m.try_for_each_child(&mut |c| match shapes_collide(
+                c,
+                env,
+                &mut LPooled::take(),
+            ) {
+                true => ControlFlow::Break(()),
+                false => ControlFlow::Continue(()),
+            })
+            .is_break()
+        };
+        if scrut.iter().any(below) {
+            return None;
+        }
         let mut sfacts: LPooled<Vec<MemberFacts>> = LPooled::take();
         for m in scrut.iter() {
             sfacts.push(member_facts(m));
@@ -1199,6 +1215,42 @@ impl Type {
             Type::Set(Arc::from_iter(out.drain(..)))
         })
     }
+}
+
+/// Whether `t` or a part of it is a union two of whose members share a
+/// shape (`arr_overlap`).
+fn shapes_collide(t: &Type, env: &Env, seen: &mut LPooled<Vec<RefKey>>) -> bool {
+    ensure_sufficient(|| match t {
+        Type::Ref(tr) => {
+            let Some(key) = ref_key(tr) else { return false };
+            let Ok(x) = t.lookup_ref(env) else { return false };
+            if seen.contains(&key) {
+                return false;
+            }
+            seen.push(key);
+            let r = shapes_collide(&x, env, seen);
+            seen.pop();
+            r
+        }
+        Type::TVar(tv) => tv.binding().is_some_and(|b| shapes_collide(&b, env, seen)),
+        Type::Set(ts) => {
+            let shapes: LPooled<Vec<_>> = ts
+                .iter()
+                .filter_map(|m| m.with_deref(|m| m.and_then(|m| member_facts(m).arr)))
+                .collect();
+            let overlap = shapes
+                .iter()
+                .enumerate()
+                .any(|(i, a)| shapes[i + 1..].iter().any(|b| arr_overlap(a, b)));
+            overlap || ts.iter().any(|m| shapes_collide(m, env, seen))
+        }
+        t => t
+            .try_for_each_child(&mut |c| match shapes_collide(c, env, seen) {
+                true => ControlFlow::Break(()),
+                false => ControlFlow::Continue(()),
+            })
+            .is_break(),
+    })
 }
 
 /// A struct value's `[name, value]` pair.

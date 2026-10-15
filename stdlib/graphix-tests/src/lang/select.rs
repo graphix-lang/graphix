@@ -3152,6 +3152,22 @@ run!(coverage_slice_bind_covers_every_member, r#"{
     (f(["s"]), h(["s"]), l([<"s">]))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("one"), Value::I64(1), Value::I64(1)]); FuseExpect::None);
 
+// A constructor pattern nested in an array, tuple, struct, list or payload
+// tells apart members of one runtime form by their parts, as at the top:
+// ("S", "x") is not `S(i64).
+run!(nested_constructor_tells_runtime_forms_apart, r#"{
+    type U = [(string, string), `S(i64)];
+    let p: U = ("S", "x");
+    let a = select [p] { [`S(n)] => "S [n]", _ => "other" };
+    let b = select (p, 0) { (`S(n), _) => "S [n]", _ => "other" };
+    let c = select {f: p} { {f: `S(n)} => "S [n]", _ => "other" };
+    let d = select [<p>] { [<`S(n)>] => "S [n]", _ => "other" };
+    let e = select `W(p) { `W(`S(n)) => "S [n]", _ => "other" };
+    let q: U = `S(4);
+    let g = select [q] { [`S(n)] => "S [n]", _ => "other" };
+    "[a] [b] [c] [d] [e] [g]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other other other other other S 4"); FuseExpect::Jit);
+
 // A partial struct pattern pools against the one member holding its
 // fields, its unnamed fields matching anything: arms naming different
 // fields pool together, a later bind narrows, a later arm can be dead.

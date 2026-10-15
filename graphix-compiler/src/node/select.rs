@@ -1619,28 +1619,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
             pat.bind_narrowed(&ctx.env, &narrowed, checking).at(n.spec())?;
             // a runtime test can't tell apart two types with one runtime form
-            // CR claude for claude: [bug/high] x-unsafe-03/c-pattern-02 still open:
-            // nested constructor patterns ignore the one-runtime-form rule. Select
-            // checks one-runtime-form collisions only for an arm's whole predicate
-            // against the rest of the scrutinee (select.rs). The nested check in
-            // StructPatternNode::compile (pattern.rs) runs only when `!cx.inferred`. A
-            // constructor pattern nested in a tuple, struct field, slice element, List
-            // element or variant payload therefore tests only the shape: over `U =
-            // [(string, string), `S(i64)]`, `[`S(n)]` matches the tuple ("S", "x") and
-            // binds `n: i64` to the string "x". Commit 613864c3 closed x-unsafe-03 by
-            // hardening buffer::encode against the bad payload; the root cause was left
-            // in place. At top level the same test correctly takes the other arm.
-            // Failure: For p = ("S", "x"), every nested position takes the `S arm: the
-            // output is ("S x", "S x", "S x", "S x", "S x") instead of "other" five
-            // times. Passing n to `|n: i64| n * 2` makes the JIT panic the runtime:
-            // "kernel param `n`: runtime String(\"x\") does not match the compiled
-            // Scalar(I64) slot". The node-walk logs an arith error and bottoms. Fix:
-            // Run the rep_collision test for every nested constructor position, not
-            // only the top-level predicate. Either drop the `!cx.inferred` restriction
-            // in pattern.rs, so an inferred nested predicate is completed against its
-            // position's type and checked, or have Reach walk sub-positions. Pin each
-            // position kind. Unverified: the reviewer's report, not checked by a
-            // verifier. (x-rerun-8-01)
             // CR claude for eric: [bug/medium] The one-runtime-form check runs only in
             // the definition's check, and Type::rep_collision reads an open cell as
             // Open::Benign. An instance never re-checks (typecheck0_instance), so a
