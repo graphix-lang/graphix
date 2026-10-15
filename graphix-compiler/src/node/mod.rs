@@ -2792,7 +2792,7 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
         let mut ts: LPooled<Vec<&Type>> = LPooled::take();
         ts.push(&bottom);
         ts.extend(self.n.iter().map(|n| n.typ()));
-        let rtyp = wrap!(self, Type::union(&ctx.env, &ts))?;
+        let rtyp = wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?;
         let rtyp = if rtyp == Type::Bottom { Type::empty_tvar() } else { rtyp };
         self.typ.check_contains(&ctx.env, &rtyp)?;
         Ok(())

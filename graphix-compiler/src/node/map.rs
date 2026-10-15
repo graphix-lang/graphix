@@ -162,7 +162,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         vts.extend(values.iter().map(|v| v.typ()));
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         ktype.require_compared(&Type::Ordered);
-        let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;
+        let vtype = wrap!(self, Type::union_of_alternatives(&ctx.env, &vts))?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         self.typ.check_contains(&ctx.env, &rtype)?;
         let judgment = crate::PendingSettle::Discernible {

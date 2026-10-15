@@ -2616,6 +2616,21 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
 );
 
+// Functions gathered in an array, a map or an `any` meet, as a select's
+// alternatives do: a call through one accepts each alike.
+run!(
+    gathered_functions_meet,
+    r#"{
+    let fs = [|x| x, |x| x + 1];
+    let m = {"a" => |x| x, "b" => |x| x + 1};
+    let g = m{"a"}$;
+    let h = any(|x| x, |x| x + 1);
+    (array::map(fs, |f| f(1)), g(1), h(1))
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[[i64:1, i64:2], i64:1, i64:1]";
+    FuseExpect::None
+);
+
 // An alias a `<-` writes stays a dynamic call and follows the write.
 const LAMBDA_ALIAS_WRITTEN: &str = r#"
 {
