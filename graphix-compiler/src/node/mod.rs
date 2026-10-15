@@ -1778,6 +1778,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         // (`ref_target`/`ref_path` on the cell when a pending value lands), as
         // `Deref::address` does. probe: design/review-2026-10-12/repro/x-parallel-02.gx
         // (x-parallel-02)
+        if let crate::branch::RtView::Fork(f) = &ctx.rt {
+            f.note_read(self.src_id);
+        }
         if let Some(tv) = ctx.event.variables.get(&self.src_id) {
             // a reference delivered without a target (a place whose
             // address is undetermined) has nowhere to write

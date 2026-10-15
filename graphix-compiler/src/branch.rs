@@ -280,6 +280,9 @@ impl<'a, R: Rt> RtView<'a, R> {
     }
 
     pub fn ref_path(&self, cell: &BindId) -> Option<&(BindId, Path)> {
+        if let RtView::Fork(f) = self {
+            f.note_read(*cell)
+        }
         let mut view: &RtView<'_, R> = self;
         loop {
             match view {
@@ -1021,17 +1024,10 @@ fn audit<R: Rt, E: UserEvent>(
     right: &Event<E>,
     right_rt: &ForkRt<R>,
 ) {
-    // CR claude for claude: [test-gap/medium] The audit sees only reads that go through
-    // node::read_var. It misses three things: RtView::ref_path (Deref and ConnectDeref
-    // addressing a moving place), ConnectDeref::update's direct ctx.event.variables
-    // lookup of src_id, and a left sibling's ForkRt::ref_paths entries, which own()
-    // never checks. The place-form divergence in x-parallel-01b runs clean under
-    // GRAPHIX_PAR=force GRAPHIX_PAR_AUDIT=1 while it prints values the serial run does
-    // not. Fix: note_read the cell in RtView::ref_path and in ConnectDeref's overlay
-    // read, and count left_rt.ref_paths as published in own(). probe:
-    // design/review-2026-10-12/repro/x-parallel-01b-byref-place.gx (x-parallel-05)
     let own = |ev: &Event<E>, rt: &ForkRt<R>, id: &BindId| {
-        ev.variables.map.contains_key(id) || rt.store.contains_key(id)
+        ev.variables.map.contains_key(id)
+            || rt.store.contains_key(id)
+            || rt.ref_paths.contains_key(id)
     };
     for id in right_reads {
         if own(left, left_rt, id) && !own(right, right_rt, id) {
