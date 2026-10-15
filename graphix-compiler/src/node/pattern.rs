@@ -1499,6 +1499,31 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             && self.type_predicate.contains_with_flags(BitFlags::empty(), env, scrut)?)
     }
 
+    /// A written `error` test, whose capture is typed by the errors that
+    /// reach the arm ([`Self::error_capture`]), not by the bare predicate.
+    fn tests_error(&self) -> bool {
+        matches!(&self.type_predicate, Type::Primitive(p) if *p == Typ::Error)
+    }
+
+    /// The type this arm's binds are typed from: an `error` test's is the
+    /// `Error<..>` members of `reaching`, else the predicate.
+    pub(super) fn capture_type(&self, env: &Env, reaching: &Type) -> Result<Type> {
+        if !self.explicit_type_predicate {
+            return Ok(self.type_predicate.any_as_tvar());
+        }
+        if !self.tests_error() {
+            return Ok(self.type_predicate.clone());
+        }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        crate::expr::union_members(env, reaching, &mut members)?;
+        members.retain(|m| m.with_deref(|m| matches!(m, Some(Type::Error(_)))));
+        Ok(match members.len() {
+            0 => self.type_predicate.clone(),
+            1 => members.pop().unwrap(),
+            _ => Type::Set(Arc::from_iter(members)).normalize(),
+        })
+    }
+
     /// Type the arm's binds from `narrowed`, the arm's predicate as the
     /// select narrowed it against what reaches the arm: each capture
     /// takes the part it stands over (a `_` slot and a field a partial
@@ -1511,33 +1536,13 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         narrowed: &Type,
         checking: bool,
     ) -> Result<()> {
-        // CR claude for claude: [bug/medium] c-data-map-09 variant: `error as e` binds
-        // bare `error`, so `e.0` and `f(e)` are refused. An explicit type predicate
-        // binds its capture at the predicate's type verbatim (bind_narrowed returns
-        // early when explicit_type_predicate). For `error as e` that is the primitive
-        // `error`, which contains.rs lets only Error<Any> hold, and tuple_field_type
-        // (data.rs) has no arm for it. So the documented idiom `select r { error as e
-        // => recover(e), v => v }` is refused whenever `recover` takes the scrutinee's
-        // real Error<E>, and `e.0` is refused outright ('expected tuple not error').
-        // The c-data-map-09 fix typed the `error:` literal but left this site of the
-        // same rule; the original repro already listed `select error:"boom" { error as
-        // x => x.0 }` as refused. Failure: let g = |x: i64| -> [i64, Error<`Boom>]
-        // select x { 0 => error(`Boom), x => x }; let handle = |e: Error<`Boom>| select
-        // e.0 { `Boom => -1 }; select g(0) { error as e => handle(e), v => v } is
-        // refused: `type mismatch Error<`Boom> does not contain error`. With `e.0` in
-        // the arm instead: `expected tuple not error`. Writing `Error<`Boom> as e`
-        // works and prints -1. Fix: For a type test whose predicate is the primitive
-        // `error` (or any predicate wider than the matching member), type the capture
-        // as the scrutinee narrowed by the predicate (the Error<..> member or members),
-        // as captures of inferred predicates are. Also give tuple_field_type an arm for
-        // a union of Error types. Unverified: the reviewer's report, not checked by a
-        // verifier. (x-rerun-1-04)
-        if self.explicit_type_predicate {
+        let tests_error = self.explicit_type_predicate && self.tests_error();
+        if self.explicit_type_predicate && !tests_error {
             return Ok(());
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
-        for l in leaves.iter().filter(|l| l.fresh) {
+        for l in leaves.iter().filter(|l| l.fresh || tests_error) {
             if let Some(b) = env.by_id.get(&l.id) {
                 b.typ.check_contains(env, &l.typ)?;
             }
@@ -1633,9 +1638,13 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // the select narrows the arm against its scrutinee
         // (`bind_narrowed`); the guard and the arm body compile over the
         // cell.
-        if !explicit {
-            structure_predicate
-                .fresh_ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
+        let mut retype = |id| ctx.env.retype(id, Type::empty_tvar());
+        match &type_predicate {
+            Type::Primitive(p) if explicit && *p == Typ::Error => {
+                structure_predicate.ids(&mut retype)
+            }
+            _ if !explicit => structure_predicate.fresh_ids(&mut retype),
+            _ => (),
         }
         let guard = spec
             .guard

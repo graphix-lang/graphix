@@ -1636,7 +1636,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.
             let reaching = reach.atype.clone();
-            let narrowed = pat.type_predicate.any_as_tvar();
+            let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             pat.bind_narrowed(&ctx.env, &narrowed, checking).at(&site)?;
             // a runtime test can't tell apart two types with one runtime form

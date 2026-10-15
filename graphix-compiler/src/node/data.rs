@@ -846,6 +846,17 @@ pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
         let ts: LPooled<Vec<&Type>> = ts.iter().collect();
         return Type::union(&ctx.env, &ts);
     }
+    // errors: the field is each one's payload
+    if let Some(members) = union_of(ctx, source, |t| match t {
+        Type::Error(t) => Some((**t).clone()),
+        _ => None,
+    })? {
+        if field != 0 {
+            bail!("no such field {}", field);
+        }
+        let ts: LPooled<Vec<&Type>> = members.iter().collect();
+        return Type::union(&ctx.env, &ts);
+    }
     deref_typ!("tuple", ctx, source,
         Some(Type::Tuple(flds)) => flds
             .get(field)

@@ -1289,6 +1289,22 @@ async fn wake_over_a_republished_let_catches_up(mode: Mode) -> Result<()> {
 
 modes!(wake_over_a_republished_let_catches_up);
 
+// `error as e` types `e` as the errors that reach the arm, so its
+// payload reads and it passes where the scrutinee's errors are taken.
+run!(
+    error_test_capture_is_the_reaching_errors,
+    r#"{
+    let g = |x: i64| -> [i64, Error<`Boom>] select x { 0 => error(`Boom), x => x };
+    let handle = |e: Error<`Boom>| select e.0 { `Boom => -1 };
+    let two = |x: [i64, Error<`A>, Error<`B(string)>]| select x {
+      error as e => select e.0 { `A => "a", `B(s) => s },
+      i64 as _ => "n"
+    };
+    (select g(0) { error as e => handle(e), v => v }, two(error(`B("b"))))
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:-1, "b"]"#
+);
+
 // A struct pattern's field is the pair at its index that names it: an
 // or-alternative over a struct of another shape with that index fails.
 run!(
