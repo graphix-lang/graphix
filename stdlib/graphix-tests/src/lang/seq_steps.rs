@@ -49,6 +49,24 @@ async fn seqq_callee_write_is_live(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A reference handed to a callee that only reads through it makes no
+// capture live: each queued run reads `e` as it was enqueued.
+async fn seqq_ref_argument_keeps_captures(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 4 => n + 1, _ => never() };
+        let request = select step { 1 | 2 | 3 => step, _ => never() };
+        let e = 0;
+        e <- request ~ e + 10;
+        let d = 0;
+        let q = &mut d;
+        let look = |p: &mut i64| *p;
+        seqq request { look(q); e }
+    }"#;
+    assert_eq!(run(code, mode).await?, [0, 10, 20]);
+    Ok(())
+}
+
 // A let binds its step's production for the rest of the run: a later
 // change of its source while a later step waits is not seen.
 async fn passed_let_does_not_track(mode: Mode) -> Result<()> {
@@ -129,6 +147,7 @@ modes!(
     closure_write_is_seen,
     ref_write_through_a_variable_is_seen,
     seqq_callee_write_is_live,
+    seqq_ref_argument_keeps_captures,
     passed_let_does_not_track,
     entry_reraises_an_earlier_fire,
     until_true_at_entry,

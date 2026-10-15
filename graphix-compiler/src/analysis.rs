@@ -17,14 +17,14 @@ use crate::{
     fusion::{self, lowering},
     node::{
         Block,
-        callsite::CallSite,
+        callsite::{ArgKey, CallSite},
         fork_control::{ForkControl, ForkKind},
         lambda::{GXLambda, LambdaDef, ParamCalls},
         module::Module,
         seq_machine::{SeqCapture, SeqMachine},
     },
     profile::{self, Phase},
-    typ::Type,
+    typ::{FnType, Type},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow};
@@ -272,7 +272,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
     let graph = collect_static_graph(root, None);
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
-    plan_machines(&graph, &ctx.env);
+    plan_machines(&graph, ctx);
     plan_blocks(&graph, ctx);
     for f in graph.parallels.iter() {
         check_parallel(&f.spec, &f.n, ctx)?
@@ -318,7 +318,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     }
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
-    plan_machines(&graph, &ctx.env);
+    plan_machines(&graph, ctx);
     plan_blocks(&graph, ctx);
     let parallels =
         graph.parallels.iter().try_for_each(|f| check_parallel(&f.spec, &f.n, ctx));
@@ -761,17 +761,12 @@ impl Unresolved<'_> {
         Unresolved { params: &|_| false, facts: LambdaFacts::ASYNC };
 }
 
-/// Whether `cs` calls a builtin, which calls back the functions it is
-/// handed at run time, where no analysis sees them.
-fn calls_builtin<R: Rt, E: UserEvent>(
+/// The definition `cs` calls, where the check resolved it.
+fn callee_def<'a, R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
-    ctx: &CompileCtx<R, E>,
-) -> bool {
-    let fref = match cs.fnode().view() {
-        NodeView::Ref(r) => Some(r.id),
-        _ => None,
-    };
-    let def = cs
+    ctx: &'a CompileCtx<R, E>,
+) -> Option<&'a LambdaDef<R, E>> {
+    let lid = cs
         .static_target()
         .map(|t| t.definition)
         .or_else(|| match cs.resolved_apply() {
@@ -779,15 +774,66 @@ fn calls_builtin<R: Rt, E: UserEvent>(
             _ => None,
         })
         .or_else(|| {
-            let v = ctx.bind_to_lambda.get(&fref?)?;
+            let NodeView::Ref(r) = cs.fnode().view() else { return None };
+            let v = ctx.bind_to_lambda.get(&r.id)?;
             v.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
-        });
-    match def {
-        Some(lid) => lambda_def(ctx, lid).is_some_and(|d| d.is_builtin()),
-        None => fref.and_then(|id| ctx.env.by_id.get(&id)).is_some_and(|b| {
-            ctx.builtin_bindings.contains_key(&(b.scope.clone(), b.name.clone()))
-        }),
+        })?;
+    lambda_def(ctx, lid)
+}
+
+/// Whether `cs` calls a builtin, which calls back the functions it is
+/// handed at run time, where no analysis sees them.
+fn calls_builtin<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> bool {
+    match callee_def(cs, ctx) {
+        Some(d) => d.is_builtin(),
+        None => match cs.fnode().view() {
+            NodeView::Ref(r) => ctx.env.by_id.get(&r.id).is_some_and(|b| {
+                ctx.builtin_bindings.contains_key(&(b.scope.clone(), b.name.clone()))
+            }),
+            _ => false,
+        },
     }
+}
+
+/// Whether a builtin call can read or write through an argument: one whose
+/// value can hold a reference or a function, at a parameter its declared
+/// signature types as one, as `Any` or by a bounded variable (a builtin
+/// has nothing else to reach through).
+fn builtin_reaches_out<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> bool {
+    let env = &ctx.env;
+    let ft = callee_def(cs, ctx).map(|d| &d.typ);
+    let formal = |ft: &FnType, key: &ArgKey| -> Option<Type> {
+        let mut formals = ArgKey::of_formals(&ft.args).zip(ft.args.iter());
+        match formals.find(|(k, _)| k == key) {
+            Some((_, a)) => Some(a.typ.clone()),
+            None => ft.vargs.clone(),
+        }
+    };
+    let reaches = |ft: &FnType, t: &Type| {
+        if t.reaches_out(env) {
+            return true;
+        }
+        let bounds = ft.constraint_view();
+        if bounds.is_empty() {
+            return false;
+        }
+        let mut tvs = AHashMap::new();
+        t.collect_tvars(&mut tvs);
+        bounds.iter().any(|(tv, _)| tvs.contains_key(&tv.name))
+    };
+    cs.args
+        .iter()
+        .filter(|(_, a)| a.node.as_ref().is_some_and(|n| n.typ().reaches_out(env)))
+        .any(|(key, _)| match ft {
+            None => true,
+            Some(ft) => formal(ft, key).is_none_or(|t| reaches(ft, &t)),
+        })
 }
 
 /// The facts of the functions a builtin call is handed: each argument of
@@ -1270,8 +1316,7 @@ fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) 
 fn local_summary<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     graph: &StaticCallGraph<'_, R, E>,
-    env: &Env,
-    ordered: &dyn Fn(&str) -> bool,
+    ctx: &CompileCtx<R, E>,
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
@@ -1285,9 +1330,7 @@ fn local_summary<R: Rt, E: UserEvent>(
             if k.facts().hooks {
                 s.opaque()
             }
-            k.feeders()
-                .iter()
-                .for_each(|f| local_summary(f, graph, env, ordered, s, callees))
+            k.feeders().iter().for_each(|f| local_summary(f, graph, ctx, s, callees))
         }
         NodeView::Connect(c) => {
             s.writes.ids.insert(c.id);
@@ -1301,7 +1344,7 @@ fn local_summary<R: Rt, E: UserEvent>(
         NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
         // a comparison or a print of an abstract value runs its core-trait
         // impl, whose reads no summary holds
-        _ if runs_hooks(x, env) => s.opaque(),
+        _ if runs_hooks(x, &ctx.env) => s.opaque(),
         // CR claude for claude: [perf/medium] After a warm image start, a child call's
         // callee is still `Callee::Imaged` when a gather, argument, operator or slot
         // site first updates. Its instance is not in the graph and `resolved_apply` is
@@ -1326,35 +1369,13 @@ fn local_summary<R: Rt, E: UserEvent>(
                 {
                     return callees.push(g.instance_id());
                 }
-                // CR claude for claude: [bug/medium] The seq lowering itself trips this
-                // arm. issue_call routes every issued call's arguments through
-                // `core::once(seqargs)`. When an argument is a reference, `reaches_out`
-                // holds and the whole step summarizes as opaque (reads all, writes
-                // all). plan_machines then makes every `seqq` capture live, including
-                // ones nothing writes. `seqq request { look(q); e }` with a read-only
-                // `look = |p: &mut i64| *p` reads `e` live (30 30 30) where `look2(1);
-                // e` keeps the enqueue snapshots (0 10 20). That contradicts
-                // design/seq_blocks.md §8: a dereferenced write makes no capture live.
-                // Callees that write through a captured reference already follow that
-                // rule. The step plan also over-serializes these steps. Fix: treat the
-                // pass-through builtins the seq lowering adds (`once`, and `hold` in
-                // the seqq preamble) as transparent here, summarizing their arguments
-                // rather than going opaque, or have issue_call snapshot the arguments
-                // without a builtin. Add a seqq pin to seq_steps.rs with a reference
-                // argument and an unwritten capture. probe:
-                // design/review-2026-10-12/repro/tests-seq-01.gx (tests-seq-01)
                 Some(ApplyView::Opaque) => {
                     s.ordered = true;
                     return s.opaque();
                 }
                 Some(ApplyView::BuiltIn(name)) => {
-                    s.ordered |= ordered(name);
-                    let reaches = cs
-                        .args
-                        .values()
-                        .filter_map(|a| a.node.as_ref())
-                        .any(|a| a.typ().reaches_out(env));
-                    if reaches {
+                    s.ordered |= ctx.builtin_ordered(name);
+                    if builtin_reaches_out(cs, ctx) {
                         if gxdbg_seqplan() {
                             eprintln!("SEQPLAN   opaque builtin {}", cs.fnode().spec());
                         }
@@ -1393,8 +1414,7 @@ fn local_summary<R: Rt, E: UserEvent>(
 /// writes joined with its callees', to a fixpoint over recursion.
 fn instance_summaries<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
-    env: &Env,
-    ordered: &dyn Fn(&str) -> bool,
+    ctx: &CompileCtx<R, E>,
     roots: impl IntoIterator<Item = LambdaInstanceId>,
 ) -> LPooled<IntMap<LambdaInstanceId, Summary>> {
     let mut callees: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
@@ -1408,7 +1428,7 @@ fn instance_summaries<R: Rt, E: UserEvent>(
         let Some(g) = graph.instances.get(&i) else { continue };
         let mut s = Summary::default();
         let mut cs = SmallVec::new();
-        local_summary(g.body(), graph, env, ordered, &mut s, &mut cs);
+        local_summary(g.body(), graph, ctx, &mut s, &mut cs);
         stack.extend(cs.iter().copied());
         sums.insert(i, s);
         callees.insert(i, cs);
@@ -1490,19 +1510,17 @@ fn accesses_in<'a, R: Rt, E: UserEvent>(
     holder: Holder,
     ctx: &CompileCtx<R, E>,
 ) -> LPooled<Vec<Summary>> {
-    let ordered = |name: &str| ctx.builtin_ordered(name);
     let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
         .map(|n| {
             let mut s = Summary::default();
             let mut cs = SmallVec::new();
-            local_summary(n, graph, &ctx.env, &ordered, &mut s, &mut cs);
+            local_summary(n, graph, ctx, &mut s, &mut cs);
             (s, cs)
         })
         .collect();
     let sums = instance_summaries(
         graph,
-        &ctx.env,
-        &ordered,
+        ctx,
         locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
     );
     let own: LPooled<IntSet<BindId>> = match holder.and_then(|h| graph.instances.get(&h))
@@ -1782,7 +1800,10 @@ fn plan_runs<R: Rt, E: UserEvent>(
 /// since the last next-cycle boundary is still carrying there
 /// (`design/dependency_summaries.md` §3). A `seqq` capture of a variable
 /// some step writes is live (§4).
-fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>, env: &Env) {
+fn plan_machines<R: Rt, E: UserEvent>(
+    graph: &StaticCallGraph<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
+) {
     let StaticCallGraph { machines, captures, .. } = graph;
     if machines.is_empty() {
         return;
@@ -1798,7 +1819,7 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>, env: &E
                         let mut sum = Summary::default();
                         let mut cs = SmallVec::new();
                         s.nodes.iter().for_each(|n| {
-                            local_summary(n, graph, env, &|_| false, &mut sum, &mut cs)
+                            local_summary(n, graph, ctx, &mut sum, &mut cs)
                         });
                         (sum, cs)
                     })
@@ -1807,8 +1828,7 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>, env: &E
             .collect();
     let sums = instance_summaries(
         graph,
-        env,
-        &|_| false,
+        ctx,
         steps.iter().flat_map(|m| m.iter().flat_map(|(_, cs)| cs.iter().copied())),
     );
     for ((m, holder), local) in machines.iter().zip(steps.iter()) {
