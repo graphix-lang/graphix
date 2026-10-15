@@ -137,3 +137,19 @@ sys::exit(sys::time::after_idle(duration:200.ms, 0))
         );
     }
 }
+
+/// A run-time bind that does not type stops its call; the shell says so
+/// on stderr, as it does an unhandled error, rather than going silent.
+#[test]
+fn a_failed_runtime_bind_is_shown() {
+    const REBOUND: &str = r#"
+let f = |x| x;
+let a = f("s");
+let set = |g| f <- g;
+set(|x: i64| x + 1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+str::len(a)
+"#;
+    let (stderr, _) = run(REBOUND, true, "failed-bind");
+    assert!(stderr.contains("binding the callee failed"), "{stderr}");
+}

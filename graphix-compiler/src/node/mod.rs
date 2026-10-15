@@ -1132,7 +1132,8 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     ctx.pending_names.truncate(names);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
     let _ = PendingSettle::drain(&pending, &ctx.env, |spec, e| {
-        log::error!("a run-time bind's settle at {spec} refused: {e:#}");
+        let msg = format_compact!("a run-time bind's settle at {spec} refused: {e:#}");
+        error::report_failure!(&msg);
         Ok(())
     });
     res

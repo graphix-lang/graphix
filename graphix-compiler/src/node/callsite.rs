@@ -49,7 +49,7 @@ use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use indexmap::{IndexMap, map::Entry as ArgEntry};
-use log::{error, warn};
+use log::warn;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use nohash::IntSet;
@@ -1629,20 +1629,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 d
             }
             Err(e) => {
-                // CR claude for claude: [bug/medium] When build_bound fails, this
-                // drop_deferred clears the pending refs while the defaults it already
-                // compiled, and their arg_refs, are still held in self.args and
-                // self.arg_refs. The rebind Err arm then discards them with
-                // clear_prepared_bind and deletes them with a second drop_deferred.
-                // Each Ref::delete finds nothing pending and calls rt.unref_var, which
-                // removes the statement's own registration of the variable the default
-                // read. In the probe, `{ let a = s.h(1.5); n + 1 }` stops updating when
-                // n changes after a failed bind whose default reads n. The same program
-                // with a constant default keeps counting. Fix: in this arm, call
-                // self.clear_prepared_bind(ctx) first and then one drop_deferred, so
-                // the deletes cancel their own pending refs before the clear, and
-                // remove the second clear and drop from rebind's Err arm. probe:
-                // design/review-2026-10-12/repro/c-callsite-05.sh (c-callsite-05)
+                // the deletes cancel their own pending refs, then the rest go
+                self.clear_prepared_bind(ctx);
                 ctx.drop_deferred();
                 return Err(e);
             }
@@ -1687,17 +1675,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.callee = Callee::Prebound { def: fv, apply, defaults }
             }
             Err(e) => {
-                // CR claude for claude: [risk/low] This bind failure, and its twin in
-                // the dynamic rebind path below, is logged under the module's default
-                // target. The shell's logger shows only FAILURE_TARGET, so in the shell
-                // a run-time bind that does not type is silent and the call just stops
-                // producing. Such a bind is the visible symptom of a type-system bug,
-                // which makes the silence especially costly. Report all three sites
-                // through `report_failure!`: these two and the 'run-time bind's settle
-                // refused' log in node/mod.rs. probe:
-                // design/review-2026-10-12/repro/x-fix-types-09.gx (the shell prints 1
-                // and no error). (x-fix-types-12)
-                error!("{}: binding the callee failed: {e:#}", self.spec);
+                let msg =
+                    format_compact!("{}: binding the callee failed: {e:#}", self.spec);
+                super::error::report_failure!(&msg);
                 self.clear_prepared_bind(ctx);
                 self.callee = Callee::Failed { def: fv };
             }
@@ -2368,19 +2348,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         match self.bind(ctx, v.clone(), lb, set) {
             Ok(()) => true,
             Err(e) => {
-                // CR claude for claude: [bug/medium] A failed run-time bind is logged
-                // on this module's target, not on crate::FAILURE_TARGET. The shell
-                // enables only FAILURE_TARGET on stderr, so the user sees nothing: the
-                // dynamic call silently never produces and the program exits 0. The
-                // same plain `error!` is in CallSite::prebind. Report both through
-                // node::error::report_failure!, as analysis::analyze_bound_callee
-                // already does for a definition assertion broken by a run-time bind.
-                // probe: design/review-2026-10-12/repro/x-rerun-5-04.gx (the bind
-                // failure there is x-rerun-5-02). (x-rerun-5-04)
-                error!("{}: binding the callee failed: {e:#}", self.spec);
-                self.clear_prepared_bind(ctx);
+                let msg =
+                    format_compact!("{}: binding the callee failed: {e:#}", self.spec);
+                super::error::report_failure!(&msg);
                 self.callee = Callee::Failed { def: v };
-                ctx.drop_deferred();
                 false
             }
         }
