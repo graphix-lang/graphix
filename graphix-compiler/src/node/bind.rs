@@ -1466,7 +1466,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug/medium] c-bind-11 variant: a reference outliving
+        // CR claude for eric: [bug/medium] c-bind-11 variant: a reference outliving
         // its `&` reads bottom but still writes its referent. ByRef::delete now removes
         // the cell's store entry and its byref_chain link (bind.rs), which fixes the
         // leak. But a reference value that escaped the deleted site (kept in an outer
@@ -1487,6 +1487,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         // with its minting site: then ConnectDeref must drop its cached target too.
         // Document the rule in design/place_references.md and pin it. Unverified: the
         // reviewer's report, not checked by a verifier. (x-rerun-1-06)
+        // 2026-10-15 claude: Since ConnectDeref resolves its target at each write, the
+        // two paths agree: a reference kept past its minting site's deletion reads and
+        // writes its own dead cell, so x stops changing and *keep reads back what was
+        // written to the cell (probe: design/review-2026-10-12/repro/x-rerun-1-06.gx,
+        // both engines). The cell's store entry is recreated by those writes, one per
+        // dead reference written. What remains is the rule: a reference to a binding
+        // valid while the binding lives (needs the chain link kept, or the target in
+        // the value), or a reference that dies with its site (reads bottom, writes
+        // dropped, which needs a liveness test a same-cycle birth cannot fail). That is
+        // a semantics choice, so it goes to Eric.
         ctx.env.byref_chain.remove(&self.id);
         ctx.rt.store_release(&self.id);
         self.unregister(ctx);

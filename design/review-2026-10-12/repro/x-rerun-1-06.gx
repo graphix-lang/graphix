@@ -1,0 +1,14 @@
+// x-rerun-1-06: a reference kept past the deletion of the slot that minted it
+// run: graphix --no-cache design/review-2026-10-12/repro/x-rerun-1-06.gx (same with --no-fusion)
+// 2026-10-15: (1, 7, 7) (2, 1000, 7) (3, 2000, 1000) (4, 2000, 3000) (5, 2000, 3000)
+//   (6, 2000, 4000) (6, 2000, 5000): after c = 3 the reference reads and writes a
+//   detached cell; x stays 2000
+let c = 0;
+c <- select c { k if k < 6 => k + 1, _ => never() };
+let x = 7;
+let keep: [&mut i64, null] = null;
+let rs = array::map(select c { k if k < 3 => [0], _ => [] }, |_| &mut x);
+keep <- select rs { [r] => r, _ => never() };
+let w = keep$;
+*w <- c ~ c * 1000;
+(c, x, c ~ *w)
