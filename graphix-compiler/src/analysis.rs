@@ -58,7 +58,7 @@ struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
     machines: LPooled<Vec<(&'a SeqMachine<R, E>, Holder)>>,
     /// Blocks of two or more statements, by the instance holding them.
-    blocks: LPooled<Vec<(&'a Block<R, E>, Holder)>>,
+    blocks: LPooled<Vec<&'a Block<R, E>>>,
     /// The `#[parallel]` sites.
     parallels: LPooled<Vec<&'a ForkControl<R, E>>>,
     captures: LPooled<
@@ -130,7 +130,7 @@ fn walk_static_graph<'a, R: Rt, E: UserEvent>(
                 NodeView::CallSite(site) => site,
                 NodeView::SeqMachine(m) => return graph.machines.push((m, caller)),
                 NodeView::Block(b) if b.children.len() > 1 => {
-                    return graph.blocks.push((b, caller));
+                    return graph.blocks.push(b);
                 }
                 NodeView::ForkControl(f) if matches!(f.kind, ForkKind::Parallel(_)) => {
                     return graph.parallels.push(f);
@@ -169,20 +169,27 @@ fn walk_static_graph<'a, R: Rt, E: UserEvent>(
 
 #[derive(Clone, Copy, Default)]
 struct Component {
+    start: usize,
     size: usize,
     cyclic: bool,
 }
 
-/// The strongly connected components of a call graph; component ids
-/// are dense.
+/// The strongly connected components of a call graph, callers before
+/// callees; component ids are dense.
 struct Components {
     of: LPooled<IntMap<LambdaInstanceId, usize>>,
     components: LPooled<Vec<Component>>,
+    /// Each component's instances, contiguous.
+    members: LPooled<Vec<LambdaInstanceId>>,
 }
 
 impl Components {
     fn get(&self, id: &LambdaInstanceId) -> Option<(usize, Component)> {
         self.of.get(id).map(|c| (*c, self.components[*c]))
+    }
+
+    fn members(&self, c: &Component) -> &[LambdaInstanceId] {
+        &self.members[c.start..c.start + c.size]
     }
 }
 
@@ -191,11 +198,8 @@ fn strongly_connected<R: Rt, E: UserEvent>(
 ) -> Components {
     let mut forward: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
         LPooled::take();
-    let mut reverse: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
-        LPooled::take();
     for id in graph.instances.keys().copied() {
         forward.entry(id).or_default();
-        reverse.entry(id).or_default();
     }
     for edge in graph.edges.iter() {
         let Some(caller) = edge.caller else { continue };
@@ -203,13 +207,28 @@ fn strongly_connected<R: Rt, E: UserEvent>(
             && graph.instances.contains_key(&edge.callee)
         {
             forward.entry(caller).or_default().push(edge.callee);
-            reverse.entry(edge.callee).or_default().push(caller);
+        }
+    }
+    components(&forward)
+}
+
+/// The strongly connected components of `forward`, whose keys are every
+/// node and whose lists name only keys.
+fn components(
+    forward: &IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>,
+) -> Components {
+    let mut reverse: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
+        LPooled::take();
+    for (caller, callees) in forward.iter() {
+        reverse.entry(*caller).or_default();
+        for callee in callees.iter() {
+            reverse.entry(*callee).or_default().push(*caller);
         }
     }
     let mut visited: LPooled<IntSet<LambdaInstanceId>> = LPooled::take();
     let mut order: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
     let mut stack: LPooled<Vec<(LambdaInstanceId, bool)>> = LPooled::take();
-    for root in graph.instances.keys().copied() {
+    for root in forward.keys().copied() {
         if visited.contains(&root) {
             continue;
         }
@@ -225,14 +244,18 @@ fn strongly_connected<R: Rt, E: UserEvent>(
             }
         }
     }
-    let mut res = Components { of: LPooled::take(), components: LPooled::take() };
+    let mut res = Components {
+        of: LPooled::take(),
+        components: LPooled::take(),
+        members: LPooled::take(),
+    };
     let mut walk: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
     while let Some(root) = order.pop() {
         if res.of.contains_key(&root) {
             continue;
         }
         let component = res.components.len();
-        let mut size = 0;
+        let start = res.members.len();
         walk.push(root);
         while let Some(id) = walk.pop() {
             // An already-claimed node belongs to its own SCC.
@@ -240,18 +263,17 @@ fn strongly_connected<R: Rt, E: UserEvent>(
                 continue;
             }
             res.of.insert(id, component);
-            size += 1;
+            res.members.push(id);
             if let Some(next) = reverse.get(&id) {
                 walk.extend(next.iter().copied());
             }
         }
-        res.components.push(Component { size, cyclic: size > 1 });
+        let size = res.members.len() - start;
+        res.components.push(Component { start, size, cyclic: size > 1 });
     }
-    for edge in graph.edges.iter() {
-        if edge.caller == Some(edge.callee)
-            && let Some(component) = res.of.get(&edge.callee)
-        {
-            res.components[*component].cyclic = true;
+    for (caller, callees) in forward.iter() {
+        if callees.contains(caller) {
+            res.components[res.of[caller]].cyclic = true;
         }
     }
     res
@@ -1185,12 +1207,10 @@ struct Summary {
 }
 
 impl Summary {
-    /// This summary less its reads of `ids`.
-    fn without_reads(&self, ids: &IntSet<BindId>) -> Summary {
-        let mut s = Summary::default();
-        s.union(self);
-        s.reads.ids.retain(|id| !ids.contains(id));
-        s
+    /// Drop `id` from its reads and writes.
+    fn forget(&mut self, id: BindId) {
+        self.reads.ids.remove(&id);
+        self.writes.ids.remove(&id);
     }
 
     fn opaque(&mut self) {
@@ -1383,8 +1403,9 @@ fn local_summary<R: Rt, E: UserEvent>(
     })
 }
 
-/// The summary of every instance `roots` reach: its body's own reads and
-/// writes joined with its callees', to a fixpoint over recursion.
+/// The summary of every instance `roots` reach: its body's reads and
+/// writes joined with its callees', less its own bindings (its formals and
+/// what its body binds), which only a fresh activation of it reaches.
 fn instance_summaries<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
@@ -1402,46 +1423,31 @@ fn instance_summaries<R: Rt, E: UserEvent>(
         let mut s = Summary::default();
         let mut cs = SmallVec::new();
         local_summary(g.body(), graph, ctx, &mut s, &mut cs);
+        let mut refs = Refs::without_callees();
+        g.body().refs(&mut refs);
+        refs.with_bound(|id| s.forget(id));
+        g.args().iter().for_each(|p| p.ids(&mut |id| s.forget(id)));
         stack.extend(cs.iter().copied());
         sums.insert(i, s);
         callees.insert(i, cs);
     }
-    let mut callers: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
-        LPooled::take();
-    for (i, cs) in callees.iter() {
-        for c in cs.iter() {
-            callers.entry(*c).or_default().push(*i);
-        }
+    for cs in callees.values_mut() {
+        cs.retain(|c| sums.contains_key(c));
     }
-    // CR claude for claude: [perf/medium] `instance_summaries` is quadratic even for
-    // one block, for two reasons. First, `local_summary` records every `Ref`, including
-    // the instance's own formals and lets, so each summary holds every bind id of its
-    // whole subtree. Second, this worklist pops in hash order, copies the instance's
-    // whole set on each pop (`acc.union(&sums[&i])`), and re-queues every caller after
-    // any change, so ancestors are re-unioned again and again. A binary call tree of
-    // 32768 instances spends about 3.9 s in Analysis, and the time grows 4x per
-    // doubling. A callee's own binds can never meet what a sibling statement publishes,
-    // so drop each instance's bound ids (its formals plus its body's
-    // `Refs::without_callees` bound set) before propagating. Then union each instance's
-    // callees once, in reverse topological order over `strongly_connected`'s
-    // components, iterating only the cyclic ones and making no full copy per pop.
-    // probe: design/review-2026-10-12/repro/x-perf-compile-04-summaries-fixpoint.gx
-    // (x-perf-compile-04)
-    let mut work: LPooled<Vec<LambdaInstanceId>> = sums.keys().copied().collect();
-    while let Some(i) = work.pop() {
+    let components = components(&callees);
+    for c in components.components.iter().rev() {
+        let members = components.members(c);
         let mut acc = Summary::default();
-        acc.union(&sums[&i]);
-        let mut changed = false;
-        for c in callees[&i].iter() {
-            if let Some(s) = sums.get(c) {
-                changed |= acc.union(s);
+        for i in members.iter() {
+            acc.union(&sums[i]);
+            for callee in callees[i].iter().filter(|c| !members.contains(c)) {
+                acc.union(&sums[callee]);
             }
         }
-        if changed {
-            sums.insert(i, acc);
-            if let Some(cs) = callers.get(&i) {
-                work.extend(cs.iter().copied());
-            }
+        for i in members.iter() {
+            let s = sums.get_mut(i).unwrap();
+            *s = Summary::default();
+            s.union(&acc);
         }
     }
     sums
@@ -1471,63 +1477,44 @@ fn accesses<'a, R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
 ) -> LPooled<Vec<Summary>> {
     let graph = collect_static_graph_of(children.clone());
-    accesses_in(children, &graph, None, ctx)
+    let locals = local_summaries(children, &graph, ctx);
+    let sums = instance_summaries(
+        &graph,
+        ctx,
+        locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
+    );
+    with_callees(&locals, &sums)
 }
 
-/// [`accesses`] over `graph`, where `holder`'s instance holds the
-/// children: a call to it is a fresh activation, whose own bindings no
-/// earlier statement publishes.
-fn accesses_in<'a, R: Rt, E: UserEvent>(
+/// Each of `children`'s own reads, writes and calls, and its callees.
+fn local_summaries<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>>,
     graph: &StaticCallGraph<'_, R, E>,
-    holder: Holder,
     ctx: &CompileCtx<R, E>,
-) -> LPooled<Vec<Summary>> {
-    let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
+) -> LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> {
+    children
         .map(|n| {
             let mut s = Summary::default();
             let mut cs = SmallVec::new();
             local_summary(n, graph, ctx, &mut s, &mut cs);
             (s, cs)
         })
-        .collect();
-    let sums = instance_summaries(
-        graph,
-        ctx,
-        locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
-    );
-    let own: LPooled<IntSet<BindId>> = match holder.and_then(|h| graph.instances.get(&h))
-    {
-        None => LPooled::take(),
-        Some(g) => {
-            let mut refs = Refs::without_callees();
-            g.body().refs(&mut refs);
-            let mut own: LPooled<IntSet<BindId>> = LPooled::take();
-            refs.with_bound(|id| {
-                own.insert(id);
-            });
-            g.args().iter().for_each(|p| {
-                p.ids(&mut |id| {
-                    own.insert(id);
-                })
-            });
-            own
-        }
-    };
+        .collect()
+}
+
+/// Each local summary joined with its callees' `sums`.
+fn with_callees(
+    locals: &[(Summary, SmallVec<[LambdaInstanceId; 4]>)],
+    sums: &IntMap<LambdaInstanceId, Summary>,
+) -> LPooled<Vec<Summary>> {
     locals
         .iter()
         .map(|(local, cs)| {
             let mut access = Summary::default();
             access.union(local);
-            for c in cs.iter() {
-                let Some(sum) = sums.get(c) else { continue };
-                // a self-call's reads of the activation's own names are the
-                // new activation's
-                match Some(*c) == holder {
-                    true => access.union(&sum.without_reads(&own)),
-                    false => access.union(sum),
-                };
-            }
+            cs.iter().filter_map(|c| sums.get(c)).for_each(|sum| {
+                access.union(sum);
+            });
             access
         })
         .collect()
@@ -1541,22 +1528,16 @@ fn plan_blocks<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
 ) {
-    for (b, holder) in graph.blocks.iter() {
+    if graph.blocks.iter().all(|b| b.planned.get().is_some()) {
+        return;
+    }
+    let sums = instance_summaries(graph, ctx, graph.instances.keys().copied());
+    for b in graph.blocks.iter() {
         if b.planned.get().is_some() {
             continue;
         }
-        // CR claude for claude: [perf/medium] Each block runs `accesses_in`, and
-        // `accesses_in` runs `instance_summaries` from scratch over every instance the
-        // block reaches. With B blocks over a chain of N instances whose read sets are
-        // O(N), the build is cubic: a chain of 400 block-bodied functions builds in
-        // about 3 s (6 s in debug) against 0.4 s for `--check`, and 800 takes 32 s.
-        // Compute the summaries once per analysis, over `graph.instances`, before the
-        // block loop. Then let `accesses_in` take that shared map and keep only the
-        // per-block `own` filtering. With x-perf-compile-04's fix each block then costs
-        // only its statements. probe:
-        // design/review-2026-10-12/repro/x-perf-compile-02-plan-blocks-cubic.gx
-        // (x-perf-compile-02)
-        let accesses = accesses_in(b.children.iter(), graph, *holder, ctx);
+        let accesses =
+            with_callees(&local_summaries(b.children.iter(), graph, ctx), &sums);
         let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
         let _ = b.planned.set(plan);
     }
