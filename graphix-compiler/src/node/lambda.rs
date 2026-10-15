@@ -931,9 +931,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 }
                 None => {
                     wrap!(self.body, self.body.typecheck0(ctx))?;
+                    let body = self.body.typ().clone();
                     wrap!(
                         self.body,
-                        self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
+                        self.typ.rtype.check_contains_rigid(&ctx.env, &body)
+                    )?;
+                    let top = self.body.spec().id;
+                    wrap!(
+                        self.body,
+                        super::callsite::check_hidden_defaults(
+                            ctx,
+                            BitFlags::empty(),
+                            &Scope::root(),
+                            top,
+                            &self.typ.rtype,
+                            &body,
+                            super::callsite::Narrowing::Copy
+                        )
                     )
                 }
             })

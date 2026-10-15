@@ -2661,6 +2661,61 @@ run!(default_hidden_by_a_fn_type, DEFAULT_HIDDEN_BY_A_FN_TYPE, |v: Result<&Value
     refused("string does not contain i64")(v)
 }; FuseExpect::None);
 
+// The same judgment wherever a function value meets a fn type that hides
+// its label: a let's annotation, a struct field under one, a <- into a
+// function-typed binding, an optional callback, a declared return type, a
+// rank-2 formal.
+run!(default_hidden_by_an_annotation, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let h: fn(y: string) -> bool = g;
+    h("seven")
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_field, r#"
+{
+    type T = {f: fn(y: string) -> bool};
+    let t: T = {f: |#x = 4096, y| x == y};
+    (t.f)("seven")
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_connect, r#"
+{
+    let f = |#x = 1, y| x == y;
+    let g = |y: string| y == "s";
+    let pick: fn(y: string) -> bool = g;
+    pick <- f;
+    pick("s")
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_an_optional_callback, r#"
+{
+    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let g = |h: [fn(x: f64) -> f64, null]| h$(1.5);
+    g(f)
+}
+"#, refused("does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_return_type, r#"
+{
+    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let mk = |u: i64| -> fn(x: f64) -> f64 f;
+    let h = mk(0);
+    h(1.5)
+}
+"#, refused("does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_rank2_formal, r#"
+{
+    let f = 'a: Any |#x: 'a = 1, y: 'a| -> 'a select y { _ => x };
+    let app = |g: fn<'b: Any>(y: 'b) -> 'b| (g(1), g("s"));
+    app(f)
+}
+"#, refused("does not contain i64"); FuseExpect::None);
+
 const DEFAULT_HIDDEN_BY_A_CALLBACK: &str = r#"
 {
     let scale = |#by = 2, x| x * by;

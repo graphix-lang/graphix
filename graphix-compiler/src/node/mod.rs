@@ -2576,6 +2576,19 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                     _ => e,
                 }
             })
+        )?;
+        let scope = Scope::root();
+        wrap!(
+            self,
+            callsite::check_hidden_defaults(
+                ctx,
+                BitFlags::empty(),
+                &scope,
+                self.spec.id,
+                &held,
+                written,
+                callsite::Narrowing::Copy
+            )
         )
     }
 }

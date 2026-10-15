@@ -318,6 +318,24 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 false => self.node.typ().clone(),
             };
             wrap!(self.node, self.typ.check_contains(&ctx.env, &value))?;
+            let annotated =
+                matches!(&self.spec.kind, ExprKind::Bind(b) if b.typ.is_some());
+            if annotated {
+                let scope = Scope::root();
+                let (flags, top) = (BitFlags::empty(), self.spec.id);
+                wrap!(
+                    self.node,
+                    super::callsite::check_hidden_defaults(
+                        ctx,
+                        flags,
+                        &scope,
+                        top,
+                        &self.typ,
+                        &value,
+                        super::callsite::Narrowing::Copy
+                    )
+                )?;
+            }
         }
         Ok(())
     }

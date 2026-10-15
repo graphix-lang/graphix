@@ -201,6 +201,198 @@ impl ArgStage {
 
 /// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
 /// `Fn` arms of a `[fn(...), null]` / Set union.
+/// A labeled default of `f` compiled and checked in `f`'s environment,
+/// where its names are: the site's view of the label first, which the
+/// default narrows; where the site hides or re-types the label, `f`'s own
+/// parameter.
+#[allow(clippy::too_many_arguments)]
+fn checked_default<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    top_id: ExprId,
+    f: &LambdaDef<R, E>,
+    name: &ArcStr,
+    expr: &Expr,
+    defaults: &mut Refs,
+    site: Option<&FnType>,
+) -> Result<Node<R, E>> {
+    let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+    let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
+        let local_scope =
+            Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
+        let mut node = compile(ctx, flags, expr.clone(), &local_scope, top_id)?;
+
+        let res = node.typecheck0(ctx).and_then(|()| {
+            // the site's view first, which a default narrows; where it
+            // hides or re-types the label, the callee's own parameter
+            let site_view = site
+                .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)))
+                .map(|a| a.typ.check_contains(&ctx.env, node.typ()));
+            match site_view {
+                Some(Ok(())) => Ok(()),
+                site_view => match callee_param(ctx, f, name, site, &mut gates) {
+                    Some(t) => t.check_contains(&ctx.env, node.typ()),
+                    None => site_view.unwrap_or(Ok(())),
+                },
+            }
+        });
+        Ok::<_, anyhow::Error>((node, res))
+    })?;
+    node.refs(defaults);
+    match wrap!(node, res) {
+        Ok(()) => Ok(node),
+        Err(e) => {
+            ctx.discard(node);
+            Err(e)
+        }
+    }
+}
+
+/// The labeled defaults of the lambdas `value` may hold that `formal`
+/// hides or makes optional, each judged at `formal`'s view.
+fn judge_hidden_defaults<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    top_id: ExprId,
+    formal: &FnType,
+    value: &FnType,
+) -> Result<()> {
+    for id in value.lambda_ids.ids().iter() {
+        let def = ctx.lambda_defs.get(id).cloned();
+        let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+        else {
+            continue;
+        };
+        for (a, spec) in f.typ.args.iter().zip(f.argspec.iter()) {
+            let (Some(name), Some(expr)) = (a.label(), spec.kind.default()) else {
+                continue;
+            };
+            let required = formal.args.iter().find(|fa| fa.label() == Some(name));
+            if required.is_some_and(|fa| !fa.kind.has_default()) {
+                continue;
+            }
+            let node = checked_default(
+                ctx,
+                flags,
+                scope,
+                top_id,
+                f,
+                name,
+                expr,
+                &mut Refs::default(),
+                Some(formal),
+            )?;
+            ctx.discard(node);
+        }
+    }
+    Ok(())
+}
+
+/// Whose cells a hidden default's judgment may narrow.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Narrowing {
+    /// A call's formals: the site's own instantiation, which a default
+    /// narrows.
+    Site,
+    /// A declaration's type (an annotation, a `<-` target, a return
+    /// type): judged on a copy, so it binds nothing of the declaration.
+    Copy,
+}
+
+/// [`judge_hidden_defaults`] wherever `declared` and `value` both give a
+/// function at one place: a union's one function arm, a struct field, a
+/// tuple, variant, array, list, map or reference part, through typedefs.
+/// What a call's formal, a `let`'s annotation, a `<-` target and a
+/// declared return type hold.
+pub(crate) fn check_hidden_defaults<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    top_id: ExprId,
+    declared: &Type,
+    value: &Type,
+    narrowing: Narrowing,
+) -> Result<()> {
+    match narrowing {
+        Narrowing::Site => {
+            hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0)
+        }
+        Narrowing::Copy => {
+            let declared = declared.reset_tvars();
+            hidden_defaults_at(ctx, flags, scope, top_id, &declared, value, 0)
+        }
+    }
+}
+
+fn hidden_defaults_at<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    top_id: ExprId,
+    declared: &Type,
+    value: &Type,
+    expanded: u8,
+) -> Result<()> {
+    // typedefs expand this deep at most, so a recursive one ends
+    const MAX_EXPANSIONS: u8 = 16;
+    let (Some(d), Some(v)) = (declared.deref_cloned(), value.deref_cloned()) else {
+        return Ok(());
+    };
+    let mut expanded = expanded;
+    let mut open = |t: Type| match t {
+        Type::Ref(_) if expanded < MAX_EXPANSIONS => {
+            expanded += 1;
+            t.lookup_ref(&ctx.env).ok()
+        }
+        Type::Ref(_) => None,
+        t => Some(t),
+    };
+    let (Some(d), Some(v)) = (open(d), open(v)) else { return Ok(()) };
+    let at = |ctx: &mut CompileCtx<R, E>, d: &Type, v: &Type| {
+        hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded)
+    };
+    ensure_sufficient(|| match (&d, &v) {
+        (Type::Fn(formal), Type::Fn(fv)) => {
+            judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
+        }
+        (Type::Set(_), _) | (_, Type::Set(_)) => {
+            let mut formals: LPooled<Vec<TArc<FnType>>> = LPooled::take();
+            collect_fn_arms(&d, &mut formals);
+            let mut values: LPooled<Vec<TArc<FnType>>> = LPooled::take();
+            collect_fn_arms(&v, &mut values);
+            match &formals[..] {
+                [formal] => values.iter().try_for_each(|fv| {
+                    judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
+                }),
+                _ => Ok(()),
+            }
+        }
+        (Type::Struct(df), Type::Struct(vf)) => df.iter().try_for_each(|(n, dt, _)| {
+            match vf.iter().find(|(m, _, _)| m == n) {
+                Some((_, vt, _)) => at(ctx, dt, vt),
+                None => Ok(()),
+            }
+        }),
+        (Type::Tuple(a), Type::Tuple(b))
+        | (Type::Variant(_, a, _), Type::Variant(_, b, _))
+            if a.len() == b.len() =>
+        {
+            a.iter().zip(b.iter()).try_for_each(|(d, v)| at(ctx, d, v))
+        }
+        (Type::Array(d), Type::Array(v))
+        | (Type::List(d), Type::List(v))
+        | (Type::Error(d), Type::Error(v))
+        | (Type::ByRef(_, d), Type::ByRef(_, v)) => at(ctx, d, v),
+        (Type::Map { key: dk, value: dv }, Type::Map { key: vk, value: vv }) => {
+            at(ctx, dk, vk)?;
+            at(ctx, dv, vv)
+        }
+        _ => Ok(()),
+    })
+}
+
 fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     match t {
         Type::Fn(ft) => out.push(ft.clone()),
@@ -413,11 +605,22 @@ fn callee_param<R: Rt, E: UserEvent>(
     f: &LambdaDef<R, E>,
     name: &ArcStr,
     site: Option<&FnType>,
+    gates: &mut LPooled<Vec<RigidGate>>,
 ) -> Option<Type> {
     let inst = f.typ.instantiate(&ctx.rec_defs);
     if let Some(site) = site {
-        // each argument the site passes fits the callee's parameter for it
+        // each argument the site passes fits the callee's parameter for it;
+        // a rank-2 site's quantifiers stand for any type, so they are held
+        // rigid while `gates` lives
         let site = site.replace_tvars(&Default::default());
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        site.collect_tvars(&mut named);
+        gates.extend(
+            named
+                .iter()
+                .filter(|(n, _)| site.quantifiers.contains(*n))
+                .map(|(_, tv)| tv.open_quantifier_rigid()),
+        );
         let keys =
             |args: &[FnArgType]| ArgKey::of_formals(args).collect::<SmallVec<[_; 4]>>();
         let (site_keys, inst_keys) = (keys(&site.args), keys(&inst.args));
@@ -1063,37 +1266,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// each default of its definition that such a call may omit, the
     /// formal hiding the label or making it optional, is judged here, at
     /// the parameter as the formal instantiates it.
-    // CR claude for claude: [bug/high] This is the only place where an omitted labeled
-    // default is checked against the fn type that hides its label, and it runs only for
-    // call arguments. FnType::contains_int accepts the same omission everywhere a
-    // function value meets a fn type: a `let` annotation, a connect into a
-    // function-typed binding, and a rank-2 formal at its instantiated copy. With `f =
-    // |#x = 1, y| x == y`, `let h: fn(y: string) -> bool = f` passes --check and the
-    // build refuses it, and so does the rank-2 form. When `f` is connected into `pick:
-    // fn(y: string) -> bool`, both check and build pass. At run time the callee bind
-    // fails, the error is only logged, and the call goes silent for good. Fix: run this
-    // judgment wherever a value is contained in a function type, either by carrying
-    // each default's checked type in FnArgType and testing it inside
-    // FnType::contains_int where the omission is accepted, or by calling this helper
-    // from bind, connect and the rank-2 instantiation. Then pin the annotation form.
-    // probe: design/review-2026-10-12/repro/x-typecheck-generics-04.gx (static forms in
-    // x-typecheck-generics-04a-*.gx and 04c-*.gx) (x-typecheck-generics-04)
-    // CR claude for claude: [bug/high] A labeled default that a fn type hides should be
-    // judged wherever a function value meets that fn type. This check runs only for the
-    // arguments of a call, so the other places are not covered. Through a `let`
-    // annotation (`let h: fn(y: string) -> bool = |#x = 4096, y| x == y; h("seven")`),
-    // the check accepts the program and the build refuses it at the call, which is a
-    // check/elaboration divergence. Through a struct field, an array element or a `<-`
-    // connect, both the check and the build accept it. At run time the callee bind then
-    // fails ("binding the callee failed: ... string does not contain i64") and the call
-    // never produces a value. Fix: move this judgment into one helper and call it from
-    // every place a fn-typed value is checked against a declared fn type: the let/bind
-    // annotation, `Connect::typecheck0`, the struct/tuple/array constructor checks and
-    // this call-argument path. Alternatively, make fn-type containment consult
-    // `lambda_ids`. Add pins for the let, field, element and connect forms next to
-    // `default_hidden_by_a_fn_type`. Probes:
-    // design/review-2026-10-12/repro/tests-functions-01.gx and
-    // design/review-2026-10-12/repro/tests-functions-01b.gx. (tests-functions-01)
     fn check_value_defaults(
         &self,
         ctx: &mut CompileCtx<R, E>,
@@ -1105,54 +1277,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) else {
                 continue;
             };
-            // CR claude for claude: [bug/high] This is the only place a value's hidden
-            // labeled default is judged, and it only runs when a call argument's formal
-            // is exactly `Type::Fn`. The check accepts the same value when it meets a
-            // fn type that hides the label in any other position: an optional callback
-            // `[fn(..), null]`, a struct field, an array element, or a let annotation.
-            // In the optional-callback, struct and array cases, the run-time bind's
-            // `checked_default` then refuses the default. The site logs "binding the
-            // callee failed" and stays bottom forever. In the let-annotation case, the
-            // build refuses what `--check` accepted. Fix: judge hidden defaults
-            // wherever a value carrying `lambda_ids` is coerced to a fn type that omits
-            // the label or makes it optional. At minimum, walk both the formal and the
-            // argument type with `collect_fn_arms` here instead of requiring a bare Fn.
-            // probe: design/review-2026-10-12/repro/c-callsite-02.gx (c-callsite-02)
-            let Some(Type::Fn(ref formal)) = farg.typ.deref_cloned() else { continue };
-            let Some(Type::Fn(ref value)) = n.typ().deref_cloned() else { continue };
-            for id in value.lambda_ids.ids().iter() {
-                let def = ctx.lambda_defs.get(id).cloned();
-                let Some(f) =
-                    def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
-                else {
-                    continue;
-                };
-                for (a, spec) in f.typ.args.iter().zip(f.argspec.iter()) {
-                    let (Some(name), Some(expr)) = (a.label(), spec.kind.default())
-                    else {
-                        continue;
-                    };
-                    let omittable =
-                        formal.args.iter().find(|fa| fa.label() == Some(name));
-                    if omittable.is_some_and(|fa| !fa.kind.has_default()) {
-                        continue;
-                    }
-                    let node = wrap!(
-                        n,
-                        self.checked_default_at(
-                            ctx,
-                            flags,
-                            &self.scope,
-                            f,
-                            name,
-                            expr,
-                            &mut Refs::default(),
-                            Some(&formal),
-                        )
-                    )?;
-                    ctx.discard(node);
-                }
-            }
+            wrap!(
+                n,
+                check_hidden_defaults(
+                    ctx,
+                    flags,
+                    &self.scope,
+                    self.top_id,
+                    &farg.typ,
+                    n.typ(),
+                    Narrowing::Site
+                )
+            )?;
         }
         Ok(())
     }
@@ -1169,37 +1305,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         defaults: &mut Refs,
         site: Option<&FnType>,
     ) -> Result<Node<R, E>> {
-        // compiled and checked in `f`'s environment, where its names are
-        let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
-            let local_scope = Scope {
-                dynamic: scope.dynamic.clone(),
-                lexical: f.scope.lexical.clone(),
-            };
-            let mut node = compile(ctx, flags, expr.clone(), &local_scope, self.top_id)?;
-            let res = node.typecheck0(ctx).and_then(|()| {
-                // the site's view first, which a default narrows; where it
-                // hides or re-types the label, the callee's own parameter
-                let site_view = site
-                    .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)))
-                    .map(|a| a.typ.check_contains(&ctx.env, node.typ()));
-                match site_view {
-                    Some(Ok(())) => Ok(()),
-                    site_view => match callee_param(ctx, f, name, site) {
-                        Some(t) => t.check_contains(&ctx.env, node.typ()),
-                        None => site_view.unwrap_or(Ok(())),
-                    },
-                }
-            });
-            Ok::<_, anyhow::Error>((node, res))
-        })?;
-        node.refs(defaults);
-        match wrap!(node, res) {
-            Ok(()) => Ok(node),
-            Err(e) => {
-                ctx.discard(node);
-                Err(e)
-            }
-        }
+        checked_default(ctx, flags, scope, self.top_id, f, name, expr, defaults, site)
     }
 
     /// What the call raises joins the enclosing catch's type; with no
@@ -1248,7 +1354,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 .get(&ArgKey::Named(name.clone()))
                 .is_some_and(|a| a.stage.is_default())
         };
-        // CR claude for claude: [bug/medium] The check skips a default whose label the
+        // XCR claude for claude: [bug/medium] The check skips a default whose label the
         // site's fn type does not declare. fill_omitted adds a placeholder only for
         // labels the site's ftype names, so `omitted` is false for such a label. This
         // early return then gives Ok(true), and the per-definition loop below would
@@ -1262,6 +1368,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // a default stage), and drop this early return or base it on those labels.
         // Fixing the coercion that hides the label (c-callsite-02) would also cover it.
         // probe: design/review-2026-10-12/repro/c-callsite-03.gx (c-callsite-03)
+        // 2026-10-14 claude: every place a function value meets a fn type that hides or
+        // makes optional a label is judged now (callsite::check_hidden_defaults from
+        // call arguments, a let's annotation, a <-, a declared return type, through
+        // unions, fields, tuples, variants, arrays, lists, maps, references and
+        // typedefs), so a call through such a type is never reached by an unjudged
+        // value; this early return stands on that. Pins:
+        // lang::functions::default_hidden_by_* (the probe's annotation form is
+        // default_hidden_by_an_annotation's twin). Review: is there another coercion
+        // site?
         if !ftype.args.iter().any(|a| a.label().is_some_and(omitted)) {
             return Ok(true);
         }
