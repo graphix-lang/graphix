@@ -157,7 +157,12 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         let at = pc.update(ctx);
         let target = match at.is_fired().then(|| at.value_cloned()) {
             Some(Value::String(l)) if *l == crate::expr::seq::IDLE => Some(None),
-            Some(Value::String(l)) => steps.iter().position(|s| s.label == l).map(Some),
+            // the step after the current one, else a search
+            Some(Value::String(l)) => current
+                .and_then(|c| steps[c].next)
+                .filter(|n| steps[*n].label == l)
+                .or_else(|| steps.iter().position(|s| s.label == l))
+                .map(Some),
             _ => None,
         };
         tracked.observe(ctx);

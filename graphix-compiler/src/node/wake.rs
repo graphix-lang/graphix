@@ -8,6 +8,7 @@ use crate::{
 };
 use nohash::{IntMap, IntSet};
 use smallvec::SmallVec;
+use std::mem;
 
 /// Wake-catch-up fire tracking (design/wake_catchup.md): one fire bit
 /// per arm-body input, set when the input fires and consumed by the
@@ -26,8 +27,8 @@ pub(crate) struct TrackedFires {
     /// of. Reading a facet consumes the input's fire; the facet itself
     /// is never delivered.
     consumes: Vec<IntSet<BindId>>,
-    /// The union of `per_arm`'s keys.
-    all: IntSet<BindId>,
+    /// The union of `per_arm`'s keys, each with how many arms read it.
+    all: IntMap<BindId, u32>,
     /// Sound fires no arm evaluation has consumed yet, each with its
     /// tag: a real event, or a wake's own fire.
     pending: IntMap<BindId, Tag>,
@@ -98,7 +99,7 @@ impl TrackedFires {
         let mut t = TrackedFires {
             per_arm: (0..n).map(|_| IntMap::default()).collect(),
             consumes: (0..n).map(|_| IntSet::default()).collect(),
-            all: IntSet::default(),
+            all: IntMap::default(),
             pending: IntMap::default(),
             carried: IntMap::default(),
             ran: vec![false; n],
@@ -108,7 +109,9 @@ impl TrackedFires {
             fill(i, &mut r);
             Self::arm_refs(env, &r, &mut t.per_arm[i], &mut t.consumes[i]);
         }
-        t.all.extend(t.per_arm.iter().flat_map(|m| m.keys().copied()));
+        for id in t.per_arm.iter().flat_map(|m| m.keys()) {
+            *t.all.entry(*id).or_default() += 1;
+        }
         t
     }
 
@@ -127,6 +130,7 @@ impl TrackedFires {
         let Self { per_arm, consumes, all, pending, carried, ran: _ } = self;
         let mut r = Refs::default();
         fill(&mut r);
+        let old = mem::take(&mut per_arm[i]);
         Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
         // CR claude for claude: [perf/medium] refresh rebuilds `all` from every arm's
         // map and then retains `pending`, at every deselect. A seq machine deselects at
@@ -144,10 +148,35 @@ impl TrackedFires {
         // side; the store-stamped-this-cycle case read_var also reports must be made
         // explicit. Precompute the evaluated arms' membership set once per call. Map
         // label to step index once in the seq machine. (x-perf-runtime-03)
-        all.clear();
-        all.extend(per_arm.iter().flat_map(|m| m.keys().copied()));
-        pending.retain(|id, _| all.contains(id));
-        carried.retain(|id, _| all.contains(id));
+        // the input counts move by this arm's difference; an input no arm
+        // reads any more drops its bits
+        // 2026-10-15 claude: Done: all counts the arms reading each input and refresh
+        // moves the counts by the refreshed arm's difference, dropping the bits of an
+        // input no arm reads; the seq machine tries the current step's next before
+        // searching the labels. The seq chain probe is now linear (quick build, pinned:
+        // 800/1600/3200 steps 3.1/5.1/9.7 ms, from 11.9/50.8/131.7). Open:
+        // observe_except still reads every tracked input each update
+        // (x-perf-runtime-05.py d, 1600 arms: 0.22 ms a cycle, 0.06 shared). Walking
+        // the event instead needs the store writes stamped this cycle with no event
+        // entry made explicit (the ByRef mirror, a module's proxies, the seq pc) and
+        // must keep a fork's read audit, so it is left.
+        for id in per_arm[i].keys() {
+            if !old.contains_key(id) {
+                *all.entry(*id).or_default() += 1;
+            }
+        }
+        for id in old.keys() {
+            if !per_arm[i].contains_key(id)
+                && let Some(n) = all.get_mut(id)
+            {
+                *n -= 1;
+                if *n == 0 {
+                    all.remove(id);
+                    pending.remove(id);
+                    carried.remove(id);
+                }
+            }
+        }
     }
 
     /// Arm `i` was evaluated: the first time, add what its own nodes
@@ -170,7 +199,7 @@ impl TrackedFires {
         for (id, ids) in inputs {
             if let std::collections::hash_map::Entry::Vacant(e) = per_arm[i].entry(id) {
                 e.insert(ids);
-                all.insert(id);
+                *all.entry(id).or_default() += 1;
                 pending.remove(&id);
             }
         }
@@ -196,7 +225,7 @@ impl TrackedFires {
         carried: Option<&IntSet<BindId>>,
     ) {
         let Self { all, pending, carried: carried_bits, per_arm, .. } = self;
-        for id in all.iter() {
+        for id in all.keys() {
             let carry = carried.is_some_and(|c| c.contains(id));
             if (carry || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
                 && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
