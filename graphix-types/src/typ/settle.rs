@@ -100,7 +100,8 @@ impl TVar {
                         }
                         write!(cs, "{c}")?;
                     }
-                    bail!("unsatisfiable constraints on '{}: {}", self.name, &*cs)
+                    let name = super::tvar::ShortName(&self.name);
+                    bail!("unsatisfiable constraints on '{name}: {}", &*cs)
                 })
             }
         }

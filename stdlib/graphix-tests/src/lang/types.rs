@@ -3110,3 +3110,22 @@ run!(
 let g = { type E = `A(i64); |x: i64| -> i64 throws Error<ErrChain<E>> f(x) };
 let result = { catch(e) println("[e]"); g(0) }"#
 ; FuseExpect::None);
+
+// A refusal that names an open cell prints its short name, as every other
+// message does, never the cell's full generated id.
+run!(an_open_cell_prints_short, r#"
+{
+    let st = never();
+    let g = |x| { st <- x; st };
+    let h = |f: fn<'b: Any>(x: 'b) -> 'b| f(1);
+    h(g)
+}
+"#, |v: Result<&Value>| match v {
+    Err(e) => {
+        let msg = format!("{e:#}");
+        let held = msg.split("its type holds '_").nth(1).unwrap_or("");
+        let digits = held.chars().take_while(|c| c.is_ascii_digit()).count();
+        msg.contains("is not polymorphic in 'b") && (1..10).contains(&digits)
+    }
+    Ok(_) => false,
+}; FuseExpect::None);

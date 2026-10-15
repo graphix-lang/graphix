@@ -157,8 +157,7 @@ pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub id: BindId,
     pub node: Option<Node<R, E>>,
     pub stage: ArgStage,
-    /// The argument's expression, which a reference to it shows: the
-    /// node's own, so a bind's reference allocates none.
+    /// The argument's expression, which a reference to it shows.
     pub spec: TArc<Expr>,
 }
 
@@ -635,21 +634,9 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
         .map(|(name, tv)| (name.clone(), tv.cell_addr()))
         .collect();
     if let Some((q, tv)) = carried_out(&quantified, arg) {
-        // CR claude for claude: [readability/low] This refusal formats tv.name
-        // directly, so a generated cell prints as `'_4611686018427395427`. TVar's
-        // Display would print the short name (`'_7517`) used in every other
-        // message. The unsatisfiable-constraints bail in TVar::settle
-        // (typ/settle.rs) has the same problem with self.name. Fix: print the cell
-        // through TVar's Display (or make ShortName usable here) at both sites.
-        // Then give inferred_cell_prints_its_binding, or a new pin, a message that
-        // actually holds an open cell, and assert the short form. Today's pin
-        // asserts "i64 does not contain string", which has no cell in it, so it
-        // passes however a cell prints. probe:
-        // design/review-2026-10-12/repro/tests-types-03.gx (tests-types-05)
         bail!(
-            "the argument is not polymorphic in '{q}: its type holds '{}, a variable \
-             of its environment, which would carry '{q} out",
-            tv.name
+            "the argument is not polymorphic in '{q}: its type holds {tv}, a variable \
+             of its environment, which would carry '{q} out"
         )
     }
     Ok(())
@@ -1110,19 +1097,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee.apply().map(|a| a.view())
     }
 
-    /// Signature-order `Ref` Nodes, one per formal, with labeled defaults
-    /// resolved. `None` until bound. [`Self::arg_positional`] /
-    /// [`Self::arg_named`] give the source-order view.
-    // CR claude for claude: [doc-drift/low] Several docs in this file are on the wrong
-    // item or say something the code does not do. (a) The doc above this fn describes
-    // signature-order Ref nodes that are None until bound, which is the deleted
-    // arg_refs accessor and not compile. Replace it with a one-line doc for compile.
-    // (b) The first line of imaged_refs' doc, 'Decode the instance the image holds for
-    // this site and bind it', describes materialize, which has no doc: move it there.
-    // (c) update_args' two-line doc sits on `type Published`: move it onto update_args.
-    // (d) Arg::spec's doc says a bind's reference allocates nothing, but prepare_bind
-    // and Arg::image_decode each allocate TArc::new(node.spec().clone()). Either share
-    // the spec (ctx.shared_spec) or drop that clause. (c-callsite-11)
+    /// The call `spec` compiled: its function and arguments, unbound.
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -2476,7 +2451,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             .ok_or(PackError::Application(image::NOT_IMAGED))
     }
 
-    /// Decode the instance the image holds for this site and bind it.
     /// Each variable an imaged body reads that it does not bind, from its
     /// summary.
     fn imaged_refs(&self, mut f: impl FnMut(BindId)) {
@@ -2487,6 +2461,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
     }
 
+    /// Decode the instance the image holds for this site and bind it.
     fn materialize(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<()> {
         let Callee::Imaged { instance, .. } = &self.callee else { return Ok(()) };
         let instance = *instance;
@@ -3266,8 +3241,6 @@ enum Keep {
     Nothing,
 }
 
-/// Update `args` and publish each production on its argument's id into
-/// `out`, in order or forked where the site's plan says.
 /// The argument ids a dispatch published on the overlay.
 type Published = SmallVec<[BindId; 4]>;
 
@@ -3278,6 +3251,8 @@ struct Pass {
     root: QuietAtRoot,
 }
 
+/// Update `args` and publish each production on its argument's id into
+/// `out`, in order or forked where the site's plan says.
 fn update_args<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,

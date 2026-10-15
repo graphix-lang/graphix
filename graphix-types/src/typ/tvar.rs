@@ -541,7 +541,7 @@ impl fmt::Debug for TVar {
 
 /// A generated cell's name: `_<id>`, the id short when it was minted
 /// (counted from [`crate::ids::MINT_BASE`]) rather than its full width.
-struct ShortName<'a>(&'a str);
+pub(crate) struct ShortName<'a>(pub(crate) &'a str);
 
 impl fmt::Display for ShortName<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
