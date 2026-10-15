@@ -208,6 +208,11 @@ pub(super) struct Leaf {
     pub(super) fresh: bool,
 }
 
+/// Whether `pair` is a struct's `[name, value]` field named `name`.
+fn is_field(pair: &[Value], name: &ArcStr) -> bool {
+    matches!(pair, [Value::String(n), _] if n == name)
+}
+
 impl StructPatternNode {
     /// This pattern's children, in the order [`Self::child_types`]
     /// gives their types.
@@ -355,6 +360,10 @@ impl StructPatternNode {
         for id in self.whole_binds() {
             out.push(Leaf { id, typ: typ.normalize(), fresh: true })
         }
+        // an abstract's payload took its types from its written rep
+        if let Self::Abstract { .. } = self {
+            return Ok(());
+        }
         let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
         let sub = self.children_inferred(inferred);
         let Self::Or { alts } = self else {
@@ -461,27 +470,11 @@ impl StructPatternNode {
 
     /// The id of every [`Leaf::fresh`] name: each capture and every
     /// name an or-pattern binds.
-    // CR claude for claude: [bug/critical] fresh_ids recurses into an Abstract's
-    // payload. That payload compiles against its declared rep under a written
-    // predicate, so its or-names and captures already have final types.
-    // PatternNode::compile still frees them to empty tvars, and bind_narrowed never
-    // re-binds them. Under the written rep, leaves reaches a constructor at a union
-    // position through child_types, which returns None over a Set, so an or-pattern's
-    // shared name stays a free type variable that the arm body decides. That is
-    // unsound: `let r: string = select t { T(`A(x) | `B(x)) => x }` is accepted and
-    // prints an i64. With fusion, an i64 arm body panics a kernel ("runtime String does
-    // not match the compiled Scalar(I64) slot"). A capture inside the payload is
-    // widened to the whole rep, so `T(v@ `A(_)) => select v { `A(m) => m }` is refused
-    // for a missing `B arm. Fix: stop both walks at an Abstract. In fresh_ids, report
-    // only its `all`. In leaves_inner, push only its `all` leaf and do not descend.
-    // Both are needed: either half alone still frees the binds, or refuses the capture
-    // in bind_narrowed's check_contains. probe:
-    // design/review-2026-10-12/repro/c-pattern-02.gx (also
-    // c-pattern-01-abstract-or-unbound.gx, c-pattern-02-abstract-capture-widened.gx)
-    // (c-pattern-02)
     fn fresh_ids(&self, f: &mut impl FnMut(BindId)) {
         crate::stack::ensure_sufficient(|| match self {
             Self::Or { .. } => self.ids(&mut *f),
+            // a payload compiled against its written rep: its binds are typed
+            Self::Abstract { .. } => self.whole_binds().for_each(&mut *f),
             _ => {
                 self.whole_binds().for_each(&mut *f);
                 for c in self.children() {
@@ -1167,12 +1160,11 @@ impl StructPatternNode {
                     if let Some(id) = all {
                         f(*id, v.clone())
                     }
-                    for (_, i, n) in binds.iter() {
-                        if let Some(v) = a.get(*i) {
-                            match v {
-                                Value::Array(a) if a.len() == 2 => n.bind(&a[1], f),
-                                _ => (),
-                            }
+                    for (name, i, n) in binds.iter() {
+                        if let Some(Value::Array(a)) = a.get(*i)
+                            && is_field(a, name)
+                        {
+                            n.bind(&a[1], f)
                         }
                     }
                 }
@@ -1242,27 +1234,15 @@ impl StructPatternNode {
                 }
                 _ => false,
             },
-            // CR claude for claude: [bug/critical] The struct structure test reads each
-            // bound field at the index it has in this pattern's own struct type and
-            // never compares the field name stored in the pair. bind_inner's Struct arm
-            // does the same. An or-pattern takes the first alternative whose structure
-            // passes, but the check's guard (`footprint` + `rep_collision` in `leaves`)
-            // compares field names, so it accepts alternatives that this test cannot
-            // tell apart. Over `[{a: i64, x: i64}, {x: i64, z: string}]`, `{a: 0, x} |
-            // {x, z: "q"}` matches `{x: 0, z: "q"}` through the first alternative and
-            // binds x to "q". In the node-walk an i64 then holds a string. A fused
-            // kernel panics in `stage` ("runtime String does not match the compiled
-            // Scalar(I64) slot") and takes the runtime down. Fix: in is_match_inner and
-            // bind_inner, require `a[i]` to be `[String(n), v]` with `n` equal to the
-            // bind's name, and apply the same name test in the JIT's composite struct
-            // condition. That makes `footprint` honest. A name-blind footprint would
-            // refuse valid programs instead. probe:
-            // design/review-2026-10-12/repro/c-pattern-01.sh (c-pattern-01)
+            // a field is the pair at its index naming it: a struct of
+            // another shape that has the index fails
             Self::Struct { all: _, binds } => match v {
                 Value::Array(a) => {
                     a.len() >= binds.len()
-                        && binds.iter().all(|(_, i, p)| match a.get(*i) {
-                            Some(Value::Array(a)) if a.len() == 2 => p.is_match(&a[1]),
+                        && binds.iter().all(|(name, i, p)| match a.get(*i) {
+                            Some(Value::Array(a)) if is_field(a, name) => {
+                                p.is_match(&a[1])
+                            }
                             _ => false,
                         })
                 }

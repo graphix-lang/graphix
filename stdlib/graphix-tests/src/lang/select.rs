@@ -1289,6 +1289,54 @@ async fn wake_over_a_republished_let_catches_up(mode: Mode) -> Result<()> {
 
 modes!(wake_over_a_republished_let_catches_up);
 
+// A struct pattern's field is the pair at its index that names it: an
+// or-alternative over a struct of another shape with that index fails.
+run!(
+    struct_pattern_checks_field_names,
+    r#"{
+    let g = |p: [{a: i64, x: i64}, {x: i64, z: string}]| select p {
+      {a: 0, x} | {x, z: "q"} => x,
+      _ => -1
+    };
+    let h = |p: [{y: i64}, {x: i64, y: string}]| select p {
+      {y} | {x: 1, y} => y,
+      _ => "none"
+    };
+    (g({x: 0, z: "q"}), h({x: 1, y: "s"}))
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:0, "s"]"#;
+    FuseExpect::None
+);
+
+// An abstract's payload pattern compiles against its written rep: an
+// or-name shared across its members holds their union, and a capture
+// narrows to its alternative.
+run!(
+    abstract_payload_binds_keep_their_rep_types,
+    r#"{
+    type T = Abstract<[`A(i64), `B(string)]>;
+    let t: T = T(`B("hello"));
+    let r: i64 = select t { T(`A(x) | `B(x)) => x };
+    r
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_capture_narrows,
+    r#"{
+    type T = Abstract<[`A(i64), `B(string)]>;
+    let t: T = T(`A(3));
+    select t {
+      T(v@ `A(_)) => select v { `A(m) => m },
+      T(`B(_)) => 0
+    }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)));
+    FuseExpect::Jit
+);
+
 // A bottom initializer that only an arm's wake fired, through `$`, a cast
 // or a select arm, is the wake's own fire: the `<-` target keeps its
 // written value, as with `never()`.
