@@ -48,10 +48,7 @@ use std::{
     fmt,
     hash::Hash,
     mem,
-    sync::{
-        Arc as SArc, OnceLock, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc as SArc, OnceLock, Weak},
 };
 use triomphe::Arc;
 
@@ -696,22 +693,8 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
     typ: Arc<FnType>,
-    /// `true` iff this lambda is pure, self-tail-recursive and has
-    /// loop-able formals; set by `analysis::analyze`. The JIT emits a
-    /// native loop; the node-walk dispatches every call.
-    // CR claude for claude: [structure/low] `tail_loop`, `self_recursive` and
-    // `self_bind` are one fact stored three times. `analysis::mark_recursion` derives
-    // all three from one `self_info` entry: tail_loop implies a self_bind, and a
-    // self_bind implies self_recursive. Nothing in the types holds those rules, and the
-    // image codec writes and reads the three fields separately. The only read of
-    // `self_recursive` is `self_bind.filter(|_| g.self_recursive())` in
-    // `lowering::lambda_kernel`, which the rules already make redundant. Replace the
-    // three with one `Mutex<Option<SelfCall>>`, where `struct SelfCall { bind: BindId,
-    // tail_loop: bool }`, set in one store by `mark_recursion` and imaged as one value.
-    // Delete `self_recursive` and the filter. (x-invalid-states-05)
-    tail_loop: AtomicBool,
-    self_recursive: AtomicBool,
-    self_bind: Mutex<Option<BindId>>,
+    /// How the body calls itself ([`SelfCall`]), when it does.
+    self_call: Mutex<Option<SelfCall>>,
     /// The dispatch's return slot, lent to the owning `CallSite`.
     resident: TagValue,
     /// `true` until the first dispatch, which seeds the fresh formal
@@ -784,31 +767,31 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         &self.typ
     }
 
-    /// The tail-loop gate (see the `tail_loop` field).
+    /// The tail-loop gate (see the `self_call` field).
     pub fn tail_loop(&self) -> bool {
-        self.tail_loop.load(Ordering::Relaxed)
+        self.self_call.lock().is_some_and(|s| s.tail_loop)
     }
 
-    /// Set the tail-loop gate; `&self` so analysis can mark through a shared `&Node`.
-    pub fn set_tail_loop(&self, v: bool) {
-        self.tail_loop.store(v, Ordering::Relaxed)
-    }
-
-    pub fn self_recursive(&self) -> bool {
-        self.self_recursive.load(Ordering::Relaxed)
-    }
-
-    pub fn set_self_recursive(&self, recursive: bool) {
-        self.self_recursive.store(recursive, Ordering::Relaxed)
-    }
-
+    /// The binding the body calls itself through.
     pub fn self_bind(&self) -> Option<BindId> {
-        *self.self_bind.lock()
+        self.self_call.lock().map(|s| s.bind)
     }
 
-    pub fn set_self_bind(&self, bind: Option<BindId>) {
-        *self.self_bind.lock() = bind;
+    /// Set how the body calls itself; `&self` so analysis can mark
+    /// through a shared `&Node`.
+    pub fn set_self_call(&self, call: Option<SelfCall>) {
+        *self.self_call.lock() = call;
     }
+}
+
+/// How an instance's body calls itself: through `bind`, and as one native
+/// loop when `tail_loop` (its self-calls are tails over loop-able
+/// formals; set by `analysis::analyze`, the JIT emits the loop and the
+/// node-walk dispatches every call).
+#[derive(Debug, Clone, Copy, netidx_derive::Pack)]
+pub struct SelfCall {
+    pub bind: BindId,
+    pub tail_loop: bool,
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -848,9 +831,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         image::slice_encode(&self.args, buf)?;
         self.typ.encode(buf)?;
         self.body.image_encode(buf)?;
-        self.tail_loop.load(Ordering::Relaxed).encode(buf)?;
-        self.self_recursive.load(Ordering::Relaxed).encode(buf)?;
-        self.self_bind.lock().encode(buf)?;
+        self.self_call.lock().encode(buf)?;
         lexical_encode(&self.env, buf)
     }
 
@@ -1151,9 +1132,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             args: Box::from_iter(argpats.drain(..)),
             typ,
             body,
-            tail_loop: AtomicBool::new(false),
-            self_recursive: AtomicBool::new(false),
-            self_bind: Mutex::new(None),
+            self_call: Mutex::new(None),
             resident: TagValue::phantom(),
             first_dispatch: true,
             env: Env { binds, ..ctx.env.lexical() },
@@ -1171,9 +1150,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         let args = Vec::<StructPatternNode>::decode(buf)?.into_boxed_slice();
         let typ: Arc<FnType> = Pack::decode(buf)?;
         let body = decode_node(ctx, buf)?;
-        let tail_loop = bool::decode(buf)?;
-        let self_recursive = bool::decode(buf)?;
-        let self_bind = Option::<BindId>::decode(buf)?;
+        let self_call = Option::<SelfCall>::decode(buf)?;
         let env = lexical_decode(buf)?;
         Ok(Self {
             slept: WakeBit::default(),
@@ -1182,9 +1159,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             args,
             body,
             typ,
-            tail_loop: AtomicBool::new(tail_loop),
-            self_recursive: AtomicBool::new(self_recursive),
-            self_bind: Mutex::new(self_bind),
+            self_call: Mutex::new(self_call),
             resident: TagValue::phantom(),
             first_dispatch: true,
             env,

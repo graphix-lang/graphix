@@ -1195,7 +1195,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     if matches!(abi_kind(&return_type), Some(AbiKind::Unit | AbiKind::Null)) {
         return Err("it returns no value".into());
     }
-    let self_call = self_bind.filter(|_| g.self_recursive());
+    let self_call = self_bind;
     // Defense in depth behind static instance checking: a self-call
     // feeding a formal a differently-shaped value would marshal it under
     // the wrong ABI.

@@ -19,7 +19,7 @@ use crate::{
         Block,
         callsite::{ArgKey, CallSite},
         fork_control::{ForkControl, ForkKind},
-        lambda::{GXLambda, LambdaDef, ParamCalls},
+        lambda::{GXLambda, LambdaDef, ParamCalls, SelfCall},
         module::Module,
         seq_machine::{SeqCapture, SeqMachine},
     },
@@ -988,8 +988,7 @@ fn mark_recursion<R: Rt, E: UserEvent>(
     for (instance, g) in graph.instances.iter() {
         let component = components.get(instance).map(|(_, c)| c).unwrap_or_default();
         let self_bind = self_info.get(instance).copied().flatten();
-        g.set_self_recursive(self_info.contains_key(instance));
-        g.set_self_bind(self_bind);
+        g.set_self_call(self_bind.map(|bind| SelfCall { bind, tail_loop: false }));
         let tail_calls = TailSelfCalls::collect(g.body(), *instance);
         let tail = component.size == 1
             && !tail_calls.sites.is_empty()
@@ -1008,7 +1007,7 @@ fn mark_recursion<R: Rt, E: UserEvent>(
             && self_bind.is_some_and(|self_bind| {
                 lowering::structural_tail_loop(g, self_bind, ctx)
             });
-        g.set_tail_loop(looped);
+        g.set_self_call(self_bind.map(|bind| SelfCall { bind, tail_loop: looped }));
         let summary = match (tail, looped) {
             (true, true) => RecursionKind::TailRecursive,
             (true, false) => RecursionKind::TailCalls,
