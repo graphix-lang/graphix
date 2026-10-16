@@ -21,10 +21,17 @@ use sled::{
 };
 use std::{collections::hash_map::Entry, fmt, sync::Arc};
 
+/// The tree a transaction's part is over: one that stood when it was
+/// opened, or a name the commit creates, empty until then.
+enum Target {
+    Tree(sled::Tree),
+    New(ArcStr),
+}
+
 /// One tree's part of a transaction: each key it read, with the value it
 /// saw, and each write it will make (`None` removes).
 struct TreeTxn {
-    tree: sled::Tree,
+    target: Target,
     read: AHashMap<IVec, Option<IVec>>,
     write: AHashMap<IVec, Option<IVec>>,
 }
@@ -36,7 +43,10 @@ impl TreeTxn {
         if let Some(v) = self.write.get(key).or_else(|| self.read.get(key)) {
             return Ok(v.clone());
         }
-        let v = self.tree.get(key)?;
+        let v = match &self.target {
+            Target::Tree(tree) => tree.get(key)?,
+            Target::New(_) => None,
+        };
         self.read.insert(key.clone(), v.clone());
         Ok(v)
     }
@@ -93,27 +103,19 @@ impl TxnState {
         if let Some(idx) = self.opened.get(&key) {
             return Ok(*idx);
         }
-        let tree = match &name {
-            None => (****self.db).clone(),
-            // CR claude for claude: [bug/low] Opening a tree in a transaction creates
-            // it on disk immediately, while its type metadata waits in pending_meta
-            // until commit. A rollback, a Conflict or a dropped transaction therefore
-            // leaves a tree that db::tree_names lists and db::get_type answers null
-            // for, so the transaction is not all-or-nothing. probe:
-            // design/review-2026-10-12/repro/db2-10.gx (tree_names gives ["fresh"] and
-            // get_type gives null after rollback). Fix: when the tree does not exist
-            // yet, defer creating it to commit (create it just before the sled
-            // transaction, together with its meta entry), or drop it on
-            // rollback/conflict when this transaction created it. (db2-10)
-            // 2026-10-13 codex: The supplied probe reproduces (["fresh"], null) after rollback.
-            // sled 0.34.7 creates collections outside its entry transactions. Moving
-            // creation to commit still leaks a collection on conflict; dropping it
-            // afterward can erase concurrent writes. Atomic collection creation is
-            // needed in sled::Db/transaction (outside this worktree scope).
-            Some(n) => self.db.open_tree(n.as_bytes())?,
+        let target = match name {
+            None => Target::Tree((****self.db).clone()),
+            Some(n) if self.db.tree_names().iter().any(|t| *t == n.as_bytes()) => {
+                Target::Tree(self.db.open_tree(n.as_bytes())?)
+            }
+            Some(n) => Target::New(n),
         };
         let idx = self.trees.len();
-        self.trees.push(TreeTxn { tree, read: AHashMap::new(), write: AHashMap::new() });
+        self.trees.push(TreeTxn {
+            target,
+            read: AHashMap::new(),
+            write: AHashMap::new(),
+        });
         self.opened.insert(key, idx);
         Ok(idx)
     }
@@ -154,9 +156,47 @@ impl TxnState {
         Ok(())
     }
 
+    /// Apply the transaction. A tree it opened that did not stand is
+    /// created here, and dropped again when the commit fails and nothing
+    /// claimed it meanwhile.
     fn commit(self) -> Result<Value> {
-        let mut trees: Vec<sled::Tree> =
-            self.trees.iter().map(|t| t.tree.clone()).collect();
+        let creates = self.trees.iter().any(|t| matches!(t.target, Target::New(_)));
+        let _creating = creates.then(|| self.db.creating.lock());
+        let mut created: LPooled<Vec<ArcStr>> = LPooled::take();
+        let res = self.apply(&mut created);
+        if !matches!(res, Ok(Value::Null)) {
+            self.drop_unclaimed(&created)?;
+        }
+        res
+    }
+
+    /// Drop each of `created` that is still empty and has no types: a
+    /// program that opened it outside the transaction stored its types.
+    fn drop_unclaimed(&self, created: &[ArcStr]) -> Result<()> {
+        let meta = self.db.open_tree(META_TREE)?;
+        for name in created {
+            if self.db.open_tree(name.as_bytes())?.is_empty()
+                && meta.get(name.as_bytes())?.is_none()
+            {
+                self.db.drop_tree(name.as_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply(&self, created: &mut Vec<ArcStr>) -> Result<Value> {
+        let mut trees: Vec<sled::Tree> = Vec::with_capacity(self.trees.len() + 1);
+        for t in &self.trees {
+            trees.push(match &t.target {
+                Target::Tree(tree) => tree.clone(),
+                Target::New(name) => {
+                    if !self.db.tree_names().iter().any(|t| *t == name.as_bytes()) {
+                        created.push(name.clone());
+                    }
+                    self.db.open_tree(name.as_bytes())?
+                }
+            });
+        }
         if !self.pending_meta.is_empty() {
             trees.push(self.db.open_tree(META_TREE)?);
         }
@@ -432,7 +472,7 @@ mod test {
         let dir = tempfile::tempdir()?;
         let db = open_db(dir.path().to_str().unwrap().into()).await?;
         let tree = TreeTxn {
-            tree: db.open_tree("t")?,
+            target: Target::Tree(db.open_tree("t")?),
             read: AHashMap::new(),
             write: AHashMap::new(),
         };
@@ -458,6 +498,32 @@ mod test {
         assert_ne!(*ENCODED_ON.lock(), Some(thread::current().id()));
         assert!(ENCODED_ON.lock().is_some());
         let _: Option<EncodingProbe> = None;
+        Ok(())
+    }
+
+    /// A commit that fails drops the tree it created, and a later open
+    /// starts it empty with its own types.
+    #[tokio::test]
+    async fn failed_commit_drops_its_new_tree() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open_db(dir.path().to_str().unwrap().into()).await?;
+        let types = TreeTypes::string_to_string();
+        let old = db.open_tree("old")?;
+        let mut state = TxnState {
+            trees: Vec::new(),
+            opened: AHashMap::new(),
+            pending_meta: AHashMap::new(),
+            db: db.clone(),
+        };
+        let o = state.open_tree(Some("old".into()), types.clone())?;
+        let f = state.open_tree(Some("fresh".into()), types)?;
+        assert!(!db.tree_names().iter().any(|n| &**n == b"fresh"));
+        state.tree(o)?.get(b"k")?;
+        state.tree(f)?.put(b"k", Some(IVec::from(b"v")))?;
+        old.insert(b"k", b"changed")?;
+        let conflict = state.commit()?;
+        assert!(matches!(conflict, Value::Error(_)), "expected Conflict: {conflict:?}");
+        assert!(!db.tree_names().iter().any(|n| &**n == b"fresh"));
         Ok(())
     }
 }

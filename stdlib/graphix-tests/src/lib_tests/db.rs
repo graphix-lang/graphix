@@ -1090,6 +1090,26 @@ run_with_tempdir!(
     }
 );
 
+// A tree first opened in a transaction exists only once the transaction
+// commits: a rollback leaves neither the tree nor its types.
+run_with_tempdir!(
+    name: db_txn_rollback_leaves_no_tree,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let txn = db::txn::begin(db)$;
+        let t: db::txn::TxnTree<string, i64> = db::txn::tree(txn, "fresh")$;
+        let ins = db::txn::insert(t, "k", 1)$;
+        let r = db::txn::rollback(ins ~ txn)$;
+        let names = db::tree_names(r ~ db)$;
+        (names, db::get_type(names ~ db, "fresh")$)
+    }}"#,
+    setup: |td| { td.path().join("txn_fresh.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, arr([arr([]), Value::Null]));
+        Ok(())
+    }
+);
+
 // A constant #prefix filters the events, and the write issued on the
 // subscription's fire is seen.
 run_with_tempdir!(

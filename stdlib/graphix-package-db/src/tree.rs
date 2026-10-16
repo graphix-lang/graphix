@@ -38,6 +38,10 @@ pub(crate) use graphix_package_core::Reaped;
 
 pub(crate) struct Database {
     db: sled::Db,
+    /// Held while a tree is created with its types or dropped, so a
+    /// transaction's commit that created a tree and failed drops only one
+    /// nothing else has claimed.
+    pub(crate) creating: Mutex<()>,
     // The database drops before waiting openers are notified.
     _registration: Registration,
 }
@@ -94,8 +98,11 @@ fn try_open_db(path: &str) -> Result<Option<Db>> {
     }
     let db = sled::open(path)?;
     let path = std::fs::canonicalize(path)?;
-    let db =
-        Arc::new(Reaped::new(Database { db, _registration: Registration(path.clone()) }));
+    let db = Arc::new(Reaped::new(Database {
+        db,
+        creating: Mutex::new(()),
+        _registration: Registration(path.clone()),
+    }));
     open.insert(path, Arc::downgrade(&db));
     Ok(Some(db))
 }
@@ -209,6 +216,15 @@ impl TreeTypes {
             key: prim_typ(&params[0]),
             key_str: stored_type(&params[0], env),
             val_str: stored_type(&params[1], env),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn string_to_string() -> Self {
+        Self {
+            key: Some(Typ::String),
+            key_str: "string".into(),
+            val_str: "string".into(),
         }
     }
 
@@ -633,6 +649,7 @@ db_name_op!(DbGetTypeEv, DbGetType, "db_get_type", |db, name: Option<ArcStr>| {
 
 db_name_op!(DbDropTreeEv, DbDropTree, "db_drop_tree", |db, name: ArcStr| {
     meta_key(Some(&name))?;
+    let _creating = db.creating.lock();
     let existed = db.drop_tree(name.as_bytes())?;
     db.open_tree(META_TREE)?.remove(name.as_bytes())?;
     Ok(Value::Bool(existed))
@@ -871,10 +888,13 @@ impl TreeOpener for FromDb {
         blocking(move || {
             types.concrete()?;
             let key = meta_key(name.as_ref())?;
-            db.open_tree(META_TREE)?.check_or_store(key, &types)?;
-            let tree = match name {
-                None => (*db.db).clone(),
-                Some(n) => db.open_tree(n.as_bytes())?,
+            let tree = {
+                let _creating = db.creating.lock();
+                db.open_tree(META_TREE)?.check_or_store(key, &types)?;
+                match name {
+                    None => (*db.db).clone(),
+                    Some(n) => db.open_tree(n.as_bytes())?,
+                }
             };
             Ok(wrap_tree(db, tree, types.key))
         })

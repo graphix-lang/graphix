@@ -11,7 +11,9 @@ type TxnTree<'k, 'v>;
 /// at commit. Nothing is locked while it is open.
 val begin: fn(db: Db) -> Result<Txn, `DbErr(string)>;
 
-/// Open a tree within the transaction. Pass null for the default tree.
+/// Open a tree within the transaction. Pass null for the default tree. A tree
+/// that does not exist yet is created when the transaction commits, and not
+/// at all when it rolls back or fails.
 val tree: fn<'k: Concrete + Ordered, 'v: Concrete>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
 
 /// Get a value within the transaction.
