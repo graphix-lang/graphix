@@ -188,6 +188,12 @@ fn check_invariants(c: &Crate) {
     if c.doc.get("lib").is_none() && !src.join("lib.rs").exists() {
         panic!("graphix package crates must have a lib target")
     }
+    // the package is named for its crate everywhere: here, in the packed
+    // sources graphix-ast-pack keys by the package name, and in the crate
+    // paths package_crate_ident builds
+    if c.doc.get("lib").and_then(|l| l.get("name")).is_some() {
+        panic!("graphix package crates may not rename their lib target")
+    }
     if !c.graphix_src().is_dir() {
         panic!("graphix projects must have a src/graphix directory")
     }

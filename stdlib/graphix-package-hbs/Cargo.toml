@@ -28,6 +28,7 @@ graphix-package = { version = "0.9.0", path = "../../graphix-package" }
 graphix-package-core = { version = "0.9.0", path = "../graphix-package-core" }
 graphix-package-json = { version = "0.9.0", path = "../graphix-package-json" }
 graphix-rt = { version = "0.9.0", path = "../../graphix-rt" }
+serde_json = { workspace = true }
 handlebars = { workspace = true }
 poolshark = { workspace = true }
 netidx-core = { workspace = true }
