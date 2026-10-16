@@ -961,23 +961,6 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         });
         any
     };
-    // CR claude for claude: [perf/low] `raises(node)` walks the argument and every
-    // callee body it reaches, and it runs for every argument even when no argument
-    // feeds. When nothing feeds, the result is Ok(None) regardless. Each level of
-    // the descent after a failed region repeats this, so a nest of calls that fail
-    // to fuse costs quadratic reachable walks. Compute `feeds` first and return
-    // early when none is true. Run `raises` only when some argument feeds, and only
-    // up to the last fed argument. The same layer also does redundant work:
-    // calls_a_function walks the whole subtree after it finds a call (make it stop
-    // at the first hit), and fuse_parts' visitor recomputes calls_a_function for
-    // parts that fuse_each has already partitioned by it. (f-mod-lowering-07)
-    // 2026-10-15 claude: Done: feeds are decided first, nothing fed returns early,
-    // and raises walks only the arguments up to the last fed one. Open: the
-    // calls_a_function early stop and fuse_parts' recomputation of it.
-    // 2026-10-15 claude: calls_a_function now stops descending at its first call.
-    // Open: fuse_parts' visitor still recomputes it for parts fuse_each partitioned
-    // by it; passing the partition's answer means a visit signature fuse_each's
-    // other callers share.
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
     for arg in cs.args.values_mut() {
         let feed = arg.node.as_mut().is_some_and(|node| {
@@ -1089,8 +1072,8 @@ pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
     parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
     ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
-    fuse_each(ctx, parts, |part, ctx| {
-        if calls_a_function(part) || asserted_native(part) {
+    fuse_each(ctx, parts, |part, calls, ctx| {
+        if calls.unwrap_or_else(|| calls_a_function(part)) || asserted_native(part) {
             fuse(part, ctx)
         } else {
             descend(part, ctx)
@@ -1103,25 +1086,27 @@ pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
 /// several: the parts are disjoint subtrees, each fused against its own
 /// fork of the context, the forks joined in order and the first error
 /// in order the result. A collection's prototype or slot walk matches
-/// its kernels by attempt order, so it runs in order.
+/// its kernels by attempt order, so it runs in order. `visit` is told
+/// whether its part calls a function when the partition decided it.
 pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     ctx: &mut CompileCtx<R, E>,
     parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
-    visit: fn(&mut Node<R, E>, &mut CompileCtx<R, E>) -> anyhow::Result<()>,
+    visit: fn(&mut Node<R, E>, Option<bool>, &mut CompileCtx<R, E>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let mut parts: LPooled<Vec<&'a mut Node<R, E>>> = parts.into_iter().collect();
     if parts.len() < 2
         || ctx.fusion.share.is_some()
         || crate::dbgenv::graphix_fuse_serial()
     {
-        return parts.drain(..).try_for_each(|p| visit(p, ctx));
+        return parts.drain(..).try_for_each(|p| visit(p, None, ctx));
     }
     // a part that calls no function is not worth a task; the error is the
     // serial walk's, the first in order
     let (mut heavy, mut light): (LPooled<Vec<_>>, LPooled<Vec<_>>) =
         parts.drain(..).enumerate().partition(|(_, p)| calls_a_function(p));
-    let light_err =
-        light.drain(..).find_map(|(i, p)| visit(p, ctx).err().map(|e| (i, e)));
+    let light_err = light
+        .drain(..)
+        .find_map(|(i, p)| visit(p, Some(false), ctx).err().map(|e| (i, e)));
     if let Some((i, _)) = &light_err {
         heavy.retain(|(h, _)| h < i);
     }
@@ -1135,7 +1120,9 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     };
     if heavy.len() < 2 {
         return first(
-            heavy.drain(..).find_map(|(i, p)| visit(p, ctx).err().map(|e| (i, e))),
+            heavy
+                .drain(..)
+                .find_map(|(i, p)| visit(p, Some(true), ctx).err().map(|e| (i, e))),
         );
     }
     let mut parts = heavy;
@@ -1157,7 +1144,12 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     let mut results: Vec<(usize, anyhow::Result<()>)> = work
         .par_iter_mut()
         .map(|(i, n, task)| {
-            (*i, task.run_task(|task| TypeMemo::enter(memo.clone(), || visit(n, task))))
+            (
+                *i,
+                task.run_task(|task| {
+                    TypeMemo::enter(memo.clone(), || visit(n, Some(true), task))
+                }),
+            )
         })
         .collect();
     for (_, _, task) in work.drain(..) {

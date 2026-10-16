@@ -1487,7 +1487,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        fusion::fuse_each(ctx, self.children.iter_mut(), fuse)?;
+        fusion::fuse_each(ctx, self.children.iter_mut(), |n, _, ctx| fuse(n, ctx))?;
         Ok(None)
     }
 }
