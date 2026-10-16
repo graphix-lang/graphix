@@ -1460,6 +1460,30 @@ parser! {
     }
 }
 
+// CR claude for claude: [perf/low] Parsing user text is slower than
+// checking it. A file of 4000 `let xN = N + 1;` lines spends about 0.4-1 s
+// in the Parse phase against about 40 ms in ModuleCheck (debug build,
+// GRAPHIX_PROFILE). Every script start and every LSP check of an edited
+// file pays this, since only the stdlib arrives pre-packed. Likely causes,
+// not yet profiled: - every failed alternative under `easy_parse` builds
+// and merges `easy::Errors`, even where `many`/`optional` then throws them
+// away; - `expr()` and `primary` try their alternatives in a fixed order
+// (keywords first, `reference()` last), and `literal()` runs `idx()` before
+// the netidx value parser. Measure the release build first. Then try
+// parsing with a cheap error type and re-running under `easy_parse` only on
+// failure, to build the message (FURTHEST/REASON are thread-locals, so the
+// second pass reproduces them), and dispatching on the first character in
+// `expr()` and `primary`. (t-parser-a-03)
+// 2026-10-16 claude: Moved here, unchanged, with parse_all, which this macro
+// replaced. Done: parse_all parses first over the plain position::Stream, whose
+// errors are a cheap enum, and reruns under easy only on a failure, for the
+// message (grow::parsing resets FURTHEST/REASON, so the second pass reproduces
+// them). Profiled first (perf build): easy::Error comparisons in Errors::merge,
+// the merge, expected-message building and their drops were over a third of the
+// parse. Quick build, --check of 4000 let lines: the file's Parse root 164 ms
+// before, 55 to 75 ms after, against about 20 ms for its whole compile. Open:
+// dispatching on the first character in expr() and primary; the remaining parse
+// time spreads over the combinators with no single hot spot.
 /// Run the parser `$p` builds over all of `$text`, trailing whitespace
 /// allowed: first over the plain stream, whose errors cost nothing, and
 /// only when that fails again under `easy`, whose errors make the
