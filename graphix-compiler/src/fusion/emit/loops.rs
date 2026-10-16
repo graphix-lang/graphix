@@ -90,6 +90,11 @@ fn bindable_array_element(
     }
 }
 
+/// Whether a loop's elements are ⊥: a slot produces nothing to keep.
+fn is_unit(typ: &Type) -> bool {
+    matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit))
+}
+
 fn is_unit_or_null(typ: &Type) -> bool {
     matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
 }
@@ -221,7 +226,7 @@ pub(crate) fn emit_init_kind<R: Rt, E: UserEvent>(
     let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
-    if is_unit_or_null(&output_type) {
+    if is_unit(&output_type) {
         return Ok(None);
     }
     let count = source.emit_clif(cx)?;
@@ -272,7 +277,11 @@ pub(crate) fn emit_map_kind<R: Rt, E: UserEvent>(
     // instead of the sample blocker. probe:
     // design/review-2026-10-12/repro/x-engine-collections-03.gx
     // (x-engine-collections-03)
-    if is_unit_or_null(&output_type) {
+    // 2026-10-15 claude: Done: map and init loops take null elements (push_field
+    // pushes a null as the Value it is); pin lang::fusion::native_null_element_loops.
+    // filter_map keeps refusing a null element, its drop marker. Open: the related
+    // `~` in a callback still reports 'a capture has no binding'.
+    if is_unit(&output_type) {
         return Ok(None);
     }
     emit_loop(cx, source, flavor, |cx, src| {

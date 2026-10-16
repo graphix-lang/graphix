@@ -385,11 +385,13 @@ pub fn push_field(
                 "producer-op field has Unit type — emit_*_new should reject"
             ));
         }
-        Some(AbiKind::Null) | None => {
-            return Err(anyhow!(
-                "producer-op field has bare Null / non-fusable type — should \
-                 widen to Nullable<T>"
-            ));
+        // a null is the Value it is: the NULL disc, no payload
+        Some(AbiKind::Null) => {
+            cx.call_helper("graphix_value_buf_push_value", &[buf, cv.disc, cv.payload])?;
+            return Ok(());
+        }
+        None => {
+            return Err(anyhow!("producer-op field has a non-fusable type {typ}"));
         }
     };
     // Pushing a tainted field is safe: every push helper masks the tag

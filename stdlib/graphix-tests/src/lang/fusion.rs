@@ -2264,3 +2264,12 @@ run!(native_dynamic_map_literal, r#"{
 }"#, |v: Result<&Value>| format!("{}", v.unwrap())
     == r#"[{"a" => i64:30, "b" => i64:4}, {"q" => i64:7, "z" => i64:0}, {"z" => i64:0}]"#;
     FuseExpect::Jit);
+
+// A loop whose callback returns null fuses, run for its effects, its
+// result an array of nulls.
+run!(native_null_element_loops, r#"{
+    let f = |xs: Array<i64>| #[native] array::map(xs, |x| println(x));
+    let g = |n: i64| #[native] array::init(n, |i| println(i));
+    (f([1, 2]), g(2))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
+    FuseExpect::Jit);
