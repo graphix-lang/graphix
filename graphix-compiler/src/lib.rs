@@ -1619,14 +1619,42 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
-        fn instance(t: &Type, open: &nohash::IntSet<LambdaId>) -> Option<Type> {
-            crate::stack::ensure_sufficient(|| match t {
-                Type::TVar(tv) => tv.binding().map(|b| instance(&b, open).unwrap_or(b)),
-                Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate(open)))),
-                t => t.cow_children(&mut |c| instance(c, open)),
+        /// A shared node rebuilds once and stays shared, unless a function
+        /// type beneath it instantiated: each occurrence of one takes its
+        /// own variables.
+        struct Memo<'a> {
+            open: &'a nohash::IntSet<LambdaId>,
+            done: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
+            fresh: bool,
+        }
+        fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
+            crate::stack::ensure_sufficient(|| {
+                let key = t.shared_identity();
+                if let Some(k) = key
+                    && let Some((_, r)) = m.done.get(&k)
+                {
+                    return r.clone();
+                }
+                let outer = mem::replace(&mut m.fresh, false);
+                let r = match t {
+                    Type::TVar(tv) => tv.binding().map(|b| instance(&b, m).unwrap_or(b)),
+                    Type::Fn(ft) => {
+                        m.fresh = true;
+                        Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
+                    }
+                    t => t.cow_children(&mut |c| instance(c, m)),
+                };
+                if let Some(k) = key
+                    && !m.fresh
+                {
+                    m.done.insert(k, (t.clone(), r.clone()));
+                }
+                m.fresh |= outer;
+                r
             })
         }
-        instance(t, &self.rec_defs).unwrap_or_else(|| t.clone())
+        let mut m = Memo { open: &self.rec_defs, done: LPooled::take(), fresh: false };
+        instance(t, &mut m).unwrap_or_else(|| t.clone())
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {

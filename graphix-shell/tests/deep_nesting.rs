@@ -380,28 +380,71 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
     }
 }
 
-/// A type as deep as the program is long checks in time linear in the
-/// program: `flattype` at eight times `FLAT_DEPTH` checks well inside a
-/// budget a walk of each let's whole type blows several times over.
-#[test]
-fn flat_type_chain_checks_in_linear_time() {
-    const BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
+/// `graphix --check` of `program` finishes, accepted, within `budget`;
+/// a check still running then is killed.
+fn checks_within(program: &str, budget: std::time::Duration) {
     let dir = tempfile::tempdir().expect("a dir for the program");
-    let file = dir.path().join("flattype.gx");
-    fs::write(&file, program("flattype", 8 * FLAT_DEPTH)).expect("write the program");
+    let file = dir.path().join("program.gx");
+    fs::write(&file, program).expect("write the program");
     let start = std::time::Instant::now();
-    let status = Command::new(env!("CARGO_BIN_EXE_graphix"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_graphix"))
         .args(["--check", "--no-cache"])
         .arg(&file)
         .env("XDG_CACHE_HOME", dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .spawn()
         .expect("run the check");
-    let took = start.elapsed();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for the check") {
+            break status;
+        }
+        if start.elapsed() > budget {
+            let _ = child.kill();
+            panic!("the check ran past {budget:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     assert!(status.success(), "the check failed: {status}");
-    assert!(took < BUDGET, "{} lets checked in {took:?}", 8 * FLAT_DEPTH);
+}
+
+/// A type as deep as the program is long checks in time linear in the
+/// program: `flattype` at eight times `FLAT_DEPTH` checks well inside a
+/// budget a walk of each let's whole type blows several times over.
+#[test]
+fn flat_type_chain_checks_in_linear_time() {
+    checks_within(
+        &program("flattype", 8 * FLAT_DEPTH),
+        std::time::Duration::from_secs(15),
+    )
+}
+
+/// A value whose type shares each level twice (`(x, x)`), written to a
+/// binding of an equal type and checked against a typedef built the same
+/// way, checks in time linear in its depth: a walk of it as a tree takes
+/// 2^depth steps.
+#[test]
+fn shared_type_dags_check_in_linear_time() {
+    const DEPTH: usize = 60;
+    let chain = |name: &str| {
+        let mut s = format!("let {name}0 = 1;\n");
+        for i in 1..=DEPTH {
+            s.push_str(&format!("let {name}{i} = ({name}{}, {name}{});\n", i - 1, i - 1));
+        }
+        s
+    };
+    let mut written = chain("x") + &chain("z");
+    written.push_str(&format!("let y = x{DEPTH};\ny <- z{DEPTH};\ny"));
+    let mut typedef = String::from("type T0 = i64;\n");
+    for i in 1..=DEPTH {
+        typedef.push_str(&format!("type T{i} = (T{}, T{});\n", i - 1, i - 1));
+    }
+    typedef.push_str(&chain("x"));
+    typedef.push_str(&format!("let y: T{DEPTH} = x{DEPTH};\ny"));
+    for program in [written, typedef] {
+        checks_within(&program, std::time::Duration::from_secs(15))
+    }
 }
 
 #[test]

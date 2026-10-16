@@ -22,7 +22,7 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
     mem,
-    ops::{Deref, DerefMut},
+    ops::{ControlFlow, Deref, DerefMut},
 };
 use triomphe::Arc;
 
@@ -89,6 +89,10 @@ pub(super) struct ContainsHist {
     /// A definition whose parameters grew past [`MAX_GROWTH`] under a
     /// probe: the reason a refusal gives when the verdict needed it.
     grew: Option<ModPath>,
+    /// [`Self::closed`]'s verdicts by node and cell identity, each node
+    /// pinned so its address is not recycled under its key.
+    closed: Lazy<IntMap<usize, bool>>,
+    closed_pins: Lazy<Vec<Type>>,
 }
 
 /// How many expansions of one typedef in a row may take larger params. A
@@ -124,7 +128,40 @@ impl ContainsHist {
             epoch: 0,
             unfolding: Lazy::new(),
             grew: None,
+            closed: Lazy::new(),
+            closed_pins: Lazy::new(),
         }
+    }
+
+    /// Whether `t` reaches no open cell, through bindings: a commit over
+    /// two closed sides binds nothing, so it is the probe. Within a walk
+    /// a closed node stays closed (cells only bind), and one found open
+    /// only costs the commit's walk.
+    fn closed(&mut self, t: &Type) -> bool {
+        ensure_sufficient(|| {
+            let key = t.shared_identity();
+            if let Some(k) = key {
+                if let Some(c) = self.closed.get().and_then(|m| m.get(&k)) {
+                    return *c;
+                }
+                // a binding that reaches its own cell is not closed
+                self.closed.get_mut().insert(k, false);
+                self.closed_pins.get_mut().push(t.clone());
+            }
+            let c = match t {
+                Type::TVar(tv) => tv.binding().is_some_and(|b| self.closed(&b)),
+                t => t
+                    .try_for_each_child(&mut |c| match self.closed(c) {
+                        true => ControlFlow::Continue(()),
+                        false => ControlFlow::Break(()),
+                    })
+                    .is_continue(),
+            };
+            if let Some(k) = key {
+                self.closed.get_mut().insert(k, c);
+            }
+            c
+        })
     }
 
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
@@ -1046,22 +1083,11 @@ impl Type {
         if (self as *const Type) == (t as *const Type) || same_content(self, t) {
             return Ok(true);
         }
-        // CR claude for claude: [perf/medium] A committing call has no memo of finished
-        // pairs. Each one bumps the epoch and walks both sides, and probe_key is None
-        // for Ref and TVar, so Ref pairs are never memoized either. Two equal types
-        // held in distinct Arcs (`let x_i = (x_{i-1}, x_{i-1})`, likewise z_i, then `y
-        // <- z_N`) are walked once per path: --check doubles with every level, and a
-        // typedef chain `type T_i = (T_{i-1}, T_{i-1})` against such a value is the
-        // same. design/type_operation_scaling.md requires DAG cost. Fix: a commit where
-        // both sides are free of type variables binds nothing, so let it read and fill
-        // the probe memo. Key Ref pairs by their ref_id pair. Probe:
-        // design/review-2026-10-12/repro/t-contains-commit-dag-tree-walk.gx,
-        // t-contains-typedef-dag-tree-walk.gx. (t-contains-08)
-        // 2026-10-14 claude: the distribution law's heads now come from the expansion
-        // cache, so its sub-questions reach the memo. Keying a Ref pair by its ref_id
-        // pair was tried and made the GUI package's data_table refuse a ColumnSpec in
-        // about one run in three (graphix-package-gui's table tests): some verdict over
-        // a Ref depends on state its key does not carry. Not landed; the rest stands.
+        // a commit over two closed sides binds nothing: it is the probe
+        let flags = match flags.contains(ContainsFlags::Commit) {
+            true if hist.closed(self) && hist.closed(t) => BitFlags::empty(),
+            _ => flags,
+        };
         if flags.contains(ContainsFlags::Commit) {
             // A committing call may bind a cell a cached verdict read.
             hist.epoch += 1;

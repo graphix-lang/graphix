@@ -79,6 +79,10 @@ struct Identity {
 
 impl Identity {
     fn same(&mut self, t0: &Type, t1: &Type) -> bool {
+        // one shared node is identical to itself, however large
+        if t0.shared_identity().is_some_and(|a| t1.shared_identity() == Some(a)) {
+            return true;
+        }
         ensure_sufficient(|| self.same_inner(t0, t1))
     }
 

@@ -63,6 +63,19 @@ impl FromIterator<bool> for AndAc {
     }
 }
 
+impl Type {
+    /// What a walk that visits each shared node once keys it by: a
+    /// composite's content allocation, a reference's, a var's cell;
+    /// `None` for a leaf and for `Map`, whose content is two allocations.
+    pub fn shared_identity(&self) -> Option<usize> {
+        match self {
+            Type::TVar(tv) => Some(tv.cell_addr()),
+            Type::Ref(r) => Some(Arc::as_ptr(r).addr()),
+            t => node_addr(t),
+        }
+    }
+}
+
 /// The address of a composite's content allocation, for walks that
 /// visit each shared node once; `None` for leaves and for `Map`, whose
 /// content is two allocations.
@@ -150,15 +163,33 @@ struct RefHist<H: IsoPoolable> {
 /// cell is its binding, an open cell its cell, a union's members in any
 /// order, a function only its shape (its equality is loose).
 fn shape_hash(t: &Type) -> u64 {
+    shape_hash_memo(t, &mut LPooled::take())
+}
+
+/// [`shape_hash`], each shared node hashed once (`memo`, by identity).
+fn shape_hash_memo(t: &Type, memo: &mut IntMap<usize, u64>) -> u64 {
+    let key = t.shared_identity();
+    if let Some(h) = key.and_then(|k| memo.get(&k)) {
+        return *h;
+    }
+    let h = shape_hash_node(t, memo);
+    if let Some(k) = key {
+        memo.insert(k, h);
+    }
+    h
+}
+
+fn shape_hash_node(t: &Type, memo: &mut IntMap<usize, u64>) -> u64 {
     ensure_sufficient(|| {
         let mut h = ahash::AHasher::default();
         match t {
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => return shape_hash(&b),
+                Some(b) => return shape_hash_memo(&b, memo),
                 None => (0u8, tv.cell_addr()).hash(&mut h),
             },
             Type::Set(ts) => {
-                let members = ts.iter().fold(0u64, |a, t| a.wrapping_add(shape_hash(t)));
+                let members =
+                    ts.iter().fold(0u64, |a, t| a.wrapping_add(shape_hash_memo(t, memo)));
                 (1u8, members).hash(&mut h)
             }
             Type::Fn(f) => (2u8, f.args.len(), f.vargs.is_some()).hash(&mut h),
@@ -174,7 +205,7 @@ fn shape_hash(t: &Type) -> u64 {
             t => (9u8, mem::discriminant(t)).hash(&mut h),
         }
         if !matches!(t, Type::Set(_) | Type::Fn(_)) {
-            t.for_each_child(&mut |c| shape_hash(c).hash(&mut h));
+            t.for_each_child(&mut |c| shape_hash_memo(c, memo).hash(&mut h));
         }
         h.finish()
     })

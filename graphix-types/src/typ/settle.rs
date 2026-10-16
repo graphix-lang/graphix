@@ -17,6 +17,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
+use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt::Write;
@@ -326,6 +327,11 @@ impl Type {
 }
 
 fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
+    reached(t, out, &mut LPooled::take())
+}
+
+/// `reached_cells`, each shared composite walked once (`nodes`).
+fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut IntSet<usize>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             if out.insert(tv.cell_addr(), tv.clone()).is_none() {
@@ -335,12 +341,13 @@ fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
                     (cell.binding.clone(), cell.constraints.clone())
                 };
                 for t in bound.iter().chain(cons.iter()) {
-                    reached_cells(t, out)
+                    reached(t, out, nodes)
                 }
             }
         }
-        Type::Fn(ft) => ft.reached_cells(out),
-        t => t.for_each_child(&mut |c| reached_cells(c, out)),
+        t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
+        Type::Fn(ft) => ft.for_each_part(&mut |t, _| reached(t, out, nodes)),
+        t => t.for_each_child(&mut |c| reached(c, out, nodes)),
     })
 }
 

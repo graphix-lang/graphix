@@ -354,6 +354,9 @@ pub(crate) fn check_hidden_defaults<R: Rt, E: UserEvent>(
     value: &Type,
     narrowing: Narrowing,
 ) -> Result<()> {
+    if !may_hold_fn(declared, &mut LPooled::take()) {
+        return Ok(());
+    }
     match narrowing {
         Narrowing::Site => {
             hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0)
@@ -363,6 +366,21 @@ pub(crate) fn check_hidden_defaults<R: Rt, E: UserEvent>(
             hidden_defaults_at(ctx, flags, scope, top_id, &declared, value, 0)
         }
     }
+}
+
+/// Whether a function may stand somewhere in `t`, through bindings; a
+/// typedef may expand to one. Each shared node is asked once (`seen`).
+fn may_hold_fn(t: &Type, seen: &mut AHashSet<usize>) -> bool {
+    ensure_sufficient(|| match t {
+        _ if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
+        Type::Fn(_) | Type::Ref(_) => true,
+        Type::TVar(tv) => tv.binding().is_some_and(|b| may_hold_fn(&b, seen)),
+        t => {
+            let mut any = false;
+            t.for_each_child(&mut |c| any = any || may_hold_fn(c, seen));
+            any
+        }
+    })
 }
 
 fn hidden_defaults_at<R: Rt, E: UserEvent>(
