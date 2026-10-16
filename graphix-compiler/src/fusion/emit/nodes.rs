@@ -998,6 +998,15 @@ pub(super) fn emit_bottom_placeholder(
 ) -> Result<CompiledExpr> {
     let kind = kernel_abi::abi_kind(elem)
         .ok_or_else(|| anyhow!("emit_clif: no placeholder for {elem}"))?;
+    emit_bottom_placeholder_of_kind(cx, kind, governing_discs)
+}
+
+/// [`emit_bottom_placeholder`] for a placeholder of ABI kind `kind`.
+pub(super) fn emit_bottom_placeholder_of_kind(
+    cx: &mut BodyCx,
+    kind: AbiKind,
+    governing_discs: &[ClifValue],
+) -> Result<CompiledExpr> {
     let cv = emit_bottom_of_kind(cx, kind)?;
     let disc = propagate_flags(cx.b, cv.disc, governing_discs);
     Ok(CompiledExpr::new(disc, cv.payload))

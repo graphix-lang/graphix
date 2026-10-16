@@ -24,8 +24,8 @@ use smallvec::SmallVec;
 
 use super::{
     abi::{
-        CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        is_fresh, is_tainted, propagate_flags, scalar_disc, taint_if, value_disc,
+        CompiledExpr, LocalKind, STALE, ValueVar, bind_local, clean_disc, is_fresh,
+        is_tainted, propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{
         BodyCx, TailRebind, emit_kernel_return, emit_return_from_node,
@@ -33,7 +33,9 @@ use super::{
         node_composite_source,
     },
     call::{CompositeSource, emit_drop_local, emit_owned_drop, owned_drop_kind},
-    nodes::{emit_bottom_of_kind, emit_bottom_placeholder, widen_result_to_value},
+    nodes::{
+        emit_bottom_placeholder, emit_bottom_placeholder_of_kind, widen_result_to_value,
+    },
     scalar::{cast_u64_to_prim, scalar_to_payload_i64},
     select::{classify_select_scrutinee, emit_select_arms},
 };
@@ -609,18 +611,7 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
         .and_then(|t| kernel_abi::abi_kind(&t))
         .filter(|k| !matches!(k, AbiKind::Unit | AbiKind::Null))
         .unwrap_or(AbiKind::Value);
-    // CR claude for claude: [structure/low] This builds the qop bottom with
-    // emit_bottom_of_kind and then hand-rolls the STALE fold (`bor(disc,
-    // band_imm(cv.disc, STALE))`). emit_qop_node's two bad-path placeholders repeat the
-    // same fold and even build the placeholder by hand. emit_bottom_placeholder is the
-    // one place that fold is supposed to live, so a change to the rule (how WAKE
-    // combines, say) would have to find every copy. Fix: have emit_bottom_placeholder
-    // take an AbiKind (its Type callers call abi_kind first), and route all three qop
-    // sites through it with `&[cv.disc]`. (f-nodes-scalar-08)
-    let bottom = emit_bottom_of_kind(cx, kind)?;
-    let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
-    let disc = cx.b.ins().bor(bottom.disc, stale_bit);
-    Ok(CompiledExpr::new(disc, bottom.payload))
+    emit_bottom_placeholder_of_kind(cx, kind, &[cv.disc])
 }
 
 /// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`, or a `[T, null]`
@@ -717,13 +708,9 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.seal_block(bad_bl);
             emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
             // The inner's STALE carries; TAINT marks no-value.
-            let ph_helper =
-                if is_string { "graphix_arcstr_empty" } else { "graphix_valarray_empty" };
-            let ph = cx.call_helper(ph_helper, &[])?[0];
-            let tainted_base = cx.b.ins().iconst(types::I64, base_disc | TAINT);
-            let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
-            let ph_disc = cx.b.ins().bor(tainted_base, stale_bit);
-            cx.b.ins().jump(qmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph)]);
+            let ph = emit_bottom_placeholder_of_kind(cx, k, &[cv.disc])?;
+            cx.b.ins()
+                .jump(qmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
             // A Borrowed inner's success must be cloned (the unwrap result is
@@ -772,11 +759,9 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
             // Tainted Value::Null placeholder (helper-safe by
             // construction); the inner's STALE carries.
-            let tainted_base = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
-            let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
-            let ph_disc = cx.b.ins().bor(tainted_base, stale_bit);
-            let zero = cx.b.ins().iconst(types::I64, 0);
-            cx.b.ins().jump(qmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(zero)]);
+            let ph = emit_bottom_placeholder_of_kind(cx, AbiKind::Value, &[cv.disc])?;
+            cx.b.ins()
+                .jump(qmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
             // A Borrowed inner aliases its env slot, which is dropped at scope
