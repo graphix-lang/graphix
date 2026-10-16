@@ -1268,16 +1268,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     let phase = profile::phase(Phase::ReturnType);
-    // CR claude for claude: [bug/low] A region whose type is null or unit (an
-    // effect-only body such as `|x| #[native] println(x + 1)`, or a select whose arms
-    // are all null) returns Ok(None) here, before build_region, so nothing is counted
-    // and no FusionFailure is recorded. #[native] then refuses with the bare 'did not
-    // fully fuse to native code', with no reason given, and the blocker profile does
-    // not show the region. The emitted call path already handles AbiKind::Unit |
-    // AbiKind::Null: it returns a NULL disc carrying the tag bits. A region could
-    // return the same way and fuse. At the very least, record a failure here ("a region
-    // of type null has no kernel return") so that #[native] names the cause. probe:
-    // design/review-2026-10-12/repro/x-fix-fusion-03.gx (x-fix-fusion-03)
     let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
         if crate::dbgenv::gxdbg_freeze_ret() {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -1286,7 +1276,10 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             })
             .ok();
         }
-        return Ok(None);
+        let reason = format_with_flags(PrintFlag::DerefTVars, || {
+            format_compact!("a region of type {} has no kernel return", node.typ())
+        });
+        return refuse(ctx, node.spec(), &reason);
     };
     drop(phase);
     if ctx.fusion.reusing() {
@@ -1433,8 +1426,8 @@ fn refuse<R: Rt, E: UserEvent>(
 }
 
 /// Freeze a region root's type into the kernel's return ABI type, or
-/// `None` if the region can't fuse: bare `Null` and `Unit` have no
-/// kernel representation. Normalized because a select-rooted region's
+/// `None` if the region can't fuse: `Unit` (⊥) has no kernel
+/// representation. Normalized because a select-rooted region's
 /// type is the raw arm union; on failure, retry with refs expanded,
 /// since an abstract-typed return carries Refs the env-free freeze rejects.
 pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
@@ -1462,9 +1455,10 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
             | AbiKind::Variant
             | AbiKind::Nullable
             | AbiKind::Value
-            | AbiKind::String,
+            | AbiKind::String
+            | AbiKind::Null,
         ) => Some(return_type),
-        Some(AbiKind::Unit | AbiKind::Null) | None => None,
+        Some(AbiKind::Unit) | None => None,
     }
 }
 

@@ -12,7 +12,7 @@ use crate::{
     fusion::{
         CalleeBody, FusionCtx, LambdaCallInfo,
         emit_helpers::all_helpers,
-        kernel_abi::{self, AbiKind, KernelKey, KernelSig, PrimType},
+        kernel_abi::{self, KernelKey, KernelSig, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
     image::ImageBuf,
@@ -686,13 +686,10 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
 }
 
 /// Push the return `AbiParam`s onto `sig`: every kernel returns the
-/// `(disc, payload)` Value pair. Errors on a bare-`Null` return.
+/// `(disc, payload)` Value pair, a null one the NULL disc and no payload.
 fn push_abi_returns(sig: &mut Signature, kernel: &KernelSig) -> Result<()> {
-    if matches!(kernel_abi::abi_kind(&kernel.return_type), Some(AbiKind::Null) | None) {
-        bail!(
-            "kernel returns the bare Null type; should have widened to Nullable<T> at \
-             construction"
-        )
+    if kernel_abi::abi_kind(&kernel.return_type).is_none() {
+        bail!("kernel return type {} has no ABI kind", kernel.return_type)
     }
     sig.returns.push(AbiParam::new(types::I64)); // disc
     sig.returns.push(AbiParam::new(types::I64)); // payload

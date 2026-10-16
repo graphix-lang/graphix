@@ -2246,3 +2246,11 @@ run!(native_error_payload_read, r#"{
     };
     f(3)
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::Jit);
+
+// A region of type null fuses: an effect-only body, a select whose arms
+// are all null.
+run!(native_null_regions, r#"{
+    let f = |x: i64| #[native] println(x + 1);
+    let g = |x: i64| #[native] select x { 0 => null, _ => null };
+    (f(3), g(4))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[null, null]"; FuseExpect::Jit);

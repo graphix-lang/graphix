@@ -232,10 +232,13 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         })?;
     let merge_shape = match kernel_abi::abi_kind(&result_typ) {
         Some(AbiKind::Scalar(p)) => SelectMerge::Scalar(p),
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => SelectMerge::Value,
+        // a null merges as the Value it is
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
+            SelectMerge::Value
+        }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => SelectMerge::Composite,
         Some(AbiKind::String) => SelectMerge::String,
-        other @ (Some(AbiKind::Unit | AbiKind::Null) | None) => {
+        other @ (Some(AbiKind::Unit) | None) => {
             return Err(anyhow!(
                 "emit_clif: select result shape {other:?} not representable"
             ));

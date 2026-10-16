@@ -968,6 +968,13 @@ pub(super) fn emit_kernel_return(
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             cx.b.ins().return_(&[disc, cv.payload]);
         }
+        Some(AbiKind::Null) => {
+            emit_scope_drops(cx, 0)?;
+            let base = cx.b.ins().iconst(types::I64, value_disc::NULL);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
+            let payload = cx.b.ins().iconst(types::I64, 0);
+            cx.b.ins().return_(&[disc, payload]);
+        }
         Some(AbiKind::Scalar(p)) => {
             emit_scope_drops(cx, 0)?;
             // Widen the payload to the Value-encoded word (sign/zero

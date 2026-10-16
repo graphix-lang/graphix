@@ -41,8 +41,8 @@ abort	abort-seam-jul2026/01_depth_trip_settled_taint.gx
 3	byref-wake-view-sep2026/01_impure_arm.gx
 0	call-arity-jul2026/00_excess_pos_skips_nested_check.gx
 0	call-arity-jul2026/01_excess_pos_silently_dropped.gx
-4	callable-route-aug2026/01_connectderef_twin.gx
-3	callable-route-aug2026/02_dispatch_route_matrix.gx
+7	callable-route-aug2026/01_connectderef_twin.gx
+4	callable-route-aug2026/02_dispatch_route_matrix.gx
 1	callee-flags-jul2026/01_bottom_call_result_as_unused_arg.gx
 1	callee-taint-cache-honor-aug2026/00_two_level_call_ride.gx
 1	callee-taint-cache-honor-aug2026/01_top_level_control.gx
@@ -171,7 +171,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	foldq-empty-overfire-jul2026/02_init_runaway_local_bottom.gx
 2	foldq-reactive-size-jul2026/01_fold_over_growing_init.gx
 2	foldq-reactive-size-jul2026/02_fold_shrink_emits_held.gx
-0	forked-print-order-oct2026/01_forked_prints_are_unordered.gx
+1	forked-print-order-oct2026/01_forked_prints_are_unordered.gx
 5	formal-bottom-persists-aug2026/00_wrapper_formal_resurrection.gx
 2	frame-formal-init-view-aug2026/00_guard_flip_rec_arm.gx
 4	frame-formal-init-view-aug2026/01_count_observes_fires.gx
@@ -185,10 +185,10 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	function-bound-oct2026/00_queuefn_non_function.gx
 0	function-bound-oct2026/01_queuefn_defaulted_label.gx
 2	function-scheme-arg-oct2026/00_seq_trigger_builtin.gx
-1	fusion-flips-display-backend-aug2026/00_tui_backend_selection.gx
+2	fusion-flips-display-backend-aug2026/00_tui_backend_selection.gx
 0	fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx
 1	guard-bind-store-tag-aug2026/00_refwrite_guard_livelock.gx
-7	guard-bind-unmatched-arm-sep2026/00_guard_after_null_arm.gx
+8	guard-bind-unmatched-arm-sep2026/00_guard_after_null_arm.gx
 2	guard-bottom-ride-aug2026/00_bottom_guard_phantom_flip.gx
 1	hof-composite-return-jul2026/01_findmap_captured_array.gx
 1	hof-composite-return-jul2026/02_filtermap_fresh_array.gx
@@ -266,7 +266,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	nested-bind-stmt-dead-elim-aug2026/05_outer_literal_bind.gx
 1	nested-value-jul2026/01_selfref_connect_growth.gx
 0	never-args-elided-sep2026/00_dbg_in_never_arm.gx
-2	never-args-elided-sep2026/01_raise_in_never_arm.gx
+3	never-args-elided-sep2026/01_raise_in_never_arm.gx
 0	never-type-names-sep2026/00_never_of_an_undefined_type.gx
 0	omitted-default-check-sep2026/01_default_types_the_site.gx
 1	omitted-default-check-sep2026/02_default_and_argument_agree.gx
@@ -539,7 +539,7 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 7	wake-connect-target-sep2026/01_never_let.gx
 6	wake-connect-target-sep2026/02_arm_value.gx
 4	wake-stale-bottom-sep2026/00_plain_select.gx
-19	wake-stale-bottom-sep2026/01_seq_step.gx
+22	wake-stale-bottom-sep2026/01_seq_step.gx
 4	wake-stale-bottom-sep2026/02_let.gx
 4	wake-stale-bottom-sep2026/03_call.gx
 5	wake-stale-bottom-sep2026/04_map_source.gx
