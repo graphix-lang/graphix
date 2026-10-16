@@ -2277,6 +2277,23 @@ run!(native_null_element_loops, r#"{
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
     FuseExpect::Jit);
 
+// A union of composites rides a kernel as the Value it is: an arm that
+// tests a member's type reads the value as that member, its guard
+// included, and a function taking such a union has a kernel.
+run!(native_union_of_composites_select, r#"{
+    let g = |p: [(i64, string), (string, i64)]| select p {
+        (i64, string) as (a, _) => a,
+        (string, i64) as (_, b) => b * 10
+    };
+    let h = |s: [{x: i64, y: i64}, {name: string}]| select s {
+        {x: i64, y: i64} as {x, y} if x > 0 => x + y,
+        {x: i64, y: i64} as {x, ..} => x,
+        {name: string} as {name} => str::len(name)
+    };
+    (#[native] g((1, "s")), #[native] g(("t", 4)), #[native] h({x: 2, y: 3}), #[native] h({x: -2, y: 3}), #[native] h({name: "abcd"}))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:40, i64:5, i64:-2, i64:4]";
+    FuseExpect::Jit);
+
 // A fold whose acc is a tuple of scalars, built by a tuple literal and
 // read field by field, carries each field in a register: the same values
 // as the node-walk, an empty source included.

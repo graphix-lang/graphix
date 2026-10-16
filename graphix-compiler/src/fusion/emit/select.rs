@@ -1067,6 +1067,35 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     scrut_typ: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
+    // a composite member of a union of composites: the value's own shape
+    // tested as the node-walk tests it, then destructured as that member;
+    // a value that fails the test reads as the empty array, which every
+    // read of it survives
+    if pat.explicit_type_predicate
+        && let SelectScrut::Value { kind: ValueKind::Value, disc, payload } = scrut
+        && let Some(pred) = freeze_node_typ(cx.ctx, &pat.type_predicate)
+        && matches!(
+            kernel_abi::abi_kind(&pred),
+            Some(AbiKind::Tuple | AbiKind::Struct | AbiKind::Array)
+        )
+    {
+        let typ = cx.interned_type(&pat.type_predicate.resolve_tvars())?;
+        let call = cx.call_helper("graphix_value_is_a", &[typ, disc, payload])?;
+        let tcond = cx.b.ins().icmp_imm(IntCC::NotEqual, call[0], 0);
+        let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
+        let ptr = cx.b.ins().select(tcond, payload, empty);
+        let member = SelectScrut::Composite { disc, ptr };
+        let scond = emit_structure_cond(
+            cx,
+            &pat.structure_predicate,
+            &pat.type_predicate,
+            false,
+            member,
+            &pred,
+            binds,
+        )?;
+        return Ok((Some(tcond), scond));
+    }
     // The chain has excluded earlier arms. The guard prologue has not,
     // so it also tests the inferred predicate before delivering binds.
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
@@ -1421,30 +1450,22 @@ fn install_arm_binds(
                 let rs = call;
                 (*id, rs[0], rs[1], LocalKind::Value)
             }
-            SelectArmBind::Elem { id, idx, typ, kind, parent_ptr } => {
-                if !matches!(scrut, SelectScrut::Composite { .. }) {
-                    bail!("emit_clif: element bind without a composite scrutinee");
+            SelectArmBind::Elem { id, idx, typ, kind, parent_ptr } => match kind {
+                LocalKind::Scalar(prim) => {
+                    let v = read_scrut_elem(cx, *parent_ptr, *idx, *prim)?;
+                    (*id, scalar_disc(cx.b, *prim), v, *kind)
                 }
-                match kind {
-                    LocalKind::Scalar(prim) => {
-                        let v = read_scrut_elem(cx, *parent_ptr, *idx, *prim)?;
-                        (*id, scalar_disc(cx.b, *prim), v, *kind)
-                    }
-                    kind => {
-                        let (read, idx_v) = elem_index(cx, *idx);
-                        let call = cx.call_helper(
-                            element_read_helper(typ, read)?,
-                            &[*parent_ptr, idx_v],
-                        )?;
-                        let (d, p) = owned_words(cx.b, *kind, &call);
-                        (*id, d, p, *kind)
-                    }
+                kind => {
+                    let (read, idx_v) = elem_index(cx, *idx);
+                    let call = cx.call_helper(
+                        element_read_helper(typ, read)?,
+                        &[*parent_ptr, idx_v],
+                    )?;
+                    let (d, p) = owned_words(cx.b, *kind, &call);
+                    (*id, d, p, *kind)
                 }
-            }
+            },
             SelectArmBind::Subslice { id, start, back, parent_ptr } => {
-                if !matches!(scrut, SelectScrut::Composite { .. }) {
-                    bail!("emit_clif: subslice bind without a composite scrutinee");
-                }
                 let start = cx.b.ins().iconst(types::I64, *start as i64);
                 let back = cx.b.ins().iconst(types::I64, *back as i64);
                 let call = cx.call_helper(

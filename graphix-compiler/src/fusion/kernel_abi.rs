@@ -293,24 +293,15 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             if all_variants {
                 return Some(AbiKind::Variant);
             }
-            // CR claude for claude: [perf/medium] Any other union has no ABI kind, so a
-            // function with a formal like `p: [(i64, string), (string, i64)]` gets no
-            // kernel ("formal `p` has no kernel encoding") and every call to it
-            // node-walks, though abstract types and primitive unions already ride as
-            // opaque 2-word values (AbiKind::Value). Classify such a Set as
-            // AbiKind::Value, and have the select emitter destructure an opaque
-            // scrutinee per member or refuse that select alone, so the rest of the
-            // body still fuses. probe: `let g = |p: [(i64, string), (string, i64)]|
-            // select p { (a, b) => 0, (c, d) => 1 }; #[native] g((1, "s"))` is refused
-            // by --expand. Pin: lang::select::coverage_all_bind_arms_cover_each_member
-            // (FuseExpect::None today). (abi-union-01)
-            // 2026-10-15 claude: Looked at 10-15: classifying the union as
-            // AbiKind::Value alone gains nothing for the probe, since its select over
-            // the opaque scrutinee is then refused ('select scrutinee type ... doesn't
-            // freeze concrete', as a union of structs is); the freeze's Set arm would
-            // need the members frozen too. The value is in the select emitter
-            // destructuring an opaque scrutinee per member, which is the work this
-            // needs.
+            // a union of composites rides as the Value it is; a select
+            // tests a member's shape before reading it as that member
+            if members.iter().all(|m| {
+                m.with_deref(|r| {
+                    matches!(r, Some(Type::Tuple(_) | Type::Struct(_) | Type::Array(_)))
+                })
+            }) {
+                return Some(AbiKind::Value);
+            }
             return None;
         }
         None
@@ -595,6 +586,29 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                     };
                     let m1 = if succ_idx == 1 { frozen_succ } else { members[1].clone() };
                     return Ok(Type::Set(Arc::from_iter([m0, m1])));
+                }
+                let composite = |m: &Type| {
+                    m.with_deref(|r| {
+                        matches!(
+                            r,
+                            Some(Type::Tuple(_) | Type::Struct(_) | Type::Array(_))
+                        )
+                    })
+                };
+                if members.iter().all(composite) {
+                    // one the normalizer would collapse freezes as what it
+                    // collapses to
+                    let canonical = matches!(
+                        resolved.normalize(),
+                        Type::Set(ref ms) if ms.len() == members.len()
+                    );
+                    if !canonical {
+                        return Err(NonCanonical);
+                    }
+                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
+                        members.iter().map(|m| freeze_for_abi_d(m, seen)).collect();
+                    let mut frozen = frozen?;
+                    return Ok(Type::Set(Arc::from_iter(frozen.drain(..))));
                 }
                 let frozen: Result<LPooled<Vec<Type>>, FreezeError> = members
                     .iter()

@@ -1184,6 +1184,21 @@ safe fn graphix_valarray_empty() -> u64 {
     va_bits(EMPTY_ARR.clone())
 }
 
+/// An empty `ValArray` to read borrowed, as bits: one reference held for
+/// the process, so a read that never drops it is sound.
+safe fn graphix_valarray_empty_borrowed() -> u64 {
+    static HELD: std::sync::LazyLock<u64> =
+        std::sync::LazyLock::new(|| va_bits(EMPTY_ARR.clone()));
+    *HELD
+}
+
+/// Whether `v` is a `*typ`, as a select arm's written type test asks
+/// (`Type::is_a`), under the invoking kernel's env loan. Borrows `v`.
+unsafe fn graphix_value_is_a(typ: *const Type, v: ManuallyDrop<TagValue>) -> u8 {
+    let (typ, env) = unsafe { (&*typ, kernel_env()) };
+    v.with_value(|v| typ.is_a(env, v)) as u8
+}
+
 /// Start an owned string buffer; pair with `graphix_string_buf_finalize`
 /// or `graphix_string_buf_drop`.
 unsafe fn graphix_string_buf_new() -> *mut StringBuf {

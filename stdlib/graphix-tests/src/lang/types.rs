@@ -2278,7 +2278,7 @@ const UNION_FORMAL_INLINE_LITERAL: &str = r#"
 run!(
     union_formal_inline_literal,
     UNION_FORMAL_INLINE_LITERAL,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::None
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit
 );
 
 /// A declared variable may be anything, so `_` cannot hold it.
@@ -2744,7 +2744,7 @@ run!(
     let h = |x: [Array<(i64, i64)>, Array<(string, f64)>]| 100;
     f(["a"]) + g(&["a"]) + h([("a", 1.0)])
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(111))); FuseExpect::None
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(111))); FuseExpect::Jit
 );
 
 // A generic function beside a monomorphic one in a union meets it: the
@@ -3027,25 +3027,25 @@ run!(
 run!(
     union_formal_behind_an_alias,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "type D = [Array<f64>, Array<string>]; let g = |x: D| 0; let result = g([\"a\"])"; FuseExpect::None
+    "/test.gx" => "type D = [Array<f64>, Array<string>]; let g = |x: D| 0; let result = g([\"a\"])"; FuseExpect::Jit
 );
 
 run!(
     union_formal_in_a_tuple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "let g = |x: (i64, [Array<f64>, Array<string>])| 0; let result = g((1, [\"a\"]))"; FuseExpect::None
+    "/test.gx" => "let g = |x: (i64, [Array<f64>, Array<string>])| 0; let result = g((1, [\"a\"]))"; FuseExpect::Jit
 );
 
 run!(
     union_formal_in_a_struct,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "let g = |x: {a: [Array<f64>, Array<string>]}| 0; let result = g({a: [\"a\"]})"; FuseExpect::None
+    "/test.gx" => "let g = |x: {a: [Array<f64>, Array<string>]}| 0; let result = g({a: [\"a\"]})"; FuseExpect::Jit
 );
 
 run!(
     union_formal_in_a_variant,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "let g = |x: [`A([Array<f64>, Array<string>]), `B]| 0; let result = g(`A([\"a\"]))"; FuseExpect::None
+    "/test.gx" => "let g = |x: [`A([Array<f64>, Array<string>]), `B]| 0; let result = g(`A([\"a\"]))"; FuseExpect::Jit
 );
 
 run!(
