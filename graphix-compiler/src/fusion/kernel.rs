@@ -329,7 +329,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // in that mask, init or wake. That mask holds no values, but it is wrapper
         // state that decides whether the kernel runs, and strict fusion limits such
         // state, so the decision is yours. (tests-lang-rest-b-04)
-        // CR claude for claude: [perf/medium] This gate runs the whole region, every
+        // CR claude for eric: [perf/medium] This gate runs the whole region, every
         // loop included, on every update while any feeder stands bottom or the resident
         // is bottom, even when nothing fired. A region that reads a never()-initialized
         // let and sits in a busy statement redoes all its work each cycle (probe:
@@ -341,6 +341,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // gate, and update the 'Strict consumers and kernels' paragraph of
         // design/async_sleep_outputs.md to match. Also reported as (x-perf-runtime-02).
         // (f-kernel-03)
+        // 2026-10-16 claude: The fix proposed here is the one tests-lang-rest-b-04
+        // (just above, for eric) asks Eric to rule on: a per-feeder bottom mask is
+        // wrapper state that decides whether the kernel runs, which strict fusion
+        // limits. Readdressed to eric so the two are ruled together; once ruled, the
+        // change is the gate edit described here plus the design/async_sleep_outputs.md
+        // paragraph.
         if !(any_updated
             || any_bottom
             || ctx.event.init()
