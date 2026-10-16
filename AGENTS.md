@@ -611,7 +611,8 @@ for an `Io` builtin computes the value without the effect), and
 otherwise costs the loop. An async call site (`CachedArgsAsync`) runs its
 invocations as its `EvalCachedAsync::CALLS` says: one at a time in
 order (`Fifo`, the default), the latest only, a new one aborting those in
-flight (`Latest`: `accept`, `wait`), or each at once, answered in
+flight, though one that completed before the abort reached it still
+answers, a cycle later if need be (`Latest`: `accept`, `wait`), or each at once, answered in
 completion order (`Concurrent`: the tls handshakes); `delete` and `sleep`
 abort every call in flight. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`; raw `Apply` authors read args through

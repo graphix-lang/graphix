@@ -393,6 +393,11 @@ impl EvalCachedAsync for IoReadExactEv {
             // (src/lib.rs::release/renew) and graphix-rt/src/gx.rs::deliver, which
             // discards unreferenced replies. Those files are outside this scope; a
             // Halves push-back buffer alone cannot recover an already-posted reply.
+            // 2026-10-16 claude: The sleep half of this is Eric's x-builtin-effects-03 in
+            // core's CachedArgsAsync::sleep (whether a non-cancel-safe eval finishes and banks
+            // across a sleep, or the stream halves get a push-back buffer); waiting on that
+            // ruling. The replaced-call reply loss under Latest is fixed under sys-io-08, but
+            // these reads are Fifo, so it does not apply here.
             match stream.until_closed((&mut *s).take(n).read_to_end(&mut buf)).await {
                 Ok(_) => Value::Bytes(PBytes::new(Bytes::from(buf))),
                 Err(e) => errf!("IOError", "read_exact failed: {e}"),

@@ -29,6 +29,7 @@ use netidx_core::{
 };
 use netidx_value::FromValue;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     any::Any,
     collections::VecDeque,
@@ -1529,8 +1530,9 @@ pub enum Calls {
     /// One at a time, in order.
     Fifo,
     /// A new invocation aborts the calls in flight and drops those
-    /// queued, so the call answers only its latest arguments. Only for
-    /// an `eval` that loses nothing when dropped.
+    /// queued, so the call answers only its latest arguments; a call that
+    /// completed before the abort reached it still answers. Only for an
+    /// `eval` that loses nothing when dropped before it completes.
     Latest,
     /// Each at once; the replies come in the order the calls complete.
     Concurrent,
@@ -1562,6 +1564,9 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     queued: VecDeque<T::Args>,
     /// calls spawned under `id` and not answered yet
     inflight: usize,
+    /// the reply ids of calls a later one replaced, held until each
+    /// answers: one that completed before it was replaced still answers
+    replaced: SmallVec<[BindId; 1]>,
     abort: Option<Abort>,
     /// the error tag a panicking eval answers under, from the call's
     /// declared return type; none when it declares no such error
@@ -1598,14 +1603,22 @@ static PANICKED: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     errf!(arcstr::literal!("Panicked"), "an async builtin panicked")
 });
 
+/// The reply of an eval aborted before it completed: it answers nothing.
+static ABORTED: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    errf!(arcstr::literal!("Aborted"), "an async builtin was aborted")
+});
+
 impl<T: EvalCachedAsync> CachedArgsAsync<T> {
     /// Abort the calls in flight, drop those queued and release the reply
-    /// id, which is this call's alone, as is what was stored for it.
+    /// ids, which are this call's alone, as is what was stored for them.
     fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.abort = None;
         self.inflight = 0;
         self.queued.clear();
         ctx.release_var(self.id, self.top_id);
+        for id in self.replaced.drain(..) {
+            ctx.release_var(id, self.top_id);
+        }
     }
 
     /// `release`, then answer under a fresh reply id.
@@ -1613,6 +1626,45 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         self.release(ctx);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
+    }
+
+    /// Abort the calls in flight for a newer one, answering under a fresh
+    /// reply id; the old id stays until its reply comes, since a call that
+    /// completed before the abort reached it has already done its work.
+    fn replace<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.abort = None;
+        self.inflight = 0;
+        self.queued.clear();
+        self.replaced.push(self.id);
+        self.id = BindId::new();
+        ctx.rt.ref_var(self.id, self.top_id);
+    }
+
+    /// The reply of the first replaced call that completed, its id
+    /// released; another's waits for a later cycle under its own id.
+    fn replaced_reply<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+    ) -> Option<Value> {
+        let mut reply = None;
+        let top_id = self.top_id;
+        self.replaced.retain(|id| match ctx.event.variables.remove(id) {
+            None => true,
+            Some(tv) => match tv.value() {
+                v if v != *ABORTED && reply.is_some() => {
+                    ctx.rt.set_var(*id, v);
+                    true
+                }
+                v => {
+                    ctx.release_var(*id, top_id);
+                    if v != *ABORTED {
+                        reply = Some(v);
+                    }
+                    false
+                }
+            },
+        });
+        reply
     }
 }
 
@@ -1637,6 +1689,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             inflight: 0,
+            replaced: SmallVec::new(),
             abort: None,
             panic_tag,
             out: TagValue::phantom(),
@@ -1664,6 +1717,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             top_id,
             queued: VecDeque::new(),
             inflight: 0,
+            replaced: SmallVec::new(),
             abort: None,
             panic_tag,
             out: TagValue::phantom(),
@@ -1676,7 +1730,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     /// The queue holds arguments already prepared for `eval`, and a
     /// running eval is a task, which exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if !self.queued.is_empty() || self.inflight > 0 {
+        if !self.queued.is_empty() || self.inflight > 0 || !self.replaced.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.slept.encode(buf)?;
@@ -1733,16 +1787,24 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             Invocation::Quiet => woke,
             Invocation::Bottom { .. } => false,
         };
-        let res = ctx.event.variables.remove(&self.id).and_then(|tv| {
+        let mut reply = ctx.event.variables.remove(&self.id).map(|tv| {
             self.inflight -= 1;
-            match tv.value() {
-                v if self.panic_tag.is_none() && v == *PANICKED => None,
-                v => self.t.map_value(ctx, v),
+            tv.value()
+        });
+        if let Some(earlier) = self.replaced_reply(ctx) {
+            // one answer a cycle: the replaced call's first, this one's next
+            if let Some(v) = reply.replace(earlier) {
+                self.inflight += 1;
+                ctx.rt.set_var(self.id, v);
             }
+        }
+        let res = reply.and_then(|v| match v {
+            v if self.panic_tag.is_none() && v == *PANICKED => None,
+            v => self.t.map_value(ctx, v),
         });
         if start && let Some(args) = self.t.prepare_args(&self.cached) {
             if T::CALLS == Calls::Latest && self.inflight > 0 {
-                self.renew(ctx);
+                self.replace(ctx);
             }
             self.queued.push_back(args);
         }
@@ -1793,8 +1855,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                             None => PANICKED.clone(),
                         }
                     }
-                    // an aborted eval's id was released, which drops this reply
-                    future::Either::Right(_) => Value::Null,
+                    future::Either::Right(_) => ABORTED.clone(),
                 };
                 (id, v)
             });

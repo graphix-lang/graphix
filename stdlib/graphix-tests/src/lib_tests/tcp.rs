@@ -201,3 +201,29 @@ const TCP_ACCEPT_DELETED: &str = r#"
 run!(tcp_accept_deleted, TCP_ACCEPT_DELETED, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
+
+// A trigger that fires every cycle replaces each accept with the next, and
+// an accept that completed before it was replaced still answers: every
+// client is accepted and none is closed.
+const TCP_ACCEPT_BUSY_TRIGGER: &str = r#"
+{
+  use sys::io::Read;
+  let l = sys::tcp::listen("127.0.0.1:0")$;
+  let addr = sys::tcp::listener_addr(l)$;
+  let clients = array::init(50, |i| sys::tcp::connect(addr)$);
+  let ev = never();
+  let held = array::map(clients, |c| { ev <- Read::read(c, u64:1) ~ 1; c });
+  let lost = 0;
+  lost <- ev ~ lost + 1;
+  let tick = 0;
+  tick <- tick + 1;
+  let conn = sys::tcp::accept(l, tick)$;
+  let all = [];
+  all <- conn ~ array::push(all, conn);
+  sys::time::timer(duration:1.s, false) ~ (array::len(all), lost)
+}
+"#;
+
+run!(tcp_accept_busy_trigger, TCP_ACCEPT_BUSY_TRIGGER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(50), Value::I64(0)])
+});

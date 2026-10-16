@@ -129,7 +129,10 @@ impl EvalCachedAsync for TcpAcceptEv {
     // reply whose value owns a resource. CLAUDE.md lists `accept` under Latest, so the
     // choice is a semantics decision. probe:
     // design/review-2026-10-12/repro/x-builtin-effects-11.gx (x-builtin-effects-11)
-    // CR claude for claude: [bug/medium] Calls::Latest is wrong for accept because a
+    // 2026-10-16 claude: Implemented the second option under sys-io-08 (a renewed site
+    // still delivers a completed reply; Latest kept, CLAUDE.md updated). Pin
+    // lib_tests::tcp::tcp_accept_busy_trigger. Keep it, or rule Fifo instead.
+    // XCR claude for claude: [bug/medium] Calls::Latest is wrong for accept because a
     // completed accept is not "an eval that loses nothing when dropped". Suppose the
     // trigger fires while an accept has already returned a stream but the runtime has
     // not joined its reply yet. Then CachedArgsAsync::renew releases the reply id,
@@ -150,6 +153,16 @@ impl EvalCachedAsync for TcpAcceptEv {
     // it did not reproduce; it is dropped. The fix this CR's last sentence allows stays
     // open: under Latest, a renew must not discard an accept that already completed.
     // See Eric's x-builtin-effects-11 above.
+    // 2026-10-16 claude: Fixed by the option the last sentence allows: under Latest a
+    // new call no longer releases the replaced call's reply id
+    // (CachedArgsAsync::replace); the old id stays until its reply comes, an aborted
+    // eval answers ABORTED and is dropped, and one that completed answers (a cycle later
+    // when another reply holds the cycle, re-set under its own id). Probe sys-io-08.gx
+    // gives (200, 0); its busy-trigger form (tick <- tick + 1) went from (98, 102) to
+    // (200, 0). Pin: lib_tests::tcp::tcp_accept_busy_trigger (50 clients), which fails
+    // in all four modes with renew put back. CLAUDE.md's Calls sentence and
+    // Calls::Latest's doc say it. Eric's x-builtin-effects-11 above is the same defect
+    // for his semantics call: this keeps Latest and banks the completed reply.
     const CALLS: Calls = Calls::Latest;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
