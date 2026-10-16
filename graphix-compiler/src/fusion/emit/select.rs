@@ -3,6 +3,7 @@
 
 use crate::{
     BindId, Node, NodeView, Rt, Update, UserEvent,
+    expr::ExprId,
     fusion::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
@@ -327,17 +328,54 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
 ) -> Result<(SelectScrut, Type, Option<ScrutDrop>)> {
-    let scrut_typ = kernel_abi::freeze_for_abi_normalized(sel.arg.node.typ())
-        .ok_or_else(|| {
-            anyhow!(
-                "emit_clif: select scrutinee type {} doesn't freeze \
-                 concrete",
-                sel.arg.node.typ()
-            )
-        })?;
+    let typ = sel.arg.node.typ();
+    let scrut_typ = kernel_abi::freeze_for_abi_normalized(typ).ok_or_else(|| {
+        anyhow!("emit_clif: select scrutinee type {typ} doesn't freeze concrete")
+    })?;
+    classify_scrutinee(cx, &sel.arg.node, scrut_typ, sel.spec.id)
+}
+
+/// A destructuring `let pat = value`: its pattern's leaves bound over
+/// `value` as a select arm's are, into the block's scope. An owned value
+/// stays a block local, dropped with the block's others.
+pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    pattern: &StructPatternNode,
+    typ: &Type,
+    value: &Node<R, E>,
+    id: ExprId,
+) -> Result<()> {
+    // CR claude for claude: [perf/medium] In Collection::find's default body, as a
+    // user Collection's instance (lang::collection::collection_newtype_defaults),
+    // `let (_, found) = fold(c, (false, init), ..)` reaches here with both the let's
+    // type and its value's type open cells ('_n), so the region refuses with "let
+    // pattern type '_n doesn't freeze" and that fixture cannot put #[native] on its
+    // `find`. The same let in an ordinary generic function freezes. An instance's
+    // types are its definition's check table substituted by its signature, so a
+    // destructuring let's cell (and the call it binds) seems to be missing from the
+    // trait default's table or its substitution. Find which, then put #[native] on
+    // that fixture's `find`. (fusion-let-destructure-02)
+    let typ = freeze_node_typ(cx.ctx, typ)
+        .ok_or_else(|| anyhow!("emit_clif: let pattern type {typ} doesn't freeze"))?;
+    let (scrut, scrut_typ, _kept) = classify_scrutinee(cx, value, typ, id)?;
+    let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+    let cond = emit_structure_cond(
+        cx, pattern, &scrut_typ, false, scrut, &scrut_typ, &mut binds,
+    )?;
+    install_arm_binds(cx, &binds, scrut, cond)
+}
+
+/// [`classify_select_scrutinee`] for the value `node`, of the frozen
+/// type `scrut_typ`, of the expression `id`.
+fn classify_scrutinee<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    node: &Node<R, E>,
+    scrut_typ: Type,
+    id: ExprId,
+) -> Result<(SelectScrut, Type, Option<ScrutDrop>)> {
     let scrut_kind = kernel_abi::abi_kind(&scrut_typ)
         .ok_or_else(|| anyhow!("emit_clif: select scrutinee shape not classifiable"))?;
-    let owned = node_composite_source(&sel.arg.node) == CompositeSource::Owned;
+    let owned = node_composite_source(node) == CompositeSource::Owned;
     let mut drop_ob: Option<ScrutDrop> = None;
     let mut adopt = |cx: &mut BodyCx,
                      kind: LocalKind,
@@ -347,20 +385,18 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
         if owned {
             let mark = cx.env.mark();
             let name: ArcStr =
-                compact_str::format_compact!("__scrut{}", sel.spec.id.inner())
-                    .as_str()
-                    .into();
+                compact_str::format_compact!("__scrut{}", id.inner()).as_str().into();
             let vv = bind_local(cx, name, disc, payload, kind, None);
             drop_ob = Some(ScrutDrop { kind, vv, mark });
         }
     };
     let scrut = match scrut_kind {
         AbiKind::Scalar(p) => {
-            let cv = sel.arg.node.emit_clif(cx)?;
+            let cv = node.emit_clif(cx)?;
             SelectScrut::Scalar { disc: cv.disc, value: cv.payload, prim: p }
         }
         AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
-            let cv = sel.arg.node.emit_clif(cx)?;
+            let cv = node.emit_clif(cx)?;
             adopt(cx, LocalKind::Value, cv.disc, cv.payload, owned);
             let kind = match scrut_kind {
                 AbiKind::Variant => ValueKind::Variant,
@@ -370,14 +406,14 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             SelectScrut::Value { kind, disc: cv.disc, payload: cv.payload }
         }
         AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
-            let cv = sel.arg.node.emit_clif(cx)?;
+            let cv = node.emit_clif(cx)?;
             adopt(cx, LocalKind::Composite, cv.disc, cv.payload, owned);
             SelectScrut::Composite { disc: cv.disc, ptr: cv.payload }
         }
         // A string is a value whose read is always owned: the select
         // keeps it until the merge.
         AbiKind::String => {
-            let cv = sel.arg.node.emit_clif(cx)?;
+            let cv = node.emit_clif(cx)?;
             let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             adopt(cx, LocalKind::String, disc, cv.payload, true);

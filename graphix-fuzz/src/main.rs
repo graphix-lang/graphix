@@ -1092,6 +1092,20 @@ fn vm_rss_kb(pid: u32) -> Option<u64> {
 /// the gate honest: a shared baseline drift fails nothing.
 const LEAK_WITNESSES: &[(&str, &str)] = &[
     (
+        // fused destructuring lets binding owned strings and arrays every
+        // tick, the value an adopted block local
+        "let-destructure",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let f = |n: i64| {\n\
+           let (a, s) = (n, \"s[n]\");\n\
+           let {p, q} = {p: s, q: [s, \"t[a]\"]};\n\
+           str::len(p) + array::len(q)\n\
+         };\n\
+         f(x)\n",
+    ),
+    (
         // fused handler-less `$` minting an owned error every tick
         "qop-scalar-error",
         "let clk = sys::time::timer(duration:0.001s, true);\n\

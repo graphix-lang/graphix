@@ -38,7 +38,7 @@ use super::{
         emit_bottom_placeholder, emit_bottom_placeholder_of_kind, widen_result_to_value,
     },
     scalar::{cast_u64_to_prim, scalar_to_payload_i64},
-    select::{classify_select_scrutinee, emit_select_arms},
+    select::{classify_select_scrutinee, emit_let_binds, emit_select_arms},
 };
 
 /// True only when no node in the subtree could carry an effect or
@@ -161,20 +161,19 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
                     "emit_clif: recursive non-function let not supported"
                 ));
             }
-            // CR claude for claude: [perf/medium] A destructuring let (`let (a, b) =
-            // e`, `let {x, ..} = e`) refuses its whole region here, so an ordinary
-            // construct de-fuses: Collection's `find` default (`let (_, found) =
-            // fold(..)`) never fuses whole, which is why lang::collection::
-            // collection_newtype_defaults cannot put #[native] on its `find`. A select
-            // arm already binds a structure pattern's leaves, owned ones dropped at
-            // its exit; bind an irrefutable let pattern through the same leaf binds
-            // over a held composite local, dropped at the block's scope exit, then
-            // put #[native] on that fixture's `find`. (fusion-let-destructure-01)
-            let name = bspec.pattern.single_bind().ok_or_else(|| {
-                anyhow!("emit_clif: non-single-bind let pattern not supported")
-            })?;
-            let bind_id = bind.pattern.single_bind_id();
-            emit_let_node(cx, name, bind_id, &bind.typ, &bind.node)?;
+            match bspec.pattern.single_bind() {
+                Some(name) => {
+                    let bind_id = bind.pattern.single_bind_id();
+                    emit_let_node(cx, name, bind_id, &bind.typ, &bind.node)?;
+                }
+                None => emit_let_binds(
+                    cx,
+                    &bind.pattern,
+                    &bind.typ,
+                    &bind.node,
+                    bind.spec.id,
+                )?,
+            }
         }
         // Compile-time-only declarations — nothing to emit.
         NodeView::Nop(_) | NodeView::TypeDef(_) => {}

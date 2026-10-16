@@ -2218,13 +2218,13 @@ run!(large_region_fuses_whole, {
 }; FuseExpect::Jit);
 
 // A `#[native]` refusal names the blocker that stopped the region, a
-// destructuring let, though the call's argument fused beneath it.
+// stateful builtin, though the call's argument fused beneath it.
 run!(native_names_the_blocker_over_a_fused_argument, r#"{
     let g = |x: f64| x + 1.0;
-    let f = |p: {a: f64, b: f64}| { let {a, b} = p; a + b };
+    let f = |p: {a: f64, b: f64}| uniq(p.a) + p.b;
     let x = 1.0;
     #[native] f({a: g(x), b: g(x)})
-}"#, refused("non-single-bind let pattern not supported"); FuseExpect::None; jit_only);
+}"#, refused("builtin `uniq` has no fast-call entry"); FuseExpect::None; jit_only);
 
 // `#[native]` on a `<-` right side makes it a region of its own, as on a
 // let initializer, whatever it calls.
@@ -2294,3 +2294,17 @@ run!(native_trait_default_option_let, r#"{
     let b = Bag([1, 2, 3, 4]);
     #[native] Collection::find_map(b, |x| select x > 2 { true => x, false => null })
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+// A destructuring let fuses: its leaves bind over the value, owned ones
+// cloned out, inside a loop callback too.
+run!(native_destructuring_let, r#"{
+    let f = |x: i64| #[native] {
+        let (a, b) = (x, x + 1);
+        let {p, q: (s, n)} = {p: a * 2, q: ("s[b]", b)};
+        let (_, t) = ("ignored", s);
+        "[a] [b] [p] [t] [n]"
+    };
+    let g = |xs: Array<i64>| #[native] array::map(xs, |x| { let (u, v) = (x, "v[x]"); "[u][v]" });
+    (f(3), g([1, 2]))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["3 4 6 s4 4", ["1v1", "2v2"]]"#;
+    FuseExpect::Jit);
