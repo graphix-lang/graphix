@@ -116,6 +116,17 @@ pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
     apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id)
 }
 
+fn check_arity(n: usize, typ: &FnType) -> Result<()> {
+    if n != typ.args.len() {
+        let s = if n == 1 { "" } else { "s" };
+        bail!(
+            "this function is called with {n} argument{s}, but its type {typ} takes {}",
+            typ.args.len()
+        )
+    }
+    Ok(())
+}
+
 fn apply_inner<R: Rt, E: UserEvent>(
     fnode: Node<R, E>,
     scope: Scope,
@@ -125,14 +136,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
     rtype: Type,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
-    if args.len() != typ.args.len() {
-        let s = if args.len() == 1 { "" } else { "s" };
-        bail!(
-            "this function is called with {} argument{s}, but its type {typ} takes {}",
-            args.len(),
-            typ.args.len()
-        )
-    }
+    check_arity(args.len(), typ)?;
     let mut spec = ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter(
             args.iter()
@@ -246,9 +250,7 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         names: &[&str],
         top_id: ExprId,
     ) -> Result<Self> {
-        if names.len() != typ.args.len() {
-            bail!("expected a function of {} arguments not {typ}", names.len())
-        }
+        check_arity(names.len(), typ)?;
         let mut args = SmallVec::new();
         let mut nodes = SmallVec::new();
         for (name, a) in names.iter().zip(typ.args.iter()) {
