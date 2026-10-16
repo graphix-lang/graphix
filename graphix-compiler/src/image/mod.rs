@@ -19,7 +19,7 @@ use crate::{
     expr::ExprId,
     fusion::{
         emit::BodyRecord,
-        kernel_abi::{KernelSig, SiteLeaf},
+        kernel_abi::{ActivationLayout, KernelSig, SiteLeaf},
     },
     node::{callsite::RefsSummary, lambda::DefTable},
 };
@@ -39,9 +39,11 @@ type Deferred = Box<dyn FnOnce(&mut ImageBuf) -> Result<(), PackError>>;
 #[derive(Default)]
 pub(crate) struct Compiled {
     handlers: Table<usize, ErrorHandler>,
-    /// Kernel signatures, slot-chain leaves and body records by `Arc`.
+    /// Kernel signatures, slot-chain leaves, activation layouts and body
+    /// records by `Arc`.
     pub(crate) kernel_sigs: Table<usize, triomphe::Arc<KernelSig>>,
     pub(crate) site_leaves: Table<usize, triomphe::Arc<SiteLeaf>>,
+    pub(crate) layouts: Table<usize, triomphe::Arc<ActivationLayout>>,
     pub(crate) records: Table<usize, triomphe::Arc<BodyRecord>>,
     /// Definitions' check tables by `Arc`.
     pub(crate) def_tables: Table<usize, sync::Arc<DefTable>>,

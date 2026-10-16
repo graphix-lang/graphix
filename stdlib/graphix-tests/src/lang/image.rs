@@ -1013,3 +1013,49 @@ let g = |y: i64| -> i64 {
     assert_eq!(cold, warm);
     Ok(())
 }
+
+/// The program image `program` writes, compiled with fusion on.
+async fn fused_program_image(program: &str) -> Result<Bytes> {
+    let (tx, _rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let (prog_tx, prog_rx) = oneshot::channel();
+    let ctx = init_with_session(
+        tx,
+        TEST_REGISTER,
+        Default::default(),
+        RegistrationImage::save(reg_tx),
+        Some(Source::Program(program.into())),
+        Some(prog_tx),
+    )
+    .await?;
+    let image = prog_rx.await??.image;
+    ctx.shutdown().await;
+    Ok(image)
+}
+
+/// A chain of recursive kernels, each calling the one before and itself
+/// twice, shares its callees' activation layouts: its image grows with
+/// the chain, not with the layouts' copies (3^n).
+#[tokio::test]
+async fn a_recursive_kernel_chain_images_its_layouts_once() -> Result<()> {
+    let chain = |n: usize| {
+        let rhs = |f: &str| format!("{f}(n - 1) + {f}(n - 2) + 1");
+        let mut s = format!(
+            "let rec f0 = |n: i64| -> i64 select n < 1 {{ true => 0, false => {} }};\n",
+            rhs("f0")
+        );
+        for k in 1..n {
+            s.push_str(&format!(
+                "let rec f{k} = |n: i64| -> i64 select n < 1 {{ true => f{}(n), false => {} }};\n",
+                k - 1,
+                rhs(&format!("f{k}"))
+            ));
+        }
+        s.push_str(&format!("let x = 3;\nf{}(x)\n", n - 1));
+        s
+    };
+    let short = fused_program_image(&chain(8)).await?.len();
+    let long = fused_program_image(&chain(12)).await?.len();
+    assert!(long - short < 256 * 1024, "8 links: {short} bytes, 12 links: {long} bytes");
+    Ok(())
+}

@@ -1065,59 +1065,66 @@ mod tests {
     }
 }
 
-// CR claude for claude: [bug/medium] This codec writes the `ActivationLayout` behind
-// `layout` inline and recurses into its `nested`. In memory the layouts are a DAG:
-// `claim_block_run` copies a callee's whole `SiteLayout::self_blocks` (one entry per
-// self-call slot sharing one Arc, plus the callee's own `nested`) into every caller.
-// The image therefore holds that DAG as a tree. A chain of N non-tail recursive
-// functions, each calling the previous one, writes a program image that grows 2^N, or
-// 3^N with two self-calls: 32 MB at N=13. At that size the warm start is no faster than
-// cold, and decode builds a separate Arc for every occurrence. Make `ActivationLayout`
-// an image object like `SiteLeaf`: write it through `image::object_encode` keyed by
-// `Arc::as_ptr`, read it back with `foreign_decode`, and have `SelfBlock` write `rel`
-// plus the reference. Add a pin that bounds the image size of a 20-link chain. probe:
-// design/review-2026-10-12/repro/f-kernel-01.sh (f-kernel-01)
+/// A self block's layout is an image object: the callers that copied a
+/// callee's blocks share its layouts, a DAG the image keeps one.
 impl PackTrait for SelfBlock {
     fn encoded_len(&self) -> usize {
-        crate::stack::ensure_sufficient(|| {
-            let SelfBlock { rel, layout } = self;
-            let ActivationLayout { words, slots, anchors, nested } = &**layout;
-            rel.encoded_len()
-                + words.encoded_len()
-                + crate::image::slice_len(slots)
-                + crate::image::slice_len(anchors)
-                + crate::image::slice_len(nested)
-        })
+        let SelfBlock { rel, layout } = self;
+        rel.encoded_len()
+            + crate::image::object_len(
+                &(Arc::as_ptr(layout) as usize),
+                |k| (*k, layout.clone()),
+                |e| &mut e.ext::<crate::image::Compiled>().layouts,
+            )
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        crate::stack::ensure_sufficient(|| {
-            let SelfBlock { rel, layout } = self;
-            let ActivationLayout { words, slots, anchors, nested } = &**layout;
-            rel.encode(buf)?;
-            words.encode(buf)?;
-            crate::image::slice_encode(slots, buf)?;
-            crate::image::slice_encode(anchors, buf)?;
-            crate::image::slice_encode(nested, buf)
-        })
+        let SelfBlock { rel, layout } = self;
+        rel.encode(buf)?;
+        crate::image::object_encode(
+            &(Arc::as_ptr(layout) as usize),
+            |k| (*k, layout.clone()),
+            |e| &mut e.ext::<crate::image::Compiled>().layouts,
+            buf,
+            |buf| {
+                crate::stack::ensure_sufficient(|| {
+                    let ActivationLayout { words, slots, anchors, nested } = &**layout;
+                    words.encode(buf)?;
+                    crate::image::slice_encode(slots, buf)?;
+                    crate::image::slice_encode(anchors, buf)?;
+                    crate::image::slice_encode(nested, buf)
+                })
+            },
+        )
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        crate::stack::ensure_sufficient(|| {
-            let rel = u32::decode(buf)?;
-            let words = u32::decode(buf)?;
-            let slots: Vec<u32> = PackTrait::decode(buf)?;
-            let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
-            let nested: Vec<SelfBlock> = PackTrait::decode(buf)?;
-            let layout = ActivationLayout {
-                words,
-                slots: slots.into(),
-                anchors: anchors.into(),
-                nested: nested.into(),
-            };
-            Ok(SelfBlock { rel, layout: Arc::new(layout) })
-        })
+        let rel = u32::decode(buf)?;
+        Ok(SelfBlock { rel, layout: activation_layout_decode(buf)? })
     }
+}
+
+fn activation_layout_decode(
+    buf: &mut impl Buf,
+) -> Result<Arc<ActivationLayout>, PackError> {
+    crate::image::foreign_decode(
+        buf,
+        |buf| {
+            crate::stack::ensure_sufficient(|| {
+                let words = u32::decode(buf)?;
+                let slots: Vec<u32> = PackTrait::decode(buf)?;
+                let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
+                let nested: Vec<SelfBlock> = PackTrait::decode(buf)?;
+                Ok(Arc::new(ActivationLayout {
+                    words,
+                    slots: slots.into(),
+                    anchors: anchors.into(),
+                    nested: nested.into(),
+                }))
+            })
+        },
+        |b| activation_layout_decode(b),
+    )
 }
 
 impl PackTrait for SiteAnchor {
