@@ -456,20 +456,74 @@ fn try_freeze_for_abi(t: &Type) -> Result<Type, FreezeError> {
 }
 
 fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
-    crate::stack::ensure_sufficient(|| freeze_for_abi_d_inner(t, seen))
+    crate::stack::ensure_sufficient(|| {
+        freeze_for_abi_d_inner(t, seen).map(super::TypeMemo::intern_frozen)
+    })
 }
 
-// CR claude for claude: [perf/low] Every freeze builds a new Arc for every node of the
-// type, and each fused region freezes its param and return types. A chain of lets of
-// nesting depth d (`let x1 = [x0]; .. let xN = [x(N-1)]`) therefore keeps about N^2
-// frozen nodes alive for the session. The image writer then keys each of them
-// separately (image::shared_key inserts one type_keys entry per Arc), which roughly
-// doubles the cost. Peak memory at N = 1000 / 2000 / 3000 is 169 / 459 / 904 MB with
-// --no-cache and 292 / 950 / 1889 MB cold, against 72-106 MB with --no-fusion. Freezing
-// an already frozen subtree twice gives equal content, so the copies could share it:
-// intern frozen nodes by content (or by the frozen child's identity) during a fusion
-// pass, so N regions share one chain. That makes both the run and the image memo
-// linear. probe: design/review-2026-10-05/repro/t-misc-02.sh (x-rerun-6-07)
+/// A hash of a frozen node's own content and its parts' identities (a
+/// part with none, a leaf, by content): parts interned first, two equal
+/// nodes key alike. `None` for a node not interned.
+pub(crate) fn shallow_key(t: &Type) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    fn part(t: &Type, h: &mut ahash::AHasher) {
+        match t.shared_identity() {
+            Some(id) => id.hash(h),
+            None => t.hash(h),
+        }
+    }
+    let mut h = ahash::AHasher::default();
+    std::mem::discriminant(t).hash(&mut h);
+    match t {
+        Type::Array(e) | Type::List(e) => part(e, &mut h),
+        Type::Tuple(ts) | Type::Set(ts) => ts.iter().for_each(|t| part(t, &mut h)),
+        Type::Struct(fs) => fs.iter().for_each(|(n, t, _)| {
+            n.hash(&mut h);
+            part(t, &mut h)
+        }),
+        Type::Variant(tag, ps, _) => {
+            tag.hash(&mut h);
+            ps.iter().for_each(|t| part(t, &mut h))
+        }
+        Type::Abstract { id, params } => {
+            id.hash(&mut h);
+            params.iter().for_each(|t| part(t, &mut h))
+        }
+        _ => return None,
+    }
+    Some(h.finish())
+}
+
+/// Whether two nodes [`shallow_key`] keys alike are equal: their own
+/// content equal and their parts the same nodes (leaves equal).
+pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
+    fn part(a: &Type, b: &Type) -> bool {
+        match (a.shared_identity(), b.shared_identity()) {
+            (Some(x), Some(y)) => x == y,
+            (None, None) => a == b,
+            _ => false,
+        }
+    }
+    fn parts(a: &[Type], b: &[Type]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| part(a, b))
+    }
+    match (a, b) {
+        (Type::Array(x), Type::Array(y)) | (Type::List(x), Type::List(y)) => part(x, y),
+        (Type::Tuple(x), Type::Tuple(y)) | (Type::Set(x), Type::Set(y)) => parts(x, y),
+        (Type::Struct(x), Type::Struct(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|((n0, t0, _), (n1, t1, _))| n0 == n1 && part(t0, t1))
+        }
+        (Type::Variant(t0, x, _), Type::Variant(t1, y, _)) => t0 == t1 && parts(x, y),
+        (Type::Abstract { id: i0, params: x }, Type::Abstract { id: i1, params: y }) => {
+            i0 == i1 && parts(x, y)
+        }
+        _ => false,
+    }
+}
+
 fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
     use FreezeError::{NonCanonical, Unresolved, Unsupported};
     // The TVar lock is not reentrant: clone out of the guard before recursing.

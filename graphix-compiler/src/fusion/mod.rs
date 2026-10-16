@@ -160,6 +160,9 @@ impl FusionStats {
 pub(crate) struct TypeMemo {
     expanded: Table<Type>,
     frozen: Table<Result<Type, kernel_abi::FreezeError>>,
+    /// Every frozen node, by [`kernel_abi::shallow_key`]: a node equal to
+    /// one frozen before is that one, so frozen copies share their parts.
+    frozen_nodes: DashMap<u64, SmallVec<[Type; 1]>>,
 }
 
 /// Results by the allocations a type is made of (see [`identity`]),
@@ -313,6 +316,21 @@ impl TypeMemo {
             || Err(kernel_abi::FreezeError::Unsupported),
             compute,
         )
+    }
+
+    /// `t`, a node just frozen over interned parts, or the equal node
+    /// frozen before it.
+    pub(crate) fn intern_frozen(t: Type) -> Type {
+        let Some(memo) = Self::current() else { return t };
+        let Some(key) = kernel_abi::shallow_key(&t) else { return t };
+        let mut bucket = memo.frozen_nodes.entry(key).or_default();
+        match bucket.iter().find(|u| kernel_abi::shallow_same(u, &t)) {
+            Some(u) => u.clone(),
+            None => {
+                bucket.push(t.clone());
+                t
+            }
+        }
     }
 }
 
