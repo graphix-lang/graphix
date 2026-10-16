@@ -645,34 +645,21 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         let mut ts: LPooled<Vec<&Type>> = LPooled::take();
         ts.push(&bottom);
         ts.extend(self.n.iter().map(|n| n.typ()));
-        // CR claude for claude: [perf/low] The check of an array or list literal walks
-        // its element type's whole depth: `Type::union` over [⊥, elems] and then
-        // `check_contains` against `Array<union>`. A chain `let x_i = [x_{i-1}]`
-        // therefore checks superlinearly: 2000 lets take 3.1 s in Typecheck0, while the
-        // same chain built from tuples takes 2.4 ms. Profile which of the two re-walks
-        // the subtree. Make a union with one member left after dropping ⊥ return that
-        // member untouched, and make `contains` short-circuit on identical subtrees.
-        // Then add a timed pin. probe:
-        // design/review-2026-10-12/repro/t-misc-03-array-chain.gx vs
-        // t-misc-03-tuple-chain.gx (t-misc-03) (t-misc-03)
         // a call through an element accepts each alike: functions meet;
         // one element is its own union
-        // 2026-10-15 claude: Profiled: the union over [⊥, elem] walked the element
-        // type; a one-element literal now takes its element's type directly (quick
-        // build, --check of the chain: 1000/2000/4000 lets 0.25/1.03/4.14 s before,
-        // 0.23/0.48/1.64 s after). Still superlinear: binding the literal's fresh type
-        // cell runs the occurs check (would_cycle_seen_inner) over the whole element
-        // type, O(depth) per let. The cell is fresh and only the literal holds it, so
-        // it cannot occur in the element type, but the check cannot know that without a
-        // cached bound on what a bound cell reaches (or a bind entry for a cell nothing
-        // else holds yet).
-        // 2026-10-16 claude: The remaining walk is the occurs check
-        // (would_cycle_seen_inner) and lower() in TVar::bind; see the profile on
-        // tests-shell-compiler-10.
         let union = match &self.n[..] {
             [one] => one.typ().clone(),
             _ => wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?,
         };
+        // the literal's own element cell, held by nothing else, takes the
+        // elements' type without an occurs walk of its whole depth
+        if let Type::Array(e) | Type::List(e) = &self.typ
+            && let Type::TVar(tv) = &**e
+            && !matches!(union, Type::Bottom)
+            && tv.bind_unshared(&union)
+        {
+            return Ok(());
+        }
         let rtype = match union {
             Type::Bottom => K::typ(Type::empty_tvar()),
             t => K::typ(t),

@@ -827,6 +827,25 @@ impl TVar {
         }
     }
 
+    /// Bind an open, flexible, unconstrained cell to `t`, which is not a
+    /// var and does not hold this one, when nothing but this var holds
+    /// the cell: every way a type reaches a cell is a clone of a var
+    /// sharing it, so `t` cannot reach it and the occurs check would find
+    /// nothing. False, binding nothing, when any of that fails.
+    pub fn bind_unshared(&self, t: &Type) -> bool {
+        let unshared = Arc::count(&self.0) == 1 && Arc::count(&self.read().cell) == 1;
+        if !unshared
+            || matches!(t, Type::TVar(_))
+            || self.is_bound()
+            || self.is_rigid()
+            || !self.cell_constraints().is_empty()
+        {
+            return false;
+        }
+        self.bind(t.clone());
+        true
+    }
+
     /// Bind the cell, replacing any binding.
     #[doc(hidden)]
     pub fn bind(&self, t: Type) {

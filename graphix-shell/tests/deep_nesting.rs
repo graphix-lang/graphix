@@ -226,25 +226,6 @@ fn paren_chain(d: usize) -> String {
 /// Shapes with no source nesting at all: the parser cannot refuse
 /// them, so each must compile at `FLAT_DEPTH`.
 const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
-// CR claude for claude: [perf/low] A chain of `let x_i = [x_{i-1}]`, whose type depth
-// equals the program's length, checks in 2.8 s at 1500 lets, 6.4 s at 3000 and 21.7 s
-// at 6000 (debug binary). A flat chain of the same length (`let x_i = [x_{i-1}[0]$]`)
-// takes about 1 s at every size. So something in Typecheck0 walks each let's whole
-// type, and the cost grows faster than quadratically. This pin runs only at 3000 and
-// has no time bound, so a further slowdown goes unseen. Fix: find the per-let walk that
-// is linear in type depth (a full contains or occurs walk is the likely one) and
-// memoize it by shared identity. Give the flat shapes a time budget.
-// (tests-shell-compiler-10)
-// 2026-10-13 claude: left for the compiler batch, where the walk is; the flat
-// shapes now run in every mode at FLAT_DEPTH, still with no time budget.
-// 2026-10-16 claude: Profiled (perf, 3000 lets, debug): the per-let walk is the occurs
-// check, would_cycle_seen_inner through each bound cell's binding (16%), with the Type
-// clones and drops of each cell's binding and conjuncts it makes (22%) and
-// TVar::read/cell (23%); TVar::bind's lower() is a second walk of the same depth. Both
-// are linear in the type's depth per bind, so the chain is quadratic: Typecheck0 5.6 s
-// at 6000. A memo needs a fact that survives rollback and unbind (a cell known to reach
-// no open cell), which a cell's later unbind would invalidate in every cell that
-// recorded it; t-misc-03's remainder is the same walk.
 const FLAT_DEPTH: usize = 3000;
 
 /// Cells chained by bounds in one signature (`chainbounds`).
@@ -397,6 +378,30 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
         eprintln!("{shape}@{depth} {mode}: {e}");
         std::process::exit(FAILED)
     }
+}
+
+/// A type as deep as the program is long checks in time linear in the
+/// program: `flattype` at eight times `FLAT_DEPTH` checks well inside a
+/// budget a walk of each let's whole type blows several times over.
+#[test]
+fn flat_type_chain_checks_in_linear_time() {
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
+    let dir = tempfile::tempdir().expect("a dir for the program");
+    let file = dir.path().join("flattype.gx");
+    fs::write(&file, program("flattype", 8 * FLAT_DEPTH)).expect("write the program");
+    let start = std::time::Instant::now();
+    let status = Command::new(env!("CARGO_BIN_EXE_graphix"))
+        .args(["--check", "--no-cache"])
+        .arg(&file)
+        .env("XDG_CACHE_HOME", dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run the check");
+    let took = start.elapsed();
+    assert!(status.success(), "the check failed: {status}");
+    assert!(took < BUDGET, "{} lets checked in {took:?}", 8 * FLAT_DEPTH);
 }
 
 #[test]
