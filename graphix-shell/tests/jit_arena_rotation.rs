@@ -31,9 +31,9 @@ fn program(calling: bool) -> String {
     s
 }
 
-/// Run the program with a 192KB arena, caching its image under `dir`:
-/// whether it computed its total, its stderr and its log.
-fn run(dir: &Path, path: &Path) -> (bool, String, String) {
+/// Run the program with an arena of `arena` bytes, caching its image
+/// under `dir`: whether it computed its total, its stderr and its log.
+fn run(dir: &Path, path: &Path, arena: &str) -> (bool, String, String) {
     let logs = dir.join("log");
     let _ = fs::remove_dir_all(&logs);
     fs::create_dir_all(&logs).expect("log dir");
@@ -44,7 +44,7 @@ fn run(dir: &Path, path: &Path) -> (bool, String, String) {
         .arg(path)
         // the cache's info lines say whether the image was written or restored
         .env("RUST_LOG", "warn,graphix_shell::cache=info")
-        .env("GRAPHIX_JIT_ARENA", "196608")
+        .env("GRAPHIX_JIT_ARENA", arena)
         .env("XDG_CACHE_HOME", dir.join("cache"))
         .stdin(Stdio::null())
         .output()
@@ -65,8 +65,8 @@ fn arena_rotates(calling: bool) {
     fs::create_dir_all(&dir).expect("tempdir");
     let path = dir.join("arena.gx");
     fs::write(&path, program(calling)).expect("write program");
-    let (cold_ok, cold_err, cold_log) = run(&dir, &path);
-    let (warm_ok, warm_err, warm_log) = run(&dir, &path);
+    let (cold_ok, cold_err, cold_log) = run(&dir, &path, "196608");
+    let (warm_ok, warm_err, warm_log) = run(&dir, &path, "196608");
     let _ = fs::remove_dir_all(&dir);
     assert!(cold_ok, "the program did not compute its total: {cold_err}\n{cold_log}");
     assert!(cold_log.contains("Program image written to"), "{cold_log}");
@@ -96,6 +96,24 @@ fn exhausted_arena_rotates() {
 #[test]
 fn exhausted_arena_rotates_task_regions() {
     arena_rotates(true)
+}
+
+/// A link batch bigger than a whole arena installs in a fresh one of twice
+/// the size, as many times as it takes.
+#[test]
+fn arena_grows_for_a_batch_it_cannot_hold() {
+    let dir = std::env::temp_dir().join(format!("gx-arena-grow-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("tempdir");
+    let path = dir.join("grow.gx");
+    fs::write(&path, program(false)).expect("write program");
+    let (ok, err, log) = run(&dir, &path, "16384");
+    let _ = fs::remove_dir_all(&dir);
+    assert!(ok, "the program did not compute its total: {err}\n{log}");
+    assert!(
+        log.contains("reinstalling in a fresh module of 32768 bytes"),
+        "a 16KB arena never grew:\n{log}"
+    );
 }
 
 /// A JIT that cannot be built leaves the program unfused, never failed.

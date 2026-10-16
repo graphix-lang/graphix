@@ -640,7 +640,8 @@ node graph IS the IR — there is no parallel typed IR
   One JITModule + 256MB
   arena per generation, built on the first fusion (a fusion-off context
   never builds one); an install that fails retires the generation, and
-  on exhaustion the link reinstalls its records in a fresh one; a
+  on exhaustion the link reinstalls its records in a fresh one, twice the
+size while a fresh one cannot hold the batch; a
   generation's code is freed when it and every kernel installed into it
   have dropped (each `WrappedKernel` holds its code). Pin:
   `graphix-shell/tests/jit_arena_rotation.rs`. A two-word value never
