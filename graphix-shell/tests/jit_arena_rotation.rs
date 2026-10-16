@@ -12,10 +12,17 @@ use std::{
 /// Regions for two links.
 const REGIONS: usize = 512;
 
-fn program() -> String {
+/// Each region computes `x * i + 1`; a `calling` one through a lambda,
+/// so it fuses in a compile task of its own and its region links at the
+/// join.
+fn program(calling: bool) -> String {
     let mut s = String::from("let x = sys::time::after_idle(duration:1.ms, 3);\n");
+    s.push_str("let f = |a: i64, i: i64| a * i + 1;\n");
     for i in 0..REGIONS {
-        s.push_str(&format!("let r{i} = #[native] (x * {i} + 1);\n"));
+        match calling {
+            true => s.push_str(&format!("let r{i} = #[native] f(x, {i});\n")),
+            false => s.push_str(&format!("let r{i} = #[native] (x * {i} + 1);\n")),
+        }
     }
     let sum = (0..REGIONS).map(|i| format!("r{i}")).collect::<Vec<_>>().join(" + ");
     let expect: usize = (0..REGIONS).map(|i| 3 * i + 1).sum();
@@ -51,13 +58,13 @@ fn run(dir: &Path, path: &Path) -> (bool, String, String) {
     (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned(), log)
 }
 
-#[test]
-fn exhausted_arena_rotates() {
-    let dir = std::env::temp_dir().join(format!("gx-arena-{}", std::process::id()));
+fn arena_rotates(calling: bool) {
+    let dir =
+        std::env::temp_dir().join(format!("gx-arena-{}-{calling}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("tempdir");
     let path = dir.join("arena.gx");
-    fs::write(&path, program()).expect("write program");
+    fs::write(&path, program(calling)).expect("write program");
     let (cold_ok, cold_err, cold_log) = run(&dir, &path);
     let (warm_ok, warm_err, warm_log) = run(&dir, &path);
     let _ = fs::remove_dir_all(&dir);
@@ -77,6 +84,18 @@ fn exhausted_arena_rotates() {
         warm_log.contains("JIT code arena exhausted: retired generation"),
         "the warm start never rotated:\n{warm_log}"
     );
+}
+
+#[test]
+fn exhausted_arena_rotates() {
+    arena_rotates(false)
+}
+
+/// Regions fused in parallel tasks link in batches as the serial walk's
+/// do, so none outgrows a fresh arena.
+#[test]
+fn exhausted_arena_rotates_task_regions() {
+    arena_rotates(true)
 }
 
 /// A JIT that cannot be built leaves the program unfused, never failed.

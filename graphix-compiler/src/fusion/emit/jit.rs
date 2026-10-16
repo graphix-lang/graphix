@@ -1489,11 +1489,16 @@ impl Jit {
     ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
         match self.generation.install(wrappers) {
             Ok(p) => Ok((p, self.generation.code.clone())),
-            Err(e) => {
-                self.generation = Generation::new(&self.shared.isa)?;
-                self.retired += 1;
-                Err(e)
-            }
+            Err(e) => match Generation::new(&self.shared.isa) {
+                Ok(g) => {
+                    self.generation = g;
+                    self.retired += 1;
+                    Err(e)
+                }
+                Err(fresh) => {
+                    Err(e.context(format!("and no fresh generation: {fresh:#}")))
+                }
+            },
         }
     }
 
