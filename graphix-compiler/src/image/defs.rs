@@ -11,15 +11,20 @@ use super::{
 use crate::{
     ExecCtx, LambdaId, Rt, UserEvent,
     effects::LambdaFacts,
-    expr::{Arg, Expr},
+    expr::{Arg, Expr, ExprId, ModPath},
     node::lambda::{
-        BodyShare, DefBody, DefOrigin, LambdaDef, make_init, tables_decode, tables_encode,
+        BodyShare, BodyShared, DefBody, DefOrigin, LambdaDef, make_init, tables_decode,
+        tables_encode,
     },
     typ::FnType,
 };
+use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use netidx_core::pack::{Pack, PackError};
+use graphix_types::{MINT_BASE, block_component};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::path::Path;
 use parking_lot::Mutex;
+use smallvec::SmallVec;
 use triomphe::Arc;
 
 fn body_encode(body: &DefBody, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -51,6 +56,98 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
     }
 }
 
+/// A lexical scope whose generated block components name expressions by
+/// id (`#fn<id>`): each such id is written as an `ExprId`, so it relocates
+/// with the expressions it names.
+fn lexical_relocating_encode(
+    p: &ModPath,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    let parts: SmallVec<[&str; 8]> = Path::parts(&p.0).collect();
+    encode_varint(parts.len() as u64, buf);
+    for part in parts {
+        let id = part
+            .strip_prefix('#')
+            .and_then(|k| k.find(|c: char| c.is_ascii_digit()).map(|i| k.split_at(i)))
+            .and_then(|(kind, n)| Some((kind, n.parse::<u64>().ok()?)))
+            .filter(|(_, n)| *n >= MINT_BASE);
+        match id {
+            Some((kind, n)) => {
+                buf.put_u8(1);
+                ArcStr::from(kind).encode(buf)?;
+                ExprId::from_inner(n).encode(buf)?
+            }
+            None => {
+                buf.put_u8(0);
+                ArcStr::from(part).encode(buf)?
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lexical_relocating_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
+    let mut p = Path::root();
+    for _ in 0..decode_varint(buf)? {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        p = match buf.get_u8() {
+            0 => p.append(&*<ArcStr as Pack>::decode(buf)?),
+            1 => {
+                let kind: ArcStr = Pack::decode(buf)?;
+                let id = ExprId::decode(buf)?;
+                p.append(block_component(&kind, id.inner()).as_str())
+            }
+            _ => return Err(PackError::UnknownTag),
+        };
+    }
+    Ok(ModPath(p))
+}
+
+/// What a definition's compiles share: its seqs' lowerings (whose ids
+/// its check table has rows for), the check's specs and its lambda
+/// literals' shares.
+fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackError> {
+    let BodyShared { seqs, specs, literals } = shared;
+    encode_varint(seqs.len() as u64, buf);
+    for ((id, scope), e) in seqs.iter() {
+        id.encode(buf)?;
+        lexical_relocating_encode(scope, buf)?;
+        e.encode(buf)?;
+    }
+    encode_varint(specs.len() as u64, buf);
+    for (id, e) in specs.iter() {
+        id.encode(buf)?;
+        e.encode(buf)?;
+    }
+    encode_varint(literals.len() as u64, buf);
+    for (id, share) in literals.iter() {
+        id.encode(buf)?;
+        shared_encode(&share.lock(), buf)?;
+    }
+    Ok(())
+}
+
+fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
+    let mut shared = BodyShared::default();
+    for _ in 0..decode_varint(buf)? {
+        let id = ExprId::decode(buf)?;
+        let scope = lexical_relocating_decode(buf)?;
+        shared.seqs.insert((id, scope), Expr::decode(buf)?);
+    }
+    for _ in 0..decode_varint(buf)? {
+        let id = ExprId::decode(buf)?;
+        shared.specs.insert(id, Pack::decode(buf)?);
+    }
+    for _ in 0..decode_varint(buf)? {
+        let id = ExprId::decode(buf)?;
+        let share = shared_decode(buf)?;
+        shared.literals.insert(id, BodyShare::new(Mutex::new(share)));
+    }
+    Ok(shared)
+}
+
 pub(crate) fn def_encode<R: Rt, E: UserEvent>(
     def: &LambdaDef<R, E>,
     buf: &mut impl BufMut,
@@ -63,7 +160,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         typ,
         init: _,
         table,
-        shared: _,
+        shared,
         facts,
         param_calls,
         recursion,
@@ -88,7 +185,8 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
     body_encode(body, buf)?;
     flags_encode(*flags, buf)?;
     spec.encode(buf)?;
-    tables_encode(table.get(), buf)
+    tables_encode(table.get(), buf)?;
+    shared_encode(&shared.lock(), buf)
 }
 
 /// Rebuild a definition and register it in `ctx.lambda_defs`.
@@ -110,20 +208,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;
     let table = std::sync::Arc::new(tables_decode(buf)?);
-    // CR claude for claude: [perf/medium] A restored definition starts with an empty
-    // BodyShare. On a warm start, its first run-time compile lowers each seq again
-    // through seq::desugar, which mints fresh expression ids. The restored DefTable has
-    // no rows for those ids, so every warm instance type-checks the lowered nodes
-    // instead of substituting. Probe design/review-2026-10-12/repro/c-image-05.gx
-    // measures each instance check at about 3x the cold cost, the same as the cold run
-    // under GRAPHIX_NO_SUBST. Specs suffer the same way: BodyShared.specs is empty, so
-    // each warm instance allocates its own spec Arcs instead of sharing the check's.
-    // Fix: image BodyShared (at least its seqs, and its specs by expr_key) as a shared
-    // object beside the DefTable, decoded lazily with it. Alternatively, make the
-    // lowered ids a deterministic function of the seq's id and scope. Also fix the
-    // CompileCtx::body doc, which names `LambdaDef::seqs` instead of
-    // `LambdaDef::shared`. (c-image-05)
-    let shared = BodyShare::default();
+    let shared = BodyShare::new(Mutex::new(shared_decode(buf)?));
     let init = make_init(
         id,
         flags,

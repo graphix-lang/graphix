@@ -9,6 +9,7 @@ extern crate combine;
 extern crate serde_derive;
 #[macro_use]
 mod ids;
+pub use ids::MINT_BASE;
 
 pub mod abstract_value;
 pub(crate) mod dbgenv;

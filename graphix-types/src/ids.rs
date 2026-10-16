@@ -11,7 +11,7 @@
 //! its size.
 
 /// The first minted id; every reserved block lies below it.
-pub(crate) const MINT_BASE: u64 = 1 << 62;
+pub const MINT_BASE: u64 = 1 << 62;
 
 /// One past the last id an image may hold: a minted id's wire form is
 /// its offset from [`MINT_BASE`] shifted up a bit.

@@ -1306,7 +1306,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// the re-drive's `bind_to_lambda` entry is gone.
     pub fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
     /// The seq lowerings of the definition whose body is compiling
-    /// (`LambdaDef::seqs`): each of its seqs lowers once, so every compile
+    /// (`LambdaDef::shared`): each of its seqs lowers once, so every compile
     /// of the body has its check's expression ids. A seq outside every
     /// definition compiles once and is lowered where it stands.
     pub(crate) body: Option<node::lambda::BodyCompile>,
