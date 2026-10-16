@@ -782,6 +782,16 @@ fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
 // the cell's binding where the check expanded it only to compare, or remember it
 // beside the cell for printing. Found under (t-cast-setops-13), whose union arm order
 // is fixed. (mismatch-print-01)
+// 2026-10-16 claude: Found where the expansion enters:
+// StructPatternNode::compile_int_inner expands a typedef reference before binding, so
+// a plain name binds the typedef's body (the bind trace shows 'CHK-CONTAINS i64 >=
+// [`Circle(f64), `Rect(f64, f64)]', no cell involved). Binding a plain name at the
+// written type instead fixes the message but changes typing: a union of (bool, i64)
+// and (bool, Option<i64>) no longer merges, and collection_newtype_defaults,
+// native_let_wildcard_keeps_the_value_type and private_type_in_public_body stop
+// fusing. The fix has to be print-only: carry the written type beside the bind's type
+// for messages (the Ref node or TypeMismatch would print it), never in what the check
+// unifies.
 #[derive(Debug)]
 pub struct TypeMismatch {
     expected: Type,
