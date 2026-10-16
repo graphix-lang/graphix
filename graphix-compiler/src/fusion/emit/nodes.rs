@@ -902,29 +902,19 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
                 })?;
                 field_discs.push(disc);
             }
-            // CR claude for claude: [perf/medium] For a field the update leaves alone,
-            // this builds a whole new `[name, value]` pair: a 2-slot buf, an
-            // interned-name clone, a field read and a new ValArray. A `{s with f: v}`
-            // on an n-field struct therefore allocates n+1 arrays per evaluation, while
-            // the node-walk's StructWith::update only bumps each kept pair's refcount.
-            // In a 300k-step fold of `{acc with a: acc.a + i}`, a 16-field struct takes
-            // 1.69 s fused against 0.27 s for 2 fields. Fix: read the whole pair out of
-            // the source (compile_element_read with ElementRead::ArrayIndex at the
-            // pair's Array type, a refcount bump) and push it with
-            // graphix_value_buf_push_array. Then only replaced fields build a new pair.
-            // (f-nodes-scalar-02)
+            // a kept field's `[name, value]` pair is the source's, shared
             None => {
-                push_struct_pair(cx, outer, name, |cx, pair| {
-                    // Guarded: a tainted source's placeholder has no fields.
-                    let ftyp = resolve_node_typ(cx.ctx, field_typ);
-                    let idx = cx.b.ins().iconst(types::I64, i as i64);
-                    let cv = emit_taint_guarded_read(cx, src_disc, &ftyp, |cx| {
-                        let read = ElementRead::StructField;
-                        compile_element_read(cx.b, arr_ptr, idx, &ftyp, read, cx.ctx)
-                    })?;
-                    scaffold::push_field(cx, pair, cv, &ftyp, CompositeSource::Owned)?;
-                    Ok(cv.disc)
+                let pair = Type::Tuple(triomphe::Arc::from_iter([
+                    Type::Primitive(netidx_value::Typ::String.into()),
+                    resolve_node_typ(cx.ctx, field_typ),
+                ]));
+                let idx = cx.b.ins().iconst(types::I64, i as i64);
+                // Guarded: a tainted source's placeholder has no fields.
+                let cv = emit_taint_guarded_read(cx, src_disc, &pair, |cx| {
+                    let read = ElementRead::ArrayIndex;
+                    compile_element_read(cx.b, arr_ptr, idx, &pair, read, cx.ctx)
                 })?;
+                scaffold::push_field(cx, outer, cv, &pair, CompositeSource::Owned)?;
             }
         }
     }
