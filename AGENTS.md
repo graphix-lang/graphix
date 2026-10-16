@@ -410,10 +410,12 @@ id and contents (`image::expr_key`), so a node's spec shares its def
 body's definition.
 Everything a session encodes must be borrowed from the context and
 root nodes for the whole session. A program image writes instance
-bodies to a heap after the eager part with an instance table; a call
-site keeps `Callee::Imaged` (id, resolved type, reference summary) and
-decodes the body on its first dispatch, synchronously, through
-`ExecCtx::image_decoder`; a builtin callee travels as its own bytes:
+bodies to a heap after the eager part with an instance table, which
+holds each instance's own reads and its callees by instance; a call
+site keeps `Callee::Imaged` and decodes the body on its first
+dispatch, synchronously, through `ExecCtx::image_decoder`; a site
+decoded outside every heap instance registers the reads of its whole
+tree until it is deleted, and the sites inside register nothing; a builtin callee travels as its own bytes:
 every `Apply` owns `image_encode` and every `BuiltIn` an
 `image_decode` (no defaults — a builtin without a codec does not
 compile), wrapper payloads implement `graphix_package_core::ImageState`

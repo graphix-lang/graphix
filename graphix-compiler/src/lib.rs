@@ -268,12 +268,25 @@ pub struct Refs {
     banked: usize,
     /// Leave callee instance bodies out of the walk.
     skip_callees: bool,
+    /// Stop at each lambda callee, recording its instance and whether a
+    /// sample's right side holds it, instead of walking its body.
+    callees: Option<Vec<(LambdaInstanceId, bool)>>,
 }
 
 impl Refs {
     /// A walk of one body alone: callee instance bodies are left out.
     pub(crate) fn without_callees() -> Self {
         Self { skip_callees: true, ..Self::default() }
+    }
+
+    /// A walk of one body that stops at its lambda callees
+    /// ([`Refs::take_callees`]).
+    pub(crate) fn stopping_at_callees() -> Self {
+        Self { callees: Some(Vec::new()), ..Self::default() }
+    }
+
+    pub(crate) fn take_callees(&mut self) -> Vec<(LambdaInstanceId, bool)> {
+        self.callees.take().unwrap_or_default()
     }
 
     /// Record a read of `id`, triggering unless under a sample's right

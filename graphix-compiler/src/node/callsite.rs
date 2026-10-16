@@ -58,7 +58,10 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
     fmt, mem,
-    sync::atomic::{AtomicBool, Ordering::Relaxed},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering::Relaxed},
+    },
 };
 use triomphe::Arc as TArc;
 
@@ -901,26 +904,56 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     Static { apply: Box<dyn Apply<R, E>>, first_update: bool },
     /// A statically bound instance the image holds in its heap, decoded
     /// by the first dispatch; `refs` is the body's summary until then.
-    Imaged { instance: LambdaInstanceId, first_update: bool, summary: RefsSummary },
+    Imaged { instance: LambdaInstanceId, first_update: bool, refs: ImagedRefs },
 }
 
-/// What an imaged instance's body answers `refs` with before it is
-/// decoded.
-// CR claude for claude: [perf/medium] Each imaged site writes its callee's whole
-// transitive reference summary, so a chain of n distinct functions (`let fi = |x|
-// f{i-1}(x) * 2 + i`) images O(n^2) ids: 50 MB at n=2000, 187 MB at n=4000. A warm
-// start then decodes each level's summary at its first dispatch and unrefs it before
-// registering the decoded body's (equal) refs, so the warm first cycle is O(n^2) too:
-// at n=4000 (debug) the warm run takes 3.5 s wall against 1.8 s cold, its first cycle
-// 3.3 s against 0.02 s. Fix: write a summary once per instance as a shared image
-// object holding the body's own refs and the imaged callees it reaches, flattened only
-// where a registration needs it (the top statement's), and skip the unref/ref churn
-// at materialize when the decoded body's refs are the summary's by construction.
-// probe: bench/par_chain.gx run twice (the second run is warm) prints elapsed_s
-// 0.0035 cold against 0.09 warm at n=1000. (image-refs-01)
+/// The reads of an imaged instance's whole tree, flattened from the
+/// image's table when first asked.
+#[derive(Debug)]
+pub(crate) struct ImagedRefs {
+    table: TArc<InstanceRefsTable>,
+    flat: OnceLock<RefsSummary>,
+}
+
+impl ImagedRefs {
+    fn flat(&self, instance: LambdaInstanceId) -> &RefsSummary {
+        self.flat.get_or_init(|| {
+            let mut refed: LPooled<IntSet<BindId>> = LPooled::take();
+            let mut triggering: LPooled<IntSet<BindId>> = LPooled::take();
+            let mut bound: LPooled<IntSet<BindId>> = LPooled::take();
+            let mut seen: LPooled<AHashSet<(LambdaInstanceId, bool)>> = LPooled::take();
+            let mut stack: LPooled<Vec<(LambdaInstanceId, bool)>> = LPooled::take();
+            stack.push((instance, false));
+            while let Some((i, banked)) = stack.pop() {
+                if !seen.insert((i, banked)) {
+                    continue;
+                }
+                let Some(r) = self.table.get(&i) else { continue };
+                refed.extend(r.own.refed.iter().copied());
+                bound.extend(r.own.bound.iter().copied());
+                if !banked {
+                    triggering.extend(r.own.triggering.iter().copied());
+                }
+                stack.extend(r.callees.iter().map(|(c, b)| (*c, banked || *b)));
+            }
+            RefsSummary::of_sets(&refed, &triggering, &bound)
+        })
+    }
+}
+
+/// What a heap instance's own nodes read, and its callees by instance,
+/// each marked when a sample's right side holds it.
+#[derive(Debug, Clone, netidx_derive::Pack)]
+pub(crate) struct InstanceRefs {
+    own: RefsSummary,
+    callees: Vec<(LambdaInstanceId, bool)>,
+}
+
+pub(crate) type InstanceRefsTable = AHashMap<LambdaInstanceId, InstanceRefs>;
+
+/// A walk's reads, each sorted.
 #[derive(Debug, Clone, netidx_derive::Pack)]
 pub(crate) struct RefsSummary {
-    // each sorted
     refed: Vec<BindId>,
     triggering: Vec<BindId>,
     bound: Vec<BindId>,
@@ -1003,6 +1036,9 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Absent>,
     fork: ForkSite,
+    /// The reads of an imaged tree this site registered when it decoded
+    /// outside every heap instance, released at delete.
+    held: Option<Box<[BindId]>>,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
@@ -1037,6 +1073,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             defaults_open: true,
             absent: None,
             fork: ForkSite::default(),
+            held: None,
         }
     }
 
@@ -2147,8 +2184,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             && let Err(e) = self.materialize(ctx)
         {
             warn!("decoding the instance of {}: {e:#}; resolving it afresh", self.spec);
-            let top_id = self.top_id;
-            self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
             self.callee = Callee::DynamicUnbound;
         }
         // a first bind reads every quiet production; a bound site's rebind
@@ -2374,16 +2409,20 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
 }
 
 impl RefsSummary {
-    fn of(refs: &Refs) -> Self {
+    fn of_sets(
+        refed: &IntSet<BindId>,
+        triggering: &IntSet<BindId>,
+        bound: &IntSet<BindId>,
+    ) -> Self {
         let sorted = |ids: &IntSet<BindId>| {
             let mut v: Vec<BindId> = ids.iter().copied().collect();
             v.sort_unstable();
             v
         };
         RefsSummary {
-            refed: sorted(&refs.refed),
-            triggering: sorted(&refs.triggering),
-            bound: sorted(&refs.bound),
+            refed: sorted(refed),
+            triggering: sorted(triggering),
+            bound: sorted(bound),
         }
     }
 
@@ -2410,43 +2449,36 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
     }
 
-    /// The body's reference summary an imaged site answers `refs` with
-    /// before its instance is decoded, as `f` sees it; walked once per
-    /// instance and kept by the encoder.
-    fn with_refs_summary<T>(
-        apply: &dyn Apply<R, E>,
-        f: impl FnOnce(&RefsSummary) -> T,
-    ) -> Result<T, PackError> {
+    /// Record what `apply`'s body reads, its callees by instance, once
+    /// per instance however many sites write it.
+    fn record_instance_refs(apply: &dyn Apply<R, E>) -> Result<(), PackError> {
         let ApplyView::Lambda(g) = apply.view() else {
             return Err(PackError::Application(image::NOT_IMAGED));
         };
         let instance = g.instance_id();
-        if image::encoding(|e| {
+        let known = image::encoding(|e| {
             e.ext::<image::Compiled>().instance_refs.contains_key(&instance)
-        }) != Some(true)
-        {
-            let mut refs = Refs::default();
+        })
+        .ok_or(PackError::Application(image::NOT_IMAGED))?;
+        if !known {
+            let mut refs = Refs::stopping_at_callees();
             apply.refs(&mut refs);
-            let summary = RefsSummary::of(&refs);
+            let callees = refs.take_callees();
+            let own = RefsSummary::of_sets(&refs.refed, &refs.triggering, &refs.bound);
             image::encoding(|e| {
-                e.ext::<image::Compiled>().instance_refs.insert(instance, summary)
-            })
-            .ok_or(PackError::Application(image::NOT_IMAGED))?;
+                e.ext::<image::Compiled>()
+                    .instance_refs
+                    .insert(instance, InstanceRefs { own, callees })
+            });
         }
-        image::encoding(|e| f(&e.ext::<image::Compiled>().instance_refs[&instance]))
-            .ok_or(PackError::Application(image::NOT_IMAGED))
+        Ok(())
     }
 
-    /// Each variable an imaged body reads that it does not bind, from its
-    /// summary.
-    fn imaged_refs(&self, mut f: impl FnMut(BindId)) {
-        if let Callee::Imaged { summary, .. } = &self.callee {
-            let mut bound = summary.bound.iter().peekable();
-            for id in summary.refed.iter() {
-                while bound.next_if(|b| *b < id).is_some() {}
-                if bound.peek() != Some(&id) {
-                    f(*id)
-                }
+    /// Release what this site registered for an imaged tree.
+    fn release_held(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Some(held) = self.held.take() {
+            for id in held.iter() {
+                ctx.rt.unref_var(*id, self.top_id)
             }
         }
     }
@@ -2468,13 +2500,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             None => Err(anyhow!("instance {instance:?} is not in the image")),
             Some(at) => {
                 let image = dec.image().clone();
-                image::DecodeImage::with(&mut dec, || {
+                let outer =
+                    mem::replace(&mut dec.ext::<image::Restored>().in_instance, true);
+                let decoded = image::DecodeImage::with(&mut dec, || {
                     let Some(mut sub) = image.get(at as usize..) else {
                         bail!("instance {instance:?} at {at} is past the image")
                     };
                     GXLambda::image_decode(ctx, &mut sub)
                         .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
-                })
+                });
+                dec.ext::<image::Restored>().in_instance = outer;
+                decoded
             }
         };
         // an instance whose kernels do not install is deleted, not dropped
@@ -2489,8 +2525,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let apply: Box<dyn Apply<R, E>> = match decoded {
             Ok(g) => {
                 ctx.apply_deferred();
-                let top_id = self.top_id;
-                self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
                 Box::new(g)
             }
             Err(e) => {
@@ -2535,11 +2569,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             Box::new(GXLambda::image_decode(ctx, buf)?);
                         Callee::Static { apply, first_update: bool::decode(buf)? }
                     }
-                    true => Callee::Imaged {
-                        instance: LambdaInstanceId::decode(buf)?,
-                        first_update: bool::decode(buf)?,
-                        summary: RefsSummary::decode(buf)?,
-                    },
+                    true => {
+                        let instance = LambdaInstanceId::decode(buf)?;
+                        let first_update = bool::decode(buf)?;
+                        let table = image::decoding(|d| {
+                            d.ext::<image::Restored>().instance_refs.clone()
+                        })
+                        .ok_or(PackError::Application(image::NOT_IMAGED))?;
+                        let refs = ImagedRefs { table, flat: OnceLock::new() };
+                        Callee::Imaged { instance, first_update, refs }
+                    }
                 };
                 (arg_refs, callee)
             }
@@ -2562,10 +2601,22 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         site.callee = callee;
         site.static_target = static_target;
         site.recursive_edge = AtomicBool::new(recursive_edge);
-        // an imaged body's reads schedule this statement before the body
-        // decodes, as a cold compile's registrations do
-        // deferred like every decoded reference, so a failed read unwinds it
-        site.imaged_refs(|id| ctx.record_ref(id, top_id));
+        // an imaged tree's reads schedule this statement before its bodies
+        // decode, as a cold compile's registrations do; the site decoded
+        // outside every heap instance holds them for the whole tree
+        // (recorded, so a failed read unwinds them)
+        let in_instance =
+            image::decoding(|d| d.ext::<image::Restored>().in_instance).unwrap_or(false);
+        if let Callee::Imaged { instance, refs, .. } = &site.callee
+            && !in_instance
+        {
+            let held: Box<[BindId]> =
+                refs.flat(*instance).refed.iter().copied().collect();
+            for id in held.iter() {
+                ctx.record_ref(*id, top_id)
+            }
+            site.held = Some(held);
+        }
         Ok(Node::new(CallNode::Call(site)))
     }
 }
@@ -2741,7 +2792,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     let instance = g.instance_id();
                     instance.encode(buf)?;
                     first_update.encode(buf)?;
-                    Self::with_refs_summary(&**apply, |s| s.encode(buf))??;
+                    Self::record_instance_refs(&**apply)?;
                     // The session borrows every node it encodes for its
                     // whole length; the heap is written before it ends.
                     let body: &'static dyn Apply<R, E> =
@@ -2775,8 +2826,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        let top_id = self.top_id;
-        self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
+        self.release_held(ctx);
         if let Some(mut f) = self.callee.take_apply() {
             f.delete(ctx)
         }
@@ -3027,10 +3077,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     pub(crate) fn refs(&self, refs: &mut Refs) {
         if !refs.skip_callees {
             if let Some(fun) = self.callee.apply() {
-                fun.refs(refs)
+                match (fun.view(), refs.callees.as_mut()) {
+                    (ApplyView::Lambda(g), Some(callees)) => {
+                        callees.push((g.instance_id(), refs.banked > 0))
+                    }
+                    _ => fun.refs(refs),
+                }
             }
-            if let Callee::Imaged { summary, .. } = &self.callee {
-                summary.add_to(refs);
+            if let Callee::Imaged { instance, refs: imaged, .. } = &self.callee {
+                imaged.flat(*instance).add_to(refs);
             }
         }
         self.fnode.refs(refs);

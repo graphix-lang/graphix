@@ -21,7 +21,7 @@ use crate::{
         emit::BodyRecord,
         kernel_abi::{ActivationLayout, KernelSig, SiteLeaf},
     },
-    node::{callsite::RefsSummary, lambda::DefTable},
+    node::{callsite::InstanceRefsTable, lambda::DefTable},
 };
 use ahash::AHashMap;
 use bytes::{Buf, BufMut};
@@ -52,9 +52,9 @@ pub(crate) struct Compiled {
     pub(crate) defer_instances: bool,
     pub(crate) deferred: Vec<(LambdaInstanceId, Deferred)>,
     pub(crate) instances: AHashMap<LambdaInstanceId, u64>,
-    /// Every deferred instance's reference summary, walked once
+    /// Every deferred instance's own reads and its callees, walked once
     /// however many sites write it.
-    pub(crate) instance_refs: AHashMap<LambdaInstanceId, RefsSummary>,
+    pub(crate) instance_refs: InstanceRefsTable,
 }
 
 impl SessionExt for Compiled {
@@ -70,6 +70,11 @@ pub(crate) struct Restored {
     pub(crate) fastcalls: AHashMap<&'static str, FastCall>,
     /// Where each instance written to the heap starts in the image.
     pub(crate) instances: AHashMap<LambdaInstanceId, u64>,
+    /// What each instance in the heap reads, its callees by instance.
+    pub(crate) instance_refs: triomphe::Arc<InstanceRefsTable>,
+    /// A heap instance is decoding: its imaged sites' reads are held by
+    /// the site that registered the whole tree.
+    pub(crate) in_instance: bool,
 }
 
 /// A dynamic scope is the chain of handlers a `?` sees; each handler is

@@ -20,7 +20,7 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ModPath},
     image,
-    node::lambda::LambdaDef,
+    node::{callsite::InstanceRefs, lambda::LambdaDef},
     profile::{self, Phase},
     typ::Type,
 };
@@ -34,7 +34,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 63;
+pub const REGISTRATION_FORMAT: u8 = 64;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -268,10 +268,18 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             let instances =
                 image::encoding(|e| std::mem::take(&mut e.ext::<Compiled>().instances))
                     .unwrap_or_default();
+            let mut refs = image::encoding(|e| {
+                std::mem::take(&mut e.ext::<Compiled>().instance_refs)
+            })
+            .unwrap_or_default();
             encode_varint(instances.len() as u64, &mut buf);
             for (id, at) in instances {
                 id.encode(&mut buf)?;
                 encode_varint(at, &mut buf);
+                let r =
+                    refs.remove(&id).ok_or(PackError::Application(image::NOT_IMAGED))?;
+                encode_varint(r.encoded_len() as u64, &mut buf);
+                r.encode(&mut buf)?;
             }
             encode_varint(offsets.len() as u64, &mut buf);
             for at in offsets {
@@ -400,6 +408,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         for _ in 0..n_instances {
             decode_varint(&mut table)?;
             decode_varint(&mut table)?;
+            let len = decode_varint(&mut table)? as usize;
+            if len > table.remaining() {
+                return Err(PackError::BufferShort);
+            }
+            table.advance(len);
         }
         let n = decode_varint(&mut table)? as usize;
         // every offset is one varint at least
@@ -424,6 +437,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
                 // every entry is two varints at least
                 let mut instances =
                     AHashMap::with_capacity(n_instances.min(table.len() / 2));
+                let mut refs = AHashMap::with_capacity(n_instances.min(table.len() / 2));
                 for _ in 0..n_instances {
                     let id = LambdaInstanceId::decode(&mut table)?;
                     let at = decode_varint(&mut table)?;
@@ -431,8 +445,21 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
                         return Err(PackError::InvalidFormat);
                     }
                     instances.insert(id, at);
+                    let len = decode_varint(&mut table)? as usize;
+                    let Some(mut entry) = table.get(..len) else {
+                        return Err(PackError::BufferShort);
+                    };
+                    refs.insert(id, InstanceRefs::decode(&mut entry)?);
+                    if entry.has_remaining() {
+                        return Err(PackError::InvalidFormat);
+                    }
+                    table = &table[len..];
                 }
-                image::decoding(|d| d.ext::<Restored>().instances = instances);
+                image::decoding(|d| {
+                    let restored = d.ext::<Restored>();
+                    restored.instances = instances;
+                    restored.instance_refs = triomphe::Arc::new(refs);
+                });
                 let p = profile::phase(Phase::ImageEnv);
                 let env: Env = Pack::decode(&mut bytes)?;
                 self.env = Env { ide: std::mem::take(&mut self.env.ide), ..env };
