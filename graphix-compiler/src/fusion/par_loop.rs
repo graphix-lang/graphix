@@ -57,10 +57,8 @@ thread_local! {
 
 /// Loan `loan` to the kernel code `f` runs; nested runs stack.
 pub(crate) fn with_par_loan<T>(loan: Option<ParLoan>, f: impl FnOnce() -> T) -> T {
-    let prev = PAR_LOAN.with(|c| c.replace(loan));
-    let r = f();
-    PAR_LOAN.with(|c| c.set(prev));
-    r
+    let _loan = emit_helpers::Restore::set(&PAR_LOAN, loan);
+    f()
 }
 
 /// One run of a chunk: its out record and what it left in the
@@ -117,36 +115,15 @@ unsafe impl Send for Run {}
 
 /// Run `chunk` over slots `lo..hi` on this thread, the run's loans as
 /// the invoking thread had them.
-// CR claude for claude: [risk/low] FusedKernel::update, run_here and the forked closure
-// in run each save and restore their own subset of the kernel-run thread-locals
-// (KERNEL_ABORT, KERNEL_PANIC, SELF_BLOCK_GEN/REACHED/MADE, KERNEL_ENV, PAR_LOAN,
-// DEFERRED), and none restores on unwind. run_here does not set aside an enclosing
-// run's KERNEL_PANIC. After guard_panic the enclosing chunk keeps running, and if it
-// enters a nested outlined loop, a stolen chunk that aborts there takes the outer panic
-// as its own or overwrites it. The outer run then reports a pending abort with no
-// panic, or the wrong kernel resumes the panic. Fix: one guard type that installs a
-// fresh set of all kernel-run thread-locals on construction and restores the previous
-// set on Drop, used in all three places. (f-kernel-05)
-// 2026-10-15 claude: run_here now sets aside and restores an enclosing run's
-// KERNEL_PANIC, and a caught panic no longer sets KERNEL_ABORT (x-unsafe-01), so a
-// stolen chunk cannot take the outer panic as its own. The one guard over every
-// kernel-run thread-local, restored on unwind, is still to do.
 unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
-    let prev_panic = emit_helpers::take_kernel_panic();
-    let prev_abort = KERNEL_ABORT.with(|c| c.replace(false));
-    let prev_reached = SELF_BLOCK_REACHED.with(|c| c.replace(0));
-    let prev_made = SELF_BLOCK_MADE.with(|c| c.replace(0));
+    let locals = emit_helpers::RunLocals::enter();
     let ((), deferred) = emit_helpers::with_deferred(|| unsafe {
         chunk(frame, r.lo as u64, r.hi as u64, r.out.as_mut_ptr())
     });
     r.deferred = deferred;
-    r.aborted = KERNEL_ABORT.with(|c| c.replace(prev_abort));
-    r.panic = emit_helpers::take_kernel_panic();
-    if let Some(p) = prev_panic {
-        emit_helpers::set_kernel_panic(p)
-    }
-    r.reached = SELF_BLOCK_REACHED.with(|c| c.replace(prev_reached));
-    r.made = SELF_BLOCK_MADE.with(|c| c.replace(prev_made));
+    let report = locals.report();
+    (r.aborted, r.panic, r.reached, r.made) =
+        (report.aborted, report.panic, report.reached, report.made);
 }
 
 /// Run an outlined loop of `len` slots over `frame`, filling `out`: in
@@ -269,13 +246,13 @@ pub(crate) unsafe fn run(
             branch::on_pool(control, || {
                 forked.par_iter_mut().with_max_len(1).for_each(|r| {
                     branch::as_part(control, None, &live, || {
-                        let prev_env = KERNEL_ENV.with(|c| c.replace(env as *const _));
-                        let prev_gen = SELF_BLOCK_GEN.with(|c| c.replace(generation));
+                        let _env =
+                            emit_helpers::Restore::set(&KERNEL_ENV, env as *const _);
+                        let _gen =
+                            emit_helpers::Restore::set(&SELF_BLOCK_GEN, generation);
                         with_par_loan(Some(loan), || unsafe {
                             run_here(chunk, frame, r)
                         });
-                        SELF_BLOCK_GEN.with(|c| c.set(prev_gen));
-                        KERNEL_ENV.with(|c| c.set(prev_env));
                     })
                 })
             });

@@ -14,9 +14,8 @@ use crate::{
     fusion::{
         emit::{KernelType, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
         emit_helpers::{
-            self, EMPTY_ARR, KERNEL_ABORT, SELF_BLOCK_GEN, SELF_BLOCK_MADE,
-            SELF_BLOCK_REACHED, TagValue, free_self_block_tree, free_slot_chain,
-            reclaim_self_block_tree, reclaim_slot_chain,
+            self, EMPTY_ARR, SELF_BLOCK_GEN, TagValue, free_self_block_tree,
+            free_slot_chain, reclaim_self_block_tree, reclaim_slot_chain,
         },
         kernel_abi::{self, KernelSig, ParamKind},
         share::Redirects,
@@ -387,17 +386,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // A run nested in another on this thread (a stolen pool job, a
         // value hook) must neither see nor clobber the enclosing run's
         // abort, panic or reach count: each is saved and restored.
-        let outer_abort = KERNEL_ABORT.with(|c| c.replace(false));
-        let outer_panic = emit_helpers::take_kernel_panic();
+        let locals = emit_helpers::RunLocals::enter();
         let has_self_blocks = !self.jit.state_self_blocks.is_empty()
             || self.jit.slot_table_words.iter().any(|a| a.roots_trees());
         let shrink_gen = has_self_blocks.then(|| {
             self.self_gen = self.self_gen.wrapping_add(1);
             self.self_gen
         });
-        let saved_gen = SELF_BLOCK_GEN.with(|c| c.replace(shrink_gen.unwrap_or(0)));
-        let saved_reached = SELF_BLOCK_REACHED.with(|c| c.replace(0));
-        let saved_made = SELF_BLOCK_MADE.with(|c| c.replace(0));
+        let generation =
+            emit_helpers::Restore::set(&SELF_BLOCK_GEN, shrink_gen.unwrap_or(0));
         // The run reads its env loan under the value-hook loan (a
         // snapshot when a hook can fire) and delivers its raises after.
         // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)
@@ -426,7 +423,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         };
         // a panicked run raises nothing and performs nothing, as the
         // node-walk unwinding at the panicking call would not
-        let panic = emit_helpers::take_kernel_panic();
+        let emit_helpers::RunReport { aborted: pending, panic, reached, made } =
+            locals.report();
         if panic.is_some() {
             deferred.raises.clear();
             deferred.io.clear();
@@ -461,15 +459,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 None => unreachable!("{} is not an Effect::Io builtin", site.builtin),
             }
         }
-        let pending = KERNEL_ABORT.with(|c| c.replace(outer_abort));
-        if let Some(p) = outer_panic {
-            emit_helpers::set_kernel_panic(p)
-        }
+        drop(locals);
         // Must run before the pending early return. An aborted run
         // reached only a prefix, so its reach count is not a shrink signal.
-        let made = SELF_BLOCK_MADE.with(|c| c.get());
         if let Some(generation) = shrink_gen {
-            let reached = SELF_BLOCK_REACHED.with(|c| c.get());
             // what was live plus what this run made; an aborted run only adds
             let live = self.tree_size + made;
             if pending || panic.is_some() {
@@ -501,9 +494,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 self.tree_size = reached;
             }
         }
-        SELF_BLOCK_GEN.with(|c| c.set(saved_gen));
-        SELF_BLOCK_REACHED.with(|c| c.set(saved_reached));
-        SELF_BLOCK_MADE.with(|c| c.set(saved_made));
+        drop(generation);
         if let Some(p) = panic {
             if !pending {
                 // SAFETY: a run that did not abort wrote a real Value.

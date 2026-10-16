@@ -1973,6 +1973,74 @@ thread_local! {
 }
 
 /// Take the panic a fast fn raised in a chunk run on this thread.
+/// A thread-local's value set aside and put back when this drops, an
+/// unwind included.
+pub(crate) struct Restore<T: Copy + 'static> {
+    key: &'static std::thread::LocalKey<Cell<T>>,
+    prev: T,
+}
+
+impl<T: Copy + 'static> Restore<T> {
+    pub(crate) fn set(key: &'static std::thread::LocalKey<Cell<T>>, v: T) -> Self {
+        Self { key, prev: key.with(|c| c.replace(v)) }
+    }
+}
+
+impl<T: Copy + 'static> Drop for Restore<T> {
+    fn drop(&mut self) {
+        self.key.with(|c| c.set(self.prev))
+    }
+}
+
+/// What a kernel run reports through this thread (its abort, panic and
+/// activation reach and made counts), cleared for a run nested in an
+/// enclosing one, whose own is set aside and put back when this drops, an
+/// unwind included.
+pub(crate) struct RunLocals {
+    abort: bool,
+    panic: Option<Box<dyn Any + Send>>,
+    reached: u64,
+    made: u64,
+}
+
+/// What a kernel run reported.
+pub(crate) struct RunReport {
+    pub(crate) aborted: bool,
+    pub(crate) panic: Option<Box<dyn Any + Send>>,
+    pub(crate) reached: u64,
+    pub(crate) made: u64,
+}
+
+impl RunLocals {
+    pub(crate) fn enter() -> Self {
+        Self {
+            abort: KERNEL_ABORT.with(|c| c.replace(false)),
+            panic: take_kernel_panic(),
+            reached: SELF_BLOCK_REACHED.with(|c| c.replace(0)),
+            made: SELF_BLOCK_MADE.with(|c| c.replace(0)),
+        }
+    }
+
+    /// What the run reported, taken before the enclosing run's comes back.
+    pub(crate) fn report(&self) -> RunReport {
+        RunReport {
+            aborted: KERNEL_ABORT.with(|c| c.get()),
+            panic: take_kernel_panic(),
+            reached: SELF_BLOCK_REACHED.with(|c| c.get()),
+            made: SELF_BLOCK_MADE.with(|c| c.get()),
+        }
+    }
+}
+
+impl Drop for RunLocals {
+    fn drop(&mut self) {
+        KERNEL_ABORT.with(|c| c.set(self.abort));
+        KERNEL_PANIC.with(|q| *q.borrow_mut() = self.panic.take());
+        SELF_BLOCK_REACHED.with(|c| c.set(self.reached));
+        SELF_BLOCK_MADE.with(|c| c.set(self.made));
+    }
+}
+
 pub(crate) fn take_kernel_panic() -> Option<Box<dyn Any + Send>> {
     KERNEL_PANIC.with(|p| p.borrow_mut().take())
 }
@@ -2138,18 +2206,26 @@ pub fn kernel_running() -> bool {
 /// Loan `env` (`KERNEL_ENV`) to the JIT'd code `f` runs; nested
 /// invocations stack.
 pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -> T {
-    let prev = KERNEL_ENV.with(|c| c.replace(env as *const _));
-    let r = f();
-    KERNEL_ENV.with(|c| c.set(prev));
-    r
+    let _env = Restore::set(&KERNEL_ENV, env as *const _);
+    f()
 }
 
 /// Run `f` against a fresh deferred queue and return what it deferred,
 /// in order; an enclosing invocation's queue is set aside and restored.
 pub(crate) fn with_deferred<T>(f: impl FnOnce() -> T) -> (T, Deferred) {
-    let outer =
-        DEFERRED.with(|q| std::mem::replace(&mut *q.borrow_mut(), Deferred::new()));
+    struct Outer(Option<Deferred>);
+    impl Drop for Outer {
+        fn drop(&mut self) {
+            if let Some(outer) = self.0.take() {
+                DEFERRED.with(|q| *q.borrow_mut() = outer)
+            }
+        }
+    }
+    let mut outer = Outer(Some(
+        DEFERRED.with(|q| std::mem::replace(&mut *q.borrow_mut(), Deferred::new())),
+    ));
     let r = f();
+    let outer = outer.0.take().expect("set at the start");
     let mine = DEFERRED.with(|q| std::mem::replace(&mut *q.borrow_mut(), outer));
     (r, mine)
 }
