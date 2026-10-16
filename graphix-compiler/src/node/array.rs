@@ -666,6 +666,9 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         // it cannot occur in the element type, but the check cannot know that without a
         // cached bound on what a bound cell reaches (or a bind entry for a cell nothing
         // else holds yet).
+        // 2026-10-16 claude: The remaining walk is the occurs check
+        // (would_cycle_seen_inner) and lower() in TVar::bind; see the profile on
+        // tests-shell-compiler-10.
         let union = match &self.n[..] {
             [one] => one.typ().clone(),
             _ => wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?,

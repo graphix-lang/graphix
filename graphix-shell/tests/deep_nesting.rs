@@ -237,6 +237,14 @@ const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
 // (tests-shell-compiler-10)
 // 2026-10-13 claude: left for the compiler batch, where the walk is; the flat
 // shapes now run in every mode at FLAT_DEPTH, still with no time budget.
+// 2026-10-16 claude: Profiled (perf, 3000 lets, debug): the per-let walk is the occurs
+// check, would_cycle_seen_inner through each bound cell's binding (16%), with the Type
+// clones and drops of each cell's binding and conjuncts it makes (22%) and
+// TVar::read/cell (23%); TVar::bind's lower() is a second walk of the same depth. Both
+// are linear in the type's depth per bind, so the chain is quadratic: Typecheck0 5.6 s
+// at 6000. A memo needs a fact that survives rollback and unbind (a cell known to reach
+// no open cell), which a cell's later unbind would invalidate in every cell that
+// recorded it; t-misc-03's remainder is the same walk.
 const FLAT_DEPTH: usize = 3000;
 
 /// Cells chained by bounds in one signature (`chainbounds`).
