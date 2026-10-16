@@ -655,12 +655,10 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
     slept: bool,
     current: Option<(Path, Val)>,
     top_id: ExprId,
-    x: BindId,
-    pid: BindId,
     /// write requests on the published value arrive here as custom
     /// events (routed by the NetState pump)
     wid: BindId,
-    on_write: Node<R, E>,
+    on_write: genn::Callback<R, E>,
     cast_typ: Option<Type>,
     out: TagValue,
 }
@@ -681,29 +679,17 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
             [_, _, _] => {
                 let typ = resolved.unwrap_or(typ);
                 let scope = scope.append_block("fn", LambdaId::new().inner());
-                let pid = BindId::new();
                 let mftyp = match &typ.args[0].typ {
                     Type::Fn(ft) => ft.clone(),
                     t => bail!("expected function not {t}"),
                 };
-                let (x, xn) = genn::bind(
-                    ctx,
-                    &scope.lexical,
-                    "x",
-                    mftyp.args[0].typ.clone(),
-                    top_id,
-                );
-                let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
-                let on_write =
-                    genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id)?;
+                let on_write = genn::Callback::new(ctx, &scope, &mftyp, &["x"], top_id)?;
                 let wid = BindId::new();
                 ctx.record_ref(wid, top_id);
                 Ok(Box::new(Publish {
                     slept: false,
                     current: None,
                     top_id,
-                    pid,
-                    x,
                     wid,
                     on_write,
                     cast_typ: extract_publish_cast_type(resolved),
@@ -721,18 +707,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let slept = bool::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let x = BindId::decode(buf)?;
-        let pid = BindId::decode(buf)?;
         let wid = BindId::decode(buf)?;
-        let on_write = image::decode_node(ctx, buf)?;
+        let on_write = genn::Callback::image_decode(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
         ctx.record_ref(wid, top_id);
         Ok(Box::new(Publish {
             slept,
             current: None,
             top_id,
-            x,
-            pid,
+
             wid,
             on_write,
             cast_typ,
@@ -749,8 +732,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         }
         self.slept.encode(buf)?;
         self.top_id.encode(buf)?;
-        self.x.encode(buf)?;
-        self.pid.encode(buf)?;
+
         self.wid.encode(buf)?;
         self.on_write.image_encode(buf)?;
         self.cast_typ.encode(buf)
@@ -782,7 +764,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         let (pathv, path_fired) = seam_arg(ctx, &mut from[1]);
         let (val, val_fired) = seam_arg(ctx, &mut from[2]);
         if f_fired && let Some(v) = fv {
-            ctx.deliver(self.pid, TagValue::fired(v));
+            self.on_write.feed_fn(ctx, TagValue::fired(v));
         }
         // a path that moved drops the publication even while the value is
         // bottom, so the next value goes to the new path
@@ -818,7 +800,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                             reply.send(v)
                         }
                     } else {
-                        ctx.deliver(self.x, TagValue::fired(v));
+                        self.on_write.feed_arg(ctx, 0, TagValue::fired(v));
                     }
                 }
             }
@@ -855,9 +837,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             NetState::get(ctx).unpublish(val);
         }
         ctx.release_var(self.wid, self.top_id);
-        ctx.rt.store_remove(&self.pid);
-        ctx.rt.store_remove(&self.x);
-        ctx.env.unbind_variable(self.x);
         self.on_write.delete(ctx);
     }
 

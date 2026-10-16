@@ -2398,25 +2398,10 @@ crate::fast_builtin!(Shr, ShrEv, "core_shr", fc_shr);
 /// Feeds each input value to `pred` and emits it when `pred` returns
 /// `true`. A new input arriving while `pred` is still working replaces
 /// the pending value; wrap with `queue` for strict pairing.
-// CR claude for claude: [structure/low] `Filter` repeats `opt::OptHof`'s callback
-// scaffolding: the genn::bind / genn::reference / genn::apply init, and a `delete`,
-// `refs` and `typecheck0` that match line for line. Its `update` also writes
-// `opt::feed` inline twice. The same feed is inlined in array's group, queuefn's
-// `WrapperApply`, sys::net's publish and core's handler.rs. Dropping a private bind is
-// spelled three ways: `release_var`; `unref_var` + `store_remove` in `Sample::delete`,
-// which is `release_var` written out; and `release_var` + `store_remove` in
-// `QueueFn::delete`, which removes twice. A change to how a private bind is fed or
-// released has to find every copy. Put `feed` beside `genn::bind` in
-// graphix_compiler::node::genn, use it at each of these sites, and build `Filter` on
-// the same callback struct `OptHof` uses. (x-node-contract-06)
-// 2026-10-13 claude: OptHof is gone (opt's unary HOFs are now selects in opt.gx);
-// Filter's callback scaffolding and the inlined feeds remain.
 #[derive(Debug)]
 struct Filter<R: Rt, E: UserEvent> {
-    pred: Node<R, E>,
+    pred: genn::Callback<R, E>,
     pending: Option<Value>,
-    fid: BindId,
-    x: BindId,
     out: TagValue,
 }
 
@@ -2434,29 +2419,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
             [_, _] => {
-                let typ = resolved.unwrap_or(typ);
-                let (x, xn) =
-                    genn::bind(ctx, &scope.lexical, "x", typ.args[0].typ.clone(), top_id);
-                let fid = BindId::new();
-                let ptyp = match &typ.args[1].typ {
+                let ptyp = match &resolved.unwrap_or(typ).args[1].typ {
                     Type::Fn(ft) => ft.clone(),
                     t => bail!("expected a function not {t}"),
                 };
-                let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
-                let pred = genn::apply(
-                    fnode,
-                    scope.clone(),
-                    smallvec::smallvec![xn],
-                    &ptyp,
-                    top_id,
-                )?;
-                Ok(Box::new(Self {
-                    pred,
-                    pending: None,
-                    fid,
-                    x,
-                    out: TagValue::phantom(),
-                }))
+                let pred = genn::Callback::new(ctx, scope, &ptyp, &["x"], top_id)?;
+                Ok(Box::new(Self { pred, pending: None, out: TagValue::phantom() }))
             }
             _ => bail!("expected two arguments"),
         }
@@ -2467,20 +2435,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let pred = image::decode_node(ctx, buf)?;
+        let pred = genn::Callback::image_decode(ctx, buf)?;
         let pending = Pack::decode(buf)?;
-        let fid = BindId::decode(buf)?;
-        let x = BindId::decode(buf)?;
-        Ok(Box::new(Self { pred, pending, fid, x, out: TagValue::phantom() }))
+        Ok(Box::new(Self { pred, pending, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.pred.image_encode(buf)?;
-        self.pending.encode(buf)?;
-        self.fid.encode(buf)?;
-        self.x.encode(buf)
+        self.pending.encode(buf)
     }
 
     fn update(
@@ -2489,16 +2453,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         if let Some(tv) = seam_value(from[1].update(ctx)) {
-            ctx.deliver(self.fid, tv.clone());
+            self.pred.feed_fn(ctx, tv.clone());
         }
         let x = from[0].update(ctx);
         let x_tag = x.tag();
         if let Some(tv) = seam_value(x) {
-            let tag = tv.tag();
-            let v = tv.value_cloned();
-            self.pending = Some(v.clone());
-            ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
-            ctx.event.variables.insert(self.x, TagValue::tagged(v, tag));
+            self.pending = Some(tv.value_cloned());
+            self.pred.feed_arg(ctx, 0, tv.clone());
         }
         let pred = self.pred.update(ctx);
         if let Some(bottom) = bottom_of([x_tag, pred.tag()]) {
@@ -2519,8 +2480,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> anyhow::Result<()> {
-        self.pred.typecheck0(ctx)?;
-        Ok(())
+        self.pred.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -2528,9 +2488,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.rt.store_remove(&self.fid);
-        ctx.rt.store_remove(&self.x);
-        ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
     }
 

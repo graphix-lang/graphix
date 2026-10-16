@@ -5,8 +5,8 @@
 use ahash::AHashSet;
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue,
+    UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -15,8 +15,8 @@ use graphix_compiler::{
 };
 use graphix_package_core::{bottom_of, seam_tick, seam_value, sort_values};
 use graphix_rt::GXRt;
-use netidx::{publisher::Typ, subscriber::Value};
-use netidx_core::pack::{Pack, PackError};
+use netidx::subscriber::Value;
+use netidx_core::pack::PackError;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
@@ -197,11 +197,8 @@ graphix_package_core::fast_builtin!(Unzip, UnzipEv, "array_unzip", fc_unzip);
 struct Group<R: Rt, E: UserEvent> {
     queue: VecDeque<Value>,
     buf: SmallVec<[Value; 16]>,
-    pred: Node<R, E>,
+    pred: genn::Callback<R, E>,
     ready: bool,
-    pid: BindId,
-    nid: BindId,
-    xid: BindId,
     out: TagValue,
 }
 
@@ -219,29 +216,17 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
             [_, _] => {
-                let typ = resolved.unwrap_or(typ);
                 let scope = scope.append_block("fn", LambdaId::new().inner());
-                let n_typ = Type::Primitive(Typ::I64.into());
-                let etyp = typ.args[0].typ.clone();
-                let mftyp = match &typ.args[1].typ {
+                let mftyp = match &resolved.unwrap_or(typ).args[1].typ {
                     Type::Fn(ft) => ft.clone(),
                     t => bail!("expected function not {t}"),
                 };
-                let (nid, n) =
-                    genn::bind(ctx, &scope.lexical, "n", n_typ.clone(), top_id);
-                let (xid, x) = genn::bind(ctx, &scope.lexical, "x", etyp.clone(), top_id);
-                let pid = BindId::new();
-                let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
-                let pred =
-                    genn::apply(fnode, scope, smallvec::smallvec![n, x], &mftyp, top_id)?;
+                let pred = genn::Callback::new(ctx, &scope, &mftyp, &["n", "x"], top_id)?;
                 Ok(Box::new(Self {
                     queue: VecDeque::new(),
                     buf: smallvec![],
                     pred,
                     ready: true,
-                    pid,
-                    nid,
-                    xid,
                     out: TagValue::phantom(),
                 }))
             }
@@ -254,18 +239,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let pred = image::decode_node(ctx, buf)?;
-        let pid = BindId::decode(buf)?;
-        let nid = BindId::decode(buf)?;
-        let xid = BindId::decode(buf)?;
+        let pred = genn::Callback::image_decode(ctx, buf)?;
         Ok(Box::new(Self {
             queue: VecDeque::new(),
             buf: smallvec![],
             pred,
             ready: true,
-            pid,
-            nid,
-            xid,
             out: TagValue::phantom(),
         }))
     }
@@ -278,10 +257,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         if !self.queue.is_empty() || !self.buf.is_empty() || !self.ready {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.pred.image_encode(buf)?;
-        self.pid.encode(buf)?;
-        self.nid.encode(buf)?;
-        self.xid.encode(buf)
+        self.pred.image_encode(buf)
     }
 
     fn update(
@@ -294,8 +270,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.ready = false;
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
-                ctx.deliver(self.nid, TagValue::fired(len));
-                ctx.deliver(self.xid, TagValue::fired($v));
+                self.pred.feed_arg(ctx, 0, TagValue::fired(len));
+                self.pred.feed_arg(ctx, 1, TagValue::fired($v));
             }};
         }
         let x = from[0].update(ctx);
@@ -304,7 +280,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             self.queue.push_back(tv.value_cloned());
         }
         if let Some(tv) = seam_value(from[1].update(ctx)) {
-            ctx.deliver(self.pid, tv.clone());
+            self.pred.feed_fn(ctx, tv.clone());
         }
         if self.ready && self.queue.len() > 0 {
             let v = self.queue.pop_front().unwrap();
@@ -329,8 +305,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                             if let Some(v) = self.queue.pop_front() {
                                 self.ready = false;
                                 self.buf.push(v.clone());
-                                ctx.rt.set_var(self.nid, Value::I64(1));
-                                ctx.rt.set_var(self.xid, v);
+                                ctx.rt.set_var(self.pred.arg(0), Value::I64(1));
+                                ctx.rt.set_var(self.pred.arg(1), v);
                             }
                             break Some(group);
                         }
@@ -358,8 +334,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> anyhow::Result<()> {
-        self.pred.typecheck0(ctx)?;
-        Ok(())
+        self.pred.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -367,11 +342,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.rt.store_release(&self.nid);
-        ctx.rt.store_remove(&self.pid);
-        ctx.rt.store_release(&self.xid);
-        ctx.env.unbind_variable(self.nid);
-        ctx.env.unbind_variable(self.xid);
         self.pred.delete(ctx);
     }
 

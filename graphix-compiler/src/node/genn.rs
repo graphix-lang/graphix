@@ -5,13 +5,15 @@ use super::{
 };
 use crate::SourcePosition;
 use crate::{
-    BindId, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
+    BindId, CompileCtx, ExecCtx, Node, Refs, Rt, Scope, TagValue, UserEvent,
     expr::{ApplyExpr, Expr, ExprId, ExprKind, ModPath, Origin},
+    image::ImageBuf,
     typ::{FnType, Type},
 };
 use anyhow::{Result, bail};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use smallvec::SmallVec;
 use std::sync::LazyLock;
@@ -221,5 +223,100 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
             ctx.env.unbind_variable(id);
             ctx.rt.store_release(&id);
         }
+    }
+}
+
+/// A call of a Graphix function from Rust: the function a private binding
+/// holds, applied to arguments bound privately too. The owner feeds both
+/// (with the tag its own policy gives them) and updates the call; delete
+/// drops every binding.
+#[derive(Debug)]
+pub struct Callback<R: Rt, E: UserEvent> {
+    call: Node<R, E>,
+    fid: BindId,
+    args: SmallVec<[BindId; 2]>,
+}
+
+impl<R: Rt, E: UserEvent> Callback<R, E> {
+    /// A call of a function of type `typ`, its arguments named `names`.
+    pub fn new(
+        ctx: &mut CompileCtx<R, E>,
+        scope: &Scope,
+        typ: &Arc<FnType>,
+        names: &[&str],
+        top_id: ExprId,
+    ) -> Result<Self> {
+        if names.len() != typ.args.len() {
+            bail!("expected a function of {} arguments not {typ}", names.len())
+        }
+        let mut args = SmallVec::new();
+        let mut nodes = SmallVec::new();
+        for (name, a) in names.iter().zip(typ.args.iter()) {
+            let (id, node) = bind(ctx, &scope.lexical, name, a.typ.clone(), top_id);
+            args.push(id);
+            nodes.push(node);
+        }
+        let fid = BindId::new();
+        let fnode = reference(ctx, fid, Type::Fn(typ.clone()), top_id);
+        let call = apply(fnode, scope.clone(), nodes, typ, top_id)?;
+        Ok(Self { call, fid, args })
+    }
+
+    pub fn feed_fn(&self, ctx: &mut ExecCtx<'_, R, E>, f: TagValue) {
+        ctx.deliver(self.fid, f)
+    }
+
+    pub fn feed_arg(&self, ctx: &mut ExecCtx<'_, R, E>, i: usize, v: TagValue) {
+        ctx.deliver(self.args[i], v)
+    }
+
+    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        self.call.update(ctx)
+    }
+
+    pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        self.call.typecheck0(ctx)
+    }
+
+    pub fn refs(&self, refs: &mut Refs) {
+        self.call.refs(refs)
+    }
+
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.call.sleep(ctx)
+    }
+
+    /// The binding argument `i` is fed through, for an owner that writes it
+    /// for a later cycle.
+    pub fn arg(&self, i: usize) -> BindId {
+        self.args[i]
+    }
+
+    /// Drop the call and every binding, writes queued to them included.
+    pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.call.delete(ctx);
+        ctx.rt.store_release(&self.fid);
+        for id in &self.args {
+            ctx.rt.store_release(id);
+            ctx.env.unbind_variable(*id);
+        }
+    }
+
+    pub fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.call.image_encode(buf)?;
+        self.fid.encode(buf)?;
+        encode_varint(self.args.len() as u64, buf);
+        self.args.iter().try_for_each(|id| id.encode(buf))
+    }
+
+    pub fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let call = crate::image::decode_node(ctx, buf)?;
+        let fid = BindId::decode(buf)?;
+        let n = decode_varint(buf)? as usize;
+        let args = (0..n).map(|_| BindId::decode(buf)).collect::<Result<_, _>>()?;
+        Ok(Self { call, fid, args })
     }
 }

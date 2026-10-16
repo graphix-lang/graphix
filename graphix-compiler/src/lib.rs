@@ -1877,8 +1877,6 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         self.rt.store_release(&id);
     }
 
-    /// Drop a reference `top_id` holds to `id`: one not replayed yet is
-    /// cancelled, any other unregistered.
     /// Deliver `tv` to the binding `id` this cycle: into the event, and
     /// into the store, where a bottom stands as a stale one.
     pub fn deliver(&mut self, id: BindId, tv: TagValue) {
@@ -1891,6 +1889,8 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         self.event.variables.insert(id, tv);
     }
 
+    /// Drop a reference `top_id` holds to `id`: one not replayed yet is
+    /// cancelled, any other unregistered.
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
         // read through the view first: a branch that compiled nothing
         // must not fork its compile view to find nothing pending

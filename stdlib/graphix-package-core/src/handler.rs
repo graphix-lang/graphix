@@ -98,6 +98,15 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
 // 2026-10-13 claude: OptHof is gone (opt's unary HOFs are selects in opt.gx); the
 // other five copies remain. Filter's CR (x-node-contract-06) asks for the same
 // struct.
+// 2026-10-16 claude: genn::Callback (graphix-compiler node/genn.rs) is the shared
+// struct: new over a function type and argument names, feed_fn/feed_arg through
+// ExecCtx::deliver with the owner's tag, arg(i) for a later-cycle write,
+// update/typecheck0/refs/sleep, delete releasing every binding (store_release, so
+// queued writes go too) and an image codec. Filter, array's group and sys::net publish
+// hold one. Left as they are: queuefn's WrapperApply, whose function binding is the
+// queuefn's, shared by every wrapped site (a Callback owns and releases its own), and
+// handler.rs's Request, whose running instances call the function as a constant
+// (apply_value), only its prototype through a binding.
 struct Request<R: Rt, E: UserEvent> {
     f: Node<R, E>,
     relay: ErrorRelay,
