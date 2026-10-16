@@ -9,14 +9,11 @@
 //! External packages register themselves via
 //! [`TuiTestHarness::with_register`].
 
-use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use crossterm::event::Event;
-use graphix_compiler::expr::VfsResolver;
-use graphix_package_core::testing::{self, PackageRef, TestCtx};
-use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
+use graphix_package_core::testing::{self, Fixture, PackageRef, TestState};
+use graphix_rt::{GXEvent, NoExt};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use poolshark::global::GPooled;
 use ratatui::{
     Terminal,
     backend::{Backend, TestBackend},
@@ -24,7 +21,6 @@ use ratatui::{
     layout::Rect,
 };
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 
 use crate::{Screen, SizeV, TuiControl};
 
@@ -44,17 +40,11 @@ const DEFAULT_VIEWPORT: (u16, u16) = (40, 10);
 
 /// Test harness for a single TUI widget tree.
 pub struct TuiTestHarness {
-    _ctx: TestCtx,
-    gx: graphix_rt::GXHandle<NoExt>,
-    compiled: CompRes<NoExt>,
-    rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+    f: Fixture,
     screen: Screen<NoExt>,
     /// Ctrl-C was dispatched: the display would have stopped.
     stopped: bool,
     terminal: Terminal<TestBackend>,
-    watches: testing::Watches,
-    _refs: Vec<Ref<NoExt>>,
-    _callables: Vec<Callable<NoExt>>,
 }
 
 impl TuiTestHarness {
@@ -74,70 +64,26 @@ impl TuiTestHarness {
     /// stdlib default — the entry point for a package outside this
     /// crate testing its own TUI (pass the crate's `defpackage!`
     /// TEST_REGISTER so the program can `use` the package's modules).
-    // CR claude for claude: [structure/low] This constructor and GuiTestHarness::new in
-    // graphix-package-gui's test module are the same code. Both build a VfsResolver
-    // over /test.gx, call init_with_resolvers, compile `{ mod test; test::result }` by
-    // hand (testing::compile_result does this) and wait on next_update with a 5 s
-    // deadline. The two harnesses also share the same
-    // ctx/gx/compiled/rx/watches/refs/callables fields and identical watch,
-    // get_watched, compile_named_callable and call_callback. A fix to watch semantics
-    // or callable lifetime has to be made twice. Put a `testing::Fixture` holding those
-    // fields and methods in graphix-package-core, and have each harness hold one plus
-    // its own widget tree. (x-dup-10)
-    // 2026-10-13 codex: Confirmed the duplicate constructor, watches and
-    // callable storage in graphix-package-gui/src/test/mod.rs. Sharing them
-    // requires adding Fixture in graphix-package-core/src/testing.rs and
-    // migrating the GUI harness, both outside this worktree's allowed scope.
     pub async fn with_register(
         code: &str,
         register: &[PackageRef],
         width: u16,
         height: u16,
     ) -> Result<Self> {
-        let (tx, mut rx) = mpsc::channel(100);
-        let tbl = AHashMap::from_iter([(
-            netidx_core::path::Path::from("/test.gx"),
-            graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(code)),
-        )]);
-        let resolver = VfsResolver::new(tbl);
-        let ctx = testing::init_with_resolvers(tx, register, vec![resolver]).await?;
-        let gx = ctx.rt.clone();
-        gx.with_ctx(|ctx| {
+        let headless = |ctx: &mut TestState| {
             let control = ctx.libstate.get_or_default::<TuiControl>();
             control.0.headless.store(true, std::sync::atomic::Ordering::Relaxed)
-        })
-        .await?;
-        let compiled = gx
-            .compile(arcstr::literal!("{ mod test; test::result }"))
-            .await
-            .context("compile graphix code")?;
-        let expr_id = compiled.exprs[0].id;
-
-        let mut screen = Screen::new(gx.clone(), &compiled.env, expr_id)?;
+        };
+        let (f, initial_value) = Fixture::new(code, register, headless).await?;
+        let mut screen = Screen::new(f.gx.clone(), &f.compiled.env, f.result_id())?;
         screen.resize(SizeV::new(width, height))?;
-        let initial_value = testing::next_update(
-            &mut rx,
-            expr_id,
-            tokio::time::Instant::now() + Duration::from_secs(5),
-        )
-        .await?;
-        screen.update(expr_id, initial_value).await.context("compile widget tree")?;
-
+        screen
+            .update(f.result_id(), initial_value)
+            .await
+            .context("compile widget tree")?;
         let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).context("build TestBackend terminal")?;
-
-        Ok(Self {
-            _ctx: ctx,
-            gx,
-            compiled,
-            rx,
-            screen,
-            stopped: false,
-            terminal,
-            watches: testing::Watches::default(),
-            _refs: Vec::new(),
-            _callables: Vec::new(),
-        })
+        Ok(Self { f, screen, stopped: false, terminal })
     }
 
     /// Deliver reactive updates into the widget tree until the runtime is
@@ -150,7 +96,7 @@ impl TuiTestHarness {
     /// `drain`, answering when the last update batch arrived (`None` when
     /// there was none).
     async fn drain_timed(&mut self) -> Result<Option<Instant>> {
-        let Self { gx, rx, screen, watches, .. } = self;
+        let Self { f: Fixture { gx, rx, watches, .. }, screen, .. } = self;
         let deliver = async |id, v: Value| {
             watches.note(id, &v);
             screen.update(id, v).await.context("widget handle_update")?;
@@ -164,13 +110,13 @@ impl TuiTestHarness {
     pub async fn next_update(&mut self, timeout: Duration) -> Result<bool> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            match tokio::time::timeout_at(deadline, self.rx.recv()).await {
+            match tokio::time::timeout_at(deadline, self.f.rx.recv()).await {
                 Ok(Some(mut batch)) => {
                     let mut updated = false;
                     for e in batch.drain(..) {
                         if let GXEvent::Updated(id, v) = e {
                             updated = true;
-                            self.watches.note(id, &v);
+                            self.f.watches.note(id, &v);
                             self.screen
                                 .update(id, v)
                                 .await
@@ -192,14 +138,14 @@ impl TuiTestHarness {
     /// `watched`. `name` is module-qualified (e.g. `"test::clicks"`).
     /// Returns the initial value.
     pub async fn watch(&mut self, name: &str) -> Result<Value> {
-        let v = self.watches.watch(&self.gx, &self.compiled.env, name).await?;
+        let v = self.f.watch(name).await?;
         self.drain().await?;
         Ok(v)
     }
 
     /// Latest value of a name passed to `watch`.
     pub fn get_watched(&self, name: &str) -> Option<&Value> {
-        self.watches.get(name)
+        self.f.watches.get(name)
     }
 
     /// Deliver a crossterm event to the widget tree, then drain any
@@ -313,23 +259,15 @@ impl TuiTestHarness {
         &mut self,
         name: &str,
     ) -> Result<graphix_rt::CallableId> {
-        let (r, cb) = testing::compile_named_callable(&self.gx, &self.compiled.env, name)
-            .await
-            .with_context(|| format!("compile_named_callable {name}"))?;
-        let id = cb.id();
-        self._refs.push(r);
-        self._callables.push(cb);
-        Ok(id)
+        self.f.compile_named_callable(name).await
     }
 
-    /// Dispatch a callback through the runtime by `CallableId` and
-    /// drain resulting updates.
     pub async fn call_callback(
         &mut self,
         id: graphix_rt::CallableId,
         args: ValArray,
     ) -> Result<()> {
-        self.gx.call(id, args)?;
+        self.f.gx.call(id, args)?;
         self.drain().await
     }
 }
@@ -383,10 +321,11 @@ let result = layout(&[
         )
         .await?;
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        h.gx.with_ctx(move |ctx| {
-            ctx.libstate.get_or_default::<TuiControl>().install_stop(stop);
-        })
-        .await?;
+        h.f.gx
+            .with_ctx(move |ctx| {
+                ctx.libstate.get_or_default::<TuiControl>().install_stop(stop);
+            })
+            .await?;
         tokio::time::timeout(Duration::from_millis(100), stopped).await???;
         Ok(())
     }

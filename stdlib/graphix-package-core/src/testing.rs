@@ -108,12 +108,7 @@ pub async fn init_with_setup<F>(
     setup: F,
 ) -> Result<TestCtx>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     init_with_flags_and_setup(sub, register, resolvers, BitFlags::empty(), setup).await
 }
@@ -129,12 +124,7 @@ pub async fn init_with_flags_and_setup<F>(
     setup: F,
 ) -> Result<TestCtx>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     init_inner(sub, register, resolvers, flags, false, None, None, None, None, setup)
         .await
@@ -190,12 +180,7 @@ pub async fn init_session_with_setup<F>(
     setup: F,
 ) -> Result<TestCtx>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     init_inner(
         sub,
@@ -245,12 +230,7 @@ pub async fn init_lsp_mode<F>(
     setup: F,
 ) -> Result<TestCtx>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     init_inner(sub, register, resolvers, flags, true, None, None, None, None, setup).await
 }
@@ -266,6 +246,12 @@ where
 // flags/registration/program/trace/lsp_mode. Add a `TestState` alias for the closure's
 // argument, and use result_source in run! and eval_packed. The ../netidx admin tests
 // call init, init_with_session and init_with_flags_and_setup. (x-dup-09)
+// 2026-10-16 claude: TestState now names the setup closure's argument everywhere in
+// this file (testing::TestState), and testing::Fixture (x-dup-10) holds a widget
+// harness's runtime, program, channel, watches and callables. Left: the init_*
+// wrappers over init_inner's ten parameters (the builder this CR asks for; ../netidx's
+// admin tests call init, init_with_session and init_with_flags_and_setup), and
+// run!/eval_packed formatting the result block instead of result_source.
 async fn init_inner<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
@@ -279,12 +265,7 @@ async fn init_inner<F>(
     setup: F,
 ) -> Result<TestCtx>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     let _ = env_logger::try_init();
     // A fixture that recurses without end must abort instead of
@@ -380,12 +361,7 @@ pub async fn fixture_runtime<'a, F>(
     setup: F,
 ) -> Result<(TestCtx, Events)>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     let (tx, rx) = mpsc::channel(1024);
     let tbl = ahash::AHashMap::from_iter(
@@ -551,6 +527,83 @@ pub async fn compile_named_callable(
     Ok((r, cb))
 }
 
+/// The state a test's setup closure is handed before the runtime starts.
+pub type TestState =
+    graphix_compiler::ExecState<GXRt<NoExt>, <NoExt as graphix_rt::GXExt>::UserEvent>;
+
+/// What every widget harness holds beside its widget tree: the runtime, the
+/// program `/test.gx` compiled as `test::result`, its update channel, the
+/// variables the test watches and the callables it made, kept alive.
+pub struct Fixture {
+    _ctx: TestCtx,
+    pub gx: GXHandle<NoExt>,
+    pub compiled: CompRes<NoExt>,
+    pub rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+    pub watches: Watches,
+    refs: Vec<Ref<NoExt>>,
+    callables: Vec<Callable<NoExt>>,
+}
+
+impl Fixture {
+    /// Compile `code` as `/test.gx` under `register`, `setup` run on the
+    /// state first; the fixture and `test::result`'s first value.
+    pub async fn new(
+        code: &str,
+        register: &[PackageRef],
+        setup: impl FnOnce(&mut TestState),
+    ) -> Result<(Self, Value)> {
+        let (tx, mut rx) = mpsc::channel(100);
+        let vfs = ahash::AHashMap::from_iter([(
+            Path::from("/test.gx"),
+            VfsEntry::from(ArcStr::from(code)),
+        )]);
+        let resolvers = vec![VfsResolver::new(vfs)];
+        let ctx = init_with_setup(tx, register, resolvers, setup).await?;
+        let gx = ctx.rt.clone();
+        let compiled = gx
+            .compile(arcstr::literal!("{ mod test; test::result }"))
+            .await
+            .context("compile graphix code")?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let initial = next_update(&mut rx, compiled.exprs[0].id, deadline).await?;
+        let f = Self {
+            _ctx: ctx,
+            gx,
+            compiled,
+            rx,
+            watches: Watches::default(),
+            refs: Vec::new(),
+            callables: Vec::new(),
+        };
+        Ok((f, initial))
+    }
+
+    /// The id of `test::result`'s updates.
+    pub fn result_id(&self) -> ExprId {
+        self.compiled.exprs[0].id
+    }
+
+    /// Watch the module-qualified variable `name`; its value as it stands.
+    pub async fn watch(&mut self, name: &str) -> Result<Value> {
+        self.watches.watch(&self.gx, &self.compiled.env, name).await
+    }
+
+    /// The function `name` holds as a callable, kept alive with the
+    /// fixture: dropping it would invalidate the id.
+    pub async fn compile_named_callable(
+        &mut self,
+        name: &str,
+    ) -> Result<graphix_rt::CallableId> {
+        let (r, cb) = compile_named_callable(&self.gx, &self.compiled.env, name)
+            .await
+            .with_context(|| format!("compile_named_callable {name}"))?;
+        let id = cb.id();
+        self.refs.push(r);
+        self.callables.push(cb);
+        Ok(id)
+    }
+}
+
 /// Variables a test harness watches by name: their refs, kept alive, and
 /// their latest values.
 #[derive(Default)]
@@ -636,12 +689,7 @@ pub async fn eval_with_setup<F>(
     setup: F,
 ) -> Result<(Value, TestCtx)>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     first_value([("/test.gx", result_source(code))], register, setup).await
 }
@@ -652,12 +700,7 @@ async fn first_value<'a, F>(
     setup: F,
 ) -> Result<(Value, TestCtx)>
 where
-    F: FnOnce(
-        &mut graphix_compiler::ExecState<
-            GXRt<NoExt>,
-            <NoExt as graphix_rt::GXExt>::UserEvent,
-        >,
-    ),
+    F: FnOnce(&mut TestState),
 {
     let (ctx, mut rx) = fixture_runtime(files, register, Mode::Jit, setup).await?;
     let res = compile_result(&ctx).await?;

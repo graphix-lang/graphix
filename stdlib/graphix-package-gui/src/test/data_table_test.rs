@@ -565,8 +565,8 @@ let result = data_table(
         "initial ascending sort: r1(10) < r2(20) < r0(30)"
     );
 
-    let bid = testing::find_bind_id(&h.compiled.env, "test::v1")?;
-    let mut v1_ref = h.gx.compile_ref(bid).await?;
+    let bid = testing::find_bind_id(&h.f.compiled.env, "test::v1")?;
+    let mut v1_ref = h.f.gx.compile_ref(bid).await?;
     v1_ref.set(Value::F64(100.0))?;
     h.wait_until(
         |h| {
@@ -711,10 +711,10 @@ let result = data_table(
 
     await_order(&mut h, &alpha_asc, "initial alpha asc").await?;
 
-    let col_bid = testing::find_bind_id(&h.compiled.env, "test::sort_col")?;
-    let mut col_ref = h.gx.compile_ref(col_bid).await?;
-    let dir_bid = testing::find_bind_id(&h.compiled.env, "test::sort_dir")?;
-    let mut dir_ref = h.gx.compile_ref(dir_bid).await?;
+    let col_bid = testing::find_bind_id(&h.f.compiled.env, "test::sort_col")?;
+    let mut col_ref = h.f.gx.compile_ref(col_bid).await?;
+    let dir_bid = testing::find_bind_id(&h.f.compiled.env, "test::sort_dir")?;
+    let mut dir_ref = h.f.gx.compile_ref(dir_bid).await?;
 
     dir_ref.set(Value::String(arcstr::literal!("Descending")))?;
     await_order(&mut h, &alpha_desc, "alpha desc after direction flip").await?;
@@ -1094,8 +1094,8 @@ let result = data_table(
 "#;
     let mut h = dt(code).await?;
     assert_eq!(h.dt_snapshot().grid[0][0], "v1");
-    let bid = testing::find_bind_id(&h.compiled.env, "test::a")?;
-    let mut a_ref = h.gx.compile_ref(bid).await?;
+    let bid = testing::find_bind_id(&h.f.compiled.env, "test::a")?;
+    let mut a_ref = h.f.gx.compile_ref(bid).await?;
     a_ref.set(Value::String(arcstr::literal!("v1b")))?;
     h.wait_until(
         |h| h.dt_snapshot().grid[0][0] == "v1b",
@@ -1202,7 +1202,7 @@ let result = data_table(
     assert_eq!(h.dt_snapshot().grid[r1][sum_col], "3", "r1 update");
     // Several pushes between drains must land the latest value.
     for v in [10i64, 20, 30, 40] {
-        h.gx.call(
+        h.f.gx.call(
             push_id,
             ValArray::from_iter([Value::String(arcstr::literal!("r0")), Value::I64(v)]),
         )?;
@@ -1304,8 +1304,8 @@ let result = data_table(
 )
 "#;
     let mut h = dt(code).await?;
-    let bid = testing::find_bind_id(&h.compiled.env, "test::c")?;
-    let mut c = h.gx.compile_ref(bid).await?;
+    let bid = testing::find_bind_id(&h.f.compiled.env, "test::c")?;
+    let mut c = h.f.gx.compile_ref(bid).await?;
     for v in [1, 2, 3] {
         c.set(Value::I64(v))?;
         h.wait_until(
@@ -1687,8 +1687,8 @@ let result = data_table(
 
 /// Set the program variable `name` from the test.
 async fn set_var(h: &GuiTestHarness, name: &str, v: Value) -> Result<()> {
-    let bid = testing::find_bind_id(&h.compiled.env, name)?;
-    h.gx.compile_ref(bid).await?.set(v)?;
+    let bid = testing::find_bind_id(&h.f.compiled.env, name)?;
+    h.f.gx.compile_ref(bid).await?.set(v)?;
     Ok(())
 }
 
@@ -2395,8 +2395,8 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
     .await?;
     let change = h.compile_named_callable("test::change").await?;
     h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
-    let bid = testing::find_bind_id(&h.compiled.env, "test::c")?;
-    let mut c = h.gx.compile_ref(bid).await?;
+    let bid = testing::find_bind_id(&h.f.compiled.env, "test::c")?;
+    let mut c = h.f.gx.compile_ref(bid).await?;
     for v in [1, 2] {
         c.set(Value::I64(v))?;
         h.wait_until(

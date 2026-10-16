@@ -733,12 +733,14 @@ async fn combo_box_keeps_typing_across_equal_options() -> Result<()> {
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
     let _ = h.type_text("ban");
-    let opts =
-        graphix_package_core::testing::find_bind_id(&h.inner.compiled.env, "test::opts")?;
-    let opts_ref = h.inner.gx.compile_ref(opts).await?;
+    let opts = graphix_package_core::testing::find_bind_id(
+        &h.inner.f.compiled.env,
+        "test::opts",
+    )?;
+    let opts_ref = h.inner.f.gx.compile_ref(opts).await?;
     for _ in 0..3 {
         let v = opts_ref.last.clone().expect("the options");
-        h.inner.gx.compile_ref(opts).await?.set(v)?;
+        h.inner.f.gx.compile_ref(opts).await?.set(v)?;
         h.drain().await?;
     }
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
@@ -1212,7 +1214,7 @@ async fn handler_presence_changes_request_a_frame() -> Result<()> {
         let change = h.inner.compile_named_callable("test::change").await?;
         h.inner.drain().await?;
         for enabled in [true, false] {
-            h.inner.gx.call(change, ValArray::from_iter([Value::Bool(enabled)]))?;
+            h.inner.f.gx.call(change, ValArray::from_iter([Value::Bool(enabled)]))?;
             assert!(h.inner.drain().await?, "{widget}: enabled={enabled}");
         }
     }

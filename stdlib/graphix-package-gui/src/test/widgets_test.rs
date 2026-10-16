@@ -10,8 +10,8 @@ async fn reacts(decls: &str, widget: &str, var: &str, value: Value) -> Result<()
     let mut h = GuiTestHarness::new(&code).await?;
     h.drain().await?;
     h.render().await?;
-    let bid = testing::find_bind_id(&h.compiled.env, var)?;
-    h.gx.compile_ref(bid).await?.set(value)?;
+    let bid = testing::find_bind_id(&h.f.compiled.env, var)?;
+    h.f.gx.compile_ref(bid).await?.set(value)?;
     assert!(h.drain().await?, "writing {var} changes the widget");
     h.render().await
 }
@@ -455,8 +455,8 @@ async fn bad_sizes_and_coordinates_are_refused() -> Result<()> {
         let mut h = GuiTestHarness::new(&code).await?;
         h.drain().await?;
         let good = retained_value(&h);
-        let bid = testing::find_bind_id(&h.compiled.env, var)?;
-        h.gx.compile_ref(bid).await?.set(bad.clone())?;
+        let bid = testing::find_bind_id(&h.f.compiled.env, var)?;
+        h.f.gx.compile_ref(bid).await?.set(bad.clone())?;
         assert!(h.drain().await.is_err(), "{widget} takes {bad:?}");
         assert_eq!(retained_value(&h), good, "{widget} retains its last good value");
         h.render().await?;
@@ -515,7 +515,7 @@ async fn a_refused_update_does_not_drop_the_rest_of_the_batch() -> Result<()> {
     h.drain().await?;
     h.widget = Box::new(Counter(0));
     let (tx, rx) = mpsc::channel(1);
-    h.rx = rx;
+    h.f.rx = rx;
     let mut batch: GPooled<Vec<GXEvent>> = GPooled::take();
     for value in [false, true] {
         batch.push(GXEvent::Updated(ExprId::new(), Value::Bool(value)));

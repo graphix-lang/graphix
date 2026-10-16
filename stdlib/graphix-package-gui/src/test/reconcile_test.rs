@@ -23,7 +23,7 @@ async fn fixture() -> Result<GuiTestHarness> {
 }
 
 async fn named_ref(h: &GuiTestHarness, name: &str) -> Result<Ref<NoExt>> {
-    h.gx.compile_ref(find_bind_id(&h.compiled.env, name)?).await
+    h.f.gx.compile_ref(find_bind_id(&h.f.compiled.env, name)?).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -31,12 +31,12 @@ async fn children_survive_a_failed_recompile_and_retry() -> Result<()> {
     let mut h = fixture().await?;
     let source = named_ref(&h, "test::source").await?;
     let proposed = named_ref(&h, "test::proposed").await?.last.clone().unwrap();
-    let mut children = Children::compile(&h.gx, source).await?;
+    let mut children = Children::compile(&h.f.gx, source).await?;
     let (id, original) = (children.r.id, children.r.last.clone());
     let rt = tokio::runtime::Handle::current();
     for _ in 0..2 {
         assert!(
-            tokio::task::block_in_place(|| children.update(&rt, &h.gx, id, &proposed))
+            tokio::task::block_in_place(|| children.update(&rt, &h.f.gx, id, &proposed))
                 .is_err()
         );
         assert_eq!(children.ws.len(), 1);
@@ -44,7 +44,9 @@ async fn children_survive_a_failed_recompile_and_retry() -> Result<()> {
     }
     let repair = h.compile_named_callable("test::repair").await?;
     h.call_callback(repair, ValArray::from_iter([Value::Null])).await?;
-    assert!(tokio::task::block_in_place(|| children.update(&rt, &h.gx, id, &proposed))?);
+    assert!(
+        tokio::task::block_in_place(|| children.update(&rt, &h.f.gx, id, &proposed))?
+    );
     assert_eq!(children.ws.len(), 2);
     assert_eq!(children.r.last, Some(proposed));
     Ok(())
@@ -55,19 +57,19 @@ async fn a_single_child_survives_a_failed_recompile_and_retry() -> Result<()> {
     let mut h = fixture().await?;
     let source = named_ref(&h, "test::single").await?;
     let proposed = named_ref(&h, "test::bad").await?.last.clone().unwrap();
-    let mut child = Child::compile(&h.gx, source).await?;
+    let mut child = Child::compile(&h.f.gx, source).await?;
     let (id, original) = (child.r.id, child.r.last.clone());
     let rt = tokio::runtime::Handle::current();
     for _ in 0..2 {
         assert!(
-            tokio::task::block_in_place(|| child.update(&rt, &h.gx, id, &proposed))
+            tokio::task::block_in_place(|| child.update(&rt, &h.f.gx, id, &proposed))
                 .is_err()
         );
         assert_eq!(child.r.last, original);
     }
     let repair = h.compile_named_callable("test::repair").await?;
     h.call_callback(repair, ValArray::from_iter([Value::Null])).await?;
-    assert!(tokio::task::block_in_place(|| child.update(&rt, &h.gx, id, &proposed))?);
+    assert!(tokio::task::block_in_place(|| child.update(&rt, &h.f.gx, id, &proposed))?);
     assert_eq!(child.r.last, Some(proposed));
     Ok(())
 }

@@ -1,16 +1,14 @@
-use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use compact_str::{CompactString, format_compact};
-use graphix_compiler::expr::{ExprId, VfsResolver};
-use graphix_package_core::testing::{self, TestCtx};
-use graphix_rt::{Callable, CallableId, CompRes, GXEvent, NoExt, Ref};
+use graphix_compiler::expr::ExprId;
+use graphix_package_core::testing::{self, Fixture};
+use graphix_rt::{CallableId, NoExt};
 use iced_core::{Event, Point, Size, clipboard, mouse, window};
 use iced_runtime::user_interface;
 use iced_wgpu::{graphics::Shell, wgpu};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use poolshark::global::GPooled;
 use std::{cell::RefCell, time::Duration};
-use tokio::sync::{OnceCell, mpsc};
+use tokio::sync::OnceCell;
 
 use crate::widgets::{self, GuiW, Message, MessageShell};
 
@@ -99,15 +97,9 @@ fn update_widget(
 /// code producing a Widget value, builds the widget tree, and drives
 /// interactions through the reactive loop.
 struct GuiTestHarness {
-    _ctx: TestCtx,
-    gx: graphix_rt::GXHandle<NoExt>,
-    compiled: CompRes<NoExt>,
-    rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+    f: Fixture,
     widget: GuiW<NoExt>,
     rt_handle: tokio::runtime::Handle,
-    watches: testing::Watches,
-    _refs: Vec<Ref<NoExt>>,
-    _callables: Vec<Callable<NoExt>>,
     renderer: OnceCell<RefCell<widgets::Renderer>>,
 }
 
@@ -115,43 +107,14 @@ impl GuiTestHarness {
     /// Compile module-level graphix code whose last binding, `result`,
     /// is a Widget value.
     async fn new(code: &str) -> Result<Self> {
-        let (tx, mut rx) = mpsc::channel(100);
-        let tbl = AHashMap::from_iter([(
-            netidx_core::path::Path::from("/test.gx"),
-            graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(code)),
-        )]);
-        let resolver = VfsResolver::new(tbl);
-        let ctx = testing::init_with_resolvers(tx, TEST_REGISTER, vec![resolver]).await?;
-        let gx = ctx.rt.clone();
-        let compiled = gx
-            .compile(arcstr::literal!("{ mod test; test::result }"))
-            .await
-            .context("compile graphix code")?;
-        let expr_id = compiled.exprs[0].id;
-
-        let initial_value = testing::next_update(
-            &mut rx,
-            expr_id,
-            tokio::time::Instant::now() + Duration::from_secs(5),
-        )
-        .await?;
-
-        let widget = widgets::compile(gx.clone(), initial_value)
+        let (f, initial_value) = Fixture::new(code, TEST_REGISTER, |_| ()).await?;
+        let widget = widgets::compile(f.gx.clone(), initial_value)
             .await
             .context("compile widget tree")?;
-
-        let rt_handle = tokio::runtime::Handle::current();
-
         Ok(Self {
-            _ctx: ctx,
-            gx,
-            compiled,
-            rx,
+            f,
             widget,
-            rt_handle,
-            watches: testing::Watches::default(),
-            _refs: Vec::new(),
-            _callables: Vec::new(),
+            rt_handle: tokio::runtime::Handle::current(),
             renderer: OnceCell::const_new(),
         })
     }
@@ -161,7 +124,7 @@ impl GuiTestHarness {
     /// A value from outside the runtime (netidx) can come later: wait for
     /// it with `wait_until`.
     async fn drain(&mut self) -> Result<bool> {
-        let Self { gx, rx, widget, rt_handle, watches, .. } = self;
+        let Self { f: Fixture { gx, rx, watches, .. }, widget, rt_handle, .. } = self;
         let mut first_error = None;
         let deliver = async |id, v: Value| {
             watches.note(id, &v);
@@ -185,14 +148,14 @@ impl GuiTestHarness {
     /// return its initial value; `get_watched()` reads it after a
     /// `drain()`.
     async fn watch(&mut self, name: &str) -> Result<Value> {
-        let v = self.watches.watch(&self.gx, &self.compiled.env, name).await?;
+        let v = self.f.watch(name).await?;
         self.drain().await?;
         Ok(v)
     }
 
     /// Get the most recent value of a watched variable by name.
     fn get_watched(&self, name: &str) -> Option<&Value> {
-        self.watches.get(name)
+        self.f.watches.get(name)
     }
 
     /// Dispatch iced Messages through the runtime and widget as
@@ -205,7 +168,7 @@ impl GuiTestHarness {
 
     fn apply(&mut self, msgs: &[Message]) {
         let widget = &mut self.widget;
-        crate::frame::apply_messages(&self.gx, msgs.iter().cloned(), |msg, pending| {
+        crate::frame::apply_messages(&self.f.gx, msgs.iter().cloned(), |msg, pending| {
             let mut shell = MessageShell::default();
             widget.on_message(msg, &mut shell);
             pending.extend(shell.out.drain(..));
@@ -309,7 +272,7 @@ impl GuiTestHarness {
     /// Call a callable through the runtime and drain, as the widget
     /// itself would.
     async fn call_callback(&mut self, id: CallableId, args: ValArray) -> Result<()> {
-        self.gx.call(id, args)?;
+        self.f.gx.call(id, args)?;
         self.drain().await?;
         Ok(())
     }
@@ -318,13 +281,7 @@ impl GuiTestHarness {
     /// `CallableId`. The `Callable` is retained on the harness because
     /// dropping it invalidates the id.
     async fn compile_named_callable(&mut self, name: &str) -> Result<CallableId> {
-        let (r, cb) = testing::compile_named_callable(&self.gx, &self.compiled.env, name)
-            .await
-            .with_context(|| format!("compile_named_callable {name}"))?;
-        let id = cb.id();
-        self._refs.push(r);
-        self._callables.push(cb);
-        Ok(id)
+        self.f.compile_named_callable(name).await
     }
 }
 
