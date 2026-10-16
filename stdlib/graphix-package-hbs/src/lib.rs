@@ -10,7 +10,7 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{FastMemo, Shape, shape};
-use graphix_package_json::value_to_json;
+use graphix_package_json::JsonView;
 use handlebars::{
     Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
     RenderErrorReason, Renderable,
@@ -160,7 +160,9 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {
             let data_type = ft.args.get(3).map(|a| &a.typ);
-            let json_data = match value_to_json(env, data_type, data) {
+            // handlebars renders from a JSON tree, built here once
+            let view = JsonView::new(env, data_type, data);
+            let json_data = match serde_json::to_value(view) {
                 Ok(j @ handlebars::JsonValue::Object(_)) => j,
                 Ok(_) => {
                     return Some(errf!(

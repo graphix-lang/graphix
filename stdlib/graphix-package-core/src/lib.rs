@@ -449,20 +449,6 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
     let typed = t.and_then(|t| constructor(env, t));
     match (typed.as_ref(), v) {
         (Some(Type::ByRef(..)), _) => Shape::Ref,
-        // CR claude for claude: [perf/low] A union picks its member with a full is_a
-        // walk of the value. Writers recurse through shape() level by level, so a value
-        // of a recursive union type (`type J = [.., Array<J>, Map<string, J>]`)
-        // re-walks its whole subtree at every level: O(nodes × depth). Fix: choose the
-        // member by a shallow head test, falling back to is_a only when two members
-        // share a head. Separately, the json package doubles each document.
-        // json_to_value parses into a serde_json::Value and copies every string and key
-        // again, and value_to_json builds a serde_json::Value tree before serializing,
-        // so peak memory and allocations are about twice what they need to be. A serde
-        // Visitor straight into Value, and a Serialize wrapper over (env, type, &Value)
-        // that streams to the writer, would remove the intermediate tree. (x-alloc-07)
-        // 2026-10-13 claude: the member is now chosen by its shallow form
-        // (graphix_types::typ::member_of), is_a only where two members share
-        // one. The json double-copy part stands.
         (Some(Type::Set(ts)), v) => {
             shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
         }

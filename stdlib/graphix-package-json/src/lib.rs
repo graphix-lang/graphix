@@ -2,9 +2,11 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use ahash::AHashSet;
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     env::Env,
     errf,
@@ -16,41 +18,124 @@ use graphix_package_core::{
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{self, MapAccess, SeqAccess, Visitor},
+    ser::{Error as _, SerializeMap, SerializeSeq},
+};
+use std::fmt;
 
-fn json_to_value(json: serde_json::Value) -> Value {
-    match json {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::I64(i)
-            } else if let Some(u) = n.as_u64() {
-                Value::U64(u)
-            } else {
-                Value::F64(n.as_f64().unwrap_or(f64::NAN))
+/// A JSON document read straight into a graphix value: a number is the
+/// first of i64, u64 and f64 that holds it, and an object an array of
+/// `[key, value]` pairs sorted by key, a repeated key's last value kept.
+struct JsonValue(Value);
+
+impl<'de> Deserialize<'de> for JsonValue {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(JsonVisitor).map(JsonValue)
+    }
+}
+
+/// An object's key, read into an `ArcStr` once.
+struct JsonKey(ArcStr);
+
+impl<'de> Deserialize<'de> for JsonKey {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct KeyVisitor;
+        impl<'de> Visitor<'de> for KeyVisitor {
+            type Value = ArcStr;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an object key")
+            }
+
+            fn visit_str<E: de::Error>(self, s: &str) -> Result<ArcStr, E> {
+                Ok(ArcStr::from(s))
             }
         }
-        serde_json::Value::String(s) => Value::String(ArcStr::from(s.as_str())),
-        serde_json::Value::Array(arr) => {
-            let mut vals: LPooled<Vec<Value>> =
-                arr.into_iter().map(json_to_value).collect();
-            Value::Array(ValArray::from_iter_exact(vals.drain(..)))
+        d.deserialize_str(KeyVisitor).map(JsonKey)
+    }
+}
+
+/// The key serde_json's arbitrary_precision passes a number under.
+const NUMBER_TOKEN: &str = "$serde_json::private::Number";
+
+/// A number as the first of i64, u64 and f64 that holds it.
+fn number(n: serde_json::Number) -> Value {
+    match (n.as_i64(), n.as_u64()) {
+        (Some(i), _) => Value::I64(i),
+        (None, Some(u)) => Value::U64(u),
+        (None, None) => Value::F64(n.as_f64().unwrap_or(f64::NAN)),
+    }
+}
+
+struct JsonVisitor;
+
+impl<'de> Visitor<'de> for JsonVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_bool<E: de::Error>(self, b: bool) -> Result<Value, E> {
+        Ok(Value::Bool(b))
+    }
+
+    fn visit_i64<E: de::Error>(self, i: i64) -> Result<Value, E> {
+        Ok(Value::I64(i))
+    }
+
+    fn visit_u64<E: de::Error>(self, u: u64) -> Result<Value, E> {
+        Ok(i64::try_from(u).map_or(Value::U64(u), Value::I64))
+    }
+
+    fn visit_f64<E: de::Error>(self, f: f64) -> Result<Value, E> {
+        Ok(Value::F64(f))
+    }
+
+    fn visit_str<E: de::Error>(self, s: &str) -> Result<Value, E> {
+        Ok(Value::String(ArcStr::from(s)))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        while let Some(JsonValue(v)) = a.next_element()? {
+            vals.push(v)
         }
-        serde_json::Value::Object(obj) => {
-            let mut pairs: LPooled<Vec<(String, Value)>> =
-                obj.into_iter().map(|(k, v)| (k, json_to_value(v))).collect();
-            pairs.sort_by(|a, b| a.0.cmp(&b.0));
-            let mut vals: LPooled<Vec<Value>> = pairs
-                .drain(..)
-                .map(|(k, v)| {
-                    Value::Array(ValArray::from([
-                        Value::String(ArcStr::from(k.as_str())),
-                        v,
-                    ]))
-                })
-                .collect();
-            Value::Array(ValArray::from_iter_exact(vals.drain(..)))
+        Ok(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
+        let mut pairs: LPooled<Vec<(ArcStr, Value)>> = LPooled::take();
+        while let Some(JsonKey(k)) = a.next_key()? {
+            // serde_json's arbitrary_precision (on wherever a crate in the
+            // build asks for it) hands a number over as a one-entry map
+            if pairs.is_empty() && &*k == NUMBER_TOKEN {
+                let n: CompactString = a.next_value()?;
+                return n
+                    .parse::<serde_json::Number>()
+                    .map(number)
+                    .map_err(|e| de::Error::custom(e));
+            }
+            let JsonValue(v) = a.next_value()?;
+            pairs.push((k, v))
         }
+        // stable, so of a repeated key's pairs the last written is last
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        let mut pairs = pairs.drain(..).peekable();
+        while let Some((k, v)) = pairs.next() {
+            if pairs.peek().is_some_and(|(next, _)| *next == k) {
+                continue;
+            }
+            vals.push(Value::Array(ValArray::from([Value::String(k), v])));
+        }
+        Ok(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
     }
 }
 
@@ -59,104 +144,95 @@ fn json_to_value(json: serde_json::Value) -> Value {
 /// recursion running out of stack.
 const MAX_DEPTH: usize = 128;
 
-/// `value` as JSON, written as its type `typ` says (`None` reads the
-/// value alone).
-pub fn value_to_json(
-    env: &Env,
-    typ: Option<&Type>,
-    value: &Value,
-) -> Result<serde_json::Value, String> {
-    to_json(env, typ, value, 0)
-}
-
-// CR claude for claude: [perf/low] to_json builds a full serde_json::Value tree before
-// encode serializes it. That costs a Map per object, a Vec per sequence, and an owned
-// String for every key and every string leaf, all thrown away at once on every
-// json::write_str/write_bytes fire. toml's to_toml has the same shape. Fix: give a
-// `(env, Option<&Type>, &Value)` view a serde::Serialize impl that walks `shape`
-// directly, applying the same depth limit and leaf rules. Then serialize that view
-// straight into the pooled buffer. hbs's value_to_json caller can pass the same view to
-// Handlebars::render. (small-pkgs-12)
-fn to_json(
-    env: &Env,
-    typ: Option<&Type>,
-    value: &Value,
+/// `value` as JSON, written as its type `typ` says (`None` reads the value
+/// alone): a serde view a writer serializes as it walks the value.
+pub struct JsonView<'a> {
+    env: &'a Env,
+    typ: Option<&'a Type>,
+    value: &'a Value,
     depth: usize,
-) -> Result<serde_json::Value, String> {
-    // a value at depth n sits under n containers: MAX_DEPTH of them is
-    // where json::read stops
-    if depth >= MAX_DEPTH {
-        return Err(format!("the value nests {MAX_DEPTH} containers deep or more"));
+}
+
+impl<'a> JsonView<'a> {
+    pub fn new(env: &'a Env, typ: Option<&'a Type>, value: &'a Value) -> Self {
+        Self { env, typ, value, depth: 0 }
     }
-    match shape(env, typ, value) {
-        Shape::Object(mut entries, _) => {
-            let mut map = serde_json::Map::with_capacity(entries.len());
-            for (k, v, t) in entries.drain(..) {
-                let v = to_json(env, t.as_ref(), &v, depth + 1)?;
-                // two keys may print alike (`1` and `"1"`): never one for two
-                if map.insert(k.to_string(), v).is_some() {
-                    return Err(format!("two keys write as the same JSON key {k}"));
-                }
-            }
-            Ok(serde_json::Value::Object(map))
-        }
-        Shape::Seq(mut elems) => {
-            let mut vals: LPooled<Vec<serde_json::Value>> = elems
-                .drain(..)
-                .map(|(v, t)| to_json(env, t.as_ref(), &v, depth + 1))
-                .collect::<Result<_, _>>()?;
-            Ok(serde_json::Value::Array(vals.drain(..).collect()))
-        }
-        Shape::Leaf => leaf_to_json(value),
-        Shape::Ref => Err("a reference cannot be written as JSON".into()),
+
+    fn under(&self, typ: Option<&'a Type>, value: &'a Value) -> Self {
+        Self { env: self.env, typ, value, depth: self.depth + 1 }
     }
 }
 
-fn leaf_to_json(value: &Value) -> Result<serde_json::Value, String> {
+impl Serialize for JsonView<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        // a value at depth n sits under n containers: MAX_DEPTH of them is
+        // where json::read stops
+        if self.depth >= MAX_DEPTH {
+            return Err(S::Error::custom(format_args!(
+                "the value nests {MAX_DEPTH} containers deep or more"
+            )));
+        }
+        match shape(self.env, self.typ, self.value) {
+            Shape::Object(entries, _) => {
+                let mut map = s.serialize_map(Some(entries.len()))?;
+                let mut keys: LPooled<AHashSet<CompactString>> = LPooled::take();
+                for (k, v, t) in entries.iter() {
+                    let key = format_compact!("{k}");
+                    // two keys may print alike (`1` and `"1"`): never one for two
+                    if !keys.insert(key.clone()) {
+                        return Err(S::Error::custom(format_args!(
+                            "two keys write as the same JSON key {k}"
+                        )));
+                    }
+                    map.serialize_entry(key.as_str(), &self.under(t.as_ref(), v))?;
+                }
+                map.end()
+            }
+            Shape::Seq(elems) => {
+                let mut seq = s.serialize_seq(Some(elems.len()))?;
+                for (v, t) in elems.iter() {
+                    seq.serialize_element(&self.under(t.as_ref(), v))?;
+                }
+                seq.end()
+            }
+            Shape::Leaf => serialize_leaf(self.value, s),
+            Shape::Ref => Err(S::Error::custom("a reference cannot be written as JSON")),
+        }
+    }
+}
+
+fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error> {
     match value {
-        Value::Null => Ok(serde_json::Value::Null),
-        Value::Bool(b) => Ok(serde_json::Value::Bool(*b)),
-        Value::I8(n) => Ok(serde_json::Value::from(*n)),
-        Value::I16(n) => Ok(serde_json::Value::from(*n)),
-        Value::I32(n) => Ok(serde_json::Value::from(*n)),
-        Value::I64(n) => Ok(serde_json::Value::from(*n)),
-        Value::U8(n) => Ok(serde_json::Value::from(*n)),
-        Value::U16(n) => Ok(serde_json::Value::from(*n)),
-        Value::U32(n) => Ok(serde_json::Value::from(*n)),
-        Value::U64(n) => Ok(serde_json::Value::from(*n)),
-        Value::V32(n) => Ok(serde_json::Value::from(*n)),
-        Value::V64(n) => Ok(serde_json::Value::from(*n)),
-        Value::Z32(n) => Ok(serde_json::Value::from(*n)),
-        Value::Z64(n) => Ok(serde_json::Value::from(*n)),
-        Value::F32(n) => {
-            let f = f32_as_written(*n);
-            if f.is_finite() {
-                Ok(serde_json::Value::from(f))
-            } else {
-                Err(format!("cannot represent {n} as JSON"))
-            }
-        }
+        Value::Null => s.serialize_unit(),
+        Value::Bool(b) => s.serialize_bool(*b),
+        Value::I8(n) => s.serialize_i8(*n),
+        Value::I16(n) => s.serialize_i16(*n),
+        Value::I32(n) | Value::Z32(n) => s.serialize_i32(*n),
+        Value::I64(n) | Value::Z64(n) => s.serialize_i64(*n),
+        Value::U8(n) => s.serialize_u8(*n),
+        Value::U16(n) => s.serialize_u16(*n),
+        Value::U32(n) | Value::V32(n) => s.serialize_u32(*n),
+        Value::U64(n) | Value::V64(n) => s.serialize_u64(*n),
+        Value::F32(n) => match f32_as_written(*n) {
+            f if f.is_finite() => s.serialize_f64(f),
+            _ => Err(S::Error::custom(format_args!("cannot represent {n} as JSON"))),
+        },
+        Value::F64(n) if n.is_finite() => s.serialize_f64(*n),
         Value::F64(n) => {
-            if n.is_finite() {
-                Ok(serde_json::Value::from(*n))
-            } else {
-                Err(format!("cannot represent {n} as JSON"))
-            }
+            Err(S::Error::custom(format_args!("cannot represent {n} as JSON")))
         }
-        Value::Decimal(d) => Ok(serde_json::Value::String(d.to_string())),
-        Value::String(s) => Ok(serde_json::Value::String(s.to_string())),
-        Value::Bytes(b) => {
-            let mut arr: LPooled<Vec<serde_json::Value>> =
-                b.iter().map(|byte| serde_json::Value::from(*byte)).collect();
-            Ok(serde_json::Value::Array(arr.drain(..).collect()))
-        }
-        Value::DateTime(dt) => Ok(serde_json::Value::String(dt.to_rfc3339())),
-        Value::Duration(d) => Ok(serde_json::Value::from(d.as_secs_f64())),
+        Value::Decimal(d) => s.collect_str(d),
+        Value::String(st) => s.serialize_str(st),
+        Value::Bytes(b) => s.collect_seq(b.iter()),
+        Value::DateTime(dt) => s.serialize_str(&dt.to_rfc3339()),
+        Value::Duration(d) => s.serialize_f64(d.as_secs_f64()),
         Value::Array(_) | Value::Map(_) => {
             unreachable!("shape reads every array and map")
         }
-        Value::Error(_) => Err("cannot serialize Error to JSON".into()),
-        Value::Abstract(_) => Err("cannot serialize abstract type to JSON".into()),
+        Value::Error(_) => Err(S::Error::custom("cannot serialize Error to JSON")),
+        Value::Abstract(_) => {
+            Err(S::Error::custom("cannot serialize abstract type to JSON"))
+        }
     }
 }
 
@@ -176,11 +252,11 @@ impl ReadFormat for Json {
     fn parse(input: ReadInput) -> impl Future<Output = Value> + Send {
         async move {
             let json = match &input {
-                ReadInput::Str(s) => serde_json::from_str::<serde_json::Value>(s),
-                ReadInput::Bytes(b) => serde_json::from_slice::<serde_json::Value>(b),
+                ReadInput::Str(s) => serde_json::from_str::<JsonValue>(s),
+                ReadInput::Bytes(b) => serde_json::from_slice::<JsonValue>(b),
             };
             match json {
-                Ok(json) => json_to_value(json),
+                Ok(JsonValue(v)) => v,
                 Err(e) => errf!(Self::TAG, "{e}"),
             }
         }
@@ -197,10 +273,7 @@ fn encode(
     args: &[Value],
 ) -> Option<Result<LPooled<Vec<u8>>, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let json = match value_to_json(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?) {
-        Ok(j) => j,
-        Err(e) => return Some(Err(errf!("JsonErr", "{e}"))),
-    };
+    let json = JsonView::new(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?);
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
     let res = if pretty {
         serde_json::to_writer_pretty(&mut *buf, &json)
