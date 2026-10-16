@@ -910,19 +910,21 @@ impl<X: GXExt> GXHandle<X> {
             .await??)
     }
 
-    /// Point `current` at the lambda `v`, keeping the call site it already
-    /// has when `v` is the lambda it was compiled for. A reference to a
-    /// struct field fires with every update of the struct, so a handler
-    /// read out of a widget record arrives again and again unchanged.
+    /// Point `current` at the lambda `v`, or at nothing for null, keeping
+    /// the call site it already has when `v` is the lambda it was compiled
+    /// for; returns the callable it replaced. A reference to a struct field
+    /// fires with every update of the struct, so a handler read out of a
+    /// widget record arrives again and again unchanged.
     pub async fn update_callable(
         &self,
         current: &mut Option<Callable<X>>,
-        v: Value,
-    ) -> Result<()> {
-        if current.as_ref().is_none_or(|c| !c.is_for(&v)) {
-            *current = Some(self.compile_callable(v).await?);
+        v: &Value,
+    ) -> Result<Option<Callable<X>>> {
+        match v {
+            Value::Null => Ok(current.take()),
+            v if current.as_ref().is_some_and(|c| c.is_for(v)) => Ok(None),
+            v => Ok(current.replace(self.compile_callable(v.clone()).await?)),
         }
-        Ok(())
     }
 
     /// Compile a ref to a bind id

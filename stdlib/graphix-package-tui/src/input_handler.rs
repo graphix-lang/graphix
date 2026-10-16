@@ -405,7 +405,7 @@ impl<X: GXExt> InputHandlerW<X> {
     }
 
     async fn set_handle(&mut self, v: Value) -> Result<()> {
-        self.gx.update_callable(&mut self.handle, v).await?;
+        self.gx.update_callable(&mut self.handle, &v).await?;
         self.send_next().await
     }
 

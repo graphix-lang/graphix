@@ -334,11 +334,11 @@ async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
     let poke = f.value_of("test::poke").await?;
     let gx = &f.ctx.rt;
     let mut current = None;
-    gx.update_callable(&mut current, handle.clone()).await?;
+    gx.update_callable(&mut current, &handle).await?;
     let first = current.as_ref().context("no callable")?.id();
-    gx.update_callable(&mut current, handle).await?;
+    gx.update_callable(&mut current, &handle).await?;
     assert_eq!(current.as_ref().context("no callable")?.id(), first);
-    gx.update_callable(&mut current, poke).await?;
+    gx.update_callable(&mut current, &poke).await?;
     assert_ne!(current.as_ref().context("no callable")?.id(), first);
     Ok(())
 }

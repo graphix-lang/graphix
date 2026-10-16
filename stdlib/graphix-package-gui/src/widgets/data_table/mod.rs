@@ -358,8 +358,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 && r.id == id
             {
                 r.last = Some(v.clone());
-                if let Err(e) =
-                    super::update_callable_blocking(rt, &self.gx, &mut c.on_resize, v)
+                if let Err(e) = rt.block_on(self.gx.update_callable(&mut c.on_resize, v))
                 {
                     warn!("data_table column {}: on_resize: {e:#}", c.spec.name);
                     c.on_resize = None;

@@ -206,34 +206,6 @@ pub enum WidgetOp {
     Focus(iced_core::widget::Id),
 }
 
-/// Point `slot` at the callable `v` names, `None` for null; a slot already
-/// compiled for `v` keeps its call site. Returns the callable it replaced.
-pub(crate) async fn set_callable<X: GXExt>(
-    gx: &GXHandle<X>,
-    slot: &mut Option<Callable<X>>,
-    v: &Value,
-) -> Result<Option<Callable<X>>> {
-    match v {
-        Value::Null => Ok(slot.take()),
-        v if slot.as_ref().is_some_and(|c| c.is_for(v)) => Ok(None),
-        v => Ok(slot.replace(gx.compile_callable(v.clone()).await?)),
-    }
-}
-
-/// `set_callable` from synchronous code outside the runtime.
-pub(crate) fn update_callable_blocking<X: GXExt>(
-    rt: &tokio::runtime::Handle,
-    gx: &GXHandle<X>,
-    slot: &mut Option<Callable<X>>,
-    v: &Value,
-) -> Result<Option<Callable<X>>> {
-    match v {
-        Value::Null => Ok(slot.take()),
-        v if slot.as_ref().is_some_and(|c| c.is_for(v)) => Ok(None),
-        v => rt.block_on(set_callable(gx, slot, v)),
-    }
-}
-
 /// A child widget property: its ref and the widget its value compiled
 /// to.
 pub struct Child<X: GXExt> {
@@ -313,23 +285,6 @@ impl<X: GXExt> Children<X> {
         let mut changed = false;
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
             let vals = v.clone().cast_to::<LPooled<Vec<Value>>>()?;
-            // CR claude for claude: [structure/low] `Children::update` is `reconcile`
-            // written out again: keep_equal, compile the fresh values, interleave. It
-            // differs only in keeping the widgets and values in two parallel vectors.
-            // `Children::compile` and `compile_children` each repeat the initial
-            // try_join_all. Store `Vec<(Value, GuiW<X>)>` in Children and route compile
-            // (as `reconcile([], ..)`) and update (as `rt.block_on(reconcile(..))`)
-            // through `reconcile`. Then a reconciliation fix (gui-widgets-a-07, and the
-            // one for the drain-before-compile bug) lands once. Likewise
-            // `update_callable_blocking` repeats `set_callable`'s match only to skip a
-            // `block_on`, and `GXHandle::update_callable` is a third copy of the same
-            // keep-if-`is_for` rule. Keep one, which handles null and returns the
-            // callable it replaced (Handler::update needs it). (gui-widgets-a-09)
-            // 2026-10-13 codex: children_survive_a_failed_recompile_and_retry and
-            // reconciliation_compiles_fresh_entries_concurrently pin the shared
-            // collection path. The callable rule still needs graphix-rt/src/lib.rs's
-            // GXHandle::update_callable to handle null and return the replaced
-            // Callable. That API change is outside this worktree's scope.
             rt.block_on(reconcile(&mut self.ws, vals, |v| compile(gx.clone(), v)))?;
             self.r.last = Some(v.clone());
             changed = true;
@@ -647,7 +602,7 @@ impl<X: GXExt> Handler<X> {
     pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
         let mut f = None;
         if let Some(v) = r.last.as_ref() {
-            set_callable(gx, &mut f, v).await?;
+            gx.update_callable(&mut f, v).await?;
         }
         Ok(Self { r, f })
     }
@@ -666,7 +621,7 @@ impl<X: GXExt> Handler<X> {
             return Ok(None);
         }
         let previous = self.id();
-        let retired = update_callable_blocking(rt, gx, &mut self.f, v)?;
+        let retired = rt.block_on(gx.update_callable(&mut self.f, v))?;
         self.r.last = Some(v.clone());
         *changed |= previous != self.id();
         Ok(retired)

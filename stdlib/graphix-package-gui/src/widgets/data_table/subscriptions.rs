@@ -487,7 +487,7 @@ impl<X: GXExt> DataTableW<X> {
                 Ok(r) => {
                     let mut f = None;
                     if let Some(v) = r.last.as_ref()
-                        && let Err(e) = crate::widgets::set_callable(&gx, &mut f, v).await
+                        && let Err(e) = gx.update_callable(&mut f, v).await
                     {
                         fail("on_resize", e)
                     }
