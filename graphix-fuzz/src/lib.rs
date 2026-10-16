@@ -22,16 +22,13 @@ pub mod typemorph;
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use bytes::Bytes;
-use enumflags2::BitFlags;
 use graphix_compiler::{
     FusionStats, ParMode, Scope,
     env::Env,
     expr::{Expr, Origin, VfsEntry, VfsResolver, parser},
 };
 use graphix_package::Package;
-use graphix_package_core::testing::{
-    TestCtx, init_session_with_setup, init_with_flags_and_setup,
-};
+use graphix_package_core::testing::{TestCtx, config};
 use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
@@ -432,17 +429,14 @@ pub async fn check_only(code: &str, timeout: Duration) -> Result<(), String> {
     let resolver = VfsResolver::new(subj.table.clone());
     let registration = registration_image_source().await;
     let flags = Mode::Interp.flags();
-    let ctx = init_session_with_setup(
-        tx,
-        REGISTER,
-        vec![resolver],
-        flags,
-        registration,
-        None,
-        None,
-        None,
-        |_| {},
-    )
+    let ctx = async {
+        TestCtx::start(
+            config(tx, REGISTER, vec![resolver], |_| {})?
+                .flags(flags)
+                .registration(registration),
+        )
+        .await
+    }
     .await
     .map_err(|e| format!("runtime init failed: {e:?}"))?;
     let src = graphix_compiler::expr::Load::Text(ArcStr::from(subj.compile_text()));
@@ -496,21 +490,25 @@ async fn start_session(
     let sink = graphix_package_core::PrintSink::default();
     let (exit_req, exit) = graphix_package_core::ExitRequest::new();
     let seeded = sink.clone();
-    let init = init_session_with_setup(
-        tx,
-        REGISTER,
-        vec![resolver],
-        mode.flags(),
-        registration,
-        program,
-        program_image,
-        limits,
-        move |ctx| {
+    let init = async move {
+        let mut cfg = config(tx, REGISTER, vec![resolver], move |ctx| {
             ctx.libstate.set(seeded);
             ctx.libstate.set(exit_req);
             ctx.control.set_par_mode(fuzz_par(mode));
-        },
-    );
+        })?
+        .flags(mode.flags())
+        .registration(registration);
+        if let Some(p) = program {
+            cfg = cfg.program(p);
+        }
+        if let Some(tx) = program_image {
+            cfg = cfg.program_image(tx);
+        }
+        if let Some(limits) = limits {
+            cfg = cfg.trace(limits);
+        }
+        async { TestCtx::start(cfg).await }.await
+    };
     match tokio::time::timeout(timeout, init).await {
         Ok(Ok(ctx)) => Ok(Started { ctx, rx, sink, exit }),
         Ok(Err(e)) => Err(Outcome::RuntimeErr(format!("runtime init failed: {e:?}"))),
@@ -1150,17 +1148,13 @@ async fn registration_image() -> Option<Bytes> {
         .get_or_init(|| async {
             let (tx, _rx) = mpsc::channel(8);
             let (reg_tx, reg_rx) = oneshot::channel();
-            let ctx = init_session_with_setup(
-                tx,
-                REGISTER,
-                vec![],
-                BitFlags::empty(),
-                RegistrationImage::save(reg_tx),
-                None,
-                None,
-                None,
-                |_| {},
-            )
+            let ctx = async {
+                TestCtx::start(
+                    config(tx, REGISTER, vec![], |_| {})?
+                        .registration(RegistrationImage::save(reg_tx)),
+                )
+                .await
+            }
             .await
             .ok()?;
             let image = reg_rx.await.ok().and_then(|r| r.ok());
@@ -3166,15 +3160,15 @@ pub async fn typemorph_subject(
     };
     let (tx, _rx) = mpsc::channel(64);
     let sink = graphix_package_core::PrintSink::default();
-    let ctx = init_with_flags_and_setup(
-        tx,
-        REGISTER,
-        vec![],
-        Mode::Interp.flags(),
-        move |ctx| {
-            ctx.libstate.set(sink);
-        },
-    )
+    let ctx = async {
+        TestCtx::start(
+            config(tx, REGISTER, vec![], move |ctx| {
+                ctx.libstate.set(sink);
+            })?
+            .flags(Mode::Interp.flags()),
+        )
+        .await
+    }
     .await
     .map_err(|e| format!("runtime init failed: {e:?}"))?;
     let accept = |c: TmCheck| match c {
@@ -6410,13 +6404,15 @@ mod trace_probes {
             ))),
         )]);
         let resolver = VfsResolver::new(tbl);
-        let ctx = init_with_flags_and_setup(
-            tx,
-            REGISTER,
-            vec![resolver],
-            mode.flags(),
-            move |ctx| ctx.control.set_par_mode(fuzz_par(mode)),
-        )
+        let ctx = async {
+            TestCtx::start(
+                config(tx, REGISTER, vec![resolver], move |ctx| {
+                    ctx.control.set_par_mode(fuzz_par(mode))
+                })?
+                .flags(mode.flags()),
+            )
+            .await
+        }
         .await
         .expect("runtime init");
         let base = ctx.fusion_stats().await.expect("base stats");
@@ -6654,10 +6650,14 @@ mod trace_probes {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trace_wait_without_start_errors() {
         let (tx, _rx) = mpsc::channel(64);
-        let ctx =
-            init_with_flags_and_setup(tx, REGISTER, vec![], Mode::Interp.flags(), |_| {})
-                .await
-                .expect("runtime init");
+        let ctx = async {
+            TestCtx::start(
+                config(tx, REGISTER, vec![], |_| {})?.flags(Mode::Interp.flags()),
+            )
+            .await
+        }
+        .await
+        .expect("runtime init");
         let r = ctx.rt.trace_wait_idle().await;
         assert!(r.is_err(), "expected an error, got {r:?}");
         ctx.shutdown().await;
