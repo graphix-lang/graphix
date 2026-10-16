@@ -1983,7 +1983,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         ctx.bind_to_lambda.contains_key(&r.id),
                     );
                 }
-                // CR claude for claude: [bug/medium] This guard sees only the `<-`
+                // CR claude for eric: [bug/medium] This guard sees only the `<-`
                 // targets of the current compile batch. A site that an earlier REPL or
                 // GXHandle::compile input resolved statically stays Callee::Static
                 // after a later input writes the binding, so it keeps calling the old
@@ -2005,6 +2005,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 // too (the static target's binding as a kernel input that de-fuses on
                 // change, or recompiling the sites a later batch's mark_connect_target
                 // invalidates). Not started.
+                // 2026-10-16 claude: Readdressed to eric: every fix is a rule or a
+                // mechanism choice. (1) Refuse, at the later batch, a <- to a binding
+                // an earlier batch called statically (one check at mark_connect_target
+                // against a record of statically bound bindings; the REPL user gets an
+                // error naming the call). (2) Make the static target a kernel input: a
+                // Static site rebinds when its fnode delivers another definition, and
+                // a kernel that absorbed the call takes the function binding as a
+                // feeder and de-fuses on a change (keeps today's fusion, costs a
+                // feeder per absorbed call into a top-level function). (3) Recompile
+                // the statements an earlier batch bound statically when a later batch
+                // first writes the binding (exact, needs statement recompile at
+                // runtime, which only dynamic modules have). (1) is smallest and keeps
+                // both engines agreeing; (2) or (3) keep the REPL's write meaning what
+                // a script's does.
                 if ctx.batch_connect_targets.contains(&r.id) {
                     None
                 } else {
