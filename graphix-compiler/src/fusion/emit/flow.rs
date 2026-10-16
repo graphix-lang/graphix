@@ -309,6 +309,8 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     };
     let (skipped, invariant) = (&info.kernel.skipped_args, &info.kernel.tail_invariant);
     let mut rebinds: SmallVec<[TailRebind; 8]> = SmallVec::new();
+    // an owned value is held while the later args emit
+    let mut held = 0;
     let mut slot_idx = 0usize;
     for i in 0..spec_apply.args.len() {
         let iu = i as u32;
@@ -335,10 +337,20 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
                 CompiledExpr::new(cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload)),
                 CompositeSource::Owned,
             ),
-            _ => (cv, node_composite_source(arg)),
+            _ => {
+                let source = node_composite_source(arg);
+                if let Some(k) = kernel_abi::abi_kind(arg.typ())
+                    .and_then(|k| owned_drop_kind(k, source))
+                {
+                    cx.hold(k, cv);
+                    held += 1;
+                }
+                (cv, source)
+            }
         };
         rebinds.push(TailRebind { slot, val, source });
     }
+    super::call::release_owned(cx, held);
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, rebinds)
 }
 

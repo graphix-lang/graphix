@@ -116,15 +116,12 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         if let Some(k) =
             kind.and_then(|k| owned_drop_kind(k, node_composite_source(arg_node)))
         {
-            drops.push((k, cv));
-            cx.hold(k, cv);
+            hold_owned(cx, &mut drops, (k, cv));
         }
         cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
         cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
     }
-    for _ in drops.iter() {
-        cx.release();
-    }
+    release_owned(cx, drops.len());
     // A tainted arg is a mask bit, not a reason to skip emission; the
     // trampoline bottoms the call.
     let mut taint_mask = cx.b.ins().iconst(types::I64, 0);
@@ -339,6 +336,25 @@ pub enum CompositeSource {
 /// An owned value the emitter drops after its consumer: its kind and
 /// its words.
 pub(super) type OwnedDrop = (LocalKind, CompiledExpr);
+
+/// Record an owned argument for the drop after its call, and hold it
+/// while the arguments after it emit, so a pending exit they take frees
+/// it ([`release_owned`] ends the holds once the last one emitted).
+pub(super) fn hold_owned(
+    cx: &mut BodyCx,
+    drops: &mut SmallVec<[OwnedDrop; 8]>,
+    d: OwnedDrop,
+) {
+    drops.push(d);
+    cx.hold(d.0, d.1);
+}
+
+/// End `n` holds [`hold_owned`] made.
+pub(super) fn release_owned(cx: &mut BodyCx, n: usize) {
+    for _ in 0..n {
+        cx.release();
+    }
+}
 
 /// One entry in the flat formals+captures list [`emit_lambda_call_node`]
 /// marshals: a call-site arg Node or a capture read from the calling
@@ -670,18 +686,6 @@ fn marshal_args<R: Rt, E: UserEvent>(
         );
         let cv = match s {
             LambdaCallSlot::Arg(n, _) => {
-                // CR claude for claude: [bug/low] An owned arg is pushed only to
-                // `drops`, which are freed after the call returns. It is not held on
-                // `owned_input_stack` while the args after it emit. If a later arg
-                // aborts the kernel (a scaffold loop's interrupt poll, an aborted
-                // cross-kernel callee, a self-call's stack check),
-                // `emit_pending_cleanup` never sees this value and it leaks: `g([x, y],
-                // array::map(a, h))` interrupted mid-map loses `[x, y]`.
-                // `emit_self_tail_call` has the same gap: its `rebinds` are not held
-                // until `emit_tail_rebind_jump`. Hold each owned arg as it is produced
-                // and release all of them just before the call or rebind, as the
-                // builtin arg path does with `BodyCx::hold`/`release`, with one shared
-                // helper for all three sites. (f-scaffold-body-02)
                 let cv = n.emit_clif(cx)?;
                 match kernel_abi::abi_kind(n.typ()) {
                     Some(AbiKind::Scalar(p)) if value_slot => CompiledExpr::new(
@@ -694,21 +698,7 @@ fn marshal_args<R: Rt, E: UserEvent>(
                         if let Some(k) =
                             slot_kind.and_then(|k| owned_drop_kind(k, source))
                         {
-                            // CR claude for claude: [bug/low] An owned arg is collected
-                            // for the after-call drop but is not held (cx.hold) while
-                            // the later args emit. If a later arg takes a pending exit,
-                            // emit_pending_cleanup does not see this value and it
-                            // leaks. That happens on an interrupt at a collection loop
-                            // head inside it, an aborted nested lambda call or a forked
-                            // loop's abort. Example: `f(fresh_array, array::map(xs, |x|
-                            // x + 1))` interrupted inside the map.
-                            // emit_builtin_call_node does this right: hold each owned
-                            // arg as it is pushed, and release them all after the last
-                            // arg emits and before the call, so the pending path at
-                            // rmerge, which drops `drops` itself, does not drop them
-                            // twice. One helper that pushes the drop and holds it would
-                            // serve both call paths. (f-call-flow-06)
-                            drops.push((k, cv));
+                            hold_owned(cx, &mut drops, (k, cv));
                         }
                         cv
                     }
@@ -732,6 +722,7 @@ fn marshal_args<R: Rt, E: UserEvent>(
         };
         cvs.push(cv);
     }
+    release_owned(cx, drops.len());
     Ok((cvs, drops))
 }
 
