@@ -272,49 +272,44 @@ mod tag {
 }
 
 /// The relocation kinds a host emits; any other fails the record.
-// CR claude for claude: [structure/low] reloc_tag, reloc_of and reloc_fits are three
-// hand-kept tables that must agree. They already disagree: reloc_tag encodes
-// X86CallPLTRel4, X86GOTPCRel4 and the other architecture's kinds, and reloc_fits
-// refuses all of them on read. If emission ever produced one (a PIC setting change,
-// say), every image write would succeed and every read would fail with InvalidFormat.
-// Each start would then compile cold and rewrite the image, and nothing would log why.
-// Derive all three from one const table of (Reloc, tag, width, arch), and have
-// reloc_tag refuse any kind this host's reader would refuse, so the write fails with a
-// logged reason instead. (c-image-07)
+const X86: bool = cfg!(target_arch = "x86_64");
+
+/// Every relocation a record carries: its kind, its tag in the image,
+/// the bytes it writes and whether this host emits it. A kind not here,
+/// or one this host does not emit, is refused at the write, so no image
+/// is written that its reader would refuse.
+const RELOCS: [(Reloc, u8, usize, bool); 7] = [
+    (Reloc::Abs4, 0, 4, true),
+    (Reloc::Abs8, 1, 8, true),
+    (Reloc::X86PCRel4, 2, 4, X86),
+    (Reloc::X86CallPCRel4, 3, 4, X86),
+    (Reloc::Arm64Call, 6, 4, !X86),
+    (Reloc::Aarch64AdrPrelPgHi21, 7, 4, !X86),
+    (Reloc::Aarch64AddAbsLo12Nc, 8, 4, !X86),
+];
+
+fn host_reloc(
+    by: impl Fn(&(Reloc, u8, usize, bool)) -> bool,
+) -> Option<(Reloc, u8, usize)> {
+    RELOCS.iter().find(|r| r.3 && by(r)).map(|&(k, t, w, _)| (k, t, w))
+}
+
 fn reloc_tag(r: Reloc) -> Result<u8, PackError> {
-    Ok(match r {
-        Reloc::Abs4 => 0,
-        Reloc::Abs8 => 1,
-        Reloc::X86PCRel4 => 2,
-        Reloc::X86CallPCRel4 => 3,
-        Reloc::X86CallPLTRel4 => 4,
-        Reloc::X86GOTPCRel4 => 5,
-        Reloc::Arm64Call => 6,
-        Reloc::Aarch64AdrPrelPgHi21 => 7,
-        Reloc::Aarch64AddAbsLo12Nc => 8,
-        r => {
+    match host_reloc(|e| e.0 == r) {
+        Some((_, tag, _)) => Ok(tag),
+        None => {
             log::warn!("the kernel record cannot carry relocation {r:?}");
-            return Err(PackError::InvalidFormat);
+            Err(PackError::InvalidFormat)
         }
-    })
+    }
 }
 
 /// Whether a decoded relocation is one this host emits, writing inside
 /// the `len` bytes of its code.
 fn reloc_fits(r: &RecordReloc, len: usize) -> bool {
-    let x86 = cfg!(target_arch = "x86_64");
-    let width = match r.kind {
-        Reloc::Abs8 => 8,
-        Reloc::Abs4 => 4,
-        Reloc::X86PCRel4 | Reloc::X86CallPCRel4 if x86 => 4,
-        Reloc::Arm64Call | Reloc::Aarch64AdrPrelPgHi21 | Reloc::Aarch64AddAbsLo12Nc
-            if !x86 =>
-        {
-            4
-        }
-        _ => return false,
-    };
-    (r.offset as usize).checked_add(width).is_some_and(|end| end <= len)
+    host_reloc(|e| e.0 == r.kind).is_some_and(|(_, _, width)| {
+        (r.offset as usize).checked_add(width).is_some_and(|end| end <= len)
+    })
 }
 
 /// A record's relocations, each one [`reloc_fits`] its `len` bytes of code.
@@ -335,18 +330,7 @@ fn align_decode(buf: &mut impl Buf) -> Result<u64, PackError> {
 }
 
 fn reloc_of(tag: u8) -> Result<Reloc, PackError> {
-    Ok(match tag {
-        0 => Reloc::Abs4,
-        1 => Reloc::Abs8,
-        2 => Reloc::X86PCRel4,
-        3 => Reloc::X86CallPCRel4,
-        4 => Reloc::X86CallPLTRel4,
-        5 => Reloc::X86GOTPCRel4,
-        6 => Reloc::Arm64Call,
-        7 => Reloc::Aarch64AdrPrelPgHi21,
-        8 => Reloc::Aarch64AddAbsLo12Nc,
-        _ => return Err(PackError::UnknownTag),
-    })
+    host_reloc(|e| e.1 == tag).map(|(k, _, _)| k).ok_or(PackError::UnknownTag)
 }
 
 /// A libcall by its position in cranelift's list; an image never
