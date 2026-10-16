@@ -1,9 +1,6 @@
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
-use futures::{
-    channel::mpsc,
-    future::{self, Either},
-};
+use futures::{channel::mpsc, future, prelude::*};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
     Node, Rt, Scope, Tag, TagValue, UserEvent,
@@ -26,10 +23,11 @@ use std::{
     any::Any,
     cmp::Ordering,
     hash::{Hash, Hasher},
-    mem,
-    pin::{Pin, pin},
-    sync::LazyLock,
+    pin::Pin,
+    sync::{LazyLock, mpsc::RecvTimeoutError},
     task::{Context, Poll, Waker},
+    thread,
+    time::Duration,
 };
 
 use crate::{
@@ -109,86 +107,117 @@ fn push_event(
     events.push(decode_sled_event(key_typ, event));
 }
 
-fn drain_ready(
-    subscriber: &mut sled::Subscriber,
-    key_typ: Option<Typ>,
-    events: &mut Vec<Result<DbEvent>>,
-) {
+/// Read `subscriber` on a thread of its own until `tx` closes. sled 0.34
+/// drops a no-op write's reservation without waking an async subscriber,
+/// and its `next_timeout` reports one as `Disconnected` and keeps it, so
+/// the thread waits with `next_timeout` and consumes a dropped
+/// reservation by polling. A writer therefore never waits on the runtime.
+fn pump(mut subscriber: sled::Subscriber, tx: mpsc::UnboundedSender<sled::Event>) {
+    const CANCEL_POLL: Duration = Duration::from_millis(100);
     let waker = Waker::noop();
     let mut cx = Context::from_waker(&waker);
-    while let Poll::Ready(Some(event)) = Pin::new(&mut *subscriber).poll(&mut cx) {
-        push_event(key_typ, event, events)
+    while !tx.is_closed() {
+        // XCR claude for claude: [bug/critical] sled 0.34 reserves a subscriber slot
+        // for every write, including a no-op write (the same value written again).
+        // For a no-op it drops the reservation without waking the waker that
+        // `Subscriber::poll` left in sled's senders map. This task therefore stays
+        // parked here, and the dropped OneShots pile up in sled's 1024-slot
+        // channel. After 1024 no-op writes, every writer to the tree blocks in
+        // `Subscribers::reserve` while holding sled's `watched` read lock (and the
+        // global concurrency-control lock for batches and commits). A later
+        // `watch_prefix` in `DbSubscribe::watch` then blocks the runtime thread,
+        // and dropping the Subscriber on abort deadlocks on `home.write()`. Fix:
+        // drain the Subscriber from a blocking thread with `next_timeout` or its
+        // blocking Iterator, which consume a dropped filler, and forward the events
+        // into the mpsc. Also take `watch_prefix` off the runtime thread. Pin: more
+        // than 1024 no-op inserts under a standing subscription must all answer.
+        // Probe: design/review-2026-10-12/repro/db2-01.gx (stops at 1025 answered
+        // inserts and hangs; without the subscription it runs to about 15000 and
+        // exits). (db2-01)
+        // 2026-10-13 codex: Reproduced: the probe stalls at 1026 inserts and needs SIGKILL.
+        // The proposed next_timeout also wedges: sled 0.34.7 saves the dropped
+        // OneShot back into Subscriber::existing on Disconnected, so one no-op
+        // followed by a real insert returns Disconnected on every call.
+        // Iterator drains fillers but has no cancellable wait for sleep/delete.
+        // Fix sled::Subscribers::reserve / ReservedBroadcast drop to wake the
+        // registered subscriber on cancellation, and Subscriber::next_timeout
+        // to consume cancelled reservations. That dependency is outside this
+        // worktree scope; retain the db2-01.gx probe for the dependency fix.
+        // 2026-10-16 claude: Worked around in this package: pump() reads the Subscriber on
+        // a thread of its own with next_timeout and consumes a dropped reservation by
+        // polling, so writers never wait on the runtime and watch_prefix no longer meets a
+        // blocked writer; watch() batches what the thread forwards. Pins:
+        // subscribe::test::no_op_writes_pass_a_watch (3000 no-op inserts, then a change,
+        // delivered), an_aborted_watch_unregisters, writes_pass_a_stalled_runtime. The
+        // db2-01.gx probe now answers 21029 inserts and exits 0. Upstream patch prepared,
+        // not submitted: ~/proj/sled branch subscriber-dropped-reservations (df42b243 on
+        // v0.34.7): ReservedBroadcast wakes its subscribers when dropped, next_timeout
+        // skips a dropped reservation and reports a timeout as Timeout, two tests. sled
+        // main is the 1.0 rewrite without subscribers, so the PR would target a 0.34 branch
+        // (origin/tyler_0.34.7 is v0.34.7).
+        let event = match subscriber.next_timeout(CANCEL_POLL) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                match Pin::new(&mut subscriber).poll(&mut cx) {
+                    Poll::Ready(Some(event)) => event,
+                    Poll::Ready(None) => break,
+                    Poll::Pending => continue,
+                }
+            }
+        };
+        if tx.unbounded_send(event).is_err() {
+            break;
+        }
     }
+    while let Poll::Ready(Some(_)) = Pin::new(&mut subscriber).poll(&mut cx) {}
 }
 
+/// Forward `events` to the runtime, one batch per delivery the runtime
+/// has room for.
 async fn watch(
-    mut subscriber: sled::Subscriber,
+    mut events: mpsc::UnboundedReceiver<sled::Event>,
     key_typ: Option<Typ>,
     bind_id: BindId,
     mut tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
 ) {
-    let mut events = EVENT_POOL.take();
-    let mut open = true;
-    while open {
-        if events.is_empty() {
-            // CR claude for claude: [bug/critical] sled 0.34 reserves a subscriber slot
-            // for every write, including a no-op write (the same value written again).
-            // For a no-op it drops the reservation without waking the waker that
-            // `Subscriber::poll` left in sled's senders map. This task therefore stays
-            // parked here, and the dropped OneShots pile up in sled's 1024-slot
-            // channel. After 1024 no-op writes, every writer to the tree blocks in
-            // `Subscribers::reserve` while holding sled's `watched` read lock (and the
-            // global concurrency-control lock for batches and commits). A later
-            // `watch_prefix` in `DbSubscribe::watch` then blocks the runtime thread,
-            // and dropping the Subscriber on abort deadlocks on `home.write()`. Fix:
-            // drain the Subscriber from a blocking thread with `next_timeout` or its
-            // blocking Iterator, which consume a dropped filler, and forward the events
-            // into the mpsc. Also take `watch_prefix` off the runtime thread. Pin: more
-            // than 1024 no-op inserts under a standing subscription must all answer.
-            // Probe: design/review-2026-10-12/repro/db2-01.gx (stops at 1025 answered
-            // inserts and hangs; without the subscription it runs to about 15000 and
-            // exits). (db2-01)
-            // 2026-10-13 codex: Reproduced: the probe stalls at 1026 inserts and needs SIGKILL.
-            // The proposed next_timeout also wedges: sled 0.34.7 saves the dropped
-            // OneShot back into Subscriber::existing on Disconnected, so one no-op
-            // followed by a real insert returns Disconnected on every call.
-            // Iterator drains fillers but has no cancellable wait for sleep/delete.
-            // Fix sled::Subscribers::reserve / ReservedBroadcast drop to wake the
-            // registered subscriber on cancellation, and Subscriber::next_timeout
-            // to consume cancelled reservations. That dependency is outside this
-            // worktree scope; retain the db2-01.gx probe for the dependency fix.
-            match (&mut subscriber).await {
-                Some(ev) => push_event(key_typ, ev, &mut events),
-                None => break,
-            }
-        }
-        // read sled while the runtime has no room: a subscriber that stops
-        // reading fills sled's buffer, which blocks every writer to the tree
-        let room = loop {
-            drain_ready(&mut subscriber, key_typ, &mut events);
-            let room = future::poll_fn(|cx| tx.poll_ready(cx));
-            match future::select(pin!(room), &mut subscriber).await {
-                Either::Left((room, _)) => break room,
-                Either::Right((Some(ev), _)) => push_event(key_typ, ev, &mut events),
-                Either::Right((None, _)) => {
-                    open = false;
-                    break future::poll_fn(|cx| tx.poll_ready(cx)).await;
-                }
-            }
-        };
-        if room.is_err() {
+    while let Some(event) = events.next().await {
+        if future::poll_fn(|cx| tx.poll_ready(cx)).await.is_err() {
             break;
         }
-        if events.is_empty() {
-            continue;
+        let mut batch_events = EVENT_POOL.take();
+        push_event(key_typ, event, &mut batch_events);
+        while let Ok(event) = events.try_recv() {
+            push_event(key_typ, event, &mut batch_events);
         }
-        let events = mem::replace(&mut events, EVENT_POOL.take());
         let mut batch = CBATCH_POOL.take();
-        batch.push((bind_id, Box::new(DbEvents(events)) as Box<dyn CustomBuiltinType>));
+        batch.push((
+            bind_id,
+            Box::new(DbEvents(batch_events)) as Box<dyn CustomBuiltinType>,
+        ));
         if tx.start_send(batch).is_err() {
             break;
         }
     }
+}
+
+/// Watch `subscriber`, its events delivered under `bind_id`; aborting the
+/// returned task ends the watch.
+fn spawn_watch(
+    subscriber: sled::Subscriber,
+    key_typ: Option<Typ>,
+    bind_id: BindId,
+    tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
+) -> Option<tokio::task::AbortHandle> {
+    let (events_tx, events) = mpsc::unbounded();
+    let spawned = thread::Builder::new()
+        .name("db-subscription".into())
+        .spawn(move || pump(subscriber, events_tx));
+    if let Err(e) = spawned {
+        log::error!("db subscription: no thread to watch the tree: {e}");
+        return None;
+    }
+    Some(tokio::task::spawn(watch(events, key_typ, bind_id, tx)).abort_handle())
 }
 
 /// A subscription to a tree's changes under a prefix. The watch is
@@ -261,8 +290,7 @@ impl DbSubscribe {
         let subscriber = tree.tree.watch_prefix(&*prefix);
         let (tx, rx) = mpsc::channel(1);
         ctx.rt.watch(rx);
-        let jh = tokio::task::spawn(watch(subscriber, tree.key_typ, self.bind_id, tx));
-        self.abort = Some(jh.abort_handle());
+        self.abort = spawn_watch(subscriber, tree.key_typ, self.bind_id, tx);
     }
 }
 
@@ -484,7 +512,7 @@ db_event_accessor!(DbOnRemove, "db_subscription_on_remove", |se| match se {
 mod test {
     use super::*;
     use crate::encoding::{encode_key, encode_value};
-    use std::{sync::mpsc as std_mpsc, thread, time::Duration};
+    use std::sync::mpsc as std_mpsc;
 
     #[test]
     fn undecodable_events_reach_accessors() {
@@ -525,7 +553,7 @@ mod test {
     async fn writes_pass_a_stalled_runtime() {
         let db = sled::Config::new().temporary(true).open().unwrap();
         let (tx, _never_read) = mpsc::channel(1);
-        tokio::spawn(watch(db.watch_prefix(vec![]), None, BindId::new(), tx));
+        spawn_watch(db.watch_prefix(vec![]), None, BindId::new(), tx).unwrap();
         let (done_tx, done) = std_mpsc::channel();
         thread::spawn(move || {
             let value = encode_value(&Value::Null).unwrap();
@@ -537,5 +565,63 @@ mod test {
         });
         done.recv_timeout(Duration::from_secs(10))
             .expect("a writer blocked on the subscriber's buffer");
+    }
+
+    /// sled reserves a subscriber slot for a write that changes nothing and
+    /// drops it unannounced: thousands of them pass a standing watch, and
+    /// the change after them is delivered.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_op_writes_pass_a_watch() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        spawn_watch(db.watch_prefix(vec![]), None, BindId::new(), tx).unwrap();
+        let (done_tx, done) = std_mpsc::channel();
+        thread::spawn(move || {
+            let key = encode_key(None, &Value::U64(0)).unwrap();
+            let same = encode_value(&Value::Null).unwrap();
+            for _ in 0..3000 {
+                db.insert(key.as_slice(), same.as_slice()).unwrap();
+            }
+            let changed = encode_value(&Value::U64(1)).unwrap();
+            db.insert(key.as_slice(), changed.as_slice()).unwrap();
+            let _ = done_tx.send(db);
+        });
+        let _db = tokio::task::spawn_blocking(move || {
+            done.recv_timeout(Duration::from_secs(10))
+        })
+        .await
+        .unwrap()
+        .expect("a writer blocked on dropped reservations");
+        let mut values = vec![];
+        while values.last() != Some(&Value::U64(1)) {
+            let batch = tokio::time::timeout(Duration::from_secs(10), rx.next())
+                .await
+                .expect("the change after the no-op writes was not delivered")
+                .unwrap();
+            for (_, events) in batch.iter() {
+                let events = (&**events as &dyn Any).downcast_ref::<DbEvents>().unwrap();
+                for event in events.0.iter() {
+                    match event {
+                        Ok(DbEvent::Insert { value, .. }) => values.push(value.clone()),
+                        e => panic!("unexpected event {e:?}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(values, [Value::Null, Value::U64(1)]);
+    }
+
+    /// Ending the watch ends its thread, which unregisters the subscriber.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_aborted_watch_unregisters() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let subscriber = db.watch_prefix(vec![]);
+        let (events_tx, events) = mpsc::unbounded();
+        let pump = thread::spawn(move || pump(subscriber, events_tx));
+        let watch = tokio::task::spawn(watch(events, None, BindId::new(), tx));
+        watch.abort();
+        let _ = watch.await;
+        tokio::task::spawn_blocking(move || pump.join()).await.unwrap().unwrap();
     }
 }
