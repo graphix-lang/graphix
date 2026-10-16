@@ -1273,6 +1273,25 @@ run!(
     "/test/m.gx" => "let parse = 'b: Any |s: string, d: 'b| -> Result<'b, `ParseError(string)> str::parse(s)"
 ; FuseExpect::None);
 
+// A union of variables pairs with the implementation's however either side
+// orders it, as the rest of the signature decides.
+run!(
+    open_union_pairs_by_the_rest_of_the_signature,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => "mod m; let result = m::f(1, 2)",
+    "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: ['b, 'a], y: 'a| -> 'a y"
+; FuseExpect::Jit);
+
+// No pairing of the union fits the rest of the signature: refused.
+run!(
+    open_union_without_a_pairing_is_refused,
+    refused("type variable usage mismatch"),
+    "/test.gx" => "mod m; let result = m::f(1, 2)",
+    "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a, z: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: ['b, 'a], y: 'a, z: 'b| -> 'a y"
+; FuseExpect::None);
+
 // A ground union matches its signature as a set, whatever normal form
 // either side holds: primitives folded into one, or a binding never
 // normalized ([i64, i64]).

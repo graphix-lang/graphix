@@ -15,6 +15,73 @@ use nohash::IntMap;
 use poolshark::local::LPooled;
 use std::ops::{Deref, DerefMut};
 
+/// What a signature match has paired: each implementation cell's
+/// signature type, and the unions holding an open variable, whose pairing
+/// waits until the rest of the signature has paired what it can.
+#[derive(Debug, Default, Clone)]
+pub(super) struct SigPairs {
+    pub(super) cells: IntMap<usize, Type>,
+    deferred: Vec<(Type, Type)>,
+}
+
+/// The most members an open union's pairing searches over; a larger one
+/// pairs in stored order.
+const MAX_PAIRED_MEMBERS: usize = 6;
+
+impl SigPairs {
+    /// Pair every deferred union: the first assignment of signature
+    /// members to implementation members that every union, and the unions
+    /// those pairings defer in turn, accept.
+    pub(super) fn settle(
+        &mut self,
+        env: &Env,
+        hist: &mut RefHist<AHashSet<RefPair>>,
+    ) -> Result<()> {
+        let Some((s0, s1)) = self.deferred.pop() else { return Ok(()) };
+        let (Type::Set(m0), Type::Set(m1)) = (&s0, &s1) else { unreachable!() };
+        let n = m0.len();
+        let mut order: LPooled<Vec<usize>> = (0..n).collect();
+        let mut first_err = None;
+        loop {
+            let mut scratch = self.clone();
+            let r = m0
+                .iter()
+                .zip(order.iter())
+                .try_for_each(|(t0, i)| {
+                    t0.sig_matches_int(env, &m1[*i], &mut scratch, hist)
+                })
+                .and_then(|()| scratch.settle(env, hist));
+            match r {
+                Ok(()) => {
+                    *self = scratch;
+                    return Ok(());
+                }
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+            if n > MAX_PAIRED_MEMBERS || !next_permutation(&mut order) {
+                return Err(first_err.unwrap());
+            }
+        }
+    }
+}
+
+/// Step `v` to its next permutation in lexical order; false after the last.
+fn next_permutation(v: &mut [usize]) -> bool {
+    let Some(i) = (1..v.len()).rev().find(|&i| v[i - 1] < v[i]) else { return false };
+    let j = (i..v.len()).rev().find(|&j| v[j] > v[i - 1]).unwrap();
+    v.swap(i - 1, j);
+    v[i..].reverse();
+    true
+}
+
+/// Whether a union member is a variable still open: its pairing is
+/// decided by the rest of the signature.
+fn open_member(t: &Type) -> bool {
+    matches!(t, Type::TVar(tv) if tv.binding().is_none())
+}
+
 /// could_match's walk state: its pairs in progress (assumed to overlap),
 /// and a memo of its own for the containment questions it asks.
 pub(super) struct MatchHist {
@@ -253,14 +320,16 @@ impl Type {
     }
 
     pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
-        self.sig_matches_int(env, impl_type, &mut LPooled::take(), &mut RefHist::new())
+        let (mut pairs, mut hist) = (SigPairs::default(), RefHist::new());
+        self.sig_matches_int(env, impl_type, &mut pairs, &mut hist)?;
+        pairs.settle(env, &mut hist)
     }
 
     pub(super) fn sig_matches_int(
         &self,
         env: &Env,
         impl_type: &Self,
-        tvar_map: &mut IntMap<usize, Type>,
+        tvar_map: &mut SigPairs,
         hist: &mut RefHist<AHashSet<RefPair>>,
     ) -> Result<()> {
         ensure_sufficient(|| self.sig_matches_inner(env, impl_type, tvar_map, hist))
@@ -270,7 +339,7 @@ impl Type {
         &self,
         env: &Env,
         impl_type: &Self,
-        tvar_map: &mut IntMap<usize, Type>,
+        tvar_map: &mut SigPairs,
         hist: &mut RefHist<AHashSet<RefPair>>,
     ) -> Result<()> {
         if (self as *const Type) == (impl_type as *const Type) {
@@ -342,21 +411,13 @@ impl Type {
                     })
                 }
             }
-            // CR claude for claude: [bug/low] A set holding an open variable is matched
-            // member by member in stored order, so an implementation that writes the
-            // same union in another order pairs the wrong variables and is refused:
-            // `val f: fn(x: ['a, 'b], y: 'a) -> 'a` over `let f = |x: ['b, 'a], y: 'a|
-            // -> 'a y` fails with 'type variable usage mismatch: expected 'b, got 'a'.
-            // The ground-set branch above already treats one union's several normal
-            // forms; the open case needs the same, e.g. pair each signature member with
-            // an implementation member it sig-matches, trying each candidate against a
-            // scratch copy of `tvar_map` and committing only a full assignment. probe:
-            // design/review-2026-10-12/repro/t-fntyp-07/ (main.gx, m.gx, m.gxi).
-            // (t-fntyp-09)
-            // 2026-10-14 claude: a pairing decided at the set cannot be right in general: in
-            // the probe both pairings fit `x`, and only `y`, matched after it, tells them
-            // apart. The search has to span the whole signature (or the set positions go
-            // last, then a backtracking pairing over scratch maps).
+            (Self::Set(s0), Self::Set(s1))
+                if s0.len() == s1.len()
+                    && (s0.iter().any(open_member) || s1.iter().any(open_member)) =>
+            {
+                tvar_map.deferred.push((self.clone(), impl_type.clone()));
+                Ok(())
+            }
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
                 for (t0, t1) in s0.iter().zip(s1.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
@@ -434,7 +495,7 @@ impl Type {
                 if let Some(b) = impl_tv.binding() {
                     return sig_type.sig_matches_int(env, &b, tvar_map, hist);
                 }
-                match tvar_map.get(&impl_tv.cell_addr()) {
+                match tvar_map.cells.get(&impl_tv.cell_addr()) {
                     Some(prev_sig_type) => {
                         let matches = match (sig_type, prev_sig_type) {
                             (Type::TVar(tv0), Type::TVar(tv1)) => tv0.same_cell(tv1),
@@ -451,7 +512,7 @@ impl Type {
                         }
                     }
                     None => {
-                        tvar_map.insert(impl_tv.cell_addr(), sig_type.clone());
+                        tvar_map.cells.insert(impl_tv.cell_addr(), sig_type.clone());
                         Ok(())
                     }
                 }

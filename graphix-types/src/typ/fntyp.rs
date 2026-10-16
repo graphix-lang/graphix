@@ -10,7 +10,7 @@ use crate::{
         Mutability, TVar, Type,
         contains::{ContainsFlags, ContainsHist},
         key_text,
-        matches::MatchHist,
+        matches::{MatchHist, SigPairs},
         tvar::{Fresh, Level},
     },
 };
@@ -1169,7 +1169,7 @@ impl FnType {
         self.sig_matches_int(
             env,
             impl_fn,
-            &mut LPooled::take(),
+            &mut SigPairs::default(),
             &mut super::RefHist::new(),
         )
     }
@@ -1178,7 +1178,7 @@ impl FnType {
         &self,
         env: &Env,
         impl_fn: &Self,
-        tvar_map: &mut IntMap<usize, Type>,
+        tvar_map: &mut SigPairs,
         hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
         let Self {
@@ -1257,6 +1257,7 @@ impl FnType {
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist)
             .context("in throws clause")?;
+        tvar_map.settle(env, hist)?;
         // Every declared bound must be among the impl cell's whole
         // conjunction, compared by meaning (refs are scoped
         // independently on each side).
@@ -1294,7 +1295,7 @@ impl FnType {
             let matched = impl_cells
                 .iter()
                 .find(|(_, tv)| {
-                    matches!(tvar_map.get(&tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
+                    matches!(tvar_map.cells.get(&tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
                 })
                 .or_else(|| {
                     impl_tvs
@@ -1354,7 +1355,7 @@ impl FnType {
             )
         };
         for (_, tv) in impl_cells.iter() {
-            match tvar_map.get(&tv.cell_addr()) {
+            match tvar_map.cells.get(&tv.cell_addr()) {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
