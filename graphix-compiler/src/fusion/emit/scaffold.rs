@@ -1226,6 +1226,123 @@ where
     Ok((CompiledExpr::new(disc, payload), flags))
 }
 
+/// [`emit_fold_loop`] for an acc that is a tuple of scalars, carried as
+/// one register per field: each iteration binds the fields as locals the
+/// acc's field reads take (`JitEnv::unpack`), `fields` emits the body's
+/// fields, and the tuple is built once, after the loop.
+pub(crate) fn emit_fold_fields_loop<'a, 'f, 'c, I, F>(
+    cx: &mut BodyCx<'a, 'f, 'c>,
+    arr: ArraySrc,
+    prims: &[PrimType],
+    acc_name: &ArcStr,
+    acc_id: BindId,
+    elem: &HofElem,
+    state_sites: &[ExprId],
+    init_src: CompositeSource,
+    init: I,
+    fields: F,
+) -> Result<(CompiledExpr, SlotFlags)>
+where
+    I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<SmallVec<[CompiledExpr; 4]>>,
+{
+    arr.hold(cx);
+    let len = input_len(cx, arr.ptr)?;
+    let vars: SmallVec<[Variable; 4]> =
+        prims.iter().map(|p| cx.b.declare_var(prim_to_clif(*p))).collect();
+    // the acc's TAINT and STALE, which every field's disc carries
+    let carry = cx.b.declare_var(types::I64);
+    let flags = SlotFlags::new(cx, len, LoopKind::Fold);
+    let init_cv = init(cx)?;
+    let read = |cx: &mut BodyCx, k: usize, p: PrimType| {
+        let typ = Type::Primitive(p.to_typ().into());
+        let idx = cx.b.ins().iconst(types::I64, k as i64);
+        super::nodes::emit_taint_guarded_read(cx, init_cv.disc, &typ, |cx| {
+            super::scalar::compile_element_read(
+                cx.b,
+                init_cv.payload,
+                idx,
+                &typ,
+                super::scalar::ElementRead::ArrayIndex,
+                cx.ctx,
+            )
+        })
+    };
+    for (k, (p, v)) in prims.iter().zip(vars.iter()).enumerate() {
+        let cv = read(cx, k, *p)?;
+        cx.b.def_var(*v, cv.payload);
+    }
+    if init_src == CompositeSource::Owned {
+        cx.call_helper("graphix_valarray_drop", &[init_cv.payload])?;
+    }
+    let c0 = cx.b.ins().band_imm(init_cv.disc, TAINT | STALE);
+    cx.b.def_var(carry, c0);
+    let lp = open_loop(cx, len, arr.disc, state_sites, flags.entered)?;
+    let (bound, new_fields) = lp.run(
+        cx,
+        |cx, i| {
+            // a new slot's acc is delivered: the chain as it stands, fired
+            if let Some(s) = cx.env.slot {
+                let d = cx.b.use_var(carry);
+                let fired = cx.b.ins().band_imm(d, !STALE);
+                let new = cx.b.ins().icmp_imm(IntCC::NotEqual, s.new, 0);
+                let d = cx.b.ins().select(new, fired, d);
+                cx.b.def_var(carry, d);
+            }
+            let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
+            for (p, v) in prims.iter().zip(vars.iter()) {
+                let c = cx.b.use_var(carry);
+                let base = scalar_disc(cx.b, *p);
+                let d = cx.b.ins().bor(base, c);
+                let dv = cx.b.declare_var(types::I64);
+                cx.b.def_var(dv, d);
+                let id = BindId::new();
+                bind_scalar_var_with_disc(cx, acc_name.clone(), *p, *v, dv, Some(id));
+                ids.push(id);
+            }
+            cx.env.unpack(acc_id, ids);
+            bind_elem(cx, arr.disc, arr.ptr, i, elem)
+        },
+        fields,
+    )?;
+    bound.drop_leaves(cx)?;
+    bound.drop_elem(cx)?;
+    cx.env.truncate(lp.mark);
+    let discs: SmallVec<[ClifValue; 4]> = new_fields.iter().map(|f| f.disc).collect();
+    let zero = cx.b.ins().iconst(types::I64, 0);
+    let new_disc = super::abi::propagate_flags(cx.b, zero, &discs);
+    // each field's STALE folds into the firing flags, as a body's does
+    for d in discs.iter() {
+        flags.accs.fold_stale(cx, *d);
+    }
+    let c = cx.b.ins().band_imm(new_disc, TAINT | STALE);
+    cx.b.def_var(carry, c);
+    for (f, v) in new_fields.iter().zip(vars.iter()) {
+        cx.b.def_var(*v, f.payload);
+    }
+    lp.close(cx)?;
+    arr.drop_held(cx)?;
+    let cap = cx.b.ins().iconst(types::I64, prims.len() as i64);
+    let buf = open_value_buf(cx, cap)?;
+    for (p, v) in prims.iter().zip(vars.iter()) {
+        let payload = cx.b.use_var(*v);
+        let disc = scalar_disc(cx.b, *p);
+        let typ = Type::Primitive(p.to_typ().into());
+        push_field(
+            cx,
+            buf,
+            CompiledExpr::new(disc, payload),
+            &typ,
+            CompositeSource::Owned,
+        )?;
+    }
+    let payload = finalize_valarray(cx, buf)?;
+    let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let c = cx.b.use_var(carry);
+    let disc = cx.b.ins().bor(base, c);
+    Ok((CompiledExpr::new(disc, payload), flags))
+}
+
 /// Bind a find loop's result pair as an owned Value local, so an abort
 /// in a later iteration drops a taken value; returns the mark that
 /// unbinds it once the loop hands the result over.

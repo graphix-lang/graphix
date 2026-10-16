@@ -11,6 +11,7 @@ use cranelift_codegen::ir::{
     InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
+use smallvec::SmallVec;
 
 use super::{body::BodyCx, scalar::prim_to_clif};
 
@@ -333,6 +334,9 @@ pub(crate) struct JitEnv {
     pub(super) loop_depth: u32,
     /// In a loop body, the innermost slot's views.
     pub(super) slot: Option<SlotView>,
+    /// A tuple bound as one local per field: its BindId, its fields'
+    /// BindIds, and the locals' length when it was bound.
+    pub(super) unpacked: SmallVec<[(BindId, SmallVec<[BindId; 4]>, usize); 1]>,
 }
 
 /// How a loop slot's body reads what stands.
@@ -353,7 +357,12 @@ pub(super) struct SlotView {
 
 impl JitEnv {
     pub(super) fn new() -> Self {
-        Self { locals: Vec::with_capacity(8), loop_depth: 0, slot: None }
+        Self {
+            locals: Vec::with_capacity(8),
+            loop_depth: 0,
+            slot: None,
+            unpacked: SmallVec::new(),
+        }
     }
 
     pub(super) fn bind(
@@ -403,6 +412,19 @@ impl JitEnv {
 
     pub(super) fn truncate(&mut self, mark: usize) {
         self.locals.truncate(mark);
+        self.unpacked.retain(|(_, _, at)| *at <= mark);
+    }
+
+    /// Bind the tuple `id` as its fields, already bound as `fields`.
+    pub(super) fn unpack(&mut self, id: BindId, fields: SmallVec<[BindId; 4]>) {
+        self.unpacked.push((id, fields, self.locals.len()));
+    }
+
+    /// The local standing for field `idx` of the tuple `id`, when the
+    /// tuple is bound as its fields.
+    pub(super) fn unpacked_field(&self, id: BindId, idx: usize) -> Option<BindId> {
+        let (_, fields, _) = self.unpacked.iter().rev().find(|(t, _, _)| *t == id)?;
+        fields.get(idx).copied()
     }
 }
 

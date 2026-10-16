@@ -3,7 +3,7 @@
 
 use super::{self as emit, BodyCx, CompiledExpr, CompositeSource, scaffold};
 use crate::{
-    BindId, Node, Rt, UserEvent,
+    BindId, Node, NodeView, Rt, UserEvent,
     expr::Expr,
     fusion::{
         self,
@@ -17,6 +17,7 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use cranelift_codegen::ir::Value as ClifValue;
 use netidx_value::Typ;
+use smallvec::SmallVec;
 
 #[derive(Debug)]
 pub(crate) struct CallbackParam {
@@ -486,6 +487,47 @@ pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
 
 /// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
 /// carry and stays interpreted.
+/// A fold's acc carried one register per field: a tuple of scalars
+/// named by one parameter, built by a tuple literal and read only field
+/// by field (`p.0`).
+fn unpackable_acc<R: Rt, E: UserEvent>(
+    cx: &BodyCx,
+    acc_type: &Type,
+    acc: &CallbackParam,
+    body: &Node<R, E>,
+) -> Option<(BindId, SmallVec<[PrimType; 4]>)> {
+    let id = acc.id.filter(|_| acc.binds.is_empty())?;
+    let Type::Tuple(ts) = acc_type else { return None };
+    let prims: SmallVec<[PrimType; 4]> = ts
+        .iter()
+        .map(|t| match kernel_abi::abi_kind(t) {
+            Some(AbiKind::Scalar(p)) => Some(p),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let NodeView::Tuple(t) = body.view() else { return None };
+    let fields_fit = t.n.len() == prims.len()
+        && t.n
+            .iter()
+            .zip(prims.iter())
+            .all(|(f, p)| cx.node_kind(f.typ()) == Some(AbiKind::Scalar(*p)));
+    if !fields_fit {
+        return None;
+    }
+    let (mut reads, mut field_reads) = (0usize, 0usize);
+    fusion::for_each_node(body, &mut |n| match n.view() {
+        NodeView::Ref(r) if r.id == id => reads += 1,
+        NodeView::TupleRef(f)
+            if f.field < prims.len()
+                && matches!(f.source.view(), NodeView::Ref(r) if r.id == id) =>
+        {
+            field_reads += 1
+        }
+        _ => (),
+    });
+    (reads == field_reads).then_some((id, prims))
+}
+
 pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -507,6 +549,28 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     // shapeless placeholder that violates the owned-acc discipline.
     if emit::node_is_bottom(body) {
         return Ok(None);
+    }
+    if let Some((id, prims)) = unpackable_acc(cx, &acc_type, acc, body) {
+        return emit_loop(cx, source, flavor, |cx, src| {
+            let sites = emit::slot_state_sites(cx, body);
+            scaffold::emit_fold_fields_loop(
+                cx,
+                src,
+                &prims,
+                &acc.name,
+                id,
+                &element.elem(&element_type, &element_leaves),
+                &sites,
+                emit::node_composite_source(init),
+                |cx| init.emit_clif(cx),
+                |cx| {
+                    let NodeView::Tuple(t) = body.view() else {
+                        unreachable!("unpackable_acc took a tuple literal")
+                    };
+                    t.n.iter().map(|f| f.emit_clif(cx)).collect()
+                },
+            )
+        });
     }
     let acc_leaves;
     let acc_shape = match kernel_abi::abi_kind(&acc_type) {

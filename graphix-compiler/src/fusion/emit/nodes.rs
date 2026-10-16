@@ -1036,7 +1036,7 @@ pub(super) fn emit_bottom_of_kind(
 /// the unchecked read helpers cannot touch, so the read is skipped and the
 /// result is a bottom placeholder. `is_tainted` folds to false for proven-
 /// untainted sources, so the branch disappears.
-fn emit_taint_guarded_read(
+pub(super) fn emit_taint_guarded_read(
     cx: &mut BodyCx,
     src_disc: ClifValue,
     elem: &Type,
@@ -1137,6 +1137,12 @@ pub(crate) fn emit_field_ref_node<R: Rt, E: UserEvent>(
         FieldOf::Tuple => (AbiKind::Tuple, ElementRead::ArrayIndex),
         FieldOf::Struct => (AbiKind::Struct, ElementRead::StructField),
     };
+    // a tuple bound as its fields reads the field's own local
+    if let (FieldOf::Tuple, NodeView::Ref(r)) = (of, source.view())
+        && let Some(field) = cx.env.unpacked_field(r.id, idx)
+    {
+        return emit_ref_node(cx, source.spec(), field, elem_typ);
+    }
     // an element type may be a Ref to an abstract type name
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let arr = emit_accessor_source_node(cx, source, kind)?;

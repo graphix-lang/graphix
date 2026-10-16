@@ -2277,6 +2277,23 @@ run!(native_null_element_loops, r#"{
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
     FuseExpect::Jit);
 
+// A fold whose acc is a tuple of scalars, built by a tuple literal and
+// read field by field, carries each field in a register: the same values
+// as the node-walk, an empty source included.
+run!(native_tuple_acc_folds, r#"{
+    let xs = array::init(1000, |i| i);
+    let e: Array<i64> = [];
+    let init = (3, 4);
+    (
+        #[native] array::fold(xs, (0, 1.0), |p, x| (p.0 + x, p.1 * 1.0001)),
+        #[native] array::fold(e, (7, 8), |p, x| (p.1 + x, p.0)),
+        #[native] array::fold(xs, init, |p, x| (p.1, p.0 + x)),
+        #[native] array::map([[1, 2], [3, 4, 5]], |row| array::fold(row, (0, 0), |p, x| (p.0 + x, p.1 + 1)))
+    )
+}"#, |v: Result<&Value>| format!("{}", v.unwrap())
+    == "[[i64:499500, f64:1.1051653926032188], [i64:7, i64:8], [i64:249503, i64:250004], [[i64:3, i64:2], [i64:12, i64:3]]]";
+    FuseExpect::Jit);
+
 // A destructuring let's `_` decides nothing of the value it matches: a
 // fold whose accumulator a `(_, found)` takes apart keeps its own
 // accumulator type, so the loop fuses.
