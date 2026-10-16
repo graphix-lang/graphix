@@ -3030,7 +3030,7 @@ fn fc_mean(args: &[Value]) -> Option<Value> {
     let mut samples = 0;
     for v in flat(args) {
         match v.cast_to::<f64>() {
-            Err(e) => return Some(errf!(TAG, "{e:?}")),
+            Err(e) => return Some(errf!(TAG, "{e:#}")),
             Ok(v) => {
                 total += v;
                 samples += 1;

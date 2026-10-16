@@ -694,30 +694,7 @@ impl NetState {
                 self.spawn_request(ctx, id, async move {
                     let r = match proc.call(args).await {
                         Ok(v) => v,
-                        Err(e) => {
-                            // CR claude for claude: [bug/low] Every Value::error in
-                            // NetState (call_rpc, list, and the handles failures)
-                            // formats an anyhow::Error with `{e:?}`. anyhow's Debug
-                            // output adds a Rust stack backtrace whenever
-                            // RUST_BACKTRACE or RUST_LIB_BACKTRACE is set, so the
-                            // RpcError or list error a program reads, prints or
-                            // compares changes with the environment: 43 chars plain,
-                            // about 4000 under RUST_BACKTRACE=1. Format with `{e:#}`
-                            // (the context chain without the backtrace) at every
-                            // Value::error site here. The same applies to fc_mean's
-                            // cast error in graphix-package-core and to the watcher
-                            // creation error in sys watch.rs, which build anyhow errors
-                            // the same way. probe:
-                            // design/review-2026-10-12/repro/x-rerun-5-03.sh
-                            // (x-rerun-5-05)
-                            // 2026-10-13 codex: NetState and watcher formatting is fixed;
-                            // error_values_have_stable_context_text fails with Debug
-                            // and passes with Display under RUST_BACKTRACE=1. The
-                            // fc_mean cast error in graphix-package-core/src/lib.rs
-                            // remains outside this scope. Network probe unverified.
-
-                            error_value(e)
-                        }
+                        Err(e) => error_value(e),
                     };
                     if rpc_dbg() {
                         eprintln!("RPCDBG client: reply from {dbg_path} for {id:?}: {r}");

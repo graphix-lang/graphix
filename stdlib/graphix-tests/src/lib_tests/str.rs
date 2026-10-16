@@ -515,6 +515,16 @@ run!(
     FuseExpect::Jit
 );
 
+// Text that is no value names itself and the target, not the value grammar.
+run!(
+    parse_error_names_the_text_and_target,
+    r#"{ let r: [i64, Error<`ParseError(string)>] = str::parse("x1"); select r { error as e => e.0, _ => never() } }"#,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::Array(a)) if a[0] == Value::from("ParseError") && a[1] == Value::from("cannot parse \"x1\" as i64")
+    )
+);
+
 // `str::parse` is a typed fast fn: the kernel casts the parsed value to
 // the site's resolved return type, here a struct under `#[native]`.
 const STR_PARSE_STRUCT_NATIVE: &str = r#"{

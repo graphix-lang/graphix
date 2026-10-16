@@ -541,21 +541,18 @@ graphix_package_core::fast_builtin!(Sub, SubEv, "str_sub", fc_sub);
 
 fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("ParseError");
-    let raw = match args {
-        [Value::String(s)] => match s.parse::<Value>() {
-            Ok(Value::Error(e)) => return Some(errf!(TAG, "{e}")),
-            Ok(v) => v,
-            Err(e) => return Some(errf!(TAG, "{e:#}")),
-        },
-        _ => return None,
-    };
+    let [Value::String(s)] = args else { return None };
     // every failure is the declared ParseError
-    Some(match cast_target(&ft.rtype) {
-        Some(typ) => match typ.cast_value(env, raw) {
+    let Some(typ) = cast_target(&ft.rtype) else {
+        return Some(errf!(TAG, "parse requires a concrete type annotation"));
+    };
+    Some(match s.parse::<Value>() {
+        Ok(Value::Error(e)) => errf!(TAG, "{e}"),
+        Ok(v) => match typ.cast_value(env, v) {
             Value::Error(e) => errf!(TAG, "{e}"),
             v => v,
         },
-        None => errf!(TAG, "parse requires a concrete type annotation"),
+        Err(_) => errf!(TAG, "cannot parse {s:?} as {typ}"),
     })
 }
 
