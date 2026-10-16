@@ -18,7 +18,7 @@ use graphix_compiler::{
     BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent, Scope,
     UserEvent,
     env::Env,
-    expr::{ExprId, ModPath, Probe, ResolverFactory, ResolverRef, Source},
+    expr::{ExprId, Load, ModPath, Probe, ResolverFactory, ResolverRef},
     ide::Ide,
     image::ProgramRoot,
     node::lambda::LambdaDef,
@@ -408,12 +408,12 @@ enum ToGX<X: GXExt> {
         id: ExprId,
     },
     Load {
-        path: Source,
+        path: Load,
         rt: GXHandle<X>,
         res: oneshot::Sender<Result<CompRes<X>>>,
     },
     Check {
-        path: Source,
+        path: Load,
         /// Override the runtime's resolver chain for this check only.
         resolvers: Option<Vec<ResolverRef>>,
         /// Compile the source under this module scope rather than at the
@@ -713,7 +713,7 @@ impl<X: GXExt> GXHandle<X> {
     /// buffer-override resolver into the resolver chain.
     pub async fn check(
         &self,
-        path: Source,
+        path: Load,
         initial_scope: Option<ArcStr>,
     ) -> Result<CheckResult> {
         Ok(self
@@ -732,7 +732,7 @@ impl<X: GXExt> GXHandle<X> {
     /// body of `mod <scope> { ... }`.
     pub async fn check_with_resolvers(
         &self,
-        path: Source,
+        path: Load,
         resolvers: Vec<ResolverRef>,
         initial_scope: Option<ArcStr>,
     ) -> Result<CheckResult> {
@@ -752,7 +752,7 @@ impl<X: GXExt> GXHandle<X> {
     /// region is opaque to it, so check on a runtime with fusion off.
     pub async fn check_with_types(
         &self,
-        path: Source,
+        path: Load,
         resolvers: Vec<ResolverRef>,
         initial_scope: Option<ArcStr>,
     ) -> Result<CheckResult> {
@@ -784,7 +784,7 @@ impl<X: GXExt> GXHandle<X> {
     /// dropped their corresponding expressions will be
     /// deleted. Therefore, you can stop execution of the whole file
     /// by dropping the returned `CompRes`.
-    pub async fn load(&self, path: Source) -> Result<CompRes<X>> {
+    pub async fn load(&self, path: Load) -> Result<CompRes<X>> {
         Ok(self.exec(|tx| ToGX::Load { path, res: tx, rt: self.clone() }).await??)
     }
 
@@ -1076,7 +1076,7 @@ pub struct GXConfig<X: GXExt> {
     /// the image can carry it; a restored image that holds a program
     /// leaves this one alone. [`GXHandle::program`] hands it back.
     #[builder(setter(strip_option), default)]
-    program: Option<Source>,
+    program: Option<Load>,
     /// Receives the image taken after `program` compiled, taken before
     /// any cycle, when the registration was not restored with one.
     #[builder(setter(strip_option), default)]

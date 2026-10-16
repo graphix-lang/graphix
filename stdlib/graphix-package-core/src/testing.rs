@@ -5,7 +5,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     BindId, CFlag, ParMode,
     env::Env,
-    expr::{ExprId, Origin, ResolverRef, Source, VfsEntry, VfsResolver},
+    expr::{ExprId, Load, Origin, ResolverRef, Source, VfsEntry, VfsResolver},
 };
 use graphix_rt::{
     Callable, CompRes, GXConfig, GXEvent, GXHandle, GXRt, NoExt, ProgramImage, Ref,
@@ -148,7 +148,7 @@ pub async fn init_with_session(
     register: &[PackageRef],
     flags: BitFlags<CFlag>,
     registration: RegistrationImage,
-    program: Option<Source>,
+    program: Option<Load>,
     program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
 ) -> Result<TestCtx> {
     init_inner(
@@ -174,7 +174,7 @@ pub async fn init_session_with_setup<F>(
     resolvers: Vec<ResolverRef>,
     flags: BitFlags<CFlag>,
     registration: RegistrationImage,
-    program: Option<Source>,
+    program: Option<Load>,
     program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
     trace: Option<(usize, u64)>,
     setup: F,
@@ -259,7 +259,7 @@ async fn init_inner<F>(
     flags: BitFlags<CFlag>,
     lsp_mode: bool,
     registration: Option<RegistrationImage>,
-    program: Option<Source>,
+    program: Option<Load>,
     program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
     trace: Option<(usize, u64)>,
     setup: F,
@@ -391,7 +391,7 @@ pub async fn compile_result(ctx: &TestCtx) -> Result<CompRes<NoExt>> {
 /// elaboration refusing what the check accepted is a type-system bug.
 /// A check rolls back everything it compiled.
 pub async fn check_fixture(ctx: &TestCtx) -> Result<()> {
-    let program = Source::Program(arcstr::literal!("{ mod test; test::result }"));
+    let program = Load::Text(arcstr::literal!("{ mod test; test::result }"));
     ctx.rt.check(program, None).await.map(|_| ())
 }
 

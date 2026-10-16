@@ -407,7 +407,7 @@ impl ModuleKind {
         let is_interface = |o: &Origin| match &o.source {
             Source::File(p) => p.extension().is_some_and(|e| e == "gxi"),
             Source::Netidx(p) => p.ends_with(".gxi"),
-            Source::Vfs(_) | Source::Program(_) | Source::Unspecified => false,
+            Source::Vfs(_) | Source::Program | Source::Unspecified => false,
         };
         exprs
             .iter()
@@ -903,16 +903,28 @@ pub enum Source {
     /// A module the VFS resolver served, by its full module path.
     Vfs(ArcStr),
     /// A program given as text, the text its `Origin` holds.
-    // CR claude for claude: [structure/low] `Source::Program` holds the program text
-    // that its `Origin` already holds in `text`. An origin whose two texts differ is
-    // representable, and the image codec quietly repairs it: it writes no payload and
-    // rebuilds it from the origin's text. The payload is there only because `Source` is
-    // also the load request (`GXConfig::program`, the runtime's load,
-    // `RegistrationCache::new`'s key). Give the load request its own type with a text
-    // variant and make `Source::Program` carry nothing. (t-expr-core-10)
-    Program(ArcStr),
+    Program,
     #[default]
     Unspecified,
+}
+
+/// A program to load: a file, a netidx path or text.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Load {
+    File(PathBuf),
+    Netidx(Path),
+    Text(ArcStr),
+}
+
+impl Load {
+    /// The source of the origin a load makes.
+    pub fn source(&self) -> Source {
+        match self {
+            Load::File(p) => Source::File(p.clone()),
+            Load::Netidx(p) => Source::Netidx(p.clone()),
+            Load::Text(_) => Source::Program,
+        }
+    }
 }
 
 /// Where the source is, as `in <source>` reads it; `Unspecified` says
@@ -923,7 +935,7 @@ impl fmt::Display for Source {
             Source::File(p) => write!(f, "file {}", p.display()),
             Source::Netidx(p) => write!(f, "netidx {p}"),
             Source::Vfs(m) => write!(f, "module {m}"),
-            Source::Program(_) => write!(f, "program"),
+            Source::Program => write!(f, "program"),
             Source::Unspecified => write!(f, "expr"),
         }
     }
@@ -933,9 +945,7 @@ impl Source {
     pub fn is_file(&self) -> bool {
         match self {
             Self::File(_) => true,
-            Self::Netidx(_) | Self::Vfs(_) | Self::Program(_) | Self::Unspecified => {
-                false
-            }
+            Self::Netidx(_) | Self::Vfs(_) | Self::Program | Self::Unspecified => false,
         }
     }
 
@@ -947,7 +957,7 @@ impl Source {
             }
             Self::Netidx(p) => (literal!("Netidx"), p.clone()).into(),
             Self::Vfs(s) => (literal!("Vfs"), s.clone()).into(),
-            Self::Program(_) => literal!("Program").into(),
+            Self::Program => literal!("Program").into(),
             Self::Unspecified => literal!("Unspecified").into(),
         }
     }
@@ -994,7 +1004,7 @@ impl Origin {
     pub fn to_value(&self) -> Value {
         let p = Value::from(self.parent.as_ref().map(|p| p.to_value()));
         let text = match self.source {
-            Source::Unspecified | Source::Program(_) => self.text.clone(),
+            Source::Unspecified | Source::Program => self.text.clone(),
             Source::File(_) | Source::Netidx(_) | Source::Vfs(_) => ArcStr::new(),
         };
         [

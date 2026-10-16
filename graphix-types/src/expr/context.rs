@@ -78,7 +78,7 @@ impl fmt::Display for ErrorContext {
         let suffix = if truncated { ".." } else { "" };
         write!(f, "at: {}", self.0.pos)?;
         match &self.0.ori.source {
-            Source::Program(_) | Source::Unspecified => (),
+            Source::Program | Source::Unspecified => (),
             source => write!(f, " in {source}")?,
         }
         match snippet.is_empty() {
@@ -178,7 +178,7 @@ impl fmt::Display for ParserContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "at {}", self.pos)?;
         match &self.ori.source {
-            Source::Program(_) | Source::Unspecified => Ok(()),
+            Source::Program | Source::Unspecified => Ok(()),
             source => write!(f, " in {source}"),
         }
     }

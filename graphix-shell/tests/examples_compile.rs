@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use futures::{StreamExt, stream};
 use graphix_compiler::{
     CFlag,
-    expr::{FilesResolver, Origin, Source, parser},
+    expr::{FilesResolver, Load, Origin, parser},
 };
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
@@ -62,7 +62,7 @@ async fn examples_compile() -> Result<()> {
                 .cache(CacheMode::Off)
                 .module_resolvers(vec![FilesResolver::new(base, None)])
                 .enable_flags(CFlag::ExpandSeq.into())
-                .mode(Mode::Check(Source::File(f.clone())))
+                .mode(Mode::Check(Load::File(f.clone())))
                 .build()
                 .expect("building shell")
                 .check()
@@ -170,7 +170,7 @@ async fn book_fences_parse() -> Result<()> {
         if f.tag.contains("refused") {
             let r = ShellBuilder::<NoExt>::default()
                 .cache(CacheMode::Off)
-                .mode(Mode::Check(Source::Program(f.body.as_str().into())))
+                .mode(Mode::Check(Load::Text(f.body.as_str().into())))
                 .build()
                 .expect("building shell")
                 .check()

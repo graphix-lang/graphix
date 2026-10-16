@@ -2,7 +2,7 @@
 //! top-level `let` over ⊥ takes its type from the writers below it.
 
 use anyhow::Result;
-use graphix_compiler::expr::Source;
+use graphix_compiler::expr::Load;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 
@@ -17,7 +17,7 @@ y
 async fn check_types_a_top_level_let_by_its_writers() -> Result<()> {
     ShellBuilder::<NoExt>::default()
         .cache(CacheMode::Off)
-        .mode(Mode::Check(Source::Program(WRITERS_BELOW.into())))
+        .mode(Mode::Check(Load::Text(WRITERS_BELOW.into())))
         .build()?
         .check()
         .await

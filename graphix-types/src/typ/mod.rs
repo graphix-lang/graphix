@@ -397,7 +397,7 @@ impl AbstractId {
                 }
                 // a source named by its text alone (a REPL input, an
                 // embedded program) is told apart by the text
-                Source::Program(_) | Source::Unspecified => {
+                Source::Program | Source::Unspecified => {
                     let (_, text) = abstract_uuid(&ori.text).as_u64_pair();
                     format_compact!("{stable}::#{}:{text:x}:{pos}::{name}", ori.source)
                 }
@@ -1816,7 +1816,7 @@ impl std::fmt::Display for UnresolvableRef {
         if let Some(pos) = self.pos {
             write!(f, " at {pos}")?;
             match self.ori.as_ref().map(|o| &o.source) {
-                None | Some(Source::Program(_) | Source::Unspecified) => (),
+                None | Some(Source::Program | Source::Unspecified) => (),
                 Some(source) => write!(f, " in {source}")?,
             }
         }

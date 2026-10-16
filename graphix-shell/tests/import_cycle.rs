@@ -2,7 +2,7 @@
 //! submodules are beside it, so `b`'s `mod a` is `b/a.gx`, reported
 //! missing, not a stack overflow.
 
-use graphix_compiler::expr::{FilesResolver, Source};
+use graphix_compiler::expr::{FilesResolver, Load};
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use std::{fs, sync::Arc};
@@ -16,7 +16,7 @@ async fn two_files_importing_each_other() {
     fs::write(dir.join("a.gx"), "mod b;\nlet x = b::y").expect("write a.gx");
     fs::write(dir.join("b.gx"), "mod a;\nlet y = 1").expect("write b.gx");
     let checked = ShellBuilder::<NoExt>::default()
-        .mode(Mode::Check(Source::File(dir.join("a.gx"))))
+        .mode(Mode::Check(Load::File(dir.join("a.gx"))))
         .module_resolvers(vec![Arc::new(FilesResolver {
             base: dir.clone(),
             overrides: None,
@@ -45,7 +45,7 @@ async fn a_directory_linked_into_itself() {
     fs::write(dir.join("main.gx"), "mod m;\n1").expect("write main.gx");
     fs::write(dir.join("m.gx"), "mod m;\nlet a = 1").expect("write m.gx");
     let checked = ShellBuilder::<NoExt>::default()
-        .mode(Mode::Check(Source::File(dir.join("main.gx"))))
+        .mode(Mode::Check(Load::File(dir.join("main.gx"))))
         .module_resolvers(vec![Arc::new(FilesResolver {
             base: dir.clone(),
             overrides: None,
@@ -75,7 +75,7 @@ async fn submodules_beside_a_non_utf8_path() {
     fs::write(dir.join("a.gx"), "mod b;\nlet x = b::y").expect("write a.gx");
     fs::write(dir.join("a").join("b.gx"), "let y = 1").expect("write b.gx");
     let checked = ShellBuilder::<NoExt>::default()
-        .mode(Mode::Check(Source::File(dir.join("main.gx"))))
+        .mode(Mode::Check(Load::File(dir.join("main.gx"))))
         .module_resolvers(vec![Arc::new(FilesResolver {
             base: dir.clone(),
             overrides: None,

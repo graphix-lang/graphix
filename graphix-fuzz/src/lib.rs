@@ -405,8 +405,8 @@ impl Subject {
     }
 
     /// [`Self::compile_text`] as the program a session compiles.
-    pub fn program(&self) -> graphix_compiler::expr::Source {
-        graphix_compiler::expr::Source::Program(ArcStr::from(self.compile_text()))
+    pub fn program(&self) -> graphix_compiler::expr::Load {
+        graphix_compiler::expr::Load::Text(ArcStr::from(self.compile_text()))
     }
 }
 
@@ -445,7 +445,7 @@ pub async fn check_only(code: &str, timeout: Duration) -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("runtime init failed: {e:?}"))?;
-    let src = graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text()));
+    let src = graphix_compiler::expr::Load::Text(ArcStr::from(subj.compile_text()));
     let res = match tokio::time::timeout(timeout, ctx.rt.check(src, None)).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(format!("{e:?}")),
@@ -486,7 +486,7 @@ async fn start_session(
     subj: &Subject,
     mode: Mode,
     registration: RegistrationImage,
-    program: Option<graphix_compiler::expr::Source>,
+    program: Option<graphix_compiler::expr::Load>,
     program_image: Option<oneshot::Sender<anyhow::Result<graphix_rt::ProgramImage>>>,
     limits: Option<(usize, u64)>,
     timeout: Duration,
@@ -3122,7 +3122,7 @@ async fn tm_check(
         Err(e) => return TmCheck::Unparsed(e),
     };
     let resolver = VfsResolver::new(subj.table.clone());
-    let text = graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text()));
+    let text = graphix_compiler::expr::Load::Text(ArcStr::from(subj.compile_text()));
     let resolvers = vec![resolver.into()];
     let r = match types {
         true => {

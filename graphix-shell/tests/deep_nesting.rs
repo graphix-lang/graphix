@@ -12,7 +12,7 @@
 use graphix_compiler::{
     BitFlags, CFlag,
     expr::{
-        FilesResolver, Source,
+        FilesResolver, Load, Source,
         format::{FormatConfig, SourceKind, format_source},
     },
 };
@@ -369,8 +369,8 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
                     _ => BitFlags::empty(),
                 })
                 .mode(match mode {
-                    "check" => Mode::Check(Source::File(file.clone())),
-                    _ => Mode::Script(Source::File(file.clone())),
+                    "check" => Mode::Check(Load::File(file.clone())),
+                    _ => Mode::Script(Load::File(file.clone())),
                 })
                 .build()
                 .expect("building shell")

@@ -9,7 +9,7 @@ use bytes::Bytes;
 use graphix_compiler::{
     CFlag, ParMode, PrintFlag,
     env::Env,
-    expr::{Source, VfsEntry, VfsResolver},
+    expr::{Load, VfsEntry, VfsResolver},
     format_with_flags,
     image::{DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder},
     typ::Type,
@@ -272,7 +272,7 @@ async fn program_image_restores_kernels() -> Result<()> {
         TEST_REGISTER,
         Default::default(),
         RegistrationImage::save(reg_tx),
-        Some(Source::Program(PROGRAM.into())),
+        Some(Load::Text(PROGRAM.into())),
         Some(prog_tx),
     )
     .await?;
@@ -325,7 +325,7 @@ async fn session_with(
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
     // a restored image's program wins; a refused one compiles the source
-    let src = Some(Source::Program(program.into()));
+    let src = Some(Load::Text(program.into()));
     let flags = CFlag::FusionDisabled.into();
     let (reg, prog_tx) = match image {
         None => (RegistrationImage::save(reg_tx), Some(prog_tx)),
@@ -729,7 +729,7 @@ async fn program_images_restore_round_after_round() -> Result<()> {
             TEST_REGISTER,
             CFlag::FusionDisabled.into(),
             RegistrationImage::load(registration.clone()),
-            Some(Source::Program(REPEATED.into())),
+            Some(Load::Text(REPEATED.into())),
             Some(prog_tx),
         )
         .await?;
@@ -786,7 +786,7 @@ async fn program_image_restores_builtins() -> Result<()> {
         TEST_REGISTER,
         CFlag::FusionDisabled.into(),
         RegistrationImage::save(reg_tx),
-        Some(Source::Program(BUILTINS.into())),
+        Some(Load::Text(BUILTINS.into())),
         Some(prog_tx),
     )
     .await?;
@@ -840,7 +840,7 @@ async fn program_package_root_is_the_script() -> Result<()> {
         vec![VfsResolver::new(table)],
         CFlag::FusionDisabled.into(),
         RegistrationImage::save(reg_tx),
-        Some(Source::Program(literal!("mod m0; mod m1; m1::f(i64:1)"))),
+        Some(Load::Text(literal!("mod m0; mod m1; m1::f(i64:1)"))),
         None,
         None,
         |_| {},
@@ -924,7 +924,7 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
         files(),
         CFlag::FusionDisabled.into(),
         RegistrationImage::save(reg_tx),
-        Some(Source::Program(program)),
+        Some(Load::Text(program)),
         Some(prog_tx),
         None,
         |_| {},
@@ -1024,7 +1024,7 @@ async fn fused_program_image(program: &str) -> Result<Bytes> {
         TEST_REGISTER,
         Default::default(),
         RegistrationImage::save(reg_tx),
-        Some(Source::Program(program.into())),
+        Some(Load::Text(program.into())),
         Some(prog_tx),
     )
     .await?;

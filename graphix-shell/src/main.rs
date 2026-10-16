@@ -5,7 +5,7 @@ use enumflags2::BitFlags;
 use flexi_logger::{Duplicate, FileSpec, Logger};
 use graphix_compiler::{
     CFlag, FAILURE_TARGET,
-    expr::{FilesResolver, Source},
+    expr::{FilesResolver, Load},
 };
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_package_core::{NetConfig, NetTimeouts};
@@ -442,7 +442,7 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
                             p.resolve_timeout.map(Duration::from_secs),
                         ),
                     ]);
-                    Source::Netidx(Path::from(ArcStr::from(path)))
+                    Load::Netidx(Path::from(ArcStr::from(path)))
                 }
                 #[cfg(not(feature = "sys"))]
                 Some(_) => bail!("netidx: sources require the sys feature"),
@@ -460,7 +460,7 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
                                 shell.module_resolvers(vec![FilesResolver::new(p, None)]);
                         }
                     };
-                    Source::File(path)
+                    Load::File(path)
                 }
             };
             let mode = if check { Mode::Check(source) } else { Mode::Script(source) };

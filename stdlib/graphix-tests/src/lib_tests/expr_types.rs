@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use arcstr::literal;
-use graphix_compiler::{CFlag, expr::Source};
+use graphix_compiler::{CFlag, expr::Load};
 use graphix_package_core::testing::init_with_flags_and_setup;
 use tokio::sync::mpsc;
 
@@ -21,8 +21,7 @@ async fn a_check_records_the_types_it_decided() -> Result<()> {
         |_| {},
     )
     .await?;
-    let r =
-        ctx.rt.check_with_types(Source::Program(literal!(PROGRAM)), vec![], None).await?;
+    let r = ctx.rt.check_with_types(Load::Text(literal!(PROGRAM)), vec![], None).await?;
     let at = |line: i32, column: i32| {
         r.ide
             .expr_types

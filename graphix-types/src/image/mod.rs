@@ -914,8 +914,7 @@ fn source_encode(s: &Source, buf: &mut impl BufMut) -> Result<(), PackError> {
             buf.put_u8(2);
             s.encode(buf)
         }
-        // its text is the origin's, written beside it
-        Source::Program(_) => {
+        Source::Program => {
             buf.put_u8(4);
             Ok(())
         }
@@ -943,7 +942,7 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
         1 => Ok(Source::Netidx(Pack::decode(buf)?)),
         2 => Ok(Source::Vfs(Pack::decode(buf)?)),
         3 => Ok(Source::Unspecified),
-        4 => Ok(Source::Program(ArcStr::new())),
+        4 => Ok(Source::Program),
         _ => Err(PackError::UnknownTag),
     }
 }
@@ -995,10 +994,6 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
             };
             let source = source_decode(sub)?;
             let text: ArcStr = Pack::decode(sub)?;
-            let source = match source {
-                Source::Program(_) => Source::Program(text.clone()),
-                s => s,
-            };
             Ok(Arc::new(Origin { parent, source, text }))
         },
         |b| origin_decode(b),
@@ -2089,7 +2084,7 @@ mod tests {
         let text = literal!("let x = 1; x + 1 // a program long enough to see twice");
         let ori = Arc::new(Origin {
             parent: None,
-            source: Source::Program(text.clone()),
+            source: Source::Program,
             text: text.clone(),
         });
         let expr = Expr {
@@ -2110,7 +2105,7 @@ mod tests {
         DecodeImage::with(&mut dec, || {
             let mut b = packed.body();
             let d = Expr::decode(&mut b).unwrap();
-            assert_eq!(d.ori.source, Source::Program(text.clone()));
+            assert_eq!(d.ori.source, Source::Program);
             assert_eq!(d.ori.text, text);
         });
     }

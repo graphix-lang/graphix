@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    expr::{Probe, Source},
+    expr::{Load, Probe},
     image,
 };
 use graphix_rt::ProgramImage;
@@ -236,7 +236,7 @@ impl RegistrationCache {
     /// The cache entries for this root and, when it is one a later start
     /// can find again, the program; an error when there is no cache
     /// directory or no build id to file the entries under.
-    pub(crate) fn new(root: &str, program: Option<&Source>, flags: u64) -> Result<Self> {
+    pub(crate) fn new(root: &str, program: Option<&Load>, flags: u64) -> Result<Self> {
         let root_dir = dirs::cache_dir()
             .ok_or_else(|| anyhow!("no cache directory"))?
             .join("graphix")
@@ -248,9 +248,9 @@ impl RegistrationCache {
         let registration = digest(&[&format, root.as_bytes()]);
         let program = program.and_then(|p| {
             let id = match p {
-                Source::File(path) => path.to_string_lossy().into_owned().into_bytes(),
-                Source::Program(text) => text.as_bytes().to_vec(),
-                Source::Netidx(_) | Source::Vfs(_) | Source::Unspecified => return None,
+                Load::File(path) => path.to_string_lossy().into_owned().into_bytes(),
+                Load::Text(text) => text.as_bytes().to_vec(),
+                Load::Netidx(_) => return None,
             };
             // the search path decides which file a module name reaches
             // the whole module search path, the data dir's included
@@ -264,7 +264,7 @@ impl RegistrationCache {
                 &format,
                 root.as_bytes(),
                 &flags,
-                &[p.is_file() as u8],
+                &[matches!(p, Load::File(_)) as u8],
                 &id,
                 &search,
             ]))

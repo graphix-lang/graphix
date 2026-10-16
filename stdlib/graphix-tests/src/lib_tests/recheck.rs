@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use arcstr::literal;
-use graphix_compiler::expr::Source;
+use graphix_compiler::expr::Load;
 use graphix_package_core::testing::init;
 use tokio::sync::mpsc;
 
@@ -15,7 +15,7 @@ async fn a_program_checks_twice() -> Result<()> {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     for _ in 0..2 {
-        ctx.rt.check(Source::Program(literal!(PAREN_POLY_REF)), None).await?;
+        ctx.rt.check(Load::Text(literal!(PAREN_POLY_REF)), None).await?;
     }
     ctx.shutdown().await;
     drain.abort();

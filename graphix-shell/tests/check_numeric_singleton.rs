@@ -3,14 +3,14 @@
 //! `--check` and the language server refuse what the build refuses.
 
 use anyhow::Result;
-use graphix_compiler::expr::Source;
+use graphix_compiler::expr::Load;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 
 async fn check(src: &str) -> Result<()> {
     ShellBuilder::<NoExt>::default()
         .cache(CacheMode::Off)
-        .mode(Mode::Check(Source::Program(src.into())))
+        .mode(Mode::Check(Load::Text(src.into())))
         .build()?
         .check()
         .await

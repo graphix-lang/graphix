@@ -4,7 +4,7 @@
 //! as by `--check`.
 
 use anyhow::Result;
-use graphix_compiler::expr::Source;
+use graphix_compiler::expr::Load;
 use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
@@ -17,8 +17,8 @@ async fn verdicts(gx: &str, gxi: &str) -> Result<[Option<String>; 2]> {
     fs::write(dir.path().join("prog.gxi"), gxi)?;
     let shell =
         |mode| ShellBuilder::<NoExt>::default().cache(CacheMode::Off).mode(mode).build();
-    let check = shell(Mode::Check(Source::File(file.clone())))?.check().await;
-    let run = shell(Mode::Script(Source::File(file.clone())))?
+    let check = shell(Mode::Check(Load::File(file.clone())))?.check().await;
+    let run = shell(Mode::Script(Load::File(file.clone())))?
         .run(MainThreadHandle::new().0)
         .await
         .map(|_| ());
@@ -115,7 +115,7 @@ async fn matching_interface_checks() -> Result<()> {
     )?;
     ShellBuilder::<NoExt>::default()
         .cache(CacheMode::Off)
-        .mode(Mode::Check(Source::File(file)))
+        .mode(Mode::Check(Load::File(file)))
         .build()?
         .check()
         .await

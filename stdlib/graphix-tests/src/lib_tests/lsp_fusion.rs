@@ -4,7 +4,7 @@
 use anyhow::Result;
 use arcstr::literal;
 use enumflags2::BitFlags;
-use graphix_compiler::expr::Source;
+use graphix_compiler::expr::Load;
 use graphix_package_core::testing::{TestCtx, init_lsp_mode};
 use graphix_rt::GXEvent;
 use poolshark::global::GPooled;
@@ -28,10 +28,10 @@ async fn lsp_mode_checks_without_fusion_and_survives_ill_typed() -> Result<()> {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let ctx = init(tx).await?;
     let before = ctx.fusion_stats().await?.attempted;
-    ctx.rt.check(Source::Program(literal!(FUSABLE)), None).await?;
+    ctx.rt.check(Load::Text(literal!(FUSABLE)), None).await?;
     // May return Err; the process must survive.
-    let _ = ctx.rt.check(Source::Program(literal!(ILL_TYPED)), None).await;
-    ctx.rt.check(Source::Program(literal!(FUSABLE)), None).await?;
+    let _ = ctx.rt.check(Load::Text(literal!(ILL_TYPED)), None).await;
+    ctx.rt.check(Load::Text(literal!(FUSABLE)), None).await?;
     let after = ctx.fusion_stats().await?.attempted;
     assert_eq!(before, after, "a check attempted fusion ({before} -> {after})");
     ctx.shutdown().await;

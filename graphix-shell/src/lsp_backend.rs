@@ -8,7 +8,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag,
     env::Env,
-    expr::{BufferOverrides, FilesResolver, ResolverRef, Source},
+    expr::{BufferOverrides, FilesResolver, Load, ResolverRef},
 };
 use graphix_lsp::{Checked, Connection, LspBackend};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
@@ -122,7 +122,7 @@ impl LspBackend for ShellLspBackend {
     ) -> Result<Checked> {
         let CheckResult { env, ide } =
             self.rt_handle.block_on(self.gx.check_with_resolvers(
-                Source::File(root.to_path_buf()),
+                Load::File(root.to_path_buf()),
                 self.resolvers_for(root),
                 initial_scope,
             ))?;

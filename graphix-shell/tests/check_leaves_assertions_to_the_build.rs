@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use enumflags2::BitFlags;
-use graphix_compiler::{CFlag, expr::Source};
+use graphix_compiler::{CFlag, expr::Load};
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 
@@ -25,7 +25,7 @@ r
 async fn check(program: &'static str, flags: BitFlags<CFlag>) -> Result<()> {
     ShellBuilder::<NoExt>::default()
         .cache(CacheMode::Off)
-        .mode(Mode::Check(Source::Program(program.into())))
+        .mode(Mode::Check(Load::Text(program.into())))
         .enable_flags(flags)
         .build()?
         .check()

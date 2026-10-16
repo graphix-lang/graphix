@@ -8,8 +8,8 @@ use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
     View, diagnostic_site,
     expr::{
-        self, Expr, ExprId, ExprKind, ModPath, Origin, Probes, ResolverRef, Resolvers,
-        RootFile, Sig, Source, join_in_order,
+        self, Expr, ExprId, ExprKind, Load, ModPath, Origin, Probes, ResolverRef,
+        Resolvers, RootFile, Sig, Source, join_in_order,
     },
     ide::{Ide, IdeMode},
     image::ProgramRoot,
@@ -912,43 +912,43 @@ impl<X: GXExt> GX<X> {
 
     async fn load_exprs(
         &self,
-        source: &Source,
+        source: &Load,
         resolvers: &Resolvers,
         probes: Option<&Probes>,
     ) -> Result<(Origin, Arc<[Expr]>, Option<Sig>)> {
         let (ori, exprs, sig) = match source {
-            Source::File(file) => {
+            Load::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
                 let root = RootFile::load(file, overrides.as_ref(), probes).await?;
                 (root.ori, root.exprs, root.sig)
             }
-            source @ Source::Netidx(_) => {
+            Load::Netidx(_) => {
                 // Non-file transports are fetched by whichever resolver claims
                 // the source.
+                let source = source.source();
                 let fetch = self
                     .resolvers
                     .iter()
-                    .find_map(|r| r.fetch_source(source))
-                    .ok_or_else(|| anyhow!("no module resolver can load {source:?}"))?;
+                    .find_map(|r| r.fetch_source(&source))
+                    .ok_or_else(|| {
+                    anyhow!("no module resolver can load {source:?}")
+                })?;
                 let src = fetch.await?;
-                let ori =
-                    Origin { parent: None, source: source.clone(), text: src.clone() };
+                let ori = Origin { parent: None, source, text: src };
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
-            Source::Program(src) => {
+            Load::Text(src) => {
                 let ori =
-                    Origin { parent: None, source: source.clone(), text: src.clone() };
+                    Origin { parent: None, source: Source::Program, text: src.clone() };
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
-            Source::Vfs(m) => bail!("{m} is a VFS module: it loads through a `mod`"),
-            Source::Unspecified => bail!("can't load from an unspecified source"),
         };
         Ok((ori, exprs, sig))
     }
 
     async fn check(
         &mut self,
-        source: &Source,
+        source: &Load,
         resolver_override: Option<Vec<ResolverRef>>,
         initial_scope: Option<ArcStr>,
         expr_types: bool,
@@ -961,7 +961,7 @@ impl<X: GXExt> GX<X> {
     /// Like `check`, but also returns the (post-resolve) Expr tree.
     async fn check_inner(
         &mut self,
-        source: &Source,
+        source: &Load,
         resolver_override: Option<Vec<ResolverRef>>,
         initial_scope: Option<ArcStr>,
         expr_types: bool,
@@ -985,7 +985,7 @@ impl<X: GXExt> GX<X> {
             // root is a script, its interface checked over its names
             let (ori, exprs, modules_at, as_module, sig) = match (&initial_scope, source)
             {
-                (Some(name), Source::File(file)) => {
+                (Some(name), Load::File(file)) => {
                     let path =
                         ModPath(netidx_core::path::Path::root().append(name.as_str()));
                     self.ctx.env.unbind_scope_subtree(&path);
@@ -1099,7 +1099,7 @@ impl<X: GXExt> GX<X> {
         res
     }
 
-    async fn load(&mut self, rt: GXHandle<X>, source: &Source) -> Result<CompRes<X>> {
+    async fn load(&mut self, rt: GXHandle<X>, source: &Load) -> Result<CompRes<X>> {
         let ProgramRoot { id, output, typ } = self.load_program(source, None).await?;
         let res = smallvec![CompExp { id, output, typ, rt: rt.clone() }];
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
@@ -1109,7 +1109,7 @@ impl<X: GXExt> GX<X> {
     /// resolution looked to `probes`.
     async fn load_program(
         &mut self,
-        source: &Source,
+        source: &Load,
         probes: Option<&Probes>,
     ) -> Result<ProgramRoot> {
         let scope = Scope::root();

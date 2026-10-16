@@ -992,12 +992,12 @@ impl Expr {
                     // for a VFS body, through the transport for a netidx one.
                     let prepend = match source {
                         Some(Source::File(p)) => Some(files(file_submodule_base(p))),
-                        Some(
-                            Source::Vfs(_) | Source::Program(_) | Source::Unspecified,
-                        ) => None,
+                        Some(Source::Vfs(_) | Source::Program | Source::Unspecified) => {
+                            None
+                        }
                         Some(s) => resolvers.iter().find_map(|m| m.for_source(s)),
                         None => match &self.ori.source {
-                            Source::Unspecified | Source::Vfs(_) | Source::Program(_) => {
+                            Source::Unspecified | Source::Vfs(_) | Source::Program => {
                                 None
                             }
                             Source::File(p) => p.parent().map(|p| files(p.into())),

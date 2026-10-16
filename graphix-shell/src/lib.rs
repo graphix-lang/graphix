@@ -10,7 +10,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, ExecState, FusionStats, PrintFlag,
     env::Env,
-    expr::{CouldNotResolve, ExprId, ModPath, ResolverFactory, ResolverRef, Source},
+    expr::{CouldNotResolve, ExprId, Load, ModPath, ResolverFactory, ResolverRef},
     format_with_flags,
     typ::TVal,
 };
@@ -223,9 +223,9 @@ pub enum Mode {
     /// Load compile and execute a file. Print the value
     /// of the last expression in the file to stdout. Ctrl-C exits the
     /// shell.
-    Script(Source),
+    Script(Load),
     /// Check that the specified file compiles but do not run it
-    Check(Source),
+    Check(Load),
 }
 
 impl Mode {
@@ -345,14 +345,14 @@ impl<X: GXExt> Shell<X> {
         let mut args = vec![];
         match self.packages.iter().find_map(|p| p.main_program()) {
             Some(main) if matches!(self.mode, Mode::Repl) => {
-                self.mode = Mode::Script(Source::Program(ArcStr::from(main)));
+                self.mode = Mode::Script(Load::Text(ArcStr::from(main)));
                 if let Some(bin) = std::env::args_os().next() {
                     args.push(ArcStr::from(bin.to_string_lossy().as_ref()));
                 }
             }
             _ => (),
         }
-        if let Mode::Script(Source::File(p)) | Mode::Check(Source::File(p)) = &self.mode {
+        if let Mode::Script(Load::File(p)) | Mode::Check(Load::File(p)) = &self.mode {
             args.push(ArcStr::from(p.display().to_string().as_str()));
         }
         args.extend(self.program_args.drain(..));
@@ -419,7 +419,7 @@ impl<X: GXExt> Shell<X> {
             // registration entry serves a later run of a different
             // program under these packages; a program built into the
             // binary is the only one it runs, so it never writes one.
-            if !matches!(self.mode, Mode::Script(Source::Program(_))) {
+            if !matches!(self.mode, Mode::Script(Load::Text(_))) {
                 let (tx, rx) = oneshot::channel();
                 pending_registration = Some(rx);
                 image.save = Some(tx);
@@ -560,7 +560,7 @@ impl<X: GXExt> Shell<X> {
     async fn check_with(&self, gx: &GXHandle<X>) -> Result<()> {
         let Mode::Check(source) = &self.mode else { bail!("check requires Mode::Check") };
         let initial_scope = match source {
-            Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
+            Load::File(p) => graphix_lsp::workspace::detect_package_scope(p),
             _ => None,
         };
         let baseline =
