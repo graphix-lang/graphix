@@ -2254,3 +2254,13 @@ run!(native_null_regions, r#"{
     let g = |x: i64| #[native] select x { 0 => null, _ => null };
     (f(3), g(4))
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[null, null]"; FuseExpect::Jit);
+
+// A map literal with entries computed from arguments fuses, built in
+// written order with a later key replacing an earlier one.
+run!(native_dynamic_map_literal, r#"{
+    let f = |x: i64| #[native] {"a" => x, "b" => x + 1, "a" => x * 10};
+    let g = |k: string, x: i64| #[native] {k => x, "z" => 0};
+    (f(3), g("q", 7), g("z", 1))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap())
+    == r#"[{"a" => i64:30, "b" => i64:4}, {"q" => i64:7, "z" => i64:0}, {"z" => i64:0}]"#;
+    FuseExpect::Jit);

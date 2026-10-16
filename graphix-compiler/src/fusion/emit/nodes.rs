@@ -97,33 +97,32 @@ pub(crate) fn emit_const_node(
     }
 }
 
-/// A `{k => v, ...}` map literal. Fuses only when every key and value
-/// is a compile-time constant: the `CMap` is built here and emitted as
-/// an interned Value constant. A dynamic entry de-fuses.
-// CR claude for claude: [perf/medium] A map literal fuses only when lowering::const_map
-// folds every key and value to a constant. One dynamic entry (`{"a" => x}` in a pure
-// function of x) fails the whole region with 'map literal with non-constant entries',
-// so a function that builds a map from its arguments node-walks. This is an
-// unpredictable de-fuse on an ordinary construct. Fix: emit the keys and values into a
-// value buf as emit_struct_new_node does, and finalize with a new helper that inserts
-// in written order (the last duplicate wins, as Map::update does) under the kernel's
-// loaned core-trait hooks. Fold the discs as the struct path does, keep const_map as
-// the constant fast path, and pin it with a FuseExpect::Jit fixture. probe
-// (graphix-fuzz run): design/review-2026-10-12/repro/c-data-map-03.gx (c-data-map-04)
+/// A `{k => v, ...}` map literal: one whose every key and value is a
+/// compile-time constant is built here and emitted as an interned Value
+/// constant; otherwise its keys and values, alternating, go into a value
+/// buf that `graphix_map_finalize` turns into the map.
 pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     keys: &[Node<R, E>],
     values: &[Node<R, E>],
     typ: &Type,
 ) -> Result<CompiledExpr> {
-    let v = lowering::const_map(keys, values).ok_or_else(|| {
-        anyhow!(
-            "emit_clif: map literal with non-constant entries — \
-             subtree node-walks"
-        )
-    })?;
-    let typ = kernel_abi::freeze_for_abi(typ).unwrap_or_else(kernel_abi::map_type);
-    emit_const_node(cx, &v, &typ)
+    if let Some(v) = lowering::const_map(keys, values) {
+        let typ = kernel_abi::freeze_for_abi(typ).unwrap_or_else(kernel_abi::map_type);
+        return emit_const_node(cx, &v, &typ);
+    }
+    let cap = cx.b.ins().iconst(types::I64, 2 * keys.len() as i64);
+    let buf = open_value_buf(cx, cap)?;
+    let mut discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
+    for (k, v) in keys.iter().zip(values.iter()) {
+        discs.push(emit_push_field_node(cx, buf, k)?);
+        discs.push(emit_push_field_node(cx, buf, v)?);
+    }
+    close_buf(cx);
+    let call = cx.call_helper("graphix_map_finalize", &[buf])?;
+    let (base, payload) = (call[0], call[1]);
+    let disc = producer_disc(cx, base, &discs);
+    Ok(CompiledExpr::new(disc, payload))
 }
 
 /// A binding read: the local's disc (with any `TAINT`/`STALE`) and its

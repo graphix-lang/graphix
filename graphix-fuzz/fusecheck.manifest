@@ -314,7 +314,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	ref-cast-sep2026/00_cast_of_a_reference.gx
 6	ref-print-id-oct2026/00_interpolated_ref.gx
 0	refparam-occurs-aug2026/00_flatmap_typedef_wedge.gx
-29	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
+27	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 3	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx
 1	result-union-nullable-abi-aug2026/01_string_predicate_wrong_arm.gx
@@ -477,7 +477,7 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
 4	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
 1	taint-cache-callee-jul2026/00_callee_interior_bottom.gx
-5	taint-cache-callee-jul2026/01_float_cache_block_param.gx
+1	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 2	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx
 2	transient-rebind-init-jul2026/00_capture_wake_const_body.gx
 23	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx

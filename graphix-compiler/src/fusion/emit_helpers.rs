@@ -1233,6 +1233,21 @@ unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
     TagValue::fired(list)
 }
 
+/// Finalize a value buf of keys and values, alternating, into the Map of
+/// its entries in written order, a later key replacing an earlier one as
+/// the node-walk's literal does; consumes the buf. Key order is a core
+/// trait's under the kernel's loaned hooks.
+unsafe fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
+    let mut m = netidx_value::Map::new();
+    let mut entries = unsafe { (*buf).drain(..) };
+    while let (Some(k), Some(v)) = (entries.next(), entries.next()) {
+        m.insert_cow(k, v);
+    }
+    drop(entries);
+    unsafe { buf_give(buf) };
+    TagValue::fired(Value::Map(m))
+}
+
 /// Consume finalized ValArray bits and build the List value.
 unsafe fn graphix_valarray_into_list(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };

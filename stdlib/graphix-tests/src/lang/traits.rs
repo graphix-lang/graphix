@@ -729,7 +729,7 @@ run!(
         let m = {T(0) => 0, T(1) => 1, T(2) => 2};
         let result = "[m]|[m{T(0)}$]|[m{T(2)}$]"
     "##
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // A map HOF builds its result under the user's Ord too.
@@ -1369,7 +1369,7 @@ run!(
 }
 "#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(10)));
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A type variable in an impl head must be declared on the impl.
