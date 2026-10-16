@@ -238,6 +238,20 @@ impl LocalKind {
     }
 }
 
+impl LocalKind {
+    /// The owned kind of a non-scalar local.
+    pub(crate) fn owned(self) -> anyhow::Result<OwnedKind> {
+        Ok(match self {
+            LocalKind::Scalar(p) => {
+                anyhow::bail!("emit_clif: a scalar {p:?} is no owned local")
+            }
+            LocalKind::Composite => OwnedKind::Composite,
+            LocalKind::String => OwnedKind::String,
+            LocalKind::Value => OwnedKind::Value,
+        })
+    }
+}
+
 impl From<OwnedKind> for LocalKind {
     fn from(k: OwnedKind) -> Self {
         match k {

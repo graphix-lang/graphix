@@ -158,35 +158,23 @@ fn elem_index(cx: &mut BodyCx, idx: ElemIdx) -> (ElementRead, ClifValue) {
 
 /// A pattern binding installed in the arm's matched region under the
 /// pattern's `BindId`.
-// CR claude for claude: [structure/low] ValueScalar/ValueOwned, Payload/PayloadValue
-// and Elem/ElemValue are each one bind source split by whether the result is scalar.
-// ListHead already carries a LocalKind and handles both in one variant.
-// install_arm_binds therefore has three pairs of near-duplicate arms, and each new
-// source, such as the variant leaf in f-select-04, needs two variants and two arms.
-// Give each source one variant with a LocalKind, as ListHead does, and pick the scalar
-// read or the owned read once by kind in install_arm_binds. (f-select-08)
 enum SelectArmBind {
     /// `n => ...` — bind the scalar scrutinee itself.
     Scrut(BindId),
-    /// A scalar read out of a value scrutinee: an option's payload, a
-    /// union's member, the scrutinee narrowed to one scalar.
-    ValueScalar { id: BindId, prim: PrimType },
-    /// The same for a non-scalar, cloned out as an owned local of `kind`
-    /// (the whole scrutinee included), dropped at the arm's scope exit;
-    /// legal under a mask, where a mismatch yields a drop-safe default.
-    ValueOwned { id: BindId, kind: OwnedKind },
-    /// `` `Tag(n) `` — bind one scalar variant payload; a wrong-tag read
-    /// yields 0. `on` is the variant read when it is not the scrutinee
-    /// (a payload of an enclosing variant, borrowed).
-    Payload { id: BindId, idx: usize, prim: PrimType, on: Option<(ClifValue, ClifValue)> },
-    /// `` `Tag(xs) `` — bind one non-scalar variant payload, cloned out
-    /// as an owned local of `kind` and dropped at the arm's scope exit.
-    /// Legal under a mask: a wrong-tag read yields a drop-safe default
-    /// behind a tainted disc.
-    PayloadValue {
+    /// A read out of a value scrutinee: an option's payload, a union's
+    /// member, the scrutinee narrowed to one type (the whole scrutinee
+    /// included). A non-scalar is cloned out as an owned local, dropped at
+    /// the arm's scope exit; legal under a mask, where a mismatch yields a
+    /// drop-safe default.
+    Value { id: BindId, kind: LocalKind },
+    /// `` `Tag(x) `` — bind one variant payload; a wrong-tag read yields 0,
+    /// or a drop-safe default behind a tainted disc for a non-scalar,
+    /// cloned out as an owned local. `on` is the variant read when it is
+    /// not the scrutinee (a payload of an enclosing variant, borrowed).
+    Payload {
         id: BindId,
         idx: usize,
-        kind: OwnedKind,
+        kind: LocalKind,
         on: Option<(ClifValue, ClifValue)>,
     },
     /// `[<a, b>]` / `[<h, rest..>]` — bind the j-th head of a list
@@ -194,20 +182,11 @@ enum SelectArmBind {
     ListHead { id: BindId, idx: usize, kind: LocalKind },
     /// The rest bind: the k-th TAIL itself — O(1), shares the spine.
     ListTail { id: BindId, k: usize },
-    /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
+    /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one leaf of type `typ` of a
     /// composite scrutinee (the scrutinee, or a borrowed interior pointer
-    /// for a nested pattern).
-    Elem { id: BindId, idx: ElemIdx, prim: PrimType, parent_ptr: ClifValue },
-    /// The same for a non-scalar leaf of type `typ`, cloned out as an
-    /// owned local of `kind`; a short or mismatched read yields a
-    /// drop-safe default.
-    ElemValue {
-        id: BindId,
-        idx: ElemIdx,
-        typ: Type,
-        kind: OwnedKind,
-        parent_ptr: ClifValue,
-    },
+    /// for a nested pattern); a non-scalar is cloned out as an owned local,
+    /// a short or mismatched read yielding a drop-safe default.
+    Elem { id: BindId, idx: ElemIdx, typ: Type, kind: LocalKind, parent_ptr: ClifValue },
     /// `[h, rest..]` / `[init.., l]` / `all@ [..]` — bind the elements
     /// `[start, len - back)` of an array scrutinee, cloned out as an
     /// owned composite local.
@@ -621,7 +600,8 @@ fn emit_composite_pattern_cond_inner(
                 Some(prim) => binds.push(SelectArmBind::Elem {
                     id: *id,
                     idx: leaf.idx,
-                    prim,
+                    typ: leaf.typ.clone(),
+                    kind: LocalKind::Scalar(prim),
                     parent_ptr: ptr,
                 }),
                 None => {
@@ -631,11 +611,11 @@ fn emit_composite_pattern_cond_inner(
                             leaf.typ
                         )
                     })?;
-                    binds.push(SelectArmBind::ElemValue {
+                    binds.push(SelectArmBind::Elem {
                         id: *id,
                         idx: leaf.idx,
                         typ: leaf.typ.clone(),
-                        kind,
+                        kind: kind.into(),
                         parent_ptr: ptr,
                     })
                 }
@@ -693,11 +673,11 @@ fn emit_composite_pattern_cond_inner(
         let c = match sub {
             StructPatternNode::Variant { tag, all, binds: payloads } => {
                 if let Some(id) = all {
-                    binds.push(SelectArmBind::ElemValue {
+                    binds.push(SelectArmBind::Elem {
                         id: *id,
                         idx,
                         typ: typ.clone(),
-                        kind: OwnedKind::Value,
+                        kind: LocalKind::Value,
                         parent_ptr: ptr,
                     });
                 }
@@ -1245,13 +1225,13 @@ fn emit_list_pattern_cond(
     let (elems, k, exact, tail) = match pat {
         StructPatternNode::Slice { kind: SliceKind::List, all, binds: pb } => {
             if let Some(id) = all {
-                binds.push(SelectArmBind::ValueOwned { id: *id, kind: OwnedKind::Value });
+                binds.push(SelectArmBind::Value { id: *id, kind: LocalKind::Value });
             }
             (pb, pb.len(), true, None)
         }
         StructPatternNode::SlicePrefix { list: true, all, prefix, tail } => {
             if let Some(id) = all {
-                binds.push(SelectArmBind::ValueOwned { id: *id, kind: OwnedKind::Value });
+                binds.push(SelectArmBind::Value { id: *id, kind: LocalKind::Value });
             }
             (prefix, prefix.len(), false, tail.as_ref())
         }
@@ -1359,37 +1339,38 @@ fn install_arm_binds(
                 };
                 (*id, scalar_disc(cx.b, prim), value, LocalKind::Scalar(prim))
             }
-            SelectArmBind::ValueScalar { id, prim } => {
+            SelectArmBind::Value { id, kind: LocalKind::Scalar(prim) } => {
                 let value = cast_u64_to_prim(cx.b, value_payload()?, *prim);
                 (*id, scalar_disc(cx.b, *prim), value, LocalKind::Scalar(*prim))
             }
-            SelectArmBind::ValueOwned { id, kind } => {
-                let helper = owned_read_helper(ReadFrom::Value, *kind);
+            SelectArmBind::Value { id, kind } => {
+                let owned = kind.owned()?;
+                let helper = owned_read_helper(ReadFrom::Value, owned);
                 let call = cx.call_helper(helper, &[sdisc, value_payload()?])?;
-                let (d, p) = owned_words(cx.b, (*kind).into(), &call);
-                (*id, d, p, (*kind).into())
+                let (d, p) = owned_words(cx.b, *kind, &call);
+                (*id, d, p, *kind)
             }
-            SelectArmBind::Payload { id, idx, prim, on } => {
+            SelectArmBind::Payload { id, idx, kind, on } => {
                 let (vd, vp) = match on {
                     Some(on) => *on,
                     None => (sdisc, value_payload()?),
                 };
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let call =
-                    cx.call_helper(variant_payload_helper(*prim), &[vd, vp, idx_c])?;
-                let v = call[0];
-                (*id, scalar_disc(cx.b, *prim), v, LocalKind::Scalar(*prim))
-            }
-            SelectArmBind::PayloadValue { id, idx, kind, on } => {
-                let (vd, vp) = match on {
-                    Some(on) => *on,
-                    None => (sdisc, value_payload()?),
-                };
-                let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let helper = owned_read_helper(ReadFrom::Payload, *kind);
-                let call = cx.call_helper(helper, &[vd, vp, idx_c])?;
-                let (d, p) = owned_words(cx.b, (*kind).into(), &call);
-                (*id, d, p, (*kind).into())
+                match kind {
+                    LocalKind::Scalar(prim) => {
+                        let call = cx.call_helper(
+                            variant_payload_helper(*prim),
+                            &[vd, vp, idx_c],
+                        )?;
+                        (*id, scalar_disc(cx.b, *prim), call[0], *kind)
+                    }
+                    kind => {
+                        let helper = owned_read_helper(ReadFrom::Payload, kind.owned()?);
+                        let call = cx.call_helper(helper, &[vd, vp, idx_c])?;
+                        let (d, p) = owned_words(cx.b, *kind, &call);
+                        (*id, d, p, *kind)
+                    }
+                }
             }
             SelectArmBind::ListHead { id, idx, kind } => {
                 let j = cx.b.ins().iconst(types::I64, *idx as i64);
@@ -1415,17 +1396,25 @@ fn install_arm_binds(
                 let rs = call;
                 (*id, rs[0], rs[1], LocalKind::Value)
             }
-            SelectArmBind::ElemValue { id, idx, typ, kind, parent_ptr } => {
+            SelectArmBind::Elem { id, idx, typ, kind, parent_ptr } => {
                 if !matches!(scrut, SelectScrut::Composite { .. }) {
                     bail!("emit_clif: element bind without a composite scrutinee");
                 }
-                let (read, idx_v) = elem_index(cx, *idx);
-                let call = cx.call_helper(
-                    element_read_helper(typ, read)?,
-                    &[*parent_ptr, idx_v],
-                )?;
-                let (d, p) = owned_words(cx.b, (*kind).into(), &call);
-                (*id, d, p, (*kind).into())
+                match kind {
+                    LocalKind::Scalar(prim) => {
+                        let v = read_scrut_elem(cx, *parent_ptr, *idx, *prim)?;
+                        (*id, scalar_disc(cx.b, *prim), v, *kind)
+                    }
+                    kind => {
+                        let (read, idx_v) = elem_index(cx, *idx);
+                        let call = cx.call_helper(
+                            element_read_helper(typ, read)?,
+                            &[*parent_ptr, idx_v],
+                        )?;
+                        let (d, p) = owned_words(cx.b, *kind, &call);
+                        (*id, d, p, *kind)
+                    }
+                }
             }
             SelectArmBind::Subslice { id, start, back, parent_ptr } => {
                 if !matches!(scrut, SelectScrut::Composite { .. }) {
@@ -1444,13 +1433,6 @@ fn install_arm_binds(
                     bits,
                     LocalKind::Composite,
                 )
-            }
-            SelectArmBind::Elem { id, idx, prim, parent_ptr } => {
-                if !matches!(scrut, SelectScrut::Composite { .. }) {
-                    bail!("emit_clif: element bind without a composite scrutinee");
-                }
-                let v = read_scrut_elem(cx, *parent_ptr, *idx, *prim)?;
-                (*id, scalar_disc(cx.b, *prim), v, LocalKind::Scalar(*prim))
             }
         };
         let disc = propagate_flags(cx.b, disc, &[sdisc]);
@@ -1606,13 +1588,15 @@ fn emit_structure_cond(
             {
                 let pred = kernel_abi::freeze_for_abi(pred_typ);
                 binds.push(match pred.as_ref().and_then(kernel_abi::scalar_prim) {
-                    Some(prim) => SelectArmBind::ValueScalar { id: *id, prim },
+                    Some(prim) => {
+                        SelectArmBind::Value { id: *id, kind: LocalKind::Scalar(prim) }
+                    }
                     None => {
                         let kind = match pred.as_ref().and_then(kernel_abi::abi_kind) {
                             Some(AbiKind::String) => OwnedKind::String,
                             _ => OwnedKind::Value,
                         };
-                        SelectArmBind::ValueOwned { id: *id, kind }
+                        SelectArmBind::Value { id: *id, kind: kind.into() }
                     }
                 });
                 None
@@ -1623,7 +1607,9 @@ fn emit_structure_cond(
                 // its own: the chain took this arm.
                 let pred = kernel_abi::freeze_for_abi(pred_typ);
                 let bind = match pred.as_ref().and_then(kernel_abi::scalar_prim) {
-                    Some(prim) => SelectArmBind::ValueScalar { id: *id, prim },
+                    Some(prim) => {
+                        SelectArmBind::Value { id: *id, kind: LocalKind::Scalar(prim) }
+                    }
                     None => {
                         let kind = pred.as_ref().and_then(owned_kind).ok_or_else(|| {
                             anyhow!(
@@ -1631,7 +1617,7 @@ fn emit_structure_cond(
                                  not lowerable"
                             )
                         })?;
-                        SelectArmBind::ValueOwned { id: *id, kind }
+                        SelectArmBind::Value { id: *id, kind: kind.into() }
                     }
                 };
                 binds.push(bind);
@@ -1648,16 +1634,16 @@ fn emit_structure_cond(
                     })?;
                 binds.push(match kind {
                     LocalKind::Scalar(prim) => {
-                        SelectArmBind::ValueScalar { id: *id, prim }
+                        SelectArmBind::Value { id: *id, kind: LocalKind::Scalar(prim) }
                     }
                     LocalKind::Composite => {
-                        SelectArmBind::ValueOwned { id: *id, kind: OwnedKind::Composite }
+                        SelectArmBind::Value { id: *id, kind: LocalKind::Composite }
                     }
                     LocalKind::String => {
-                        SelectArmBind::ValueOwned { id: *id, kind: OwnedKind::String }
+                        SelectArmBind::Value { id: *id, kind: LocalKind::String }
                     }
                     LocalKind::Value => {
-                        SelectArmBind::ValueOwned { id: *id, kind: OwnedKind::Value }
+                        SelectArmBind::Value { id: *id, kind: LocalKind::Value }
                     }
                 });
                 None
@@ -1722,7 +1708,7 @@ fn emit_structure_cond(
         }
         StructPatternNode::Variant { tag, all, binds: pbinds } => {
             if let Some(id) = all {
-                binds.push(SelectArmBind::ValueOwned { id: *id, kind: OwnedKind::Value });
+                binds.push(SelectArmBind::Value { id: *id, kind: LocalKind::Value });
             }
             let (disc, payload) = match scrut {
                 SelectScrut::Value { kind: ValueKind::Variant, disc, payload } => {
@@ -1814,14 +1800,22 @@ fn emit_variant_cond(
     for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
         match sub {
             StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(elt) {
-                Some(prim) => {
-                    binds.push(SelectArmBind::Payload { id: *id, idx, prim, on })
-                }
+                Some(prim) => binds.push(SelectArmBind::Payload {
+                    id: *id,
+                    idx,
+                    kind: LocalKind::Scalar(prim),
+                    on,
+                }),
                 None => {
                     let kind = owned_kind(elt).ok_or_else(|| {
                         anyhow!("emit_clif: variant payload shape {elt:?} not lowerable")
                     })?;
-                    binds.push(SelectArmBind::PayloadValue { id: *id, idx, kind, on })
+                    binds.push(SelectArmBind::Payload {
+                        id: *id,
+                        idx,
+                        kind: kind.into(),
+                        on,
+                    })
                 }
             },
             StructPatternNode::Ignore => {}
@@ -1892,14 +1886,11 @@ const PAT_BIND_NAME: ArcStr = arcstr::literal!("__pat");
 fn select_bind_id(b: &SelectArmBind) -> BindId {
     match b {
         SelectArmBind::Scrut(id)
-        | SelectArmBind::ValueScalar { id, .. }
-        | SelectArmBind::ValueOwned { id, .. }
+        | SelectArmBind::Value { id, .. }
         | SelectArmBind::Payload { id, .. }
-        | SelectArmBind::PayloadValue { id, .. }
         | SelectArmBind::ListHead { id, .. }
         | SelectArmBind::ListTail { id, .. }
         | SelectArmBind::Elem { id, .. }
-        | SelectArmBind::ElemValue { id, .. }
         | SelectArmBind::Subslice { id, .. } => *id,
     }
 }
