@@ -22,6 +22,8 @@ arcstr = { workspace = true }
 compact_str = { workspace = true }
 bytes = { workspace = true }
 calamine = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
 chrono = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
