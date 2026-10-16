@@ -128,6 +128,7 @@ unsafe impl Send for Run {}
 // fresh set of all kernel-run thread-locals on construction and restores the previous
 // set on Drop, used in all three places. (f-kernel-05)
 unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
+    let prev_panic = emit_helpers::take_kernel_panic();
     let prev_abort = KERNEL_ABORT.with(|c| c.replace(false));
     let prev_reached = SELF_BLOCK_REACHED.with(|c| c.replace(0));
     let prev_made = SELF_BLOCK_MADE.with(|c| c.replace(0));
@@ -136,8 +137,9 @@ unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
     });
     r.deferred = deferred;
     r.aborted = KERNEL_ABORT.with(|c| c.replace(prev_abort));
-    if r.aborted {
-        r.panic = emit_helpers::take_kernel_panic();
+    r.panic = emit_helpers::take_kernel_panic();
+    if let Some(p) = prev_panic {
+        emit_helpers::set_kernel_panic(p)
     }
     r.reached = SELF_BLOCK_REACHED.with(|c| c.replace(prev_reached));
     r.made = SELF_BLOCK_MADE.with(|c| c.replace(prev_made));
@@ -328,12 +330,13 @@ unsafe fn finish(runs: &mut [Run], find: bool, out: *mut u64) -> i8 {
     for r in runs[..delivered].iter_mut() {
         emit_helpers::queue_deferred(&mut r.deferred);
     }
-    if let Some(i) = aborted {
+    // the first panic in slot order is the run's; the merge goes on
+    if let Some(p) = runs.iter_mut().find_map(|r| r.panic.take()) {
+        emit_helpers::set_kernel_panic(p);
+    }
+    if aborted.is_some() {
         for r in runs.iter() {
             r.discard(find);
-        }
-        if let Some(p) = runs[i].panic.take() {
-            emit_helpers::set_kernel_panic(p);
         }
         KERNEL_ABORT.with(|c| c.set(true));
         return 1;

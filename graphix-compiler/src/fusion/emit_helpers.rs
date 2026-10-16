@@ -698,7 +698,7 @@ unsafe fn graphix_iocall(
     let f: FastFn =
         unsafe { std::mem::transmute::<usize, FastFn>(fn_ptr as usize) };
     let tv = unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) };
-    if taint_mask == 0 && stale_mask & trigger == 0 {
+    if taint_mask == 0 && stale_mask & trigger == 0 && !kernel_panicked() {
         // SAFETY: the call site's buffer holds `n` clean Values for the call.
         let args = unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
         let call = (site as *const crate::IoSite, args.iter().cloned().collect());
@@ -751,37 +751,15 @@ unsafe fn graphix_castcall(
 }
 
 /// Run `f`, which may run Graphix code (a fast fn, a value's `Eq`/`Ord`
-/// impl): a panic there aborts the kernel, `placeholder` stands for the
-/// result, and the panic resumes after the run.
-// CR claude for claude: [risk/low] A panic caught here sets KERNEL_ABORT, but the
-// kernel keeps running on the placeholder. graphix_iocall queues its call even when the
-// fast fn it guarded panicked. FusedKernel::update then delivers every queued raise and
-// performs every queued Io call before it resumes the panic. The node-walk unwinds at
-// the builtin and performs none of them, so a fused body with a print after a panicking
-// fast fn prints where the node-walk does not. set_kernel_panic also replaces an
-// earlier payload, so a second panic hides the first. To fix: in FusedKernel::update,
-// when take_kernel_panic returns Some, discard the deferred queue before resuming. Keep
-// the first payload in set_kernel_panic. Do not queue the Io call when its dispatch
-// caught a panic. (f-helpers-05)
+/// impl): a panic there is recorded, `placeholder` stands for the result
+/// and the run goes on, releasing what it owns as it would; the kernel
+/// then discards the run's result and what it deferred, and resumes the
+/// panic.
 fn guard_panic<T>(placeholder: T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,
         Err(payload) => {
             set_kernel_panic(payload);
-            // CR claude for claude: [bug/low] Setting KERNEL_ABORT here breaks what
-            // every abort consumer assumes: that the run left through emit_kernel_abort
-            // and returned the zero sentinel. Generated code never reads the flag after
-            // a guarded helper, so the kernel runs on. FusedKernel::update then
-            // performs every Io call queued after the panic (the node-walk would have
-            // unwound at the panicking call). It also never drops the real Value in
-            // `out`. par_loop's in_order and Run::discard skip the value buf, or a
-            // find's result, of a chunk that finished normally, so those leak. Fix:
-            // keep "panicked" separate from "aborted". guard_panic only records the
-            // panic. The run releases its outputs through the normal paths.
-            // FusedKernel::update and par_loop::finish check take_kernel_panic(), and
-            // when one is pending they drop the result, skip the deferred raises and
-            // Io, and resume the panic. (x-unsafe-01)
-            KERNEL_ABORT.with(|c| c.set(true));
             placeholder
         }
     }
@@ -1990,9 +1968,19 @@ pub(crate) fn take_kernel_panic() -> Option<Box<dyn Any + Send>> {
     KERNEL_PANIC.with(|p| p.borrow_mut().take())
 }
 
-/// Report `p` as the running kernel's panic.
+/// Report `p` as the running kernel's panic; the run's first stands.
 pub(crate) fn set_kernel_panic(p: Box<dyn Any + Send>) {
-    KERNEL_PANIC.with(|q| *q.borrow_mut() = Some(p))
+    KERNEL_PANIC.with(|q| {
+        let mut q = q.borrow_mut();
+        if q.is_none() {
+            *q = Some(p)
+        }
+    })
+}
+
+/// Whether the running kernel recorded a panic.
+fn kernel_panicked() -> bool {
+    KERNEL_PANIC.with(|q| q.borrow().is_some())
 }
 
 /// Append what a chunk run deferred to this thread's queue.

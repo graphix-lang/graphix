@@ -424,6 +424,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             true => crate::node::coretraits::with_display_hooks(ctx, run),
             false => run(&ctx.env),
         };
+        // a panicked run raises nothing and performs nothing, as the
+        // node-walk unwinding at the panicking call would not
+        let panic = emit_helpers::take_kernel_panic();
+        if panic.is_some() {
+            deferred.raises.clear();
+            deferred.io.clear();
+        }
         for (site, v) in deferred.raises.drain(..) {
             // SAFETY: `site` is a `QopSite` constant of the kernel's
             // record, which outlives its code.
@@ -455,7 +462,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             }
         }
         let pending = KERNEL_ABORT.with(|c| c.replace(outer_abort));
-        let panic = emit_helpers::take_kernel_panic();
         if let Some(p) = outer_panic {
             emit_helpers::set_kernel_panic(p)
         }
@@ -466,7 +472,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             let reached = SELF_BLOCK_REACHED.with(|c| c.get());
             // what was live plus what this run made; an aborted run only adds
             let live = self.tree_size + made;
-            if pending {
+            if pending || panic.is_some() {
                 self.tree_size = live;
             } else {
                 if reached < live {
@@ -499,6 +505,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         SELF_BLOCK_REACHED.with(|c| c.set(saved_reached));
         SELF_BLOCK_MADE.with(|c| c.set(saved_made));
         if let Some(p) = panic {
+            if !pending {
+                // SAFETY: a run that did not abort wrote a real Value.
+                drop(unsafe { TagValue::from_raw(out[0], out[1]) });
+            }
             std::panic::resume_unwind(p)
         }
         if pending {
