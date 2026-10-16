@@ -485,8 +485,22 @@ impl Drop for Generation {
     }
 }
 
+/// The arena a generation reserves unless `GRAPHIX_JIT_ARENA` (bytes) says
+/// otherwise.
+const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
+
+/// The largest arena a generation reserves: a colocated call's PC-relative
+/// relocation reaches ±2GiB.
+const JIT_ARENA_MAX: usize = 2 * 1024 * 1024 * 1024 - 1;
+
+static ARENA_SIZE: LazyLock<usize> =
+    LazyLock::new(|| match std::env::var("GRAPHIX_JIT_ARENA") {
+        Ok(v) => v.parse().unwrap_or(JIT_ARENA_RESERVE),
+        Err(_) => JIT_ARENA_RESERVE,
+    });
+
 impl Generation {
-    fn new(isa: &OwnedTargetIsa) -> Result<Self> {
+    fn new(isa: &OwnedTargetIsa, arena: usize) -> Result<Self> {
         let _profile = profile::phase(Phase::JitInit);
         let mut builder = JITBuilder::with_isa(isa.clone(), default_libcall_names());
         // One contiguous reservation: colocated (Linkage::Local) calls use a
@@ -503,14 +517,8 @@ impl Generation {
         // first and commits per segment, or one arena shared across a process's
         // contexts. Separately, GRAPHIX_JIT_ARENA should be clamped to the 2GiB
         // colocated-call range and a malformed value reported, not ignored. (f-jit-05)
-        const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
-        static ARENA_SIZE: LazyLock<usize> =
-            LazyLock::new(|| match std::env::var("GRAPHIX_JIT_ARENA") {
-                Ok(v) => v.parse().unwrap_or(JIT_ARENA_RESERVE),
-                Err(_) => JIT_ARENA_RESERVE,
-            });
         builder.memory_provider(Box::new(
-            ArenaMemoryProvider::new_with_size(*ARENA_SIZE)
+            ArenaMemoryProvider::new_with_size(arena)
                 .map_err(|e| anyhow!("jit arena reservation failed: {e}"))?,
         ));
         // Helpers resolve by pointer under the registry's symbol name, never
@@ -1225,7 +1233,7 @@ impl Jit {
     /// Errs if cranelift cannot target the host ISA.
     pub fn new() -> Result<Self> {
         let shared = Arc::new(EmitShared::new()?);
-        let generation = Generation::new(&shared.isa)?;
+        let generation = Generation::new(&shared.isa, *ARENA_SIZE)?;
         Ok(Self {
             shared,
             generation,
@@ -1447,35 +1455,42 @@ impl Jit {
 
     /// Install the wrappers' record trees and return their entries and
     /// the code they live in. A failed install retires the generation; a
-    /// full arena reinstalls once in a fresh one.
+    /// full arena reinstalls in a fresh one, twice the size each time a
+    /// fresh one cannot hold the batch either, up to the colocated-call
+    /// range.
     fn install(
         &mut self,
         wrappers: &[Arc<BodyRecord>],
     ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
-        let e = match self.try_install(wrappers) {
-            Ok(r) => return Ok(r),
-            Err(e) => e,
-        };
-        if !e.chain().any(|c| c.is::<ArenaExhausted>()) {
-            return Err(e);
+        let mut arena = *ARENA_SIZE;
+        loop {
+            let e = match self.try_install(wrappers, arena) {
+                Ok(r) => return Ok(r),
+                Err(e) => e,
+            };
+            if !e.chain().any(|c| c.is::<ArenaExhausted>()) || arena >= JIT_ARENA_MAX {
+                return Err(e);
+            }
+            log::warn!(
+                "JIT code arena exhausted: retired generation {} (freed when its last \
+                 kernel drops) and reinstalling in a fresh module of {arena} bytes",
+                self.retired
+            );
+            arena = arena.saturating_mul(2).min(JIT_ARENA_MAX);
         }
-        log::warn!(
-            "JIT code arena exhausted: retired generation {} (freed when its last \
-             kernel drops) and reinstalling in a fresh module",
-            self.retired
-        );
-        self.try_install(wrappers)
     }
 
-    /// Install into the current generation; a failure retires it, so a
-    /// generation never holds a failed install's definitions.
+    /// Install into the current generation; a failure retires it for a
+    /// fresh one of `arena` bytes, so a generation never holds a failed
+    /// install's definitions.
     fn try_install(
         &mut self,
         wrappers: &[Arc<BodyRecord>],
+        arena: usize,
     ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
         match self.generation.install(wrappers) {
             Ok(p) => Ok((p, self.generation.code.clone())),
-            Err(e) => match Generation::new(&self.shared.isa) {
+            Err(e) => match Generation::new(&self.shared.isa, arena) {
                 Ok(g) => {
                     self.generation = g;
                     self.retired += 1;

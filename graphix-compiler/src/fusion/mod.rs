@@ -1160,28 +1160,6 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
             (*i, task.run_task(|task| TypeMemo::enter(memo.clone(), || visit(n, task))))
         })
         .collect();
-    // CR claude for claude: [bug/medium] This is the only batch check a parallel
-    // fuse_each makes, and it runs after every task has joined. A task's emission never
-    // counts as unlinked, so the check in try_fuse never fires inside a task. N heavy
-    // parts therefore become one link batch of N regions, with every CLIF function held
-    // uncompiled, and LINK_BATCH bounds nothing. Jit::install installs a batch as one
-    // unit and retries only once, in a fresh arena of the same size. A batch bigger
-    // than the arena therefore panics in install_or_panic ("the JIT code arena is
-    // exhausted") and kills the runtime, even though the cause is only program size,
-    // not a JIT bug. With a 1.25MB arena, the probe's 400 statements panic under
-    // parallel fusion and run under GRAPHIX_FUSE_SERIAL=1, so the A/B gives different
-    // results. Fix: link_batch while joining, as the unlinked count crosses LINK_BATCH.
-    // Joins run in order on the root, so the result stays deterministic. Also bound
-    // Jit::install's retry by splitting a batch that a fresh generation cannot hold,
-    // rather than panicking. try_install has a related flaw: when Generation::new
-    // fails, the failed generation stays current and the reservation error hides the
-    // install error. probe: design/review-2026-10-12/repro/f-jit-02.sh (f-jit-02)
-    // 2026-10-15 claude: Done: the join links a batch each time the unlinked count
-    // reaches LINK_BATCH, as the serial walk does (the probe's 1.25MB arena now runs
-    // parallel as serial), and try_install keeps a failed install's error when no
-    // fresh generation can be made. Open: a single batch a fresh arena cannot hold
-    // still panics; splitting it needs its functions' calls to one another to stay in
-    // one module.
     for (_, _, task) in work.drain(..) {
         task.attr_census.lock().clear();
         ctx.join(task);
