@@ -732,6 +732,14 @@ fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
 
 /// A non-containment report that formats lazily: callers probe these
 /// errors, and rendering a large type eagerly is tree-cost.
+// CR claude for claude: [readability/low] A mismatch names a typedef by its
+// expansion: `let s: Shape = ..; let q: i64 = s`, or `|s: Shape| -> i64 s`, says
+// 'i64 does not contain [`Circle(f64), `Rect(f64, f64)]' where it should say Shape.
+// The reference node's type is a cell that the bind's `contains` bound to the
+// expanded form, and DerefTVars prints the cell's binding. Keep the written Ref as
+// the cell's binding where the check expanded it only to compare, or remember it
+// beside the cell for printing. Found under (t-cast-setops-13), whose union arm order
+// is fixed. (mismatch-print-01)
 #[derive(Debug)]
 pub struct TypeMismatch {
     expected: Type,

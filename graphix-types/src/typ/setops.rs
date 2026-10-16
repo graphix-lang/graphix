@@ -272,19 +272,6 @@ impl Type {
             {
                 self.union_ref_params(env, hist, merge, t0, t1, t)
             }
-            // CR claude for claude: [readability/low] This arm matches before the
-            // identity arms for Bottom and the empty primitive, so `T ∪ ⊥` returns T's
-            // expanded body instead of T. Every select with a never() arm builds this
-            // union. Error messages then print the whole body, e.g. 'i64 does not
-            // contain [`Circle(f64), `Rect(f64, f64), `Tri(f64, f64, f64)]' where they
-            // should say Shape. Move the `(Type::Bottom, t) | (t, Type::Bottom)` arm
-            // and the empty-primitive arm above this one. probe:
-            // design/review-2026-10-12/repro/t-cast-setops-18-union-bottom-expands-name.gx
-            // (t-cast-setops-13)
-            // 2026-10-14 claude: the ⊥ and empty arms now come first, so T ∪ ⊥ is T.
-            // The probe's message still expands Shape: so does `let s: Shape = ..; let
-            // q: i64 = s`, with no union at all, so the expansion is the mismatch
-            // message's (or the binding's), not this arm's.
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
                     (hist.ref_id(tr, env), hist.ref_id(t, env))
