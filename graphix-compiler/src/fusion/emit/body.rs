@@ -163,6 +163,31 @@ pub(super) fn emit_interrupt_check(
     Ok(())
 }
 
+/// Slots between a loop's interrupt polls, a power of two.
+const POLL_EVERY: i64 = 64;
+
+/// [`emit_interrupt_check`] at every [`POLL_EVERY`]th value of the
+/// loop index `i`, its first included.
+pub(super) fn emit_interrupt_check_every(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+    i: ClifValue,
+) -> Result<()> {
+    let masked = b.ins().band_imm(i, POLL_EVERY - 1);
+    let due = b.ins().icmp_imm(IntCC::Equal, masked, 0);
+    let poll_bl = b.create_block();
+    let cont = b.create_block();
+    b.ins().brif(due, poll_bl, &[], cont, &[]);
+    b.switch_to_block(poll_bl);
+    b.seal_block(poll_bl);
+    emit_interrupt_check(b, env, ctx)?;
+    b.ins().jump(cont, &[]);
+    b.switch_to_block(cont);
+    b.seal_block(cont);
+    Ok(())
+}
+
 /// A type-erased producer of a kernel function body, given the entry
 /// block, bound params and lowering context. Erasing the Node's
 /// `R`/`E` keeps the JIT pipeline monomorphic; the per-body data

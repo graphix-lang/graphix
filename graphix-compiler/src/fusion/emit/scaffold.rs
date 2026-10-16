@@ -32,7 +32,8 @@ use super::{
         prim_to_value_disc, scalar_disc, value_disc,
     },
     body::{
-        BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
+        BodyCx, emit_interrupt_check_every, ensure_owned_composite_src,
+        ensure_owned_value_src,
     },
     call::{CompositeSource, emit_drop_local, finalize_valarray, open_value_buf},
     outline,
@@ -322,14 +323,7 @@ impl LoopFrame {
         };
         cx.env.slot = Some(SlotView { init, new, standing, mark: cx.env.mark() });
         let r = bind(cx, self.i).and_then(|bound| {
-            // CR claude for claude: [perf/low] Every iteration of every scaffold loop
-            // makes an out-of-line `graphix_interrupted` call (a thread-local read plus
-            // an atomic load), on top of the element read and the push. A map or fold
-            // over 10^6 scalars makes 10^6 extra calls per cycle to read a flag that
-            // changes only on an interrupt or a budget abort. Poll every N slots, with
-            // a counter masked by a power of two. The abort path stays the same because
-            // the element binds are env locals either way. (f-scaffold-body-07)
-            emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
+            emit_interrupt_check_every(cx.b, cx.env, cx.ctx, self.i)?;
             Ok((bound, body(cx)?))
         });
         cx.env.slot = outer;
