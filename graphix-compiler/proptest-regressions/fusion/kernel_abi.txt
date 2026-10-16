@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b8253199bf562f38726af7454521ecaa37acc17ac2e246ec44a4a1ae38734619 # shrinks to typ = Set([Error(Ref(TypeRef { scope: ModPath(Path("/")), name: ModPath(Path("/T")), params: [], pos: None, ori: None, resolved: Mutex { data: Open } })), Set([])])

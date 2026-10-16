@@ -166,12 +166,13 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
         if depth > MAX_FREEZE_EXPANSIONS {
             return false;
         }
+        // a member with no bits (⊥, an empty set) is no primitive
         match &t.deref_cloned() {
-            Some(Type::Primitive(p)) => {
+            Some(Type::Primitive(p)) if !p.is_empty() => {
                 *acc |= *p;
                 true
             }
-            Some(Type::Set(ms)) => {
+            Some(Type::Set(ms)) if !ms.is_empty() => {
                 let mut part = *acc;
                 let all = ms.iter().all(|m| bits(m, depth + 1, &mut part));
                 if all {
