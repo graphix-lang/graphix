@@ -703,6 +703,96 @@ fn emit_slots(
     })
 }
 
+/// One iteration of an array loop that pushes into a value buf, given it.
+trait BufStep:
+    for<'x, 'y, 'z> FnOnce(
+    &mut BodyCx<'x, 'y, 'z>,
+    &LoopFrame,
+    &Slots,
+    ClifValue,
+) -> Result<()>
+{
+}
+
+impl<I> BufStep for I where
+    I: for<'x, 'y, 'z> FnOnce(
+        &mut BodyCx<'x, 'y, 'z>,
+        &LoopFrame,
+        &Slots,
+        ClifValue,
+    ) -> Result<()>
+{
+}
+
+/// One iteration of an array loop that takes its first match, given the
+/// taken flag, disc and payload.
+trait FindStep:
+    for<'x, 'y, 'z> FnOnce(
+    &mut BodyCx<'x, 'y, 'z>,
+    &LoopFrame,
+    &Slots,
+    (Variable, Variable, Variable),
+) -> Result<()>
+{
+}
+
+impl<I> FindStep for I where
+    I: for<'x, 'y, 'z> FnOnce(
+        &mut BodyCx<'x, 'y, 'z>,
+        &LoopFrame,
+        &Slots,
+        (Variable, Variable, Variable),
+    ) -> Result<()>
+{
+}
+
+/// The frame every array loop shares: the source held, its length, the
+/// slot flags, the slots run into a sink of `sink`, the source released.
+fn array_loop(
+    cx: &mut BodyCx,
+    arr: ArraySrc,
+    kind: LoopKind,
+    sink: SinkKind,
+    state_sites: &[ExprId],
+    iteration: impl Iteration,
+) -> Result<(Sunk, SlotFlags)> {
+    arr.hold(cx);
+    let len = input_len(cx, arr.ptr)?;
+    let flags = SlotFlags::new(cx, len, kind);
+    let sunk =
+        emit_slots(cx, &flags, sink, (arr.ptr, arr.disc, len), state_sites, iteration)?;
+    arr.drop_held(cx)?;
+    Ok((sunk, flags))
+}
+
+/// [`array_loop`] into a value buf: the result array.
+fn array_buf_loop(
+    cx: &mut BodyCx,
+    arr: ArraySrc,
+    kind: LoopKind,
+    state_sites: &[ExprId],
+    step: impl BufStep,
+) -> Result<(ClifValue, SlotFlags)> {
+    let iteration = |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots| step(cx, lp, s, s.buf());
+    let (sunk, flags) = array_loop(cx, arr, kind, SinkKind::Buf, state_sites, iteration)?;
+    Ok((sunk.array(), flags))
+}
+
+/// [`array_loop`] taking the first match: its `(disc, payload)`.
+fn array_find_loop(
+    cx: &mut BodyCx,
+    arr: ArraySrc,
+    kind: LoopKind,
+    state_sites: &[ExprId],
+    step: impl FindStep,
+) -> Result<((ClifValue, ClifValue), SlotFlags)> {
+    let iteration =
+        |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots| step(cx, lp, s, s.found());
+    let (sunk, flags) =
+        array_loop(cx, arr, kind, SinkKind::Find, state_sites, iteration)?;
+    Ok((sunk.taken(), flags))
+}
+
 pub(crate) fn emit_init_loop<F>(
     cx: &mut BodyCx,
     n_raw: ClifValue,
@@ -781,17 +871,6 @@ where
     Ok((sunk.array(), flags, n_disc))
 }
 
-// CR claude for claude: [structure/low] `emit_map_loop`, `emit_filter_loop`,
-// `emit_filter_map_loop`, `emit_flat_map_loop`, `emit_find_loop` and
-// `emit_find_map_loop` each repeat the same frame: `arr.hold`, `input_len`,
-// `SlotFlags::new`, `emit_slots`, `arr.drop_held`, with the same `lp.run(cx, |cx, i|
-// bind_elem(..), body)` inside. A change to that protocol (f-scaffold-body-02 is one)
-// has to be made in six places. The sink is picked by a runtime `SinkKind`, so a
-// mismatched pair (`Slots::buf` on a find loop, `Sunk::taken` on a buf loop) compiles
-// and panics in `unreachable!()`. Write one array-loop driver that owns the frame and
-// the element bind and takes each op's per-slot step, with separate buf and find entry
-// points that return `ClifValue` and `(disc, payload)` directly, so the unreachable
-// accessors go away. (f-scaffold-body-05)
 pub(crate) fn emit_map_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
@@ -804,24 +883,18 @@ pub(crate) fn emit_map_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    arr.hold(cx);
-    let len = input_len(cx, arr.ptr)?;
-    let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
-        |cx, lp, s| {
+    array_buf_loop(cx, arr, LoopKind::Slots, state_sites, {
+        |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
             s.accs.fold(cx, value.disc);
-            push_field(cx, s.buf(), value, out_typ, out_src)?;
+            push_field(cx, buf, value, out_typ, out_src)?;
             bound.drop_leaves(cx)?;
             bound.drop_elem(cx)?;
             cx.env.truncate(lp.mark);
             Ok(())
         }
-    })?;
-    arr.drop_held(cx)?;
-    Ok((sunk.array(), flags))
+    })
 }
 
 pub(crate) fn emit_filter_loop<F>(
@@ -834,12 +907,8 @@ pub(crate) fn emit_filter_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    arr.hold(cx);
-    let len = input_len(cx, arr.ptr)?;
-    let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
-    let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
-        |cx, lp, s| {
+    array_buf_loop(cx, arr, LoopKind::PassThrough, state_sites, {
+        |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, keep) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
             s.accs.fold(cx, keep.disc);
@@ -854,7 +923,7 @@ where
             // A kept element moves into the result.
             let (_, vv) = bound.elem;
             let cv = CompiledExpr::new(cx.b.use_var(vv.disc), cx.b.use_var(vv.payload));
-            push_field(cx, s.buf(), cv, elem.typ, CompositeSource::Owned)?;
+            push_field(cx, buf, cv, elem.typ, CompositeSource::Owned)?;
             cx.b.ins().jump(advance, &[]);
             cx.b.switch_to_block(drop_block);
             cx.b.seal_block(drop_block);
@@ -864,9 +933,7 @@ where
             cx.b.seal_block(advance);
             Ok(())
         }
-    })?;
-    arr.drop_held(cx)?;
-    Ok((sunk.array(), flags))
+    })
 }
 
 pub(crate) fn emit_filter_map_loop<F>(
@@ -887,12 +954,8 @@ where
     ) {
         return Err(anyhow!("filter_map output element is not representable"));
     }
-    arr.hold(cx);
-    let len = input_len(cx, arr.ptr)?;
-    let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
-        |cx, lp, s| {
+    array_buf_loop(cx, arr, LoopKind::Slots, state_sites, {
+        |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
             cx.env.truncate(lp.mark);
@@ -912,7 +975,7 @@ where
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
             };
-            cx.call_helper(helper, &[s.buf(), value.disc, value.payload])?;
+            cx.call_helper(helper, &[buf, value.disc, value.payload])?;
             cx.b.ins().jump(advance, &[]);
             cx.b.switch_to_block(advance);
             cx.b.seal_block(advance);
@@ -920,9 +983,7 @@ where
             bound.drop_elem(cx)?;
             Ok(())
         }
-    })?;
-    arr.drop_held(cx)?;
-    Ok((sunk.array(), flags))
+    })
 }
 
 /// How a flat_map body result splices into the output buf: an array
@@ -945,12 +1006,8 @@ pub(crate) fn emit_flat_map_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    arr.hold(cx);
-    let len = input_len(cx, arr.ptr)?;
-    let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
-        |cx, lp, s| {
+    array_buf_loop(cx, arr, LoopKind::Slots, state_sites, {
+        |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
             s.accs.fold(cx, value.disc);
@@ -960,18 +1017,16 @@ where
             match extend_kind {
                 FlatMapExtend::Array => cx.call_helper(
                     "graphix_value_buf_extend_from_array",
-                    &[s.buf(), value.payload],
+                    &[buf, value.payload],
                 )?,
                 FlatMapExtend::List => cx.call_helper(
                     "graphix_value_buf_extend_from_list",
-                    &[s.buf(), value.disc, value.payload],
+                    &[buf, value.disc, value.payload],
                 )?,
             };
             Ok(())
         }
-    })?;
-    arr.drop_held(cx)?;
-    Ok((sunk.array(), flags))
+    })
 }
 
 /// Destructure leaves for a `|(k, v)|`-style pattern over a tuple-typed
@@ -1222,13 +1277,15 @@ pub(crate) fn emit_find_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    arr.hold(cx);
-    let len = input_len(cx, arr.ptr)?;
-    let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
-    let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, state_sites, {
-        |cx, lp, s| {
-            let (found_var, result_disc_var, result_payload_var) = s.found();
+    array_find_loop(cx, arr, LoopKind::PassThrough, state_sites, {
+        |cx: &mut BodyCx,
+         lp: &LoopFrame,
+         s: &Slots,
+         (found_var, result_disc_var, result_payload_var): (
+            Variable,
+            Variable,
+            Variable,
+        )| {
             let (bound, keep) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
             s.accs.fold(cx, keep.disc);
@@ -1267,9 +1324,7 @@ where
             cx.b.seal_block(advance);
             Ok(())
         }
-    })?;
-    arr.drop_held(cx)?;
-    Ok((sunk.taken(), flags))
+    })
 }
 
 pub(crate) fn emit_find_map_loop<F>(
@@ -1282,13 +1337,15 @@ pub(crate) fn emit_find_map_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<(ClifValue, ClifValue)>,
 {
-    arr.hold(cx);
-    let len = input_len(cx, arr.ptr)?;
-    let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, state_sites, {
-        |cx, lp, s| {
-            let (found_var, result_disc_var, result_payload_var) = s.found();
+    array_find_loop(cx, arr, LoopKind::Slots, state_sites, {
+        |cx: &mut BodyCx,
+         lp: &LoopFrame,
+         s: &Slots,
+         (found_var, result_disc_var, result_payload_var): (
+            Variable,
+            Variable,
+            Variable,
+        )| {
             let (bound, (disc, payload)) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
             bound.drop_leaves(cx)?;
@@ -1311,9 +1368,7 @@ where
             cx.b.seal_block(advance);
             Ok(())
         }
-    })?;
-    arr.drop_held(cx)?;
-    Ok((sunk.taken(), flags))
+    })
 }
 
 /// Collect the per-slot state sites in a scaffold-loop body: the
