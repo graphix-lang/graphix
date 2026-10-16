@@ -530,7 +530,7 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 3	wake-catchup-sep2026/00_wake_recompute_table.gx
 3	wake-catchup-sep2026/01_shared_input_spent.gx
 2	wake-catchup-sep2026/02_sequential_wakers.gx
-2	wake-catchup-sep2026/03_conflation.gx
+3	wake-catchup-sep2026/03_conflation.gx
 2	wake-catchup-sep2026/04_sample_catchup_tick.gx
 2	wake-catchup-sep2026/05_noarm_window.gx
 3	wake-catchup-sep2026/06_nested_composition.gx

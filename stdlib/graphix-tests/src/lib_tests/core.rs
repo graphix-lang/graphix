@@ -154,7 +154,7 @@ run!(all, ALL, |v: Result<&Value>| match v {
 const SUM: &str = r#"
 {
   let tweeeeenywon = [1, 2, 3, 4, 5, 6];
-  sum(tweeeeenywon)
+  #[native] sum(tweeeeenywon)
 }
 "#;
 
@@ -166,12 +166,12 @@ run!(sum, SUM, |v: Result<&Value>| match v {
 const PRODUCT: &str = r#"
 {
   let tweeeeenywon = [5, 2, 2, 1.05];
-  product(tweeeeenywon)
+  #[native] product(tweeeeenywon)
 }
 "#;
 
-// `product` over a heterogeneous `Array<Number>`: the literal fuses (a
-// primitive union is a Value), `product` itself node-walks.
+// `product` over a heterogeneous `Array<Number>` fuses: a union of the
+// number typedefs is the primitive set it names.
 run!(product, PRODUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(21.0)) => true,
     _ => false,
@@ -180,7 +180,7 @@ run!(product, PRODUCT, |v: Result<&Value>| match v {
 const DIVIDE: &str = r#"
 {
   let tweeeeenywon = [84, 2, 2];
-  divide(tweeeeenywon)
+  #[native] divide(tweeeeenywon)
 }
 "#;
 

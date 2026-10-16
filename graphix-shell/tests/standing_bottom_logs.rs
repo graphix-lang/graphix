@@ -1,5 +1,7 @@
 //! A builtin whose `eval` gave no value over arguments that do not
-//! change stands bottom: it is not evaluated again, and logs once.
+//! change stands bottom: it is not evaluated again, and logs once. Its
+//! arithmetic diagnostic is the node-walk's alone, as an operator's is:
+//! fused, it logs nothing.
 
 use std::{
     fs,
@@ -52,10 +54,11 @@ fn divide_logs(fusion: bool) -> usize {
 #[test]
 fn a_standing_divide_by_zero_logs_once() {
     assert_eq!(divide_logs(false), 1, "node-walk");
-    assert_eq!(divide_logs(true), 1, "fusion");
+    assert_eq!(divide_logs(true), 0, "fusion");
 }
 
-/// A failing `divide` is reported on stderr, as `/`'s failure is.
+/// A failing `divide` is reported on stderr by the node-walk, as `/`'s
+/// failure is.
 #[test]
 fn a_failing_divide_is_reported() {
     let dir =
@@ -68,6 +71,7 @@ fn a_failing_divide_is_reported() {
     let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
         .arg("--no-cache")
         .arg("--no-netidx")
+        .arg("--no-fusion")
         .arg(&path)
         .stdin(Stdio::null())
         .output()

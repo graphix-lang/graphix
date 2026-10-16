@@ -158,6 +158,62 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 /// encoding: an unbound TVar, `Fn`, `Any`, `ByRef`, a `Set` that is
 /// neither option/result nor all-variant, a `Ref` with an empty
 /// resolution cell, or a recursive named type.
+/// A union with its primitives, unions of them and typedefs naming them
+/// (`Number = [Int, Real]`) folded into the one primitive set they are,
+/// beside its other members; `None` when that changes nothing.
+fn primitive_union(members: &[Type]) -> Option<Type> {
+    fn bits(t: &Type, depth: usize, acc: &mut BitFlags<Typ>) -> bool {
+        if depth > MAX_FREEZE_EXPANSIONS {
+            return false;
+        }
+        match &t.deref_cloned() {
+            Some(Type::Primitive(p)) => {
+                *acc |= *p;
+                true
+            }
+            Some(Type::Set(ms)) => {
+                let mut part = *acc;
+                let all = ms.iter().all(|m| bits(m, depth + 1, &mut part));
+                if all {
+                    *acc = part
+                }
+                all
+            }
+            Some(Type::Ref(tr)) => {
+                let mut part = *acc;
+                let all =
+                    tr.expand_cell().is_some_and(|x| bits(&x, depth + 1, &mut part));
+                if all {
+                    *acc = part
+                }
+                all
+            }
+            _ => false,
+        }
+    }
+    let mut acc = BitFlags::empty();
+    let mut folded = 0;
+    let mut plain = true;
+    let mut rest: LPooled<Vec<Type>> = LPooled::take();
+    for m in members {
+        if bits(m, 0, &mut acc) {
+            folded += 1;
+            plain &= matches!(m.deref_cloned(), Some(Type::Primitive(_)));
+        } else {
+            rest.push(m.clone())
+        }
+    }
+    if folded == 0 || (folded == 1 && plain) {
+        return None;
+    }
+    Some(match rest.is_empty() {
+        true => Type::Primitive(acc),
+        false => Type::Set(Arc::from_iter(
+            std::iter::once(Type::Primitive(acc)).chain(rest.drain(..)),
+        )),
+    })
+}
+
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
     abi_kind_d(t, None)
 }
@@ -224,6 +280,9 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             return Some(AbiKind::Value);
         }
         if let Type::Set(members) = resolved {
+            if let Some(p) = primitive_union(members) {
+                return abi_kind_d(&p, seen);
+            }
             if let Some(succ) = option_result_success(members) {
                 return abi_kind_d(succ, seen).map(|_| AbiKind::Nullable);
             }
@@ -460,24 +519,10 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 let mut frozen = frozen?;
                 Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..)), *at))
             }
-            // CR claude for claude: [bug/medium] A union with a typedef among its
-            // members never freezes. Examples are core's `Number = [Int, Real]`, `Int =
-            // [Sint, Uint]` and `Real = [Float, decimal]`. A member that derefs to a
-            // `Type::Ref` is not a Variant, so this arm returns NonCanonical. The
-            // normalized retry in `try_freeze_for_abi_normalized` does not help:
-            // `normalize` never expands a Ref. As a result `sum`, `product` and
-            // `divide` (FastCall builtins that return `Number`),
-            // `cast<Number>`/`cast<Int>`/`cast<[Sint, Uint]>`, and any kernel param
-            // annotated with one of these classes all de-fuse. `#[native]` then reports
-            // a bare "not discovered" with no reason (probe:
-            // design/review-2026-10-12/repro/tests-lib-a-01.gx). Fix: expand Ref
-            // members through their cells and flatten the result, primitives into one
-            // `Type::Primitive`, before classifying the union, with the same change in
-            // `abi_kind`. Have `try_register_builtin_call_from_callsite` and the cast
-            // discovery return a FusionBlocker that names the failing freeze. Then put
-            // `#[native]` on the calls in core.rs SUM/PRODUCT/DIVIDE and delete the
-            // comment saying `product` node-walks. (tests-lib-a-01)
             Type::Set(members) => {
+                if let Some(p) = primitive_union(members) {
+                    return freeze_for_abi_d(&p, seen);
+                }
                 if let Some(succ) = option_result_success(members) {
                     let succ_idx = if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
                     let frozen_succ = freeze_for_abi_d(succ, seen)?;
@@ -948,7 +993,7 @@ mod tests {
             Arc::new(Type::Set(Arc::from_iter([Type::Hole, Type::Hole]))),
             Arc::new(i64_t()),
         );
-        assert!(freeze_for_abi(&typ).is_none());
+        assert_eq!(freeze_for_abi(&typ), Some(i64_t()));
         assert_eq!(freeze_for_abi_normalized(&typ), Some(i64_t()));
     }
 

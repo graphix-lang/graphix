@@ -607,8 +607,8 @@ node graph IS the IR — there is no parallel typed IR
   (`+?` …) yields a catchable `ArithError` naming its cause, unchecked
   `+ - *` wrap, integer div0 and `MIN / -1` bottom, `x % -1` is 0; indexing is bounds-checked through shared helpers on
   both backends; `$` and handler-less `?` log a swallowed error from
-  both backends; unchecked-arith diagnostics are node-walk-only (debug
-  with `--no-fusion`).
+  both backends; unchecked-arith diagnostics, `sum`/`product`/`divide`'s
+  included, are node-walk-only (debug with `--no-fusion`).
 - **Emit contracts** (`design/distributed_jit.md`): effects de-fuse,
   never silently skip; owned select-arm binds drop at every arm exit
   (run `leakcheck` when adding an owned-local class); a bottom is a
@@ -648,7 +648,8 @@ node graph IS the IR — there is no parallel typed IR
   so fusion runs on every host Cranelift supports, Windows included.
   Kernel ABI: kind-grouped params from
   `KernelSig::abi_params`; recursive types, abstract types, primitive
-  unions and the primitives with no register form (varints, decimal,
+  unions (a union naming primitive typedefs, `Number`, is one) and the
+  primitives with no register form (varints, decimal,
   error) are opaque 2-word values (`design/unified_value_abi.md`).
 
 Coverage today: scalar arithmetic/comparison/logic/casts, producers and

@@ -141,7 +141,7 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
                 return;
             }
             NodeView::TypeCast(tc) => {
-                try_register_cast(tc, out);
+                failure = try_register_cast(tc, out).err();
                 return;
             }
             NodeView::Select(_) => {
@@ -349,17 +349,27 @@ fn always_fits(src: PrimType, tgt: PrimType) -> bool {
     }
 }
 
+/// `t` frozen for the kernel ABI, or the blocker naming it at `spec`.
+fn frozen_or_blocked(t: &Type, spec: &Expr, what: &str) -> Result<Type, FusionBlocker> {
+    freeze_for_abi_normalized(t).ok_or_else(|| FusionBlocker {
+        spec: spec.clone(),
+        reason: crate::format_with_flags(PrintFlag::DerefTVars, || {
+            format_compact!("{what} type {t} has no kernel ABI form")
+        }),
+    })
+}
+
 /// Register a cast that is not emitted inline.
 fn try_register_cast<R: Rt, E: UserEvent>(
     tc: &crate::node::TypeCast<R, E>,
     out: &mut BuiltinCallDiscovery,
-) {
+) -> Result<(), FusionBlocker> {
     let source = tc.n.typ();
     if inline_cast(source, &tc.target).is_some() {
-        return;
+        return Ok(());
     }
-    let Some(arg_frozen) = freeze_for_abi_normalized(source) else { return };
-    let Some(ret_frozen) = freeze_for_abi_normalized(&tc.typ) else { return };
+    let arg_frozen = frozen_or_blocked(source, &tc.spec, "the cast source's")?;
+    let ret_frozen = frozen_or_blocked(&tc.typ, &tc.spec, "the cast result's")?;
     out.apply_sites.insert(
         tc.spec.id,
         BuiltinCallSiteInfo {
@@ -372,6 +382,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
             },
         },
     );
+    Ok(())
 }
 
 /// Register one CallSite as a fastcall site, if it qualifies. Types
@@ -441,9 +452,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
-                let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
-                    Some(t) => t,
-                    None => return None,
+                let kt = match frozen_or_blocked(&arg_typ, apply_expr, "an argument's") {
+                    Ok(t) => t,
+                    Err(b) => return Some(b),
                 };
                 arg_types.push(kt);
                 written_types.push(arg_typ);
@@ -467,9 +478,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         (MarshalArg::Default(name.clone()), n.typ().clone())
                     }
                 };
-                let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
-                    Some(t) => t,
-                    None => return None,
+                let kt = match frozen_or_blocked(&arg_typ, apply_expr, "an argument's") {
+                    Ok(t) => t,
+                    Err(b) => return Some(b),
                 };
                 arg_types.push(kt);
                 written_types.push(arg_typ);
@@ -491,9 +502,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 Some(t) => t,
                 None => return None,
             };
-            let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
-                Some(t) => t,
-                None => return None,
+            let kt = match frozen_or_blocked(&arg_typ, apply_expr, "an argument's") {
+                Ok(t) => t,
+                Err(b) => return Some(b),
             };
             arg_types.push(kt);
             written_types.push(arg_typ);
@@ -504,9 +515,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         return None;
     }
     let ret_typ = cs.typ().clone();
-    let return_type = match kernel_abi::freeze_for_abi_normalized(&ret_typ) {
-        Some(t) => t,
-        None => return None,
+    let return_type = match frozen_or_blocked(&ret_typ, apply_expr, "its result's") {
+        Ok(t) => t,
+        Err(b) => return Some(b),
     };
     if !arg_types.iter().all(|t| is_call_arg_supported(t)) {
         return None;

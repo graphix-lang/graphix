@@ -197,7 +197,7 @@ run!(
     let v: Primitive = sys::net::subscribe("/local/prim_sub")?;
     cast<i64>(v)?
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::Jit);
 
 // subscribe without a type annotation is a compile error.
 run!(

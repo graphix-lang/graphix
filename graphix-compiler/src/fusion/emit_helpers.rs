@@ -2132,6 +2132,12 @@ unsafe fn kernel_env<'a>() -> &'a crate::env::Env {
     unsafe { &*env }
 }
 
+/// Whether a fused kernel is running on this thread: a fast fn's
+/// arithmetic diagnostics are the node-walk's alone, as an operator's are.
+pub fn kernel_running() -> bool {
+    !KERNEL_ENV.with(|c| c.get()).is_null()
+}
+
 /// Loan `env` (`KERNEL_ENV`) to the JIT'd code `f` runs; nested
 /// invocations stack.
 pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -> T {

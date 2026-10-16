@@ -2171,7 +2171,9 @@ fn arith(name: &str, args: &[Value], op: fn(Value, Value) -> Value) -> Option<Va
             Some(l) => op(l, v),
         };
         if let Value::Error(e) = &next {
-            log::error!(target: graphix_compiler::FAILURE_TARGET, "{name}: {e}");
+            if !graphix_compiler::fusion::emit_helpers::kernel_running() {
+                log::error!(target: graphix_compiler::FAILURE_TARGET, "{name}: {e}");
+            }
             return None;
         }
         acc = Some(next);
