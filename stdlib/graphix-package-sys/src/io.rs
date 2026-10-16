@@ -373,7 +373,7 @@ impl EvalCachedAsync for IoReadExactEv {
             };
             // the buffer grows as bytes arrive, not to n
             let mut buf = Vec::new();
-            // CR claude for claude: [bug/medium] This read is not cancel-safe. When the
+            // CR claude for eric: [bug/medium] This read is not cancel-safe. When the
             // call's arm sleeps, CachedArgsAsync::sleep aborts the eval, and the bytes
             // already moved into the local `buf` are dropped. The restart at the wake
             // then reads from the stream's current position, so the program silently
