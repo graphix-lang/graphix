@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-11e54a2b.js";
+            window.path_to_searchindex_js = "searchindex-acdf3f92.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -7445,7 +7445,9 @@ type TxnTree&lt;'k, 'v&gt;;
 /// at commit. Nothing is locked while it is open.
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
-/// Open a tree within the transaction. Pass null for the default tree.
+/// Open a tree within the transaction. Pass null for the default tree. A tree
+/// that does not exist yet is created when the transaction commits, and not
+/// at all when it rolls back or fails.
 val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
@@ -8401,14 +8403,16 @@ type MoveCursor = [
 /// `#size` is the area the browser is drawn in, which sizes its
 /// viewport (pass the enclosing block's `#size` output); `#cursor`
 /// moves the selection. `#selected_row` is set to the selected row's
-/// full path, and `#selected_path` to the selected cell's.
+/// full path, and `#selected_path` to the selected cell's; each is null
+/// while the listing is empty, and neither is set while a new path's
+/// listing is on its way.
 val browser: fn(
     ?#selected_style: Style,
     ?#header_style: Style,
     ?#style: Style,
     ?#cursor: MoveCursor,
-    ?#selected_row: &amp;mut string,
-    ?#selected_path: &amp;mut string,
+    ?#selected_row: &amp;mut [string, null],
+    ?#selected_path: &amp;mut [string, null],
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,
@@ -8419,15 +8423,15 @@ val browser: fn(
 <ul>
 <li><strong>path</strong> - The netidx path whose children are listed. The listing is fetched once each time <code>path</code> changes, so rows published later appear when the path next changes</li>
 <li><strong>cursor</strong> - Programmatic cursor movement: <code>Left(n)</code>, <code>Right(n)</code>, <code>Up(n)</code>, <code>Down(n)</code></li>
-<li><strong>selected_row</strong> (output) - Full path of the selected row (e.g. <code>/t/r1</code>)</li>
-<li><strong>selected_path</strong> (output) - Full path of the selected cell: the row in a list, the row and column in a table</li>
+<li><strong>selected_row</strong> (output) - Full path of the selected row (e.g. <code>/t/r1</code>), null while the listing is empty</li>
+<li><strong>selected_path</strong> (output) - Full path of the selected cell: the row in a list, the row and column in a table; null while the listing is empty</li>
 <li><strong>size</strong> (input) - The area the browser is drawn in, which sizes its viewport; pass the enclosing block’s <code>#size</code> output</li>
 </ul>
 <h2 id="examples-2"><a class="header" href="#examples-2">Examples</a></h2>
 <h3 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h3>
 <pre><code class="language-graphix">use tui::browser::browser;
 
-let selected_path: string = never();
+let selected_path: [string, null] = never();
 
 browser(
     #size: {width: 40, height: 10},
@@ -8444,8 +8448,8 @@ browser(
 };
 
 let path = "/";
-let selected_path: string = never();
-let selected_row: string = never();
+let selected_path: [string, null] = never();
+let selected_row: [string, null] = never();
 let cursor: MoveCursor = never();
 
 let handle_event = |e: Event| on_press(e, |k| select k.code {
@@ -8453,7 +8457,7 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
     e@ `Down =&gt; { cursor &lt;- e ~ `Down(1); `Stop },
     e@ `Left =&gt; { cursor &lt;- e ~ `Left(1); `Stop },
     e@ `Right =&gt; { cursor &lt;- e ~ `Right(1); `Stop },
-    e@ `Enter =&gt; { path &lt;- e ~ selected_row; `Stop },
+    e@ `Enter =&gt; { path &lt;- (e ~ selected_row)$; `Stop },
     _ =&gt; `Continue
 });
 
@@ -8482,8 +8486,8 @@ title.</p>
 
 let path = "/";
 let command_error = "";
-let selected_path: string = never();
-let selected_row: string = never();
+let selected_path: [string, null] = never();
+let selected_row: [string, null] = never();
 let cursor: MoveCursor = never();
 let command_mode = false;
 let command = "";
@@ -8505,7 +8509,7 @@ let title_bottom = select command_mode {
     true =&gt; line(#style:title_style, ":[command]"),
     false =&gt; {
         let spans = [
-            span("[path] ([selected_path])"),
+            span(select selected_path { null as _ =&gt; path, p =&gt; "[path] ([p])" }),
             span(#style:style(#fg:`Red), "  [command_error]")
         ];
         line(#style:title_style, spans)
@@ -8517,7 +8521,7 @@ let handle_normal_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
     e@ `Right =&gt; { cursor &lt;- e ~ `Right(1); `Stop },
     e@ `Down =&gt; { cursor &lt;- e ~ `Down(1); `Stop },
     e@ `Up =&gt; { cursor &lt;- e ~ `Up(1); `Stop },
-    e@ `Enter =&gt; { path &lt;- e ~ selected_row; `Stop },
+    e@ `Enter =&gt; { path &lt;- (e ~ selected_row)$; `Stop },
     e@ `Backspace =&gt; select e ~ str::dirname(path) {
         null as _ =&gt; `Stop,
         s =&gt; {
@@ -8541,7 +8545,7 @@ let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
     },
     x@ `Enter =&gt; {
         command_mode &lt;- false;
-        run_command(x ~! command, x ~! selected_path);
+        run_command(x ~! command, (x ~! selected_path)$);
         `Stop
     },
     e@ `Backspace if command != "" =&gt; {

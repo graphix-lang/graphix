@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-11e54a2b.js";
+            window.path_to_searchindex_js = "../searchindex-acdf3f92.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -332,7 +332,9 @@ type TxnTree&lt;'k, 'v&gt;;
 /// at commit. Nothing is locked while it is open.
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
-/// Open a tree within the transaction. Pass null for the default tree.
+/// Open a tree within the transaction. Pass null for the default tree. A tree
+/// that does not exist yet is created when the transaction commits, and not
+/// at all when it rolls back or fails.
 val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.

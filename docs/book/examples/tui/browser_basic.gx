@@ -1,6 +1,6 @@
 use tui::browser::browser;
 
-let selected_path: string = never();
+let selected_path: [string, null] = never();
 
 browser(
     #size: {width: 40, height: 10},
