@@ -117,7 +117,7 @@ impl TrackedFires {
 
     /// Re-collect arm `i`'s refs, at a deselect, when its subtree is
     /// fully materialized.
-    // CR claude for claude: [perf/low] Every select deselect and every seq step passage
+    // CR claude for eric: [perf/low] Every select deselect and every seq step passage
     // call this. It builds a fresh Refs and walks the arm's entire subtree with `refs`,
     // descending into every bound callee instance and every collection slot. It then
     // rebuilds the arm's input map and the select-wide `all` set. The arm's refs change
@@ -126,13 +126,17 @@ impl TrackedFires {
     // the sleep walk. Fix: refresh arm i only when its subtree changed since its last
     // refresh. A dirty bit or generation that the arm's CallSites and collections bump
     // when they bind or resize would do it. (x-alloc-06)
+    // 2026-10-16 claude: The dirty bit this asks for is the same mechanism as Eric's
+    // generalized walk pruning (his 2026-10-14 note on x-perf-runtime-01: a NodeId per
+    // node, BindId -> dependent NodeIds, a dirty bit per node). Readdressed to Eric so
+    // both are designed once.
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
         let Self { per_arm, consumes, all, pending, carried, ran: _ } = self;
         let mut r = Refs::default();
         fill(&mut r);
         let old = mem::take(&mut per_arm[i]);
         Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
-        // CR claude for claude: [perf/medium] refresh rebuilds `all` from every arm's
+        // CR claude for eric: [perf/medium] refresh rebuilds `all` from every arm's
         // map and then retains `pending`, at every deselect. A seq machine deselects at
         // every step completion, so a run of S steps costs O(S^2). observe_except also
         // reads every tracked id with read_var on every update, whether or not anything
@@ -160,6 +164,10 @@ impl TrackedFires {
         // the event instead needs the store writes stamped this cycle with no event
         // entry made explicit (the ByRef mirror, a module's proxies, the seq pc) and
         // must keep a fork's read audit, so it is left.
+        // 2026-10-16 claude: The open part (observe_except reading every tracked input
+        // each update) would be answered by the same per-node dirty bits as Eric's walk
+        // pruning on x-perf-runtime-01: an arm's tracked input that nothing set stays
+        // clean. Readdressed to Eric with x-alloc-06 so the design is made once.
         for id in per_arm[i].keys() {
             if !old.contains_key(id) {
                 *all.entry(*id).or_default() += 1;
