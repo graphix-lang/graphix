@@ -16,7 +16,7 @@ use graphix_compiler::{
     image::{self, ImageBuf},
     typ::FnType,
 };
-use graphix_package_core::{CachedVals, Invocation, seam_arg, seam_tick};
+use graphix_package_core::{CachedVals, Invocation, RtVar, seam_arg, seam_tick};
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::IntoValue;
 use netidx_value::{FromValue, ValArray, Value};
@@ -551,10 +551,9 @@ pub(crate) type WatchEvents = WatchStream<EventsKind>;
 /// writes to one variable a cycle apart.
 #[derive(Debug)]
 pub(crate) struct WatchStream<K: WatchKind> {
-    top_id: ExprId,
+    var: RtVar,
     cached: CachedVals,
     bind_ids: IntSet<BindId>,
-    id: BindId,
     out: TagValue,
     /// Asleep since the last update: the first update after watches again.
     slept: bool,
@@ -573,13 +572,10 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
         Ok(Box::new(Self {
-            top_id,
+            var: RtVar::new(ctx, top_id),
             cached: CachedVals::new(from),
             bind_ids: IntSet::default(),
-            id,
             out: TagValue::phantom(),
             slept: false,
             kind: PhantomData,
@@ -591,15 +587,12 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let top_id = ExprId::decode(buf)?;
-        let id = BindId::decode(buf)?;
+        let var = RtVar::image_decode(ctx, buf)?;
         let cached = CachedVals::image_decode(buf)?;
-        ctx.record_ref(id, top_id);
         Ok(Box::new(Self {
-            top_id,
+            var,
             cached,
             bind_ids: IntSet::default(),
-            id,
             out: TagValue::phantom(),
             slept: false,
             kind: PhantomData,
@@ -610,7 +603,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
 impl<K: WatchKind> WatchStream<K> {
     fn unwatch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for bid in self.bind_ids.drain() {
-            ctx.release_var(bid, self.top_id);
+            ctx.release_var(bid, self.var.top_id());
         }
     }
 }
@@ -621,8 +614,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         if !self.bind_ids.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.top_id.encode(buf)?;
-        self.id.encode(buf)?;
+        self.var.image_encode(buf)?;
         self.cached.image_encode(buf)
     }
 
@@ -641,7 +633,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
                 extract_bind_ids(v, &mut self.bind_ids);
             }
             for bid in &self.bind_ids {
-                ctx.rt.ref_var(*bid, self.top_id);
+                ctx.rt.ref_var(*bid, self.var.top_id());
             }
         }
         for bid in &self.bind_ids {
@@ -654,10 +646,10 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
                 })
             });
             if let Some(v) = v {
-                ctx.rt.set_var(self.id, v);
+                ctx.rt.set_var(self.var.id, v);
             }
         }
-        match ctx.event.variables.remove(&self.id) {
+        match ctx.event.variables.remove(&self.var.id) {
             Some(tv) => self.out.set(TagValue::fired(tv.value_cloned())),
             None => self.out.ride(),
         }
@@ -667,13 +659,11 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         self.unwatch(ctx);
         self.slept = true;
         self.out = TagValue::phantom();
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.unwatch(ctx);
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
     }
 }

@@ -12,7 +12,9 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CastTarget, Handler, Inbox, Reply, castable, seam_arg};
+use graphix_package_core::{
+    CastTarget, Handler, Inbox, Reply, RtVar, castable, seam_arg,
+};
 use netidx::{
     path::Path,
     publisher::Val,
@@ -201,8 +203,7 @@ pub(crate) struct Subscribe {
     /// must re-establish it from the PRESENT path.
     slept: bool,
     cur: Option<(Path, Dval)>,
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     target: CastTarget,
     out: TagValue,
 }
@@ -220,13 +221,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let _ = from;
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
+        let var = RtVar::new(ctx, top_id);
         Ok(Box::new(Subscribe {
             slept: false,
             cur: None,
-            id,
-            top_id,
+            var,
             target: CastTarget::of(resolved),
             out: TagValue::phantom(),
         }))
@@ -238,15 +237,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let slept = bool::decode(buf)?;
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
+        let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
-        ctx.record_ref(id, top_id);
         Ok(Box::new(Subscribe {
             slept,
             cur: None,
-            id,
-            top_id,
+            var,
             target,
             out: TagValue::phantom(),
         }))
@@ -260,8 +256,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.slept.encode(buf)?;
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)?;
+        self.var.image_encode(buf)?;
         self.target.encode(buf)
     }
 
@@ -279,8 +274,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                 if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
             {
                 if let Some((_, dv)) = self.cur.take() {
-                    NetState::get(ctx).unsubscribe(dv, self.id);
-                    self.renew(ctx);
+                    NetState::get(ctx).unsubscribe(dv, self.var.id);
+                    self.var.remint(ctx);
                 }
                 let net = NetState::get(ctx);
                 let path = Path::from(path);
@@ -293,7 +288,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                     ctx,
                     UpdatesFlags::BEGIN_WITH_LAST,
                     path.clone(),
-                    self.id,
+                    self.var.id,
                 ) {
                     Ok(dv) => dv,
                     Err(e) => {
@@ -314,7 +309,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
         let res = self.cur.as_ref().and_then(|_| {
-            ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
+            ctx.event.variables.get(&self.var.id).map(|v| match v.value_cloned() {
                 // the pump's unsubscribe, or the publisher's own error
                 Value::Error(e) => remote_err(&ERR_TAG, &e),
                 v => self.target.cast(&ctx.env, v),
@@ -345,9 +340,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
         if let Some((_, dv)) = self.cur.take() {
-            NetState::get(ctx).unsubscribe(dv, self.id)
+            NetState::get(ctx).unsubscribe(dv, self.var.id)
         }
     }
 
@@ -355,27 +350,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         self.slept = true;
         self.out = TagValue::phantom();
         if let Some((_, dv)) = self.cur.take() {
-            NetState::get(ctx).unsubscribe(dv, self.id);
+            NetState::get(ctx).unsubscribe(dv, self.var.id);
         }
-        self.renew(ctx);
-    }
-}
-
-impl Subscribe {
-    /// Answer under a fresh id: an update already sent for the old
-    /// subscription arrives on the old one, which nothing reads.
-    fn renew<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct RpcCall {
     slept: bool,
-    top_id: ExprId,
-    id: BindId,
+    var: RtVar,
     target: CastTarget,
     out: TagValue,
 }
@@ -392,13 +376,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
+        let var = RtVar::new(ctx, top_id);
         let _ = from;
         Ok(Box::new(RpcCall {
             slept: false,
-            top_id,
-            id,
+            var,
             target: CastTarget::of(resolved),
             out: TagValue::phantom(),
         }))
@@ -410,19 +392,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let slept = bool::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        let id = BindId::decode(buf)?;
+        let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(RpcCall { slept, top_id, id, target, out: TagValue::phantom() }))
+        Ok(Box::new(RpcCall { slept, var, target, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.slept.encode(buf)?;
-        self.top_id.encode(buf)?;
-        self.id.encode(buf)?;
+        self.var.image_encode(buf)?;
         self.target.encode(buf)
     }
 
@@ -467,10 +446,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                         .out
                         .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
                 }
-                Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
+                Ok((path, args)) => {
+                    NetState::get(ctx).call_rpc(ctx, path, args, self.var.id)
+                }
             }
         }
-        let res = ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
+        let res = ctx.event.variables.get(&self.var.id).map(|v| match v.value_cloned() {
             Value::Error(e) => remote_err(&literal!("RpcError"), &e),
             v => self.target.cast(&ctx.env, v),
         });
@@ -512,16 +493,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 impl RpcCall {
     fn release<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(net) = ctx.libstate.get::<NetState>() {
-            net.stop_request(self.id);
+            net.stop_request(self.var.id);
         }
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
     }
 
     /// A fresh delivery id: a reply to an earlier call lands nowhere.
     fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.release(ctx);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        if let Some(net) = ctx.libstate.get::<NetState>() {
+            net.stop_request(self.var.id);
+        }
+        self.var.remint(ctx);
     }
 }
 
@@ -531,17 +513,14 @@ macro_rules! list {
         pub(crate) struct $name {
             slept: bool,
             current: Option<Path>,
-            id: BindId,
-            top_id: ExprId,
+            var: RtVar,
             out: TagValue,
         }
 
         impl $name {
             fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-                ctx.release_var(self.id, self.top_id);
-                NetState::get(ctx).stop_list(self.id);
-                self.id = BindId::new();
-                ctx.rt.ref_var(self.id, self.top_id);
+                NetState::get(ctx).stop_list(self.var.id);
+                self.var.remint(ctx);
                 self.current = None;
             }
         }
@@ -559,13 +538,11 @@ macro_rules! list {
                 top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
                 let _ = from;
-                let id = BindId::new();
-                ctx.record_ref(id, top_id);
+                let var = RtVar::new(ctx, top_id);
                 Ok(Box::new($name {
                     slept: false,
                     current: None,
-                    top_id,
-                    id,
+                    var,
                     out: TagValue::phantom(),
                 }))
             }
@@ -576,14 +553,11 @@ macro_rules! list {
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
                 let slept = bool::decode(buf)?;
-                let id = BindId::decode(buf)?;
-                let top_id = ExprId::decode(buf)?;
-                ctx.record_ref(id, top_id);
+                let var = RtVar::image_decode(ctx, buf)?;
                 Ok(Box::new($name {
                     slept,
                     current: None,
-                    top_id,
-                    id,
+                    var,
                     out: TagValue::phantom(),
                 }))
             }
@@ -596,8 +570,7 @@ macro_rules! list {
                     return Err(PackError::Application(image::NOT_QUIESCENT));
                 }
                 self.slept.encode(buf)?;
-                self.id.encode(buf)?;
-                self.top_id.encode(buf)
+                self.var.image_encode(buf)
             }
 
             fn update(
@@ -623,13 +596,13 @@ macro_rules! list {
                             self.remint(ctx);
                         }
                         self.current = Some(path.clone());
-                        NetState::get(ctx).list(ctx, self.id, path, $table);
+                        NetState::get(ctx).list(ctx, self.var.id, path, $table);
                     }
                 }
                 let res = ctx
                     .event
                     .variables
-                    .get(&self.id)
+                    .get(&self.var.id)
                     .and_then(|v| v.with_value(list_response));
                 match res {
                     Some(v) => self.out.set(TagValue::fired(v)),
@@ -638,8 +611,8 @@ macro_rules! list {
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-                ctx.release_var(self.id, self.top_id);
-                NetState::get(ctx).stop_list(self.id);
+                self.var.release(ctx);
+                NetState::get(ctx).stop_list(self.var.id);
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -950,8 +923,7 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     /// Wake catch-up: `sleep()` drops the published proc, so the first
     /// update after must republish from the present path/doc/spec.
     slept: bool,
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     handler: Handler<R, E, RpcReply>,
     /// Calls posted under `id`, taken at each wake.
     inbox: std::sync::Arc<Inbox<server::RpcCall>>,
@@ -1013,7 +985,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
             path.clone(),
             doc.clone(),
             spec,
-            self.id,
+            self.var.id,
             self.inbox.clone(),
         )?;
         self.current = Some((path, proc));
@@ -1036,12 +1008,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         let [_, _, _, _] = from else { bail!("expected four arguments") };
         let typ = resolved.unwrap_or(typ);
         let handler = Handler::new(ctx, &typ.args[3].typ, scope, top_id)?;
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
+        let var = RtVar::new(ctx, top_id);
         Ok(Box::new(PublishRpc {
             slept: false,
-            id,
-            top_id,
+            var,
             handler,
             inbox: Default::default(),
             current: None,
@@ -1057,15 +1027,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let slept = bool::decode(buf)?;
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
+        let var = RtVar::image_decode(ctx, buf)?;
         let handler = Handler::image_decode(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
-        ctx.record_ref(id, top_id);
         Ok(Box::new(PublishRpc {
             slept,
-            id,
-            top_id,
+            var,
             handler,
             inbox: Default::default(),
             current: None,
@@ -1083,8 +1050,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.slept.encode(buf)?;
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)?;
+        self.var.image_encode(buf)?;
         self.handler.image_encode(buf)?;
         self.cast_typ.encode(buf)
     }
@@ -1105,7 +1071,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             if crate::netstate::rpc_dbg() {
                 eprintln!(
                     "RPCDBG publish_rpc {:?}: (re)publish changed={:?} had={:?}",
-                    self.id,
+                    self.var.id,
                     [path_fired, doc_fired, spec_fired, f_fired],
                     self.current.as_ref().map(|(p, _)| p)
                 );
@@ -1118,7 +1084,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 failed = Some(errf!(literal!("PublishRpcError"), "{e:#}"));
             }
         }
-        if let Some(cbt) = ctx.event.take_custom(&self.id)
+        if let Some(cbt) = ctx.event.take_custom(&self.var.id)
             && (&*cbt as &dyn Any).is::<NetRpcWake>()
         {
             let mut calls: LPooled<Vec<server::RpcCall>> = LPooled::take();
@@ -1160,7 +1126,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
         self.current = None;
         self.handler.delete(ctx);
     }
@@ -1168,9 +1134,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept = true;
         self.out = TagValue::phantom();
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
         self.inbox = Default::default();
         self.current = None;
         self.handler.sleep(ctx);

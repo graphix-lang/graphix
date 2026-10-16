@@ -593,6 +593,62 @@ pub enum Invocation {
     Bottom { fresh: bool },
 }
 
+/// A runtime variable a builtin answers through, and the expression that
+/// refers to it: recorded at the build, recorded again at an image's
+/// decode, re-minted where an answer under the old id must land nowhere,
+/// released at delete.
+#[derive(Debug)]
+pub struct RtVar {
+    pub id: BindId,
+    top_id: ExprId,
+}
+
+impl RtVar {
+    pub fn new<R: Rt, E: UserEvent>(ctx: &mut CompileCtx<R, E>, top_id: ExprId) -> Self {
+        let id = BindId::new();
+        ctx.record_ref(id, top_id);
+        Self { id, top_id }
+    }
+
+    pub fn top_id(&self) -> ExprId {
+        self.top_id
+    }
+
+    pub fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
+    pub fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.record_ref(id, top_id);
+        Ok(Self { id, top_id })
+    }
+
+    /// Answer under a fresh id: what was sent under the old one lands
+    /// nowhere.
+    pub fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.release(ctx);
+        self.fresh(ctx);
+    }
+
+    /// Answer under a fresh id and return the old one, still referenced:
+    /// the caller releases it once what is owed under it has come.
+    pub fn fresh<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> BindId {
+        let old = std::mem::replace(&mut self.id, BindId::new());
+        ctx.rt.ref_var(self.id, self.top_id);
+        old
+    }
+
+    pub fn release<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
+        ctx.release_var(self.id, self.top_id)
+    }
+}
+
 #[derive(Debug)]
 pub struct CachedVals {
     /// Each argument's last value and the tag it arrived with.
@@ -648,8 +704,7 @@ pub trait Elements: Debug + Send + Sync + 'static {
 /// in order.
 #[derive(Debug)]
 pub struct Iter<C> {
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     out: TagValue,
     elems: PhantomData<fn() -> C>,
 }
@@ -665,9 +720,8 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for Iter<C> {
         _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { id, top_id, out: TagValue::phantom(), elems: PhantomData }))
+        let var = RtVar::new(ctx, top_id);
+        Ok(Box::new(Self { var, out: TagValue::phantom(), elems: PhantomData }))
     }
 
     fn image_decode(
@@ -675,17 +729,14 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for Iter<C> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { id, top_id, out: TagValue::phantom(), elems: PhantomData }))
+        let var = RtVar::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { var, out: TagValue::phantom(), elems: PhantomData }))
     }
 }
 
 impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
+        self.var.image_encode(buf)
     }
 
     fn update(
@@ -704,10 +755,10 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
                 if ctx.interrupted() {
                     return self.out.ride();
                 }
-                ctx.rt.set_var(self.id, e);
+                ctx.rt.set_var(self.var.id, e);
             }
         }
-        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+        match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => match bottom {
                 Some(bottom) => bottom,
@@ -717,23 +768,11 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id)
+        self.var.release(ctx)
     }
 
-    // CR claude for claude: [structure/medium] About fifteen builtins (core, sys
-    // net/io/watch/time, http, db, queuefn) repeat the life of a runtime variable by
-    // hand. They record_ref in init and again in image_decode, re-mint on sleep
-    // (release_var, BindId::new, ref_var; sys::net names it both `renew` and `remint`),
-    // release at delete, and encode id and top_id. A new async builtin that copies init
-    // but forgets the record_ref in decode is deaf after a warm start, and nothing in
-    // the types catches it. Add a `RtVar { id, top_id }` to graphix-package-core with
-    // new, image_encode, image_decode (decode plus record_ref), remint and release.
-    // Hold it in place of the two fields so the re-registration rule lives in one
-    // place. (x-dup-05)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
         self.out = TagValue::phantom();
     }
 }
@@ -744,8 +783,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
 pub struct IterQ<C: Elements> {
     triggered: usize,
     queue: VecDeque<C::Cursor>,
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     out: TagValue,
 }
 
@@ -760,10 +798,9 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
         _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
+        let var = RtVar::new(ctx, top_id);
         let queue = VecDeque::new();
-        Ok(Box::new(Self { triggered: 0, queue, id, top_id, out: TagValue::phantom() }))
+        Ok(Box::new(Self { triggered: 0, queue, var, out: TagValue::phantom() }))
     }
 
     fn image_decode(
@@ -771,11 +808,9 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
+        let var = RtVar::image_decode(ctx, buf)?;
         let queue = VecDeque::new();
-        Ok(Box::new(Self { triggered: 0, queue, id, top_id, out: TagValue::phantom() }))
+        Ok(Box::new(Self { triggered: 0, queue, var, out: TagValue::phantom() }))
     }
 }
 
@@ -785,8 +820,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
         if self.triggered > 0 || !self.queue.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
+        self.var.image_encode(buf)
     }
 
     fn update(
@@ -814,7 +848,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
             }
             match C::next(c) {
                 Some(e) => {
-                    ctx.rt.set_var(self.id, e);
+                    ctx.rt.set_var(self.var.id, e);
                     self.triggered -= 1;
                 }
                 None => {
@@ -822,7 +856,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
                 }
             }
         }
-        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+        match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => match bottom {
                 Some(bottom) => bottom,
@@ -832,13 +866,11 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id)
+        self.var.release(ctx)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
         self.queue.clear();
         self.triggered = 0;
         self.out = TagValue::phantom();
@@ -1545,8 +1577,7 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     /// again over its present arguments.
     slept: bool,
     cached: CachedVals,
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     queued: VecDeque<T::Args>,
     /// calls spawned under `id` and not answered yet
     inflight: usize,
@@ -1598,20 +1629,25 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
     /// Abort the calls in flight, drop those queued and release the reply
     /// ids, which are this call's alone, as is what was stored for them.
     fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.abort = None;
-        self.inflight = 0;
-        self.queued.clear();
-        ctx.release_var(self.id, self.top_id);
-        for id in self.replaced.drain(..) {
-            ctx.release_var(id, self.top_id);
-        }
+        self.drop_calls(ctx);
+        self.var.release(ctx);
     }
 
     /// `release`, then answer under a fresh reply id.
     fn renew<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.release(ctx);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.drop_calls(ctx);
+        self.var.remint(ctx);
+    }
+
+    /// Abort the calls in flight, drop those queued and release the ids
+    /// of the calls replaced.
+    fn drop_calls<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.abort = None;
+        self.inflight = 0;
+        self.queued.clear();
+        for id in self.replaced.drain(..) {
+            ctx.release_var(id, self.var.top_id());
+        }
     }
 
     /// Abort the calls in flight for a newer one, answering under a fresh
@@ -1621,9 +1657,8 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         self.abort = None;
         self.inflight = 0;
         self.queued.clear();
-        self.replaced.push(self.id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        let old = self.var.fresh(ctx);
+        self.replaced.push(old);
     }
 
     /// The reply of the first replaced call that completed, its id
@@ -1633,7 +1668,7 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
         ctx: &mut ExecCtx<'_, R, E>,
     ) -> Option<Value> {
         let mut reply = None;
-        let top_id = self.top_id;
+        let top_id = self.var.top_id();
         self.replaced.retain(|id| match ctx.event.variables.remove(id) {
             None => true,
             Some(tv) => match tv.value() {
@@ -1665,13 +1700,11 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
+        let var = RtVar::new(ctx, top_id);
         let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
         let t = CachedArgsAsync::<T> {
             slept: false,
-            id,
-            top_id,
+            var,
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             inflight: 0,
@@ -1691,16 +1724,13 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let slept = bool::decode(buf)?;
         let cached = CachedVals::image_decode(buf)?;
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
+        let var = RtVar::image_decode(ctx, buf)?;
         let panic_tag = Pack::decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
-        ctx.record_ref(id, top_id);
         Ok(Box::new(Self {
             slept,
             cached,
-            id,
-            top_id,
+            var,
             queued: VecDeque::new(),
             inflight: 0,
             replaced: SmallVec::new(),
@@ -1721,8 +1751,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         }
         self.slept.encode(buf)?;
         self.cached.image_encode(buf)?;
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)?;
+        self.var.image_encode(buf)?;
         self.panic_tag.encode(buf)?;
         self.t.image_encode(buf)
     }
@@ -1773,7 +1802,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             Invocation::Quiet => woke,
             Invocation::Bottom { .. } => false,
         };
-        let mut reply = ctx.event.variables.remove(&self.id).map(|tv| {
+        let mut reply = ctx.event.variables.remove(&self.var.id).map(|tv| {
             self.inflight -= 1;
             tv.value()
         });
@@ -1781,7 +1810,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             // one answer a cycle: the replaced call's first, this one's next
             if let Some(v) = reply.replace(earlier) {
                 self.inflight += 1;
-                ctx.rt.set_var(self.id, v);
+                ctx.rt.set_var(self.var.id, v);
             }
         }
         let res = reply.and_then(|v| match v {
@@ -1798,7 +1827,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             && let Some(args) = self.queued.pop_front()
         {
             self.inflight += 1;
-            let (id, panic_tag) = (self.id, self.panic_tag.clone());
+            let (id, panic_tag) = (self.var.id, self.panic_tag.clone());
             let aborted = self.abort.get_or_insert_with(Abort::new).rx.clone();
             let eval = std::panic::AssertUnwindSafe(T::eval(args)).catch_unwind();
             ctx.rt.spawn_var(async move {
@@ -2518,8 +2547,7 @@ struct Queue {
     queue: VecDeque<(u64, Value)>,
     /// How many values have arrived.
     pushed: u64,
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     out: TagValue,
 }
 
@@ -2532,17 +2560,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         let triggered = decode_varint(buf)? as usize;
         let queue = Vec::<(u64, Value)>::decode(buf)?.into();
         let pushed = decode_varint(buf)?;
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self {
-            triggered,
-            queue,
-            pushed,
-            id,
-            top_id,
-            out: TagValue::phantom(),
-        }))
+        let var = RtVar::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { triggered, queue, pushed, var, out: TagValue::phantom() }))
     }
 
     const NAME: &str = "core_queue";
@@ -2557,14 +2576,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
             [_, _, _, _] => {
-                let id = BindId::new();
-                ctx.record_ref(id, top_id);
+                let var = RtVar::new(ctx, top_id);
                 Ok(Box::new(Self {
                     triggered: 0,
                     queue: VecDeque::new(),
                     pushed: 0,
-                    id,
-                    top_id,
+                    var,
                     out: TagValue::phantom(),
                 }))
             }
@@ -2583,8 +2600,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
             v.encode(buf)?;
         }
         encode_varint(self.pushed, buf);
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
+        self.var.image_encode(buf)
     }
 
     fn update(
@@ -2617,9 +2633,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         let bottom = bottom_of([x_tag]);
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
-            ctx.rt.set_var(self.id, self.queue.pop_front().unwrap().1);
+            ctx.rt.set_var(self.var.id, self.queue.pop_front().unwrap().1);
         }
-        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+        match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => match bottom {
                 Some(bottom) => bottom,
@@ -2629,13 +2645,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
         self.triggered = 0;
         // CR claude for eric: [doc-drift/low] Queue::sleep discards every queued value.
         // A seqq whose select arm sleeps therefore loses not only the run in progress
@@ -2734,8 +2748,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
 
 #[derive(Debug)]
 struct Seq {
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     args: CachedVals,
     out: TagValue,
 }
@@ -2746,11 +2759,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
+        let var = RtVar::image_decode(ctx, buf)?;
         let args = CachedVals::image_decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { id, top_id, args, out: TagValue::phantom() }))
+        Ok(Box::new(Self { var, args, out: TagValue::phantom() }))
     }
 
     const NAME: &str = "core_seq";
@@ -2763,10 +2774,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
+        let var = RtVar::new(ctx, top_id);
         let args = CachedVals::new(from);
-        Ok(Box::new(Self { id, top_id, args, out: TagValue::phantom() }))
+        Ok(Box::new(Self { var, args, out: TagValue::phantom() }))
     }
 }
 
@@ -2778,8 +2788,7 @@ fn range_len_exceeds_cap(i: i64, j: i64) -> bool {
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)?;
+        self.var.image_encode(buf)?;
         self.args.image_encode(buf)
     }
 
@@ -2805,7 +2814,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                         ))
                     } else {
                         for v in *i..*j {
-                            ctx.rt.set_var(self.id, Value::I64(v));
+                            ctx.rt.set_var(self.var.id, Value::I64(v));
                         }
                         None
                     }
@@ -2819,20 +2828,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                 return self.out.set(TagValue::fired(e));
             }
         }
-        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+        match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
         self.out = TagValue::phantom();
     }
 }

@@ -17,12 +17,12 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, Handler,
-    ImageState, Inbox, seam_arg,
+    ImageState, Inbox, RtVar, seam_arg,
 };
 use graphix_rt::GXRt;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::StatusCode;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::PackError;
 use netidx_derive::{FromValue, IntoValue};
 use netidx_value::{FromValue, ValArray, Value};
 use parking_lot::Mutex;
@@ -809,8 +809,7 @@ impl Drop for Listening {
 
 #[derive(Debug)]
 pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     handler: Handler<R, E, oneshot::Sender<Value>>,
     /// Requests posted under `id`, taken at each wake.
     inbox: Arc<Inbox<Asked>>,
@@ -835,11 +834,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
         let [_, _, _, _, _, _] = from else { bail!("expected six arguments") };
         let typ = resolved.unwrap_or(typ);
         let handler = Handler::new(ctx, &typ.args[5].typ, scope, top_id)?;
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
+        let var = RtVar::new(ctx, top_id);
         Ok(Box::new(HttpServe {
-            id,
-            top_id,
+            var,
             handler,
             inbox: Arc::default(),
             listening: None,
@@ -854,13 +851,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
+        let var = RtVar::image_decode(ctx, buf)?;
         let handler = Handler::image_decode(ctx, buf)?;
-        ctx.record_ref(id, top_id);
         Ok(Box::new(HttpServe {
-            id,
-            top_id,
+            var,
             handler,
             inbox: Arc::default(),
             listening: None,
@@ -912,7 +906,7 @@ impl<R: Rt, E: UserEvent> HttpServe<R, E> {
         let (tx, rx) = mpsc::channel(100);
         ctx.rt.watch(rx);
         let semaphore = Arc::new(Semaphore::new(s.max_connections));
-        let post = Post { tx, id: self.id, inbox: self.inbox.clone() };
+        let post = Post { tx, id: self.var.id, inbox: self.inbox.clone() };
         let serve = serve_loop(listener, conns, s.tls, post, semaphore, s.max_body);
         let abort = tokio::spawn(serve).abort_handle();
         self.abort = Some(abort.clone());
@@ -927,8 +921,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if self.abort.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)?;
+        self.var.image_encode(buf)?;
         self.handler.image_encode(buf)
     }
 
@@ -985,7 +978,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         // publish_rpc does the same. Delivery is pinned by http_concurrent_requests_pair
         // and the net rpc tests; the batching itself depends on arrival timing and has
         // no deterministic pin.
-        if ctx.event.take_custom(&self.id).is_some() {
+        if ctx.event.take_custom(&self.var.id).is_some() {
             let mut asked: LPooled<Vec<Asked>> = LPooled::take();
             self.inbox.take(&mut *asked);
             for (request, reply) in asked.drain(..) {
@@ -1013,7 +1006,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
         self.stop();
         self.listening = None;
         self.handler.delete(ctx);
@@ -1022,9 +1015,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     /// The server stops, its connections and pending requests dropped, and
     /// starts again at the wake on the socket it keeps.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.release_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+        self.var.remint(ctx);
         self.stop();
         if let Some(l) = &self.listening {
             l.conns.0.lock().abort_all();

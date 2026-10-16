@@ -11,9 +11,10 @@ use graphix_compiler::{
     typ::FnType,
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_value,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, RtVar,
+    seam_value,
 };
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::PackError;
 use netidx_value::{PBytes, ValArray, Value};
 use parking_lot::Mutex;
 use poolshark::{
@@ -244,8 +245,7 @@ struct Reading {
 /// (BATCHED = true). Shared by every stream kind.
 #[derive(Debug)]
 pub(crate) struct IoLines<const BATCHED: bool> {
-    id: BindId,
-    top_id: ExprId,
+    var: RtVar,
     /// The stream being read and its reader.
     reading: Option<Reading>,
     out: TagValue,
@@ -271,9 +271,8 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED
         _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { id, top_id, reading: None, out: TagValue::phantom() }))
+        let var = RtVar::new(ctx, top_id);
+        Ok(Box::new(Self { var, reading: None, out: TagValue::phantom() }))
     }
 
     fn image_decode(
@@ -281,10 +280,8 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { id, top_id, reading: None, out: TagValue::phantom() }))
+        let var = RtVar::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { var, reading: None, out: TagValue::phantom() }))
     }
 }
 
@@ -294,8 +291,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         if self.reading.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
+        self.var.image_encode(buf)
     }
 
     fn update(
@@ -313,29 +309,27 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         {
             if self.reading.is_some() {
                 self.stop();
-                ctx.release_var(self.id, self.top_id);
-                self.id = BindId::new();
-                ctx.rt.ref_var(self.id, self.top_id);
+                self.var.remint(ctx);
             }
             let (tx, rx) = mpsc::channel(3);
             ctx.rt.watch_var(rx);
             let queue = (!BATCHED).then(|| Arc::new(LineQueue::new()));
             let reader =
-                tokio::spawn(line_reader(stream.clone(), self.id, queue.clone(), tx));
+                tokio::spawn(line_reader(stream.clone(), self.var.id, queue.clone(), tx));
             self.reading = Some(Reading { stream, task: reader.abort_handle(), queue });
         }
         if let Some(queue) = self.reading.as_ref().and_then(|r| r.queue.as_ref()) {
             match queue.pop() {
                 Some((value, more)) => {
                     if more {
-                        ctx.rt.set_var(self.id, Value::Null);
+                        ctx.rt.set_var(self.var.id, Value::Null);
                     }
                     self.out.set(TagValue::fired(value))
                 }
                 None => self.out.ride(),
             }
         } else {
-            match ctx.event.variables.get(&self.id) {
+            match ctx.event.variables.get(&self.var.id) {
                 Some(tv) => self.out.set(TagValue::fired(tv.value_cloned())),
                 None => self.out.ride(),
             }
@@ -344,7 +338,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
-        ctx.release_var(self.id, self.top_id);
+        self.var.release(ctx);
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
