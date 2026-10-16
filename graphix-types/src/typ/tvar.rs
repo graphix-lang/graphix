@@ -414,22 +414,6 @@ pub(crate) enum CellFact {
     /// The cell is bound to ⊥ because something required it (`⊥ ⊇ 'x`:
     /// a `_` annotation, a `-> _` return): a fact the gate keeps, where a
     /// ⊥ nothing required is vacuous and reopens.
-    // CR claude for claude: [risk/low] `bottom_required` only means something when
-    // `binding` is `Some(Bottom)`, and two writers of a cell drop it. The session image
-    // (`cell_encode`/`cell_decode` in image/mod.rs) encodes `cycle_refused`,
-    // `bottom_fed` and `level` but not this flag. `TVar::freshen` carries the other two
-    // flags into a copy but not this one. A restored or copied cell bound to ⊥ because
-    // a `_` or `-> _` required it then reads as a vacuous ⊥, which
-    // `Type::unbind_vacuous_tvars` reopens. Today that runs only at a definition's own
-    // gate, so a warm start would type differently only if a later definition's
-    // signature shared such a cell. Fold the flag into the binding, e.g. `enum Binding
-    // { Open, Bound(Type), RequiredBottom }`, so the image codec and the copy walk have
-    // to handle it and `unbind_vacuous_tvars` matches on it. At minimum, encode it and
-    // copy it beside `bottom_fed`. (x-invalid-states-04)
-    // 2026-10-14 claude: the image and the copy now carry it (CellFact, with
-    // t-tvar-09 and t-image-04; pins image::decode_tests::a_cell_keeps_its_facts,
-    // typ::tvar::tests::a_copy_keeps_its_cells_facts). A BottomRequired beside a
-    // binding other than ⊥ is still representable.
     BottomRequired,
 }
 
@@ -1145,14 +1129,16 @@ impl TVar {
         self.clone()
     }
 
-    /// Clear the binding; the constraints stay.
+    /// Clear the binding, and the requirement a ⊥ binding carried; the
+    /// constraints stay.
     pub fn unbind(&self) {
         let cell = self.cell();
         let mut c = cell.write();
         if c.binding.is_some() && !decided(&c) {
             return;
         }
-        c.binding = None
+        c.binding = None;
+        c.facts.remove(CellFact::BottomRequired);
     }
 
     /// Open a rigid gate on the cell this var reads now; see
@@ -1970,6 +1956,7 @@ impl Type {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 let required = tv.cell().read().facts.contains(CellFact::BottomRequired);
+                debug_assert!(!required || tv.binding() == Some(Type::Bottom));
                 if !required && tv.binding().is_some_and(|t| t == Type::Bottom) {
                     tv.unbind()
                 }
