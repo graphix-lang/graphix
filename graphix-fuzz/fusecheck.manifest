@@ -125,10 +125,10 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	dyncall-site-identity-jul2026/00_masked_outer_call_cache_ride.gx
 1	dyncall-site-identity-jul2026/01_seed_backedge_unwrap.gx
 3	dyncall-stale-arg-fired-aug2026/01_escape_per_arg_gating.gx
-2	dyncall-stale-arg-fired-aug2026/02_rand_rerandomizes.gx
-2	dyncall-stale-arg-fired-aug2026/03_now_resamples_clock.gx
+3	dyncall-stale-arg-fired-aug2026/02_rand_rerandomizes.gx
+3	dyncall-stale-arg-fired-aug2026/03_now_resamples_clock.gx
 2	dyncall-tagblind-print-aug2026/00_const_arg_effect_refires.gx
-3	dyncall-tagblind-print-aug2026/04_hof_callback_effect_per_invocation.gx
+4	dyncall-tagblind-print-aug2026/04_hof_callback_effect_per_invocation.gx
 1	dyncall-value-return-stale-aug2026/00_nested_map_count.gx
 1	dyncall-value-return-stale-aug2026/01_bytes_builtin_in_callee_loop.gx
 1	dyncall-value-return-stale-aug2026/02_cast_string_in_callee_loop.gx
