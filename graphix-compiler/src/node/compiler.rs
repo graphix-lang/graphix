@@ -17,7 +17,7 @@ use crate::{
     CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope,
     UserEvent, bailat,
     expr::{
-        ApplyExpr, Arg, ArgKind, At, Attr, Decorations, Expr, ExprId, ExprKind,
+        ApplyExpr, Arg, ArgKind, At, Attr, BinOp, Decorations, Expr, ExprId, ExprKind,
         LambdaBody, LambdaExpr, ModPath, ModuleKind, Name, SelectExpr, StructExpr,
         StructWithExpr, StructurePattern, print::PrettyDisplay,
     },
@@ -591,30 +591,32 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Not { expr } => {
             Not::compile(ctx, flags, spec.clone(), scope, top_id, expr)
         }
-        ExprKind::Eq { lhs, rhs } => binop!(Eq, lhs, rhs),
-        ExprKind::Ne { lhs, rhs } => binop!(Ne, lhs, rhs),
-        ExprKind::Lt { lhs, rhs } => binop!(Lt, lhs, rhs),
-        ExprKind::Gt { lhs, rhs } => binop!(Gt, lhs, rhs),
-        ExprKind::Lte { lhs, rhs } => binop!(Lte, lhs, rhs),
-        ExprKind::Gte { lhs, rhs } => binop!(Gte, lhs, rhs),
-        ExprKind::And { lhs, rhs } => binop!(And, lhs, rhs),
-        ExprKind::Or { lhs, rhs } => binop!(Or, lhs, rhs),
-        ExprKind::Add { lhs, rhs } => binop!(Add, lhs, rhs),
-        ExprKind::CheckedAdd { lhs, rhs } => binop!(CheckedAdd, lhs, rhs),
-        ExprKind::Sub { lhs, rhs } => binop!(Sub, lhs, rhs),
-        ExprKind::CheckedSub { lhs, rhs } => binop!(CheckedSub, lhs, rhs),
-        ExprKind::Mul { lhs, rhs } => binop!(Mul, lhs, rhs),
-        ExprKind::CheckedMul { lhs, rhs } => binop!(CheckedMul, lhs, rhs),
-        ExprKind::Div { lhs, rhs } => binop!(Div, lhs, rhs),
-        ExprKind::CheckedDiv { lhs, rhs } => binop!(CheckedDiv, lhs, rhs),
-        ExprKind::Mod { lhs, rhs } => binop!(Mod, lhs, rhs),
-        ExprKind::CheckedMod { lhs, rhs } => binop!(CheckedMod, lhs, rhs),
-        ExprKind::Sample { lhs, rhs } => {
-            Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, false)
-        }
-        ExprKind::StrictSample { lhs, rhs } => {
-            Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, true)
-        }
+        ExprKind::BinOp { op, lhs, rhs } => match op {
+            BinOp::Eq => binop!(Eq, lhs, rhs),
+            BinOp::Ne => binop!(Ne, lhs, rhs),
+            BinOp::Lt => binop!(Lt, lhs, rhs),
+            BinOp::Gt => binop!(Gt, lhs, rhs),
+            BinOp::Lte => binop!(Lte, lhs, rhs),
+            BinOp::Gte => binop!(Gte, lhs, rhs),
+            BinOp::And => binop!(And, lhs, rhs),
+            BinOp::Or => binop!(Or, lhs, rhs),
+            BinOp::Add => binop!(Add, lhs, rhs),
+            BinOp::CheckedAdd => binop!(CheckedAdd, lhs, rhs),
+            BinOp::Sub => binop!(Sub, lhs, rhs),
+            BinOp::CheckedSub => binop!(CheckedSub, lhs, rhs),
+            BinOp::Mul => binop!(Mul, lhs, rhs),
+            BinOp::CheckedMul => binop!(CheckedMul, lhs, rhs),
+            BinOp::Div => binop!(Div, lhs, rhs),
+            BinOp::CheckedDiv => binop!(CheckedDiv, lhs, rhs),
+            BinOp::Mod => binop!(Mod, lhs, rhs),
+            BinOp::CheckedMod => binop!(CheckedMod, lhs, rhs),
+            BinOp::Sample => {
+                Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, false)
+            }
+            BinOp::StrictSample => {
+                Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, true)
+            }
+        },
     }
 }
 

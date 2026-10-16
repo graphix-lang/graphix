@@ -115,10 +115,10 @@ const BOOLOP: &[BinOp] = &[BinOp::And, BinOp::Or];
 
 /// If `e` is a binop, return a same-class swap with its operands.
 fn try_swap_binop(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
-    let (op, lhs, rhs) = BinOp::of(&e.kind)?;
-    let class = [ARITH, CHECKED, CMP, BOOLOP].into_iter().find(|c| c.contains(&op))?;
-    let others: Vec<BinOp> = class.iter().copied().filter(|o| *o != op).collect();
-    Some(rng.pick(&others).build(lhs.clone(), rhs.clone()))
+    let ExprKind::BinOp { op, lhs, rhs } = &e.kind else { return None };
+    let class = [ARITH, CHECKED, CMP, BOOLOP].into_iter().find(|c| c.contains(op))?;
+    let others: Vec<BinOp> = class.iter().copied().filter(|o| o != op).collect();
+    Some(ExprKind::BinOp { op: *rng.pick(&others), lhs: lhs.clone(), rhs: rhs.clone() })
 }
 
 /// If `e` is a numeric/bool constant, return an edge-value perturbation,

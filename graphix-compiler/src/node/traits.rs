@@ -982,15 +982,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             (CoreTrait::Display, _) => {
                 mk(ExprKind::StringInterpolate { args: Arc::from_iter([a.clone()]) })
             }
-            (CoreTrait::Eq, Some(b)) => {
-                mk(ExprKind::Eq { lhs: Arc::new(a.clone()), rhs: Arc::new(b.clone()) })
-            }
+            (CoreTrait::Eq, Some(b)) => mk(ExprKind::BinOp {
+                op: crate::expr::BinOp::Eq,
+                lhs: Arc::new(a.clone()),
+                rhs: Arc::new(b.clone()),
+            }),
             (CoreTrait::Ord, Some(b)) => {
-                let lt = mk(ExprKind::Lt {
+                let lt = mk(ExprKind::BinOp {
+                    op: crate::expr::BinOp::Lt,
                     lhs: Arc::new(a.clone()),
                     rhs: Arc::new(b.clone()),
                 });
-                let gt = mk(ExprKind::Gt {
+                let gt = mk(ExprKind::BinOp {
+                    op: crate::expr::BinOp::Gt,
                     lhs: Arc::new(a.clone()),
                     rhs: Arc::new(b.clone()),
                 });

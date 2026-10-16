@@ -115,10 +115,10 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
     // the expression whose first token the head parser meets first, and
     // whether an argument list follows it directly
     fn leftmost(e: &Expr, called: bool) -> (&Expr, bool) {
-        match (BinOp::of(&e.kind), bare_postfix_source(&e.kind)) {
-            (Some((_, lhs, _)), _) => leftmost(lhs, false),
-            (None, Some(source)) => leftmost(source, matches!(&e.kind, Apply(_))),
-            (None, None) => (e, called),
+        match (&e.kind, bare_postfix_source(&e.kind)) {
+            (ExprKind::BinOp { lhs, .. }, _) => leftmost(lhs, false),
+            (_, Some(source)) => leftmost(source, matches!(&e.kind, Apply(_))),
+            (_, None) => (e, called),
         }
     }
     fn reads_bare(e: &Expr) -> bool {
@@ -143,13 +143,13 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
             | Any { .. }
             | StringInterpolate { .. } => true,
             Deref(e) | Not { expr: e } | Neg(e) | ByRef(_, e) => reads_bare(e),
-            k => match (BinOp::of(k), bare_postfix_source(k)) {
-                // a lambda last operand's body is a whole expression
-                (Some((_, lhs, rhs)), _) => {
-                    reads_bare(lhs) && (matches!(rhs.kind, Lambda(_)) || reads_bare(rhs))
-                }
-                (None, Some(source)) => reads_bare(source),
-                (None, None) => matches!(
+            // a lambda last operand's body is a whole expression
+            ExprKind::BinOp { lhs, rhs, .. } => {
+                reads_bare(lhs) && (matches!(rhs.kind, Lambda(_)) || reads_bare(rhs))
+            }
+            k => match bare_postfix_source(k) {
+                Some(source) => reads_bare(source),
+                None => matches!(
                     k,
                     StructRef { .. }
                         | TupleRef { .. }
@@ -1702,7 +1702,8 @@ fn ends_bodyless(e: &Expr) -> bool {
         Connect { value, .. } => ends_bodyless(value),
         Lambda(l) => matches!(&l.body, LambdaBody::Expr(b) if ends_bodyless(b)),
         Not { expr } | Neg(expr) | Deref(expr) | ByRef(_, expr) => ends_bodyless(expr),
-        k => BinOp::of(k).is_some_and(|(_, _, rhs)| ends_bodyless(rhs)),
+        ExprKind::BinOp { rhs, .. } => ends_bodyless(rhs),
+        _ => false,
     }
 }
 
@@ -1766,19 +1767,19 @@ impl PrettyDisplay for ExprKind {
 
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         use ExprKind::*;
-        if let Some((op, lhs, rhs)) = BinOp::of(self) {
-            pretty_operand(
-                buf,
-                lhs,
-                under(lhs, op, false),
-                &format_compact!(" {}", op.token()),
-            )?;
-            return match under(rhs, op, true) {
-                false => rhs.fmt_pretty(buf),
-                true => pretty_parens(buf, rhs),
-            };
-        }
         match self {
+            ExprKind::BinOp { op, lhs, rhs } => {
+                pretty_operand(
+                    buf,
+                    lhs,
+                    under(lhs, *op, false),
+                    &format_compact!(" {}", op.token()),
+                )?;
+                match under(rhs, *op, true) {
+                    false => rhs.fmt_pretty(buf),
+                    true => pretty_parens(buf, rhs),
+                }
+            }
             NoOp => Ok(()),
             Use { reexport, names } => UseStmt(*reexport, names).fmt_pretty_inner(buf),
             Constant(_) | Ref { .. } | StringInterpolate { .. } => {
@@ -1965,26 +1966,6 @@ impl PrettyDisplay for ExprKind {
             Neg(e) if matches!(e.kind, Constant(_)) => writeln!(buf, "{self}"),
             Neg(e) => pretty_prefixed(buf, "-", e),
             Select(se) => se.fmt_pretty_inner(buf),
-            Eq { .. }
-            | Ne { .. }
-            | Lt { .. }
-            | Gt { .. }
-            | Lte { .. }
-            | Gte { .. }
-            | And { .. }
-            | Or { .. }
-            | Add { .. }
-            | CheckedAdd { .. }
-            | Sub { .. }
-            | CheckedSub { .. }
-            | Mul { .. }
-            | CheckedMul { .. }
-            | Div { .. }
-            | CheckedDiv { .. }
-            | Mod { .. }
-            | CheckedMod { .. }
-            | Sample { .. }
-            | StrictSample { .. } => unreachable!("BinOp::of matched it"),
         }
     }
 }
@@ -2435,12 +2416,14 @@ impl ExprKind {
             }
             write!(f, "{close}")
         }
-        if let Some((op, lhs, rhs)) = BinOp::of(self) {
-            let (l, r) =
-                (Operand(lhs, under(lhs, op, false)), Operand(rhs, under(rhs, op, true)));
-            return write!(f, "{l} {} {r}", op.token());
-        }
         match self {
+            ExprKind::BinOp { op, lhs, rhs } => {
+                let (l, r) = (
+                    Operand(lhs, under(lhs, *op, false)),
+                    Operand(rhs, under(rhs, *op, true)),
+                );
+                write!(f, "{l} {} {r}", op.token())
+            }
             ExprKind::Constant(v @ Value::String(s)) => {
                 write_str_constant(f, v, s, StrForm::Quoted)
             }
@@ -2581,26 +2564,6 @@ impl ExprKind {
             }
             ExprKind::Apply(ap) => write!(f, "{ap}"),
             ExprKind::Select(se) => write!(f, "{se}"),
-            ExprKind::Eq { .. }
-            | ExprKind::Ne { .. }
-            | ExprKind::Lt { .. }
-            | ExprKind::Gt { .. }
-            | ExprKind::Lte { .. }
-            | ExprKind::Gte { .. }
-            | ExprKind::And { .. }
-            | ExprKind::Or { .. }
-            | ExprKind::Add { .. }
-            | ExprKind::CheckedAdd { .. }
-            | ExprKind::Sub { .. }
-            | ExprKind::CheckedSub { .. }
-            | ExprKind::Mul { .. }
-            | ExprKind::CheckedMul { .. }
-            | ExprKind::Div { .. }
-            | ExprKind::CheckedDiv { .. }
-            | ExprKind::Mod { .. }
-            | ExprKind::CheckedMod { .. }
-            | ExprKind::Sample { .. }
-            | ExprKind::StrictSample { .. } => unreachable!("BinOp::of matched it"),
             ExprKind::ByRef(m, e) => {
                 write!(f, "{}{}", m.prefix(), Operand(e, prefixed(e)))
             }
@@ -2620,23 +2583,26 @@ impl ExprKind {
 /// operator is left-associative. A parsed tree holds its parens; a tree
 /// the compiler built does not.
 fn under(e: &Expr, op: BinOp, right: bool) -> bool {
-    BinOp::of(&e.kind).is_some_and(|(c, _, _)| {
-        c.precedence() < op.precedence() || (right && c.precedence() == op.precedence())
-    })
+    match &e.kind {
+        ExprKind::BinOp { op: c, .. } => {
+            c.precedence() < op.precedence()
+                || (right && c.precedence() == op.precedence())
+        }
+        _ => false,
+    }
 }
 
 /// Whether `e`, the operand of `?` or `$`, needs parens: it is an
 /// operator's, which binds looser than a postfix form.
 fn suffixed(e: &Expr) -> bool {
     use ExprKind::*;
-    BinOp::of(&e.kind).is_some()
-        || matches!(&e.kind, Deref(_) | Not { .. } | Neg(_) | ByRef(..))
+    matches!(&e.kind, ExprKind::BinOp { .. } | Deref(_) | Not { .. } | Neg(_) | ByRef(..))
 }
 
 /// Whether `e`, the operand of a prefix operator (`!`, `-`, `*`, `&`),
 /// needs parens: an operator's binds looser.
 fn prefixed(e: &Expr) -> bool {
-    BinOp::of(&e.kind).is_some()
+    matches!(e.kind, ExprKind::BinOp { .. })
 }
 
 /// `op e`, laid out, `e` in parens when it needs them.

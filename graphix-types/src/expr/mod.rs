@@ -761,90 +761,14 @@ pub enum ExprKind {
     ByRef(Mutability, Arc<Expr>),
     Deref(Arc<Expr>),
     Neg(Arc<Expr>),
-    Eq {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Ne {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Lt {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Gt {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Lte {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Gte {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    And {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Or {
+    /// `lhs op rhs`: every binary operator ([`BinOp`]).
+    BinOp {
+        op: BinOp,
         lhs: Arc<Expr>,
         rhs: Arc<Expr>,
     },
     Not {
         expr: Arc<Expr>,
-    },
-    Add {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    CheckedAdd {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Sub {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    CheckedSub {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Mul {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    CheckedMul {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Div {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    CheckedDiv {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Mod {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    CheckedMod {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    Sample {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
-    },
-    /// `lhs ~! rhs` — the strict sample: `rhs` at each fire of `lhs`,
-    /// bottom when `rhs` is bottom.
-    StrictSample {
-        lhs: Arc<Expr>,
-        rhs: Arc<Expr>,
     },
 }
 
@@ -964,26 +888,7 @@ impl ExprKind {
                 f(&c.snapshot);
                 f(&c.live)
             }
-            Eq { lhs, rhs }
-            | Ne { lhs, rhs }
-            | Lt { lhs, rhs }
-            | Gt { lhs, rhs }
-            | Lte { lhs, rhs }
-            | Gte { lhs, rhs }
-            | And { lhs, rhs }
-            | Or { lhs, rhs }
-            | Add { lhs, rhs }
-            | CheckedAdd { lhs, rhs }
-            | Sub { lhs, rhs }
-            | CheckedSub { lhs, rhs }
-            | Mul { lhs, rhs }
-            | CheckedMul { lhs, rhs }
-            | Div { lhs, rhs }
-            | CheckedDiv { lhs, rhs }
-            | Mod { lhs, rhs }
-            | CheckedMod { lhs, rhs }
-            | Sample { lhs, rhs }
-            | StrictSample { lhs, rhs } => {
+            BinOp { op: _, lhs, rhs } => {
                 f(lhs);
                 f(rhs);
             }
@@ -1708,26 +1613,7 @@ impl Expr {
                         .map(|s| SeqStep { items: xs(f, &s.items), ..s.clone() }),
                 ),
             })),
-            Eq { lhs, rhs } => Eq { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Ne { lhs, rhs } => Ne { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Lt { lhs, rhs } => Lt { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Gt { lhs, rhs } => Gt { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Lte { lhs, rhs } => Lte { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Gte { lhs, rhs } => Gte { lhs: a(f, lhs), rhs: a(f, rhs) },
-            And { lhs, rhs } => And { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Or { lhs, rhs } => Or { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Add { lhs, rhs } => Add { lhs: a(f, lhs), rhs: a(f, rhs) },
-            CheckedAdd { lhs, rhs } => CheckedAdd { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Sub { lhs, rhs } => Sub { lhs: a(f, lhs), rhs: a(f, rhs) },
-            CheckedSub { lhs, rhs } => CheckedSub { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Mul { lhs, rhs } => Mul { lhs: a(f, lhs), rhs: a(f, rhs) },
-            CheckedMul { lhs, rhs } => CheckedMul { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Div { lhs, rhs } => Div { lhs: a(f, lhs), rhs: a(f, rhs) },
-            CheckedDiv { lhs, rhs } => CheckedDiv { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Mod { lhs, rhs } => Mod { lhs: a(f, lhs), rhs: a(f, rhs) },
-            CheckedMod { lhs, rhs } => CheckedMod { lhs: a(f, lhs), rhs: a(f, rhs) },
-            Sample { lhs, rhs } => Sample { lhs: a(f, lhs), rhs: a(f, rhs) },
-            StrictSample { lhs, rhs } => StrictSample { lhs: a(f, lhs), rhs: a(f, rhs) },
+            BinOp { op, lhs, rhs } => BinOp { op: *op, lhs: a(f, lhs), rhs: a(f, rhs) },
         };
         self.with_kind(kind)
     }

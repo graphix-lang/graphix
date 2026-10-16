@@ -249,7 +249,7 @@ fn finish(
 /// An expected site by its kind: the operator, or what it is.
 fn shape(e: &Expr) -> &'static str {
     match &e.kind {
-        k if let Some((op, ..)) = BinOp::of(k) => op.token(),
+        ExprKind::BinOp { op, .. } => op.token(),
         ExprKind::Apply(_) => "call",
         ExprKind::StructRef { .. } => "field read",
         ExprKind::Select(_) => "select",
@@ -501,7 +501,9 @@ fn widen(e: &Expr, u: Expr) -> Expr {
     let one =
         || Arc::new(ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos());
     ExprKind::Select(SelectExpr {
-        arg: Arc::new(ExprKind::Eq { lhs: one(), rhs: one() }.to_expr_nopos()),
+        arg: Arc::new(
+            ExprKind::BinOp { op: BinOp::Eq, lhs: one(), rhs: one() }.to_expr_nopos(),
+        ),
         arms: Arc::from_iter([(bool_arm(true), e.clone()), (bool_arm(false), u)]),
     })
     .to_expr_nopos()
@@ -714,7 +716,8 @@ fn rigid_probe(l: &LambdaExpr, bottom: bool) -> Option<(Expr, Option<Type>)> {
         match a.constraint.as_ref()? {
             Type::TVar(_) if bottom => Some(((*name_ref(x)).clone(), Some(Type::Bottom))),
             Type::TVar(_) => Some((
-                ExprKind::Eq { lhs: name_ref(x), rhs: Arc::new(one()) }.to_expr_nopos(),
+                ExprKind::BinOp { op: BinOp::Eq, lhs: name_ref(x), rhs: Arc::new(one()) }
+                    .to_expr_nopos(),
                 None,
             )),
             Type::Fn(ft)
@@ -1032,10 +1035,8 @@ fn widen_consumer(
         // the consumer's own type, where it is wider than the value's (a
         // parameter): the widening literal must lie outside it
         let target: Option<(usize, &Expr, Option<Type>)> = match &e.kind {
-            k if let Some((op, lhs, rhs)) = BinOp::of(k)
-                && arith_or_compare(op) =>
-            {
-                match comparison(op) {
+            ExprKind::BinOp { op, lhs, rhs } if arith_or_compare(*op) => {
+                match comparison(*op) {
                     false => Some((i + 1, &**lhs, None)),
                     true if literal(rhs) => Some((i + 1, &**lhs, None)),
                     true if literal(lhs) => Some((i + 1 + sizes[i + 1], &**rhs, None)),
@@ -1135,7 +1136,8 @@ fn retype(
         // the initializer retyped, where a reached use is pinned by a literal
         let (_, refs) = reached_uses(&stmts, si, v);
         let pinned = pre.iter().enumerate().find_map(|(j, n)| {
-            let (op, lhs, rhs) = BinOp::of(&n.kind)?;
+            let ExprKind::BinOp { op, lhs, rhs } = &n.kind else { return None };
+            let op = *op;
             let is_v = |e: &Expr| matches!(&e.kind, ExprKind::Ref { name } if name.to_string() == **v);
             let lit = |e: &Expr| matches!(e.kind, ExprKind::Constant(_));
             let use_at = match (is_v(lhs), is_v(rhs)) {
@@ -1221,12 +1223,10 @@ fn widen_through_let(
         let refs: Vec<usize> = refs.into_iter().map(|(r, _)| r).collect();
         let struct_t = t.with_deref(|d| matches!(d, Some(Type::Struct(_))));
         let consumed = pre.iter().enumerate().any(|(j, n)| match &n.kind {
-            k if let Some((op, lhs, rhs)) = BinOp::of(k)
-                && arith_or_compare(op) =>
-            {
+            ExprKind::BinOp { op, lhs, rhs } if arith_or_compare(*op) => {
                 let (l, r) =
                     (refs.contains(&(j + 1)), refs.contains(&(j + 1 + sizes[j + 1])));
-                match comparison(op) {
+                match comparison(*op) {
                     true => (l && literal(rhs)) || (r && literal(lhs)),
                     false => l || r,
                 }

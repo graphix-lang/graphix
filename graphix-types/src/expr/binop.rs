@@ -1,9 +1,8 @@
-use crate::expr::{Expr, ExprKind};
-use triomphe::Arc;
+use netidx_derive::Pack;
 
 /// A binary operator: the token it is written with, how tightly it binds,
 /// and the expression it builds. Every binary operator is left-associative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Pack)]
 pub enum BinOp {
     Eq,
     Ne,
@@ -115,69 +114,5 @@ impl BinOp {
             | BinOp::Mod
             | BinOp::CheckedMod => 6,
         }
-    }
-
-    // CR claude for claude: [structure/low] BinOp is meant to be the one operator
-    // table, but every operator is still its own ExprKind variant. This function and
-    // `of` only translate between the two forms, and the same 20 variants are listed
-    // again in `ExprKind::for_each_child`, `map_children`, the two printer
-    // `unreachable!("BinOp::of matched it")` lists and the compiler's `compile` match.
-    // Adding an operator means editing about seven parallel lists, and the printer arms
-    // exist only because the type allows a state the code never handles. Replace the
-    // variants with one `ExprKind::BinOp { op, lhs, rhs }`. Then `build` and `of` go
-    // away, and the walks and printer match a single arm. The Pack tag changes, so
-    // packed ASTs and images rebuild. Also rename the compiler's `node::op::BinOp`
-    // (arithmetic only), which shares this type's name. (t-parser-b-05)
-    pub fn build(self, lhs: Arc<Expr>, rhs: Arc<Expr>) -> ExprKind {
-        match self {
-            BinOp::Eq => ExprKind::Eq { lhs, rhs },
-            BinOp::Ne => ExprKind::Ne { lhs, rhs },
-            BinOp::Lt => ExprKind::Lt { lhs, rhs },
-            BinOp::Gt => ExprKind::Gt { lhs, rhs },
-            BinOp::Lte => ExprKind::Lte { lhs, rhs },
-            BinOp::Gte => ExprKind::Gte { lhs, rhs },
-            BinOp::And => ExprKind::And { lhs, rhs },
-            BinOp::Or => ExprKind::Or { lhs, rhs },
-            BinOp::Add => ExprKind::Add { lhs, rhs },
-            BinOp::CheckedAdd => ExprKind::CheckedAdd { lhs, rhs },
-            BinOp::Sub => ExprKind::Sub { lhs, rhs },
-            BinOp::CheckedSub => ExprKind::CheckedSub { lhs, rhs },
-            BinOp::Mul => ExprKind::Mul { lhs, rhs },
-            BinOp::CheckedMul => ExprKind::CheckedMul { lhs, rhs },
-            BinOp::Div => ExprKind::Div { lhs, rhs },
-            BinOp::CheckedDiv => ExprKind::CheckedDiv { lhs, rhs },
-            BinOp::Mod => ExprKind::Mod { lhs, rhs },
-            BinOp::CheckedMod => ExprKind::CheckedMod { lhs, rhs },
-            BinOp::Sample => ExprKind::Sample { lhs, rhs },
-            BinOp::StrictSample => ExprKind::StrictSample { lhs, rhs },
-        }
-    }
-
-    /// The operator and operands of a binary-operator expression.
-    pub fn of(e: &ExprKind) -> Option<(BinOp, &Arc<Expr>, &Arc<Expr>)> {
-        let (op, lhs, rhs) = match e {
-            ExprKind::Eq { lhs, rhs } => (BinOp::Eq, lhs, rhs),
-            ExprKind::Ne { lhs, rhs } => (BinOp::Ne, lhs, rhs),
-            ExprKind::Lt { lhs, rhs } => (BinOp::Lt, lhs, rhs),
-            ExprKind::Gt { lhs, rhs } => (BinOp::Gt, lhs, rhs),
-            ExprKind::Lte { lhs, rhs } => (BinOp::Lte, lhs, rhs),
-            ExprKind::Gte { lhs, rhs } => (BinOp::Gte, lhs, rhs),
-            ExprKind::And { lhs, rhs } => (BinOp::And, lhs, rhs),
-            ExprKind::Or { lhs, rhs } => (BinOp::Or, lhs, rhs),
-            ExprKind::Add { lhs, rhs } => (BinOp::Add, lhs, rhs),
-            ExprKind::CheckedAdd { lhs, rhs } => (BinOp::CheckedAdd, lhs, rhs),
-            ExprKind::Sub { lhs, rhs } => (BinOp::Sub, lhs, rhs),
-            ExprKind::CheckedSub { lhs, rhs } => (BinOp::CheckedSub, lhs, rhs),
-            ExprKind::Mul { lhs, rhs } => (BinOp::Mul, lhs, rhs),
-            ExprKind::CheckedMul { lhs, rhs } => (BinOp::CheckedMul, lhs, rhs),
-            ExprKind::Div { lhs, rhs } => (BinOp::Div, lhs, rhs),
-            ExprKind::CheckedDiv { lhs, rhs } => (BinOp::CheckedDiv, lhs, rhs),
-            ExprKind::Mod { lhs, rhs } => (BinOp::Mod, lhs, rhs),
-            ExprKind::CheckedMod { lhs, rhs } => (BinOp::CheckedMod, lhs, rhs),
-            ExprKind::Sample { lhs, rhs } => (BinOp::Sample, lhs, rhs),
-            ExprKind::StrictSample { lhs, rhs } => (BinOp::StrictSample, lhs, rhs),
-            _ => return None,
-        };
-        Some((op, lhs, rhs))
     }
 }

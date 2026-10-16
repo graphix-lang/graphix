@@ -250,7 +250,11 @@ fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(BinOp, Expr)>>) -> Expr {
         let rhs = output.pop().unwrap();
         let lhs = output.pop().unwrap();
         let (pos, end) = (lhs.pos, rhs.end.0);
-        output.push(op.build(Arc::new(lhs), Arc::new(rhs)).to_expr(pos).ending(end));
+        output.push(
+            ExprKind::BinOp { op, lhs: Arc::new(lhs), rhs: Arc::new(rhs) }
+                .to_expr(pos)
+                .ending(end),
+        );
     }
     let mut output: LPooled<Vec<Expr>> = LPooled::take();
     let mut ops: LPooled<Vec<BinOp>> = LPooled::take();

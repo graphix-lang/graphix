@@ -652,10 +652,10 @@ fn shape(e: &Expr) -> String {
     match &e.kind {
         ExprKind::ExplicitParens(e) => shape(e),
         ExprKind::Not { expr } => format!("!{}", shape(expr)),
-        k => match BinOp::of(k) {
-            Some((op, l, r)) => format!("({} {} {})", shape(l), op.token(), shape(r)),
-            None => format!("{e}"),
-        },
+        ExprKind::BinOp { op, lhs, rhs } => {
+            format!("({} {} {})", shape(lhs), op.token(), shape(rhs))
+        }
+        _ => format!("{e}"),
     }
 }
 
@@ -700,24 +700,36 @@ fn arith_precedence() {
 
 #[test]
 fn arith_nested() {
-    let sum = ExprKind::Add {
+    let sum = ExprKind::BinOp {
+        op: BinOp::Add,
         lhs: Arc::new(
-            ExprKind::Add { lhs: Arc::new(refx("a")), rhs: Arc::new(refx("b")) }
-                .to_expr_nopos(),
+            ExprKind::BinOp {
+                op: BinOp::Add,
+                lhs: Arc::new(refx("a")),
+                rhs: Arc::new(refx("b")),
+            }
+            .to_expr_nopos(),
         ),
         rhs: Arc::new(refx("c")),
     }
     .to_expr_nopos();
-    let sub = ExprKind::Sub {
+    let sub = ExprKind::BinOp {
+        op: BinOp::Sub,
         lhs: Arc::new(
-            ExprKind::Sub { lhs: Arc::new(refx("a")), rhs: Arc::new(refx("b")) }
-                .to_expr_nopos(),
+            ExprKind::BinOp {
+                op: BinOp::Sub,
+                lhs: Arc::new(refx("a")),
+                rhs: Arc::new(refx("b")),
+            }
+            .to_expr_nopos(),
         ),
         rhs: Arc::new(refx("c")),
     }
     .to_expr_nopos();
-    let eq = ExprKind::Eq { lhs: Arc::new(sum), rhs: Arc::new(sub) }.to_expr_nopos();
-    let exp = ExprKind::And {
+    let eq = ExprKind::BinOp { op: BinOp::Eq, lhs: Arc::new(sum), rhs: Arc::new(sub) }
+        .to_expr_nopos();
+    let exp = ExprKind::BinOp {
+        op: BinOp::And,
         lhs: Arc::new(eq),
         rhs: Arc::new(ExprKind::Not { expr: Arc::new(refx("a")) }.to_expr_nopos()),
     }
@@ -734,7 +746,8 @@ fn select0() {
                 type_predicate: Some(Type::Primitive(Typ::I64.into())),
                 structure_predicate: StructurePattern::Bind(literal!("a").into()),
                 guard: Some(
-                    ExprKind::Lt {
+                    ExprKind::BinOp {
+                        op: BinOp::Lt,
                         lhs: Arc::new(refx("a")),
                         rhs: Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos()),
                     }
@@ -743,7 +756,8 @@ fn select0() {
                 pos: WrittenAt::NOWHERE,
                 end: WrittenAt::NOWHERE,
             },
-            ExprKind::Mul {
+            ExprKind::BinOp {
+                op: BinOp::Mul,
                 lhs: Arc::new(refx("a")),
                 rhs: Arc::new(ExprKind::Constant(Value::I64(2)).to_expr_nopos()),
             }
@@ -790,7 +804,8 @@ fn select1() {
                     ]),
                 },
                 guard: Some(
-                    ExprKind::Lt {
+                    ExprKind::BinOp {
+                        op: BinOp::Lt,
                         lhs: Arc::new(refx("a")),
                         rhs: Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos()),
                     }
@@ -799,7 +814,8 @@ fn select1() {
                 pos: WrittenAt::NOWHERE,
                 end: WrittenAt::NOWHERE,
             },
-            ExprKind::Mul {
+            ExprKind::BinOp {
+                op: BinOp::Mul,
                 lhs: Arc::new(refx("a")),
                 rhs: Arc::new(ExprKind::Constant(Value::I64(2)).to_expr_nopos()),
             }
@@ -945,7 +961,8 @@ fn connect() {
     let exp = ExprKind::Connect {
         name: ModPath::from(["m", "foo"]),
         value: Arc::new(
-            ExprKind::Add {
+            ExprKind::BinOp {
+                op: BinOp::Add,
                 lhs: Arc::new(
                     ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos(),
                 ),
@@ -1049,10 +1066,15 @@ fn lambda() {
         constraints: Arc::from_iter([]),
         throws: None,
         body: LambdaBody::Expr(
-            ExprKind::Add {
+            ExprKind::BinOp {
+                op: BinOp::Add,
                 lhs: Arc::new(
-                    ExprKind::Add { lhs: Arc::new(refx("a")), rhs: Arc::new(refx("b")) }
-                        .to_expr_nopos(),
+                    ExprKind::BinOp {
+                        op: BinOp::Add,
+                        lhs: Arc::new(refx("a")),
+                        rhs: Arc::new(refx("b")),
+                    }
+                    .to_expr_nopos(),
                 ),
                 rhs: Arc::new(refx("c")),
             }
@@ -1066,10 +1088,15 @@ fn lambda() {
 
 #[test]
 fn nested_lambda() {
-    let e = ExprKind::Add {
+    let e = ExprKind::BinOp {
+        op: BinOp::Add,
         lhs: Arc::new(
-            ExprKind::Add { lhs: Arc::new(refx("a")), rhs: Arc::new(refx("b")) }
-                .to_expr_nopos(),
+            ExprKind::BinOp {
+                op: BinOp::Add,
+                lhs: Arc::new(refx("a")),
+                rhs: Arc::new(refx("b")),
+            }
+            .to_expr_nopos(),
         ),
         rhs: Arc::new(refx("c")),
     }
@@ -1580,7 +1607,9 @@ fn lambda_is_a_last_operand() {
         ("a + b ~ || 1", "|| 1"),
     ] {
         let e = parse_one(src).unwrap();
-        let (_, _, last) = BinOp::of(&e.kind).expect("a binary operator");
+        let ExprKind::BinOp { rhs: last, .. } = &e.kind else {
+            panic!("a binary operator")
+        };
         assert_eq!(**last, parse_one(inner).unwrap(), "{src}");
         assert_eq!(parse_one(&e.to_string()).unwrap(), e, "{src}");
     }
@@ -1625,7 +1654,7 @@ fn connect_not_lt_neg() {
 #[test]
 fn lt_neg_with_space() {
     let e = parse_one("a < -b").unwrap();
-    assert!(matches!(&e.kind, ExprKind::Lt { .. }), "got {:?}", e.kind);
+    assert!(matches!(&e.kind, ExprKind::BinOp { op: BinOp::Lt, .. }), "got {:?}", e.kind);
 }
 
 #[test]
@@ -2342,7 +2371,9 @@ fn a_lambda_by_reference_is_an_operand() {
         [("t ~ &|x| x + 1", Mutability::Shared), ("t ~ &mut |x| x", Mutability::Mut)]
     {
         let e = parse_one(src).unwrap();
-        let ExprKind::Sample { rhs, .. } = &e.kind else { panic!("{src}: {e:?}") };
+        let ExprKind::BinOp { op: BinOp::Sample, rhs, .. } = &e.kind else {
+            panic!("{src}: {e:?}")
+        };
         let ExprKind::ByRef(m1, l) = &rhs.kind else { panic!("{src}: {rhs:?}") };
         assert_eq!(*m1, m, "{src}");
         assert!(matches!(l.kind, ExprKind::Lambda(_)), "{src}");

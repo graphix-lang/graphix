@@ -9,8 +9,8 @@
 //! consumes one argument snapshot per entry.
 
 use super::{
-    ApplyExpr, Arg, ArgKind, BindExpr, CatchExpr, CatchRole, Decorations, Expr, ExprId,
-    ExprKind, LambdaBody, LambdaExpr, ModPath, ModuleKind, Pattern, SelectExpr,
+    ApplyExpr, Arg, ArgKind, BinOp, BindExpr, CatchExpr, CatchRole, Decorations, Expr,
+    ExprId, ExprKind, LambdaBody, LambdaExpr, ModPath, ModuleKind, Pattern, SelectExpr,
     SeqCaptureExpr, SeqExpr, SeqKind, SeqMachineExpr, SeqStep, SeqTrigger,
     StructurePattern, TryWithExpr, WrittenAt,
 };
@@ -1186,7 +1186,8 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             None,
             ExprKind::Constant(Value::I64(0)).to_expr(pos),
         ));
-        let next = ExprKind::Add {
+        let next = ExprKind::BinOp {
+            op: BinOp::Add,
             lhs: Arc::new(r#ref(pos, &requests)),
             rhs: Arc::new(ExprKind::Constant(Value::I64(1)).to_expr(pos)),
         }
@@ -1431,8 +1432,12 @@ fn issue_expr(e: &Expr, map: &Names, issue: Issue) -> Expr {
 fn entry_fire(e: Expr, pc: &str) -> Expr {
     let pos = e.pos;
     let at_entry = |v: Expr| {
-        ExprKind::StrictSample { lhs: Arc::new(r#ref(pos, pc)), rhs: Arc::new(v) }
-            .to_expr(pos)
+        ExprKind::BinOp {
+            op: BinOp::StrictSample,
+            lhs: Arc::new(r#ref(pos, pc)),
+            rhs: Arc::new(v),
+        }
+        .to_expr(pos)
     };
     let any =
         |a: Expr, b: Expr| ExprKind::Any { args: Arc::from_iter([a, b]) }.to_expr(pos);
@@ -1496,7 +1501,8 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
         let value = if simple_ref_name(arg).is_some_and(|n| issue.fns.contains(&n)) {
             arg.clone()
         } else if inline_lambda(arg) {
-            ExprKind::StrictSample {
+            ExprKind::BinOp {
+                op: BinOp::StrictSample,
                 lhs: Arc::new(r#ref(arg.pos, pc)),
                 rhs: Arc::new(arg.clone()),
             }
@@ -1518,7 +1524,8 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     expr.id = ExprId::new();
     expr.kind = ExprKind::Apply(call);
     let ready = apply_core(pos, "once", [(None, r#ref(pos, &input))]);
-    let snapshot = ExprKind::StrictSample {
+    let snapshot = ExprKind::BinOp {
+        op: BinOp::StrictSample,
         lhs: Arc::new(
             ExprKind::Any { args: Arc::from_iter([r#ref(pos, pc), ready]) }.to_expr(pos),
         ),
@@ -1805,7 +1812,8 @@ fn variant(pos: SourcePosition, tag: &ArcStr) -> Expr {
 }
 
 fn sample(pos: SourcePosition, lhs: Expr, rhs: Expr) -> Expr {
-    ExprKind::Sample { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+    ExprKind::BinOp { op: BinOp::Sample, lhs: Arc::new(lhs), rhs: Arc::new(rhs) }
+        .to_expr(pos)
 }
 
 fn guard(e: Expr) -> Expr {

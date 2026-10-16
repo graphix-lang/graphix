@@ -666,7 +666,8 @@ fn build_pattern(arg: Expr, arms: Vec<(Option<Expr>, Pattern, Expr)>) -> Expr {
                 LambdaBody::Builtin(_) => false,
             },
             Neg(e) | Not { expr: e } | Deref(e) | ByRef(_, e) => ends_in_declaration(e),
-            k => BinOp::of(k).is_some_and(|(_, _, rhs)| ends_in_declaration(rhs)),
+            ExprKind::BinOp { rhs, .. } => ends_in_declaration(rhs),
+            _ => false,
         }
     }
     let arg = if ends_in_declaration(&arg) { paren(arg) } else { arg };
@@ -1416,7 +1417,10 @@ fn module() -> impl Strategy<Value = Expr> {
 /// The precedence of a binary-operator expression (higher binds tighter);
 /// `None` otherwise.
 fn binop_precedence(e: &ExprKind) -> Option<u8> {
-    BinOp::of(e).map(|(op, _, _)| op.precedence())
+    match e {
+        ExprKind::BinOp { op, .. } => Some(op.precedence()),
+        _ => None,
+    }
 }
 
 /// Prefix-unary operators bind tighter than every binary operator.
@@ -1474,16 +1478,16 @@ fn strip_parens(e: &Expr) -> Expr {
         ExplicitParens(inner)
             if e.dec.is_none()
                 && inner.dec.is_none()
-                && (BinOp::of(&inner.kind).is_some()
-                    || matches!(
-                        inner.kind,
-                        Not { .. }
-                            | Neg(_)
-                            | Deref(_)
-                            | ByRef(..)
-                            | Qop { .. }
-                            | OrNever(_)
-                    )) =>
+                && (matches!(
+                    inner.kind,
+                    ExprKind::BinOp { .. }
+                        | Not { .. }
+                        | Neg(_)
+                        | Deref(_)
+                        | ByRef(..)
+                        | Qop { .. }
+                        | OrNever(_)
+                )) =>
         {
             strip_parens(inner)
         }
@@ -1492,11 +1496,11 @@ fn strip_parens(e: &Expr) -> Expr {
 }
 
 fn add_parens(mut e: Expr) -> Expr {
-    if let Some((op, lhs, rhs)) = BinOp::of(&e.kind) {
-        let prec = op.precedence();
+    if let ExprKind::BinOp { op, lhs, rhs } = &e.kind {
+        let (op, prec) = (*op, op.precedence());
         let lhs = maybe_paren_lhs(add_parens((**lhs).clone()), prec);
         let rhs = maybe_paren_rhs(add_parens((**rhs).clone()), prec);
-        let kind = op.build(Arc::new(lhs), Arc::new(rhs));
+        let kind = ExprKind::BinOp { op, lhs: Arc::new(lhs), rhs: Arc::new(rhs) };
         return e.with_kind(kind);
     }
     let kind = match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
@@ -1555,7 +1559,9 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
                 inner.clone().prop_map(add_parens),
                 inner.clone().prop_map(add_parens),
             )
-                .prop_map(|(op, l, r)| op.build(Arc::new(l), Arc::new(r)).to_expr_nopos()),
+                .prop_map(|(op, l, r)| {
+                    ExprKind::BinOp { op, lhs: Arc::new(l), rhs: Arc::new(r) }.to_expr_nopos()
+                }),
             1 => inner
                 .clone()
                 .prop_map(add_parens)
@@ -1923,8 +1929,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
     if !check_dec(&s0.dec, &s1.dec) {
         return false;
     }
-    if let (Some((o0, l0, r0)), Some((o1, l1, r1))) =
-        (BinOp::of(&s0.kind), BinOp::of(&s1.kind))
+    if let (
+        ExprKind::BinOp { op: o0, lhs: l0, rhs: r0 },
+        ExprKind::BinOp { op: o1, lhs: l1, rhs: r1 },
+    ) = (&s0.kind, &s1.kind)
     {
         return o0 == o1 && check(l0, l1) && check(r0, r1);
     }
