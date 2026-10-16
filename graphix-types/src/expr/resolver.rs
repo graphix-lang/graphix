@@ -97,6 +97,12 @@ pub trait ModuleResolver: std::fmt::Debug + Send + Sync {
         probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>>;
 
+    /// Whether this resolver serves a VFS: a VFS body's submodules are
+    /// looked up in such resolvers alone, never beside a script.
+    fn serves_vfs(&self) -> bool {
+        false
+    }
+
     /// Derive a resolver for the submodules of a module whose
     /// implementation came from `source`, when this resolver understands
     /// that source kind. The compiler handles `Source::File` itself.
@@ -166,6 +172,10 @@ impl ModuleResolver for VfsResolver {
         _probes: Option<&'a Probes>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
         Box::pin(async move { resolve_from_vfs(scope, parent, name, self) })
+    }
+
+    fn serves_vfs(&self) -> bool {
+        true
     }
 }
 
@@ -452,19 +462,6 @@ async fn resolve_from_files(
             text,
         })
     };
-    // CR claude for claude: [risk/low] `rel` is built from the name alone, because
-    // FilesResolver::resolve drops its scope. A VFS body's submodule that the VFS lacks
-    // (resolve() chains a VFS body to every resolver) is then read as `<base>/x.gx`
-    // from the script directory, GRAPHIX_MODPATH or the data dir, and it takes the
-    // package's module path. For example, a_vfs_body_resolves_its_submodules_in_the_vfs
-    // without its /m/x.gx entry would load the script directory's x.gx as m::x. Join
-    // the scope's parts before the name here, which leaves root scope unchanged, or
-    // chain a VFS body's submodules to VFS resolvers only. Add the fixture without
-    // /m/x.gx as a pin that this is refused. (t-format-resolver-04)
-    // 2026-10-14 claude: joining the scope here would also move a file body's own
-    // submodules: their prepended FilesResolver is already rooted in the module's
-    // directory, so `m/x` would read base/m/m/x.gx. The VFS-only chaining is the fix
-    // that holds.
     let rel = Path::parts(&name).collect::<Vec<_>>().join("/");
     struct Shown(PathBuf);
     impl fmt::Display for Shown {
@@ -825,12 +822,15 @@ async fn resolve(
     let name = Path::from(module.name.clone());
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
     // a body with a source of its own (a file, a netidx path) keeps its
-    // submodules beside it; only a root's and a VFS body's go to the chain
+    // submodules beside it; only a root's and a VFS body's go to the chain,
+    // a VFS body's to its VFS resolvers alone
     let chain: &[ResolverRef] = match &prepend {
         Some(_) => &[],
         None => &resolvers,
     };
-    for r in prepend.iter().chain(chain.iter()) {
+    let vfs_body = matches!(stmt.ori.source, Source::Vfs(_));
+    let chain = chain.iter().filter(|r| !vfs_body || r.serves_vfs());
+    for r in prepend.iter().chain(chain) {
         let (interface, implementation) =
             match r.resolve(&scope, &stmt.ori, &name, &mut errors, probes).await {
                 Resolution::TryNextMethod => continue,
@@ -1270,6 +1270,19 @@ mod test {
             "{:?}",
             x[0].ori.source
         );
+    }
+
+    /// A VFS body's submodule the VFS lacks is not read from the script's
+    /// directory under the module's path.
+    #[tokio::test]
+    async fn a_vfs_body_never_reaches_the_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("x.gx"), "let k = 2").unwrap();
+        let lib = vfs(&[("/m.gx", "mod x; let v = x::k")]);
+        let main = file(dir.path().join("main.gx"), "mod m;");
+        let files = FilesResolver::new(dir.path().to_path_buf(), None);
+        let e = resolve_first(main, &[lib, files]).await.unwrap_err();
+        assert!(format!("{e:#}").contains("m::x"), "{e:#}");
     }
 
     /// An interface pairs with the implementation beside it only: one
