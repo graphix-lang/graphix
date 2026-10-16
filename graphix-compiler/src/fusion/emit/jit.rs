@@ -1062,25 +1062,13 @@ impl Emission {
                 layout: layout(key.layout),
             };
             match self.caches.by_kernel(&key) {
-                Some(have) => {
-                    // CR claude for claude: [risk/low] The task's body is dropped for
-                    // the parent's without comparing their SiteLayouts. The task's
-                    // callers and its region parent sized their site and state blocks
-                    // from the task's own emission (the callee_layouts seeded in
-                    // compile_region_inner, then claim_callee_block), and they will
-                    // call the parent's body. Serially, a second instance at one
-                    // CacheKey is a cache hit whose callers use the cached layout, so a
-                    // key that fails to decide the body costs a wrong value there; here
-                    // it costs an out-of-bounds write in kernel state. No instance pair
-                    // with differing layouts is known, and a FUSE_SERIAL A/B with
-                    // forked tasks sharing a recursive kernel agreed. Compare the two
-                    // bodies' layouts here (words, anchor and self-block counts, or the
-                    // two sigs' site_block_words). At least debug_assert they agree, or
-                    // keep the task's body when they differ, so the key-determines-body
-                    // contract is checked where breaking it becomes unsafe. Verifier:
-                    // plausible, not shown by a run. (f-jit-03)
+                // the task's callers sized their blocks by its body's layout
+                Some(have) if same_layout(&have.site_layout, &cached.site_layout) => {
                     moved.insert(cached.func_id.as_u32(), have.func_id);
                 }
+                // the key failed to decide the body: the task's callers keep
+                // theirs, renumbered, and the cache keeps this one's
+                Some(_) => debug_assert!(false, "one kernel cache key, two body layouts"),
                 None => kept.push((key, cached)),
             }
         }
@@ -1553,6 +1541,19 @@ impl Jit {
             }
         }
         Ok(())
+    }
+}
+
+/// Whether two bodies' site layouts size their callers' blocks alike.
+fn same_layout(a: &Option<SiteLayout>, b: &Option<SiteLayout>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            a.words == b.words
+                && a.anchors.len() == b.anchors.len()
+                && a.self_blocks.len() == b.self_blocks.len()
+        }
+        (None, None) => true,
+        _ => false,
     }
 }
 
