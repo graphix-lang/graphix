@@ -1932,7 +1932,18 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                 self.rt.ref_var(id, top_id);
             }
         }
+        self.shrink_pending_refs();
         self.delete_discarded();
+    }
+
+    /// A drain or clear walks the table's whole capacity, so one large
+    /// batch (a collection's first slots) must not make every later
+    /// small one pay for it.
+    fn shrink_pending_refs(&mut self) {
+        const KEPT: usize = 64;
+        if self.cx.pending_refs.capacity() > KEPT {
+            self.cx.pending_refs.shrink_to(KEPT)
+        }
     }
 
     /// Undo what a failed compile deferred: delete what it discarded and
@@ -1968,6 +1979,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         }
         self.delete_discarded();
         self.cx.pending_refs.clear();
+        self.shrink_pending_refs();
     }
 
     fn delete_discarded(&mut self) {
