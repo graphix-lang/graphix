@@ -305,8 +305,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                             if let Some(v) = self.queue.pop_front() {
                                 self.ready = false;
                                 self.buf.push(v.clone());
-                                ctx.rt.set_var(self.pred.arg(0), Value::I64(1));
-                                ctx.rt.set_var(self.pred.arg(1), v);
+                                ctx.rt.set_var(self.pred.args()[0], Value::I64(1));
+                                ctx.rt.set_var(self.pred.args()[1], v);
                             }
                             break Some(group);
                         }

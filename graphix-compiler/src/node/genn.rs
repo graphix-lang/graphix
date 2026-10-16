@@ -11,6 +11,7 @@ use crate::{
     typ::{FnType, Type},
 };
 use anyhow::{Result, bail};
+use bytes::BufMut;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
@@ -230,19 +231,30 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
     }
 }
 
-/// A call of a Graphix function from Rust: the function a private binding
-/// holds, applied to arguments bound privately too. The owner feeds both
-/// (with the tag its own policy gives them) and updates the call; delete
-/// drops every binding.
+/// A call of a Graphix function from Rust, applied to arguments bound
+/// privately. The owner feeds them (with the tag its own policy gives
+/// them) and updates the call; delete drops every binding it owns.
 #[derive(Debug)]
 pub struct Callback<R: Rt, E: UserEvent> {
     call: Node<R, E>,
-    fid: BindId,
+    function: Function,
     args: SmallVec<[BindId; 2]>,
 }
 
+/// What a [`Callback`] calls.
+#[derive(Debug, Clone, Copy)]
+enum Function {
+    /// The function a binding of its own holds.
+    Own(BindId),
+    /// The function a binding its owner holds, and releases, holds.
+    Shared(BindId),
+    /// A function value, a constant of the call.
+    Value,
+}
+
 impl<R: Rt, E: UserEvent> Callback<R, E> {
-    /// A call of a function of type `typ`, its arguments named `names`.
+    /// A call of a function of type `typ`, its arguments named `names`,
+    /// through a binding of its own.
     pub fn new(
         ctx: &mut CompileCtx<R, E>,
         scope: &Scope,
@@ -250,6 +262,67 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         names: &[&str],
         top_id: ExprId,
     ) -> Result<Self> {
+        Self::through_binding(
+            ctx,
+            scope,
+            typ,
+            names,
+            Function::Own(BindId::new()),
+            top_id,
+        )
+    }
+
+    /// [`Self::new`] through the binding `fid`, which its owner holds and
+    /// releases.
+    pub fn through(
+        ctx: &mut CompileCtx<R, E>,
+        scope: &Scope,
+        typ: &Arc<FnType>,
+        names: &[&str],
+        fid: BindId,
+        top_id: ExprId,
+    ) -> Result<Self> {
+        Self::through_binding(ctx, scope, typ, names, Function::Shared(fid), top_id)
+    }
+
+    /// [`Self::new`] of the function value `f`.
+    pub fn of_value(
+        ctx: &mut CompileCtx<R, E>,
+        scope: &Scope,
+        typ: &Arc<FnType>,
+        names: &[&str],
+        f: Value,
+        top_id: ExprId,
+    ) -> Result<Self> {
+        let (args, nodes) = Self::bind_args(ctx, scope, typ, names, top_id)?;
+        let call = apply_value(f, scope.clone(), nodes, typ, top_id)?;
+        Ok(Self { call, function: Function::Value, args })
+    }
+
+    fn through_binding(
+        ctx: &mut CompileCtx<R, E>,
+        scope: &Scope,
+        typ: &Arc<FnType>,
+        names: &[&str],
+        function: Function,
+        top_id: ExprId,
+    ) -> Result<Self> {
+        let (args, nodes) = Self::bind_args(ctx, scope, typ, names, top_id)?;
+        let (Function::Own(fid) | Function::Shared(fid)) = function else {
+            unreachable!("a binding")
+        };
+        let fnode = reference(ctx, fid, Type::Fn(typ.clone()), top_id);
+        let call = apply(fnode, scope.clone(), nodes, typ, top_id)?;
+        Ok(Self { call, function, args })
+    }
+
+    fn bind_args(
+        ctx: &mut CompileCtx<R, E>,
+        scope: &Scope,
+        typ: &Arc<FnType>,
+        names: &[&str],
+        top_id: ExprId,
+    ) -> Result<(SmallVec<[BindId; 2]>, SmallVec<[Node<R, E>; 2]>)> {
         check_arity(names.len(), typ)?;
         let mut args = SmallVec::new();
         let mut nodes = SmallVec::new();
@@ -258,14 +331,15 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
             args.push(id);
             nodes.push(node);
         }
-        let fid = BindId::new();
-        let fnode = reference(ctx, fid, Type::Fn(typ.clone()), top_id);
-        let call = apply(fnode, scope.clone(), nodes, typ, top_id)?;
-        Ok(Self { call, fid, args })
+        Ok((args, nodes))
     }
 
+    /// Feed the function the call's binding holds; a call of a value has
+    /// none.
     pub fn feed_fn(&self, ctx: &mut ExecCtx<'_, R, E>, f: TagValue) {
-        ctx.deliver(self.fid, f)
+        if let Function::Own(fid) | Function::Shared(fid) = self.function {
+            ctx.deliver(fid, f)
+        }
     }
 
     pub fn feed_arg(&self, ctx: &mut ExecCtx<'_, R, E>, i: usize, v: TagValue) {
@@ -288,16 +362,24 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         self.call.sleep(ctx)
     }
 
-    /// The binding argument `i` is fed through, for an owner that writes it
-    /// for a later cycle.
-    pub fn arg(&self, i: usize) -> BindId {
-        self.args[i]
+    /// The bindings the arguments are fed through, for an owner that
+    /// writes one for a later cycle.
+    pub fn args(&self) -> &[BindId] {
+        &self.args
     }
 
-    /// Drop the call and every binding, writes queued to them included.
+    /// The call, for an owner that walks it (a fork of instances).
+    pub fn call_mut(&mut self) -> &mut Node<R, E> {
+        &mut self.call
+    }
+
+    /// Drop the call and every binding it owns, writes queued to them
+    /// included.
     pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.delete(ctx);
-        ctx.rt.store_release(&self.fid);
+        if let Function::Own(fid) = self.function {
+            ctx.rt.store_release(&fid);
+        }
         for id in &self.args {
             ctx.rt.store_release(id);
             ctx.env.unbind_variable(*id);
@@ -306,7 +388,17 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
 
     pub fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.call.image_encode(buf)?;
-        self.fid.encode(buf)?;
+        match self.function {
+            Function::Own(fid) => {
+                buf.put_u8(0);
+                fid.encode(buf)?
+            }
+            Function::Shared(fid) => {
+                buf.put_u8(1);
+                fid.encode(buf)?
+            }
+            Function::Value => buf.put_u8(2),
+        }
         encode_varint(self.args.len() as u64, buf);
         self.args.iter().try_for_each(|id| id.encode(buf))
     }
@@ -316,9 +408,14 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let call = crate::image::decode_node(ctx, buf)?;
-        let fid = BindId::decode(buf)?;
+        let function = match u8::decode(buf)? {
+            0 => Function::Own(BindId::decode(buf)?),
+            1 => Function::Shared(BindId::decode(buf)?),
+            2 => Function::Value,
+            _ => return Err(PackError::UnknownTag),
+        };
         let n = decode_varint(buf)? as usize;
         let args = (0..n).map(|_| BindId::decode(buf)).collect::<Result<_, _>>()?;
-        Ok(Self { call, fid, args })
+        Ok(Self { call, function, args })
     }
 }

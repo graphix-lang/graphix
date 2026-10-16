@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
     Node, Refs, Rt, Scope, Tag, TagValue, TagView, UserEvent,
@@ -93,12 +93,9 @@ type StateRef = Arc<Mutex<QueueState>>;
 struct WrapperApply<R: Rt, E: UserEvent> {
     site: SiteId,
     state: StateRef,
-    /// One bind per fn arg, owned by this call site. `pred` references these
-    /// to read the args at invocation time. Indexed positionally (`arg_bids[i]`
-    /// corresponds to `from[i]`).
-    arg_bids: Arc<[BindId]>,
-    /// Compiled call to `f` using `arg_bids` as inputs.
-    pred: Node<R, E>,
+    /// The call of `f`, through the queuefn's binding of it, over one
+    /// binding per argument of this site's (`from[i]` feeds the `i`th).
+    call: genn::Callback<R, E>,
     typ: Arc<FnType>,
     out: TagValue,
 }
@@ -121,7 +118,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
             let tv = n.update(ctx);
             tags.push(tv.tag());
             if let Some(v) = seam_tick(tv) {
-                if let Some(bid) = self.arg_bids.get(i) {
+                if let Some(bid) = self.call.args().get(i) {
                     delta.push((*bid, v.value_cloned()));
                 }
             }
@@ -141,8 +138,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     // a released call delivering to these binds this cycle runs
                     // first, and this one the next
                     // a released entry delivers this cycle to the site's binds
-                    let released =
-                        self.arg_bids.iter().any(|b| ctx.event.variables.contains_key(b));
+                    let released = self
+                        .call
+                        .args()
+                        .iter()
+                        .any(|b| ctx.event.variables.contains_key(b));
                     for (bid, v) in delta.drain(..) {
                         if released {
                             ctx.rt.set_var(bid, v);
@@ -158,7 +158,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
             };
             write_count(ctx, count_write);
         }
-        match self.pred.update(ctx).view() {
+        match self.call.update(ctx).view() {
             TagView::Fired(v) => self.out.set(TagValue::fired(v.value_cloned())),
             _ if let Some(bottom) = bottom => bottom,
             TagView::Stale(_) => self.out.ride(),
@@ -173,7 +173,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
-        self.pred.typecheck0(ctx)
+        self.call.typecheck0(ctx)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -181,28 +181,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.pred.refs(refs)
+        self.call.refs(refs)
     }
 
     /// The site's queued calls go with it, and so do its bindings.
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.pred.delete(ctx);
+        self.call.delete(ctx);
         let count_write = {
             let mut s = self.state.lock();
             s.queue.retain(|e| e.site != self.site);
             s.count_write()
         };
         write_count(ctx, count_write);
-        for bid in self.arg_bids.iter() {
-            ctx.rt.store_remove(bid);
-            ctx.env.unbind_variable(*bid);
-        }
     }
 
     /// The site's queued calls go with its sleep: a release to a sleeping
     /// site would run nothing.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.pred.sleep(ctx);
+        self.call.sleep(ctx);
         let count_write = {
             let mut s = self.state.lock();
             s.queue.retain(|e| e.site != self.site);
@@ -505,27 +501,14 @@ fn build_wrapper_apply<R: Rt, E: UserEvent>(
     tid: ExprId,
 ) -> Result<Box<dyn Apply<R, E>>> {
     let scope = scope.append(&format_compact!("qfn{}", LambdaId::new().inner()));
-    let mut arg_bids: Vec<BindId> = Vec::with_capacity(ftyp.args.len());
-    let mut arg_nodes: smallvec::SmallVec<[Node<R, E>; 2]> =
-        smallvec::SmallVec::with_capacity(ftyp.args.len());
-    for (i, a) in ftyp.args.iter().enumerate() {
-        let (id, n) = genn::bind(
-            ctx,
-            &scope.lexical,
-            &format_compact!("qa{i}"),
-            a.typ.clone(),
-            tid,
-        );
-        arg_bids.push(id);
-        arg_nodes.push(n);
-    }
-    let fnode = genn::reference(ctx, fid, Type::Fn(ftyp.clone()), tid);
-    let pred = genn::apply(fnode, scope, arg_nodes, &ftyp, tid)?;
+    let names: LPooled<Vec<CompactString>> =
+        (0..ftyp.args.len()).map(|i| format_compact!("qa{i}")).collect();
+    let names: LPooled<Vec<&str>> = names.iter().map(|n| n.as_str()).collect();
+    let call = genn::Callback::through(ctx, &scope, &ftyp, &names, fid, tid)?;
     Ok(Box::new(WrapperApply {
         site: SiteId::new(),
         state,
-        arg_bids: arg_bids.into(),
-        pred,
+        call,
         typ: ftyp,
         out: TagValue::phantom(),
     }))

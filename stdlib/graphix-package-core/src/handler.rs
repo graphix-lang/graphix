@@ -84,33 +84,9 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
 
 /// One call of the function over its own request binding.
 #[derive(Debug)]
-// CR claude for claude: [structure/medium] Six builtins build "call a Graphix function
-// from Rust" by hand: this Request, core Filter, array Group, opt OptHof/OrElse,
-// queuefn and sys::net Publish. Each one binds args, references and applies the
-// function, feeds fid and args every cycle, removes and unbinds at delete, and forwards
-// refs/sleep/image. The copies have drifted. Filter, Group and opt's feed put the
-// production's tag in the event, while this file and net put FIRED. OptHof refuses a
-// non-quiescent image, while Filter encodes `pending` and Group encodes its queue.
-// Input-bottom handling differs too (x-dup-03). Make this a public `Callback { call,
-// fid, args }` with new, feed_fn, feed_arg (over the shared deliver of x-dup-06),
-// update, delete, refs, sleep and an image codec. Each builtin then holds one and keeps
-// only its own policy. (x-dup-04)
-// 2026-10-13 claude: OptHof is gone (opt's unary HOFs are selects in opt.gx); the
-// other five copies remain. Filter's CR (x-node-contract-06) asks for the same
-// struct.
-// 2026-10-16 claude: genn::Callback (graphix-compiler node/genn.rs) is the shared
-// struct: new over a function type and argument names, feed_fn/feed_arg through
-// ExecCtx::deliver with the owner's tag, arg(i) for a later-cycle write,
-// update/typecheck0/refs/sleep, delete releasing every binding (store_release, so
-// queued writes go too) and an image codec. Filter, array's group and sys::net publish
-// hold one. Left as they are: queuefn's WrapperApply, whose function binding is the
-// queuefn's, shared by every wrapped site (a Callback owns and releases its own), and
-// handler.rs's Request, whose running instances call the function as a constant
-// (apply_value), only its prototype through a binding.
 struct Request<R: Rt, E: UserEvent> {
-    f: Node<R, E>,
+    call: genn::Callback<R, E>,
     relay: ErrorRelay,
-    x: BindId,
 }
 
 impl<R: Rt, E: UserEvent> Request<R, E> {
@@ -124,23 +100,22 @@ impl<R: Rt, E: UserEvent> Request<R, E> {
         top_id: ExprId,
     ) -> Self {
         let (relay, scope) = ErrorRelay::new(ctx, scope, top_id);
-        let (x, xn) =
-            genn::bind(ctx, &scope.lexical, "x", ftyp.args[0].typ.clone(), top_id);
-        let args = smallvec::smallvec![xn];
-        let f = match function {
-            Ok(pid) => {
-                let fnode = genn::reference(ctx, pid, Type::Fn(ftyp.clone()), top_id);
-                genn::apply(fnode, scope, args, ftyp, top_id)
-            }
-            Err(f) => genn::apply_value(f, scope, args, ftyp, top_id),
+        let call = match function {
+            Ok(pid) => genn::Callback::through(ctx, &scope, ftyp, &["x"], pid, top_id),
+            Err(f) => genn::Callback::of_value(ctx, &scope, ftyp, &["x"], f, top_id),
         }
         .expect("Handler::new held the function to one argument");
-        Self { f, relay, x }
+        Self { call, relay }
+    }
+
+    /// The request's binding.
+    fn x(&self) -> BindId {
+        self.call.args()[0]
     }
 
     /// The answer this cycle: the call's first fire, or what it raised.
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Option<Value> {
-        let out = match self.f.update(ctx).view() {
+        let out = match self.call.update(ctx).view() {
             TagView::Fired(tv) => Some(tv.value_cloned()),
             _ => None,
         };
@@ -149,15 +124,13 @@ impl<R: Rt, E: UserEvent> Request<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.f.delete(ctx);
+        self.call.delete(ctx);
         self.relay.delete(ctx);
-        ctx.rt.store_remove(&self.x);
-        ctx.env.unbind_variable(self.x);
     }
 }
 
 fn call_of<R: Rt, E: UserEvent, Q>(running: &mut (Request<R, E>, Q)) -> &mut Node<R, E> {
-    &mut running.0.f
+    running.0.call.call_mut()
 }
 
 impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
@@ -212,7 +185,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
                     &self.scope,
                     self.top_id,
                 );
-                ctx.deliver(r.x, TagValue::fired(req));
+                ctx.deliver(r.x(), TagValue::fired(req));
                 self.running.push((r, q));
             }
         }
@@ -237,11 +210,11 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     }
 
     pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.proto.f.typecheck0(ctx)
+        self.proto.call.typecheck0(ctx)
     }
 
     pub fn refs(&self, refs: &mut Refs) {
-        self.proto.f.refs(refs)
+        self.proto.call.refs(refs)
     }
 
     /// Requests pending are dropped unanswered.
@@ -263,9 +236,8 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         if !self.pending.is_empty() || !self.running.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.proto.f.image_encode(buf)?;
+        self.proto.call.image_encode(buf)?;
         self.proto.relay.image_encode(buf)?;
-        self.proto.x.encode(buf)?;
         self.pid.encode(buf)?;
         self.ftyp.encode(buf)?;
         image::scope_encode(&self.scope, buf)?;
@@ -276,15 +248,14 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
-        let f = image::decode_node(ctx, buf)?;
+        let call = genn::Callback::image_decode(ctx, buf)?;
         let relay = ErrorRelay::image_decode(ctx, buf)?;
-        let x = BindId::decode(buf)?;
         let pid = BindId::decode(buf)?;
         let ftyp = Arc::new(FnType::decode(buf)?);
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         Ok(Self {
-            proto: Request { f, relay, x },
+            proto: Request { call, relay },
             pid,
             ftyp,
             scope,
