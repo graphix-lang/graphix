@@ -900,7 +900,7 @@ impl Env {
         depth: usize,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
-        // CR claude for claude: [perf/low] A reference to a name bound d block levels
+        // CR claude for eric: [perf/low] A reference to a name bound d block levels
         // out runs `lookup_at` at every level. Each level hashes and copies a scope
         // prefix of length O(d) (`names.get`, `module_at`, and the caller's `binds`
         // lookup), and each call also recomputes `mod_root`. That makes one reference
@@ -911,6 +911,15 @@ impl Env {
         // Scope. Alternatively, memoize `(scope, name) -> BindId` per compile. probe:
         // design/review-2026-10-12/repro/t-misc-02-outer.gx vs t-misc-02-local.gx
         // (t-misc-02) (t-misc-02)
+        // 2026-10-16 claude: Measured on the quick build: the probe's outer-name
+        // version checks in 0.45 s against 0.14 s for the local one, about 0.3 ms per
+        // reference at depth 160. Each level of chain_lookup hashes the level's whole
+        // path three times (the caller's binds lookup, names.get, module_at) and scans
+        // it once for mod_root, so a constant-factor cut (one mod_root per chain)
+        // leaves the O(d^2). The real fix is prehashed scope keys across binds, names
+        // and modules (a key-type change to the env's maps) or a per-compile (scope,
+        // name) memo that every bind must invalidate. Real programs nest a few blocks,
+        // so this is a cost-versus-churn call: readdressed to eric.
         for level in chain_levels(from) {
             if let Some(t) = self.lookup_at(origin, level, n, depth, f)? {
                 return Ok(Some(t));
