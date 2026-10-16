@@ -2,7 +2,7 @@
 //! conditions, arm dispatch, and the merge-shape protocol.
 
 use crate::{
-    BindId, Node, NodeView, Rt, Update, UserEvent,
+    BindId, Node, NodeView, Refs, Rt, Update, UserEvent,
     expr::ExprId,
     fusion::{
         self,
@@ -191,6 +191,20 @@ enum SelectArmBind {
     /// `[start, len - back)` of an array scrutinee, cloned out as an
     /// owned composite local.
     Subslice { id: BindId, start: usize, back: usize, parent_ptr: ClifValue },
+}
+
+impl SelectArmBind {
+    fn id(&self) -> BindId {
+        match self {
+            Self::Scrut(id)
+            | Self::Value { id, .. }
+            | Self::Payload { id, .. }
+            | Self::ListHead { id, .. }
+            | Self::ListTail { id, .. }
+            | Self::Elem { id, .. }
+            | Self::Subslice { id, .. } => *id,
+        }
+    }
 }
 
 /// `select` at expression position. Canonical semantics are
@@ -790,6 +804,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // reuse them. Drop them once at the select's exits: the arm exit, guard-false,
         // undecided and no-match. The mask already makes them drop-safe on every path.
         // (f-select-06)
+        // 2026-10-16 claude: Done in part: an arm's matched block installs only the
+        // binds its body reads, and a guard it runs there (a guard the prologue ran
+        // read its own copies), so a bind only the guard reads is cloned once
+        // (SelectArmBind::id; the A(xs) if len(xs) > lim probe agrees on both engines
+        // and stays native). Open: a bind both the guard and the body read is still
+        // cloned twice; keeping the prologue's locals alive means dropping, at every
+        // select exit, the clones of the arms that exit never visited.
         install_arm_binds(cx, &binds, scrut, pcond)?;
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
@@ -866,6 +887,20 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // prologue's installed binds alive into the chain for a non-or arm and drop
         // them on the guard-false and undetermined exits, or never clone a bind the arm
         // body does not read. This is the remaining half of f-select-13. (x-rerun-3-04)
+        // the arm installs what its body reads, and a guard it runs here; a
+        // guard the prologue ran read its own copies
+        // 2026-10-16 claude: The second fix offered here is in (see f-select-06): an
+        // arm installs only the binds its body, or a guard it runs itself, reads, so
+        // the A(xs) if array::len(xs) > lim => 1 arm no longer clones xs in its matched
+        // block.
+        let mut reads = Refs::default();
+        body.refs(&mut reads);
+        if let Some(g) = &pat.guard
+            && guard_vals[i].is_none()
+        {
+            g.node.refs(&mut reads);
+        }
+        binds.retain(|b| reads.refed.contains(&b.id()));
         install_arm_binds(cx, &binds, scrut, None)?;
         if let (Some(g), Some(fail)) = (&pat.guard, fail) {
             let eff = match guard_vals[i] {
