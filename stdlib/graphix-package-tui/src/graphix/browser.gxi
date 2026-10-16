@@ -16,14 +16,16 @@ type MoveCursor = [
 /// `#size` is the area the browser is drawn in, which sizes its
 /// viewport (pass the enclosing block's `#size` output); `#cursor`
 /// moves the selection. `#selected_row` is set to the selected row's
-/// full path, and `#selected_path` to the selected cell's.
+/// full path, and `#selected_path` to the selected cell's; each is null
+/// while the listing is empty, and neither is set while a new path's
+/// listing is on its way.
 val browser: fn(
     ?#selected_style: Style,
     ?#header_style: Style,
     ?#style: Style,
     ?#cursor: MoveCursor,
-    ?#selected_row: &mut string,
-    ?#selected_path: &mut string,
+    ?#selected_row: &mut [string, null],
+    ?#selected_path: &mut [string, null],
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,

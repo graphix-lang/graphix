@@ -12,8 +12,8 @@ The `browser` widget provides a specialized interface for browsing and interacti
 
 - **path** - The netidx path whose children are listed. The listing is fetched once each time `path` changes, so rows published later appear when the path next changes
 - **cursor** - Programmatic cursor movement: `Left(n)`, `Right(n)`, `Up(n)`, `Down(n)`
-- **selected_row** (output) - Full path of the selected row (e.g. `/t/r1`)
-- **selected_path** (output) - Full path of the selected cell: the row in a list, the row and column in a table
+- **selected_row** (output) - Full path of the selected row (e.g. `/t/r1`), null while the listing is empty
+- **selected_path** (output) - Full path of the selected cell: the row in a list, the row and column in a table; null while the listing is empty
 - **size** (input) - The area the browser is drawn in, which sizes its viewport; pass the enclosing block's `#size` output
 
 ## Examples

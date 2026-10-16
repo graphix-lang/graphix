@@ -3,8 +3,8 @@ let browser = |
     #header_style: Style = style(#fg:`Indexed(111)),
     #style: Style = style(#fg:`Indexed(227), #bg:`Indexed(234)),
     #cursor: MoveCursor = never(),
-    #selected_row: &mut string = &mut never(),
-    #selected_path: &mut string = &mut never(),
+    #selected_row: &mut [string, null] = &mut never(),
+    #selected_path: &mut [string, null] = &mut never(),
     #flex: Flex = `SpaceBetween,
     #rate: duration = duration:0.5s,
     #size: Size,
@@ -12,13 +12,19 @@ let browser = |
 | -> Tui {
     let selected: {x: i64, y: i64} = { x: 1, y: 0 };
     let viewport: {x: i64, y: i64} = { x: 0, y: 0 };
-    select uniq(path) {
-        p => {
-            selected <- p ~ { x: 1, y: 0 };
-            viewport <- p ~ { x: 0, y: 0 }
-        }
+    let listing = net::list_table(path)$;
+    // until a path's first listing arrives the old one stands, and the
+    // selection names none of its rows
+    let fresh = true;
+    fresh <- uniq(path) ~ true;
+    fresh <- listing ~ false;
+    let restart = select listing ~ fresh {
+        true => listing,
+        false => never()
     };
-    let (mode, structure) = select net::list_table(path)$ {
+    selected <- restart ~ { x: 1, y: 0 };
+    viewport <- restart ~ { x: 0, y: 0 };
+    let (mode, structure) = select listing {
         { columns, rows: listed } => {
             let mode = uniq(select columns {
                 [] => `List,
@@ -77,60 +83,29 @@ let browser = |
                     cols: array::push(cols, col),
                     widths: array::push(widths, `Min(len))
                 },
-                // CR claude for claude: [bug/medium] gx-ui-03 still reproduces: tui browser
-                // publishes a row of the old listing on navigation. Part B of gx-ui-03 is
-                // unfixed (part A, selected_path without #selected_row, is fixed). On a
-                // path change, `selected <- p ~ {x: 1, y: 0}` lands while
-                // `structure`/`visible_rows` still hold the previous path's listing. So
-                // `row_path = visible_rows[selected.y]$` takes row 0 of the old listing,
-                // and `*selected_row <- row_path` / `*selected_path <- ...` publish a path
-                // the user never selected. When the new listing is empty,
-                // `visible_rows[0]$` is bottom, so nothing overwrites that stale value. The
-                // outputs keep naming a row of the previous listing, and a caller that
-                // navigates on Enter goes there. Whether it happens depends on whether the
-                // reset or the new listing arrives first (7-8 of every 10 B lines in 3 of 4
-                // runs; 0 in one --no-fusion run). Failure: Publish /p/d/w and /p/d/x,
-                // browse /p/d, move the cursor down to /p/d/x and enter it (its listing is
-                // empty). The outputs switch to selected_row=/p/d/w selected_path=/p/d/w
-                // and stay there; the next Enter navigates to /p/d/w. Fix: Key the listing
-                // to the path it lists (carry `path` with the list_table result and drop it
-                // unless it equals the current path). Reset `selected` when the new listing
-                // arrives, not when the path changes. Keep the stale-read guard so no row
-                // path is published while the listing is empty. Unverified: the reviewer's
-                // report, not checked by a verifier. (x-rerun-4-02)
-                // 2026-10-13 codex: Clearing an empty selection requires nullable output
-                // references and migration of ../netidx/netidx-tools/src/browser/browser.gx
-                // (selected_row/selected_path and their Enter/write handlers), outside this
-                // task scope. Keep listing replies keyed to their requested path and reset
-                // selection on a new path reply. The probe cannot run here: the sandbox
-                // refuses the netidx resolver socket with Operation not permitted.
                 x => { total: x - len - 4, cols, widths }
             }
         })
     };
     let visible_columns: Array<string> = uniq(visible_columns);
-    let row_path = visible_rows[selected.y]$;
-    // CR claude for claude: [bug/medium] selected_row and selected_path report rows
-    // that are not on screen. The selection reset `selected <- p ~ {..}` fires on the
-    // path, but `structure` still holds the old listing until net::list_table answers.
-    // So for one cycle row_path is row 0 of the previous directory, and that row is
-    // written to both outputs. When the new listing is empty (a leaf, an unpublished
-    // path, or a list error), `visible_rows[selected.y]$` is bottom and nothing is
-    // written. The caller then keeps a row of the previous directory, and netidx-tools'
-    // browser `:w` and Enter act on it. Fix: reset the selection when the new listing
-    // arrives (trigger it on `structure`, not on `path`). Also make both outputs `&mut
-    // [string, null]` (the .gxi and the callers too), and write null when visible_rows
-    // is empty. probe: design/review-2026-10-12/repro/gx-ui-03.gx (gx-ui-03)
-    // 2026-10-13 codex: Clearing an empty selection requires nullable output
-    // references and migration of ../netidx/netidx-tools/src/browser/browser.gx
-    // (selected_row/selected_path and their Enter/write handlers), outside this
-    // task scope. Keep listing replies keyed to their requested path and reset
-    // selection on a new path reply. The probe cannot run here: the sandbox
-    // refuses the netidx resolver socket with Operation not permitted.
-    *selected_row <- row_path;
-    *selected_path <- select mode {
-        `List => row_path,
-        `Table => "[row_path]/[visible_columns[selected.x - 1]$]"
+    let row_path: [string, null] = select visible_rows[selected.y] {
+        error as _ => null,
+        r => r
+    };
+    let cell_path: [string, null] = select row_path {
+        null as n => n,
+        r => select mode {
+            `List => r,
+            `Table => "[r]/[visible_columns[selected.x - 1]$]"
+        }
+    };
+    *selected_row <- select fresh {
+        false => row_path,
+        true => never()
+    };
+    *selected_path <- select fresh {
+        false => cell_path,
+        true => never()
     };
     let header = select mode {
         `List => row(#style:header_style, [cell(line("Name")), cell(line("Value"))]),

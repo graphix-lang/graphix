@@ -282,7 +282,7 @@ use tui::browser::browser;
 let p0 = sys::net::publish("/local/browse/r0", 0);
 let p1 = sys::net::publish("/local/browse/r1", 1);
 let path = sys::time::after_idle(duration:200.ms, "/local/browse");
-let selected_path: string = never();
+let selected_path: [string, null] = never();
 let result = browser(
   #size: {width: 40, height: 10},
   #selected_path: &mut selected_path,
@@ -306,6 +306,55 @@ let result = browser(
         h.next_update(Duration::from_millis(500)).await?;
     }
     Ok(())
+}
+
+/// Navigation never reports a row of the listing it leaves: the selection
+/// starts over when the new listing arrives, and an empty listing reports
+/// null.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_selection_follows_the_listing() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r#"
+use tui::browser::{MoveCursor, browser};
+let pa = array::map([0, 1, 2, 3], |i| sys::net::publish("/local/nav/a/a[i]", i));
+let pb = array::map([0, 1], |i| sys::net::publish("/local/nav/b/b[i]", i));
+let clock = sys::time::timer(duration:300.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let cursor: MoveCursor = never();
+cursor <- select n { 2 => n ~ `Down(2), _ => never() };
+let path = "/local/nav/a";
+path <- select n { 4 => n ~ "/local/nav/b", 6 => n ~ "/local/nav/a/a3", _ => never() };
+let sel: [string, null] = never();
+let seen: Array<[string, null]> = [];
+seen <- sel ~ array::push(seen, sel);
+let result = browser(#cursor, #selected_row: &mut sel, #size: {width: 40, height: 8}, path)
+"#,
+        40,
+        8,
+    )
+    .await?;
+    h.watch("test::seen").await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(Value::Array(a)) = h.get_watched("test::seen")
+            && a.last() == Some(&Value::Null)
+        {
+            let mut seen: Vec<Value> = a.iter().cloned().collect();
+            seen.dedup();
+            let want = ["/local/nav/a/a0", "/local/nav/a/a2", "/local/nav/b/b0"]
+                .map(Value::from)
+                .into_iter()
+                .chain([Value::Null])
+                .collect::<Vec<_>>();
+            assert_eq!(seen, want);
+            return Ok(());
+        }
+        if tokio::time::Instant::now() > deadline {
+            anyhow::bail!("seen {:?}", h.get_watched("test::seen"))
+        }
+        h.next_update(Duration::from_millis(500)).await?;
+    }
 }
 
 /// A scroll by one row resubscribes only the row that enters: no row that
