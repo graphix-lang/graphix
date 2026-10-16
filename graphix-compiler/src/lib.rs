@@ -2011,6 +2011,12 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     // references must be cleared, not registered, so a registered discard in that batch
     // whose key a fresh build also holds still cancels the fresh count. Not reachable
     // while a run-time body fails only on a compiler bug.
+    // 2026-10-16 claude: Looked again 10-16: telling a registered discard from a fresh
+    // one needs to know whether the node predates the current deferred batch, and the
+    // sites cannot (clear_prepared_bind runs both at a check, where the old callee is
+    // fresh, and at a run-time rebind, where it is registered); a node would have to
+    // carry its batch. Still unreachable: a run-time body fails to build only on a
+    // compiler bug.
     pub fn drop_deferred(&mut self) {
         if !self.deferred_pending() {
             return;

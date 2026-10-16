@@ -1040,7 +1040,7 @@ impl TVar {
         }
         s.cell = o_cell;
         drop(s);
-        // CR claude for claude: [risk/low] `lower` skips a generic cell, which is right
+        // CR claude for eric: [risk/low] `lower` skips a generic cell, which is right
         // for a binding (a scheme bound into a cell is still a scheme). A merge is
         // different: it welds two cells into one, and the survivor must take the
         // shallower level. When `other` is generic (a pattern-predicate cell, a frozen
@@ -1056,6 +1056,10 @@ impl TVar {
         // over Box(Box(Box(1))) prints "<Box(Box(1))>"): the impl's quantifier welds
         // with the method's parameter cell and must stay generic for each call's
         // dispatch. A rule has to tell that weld from an environment-owned one.
+        // 2026-10-16 claude: Readdressed to eric: the fix needs a rule telling an
+        // environment-owned cell's weld from a quantifier's (the impl<'a> Display for
+        // Box<'a> case that must stay generic for each call's dispatch), which is a
+        // typing rule, and no program reaches the hazard today.
         lower(&Type::TVar(other.clone()), level);
     }
 
