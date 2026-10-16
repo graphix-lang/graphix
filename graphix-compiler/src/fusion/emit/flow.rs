@@ -2,7 +2,7 @@
 //! body tail (tail selects and self-tail-calls), and the `?`/`$`
 //! error-propagation (qop) nodes.
 
-use super::lower::OwnCall;
+use super::lower::{OwnCall, freeze_node_typ};
 use crate::{
     BindId, Node, NodeView, Refs, Rt, UserEvent,
     expr::ExprKind,
@@ -161,6 +161,15 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
                     "emit_clif: recursive non-function let not supported"
                 ));
             }
+            // CR claude for claude: [perf/medium] A destructuring let (`let (a, b) =
+            // e`, `let {x, ..} = e`) refuses its whole region here, so an ordinary
+            // construct de-fuses: Collection's `find` default (`let (_, found) =
+            // fold(..)`) never fuses whole, which is why lang::collection::
+            // collection_newtype_defaults cannot put #[native] on its `find`. A select
+            // arm already binds a structure pattern's leaves, owned ones dropped at
+            // its exit; bind an irrefutable let pattern through the same leaf binds
+            // over a held composite local, dropped at the block's scope exit, then
+            // put #[native] on that fixture's `find`. (fusion-let-destructure-01)
             let name = bspec.pattern.single_bind().ok_or_else(|| {
                 anyhow!("emit_clif: non-single-bind let pattern not supported")
             })?;
@@ -382,7 +391,12 @@ fn emit_let_node<R: Rt, E: UserEvent>(
     // meet its FuseExpect::Jit: put a #[native] on its `find` call. Probes:
     // design/review-2026-10-12/repro/tests-lang-rest-b-03.gx and
     // tests-lang-rest-b-03-user-trait.gx. (tests-lang-rest-b-05)
-    let frozen = kernel_abi::freeze_for_abi_normalized(typ);
+    // 2026-10-16 claude: Done: a let's type freezes through freeze_node_typ, which
+    // expands the env's refs when the plain freeze fails, so find_map's default (and
+    // the user-trait probe) fuse under #[native]. Open: the fixture's #[native] on
+    // find, since find's default destructures its fold result (let (_, found) = ..),
+    // which kernels refuse (fusion-let-destructure-01).
+    let frozen = freeze_node_typ(cx.ctx, typ);
     let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
     match ak {
         Some(AbiKind::Scalar(p)) => {

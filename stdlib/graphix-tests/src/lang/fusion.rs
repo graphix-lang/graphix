@@ -2281,3 +2281,16 @@ run!(native_on_a_literal, r#"{
     let y = #[native] "s";
     (x, y)
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:5, "s"]"#; FuseExpect::Jit);
+
+// A let annotated through a typedef over a method's variable, in a trait
+// default body, freezes and fuses (Option<'b> in find_map's default).
+run!(native_trait_default_option_let, r#"{
+    type Bag<'a> = Abstract<Array<'a>>;
+    impl Collection for Bag<'_> {
+        let fold = |b, init, f| array::fold(b.0, init, f);
+        let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+        let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+    };
+    let b = Bag([1, 2, 3, 4]);
+    #[native] Collection::find_map(b, |x| select x > 2 { true => x, false => null })
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
