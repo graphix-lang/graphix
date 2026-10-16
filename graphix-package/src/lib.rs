@@ -170,6 +170,10 @@ pub trait Package<X: GXExt>: Send + Sync {
     /// The package's main program source, if it has one and the `standalone`
     /// feature is enabled.
     fn main_program(&self) -> Option<&'static str>;
+
+    /// Run as the process ends, to hand off what only a drop hands off
+    /// (statics are never dropped).
+    fn shutdown(&self) {}
 }
 
 /// Register `packages` in `ctx`: the resolver of their Graphix modules,

@@ -525,8 +525,11 @@ fn main() -> Result<()> {
         f();
     }
     let code =
-        tokio_handle.join().map_err(|_| anyhow::anyhow!("tokio thread panicked"))??;
-    if let Some(code) = code {
+        tokio_handle.join().map_err(|_| anyhow::anyhow!("tokio thread panicked"))?;
+    for p in graphix_shell::stdlib_packages::<NoExt>() {
+        p.shutdown()
+    }
+    if let Some(code) = code? {
         std::process::exit(code)
     }
     Ok(())

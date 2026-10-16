@@ -167,4 +167,5 @@ graphix_derive::defpackage! {
     init_custom => |gx, env, stop, e, run_on_main| {
         Ok(Box::new(Gui::<X>::start(gx, env.clone(), e, stop, run_on_main).await?))
     },
+    shutdown => || clipboard::release(),
 }

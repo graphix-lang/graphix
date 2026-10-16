@@ -7,17 +7,28 @@ use std::{env, fs, path::Path, process::ExitCode};
 /// Round trip + idempotence over every file given (one file: print it),
 /// each under the configuration `graphix fmt` would find for it.
 /// `GXFMT_UNCHECKED=1` skips the reparse. Exits non-zero when any file was
-/// unreadable or exposed a formatter bug; a file the formatter merely
-/// declines is not a failure.
+/// unreadable or exposed a formatter bug, and, given one file, when it does
+/// not parse; a file the formatter merely declines is not a failure. Many
+/// files: those that do not parse are skipped and listed.
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let quiet = args.len() > 1;
     let unchecked = env::var("GXFMT_UNCHECKED").is_ok();
-    let mut bad = 0;
+    let (mut bad, mut skipped) = (0, Vec::new());
     for f in &args {
-        if let Err(e) = check(Path::new(f), quiet, unchecked) {
-            bad += 1;
-            eprintln!("{f}: {e:#}")
+        match check(Path::new(f), quiet, unchecked) {
+            Ok(Checked::Formatted) => (),
+            Ok(Checked::Unparsed(e)) if quiet => skipped.push((f, e)),
+            Ok(Checked::Unparsed(e)) | Err(e) => {
+                bad += 1;
+                eprintln!("{f}: {e:#}")
+            }
+        }
+    }
+    if !skipped.is_empty() {
+        eprintln!("{} skipped: do not parse", skipped.len());
+        for (f, e) in &skipped {
+            eprintln!("  {f}: {}", format!("{e:#}").lines().next().unwrap_or(""));
         }
     }
     if bad > 0 {
@@ -27,7 +38,13 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn check(path: &Path, quiet: bool, unchecked: bool) -> Result<()> {
+enum Checked {
+    Formatted,
+    /// The input does not parse, so there is nothing to round-trip.
+    Unparsed(anyhow::Error),
+}
+
+fn check(path: &Path, quiet: bool, unchecked: bool) -> Result<Checked> {
     let text = fs::read_to_string(path)?;
     let kind = SourceKind::of_path(path);
     let cfg = FormatConfig::for_file(path)?;
@@ -36,26 +53,18 @@ fn check(path: &Path, quiet: bool, unchecked: bool) -> Result<()> {
         if !quiet {
             print!("{}", &*s)
         }
-        return Ok(());
+        return Ok(Checked::Formatted);
     }
     let once = match format_source(kind, &text, &cfg) {
         Ok(s) => s,
         Err(e) if e.is::<Refused>() => return Err(e),
-        // CR claude for claude: [test-gap/low] The only errors that reach this arm come
-        // from parsing the input, so a file that does not parse is skipped silently. If
-        // a parser change breaks part of the corpus, the harness CLAUDE.md prescribes
-        // after a printer change reports 0 bad and never round-trips those files. Given
-        // one such file, it prints nothing and exits 0. Fix: count skipped files and
-        // report them ("N skipped: do not parse", with their names). In single-file
-        // mode, print the parse error and exit non-zero. Also reported as
-        // (tests-shell-compiler-12). (tests-shell-compiler-09)
-        Err(_) => return Ok(()),
+        Err(e) => return Ok(Checked::Unparsed(e)),
     };
     if !quiet {
         print!("{}", &*once);
-        return Ok(());
+        return Ok(Checked::Formatted);
     }
     let twice = format_source(kind, &once, &cfg).context("second pass")?;
     anyhow::ensure!(*twice == *once, "NOT IDEMPOTENT");
-    Ok(())
+    Ok(Checked::Formatted)
 }

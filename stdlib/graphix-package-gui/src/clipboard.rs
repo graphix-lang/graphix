@@ -58,7 +58,7 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 /// The process's clipboard, one instance for every call and the event
 /// loop: on X11 the instance owns what was written, so dropping it after
 /// each call would lose the text unless a clipboard manager took it.
-// CR claude for claude: [risk/low] A static is never dropped, and the shell ends with
+// XCR claude for claude: [risk/low] A static is never dropped, and the shell ends with
 // std::process::exit or a return from main. arboard's X11 backend (Wayland too, since
 // wayland-data-control is off) hands the selection to a clipboard manager only in the
 // Drop of the last Clipboard. So text written by write_text, or copied from a widget,
@@ -71,6 +71,13 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 // clipboard-only programs with no Gui display. arboard's X11 Clipboard::drop is
 // the handover path; a static never runs it. Desktop handover needs an X11 socket
 // and clipboard manager and was not verified in this sandbox.
+// 2026-10-16 claude: Package::shutdown (a defpackage key, default nothing) runs for
+// every stdlib package after the runtime thread ends, before the shell exits on
+// success, error or an exit code; gui's drops the clipboard (clipboard::release), so
+// the last instance's drop hands the selection to the manager. Not verified on a
+// desktop: no clipboard tool on this box. Check: graphix -e
+// 'gui::clipboard::write_text("x")' with a clipboard manager running, then paste after
+// it exits.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
 pub(crate) fn clipboard<T>(
@@ -82,6 +89,12 @@ pub(crate) fn clipboard<T>(
         slot @ None => slot.insert(arboard::Clipboard::new()?),
     };
     f(cb)
+}
+
+/// Drop the clipboard: the last instance's drop hands its selection to
+/// the desktop's clipboard manager, so text copied survives the process.
+pub(crate) fn release() {
+    drop(CLIPBOARD.lock().take())
 }
 
 fn with_clipboard(

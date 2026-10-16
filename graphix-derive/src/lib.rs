@@ -123,6 +123,8 @@ struct DefPackage {
     builtins: Vec<BuiltinEntry>,
     /// `is_custom` and `init_custom`, which make sense only together
     custom: Option<(syn::ExprClosure, syn::ExprClosure)>,
+    /// `shutdown`, run as the process ends
+    shutdown: Option<syn::ExprClosure>,
 }
 
 impl syn::parse::Parse for DefPackage {
@@ -130,6 +132,7 @@ impl syn::parse::Parse for DefPackage {
         let mut builtins = None;
         let mut is_custom = None;
         let mut init_custom = None;
+        let mut shutdown = None;
         while !input.is_empty() {
             let key: Ident = input.parse()?;
             let _arrow: Token![=>] = input.parse()?;
@@ -146,6 +149,8 @@ impl syn::parse::Parse for DefPackage {
                 is_custom.replace(input.parse::<syn::ExprClosure>()?).is_some()
             } else if key == "init_custom" {
                 init_custom.replace(input.parse::<syn::ExprClosure>()?).is_some()
+            } else if key == "shutdown" {
+                shutdown.replace(input.parse::<syn::ExprClosure>()?).is_some()
             } else {
                 return Err(syn::Error::new(key.span(), "unknown key"));
             };
@@ -166,7 +171,7 @@ impl syn::parse::Parse for DefPackage {
                 return Err(syn::Error::new_spanned(init, "init_custom needs is_custom"));
             }
         };
-        Ok(DefPackage { builtins: builtins.unwrap_or_default(), custom })
+        Ok(DefPackage { builtins: builtins.unwrap_or_default(), custom, shutdown })
     }
 }
 
@@ -389,6 +394,11 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let (custom_helpers, maybe_init_custom) = custom(&input.custom);
     let graphix_files = graphix_files();
     let main_program = main_program_impl(&c);
+    let shutdown = input.shutdown.as_ref().map(|f| {
+        check_args("shutdown", vec![], &f.inputs);
+        let body = &f.body;
+        quote! { fn shutdown(&self) { #body } }
+    });
     let test_harness = test_harness(&c);
     let package_name = &c.name;
     let dep_registers = c.runtime().filter(|d| d.name != c.name).map(|d| {
@@ -447,6 +457,8 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
 
             #main_program
+
+            #shutdown
         }
 
         #test_harness
