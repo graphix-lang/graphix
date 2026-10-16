@@ -303,6 +303,13 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // select p { (a, b) => 0, (c, d) => 1 }; #[native] g((1, "s"))` is refused
             // by --expand. Pin: lang::select::coverage_all_bind_arms_cover_each_member
             // (FuseExpect::None today). (abi-union-01)
+            // 2026-10-15 claude: Looked at 10-15: classifying the union as
+            // AbiKind::Value alone gains nothing for the probe, since its select over
+            // the opaque scrutinee is then refused ('select scrutinee type ... doesn't
+            // freeze concrete', as a union of structs is); the freeze's Set arm would
+            // need the members frozen too. The value is in the select emitter
+            // destructuring an opaque scrutinee per member, which is the work this
+            // needs.
             return None;
         }
         None
