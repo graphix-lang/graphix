@@ -1081,7 +1081,23 @@ impl FnType {
         // A quantifier self has not picked stands for every type its bound
         // admits, since each call through the value picks it anew: t must
         // fit it held rigid, wherever the type stands.
-        let _gates = self.open_quantifier_gates();
+        let gates = self.open_quantifier_gates();
+        let gated = u32::from(!gates.is_empty());
+        hist.gated += gated;
+        let r = self.contains_gated(flags, env, hist, t);
+        hist.gated -= gated;
+        drop(gates);
+        r
+    }
+
+    /// [`Self::contains_int`] with self's open quantifiers held rigid.
+    fn contains_gated(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Self,
+    ) -> Result<bool> {
         // a rank-2 formal passed on is any instance of itself: its
         // quantifiers are fresh for this comparison, so self's bind them
         let fresh;

@@ -93,6 +93,10 @@ pub(super) struct ContainsHist {
     /// pinned so its address is not recycled under its key.
     closed: Lazy<IntMap<usize, bool>>,
     closed_pins: Lazy<Vec<Type>>,
+    /// How many function types hold quantifier cells rigid on this path
+    /// (`FnType::contains_int`): a verdict reached under one depends on
+    /// the gate, so the probe memo is neither read nor filled.
+    pub(super) gated: u32,
 }
 
 /// How many expansions of one typedef in a row may take larger params. A
@@ -130,6 +134,7 @@ impl ContainsHist {
             grew: None,
             closed: Lazy::new(),
             closed_pins: Lazy::new(),
+            gated: 0,
         }
     }
 
@@ -1098,7 +1103,9 @@ impl Type {
         if !flags.is_empty() && !rigid {
             return self.contains_dispatch(flags, env, hist, t);
         }
-        if let Some(r) = hist.probe_get(rigid, self, t) {
+        if hist.gated == 0
+            && let Some(r) = hist.probe_get(rigid, self, t)
+        {
             return Ok(r);
         }
         // Only a verdict that assumed no pair from further out holds
@@ -1115,21 +1122,7 @@ impl Type {
             (a, b) => a.or(b),
         };
         let r = r?;
-        // CR claude for claude: [risk/low] Only `assuming` lowers low_water. A verdict
-        // can also depend on other walk state: a re-entered distribution probe
-        // (distribution_probes_in_progress answers false), a re-entered trait question
-        // (traits_in_progress answers true), and a rigid gate opened by
-        // FnType::open_quantifier_gates. Such a verdict is still cached by content
-        // identity and served to a later probe of the same pair in this ContainsHist,
-        // after that state has unwound. Fix: when any of those three decides a verdict,
-        // lower low_water (or set a taint flag), so the verdicts above it skip
-        // probe_put. No program shown. (t-contains-11)
-        // 2026-10-14 claude: the distribution and trait questions are one in-progress
-        // stack now (ContainsHist::question, Question); a verdict answered by
-        // assumption from one of them taints the walk (ContainsHist::tainted) and is
-        // not memoized until that question returns. The rigid gate opened by
-        // FnType::open_quantifier_gates is not covered yet; no program shown for it.
-        if assumed >= height && tainted.is_none() {
+        if assumed >= height && tainted.is_none() && hist.gated == 0 {
             hist.probe_put(rigid, self, t, r);
         }
         Ok(r)
