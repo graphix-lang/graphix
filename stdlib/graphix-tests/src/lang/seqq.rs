@@ -2,8 +2,8 @@ use super::dense_deltas::run_delta;
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::CFlag;
-use graphix_package_core::testing::init_with_flags_and_setup;
 use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::testing::{TestCtx, config};
 use netidx_value::{ValArray, Value};
 use tokio::sync::mpsc;
 
@@ -255,11 +255,13 @@ async fn function_captures_stay_static(mode: Mode) -> Result<()> {
 async fn unhandled_warnings(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(100);
     let flags = mode.flags() | CFlag::WarnUnhandled | CFlag::WarningsAreErrors;
-    let ctx =
-        init_with_flags_and_setup(tx, &crate::TEST_REGISTER, vec![], flags, |ctx| {
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |ctx| {
             ctx.control.set_par_mode(mode.par())
-        })
-        .await?;
+        })?
+        .flags(flags),
+    )
+    .await?;
     for code in [
         "seq { 42 }",
         "{ let f = || seq { 42 }; f() }",

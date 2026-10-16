@@ -9,7 +9,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     run,
-    testing::{Events, FuseExpect, init_with_flags_and_setup, next_update, refused},
+    testing::{Events, FuseExpect, TestCtx, config, next_update, refused},
 };
 use graphix_rt::EnvStats;
 use netidx::publisher::Value;
@@ -53,8 +53,9 @@ async fn run_code(
     as_file: bool,
 ) -> Result<(Value, (u64, u64))> {
     let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |_| {})
-        .await?;
+    let ctx =
+        TestCtx::start(config(tx, crate::TEST_REGISTER, vec![], |_| {})?.flags(flags))
+            .await?;
     let mut held = Vec::new();
     for p in pre {
         held.push(ctx.rt.compile(ArcStr::from(*p)).await?);
@@ -1025,12 +1026,9 @@ async fn node_shape_matches_by_kind_name() -> Result<()> {
     use graphix_compiler::node_shape::NodeShape;
 
     let (tx, _rx) = mpsc::channel(10);
-    let ctx = init_with_flags_and_setup(
-        tx,
-        crate::TEST_REGISTER,
-        vec![],
-        CFlag::FusionDisabled.into(),
-        |_| {},
+    let ctx = TestCtx::start(
+        config(tx, crate::TEST_REGISTER, vec![], |_| {})?
+            .flags(CFlag::FusionDisabled.into()),
     )
     .await?;
     let res = ctx.rt.compile(ArcStr::from(r#""a""#)).await?;

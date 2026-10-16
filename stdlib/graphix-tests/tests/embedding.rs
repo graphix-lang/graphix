@@ -32,7 +32,13 @@ async fn runtime(
         Path::from("/test.gx"),
         VfsEntry::from(ArcStr::from(PROG)),
     )]);
-    testing::init_with_resolvers(tx, packages, vec![VfsResolver::new(tbl)]).await
+    testing::TestCtx::start(testing::config(
+        tx,
+        packages,
+        vec![VfsResolver::new(tbl)],
+        |_| {},
+    )?)
+    .await
 }
 
 async fn compiles(gx: &GXHandle<NoExt>, text: &'static str) -> Result<()> {

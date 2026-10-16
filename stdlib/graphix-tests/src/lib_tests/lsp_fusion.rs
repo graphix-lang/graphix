@@ -3,9 +3,8 @@
 
 use anyhow::Result;
 use arcstr::literal;
-use enumflags2::BitFlags;
 use graphix_compiler::expr::Load;
-use graphix_package_core::testing::{TestCtx, init_lsp_mode};
+use graphix_package_core::testing::{TestCtx, config};
 use graphix_rt::GXEvent;
 use poolshark::global::GPooled;
 use tokio::sync::mpsc;
@@ -17,7 +16,8 @@ const FUSABLE: &str = "let seed = cast<i64>(sys::time::now(0))$; seed * 3 + 1";
 const ILL_TYPED: &str = "let x = 1 + \"not a number\"; x";
 
 async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
-    init_lsp_mode(sub, crate::TEST_REGISTER, vec![], BitFlags::empty(), |_| {}).await
+    TestCtx::start(config(sub, crate::TEST_REGISTER, vec![], |_| {})?.lsp_mode(true))
+        .await
 }
 
 /// An lsp_mode check is the check alone: it builds no kernel. An

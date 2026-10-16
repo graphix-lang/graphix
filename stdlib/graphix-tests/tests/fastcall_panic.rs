@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use graphix_compiler::{Effect, ExecCtx, FastCall, Rt, UserEvent};
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_eval,
-    testing::{Mode, init_with_flags_and_setup},
+    testing::{Mode, TestCtx, config},
 };
 use graphix_rt::GXEvent;
 use netidx_value::Value;
@@ -41,10 +41,13 @@ async fn values_until_death(mode: Mode, code: &'static str) -> Result<(Vec<Value
     let packages: &[graphix_package_core::testing::PackageRef] =
         graphix_package::package_refs!();
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-    let ctx = init_with_flags_and_setup(tx, packages, vec![], mode.flags(), |ctx| {
-        ctx.control.set_par_mode(mode.par());
-        ctx.register_builtin::<CachedArgs<PanicProbe>>().unwrap()
-    })
+    let ctx = TestCtx::start(
+        config(tx, packages, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par());
+            ctx.register_builtin::<CachedArgs<PanicProbe>>().unwrap()
+        })?
+        .flags(mode.flags()),
+    )
     .await?;
     let rt = ctx.rt.clone();
     rt.control().reset_invocations();

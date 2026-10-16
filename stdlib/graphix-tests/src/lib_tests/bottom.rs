@@ -4,7 +4,7 @@ use graphix_compiler::{
     Event, NoUserEvent, Scope, Tag, TagValue, View, compile,
     expr::{ModPath, parser::parse_one},
 };
-use graphix_package_core::testing::{Collect, Mode, collect, init_with_flags_and_setup};
+use graphix_package_core::testing::{Collect, Mode, TestCtx, collect, config};
 use netidx_value::{ValArray, Value};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -12,9 +12,12 @@ use tokio::sync::mpsc;
 async fn strict_bottom(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let flags = mode.flags();
-    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |ctx| {
-        ctx.control.set_par_mode(mode.par())
-    })
+    let ctx = TestCtx::start(
+        config(tx, crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
     .await?;
     let result = ctx
         .rt
@@ -140,9 +143,12 @@ async fn strict_bottom(mode: Mode) -> Result<()> {
 async fn strict_sample(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let flags = mode.flags();
-    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |ctx| {
-        ctx.control.set_par_mode(mode.par())
-    })
+    let ctx = TestCtx::start(
+        config(tx, crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
     .await?;
     let result = ctx
         .rt
@@ -224,9 +230,12 @@ async fn strict_sample(mode: Mode) -> Result<()> {
 async fn bottom_scrutinee_consults_no_guard(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let flags = mode.flags();
-    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |ctx| {
-        ctx.control.set_par_mode(mode.par())
-    })
+    let ctx = TestCtx::start(
+        config(tx, crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
     .await?;
     let result = ctx
         .rt

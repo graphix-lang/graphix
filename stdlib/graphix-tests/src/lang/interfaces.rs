@@ -1042,11 +1042,13 @@ async fn interface_error_is_placed() -> Result<()> {
     );
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let resolver = graphix_compiler::expr::VfsResolver::new(tbl);
-    let ctx = graphix_package_core::testing::init_with_setup(
-        tx,
-        &crate::TEST_REGISTER,
-        vec![resolver],
-        |_| {},
+    let ctx = graphix_package_core::testing::TestCtx::start(
+        graphix_package_core::testing::config(
+            tx,
+            &crate::TEST_REGISTER,
+            vec![resolver],
+            |_| {},
+        )?,
     )
     .await?;
     let e =

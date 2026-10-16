@@ -3031,10 +3031,11 @@ async fn budget_stops(
     flags: enumflags2::BitFlags<graphix_compiler::CFlag>,
     code: &str,
 ) -> anyhow::Result<()> {
-    use graphix_package_core::testing::init_with_flags_and_setup;
+    use graphix_package_core::testing::{TestCtx, config};
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let ctx = init_with_flags_and_setup(tx, &crate::TEST_REGISTER, vec![], flags, |_| {})
-        .await?;
+    let ctx =
+        TestCtx::start(config(tx, &crate::TEST_REGISTER, vec![], |_| {})?.flags(flags))
+            .await?;
     ctx.rt.control().set_activation_budget(2000);
     ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);

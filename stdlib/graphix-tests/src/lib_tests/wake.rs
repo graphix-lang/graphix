@@ -32,8 +32,13 @@ async fn wake_recompute_table() -> Result<()> {
         graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(TABLE)),
     )]);
     let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
+    let ctx = testing::TestCtx::start(testing::config(
+        tx,
+        crate::TEST_REGISTER,
+        vec![resolver],
+        |_| {},
+    )?)
+    .await?;
     let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;

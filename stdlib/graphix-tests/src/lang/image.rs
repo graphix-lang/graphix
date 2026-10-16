@@ -14,10 +14,7 @@ use graphix_compiler::{
     image::{DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder},
     typ::Type,
 };
-use graphix_package_core::testing::{
-    TestCtx, init_lsp_with_registration, init_session_with_setup, init_with_registration,
-    init_with_session,
-};
+use graphix_package_core::testing::{TestCtx, config};
 use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::publisher::Value;
 use netidx_core::pack::Pack;
@@ -147,14 +144,19 @@ async fn eval_on(
 async fn registration_restores() -> Result<()> {
     let (tx, mut cold_rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
-    let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
-            .await?;
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .registration(RegistrationImage::save(image_tx)),
+    )
+    .await?;
     let image = image_rx.await??;
     assert!(image.len() > 10_000, "{}", image.len());
     let (tx, mut warm_rx) = mpsc::channel(10);
-    let warm =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::load(image)).await?;
+    let warm = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .registration(RegistrationImage::load(image)),
+    )
+    .await?;
     assert!(!cold.rt.env_stats().await?.restored);
     assert!(warm.rt.env_stats().await?.restored, "the warm runtime compiled cold");
     for code in [
@@ -182,9 +184,11 @@ async fn registration_timing() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
     let t0 = std::time::Instant::now();
-    let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
-            .await?;
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .registration(RegistrationImage::save(image_tx)),
+    )
+    .await?;
     let cold_time = t0.elapsed();
     let image = image_rx.await??;
     cold.shutdown().await;
@@ -192,10 +196,9 @@ async fn registration_timing() -> Result<()> {
     for _ in 0..5 {
         let (tx, _rx) = mpsc::channel(10);
         let t0 = std::time::Instant::now();
-        let warm = init_with_registration(
-            tx,
-            TEST_REGISTER,
-            RegistrationImage::load(image.clone()),
+        let warm = TestCtx::start(
+            config(tx, TEST_REGISTER, vec![], |_| {})?
+                .registration(RegistrationImage::load(image.clone())),
         )
         .await?;
         warm_times.push(t0.elapsed());
@@ -267,13 +270,12 @@ async fn program_image_restores_kernels() -> Result<()> {
     let (tx, mut cold_rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
-    let cold = init_with_session(
-        tx,
-        TEST_REGISTER,
-        Default::default(),
-        RegistrationImage::save(reg_tx),
-        Some(Load::Text(PROGRAM.into())),
-        Some(prog_tx),
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .flags(Default::default())
+            .registration(RegistrationImage::save(reg_tx))
+            .program(Load::Text(PROGRAM.into()))
+            .program_image(prog_tx),
     )
     .await?;
     let image = prog_rx.await??.image;
@@ -282,13 +284,10 @@ async fn program_image_restores_kernels() -> Result<()> {
     let cold_values = first_values(&mut cold_rx).await;
     cold.shutdown().await;
     let (tx, mut warm_rx) = mpsc::channel(10);
-    let warm = init_with_session(
-        tx,
-        TEST_REGISTER,
-        Default::default(),
-        RegistrationImage::load(image),
-        None,
-        None,
+    let warm = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .flags(Default::default())
+            .registration(RegistrationImage::load(image)),
     )
     .await?;
     // the root's owner; dropping it deletes the program
@@ -325,32 +324,22 @@ async fn session_with(
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
     // a restored image's program wins; a refused one compiles the source
-    let src = Some(Load::Text(program.into()));
-    let flags = CFlag::FusionDisabled.into();
-    let (reg, prog_tx) = match image {
-        None => (RegistrationImage::save(reg_tx), Some(prog_tx)),
+    let cfg = config(tx, TEST_REGISTER, vec![], move |ctx| {
+        ctx.control.set_par_mode(par);
+        if let Some(b) = budget {
+            ctx.control.set_activation_budget(b)
+        }
+    })?
+    .flags(CFlag::FusionDisabled.into())
+    .program(Load::Text(program.into()));
+    let cfg = match image {
+        None => cfg.registration(RegistrationImage::save(reg_tx)).program_image(prog_tx),
         Some(image) => {
             drop(prog_tx);
-            (RegistrationImage::load(image), None)
+            cfg.registration(RegistrationImage::load(image))
         }
     };
-    let ctx = init_session_with_setup(
-        tx,
-        TEST_REGISTER,
-        vec![],
-        flags,
-        reg,
-        src,
-        prog_tx,
-        None,
-        move |ctx| {
-            ctx.control.set_par_mode(par);
-            if let Some(b) = budget {
-                ctx.control.set_activation_budget(b)
-            }
-        },
-    )
-    .await?;
+    let ctx = TestCtx::start(cfg).await?;
     let written = match prog_rx.await {
         Ok(image) => Some(image?.image),
         Err(_) => None,
@@ -717,32 +706,31 @@ array::fold([41], f(256), |acc, x| x + 1)
 async fn program_images_restore_round_after_round() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let (reg_tx, reg_rx) = oneshot::channel();
-    let cold = init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(reg_tx))
-        .await?;
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .registration(RegistrationImage::save(reg_tx)),
+    )
+    .await?;
     let registration = reg_rx.await??;
     cold.shutdown().await;
     for i in 0..80 {
         let (tx, _rx) = mpsc::channel(10);
         let (prog_tx, prog_rx) = oneshot::channel();
-        let writer = init_with_session(
-            tx,
-            TEST_REGISTER,
-            CFlag::FusionDisabled.into(),
-            RegistrationImage::load(registration.clone()),
-            Some(Load::Text(REPEATED.into())),
-            Some(prog_tx),
+        let writer = TestCtx::start(
+            config(tx, TEST_REGISTER, vec![], |_| {})?
+                .flags(CFlag::FusionDisabled.into())
+                .registration(RegistrationImage::load(registration.clone()))
+                .program(Load::Text(REPEATED.into()))
+                .program_image(prog_tx),
         )
         .await?;
         let image = prog_rx.await??.image;
         writer.shutdown().await;
         let (tx, _rx) = mpsc::channel(10);
-        let reader = init_with_session(
-            tx,
-            TEST_REGISTER,
-            CFlag::FusionDisabled.into(),
-            RegistrationImage::load(image),
-            None,
-            None,
+        let reader = TestCtx::start(
+            config(tx, TEST_REGISTER, vec![], |_| {})?
+                .flags(CFlag::FusionDisabled.into())
+                .registration(RegistrationImage::load(image)),
         )
         .await?;
         assert!(reader.rt.env_stats().await?.restored, "round {i} compiled cold");
@@ -781,13 +769,12 @@ async fn program_image_restores_builtins() -> Result<()> {
     let (tx, mut cold_rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
-    let cold = init_with_session(
-        tx,
-        TEST_REGISTER,
-        CFlag::FusionDisabled.into(),
-        RegistrationImage::save(reg_tx),
-        Some(Load::Text(BUILTINS.into())),
-        Some(prog_tx),
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .flags(CFlag::FusionDisabled.into())
+            .registration(RegistrationImage::save(reg_tx))
+            .program(Load::Text(BUILTINS.into()))
+            .program_image(prog_tx),
     )
     .await?;
     let image = prog_rx.await??.image;
@@ -799,13 +786,10 @@ async fn program_image_restores_builtins() -> Result<()> {
          true, i64:42, f64:4., false, i64:5]"
     );
     let (tx, mut warm_rx) = mpsc::channel(10);
-    let warm = init_with_session(
-        tx,
-        TEST_REGISTER,
-        CFlag::FusionDisabled.into(),
-        RegistrationImage::load(image),
-        None,
-        None,
+    let warm = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .flags(CFlag::FusionDisabled.into())
+            .registration(RegistrationImage::load(image)),
     )
     .await?;
     // the root's owner; dropping it deletes the program
@@ -834,16 +818,11 @@ async fn program_package_root_is_the_script() -> Result<()> {
     ]);
     let (tx, mut rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
-    let ctx = init_session_with_setup(
-        tx,
-        TEST_REGISTER,
-        vec![VfsResolver::new(table)],
-        CFlag::FusionDisabled.into(),
-        RegistrationImage::save(reg_tx),
-        Some(Load::Text(literal!("mod m0; mod m1; m1::f(i64:1)"))),
-        None,
-        None,
-        |_| {},
+    let ctx = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![VfsResolver::new(table)], |_| {})?
+            .flags(CFlag::FusionDisabled.into())
+            .registration(RegistrationImage::save(reg_tx))
+            .program(Load::Text(literal!("mod m0; mod m1; m1::f(i64:1)"))),
     )
     .await?;
     ctx.rt.program().await?.expect("the program compiled");
@@ -860,9 +839,11 @@ async fn program_package_root_is_the_script() -> Result<()> {
 async fn a_bad_registration_image_runs_cold() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
-    let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
-            .await?;
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .registration(RegistrationImage::save(image_tx)),
+    )
+    .await?;
     let image = image_rx.await??;
     cold.shutdown().await;
     // the instance table's count made huge: the decoder must bound it
@@ -884,9 +865,11 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
     flipped[at + 3] ^= 0x20;
     for bad in [image.slice(..image.len() / 2), huge, Bytes::from(flipped)] {
         let (tx, mut rx) = mpsc::channel(10);
-        let warm =
-            init_with_registration(tx, TEST_REGISTER, RegistrationImage::load(bad))
-                .await?;
+        let warm = TestCtx::start(
+            config(tx, TEST_REGISTER, vec![], |_| {})?
+                .registration(RegistrationImage::load(bad)),
+        )
+        .await?;
         assert!(!warm.rt.env_stats().await?.restored, "a bad image was restored");
         let v = eval_on(&warm, &mut rx, "{ let xs = [1, 2, 3]; array::len(xs) }").await?;
         assert_eq!(v, Value::I64(3));
@@ -918,16 +901,12 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
     let (tx, mut cold_rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
-    let cold = init_session_with_setup(
-        tx,
-        TEST_REGISTER,
-        files(),
-        CFlag::FusionDisabled.into(),
-        RegistrationImage::save(reg_tx),
-        Some(Load::Text(program)),
-        Some(prog_tx),
-        None,
-        |_| {},
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, files(), |_| {})?
+            .flags(CFlag::FusionDisabled.into())
+            .registration(RegistrationImage::save(reg_tx))
+            .program(Load::Text(program))
+            .program_image(prog_tx),
     )
     .await?;
     let image = prog_rx.await??.image;
@@ -935,16 +914,10 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
     assert_eq!(cold_values.last(), Some(&Value::I64(31)), "{cold_values:?}");
     cold.shutdown().await;
     let (tx, mut warm_rx) = mpsc::channel(10);
-    let warm = init_session_with_setup(
-        tx,
-        TEST_REGISTER,
-        files(),
-        CFlag::FusionDisabled.into(),
-        RegistrationImage::load(image),
-        None,
-        None,
-        None,
-        |_| {},
+    let warm = TestCtx::start(
+        config(tx, TEST_REGISTER, files(), |_| {})?
+            .flags(CFlag::FusionDisabled.into())
+            .registration(RegistrationImage::load(image)),
     )
     .await?;
     // the root's owner; dropping it deletes the program
@@ -960,15 +933,20 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
 async fn a_restored_env_keeps_the_runtimes_lsp_mode() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
-    let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
-            .await?;
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .registration(RegistrationImage::save(image_tx)),
+    )
+    .await?;
     let image = image_rx.await??;
     cold.shutdown().await;
     let (tx, _rx) = mpsc::channel(10);
-    let warm =
-        init_lsp_with_registration(tx, TEST_REGISTER, RegistrationImage::load(image))
-            .await?;
+    let warm = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .lsp_mode(true)
+            .registration(RegistrationImage::load(image)),
+    )
+    .await?;
     assert!(warm.rt.get_env().await?.ide.is_lsp());
     warm.shutdown().await;
     Ok(())
@@ -1043,13 +1021,12 @@ async fn fused_program_image(program: &str) -> Result<Bytes> {
     let (tx, _rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
-    let ctx = init_with_session(
-        tx,
-        TEST_REGISTER,
-        Default::default(),
-        RegistrationImage::save(reg_tx),
-        Some(Load::Text(program.into())),
-        Some(prog_tx),
+    let ctx = TestCtx::start(
+        config(tx, TEST_REGISTER, vec![], |_| {})?
+            .flags(Default::default())
+            .registration(RegistrationImage::save(reg_tx))
+            .program(Load::Text(program.into()))
+            .program_image(prog_tx),
     )
     .await?;
     let image = prog_rx.await??.image;

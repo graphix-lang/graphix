@@ -3,8 +3,8 @@
 
 use super::dense_deltas::run_delta;
 use anyhow::Result;
-use graphix_package_core::testing::init_with_flags_and_setup;
 use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::testing::{TestCtx, config};
 use tokio::sync::mpsc;
 
 const STEPS: &str = r#"
@@ -228,12 +228,9 @@ async fn nested_machine_restarts(mode: Mode) -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn flush_needs_a_queue() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
-    let ctx = init_with_flags_and_setup(
-        tx,
-        &crate::TEST_REGISTER,
-        vec![],
-        graphix_compiler::BitFlags::empty(),
-        |_| (),
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |_| ())?
+            .flags(graphix_compiler::BitFlags::empty()),
     )
     .await?;
     let error = ctx

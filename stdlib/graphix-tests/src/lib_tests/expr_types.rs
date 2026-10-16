@@ -4,7 +4,7 @@
 use anyhow::Result;
 use arcstr::literal;
 use graphix_compiler::{CFlag, expr::Load};
-use graphix_package_core::testing::init_with_flags_and_setup;
+use graphix_package_core::testing::{TestCtx, config};
 use tokio::sync::mpsc;
 
 const PROGRAM: &str = "let f = |x: i64| -> i64 x + 100;\nlet s = \"a\";\n(f(2), s)";
@@ -13,12 +13,9 @@ const PROGRAM: &str = "let f = |x: i64| -> i64 x + 100;\nlet s = \"a\";\n(f(2), 
 async fn a_check_records_the_types_it_decided() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1000);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let ctx = init_with_flags_and_setup(
-        tx,
-        crate::TEST_REGISTER,
-        vec![],
-        CFlag::FusionDisabled.into(),
-        |_| {},
+    let ctx = TestCtx::start(
+        config(tx, crate::TEST_REGISTER, vec![], |_| {})?
+            .flags(CFlag::FusionDisabled.into()),
     )
     .await?;
     let r = ctx.rt.check_with_types(Load::Text(literal!(PROGRAM)), vec![], None).await?;

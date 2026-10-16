@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::CFlag;
-use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
+use graphix_package_core::testing::{TestCtx, config};
 use graphix_rt::GXEvent;
 use poolshark::global::GPooled;
 use tokio::{sync::mpsc, time::Duration};
@@ -22,7 +22,7 @@ async fn init_flags(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     flags: BitFlags<CFlag>,
 ) -> Result<TestCtx> {
-    init_with_flags_and_setup(sub, crate::TEST_REGISTER, vec![], flags, |_| {}).await
+    TestCtx::start(config(sub, crate::TEST_REGISTER, vec![], |_| {})?.flags(flags)).await
 }
 
 /// Wedge the runtime with `program`, confirm a probe cannot be served,

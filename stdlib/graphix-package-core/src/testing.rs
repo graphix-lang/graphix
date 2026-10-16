@@ -8,17 +8,13 @@ use graphix_compiler::{
     expr::{ExprId, Load, Origin, ResolverRef, Source, VfsEntry, VfsResolver},
 };
 use graphix_rt::{
-    Callable, CompRes, GXConfig, GXEvent, GXHandle, GXRt, NoExt, ProgramImage, Ref,
-    RegistrationImage,
+    Callable, CompRes, GXConfig, GXConfigBuilder, GXEvent, GXHandle, GXRt, NoExt, Ref,
 };
 use netidx::publisher::Value;
 use netidx_core::path::Path;
 use poolshark::global::GPooled;
 use std::time::Duration;
-use tokio::{
-    sync::{mpsc, oneshot},
-    time::Instant,
-};
+use tokio::{sync::mpsc, time::Instant};
 
 pub struct TestCtx {
     pub rt: GXHandle<NoExt>,
@@ -70,6 +66,14 @@ pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
 }
 
 impl TestCtx {
+    /// Start the runtime `cfg` configures ([`config`]).
+    pub async fn start(cfg: GXConfigBuilder<NoExt>) -> Result<Self> {
+        let st = std::time::Instant::now();
+        let rt = cfg.build()?.start().await?;
+        log::info!("runtime start time: {:?}", st.elapsed());
+        Ok(TestCtx { rt })
+    }
+
     pub async fn shutdown(self) {
         drop(self.rt);
     }
@@ -86,187 +90,17 @@ impl TestCtx {
 /// `graphix_package::package_refs!()` macro.
 pub type PackageRef = &'static dyn graphix_package::Package<NoExt>;
 
-pub async fn init_with_resolvers(
+/// A test runtime's configuration: `register`'s packages registered,
+/// `setup` run over the context, their root and `resolvers` (after the
+/// packages') set. Chain what else it needs (flags, a registration
+/// image, a program, a trace, lsp_mode) and run it with
+/// [`TestCtx::start`].
+pub fn config(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
     resolvers: Vec<ResolverRef>,
-) -> Result<TestCtx> {
-    init_with_setup(sub, register, resolvers, |_| {}).await
-}
-
-pub async fn init(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-) -> Result<TestCtx> {
-    init_with_setup(sub, register, vec![], |_| {}).await
-}
-
-pub async fn init_with_setup<F>(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    resolvers: Vec<ResolverRef>,
-    setup: F,
-) -> Result<TestCtx>
-where
-    F: FnOnce(&mut TestState),
-{
-    init_with_flags_and_setup(sub, register, resolvers, BitFlags::empty(), setup).await
-}
-
-/// Like [`init_with_setup`] but lets the caller pin the compile-time
-/// flags (`CFlag::FusionDisabled`, etc.) the runtime passes to every
-/// `compile()` it dispatches.
-pub async fn init_with_flags_and_setup<F>(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    resolvers: Vec<ResolverRef>,
-    flags: BitFlags<CFlag>,
-    setup: F,
-) -> Result<TestCtx>
-where
-    F: FnOnce(&mut TestState),
-{
-    init_inner(sub, register, resolvers, flags, false, None, None, None, None, setup)
-        .await
-}
-
-/// A runtime that restores its registration from an image, or sends
-/// the image of the registration it compiled; see [`RegistrationImage`].
-pub async fn init_with_registration(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    registration: RegistrationImage,
-) -> Result<TestCtx> {
-    init_with_session(sub, register, BitFlags::empty(), registration, None, None).await
-}
-
-/// A runtime built around a registration image, with a program
-/// compiled at construction (or restored with the image) whose own
-/// image `program_image` receives; see `GXConfig::program`.
-pub async fn init_with_session(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    flags: BitFlags<CFlag>,
-    registration: RegistrationImage,
-    program: Option<Load>,
-    program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
-) -> Result<TestCtx> {
-    init_inner(
-        sub,
-        register,
-        vec![],
-        flags,
-        false,
-        Some(registration),
-        program,
-        program_image,
-        None,
-        |_| {},
-    )
-    .await
-}
-
-/// [`init_with_session`] with module resolvers, a trace armed before
-/// the program's init cycle (`GXConfig::trace`) and a context setup.
-pub async fn init_session_with_setup<F>(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    resolvers: Vec<ResolverRef>,
-    flags: BitFlags<CFlag>,
-    registration: RegistrationImage,
-    program: Option<Load>,
-    program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
-    trace: Option<(usize, u64)>,
-    setup: F,
-) -> Result<TestCtx>
-where
-    F: FnOnce(&mut TestState),
-{
-    init_inner(
-        sub,
-        register,
-        resolvers,
-        flags,
-        false,
-        Some(registration),
-        program,
-        program_image,
-        trace,
-        setup,
-    )
-    .await
-}
-
-/// [`init_with_registration`] for an **lsp_mode** runtime.
-pub async fn init_lsp_with_registration(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    registration: RegistrationImage,
-) -> Result<TestCtx> {
-    let setup = |_: &mut _| {};
-    init_inner(
-        sub,
-        register,
-        vec![],
-        BitFlags::empty(),
-        true,
-        Some(registration),
-        None,
-        None,
-        None,
-        setup,
-    )
-    .await
-}
-
-/// Like [`init_with_flags_and_setup`] but builds an **lsp_mode** runtime —
-/// the `check` path, which compiles to verify types and then deletes the
-/// nodes without ever executing them.
-pub async fn init_lsp_mode<F>(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    resolvers: Vec<ResolverRef>,
-    flags: BitFlags<CFlag>,
-    setup: F,
-) -> Result<TestCtx>
-where
-    F: FnOnce(&mut TestState),
-{
-    init_inner(sub, register, resolvers, flags, true, None, None, None, None, setup).await
-}
-
-// CR claude for claude: [structure/low] Nine public init_* wrappers exist only to
-// thread arguments into this function, which takes ten positional parameters (four
-// Options and a bool) and then just feeds a GXConfig builder. Each new knob adds
-// another wrapper or another parameter. The setup closure's bound `FnOnce(&mut
-// ExecState<GXRt<NoExt>, ..UserEvent>)` is spelled out eight times in this file. The
-// run! arms each format `let result = {}` although `result_source` exists, and
-// eval_packed formats it again. Return the configured builder from one function
-// (register packages, run setup, set root and resolvers) and let callers chain
-// flags/registration/program/trace/lsp_mode. Add a `TestState` alias for the closure's
-// argument, and use result_source in run! and eval_packed. The ../netidx admin tests
-// call init, init_with_session and init_with_flags_and_setup. (x-dup-09)
-// 2026-10-16 claude: TestState now names the setup closure's argument everywhere in
-// this file (testing::TestState), and testing::Fixture (x-dup-10) holds a widget
-// harness's runtime, program, channel, watches and callables. Left: the init_*
-// wrappers over init_inner's ten parameters (the builder this CR asks for; ../netidx's
-// admin tests call init, init_with_session and init_with_flags_and_setup), and
-// run!/eval_packed formatting the result block instead of result_source.
-async fn init_inner<F>(
-    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[PackageRef],
-    resolvers: Vec<ResolverRef>,
-    flags: BitFlags<CFlag>,
-    lsp_mode: bool,
-    registration: Option<RegistrationImage>,
-    program: Option<Load>,
-    program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
-    trace: Option<(usize, u64)>,
-    setup: F,
-) -> Result<TestCtx>
-where
-    F: FnOnce(&mut TestState),
-{
+    setup: impl FnOnce(&mut TestState),
+) -> Result<GXConfigBuilder<NoExt>> {
     let _ = env_logger::try_init();
     // A fixture that recurses without end must abort instead of
     // eating the box; an explicit GRAPHIX_STACK_BUDGET still wins.
@@ -286,27 +120,15 @@ where
     setup(&mut ctx);
     let mut all_resolvers = vec![modules];
     all_resolvers.extend(resolvers);
-    let mut cfg = GXConfig::builder(ctx, sub)
-        .root(root)
-        .resolvers(all_resolvers)
-        .flags(flags)
-        .lsp_mode(lsp_mode);
-    if let Some(r) = registration {
-        cfg = cfg.registration(r);
-    }
-    if let Some(p) = program {
-        cfg = cfg.program(p);
-    }
-    if let Some(tx) = program_image {
-        cfg = cfg.program_image(tx);
-    }
-    if let Some((max_events, max_cycles)) = trace {
-        cfg = cfg.trace((max_events, max_cycles));
-    }
-    let st = std::time::Instant::now();
-    let rt = cfg.build()?.start().await?;
-    log::info!("runtime start time: {:?}", st.elapsed());
-    Ok(TestCtx { rt })
+    Ok(GXConfig::builder(ctx, sub).root(root).resolvers(all_resolvers))
+}
+
+/// A runtime with `register`'s packages and nothing else.
+pub async fn init(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[PackageRef],
+) -> Result<TestCtx> {
+    TestCtx::start(config(sub, register, vec![], |_| {})?).await
 }
 
 pub type Events = mpsc::Receiver<GPooled<Vec<GXEvent>>>;
@@ -347,9 +169,14 @@ impl Mode {
     }
 }
 
-/// `let result = {code}`, a fixture's `/test.gx`.
+/// `let result = {code}`, a fixture's `/test.gx` text.
+pub fn result_text(code: &str) -> ArcStr {
+    ArcStr::from(format_compact!("let result = {code}").as_str())
+}
+
+/// [`result_text`] as a resolver entry.
 pub fn result_source(code: &str) -> VfsEntry {
-    VfsEntry::from(ArcStr::from(format_compact!("let result = {code}").as_str()))
+    VfsEntry::from(result_text(code))
 }
 
 /// A runtime for `mode` whose resolver serves `files`, with the
@@ -367,15 +194,12 @@ where
     let tbl = ahash::AHashMap::from_iter(
         files.into_iter().map(|(path, entry)| (Path::from(ArcStr::from(path)), entry)),
     );
-    let ctx = init_with_flags_and_setup(
-        tx,
-        register,
-        vec![VfsResolver::new(tbl)],
-        mode.flags(),
-        |ctx| {
+    let ctx = TestCtx::start(
+        config(tx, register, vec![VfsResolver::new(tbl)], |ctx| {
             ctx.control.set_par_mode(mode.par());
             setup(ctx)
-        },
+        })?
+        .flags(mode.flags()),
     )
     .await?;
     Ok((ctx, rx))
@@ -558,7 +382,7 @@ impl Fixture {
             VfsEntry::from(ArcStr::from(code)),
         )]);
         let resolvers = vec![VfsResolver::new(vfs)];
-        let ctx = init_with_setup(tx, register, resolvers, setup).await?;
+        let ctx = TestCtx::start(config(tx, register, resolvers, setup)?).await?;
         let gx = ctx.rt.clone();
         let compiled = gx
             .compile(arcstr::literal!("{ mod test; test::result }"))
@@ -802,7 +626,7 @@ pub async fn eval_packed(
     code: &str,
     register: &[PackageRef],
 ) -> Result<(Value, TestCtx)> {
-    let source = ArcStr::from(format_compact!("let result = {code}").as_str());
+    let source = result_text(code);
     let ori = Origin {
         parent: None,
         source: Source::Vfs(arcstr::literal!("/test")),
@@ -854,7 +678,7 @@ macro_rules! run {
     // A refusal only a build makes (`#[native]`, the definition
     // assertions): no check test.
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; build_only) => {
-        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr; build_only) => {
         $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
@@ -862,28 +686,28 @@ macro_rules! run {
     // The JIT alone: a program the node-walk cannot run (a native loop
     // deeper than the stack budget allows activations).
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; jit_only) => {
-        $crate::run!(@impl true, cfg(any()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(any()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; shape: $shape:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr; shape: $shape:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
         $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
     };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr; $fexpect:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr) => {
         $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
