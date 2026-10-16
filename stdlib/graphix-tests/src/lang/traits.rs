@@ -961,7 +961,7 @@ const DYNAMIC_IMPL_DISPATCH: &str = r#"
 run!(
     trait_dynamic_impl_dispatch,
     DYNAMIC_IMPL_DISPATCH,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(9)")
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(9)"); FuseExpect::None
 );
 
 // The trait's default method, reached through the dynamic module.
@@ -996,7 +996,7 @@ const DYNAMIC_IMPL_DEFAULT: &str = r#"
 run!(
     trait_dynamic_impl_default,
     DYNAMIC_IMPL_DEFAULT,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(2) Counter(2)")
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(2) Counter(2)"); FuseExpect::None
 );
 
 // The loaded source dispatches on its own implementation internally.
@@ -1028,7 +1028,7 @@ const DYNAMIC_IMPL_INTERNAL: &str = r#"
 run!(
     trait_dynamic_impl_internal,
     DYNAMIC_IMPL_INTERNAL,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(4)")
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(4)"); FuseExpect::None
 );
 
 // A reload replaces the implementation; the consumer's call follows.
@@ -1098,7 +1098,7 @@ run!(
             error as e => never(dbg(e)),
             null as _ => Show::show(foo::make(7))
         }
-    "#
+    "#; FuseExpect::None
 );
 
 // An outer trait's DEFAULT method through a dynamic module: the
@@ -1132,7 +1132,7 @@ run!(
             error as e => never(dbg(e)),
             null as _ => Show::twice(foo::make(2))
         }
-    "#
+    "#; FuseExpect::None
 );
 
 // The static twin: the declared impl's `twice` is the outer trait's
@@ -1220,7 +1220,7 @@ const DYNAMIC_CORE_IMPL: &str = r#"
 run!(
     trait_dynamic_core_impl,
     DYNAMIC_CORE_IMPL,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "C<3>")
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "C<3>"); FuseExpect::None
 );
 
 // A parameterized DECLARED impl: consumers resolve to the declared

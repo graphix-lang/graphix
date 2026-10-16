@@ -921,6 +921,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         }
         if !matches!(node.view(), NodeView::FusedKernel(_))
             && !fusion::region_is_candidate(node)
+            && !fusion::is_constant(node)
         {
             crate::bailat!(
                 node.spec(),
@@ -933,6 +934,10 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 
     fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
         <Self as Attribute<R, E>>::check_target(attr, node)?;
+        // a literal is its value: nothing to fuse and nothing node-walks
+        if fusion::is_constant(node) {
+            return Ok(());
+        }
         let mut report: Vec<&fusion::FusionFailure> = Vec::new();
         let mut walked = false;
         native_residue(ctx, node, &mut report, &mut walked);

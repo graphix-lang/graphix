@@ -954,7 +954,7 @@ const CAST_OF_A_REFERENCE_IN_AN_INSTANCE: &str = r#"
 "#;
 run!(cast_of_a_reference_in_an_instance, CAST_OF_A_REFERENCE_IN_AN_INSTANCE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("can't cast a reference"))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // An arithmetic operand that is a union with an open member narrows the
 // member to the bound, never binds it to the bound: the member stays one
@@ -1210,7 +1210,7 @@ const ARM_TYPEDEF_IN_THE_SIGNATURE: &str = r#"
 run!(arm_typedef_in_the_signature, ARM_TYPEDEF_IN_THE_SIGNATURE, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(42))
-); FuseExpect::Jit);
+); FuseExpect::None);
 
 // A typedef's parameter constraint names types where the typedef is.
 run!(
@@ -1995,7 +1995,7 @@ const OPEN_MEMBER_TAKES_THE_RESIDUE: &str = r#"
 
 run!(open_member_takes_the_residue, OPEN_MEMBER_TAKES_THE_RESIDUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 /// A union holding the very cell it is asked to contain binds nothing.
 const UNION_HOLDS_ITS_OWN_CELL: &str = r#"
@@ -2234,7 +2234,7 @@ run!(constructor_probe_binds_nothing, CONSTRUCTOR_PROBE_BINDS_NOTHING, |v: Resul
 >| matches!(
     v,
     Ok(Value::I64(0))
-));
+); FuseExpect::None);
 
 /// A bound holds neither a hole nor a trait below its top.
 const HOLE_IN_A_BOUND: &str = r#"
@@ -2278,7 +2278,7 @@ const UNION_FORMAL_INLINE_LITERAL: &str = r#"
 run!(
     union_formal_inline_literal,
     UNION_FORMAL_INLINE_LITERAL,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(7)))
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::None
 );
 
 /// A declared variable may be anything, so `_` cannot hold it.
@@ -2710,7 +2710,7 @@ const FN_MEMBERS_MERGE_THROUGH_BINDINGS: &str = r#"
 run!(
     fn_members_merge_through_bindings,
     FN_MEMBERS_MERGE_THROUGH_BINDINGS,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) }
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) }; FuseExpect::None
 );
 
 // A name in an alias's body means what the block finally declares, however
@@ -2744,7 +2744,7 @@ run!(
     let h = |x: [Array<(i64, i64)>, Array<(string, f64)>]| 100;
     f(["a"]) + g(&["a"]) + h([("a", 1.0)])
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(111)))
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(111))); FuseExpect::None
 );
 
 // A generic function beside a monomorphic one in a union meets it: the
@@ -3018,7 +3018,7 @@ async fn repl_inputs_declare_distinct_abstract_types() -> anyhow::Result<()> {
 run!(
     renamed_errchain_collapses,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "use core::ErrChain as EC; let f = |e: Error<ErrChain<`A>>| 0; let h = |g: Error<EC<EC<`A>>>| f(g); let result = 0"
+    "/test.gx" => "use core::ErrChain as EC; let f = |e: Error<ErrChain<`A>>| 0; let h = |g: Error<EC<EC<`A>>>| f(g); let result = 0"; FuseExpect::None
 );
 
 // An inline literal argument whose part two members of a union formal
@@ -3027,25 +3027,25 @@ run!(
 run!(
     union_formal_behind_an_alias,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "type D = [Array<f64>, Array<string>]; let g = |x: D| 0; let result = g([\"a\"])"
+    "/test.gx" => "type D = [Array<f64>, Array<string>]; let g = |x: D| 0; let result = g([\"a\"])"; FuseExpect::None
 );
 
 run!(
     union_formal_in_a_tuple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "let g = |x: (i64, [Array<f64>, Array<string>])| 0; let result = g((1, [\"a\"]))"
+    "/test.gx" => "let g = |x: (i64, [Array<f64>, Array<string>])| 0; let result = g((1, [\"a\"]))"; FuseExpect::None
 );
 
 run!(
     union_formal_in_a_struct,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "let g = |x: {a: [Array<f64>, Array<string>]}| 0; let result = g({a: [\"a\"]})"
+    "/test.gx" => "let g = |x: {a: [Array<f64>, Array<string>]}| 0; let result = g({a: [\"a\"]})"; FuseExpect::None
 );
 
 run!(
     union_formal_in_a_variant,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
-    "/test.gx" => "let g = |x: [`A([Array<f64>, Array<string>]), `B]| 0; let result = g(`A([\"a\"]))"
+    "/test.gx" => "let g = |x: [`A([Array<f64>, Array<string>]), `B]| 0; let result = g(`A([\"a\"]))"; FuseExpect::None
 );
 
 run!(

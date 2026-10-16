@@ -246,7 +246,7 @@ run!(
         } else {
             false
         }
-    }; FuseExpect::Jit);
+    }; FuseExpect::None);
 
 // RPC with a typed spec and callback.
 

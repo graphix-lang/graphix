@@ -421,7 +421,7 @@ run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // `#count` is written each time the queue grows; with `#trigger=never()`
 // nothing pops, so depth ramps up.
@@ -449,7 +449,7 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A place target for #count is written as a level too: the cycle's
 // changes land as one write, as they do for a binding.
@@ -477,7 +477,7 @@ const QUEUEFN_HOF_CALLBACK: &str = r#"
 }
 "#;
 
-run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
 
 // Feeding the wrapper output back to the trigger drains every queued
 // invocation.
@@ -624,7 +624,7 @@ run!(
             Ok(Value::I64(2)) => true,
             _ => false,
         }
-    }; FuseExpect::Jit);
+    }; FuseExpect::None);
 
 const COUNT: &str = r#"
 {
@@ -780,7 +780,7 @@ const HOLD_BASIC: &str = r#"
 run!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const HOLD_MULTIPLE: &str = r#"
 {
@@ -805,7 +805,7 @@ const HOLD_NO_TRIGGER: &str = r#"
 run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
 {
@@ -896,7 +896,7 @@ run!(all_compares_references_by_what_they_name, r#"{
     let r1 = &a;
     let r2 = &a;
     *all(r1, r2)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
 
 // opt::contains compares as `==` does: a reference by what it names, and
 // a type `==` refuses is refused.
@@ -906,7 +906,7 @@ run!(opt_contains_compares_references_by_what_they_name, r#"{
     (opt::contains(r1, &a), opt::contains(null, &a))
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[true, false]")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 run!(opt_contains_refuses_the_indiscernible, r#"{
     let x: [(i64, i64), Array<i64>, null] = (1, 2);

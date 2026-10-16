@@ -2284,7 +2284,7 @@ const WRAPPED_POLY_REF_TWICE: &str = r#"
 
 run!(wrapped_poly_ref_twice, WRAPPED_POLY_REF_TWICE, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"], [i64:2]]"#
-});
+}; FuseExpect::None);
 
 const FORWARDED_POLY_REF_TWICE: &str = r#"
 {
@@ -2297,7 +2297,7 @@ const FORWARDED_POLY_REF_TWICE: &str = r#"
 
 run!(forwarded_poly_ref_twice, FORWARDED_POLY_REF_TWICE, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"]]"#
-});
+}; FuseExpect::None);
 
 // `flat_map`'s callback returns the collection, never a bare element:
 // whether to splice is never decided by a value's shape.
@@ -2926,7 +2926,7 @@ const BUILTIN_VARIADIC_TRAIT: &str = r#"
 
 run!(builtin_variadic_trait, BUILTIN_VARIADIC_TRAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A labeled default is checked against its parameter's bounds by
 // narrowing its cells, never by deciding them.
@@ -3082,7 +3082,7 @@ run!(lambda_sampled_on_a_trigger, r#"{
   f <- t ~ |x: i64| x + 1;
   let g = t ~ 'a: Number |x: 'a| -> 'a x + x;
   select f(5) { 6 => g(4), _ => never() }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(8))); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(8))); FuseExpect::None);
 
 // A nested fn type's quantifier named like the signature's is its own:
 // the outer 'b stays rigid whichever parameter comes first.

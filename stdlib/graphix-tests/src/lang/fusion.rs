@@ -1220,7 +1220,7 @@ const NEVER_ARM_ARGS_RAISE: &str = r#"
 run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}, timeout: 5; FuseExpect::Jit);
+}, timeout: 5; FuseExpect::None);
 
 // The error derives from `n`, a let whose init fire no selected arm
 // read: the tracker re-delivers it when the arm is entered and the
@@ -1237,7 +1237,7 @@ const ARM_RAISE_STANDING_INPUT: &str = r#"
 run!(arm_raise_standing_input, ARM_RAISE_STANDING_INPUT, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}, timeout: 5; FuseExpect::Jit);
+}, timeout: 5; FuseExpect::None);
 
 // The soak's shape: a call into a connecting body inside a never arm of
 // a collection callback. The call must reach `g` and land the write;
@@ -2273,3 +2273,11 @@ run!(native_null_element_loops, r#"{
     (f([1, 2]), g(2))
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
     FuseExpect::Jit);
+
+// A literal is no fusion region, its value held by its node, and
+// #[native] on one passes: nothing node-walks.
+run!(native_on_a_literal, r#"{
+    let x = #[native] (5);
+    let y = #[native] "s";
+    (x, y)
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:5, "s"]"#; FuseExpect::Jit);

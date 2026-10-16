@@ -131,7 +131,7 @@ const AFTER_IDLE_INVALID_TIMEOUT: &str = r#"
 
 run!(after_idle_invalid_timeout, AFTER_IDLE_INVALID_TIMEOUT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}, timeout: 2; FuseExpect::Jit);
+}, timeout: 2; FuseExpect::None);
 
 run!(handle_accessors_are_sync, r#"{
     #[sync]

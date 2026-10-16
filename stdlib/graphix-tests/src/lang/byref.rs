@@ -18,7 +18,7 @@ const BYREF_DEREF: &str = r#"
 run!(byref_deref, BYREF_DEREF, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const BYREF_TUPLE: &str = r#"
 {
@@ -62,7 +62,7 @@ run!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const CONNECT_DEREF1: &str = r#"
 {
@@ -79,7 +79,7 @@ run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // Refs are first-class runtime values, so a ref read back out of a
 // container derefs like any other (`*(a[0]$)` over `Array<&i64>`).
@@ -94,7 +94,7 @@ const DEREF_FROM_ARRAY: &str = r#"
 run!(deref_from_array, DEREF_FROM_ARRAY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(42))
-); FuseExpect::Jit);
+); FuseExpect::None);
 
 const DEREF_FROM_TUPLE_FIELD: &str = r#"
 {
@@ -108,7 +108,7 @@ const DEREF_FROM_TUPLE_FIELD: &str = r#"
 run!(deref_from_tuple_field, DEREF_FROM_TUPLE_FIELD, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(14))
-); FuseExpect::Jit);
+); FuseExpect::None);
 
 // Place references (design/place_references.md).
 
@@ -239,7 +239,7 @@ const DEREF_NULL_REF_IS_BOTTOM: &str = r#"
 
 run!(deref_null_ref_is_bottom, DEREF_NULL_REF_IS_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A fired address fires the dereference even when the new target is
 // standing: switching from &x to &y delivers y.
@@ -256,7 +256,7 @@ const DEREF_FIRES_ON_ADDRESS: &str = r#"
 
 run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:10, i64:20]"
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A key move a selected reader saw is read stale by an arm woken after it:
 // the woken arm's counter does not tick.
@@ -609,7 +609,7 @@ const BYREF_PRINTS_OPAQUE: &str = r#"
 
 run!(byref_prints_opaque, BYREF_PRINTS_OPAQUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "&ref {a: 2, r: &ref}")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // `==` and `!=` compare references by what they point to: a binding, or
 // a place's root and path. Each `&x` mints a cell of its own, so its
@@ -679,7 +679,7 @@ const BYREF_UNIQ_COMPARES_TARGETS: &str = r#"
 
 run!(byref_uniq_compares_targets, BYREF_UNIQ_COMPARES_TARGETS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(2)])
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A moving place held by a variable that does not fire again writes where
 // its key names at the write, as a read through it reads there.
@@ -788,7 +788,7 @@ run!(
     let k = r ~ bump(&mut *r);
     array::group(s, |i, _| i == 3)
 }"#,
-    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:5, i64:11]"
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:5, i64:11]"; FuseExpect::None
 );
 
 // A place reference fires when its address moves, never at a write of

@@ -35,7 +35,7 @@ const DYNAMIC_MODULE0: &str = r#"
 run!(dynamic_module0, DYNAMIC_MODULE0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const DYNAMIC_MODULE1: &str = r#"
 {
@@ -85,7 +85,7 @@ const DYNAMIC_MODULE2: &str = r#"
 run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const DYNAMIC_MODULE3: &str = r#"
 {
@@ -116,7 +116,7 @@ const DYNAMIC_MODULE3: &str = r#"
 run!(dynamic_module3, DYNAMIC_MODULE3, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const DYNAMIC_MODULE4: &str = r#"
 {
@@ -205,7 +205,7 @@ const DYNAMIC_MODULE6: &str = r#"
 run!(dynamic_module6, DYNAMIC_MODULE6, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const DYNAMIC_MODULE7: &str = r#"
 {
@@ -266,7 +266,7 @@ const DYNAMIC_MODULE8: &str = r#"
 run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A module declared in a seq body is a scope of its own: the seq's
 // rewrite and its catch refusal do not reach into its file.
@@ -548,7 +548,7 @@ run!(
     "/test/a.gx" => "mod b;\nlet x = b::y",
     "/test/a/b.gx" => "mod a;\nlet y = a::z",
     "/test/a/b/a.gx" => "let z = 3"
-    ; FuseExpect::Jit);
+    ; FuseExpect::None);
 
 // The same source imported on two branches is not a cycle.
 run!(
@@ -933,7 +933,7 @@ run!(
     "/test/inner.gx" => r#"
         use super::*;
         let y = x
-    "#
+    "#; FuseExpect::None
 );
 
 // A use statement's items resolve against the scope as it stood before
@@ -976,7 +976,7 @@ run!(
     "#,
     "/test/m.gx" => r#"
         let v = 1
-    "#
+    "#; FuseExpect::None
 );
 
 // A loaded body's primes are its own: two modules loading in one cycle
@@ -1089,7 +1089,7 @@ run!(
     "#,
     "/test/m.gxi" => "val x: i64; val t: i64;",
     "/test/m.gx" => "let t = never(); let x = 0; x <- t ~ 1"
-; FuseExpect::Jit);
+; FuseExpect::None);
 
 // A catch that saw no raise at its check takes none later: the refusal
 // names the annotation that would take it.

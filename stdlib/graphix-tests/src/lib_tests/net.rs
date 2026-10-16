@@ -42,7 +42,7 @@ run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const NET_WRITE1: &str = r#"
 {
@@ -65,7 +65,7 @@ run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const NET_LIST: &str = r#"
 {
@@ -137,7 +137,7 @@ run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // An argument a call omits takes the spec's default.
 run!(net_rpc_defaults, r#"{
@@ -149,7 +149,7 @@ run!(net_rpc_defaults, r#"{
     #f: |args: {a: i64, b: i64}| args.a + args.b);
   let r: i64 = sys::net::call(p, {a: 10})?;
   r
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(12))); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(12))); FuseExpect::None);
 
 // A call whose arguments fail the cast is answered with the error and
 // never reaches the handler; the next call is served.
@@ -179,7 +179,7 @@ run!(net_rpc_latest_call_wins, r#"{
   p <- sys::time::timer(duration:50.ms, false) ~ "/local/rpc_fast";
   let r: i64 = sys::net::call(p, null)?;
   sys::time::after_idle(duration:600.ms, r)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::None);
 
 // A re-woken arm's subscribe re-establishes from the present path (the
 // path is a binding). The matcher wants a delivery, a sleep marker (-1),
@@ -263,7 +263,7 @@ run!(net_write_refused_cast, r#"
 }
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(5)])
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A write in an arm that sleeps writes again after its wake, to the path
 // as it stands.
@@ -328,7 +328,7 @@ run!(net_publish_path_moves_while_bottom, r#"
 }
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A subscriber sees its publisher go away as an error, and the value again
 // when it comes back.
@@ -406,7 +406,7 @@ const NET_RESUBSCRIBE: &str = r#"
 
 run!(net_resubscribe, NET_RESUBSCRIBE, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"["a", "b", "a"]"#)
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A subscription moving between busy paths never answers with a value of
 // the path it left.
@@ -620,4 +620,4 @@ run!(net_write_standing_after_wake, r#"{
         false => never()
     };
     sys::time::after_idle(duration:400.ms, ready) ~ writes
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::None);

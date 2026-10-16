@@ -552,7 +552,7 @@ const CATCH_ASCRIPTION_RETHROW_NO_THROW: &str = r#"
 
 run!(catch_ascription_rethrow_no_throw, CATCH_ASCRIPTION_RETHROW_NO_THROW, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(7)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // An ascribed rethrow still delivers to the enclosing catch.
 const CATCH_ASCRIPTION_RETHROW: &str = r#"
@@ -600,7 +600,7 @@ const ARM_INPUT_RAISE_DELIVERS: &str = r#"
 run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); FuseExpect::Jit);
+); FuseExpect::None);
 
 const ARM_INPUT_RAISE_NODE_WALKS: &str = r#"
 {
@@ -682,7 +682,7 @@ const QOP_NULL_SUCCESS_SURVIVES: &str = r#"
 
 run!(qop_null_success_survives, QOP_NULL_SUCCESS_SURVIVES, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // `?`/`$` sit inside a postfix chain, and chain with each other.
 const QOP_IN_POSTFIX_CHAIN: &str = r#"
@@ -710,7 +710,7 @@ const BUILTIN_CALLBACK_RAISES_TO_CALLER: &str = r#"
 
 run!(builtin_callback_raises_to_caller, BUILTIN_CALLBACK_RAISES_TO_CALLER, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "\"Caught\""
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // Two raises to one handler in one cycle: the first is delivered that
 // cycle, the second the next, from forked siblings as from serial ones.

@@ -2067,7 +2067,7 @@ const OR_CAPTURE_UNION: &str = r#"
 
 run!(or_capture_union, OR_CAPTURE_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "up")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // An enclosing select's pattern bind is never delivered at a wake: the
 // flip to arm 1 does not re-raise `k`, which the key fire bound while
@@ -2717,7 +2717,7 @@ run!(guard_beyond_sixty_four_arms, guard_beyond_sixty_four_arms(), |v: Result<
     &Value,
 >| {
     matches!(v, Ok(Value::I64(0)))
-});
+}; FuseExpect::None);
 
 // An arm input that went bottom while its arm slept is bottom at the
 // wake: the inner select sets its resident bottom instead of riding 7.

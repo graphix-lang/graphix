@@ -1503,22 +1503,26 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
 }
 
 /// A region root must emit a value. Declarations stay in the graph;
-/// a bare binding read forwards an input without computation.
-// CR claude for claude: [perf/low] A lone constant is a candidate region, so every
-// literal `let` (`let k = 3`, reached through `Bind::fuse`) is emitted, linked and
-// imaged as a kernel that returns the value its Constant node already holds. 400
-// literal lets build 400 kernels (probe:
-// design/review-2026-10-12/repro/tests-fusion-traits-05.gx with GRAPHIX_DBG_KERNELS=1).
-// These kernels are also what makes the fusion counter asserts and `FuseExpect::Jit` in
-// graphix-tests' fusion.rs vacuous (tests-fusion-traits-01, -05). Fix: exclude
-// `NodeView::Constant(_)` here, the same reasoning as for a bare `Ref`. Do not restrict
-// `Bind::fuse` to `calls_a_function`, because that would de-fuse arithmetic lets in
-// impure callbacks. Then re-bless fusecheck.manifest. (tests-fusion-traits-07)
+/// a bare binding read forwards an input and a constant holds its value,
+/// neither computing anything.
+/// Whether `node`, under any parentheses, is a constant.
+pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut n: &dyn Update<R, E> = &**node;
+    loop {
+        match n.view() {
+            NodeView::ExplicitParens(p) => n = &*p.n,
+            NodeView::Constant(_) => return true,
+            _ => return false,
+        }
+    }
+}
+
 pub(crate) fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {
         match n.view() {
             NodeView::Ref(_)
+            | NodeView::Constant(_)
             | NodeView::Bind(_)
             | NodeView::Lambda(_)
             | NodeView::Module(_)

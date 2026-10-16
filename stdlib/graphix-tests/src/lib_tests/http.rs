@@ -257,7 +257,7 @@ run!(http_restart_same_address, r#"{
     "[once(addr) == addr2] [r2.body]"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "true ok /b")
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A body over #max_body is answered 413 without reaching the handler.
 run!(http_max_body, r#"{

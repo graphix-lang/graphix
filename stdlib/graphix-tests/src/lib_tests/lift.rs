@@ -157,7 +157,7 @@ run!(
     connect_const_first_value,
     "{ let x = 0; x <- 5; x }",
     |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
-    FuseExpect::Jit
+    FuseExpect::None
 );
 
 run!(

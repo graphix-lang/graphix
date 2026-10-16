@@ -771,7 +771,7 @@ run!(array_group_waits_for_an_answer, r#"
 }
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::I64(2)])
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 const ARRAY_INIT0: &str = r#"
   array::init(5, |i| i * 2)

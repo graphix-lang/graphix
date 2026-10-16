@@ -302,7 +302,7 @@ run!(
             null as _ => dyn::double(dyn::make(42))
         }
     "#
-; FuseExpect::Jit);
+; FuseExpect::None);
 
 // A gxi `type T;` the gx does not define is a Rust-backed type: it
 // compiles.
@@ -320,7 +320,7 @@ run!(
     "/test/inner.gx" => r#"
         let x = 42
     "#
-; FuseExpect::Jit);
+; FuseExpect::None);
 
 // An abstract type in the implementation is allowed (stays opaque).
 run!(
@@ -338,7 +338,7 @@ run!(
         type T;
         let x = 42
     "#
-; FuseExpect::Jit);
+; FuseExpect::None);
 
 // Error: the function returns the wrong type.
 run!(
