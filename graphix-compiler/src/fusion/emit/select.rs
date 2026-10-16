@@ -324,16 +324,6 @@ pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
     value: &Node<R, E>,
     id: ExprId,
 ) -> Result<()> {
-    // CR claude for claude: [perf/medium] In Collection::find's default body, as a
-    // user Collection's instance (lang::collection::collection_newtype_defaults),
-    // `let (_, found) = fold(c, (false, init), ..)` reaches here with both the let's
-    // type and its value's type open cells ('_n), so the region refuses with "let
-    // pattern type '_n doesn't freeze" and that fixture cannot put #[native] on its
-    // `find`. The same let in an ordinary generic function freezes. An instance's
-    // types are its definition's check table substituted by its signature, so a
-    // destructuring let's cell (and the call it binds) seems to be missing from the
-    // trait default's table or its substitution. Find which, then put #[native] on
-    // that fixture's `find`. (fusion-let-destructure-02)
     let typ = freeze_node_typ(cx.ctx, typ)
         .ok_or_else(|| anyhow!("emit_clif: let pattern type {typ} doesn't freeze"))?;
     let (scrut, scrut_typ, _kept) = classify_scrutinee(cx, value, typ, id)?;

@@ -79,13 +79,13 @@ run!(
         use Collection::*;
         let b = filter(Bag([1, 2, 3, 4]), |x| x > 2);
         let m = map(b, |x| x * 10);
-        let result = select find(m, |x| x > 35) {
+        let result = select #[native] find(m, |x| x > 35) {
             null as _ => -1,
             v => len(b) * 100 + v
         }
     "#;
-    // The default bodies fuse; `len` and the abstract payload paths
-    // node-walk, so this asserts only that fusion happens.
+    // The default bodies fuse, `find` whole; `len` and the abstract
+    // payload paths node-walk.
     FuseExpect::Jit
 );
 

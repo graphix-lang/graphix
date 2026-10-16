@@ -377,24 +377,6 @@ fn emit_let_node<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
-    // CR claude for claude: [perf/medium] Collection's `find` and `find_map` defaults
-    // never fuse for a user Collection. Their `let init: Option<'a> = null`
-    // (`Option<'b>` in find_map), written in a trait default body, freezes to no ABI
-    // kind here, so the region is refused with "let value of shape None". The same body
-    // fuses in a plain generic function, and also in the trait default when the
-    // annotation is written `['b, null]`. So the let's type under a trait default's
-    // instance keeps a typedef reference over the method's type variable that this
-    // freeze cannot see through. Expand the let's type under the instance's
-    // substitution before `freeze_for_abi_normalized`. The fixture
-    // collection_newtype_defaults claims the default bodies fuse, but other regions
-    // meet its FuseExpect::Jit: put a #[native] on its `find` call. Probes:
-    // design/review-2026-10-12/repro/tests-lang-rest-b-03.gx and
-    // tests-lang-rest-b-03-user-trait.gx. (tests-lang-rest-b-05)
-    // 2026-10-16 claude: Done: a let's type freezes through freeze_node_typ, which
-    // expands the env's refs when the plain freeze fails, so find_map's default (and
-    // the user-trait probe) fuse under #[native]. Open: the fixture's #[native] on
-    // find, since find's default destructures its fold result (let (_, found) = ..),
-    // which kernels refuse (fusion-let-destructure-01).
     let frozen = freeze_node_typ(cx.ctx, typ);
     let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
     match ak {

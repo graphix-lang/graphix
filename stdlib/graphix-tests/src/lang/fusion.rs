@@ -2279,6 +2279,21 @@ run!(native_null_element_loops, r#"{
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
     FuseExpect::Jit);
 
+// A destructuring let's `_` decides nothing of the value it matches: a
+// fold whose accumulator a `(_, found)` takes apart keeps its own
+// accumulator type, so the loop fuses.
+run!(native_let_wildcard_keeps_the_value_type, r#"{
+    let myfind = |c: Array<'a>, f: fn(x: 'a) -> bool| -> Option<'a> {
+        let init: Option<'a> = null;
+        let (_, found) = array::fold(c, (false, init), |(done, acc), x| select done {
+            true => (true, acc),
+            false => select f(x) { true => (true, x), false => (false, acc) }
+        });
+        found
+    };
+    #[native] myfind([10, 20, 30, 40], |x| x > 35)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(40))); FuseExpect::Jit);
+
 // An interpolated part of any kind fuses, rendered as the node-walk
 // renders it at its type, a core Display impl included.
 run!(native_interpolates_every_part_kind, r#"{

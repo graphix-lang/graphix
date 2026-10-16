@@ -225,9 +225,10 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                             None => (ptyp, false),
                         }
                     };
+                    // a `_` matches what the value holds, deciding none of it
                     if !completed && pat.has_partial_struct() {
                         partial = Some(ptyp);
-                    } else if !ptyp.contains(&ctx.env, &typ).at(&spec)? {
+                    } else if !ptyp.any_as_tvar().contains(&ctx.env, &typ).at(&spec)? {
                         let part = ptyp.could_match(&ctx.env, &typ)?;
                         format_with_flags(PrintFlag::DerefTVars, || match part {
                             true => bailat!(
