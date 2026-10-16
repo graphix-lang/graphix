@@ -3,6 +3,7 @@
 //! forcing/bottom/interrupt machinery, tail-rebind jumps, and
 //! the kernel return protocol.
 
+use super::lower::OwnCall;
 use crate::{
     BindId, Node, NodeView, Rt, Update, UserEvent,
     env::Env,
@@ -765,11 +766,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.lambda_call_sites.get(&id)
     }
 
-    /// The kernel's own self-call descriptor when emitting a
-    /// self-recursive lambda body: `(the self binding, the kernel's
-    /// own LambdaCallInfo)`. A value-position call site whose fnode
-    /// Ref carries the binding calls the kernel's own FuncRef.
-    pub(crate) fn self_call_info(&self) -> Option<&(BindId, LambdaCallInfo)> {
+    /// The kernel's own self-call when emitting a self-recursive lambda
+    /// body. A value-position call site whose fnode Ref carries its
+    /// binding calls the kernel's own FuncRef.
+    pub(crate) fn self_call(&self) -> Option<OwnCall<'c>> {
         self.ctx.self_call
     }
 

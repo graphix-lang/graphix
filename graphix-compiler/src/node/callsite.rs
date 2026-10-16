@@ -17,7 +17,9 @@ use crate::{
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     fusion::{
         self,
-        emit::{BodyCx, CompiledExpr, emit_builtin_call_node, emit_lambda_call_node},
+        emit::{
+            BodyCx, Called, CompiledExpr, emit_builtin_call_node, emit_lambda_call_node,
+        },
         lowering::MarshalArg,
         share::{self, SlotShare},
     },
@@ -3069,7 +3071,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             // undiscovered site de-fuses.
             if matches!(f.view(), ApplyView::Lambda(_)) {
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
-                    return emit_lambda_call_node(cx, self, &info, false);
+                    return emit_lambda_call_node(cx, self, Called::Other(&info));
                 }
                 return Err(fusion::blocker(
                     &self.spec,
@@ -3083,15 +3085,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // A value-position self-call: `self.callee` is unresolved here, so
         // match by the self BindId and call the kernel's own FuncRef.
-        if let Some((sb, info)) = cx.self_call_info() {
-            let is_self = matches!(
-                self.fnode.view(),
-                NodeView::Ref(r) if r.id == *sb
-            );
-            if is_self {
-                let info = info.clone();
-                return emit_lambda_call_node(cx, self, &info, true);
-            }
+        if let Some(own) = cx.self_call()
+            && matches!(self.fnode.view(), NodeView::Ref(r) if r.id == own.bind)
+        {
+            return emit_lambda_call_node(cx, self, Called::Own(own));
         }
         if self.is_recursive_edge() {
             bail!("emit_clif: mutually recursive static call edge is not supported")

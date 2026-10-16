@@ -5,6 +5,7 @@
 //! [`Generation`], cold and warm alike; [`WrappedKernel`] and the
 //! wrapper-seam value packing ([`pack_value_to_u64`]).
 
+use super::lower::OwnCall;
 use crate::{
     LambdaId, Node, Rt, UserEvent,
     env::Env,
@@ -1840,10 +1841,11 @@ fn emit_kernel_body(
     if let Some((_, info)) = body_emitter.spec.self_call() {
         callee_keys.insert(kernel_abi::kernel_key(&info.kernel));
     }
-    let self_thunk_id = body_emitter.spec.self_call().map(|_| {
+    let self_thunk = body_emitter.spec.self_call().map(|own| {
         let tsig = trampoline_signature(&*em.shared.isa);
-        em.names.local(&tsig)
+        (own, em.names.local(&tsig))
     });
+    let self_thunk_id = self_thunk.map(|(_, tid)| tid);
     let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
     let chunks: RefCell<Vec<ChunkFn>> = RefCell::new(Vec::new());
     let mut emitted = None;
@@ -1863,17 +1865,17 @@ fn emit_kernel_body(
                 kernel.fn_name
             );
         }
-        let self_thunk = self_thunk_id.map(|tid| names.import_func(tid, b.func));
+        let self_call = self_thunk.map(|((bind, info), thunk_id)| OwnCall {
+            bind: *bind,
+            info,
+            thunk: names.import_func(thunk_id, b.func),
+            thunk_id,
+        });
         let names = RefCell::new(names);
         emitted = Some(compile_into_function(
             b,
             kernel,
-            Callees {
-                refs: &callee_refs,
-                ids: &callee_ids,
-                thunk: self_thunk,
-                thunk_id: self_thunk_id,
-            },
+            Callees { refs: &callee_refs, ids: &callee_ids, self_call },
             helpers,
             &consts,
             &chunks,

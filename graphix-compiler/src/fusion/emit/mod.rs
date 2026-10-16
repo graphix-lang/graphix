@@ -43,7 +43,7 @@ pub use self::body::{
     node_is_bottom,
 };
 pub use self::call::CompositeSource;
-pub(crate) use self::call::{emit_builtin_call_node, emit_lambda_call_node};
+pub(crate) use self::call::{Called, emit_builtin_call_node, emit_lambda_call_node};
 pub(crate) use self::flow::{QopSink, emit_block_node, emit_qop_node};
 pub(crate) use self::jit::{Emission, Pending, compile_kernel_with_callees_direct};
 pub use self::jit::{Jit, WrappedKernel, isa_description, pack_value_to_u64};

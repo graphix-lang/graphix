@@ -2,6 +2,7 @@
 //! body tail (tail selects and self-tail-calls), and the `?`/`$`
 //! error-propagation (qop) nodes.
 
+use super::lower::OwnCall;
 use crate::{
     BindId, Node, NodeView, Refs, Rt, UserEvent,
     expr::ExprKind,
@@ -219,11 +220,11 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
         TailPosition::Leaf(n) => {
             // Matched by the self BindId. Only a looping kernel jumps; a
             // stateful body has no loop head and calls itself natively.
-            if let Some((sb, _)) = cx.ctx.self_call
+            if let Some(own) = cx.ctx.self_call
                 && cx.ctx.tail.loop_head.is_some()
             {
                 if let NodeView::CallSite(cs) = n.view() {
-                    if matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == *sb) {
+                    if matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == own.bind) {
                         return emit_self_tail_call(cx, cs);
                     }
                 }
@@ -306,7 +307,7 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
             .all(|a| matches!(a.kind, FnArgKind::Positional { .. }))),
         "structural_tail_loop admits only positional formals"
     );
-    let Some((_, info)) = cx.ctx.self_call else {
+    let Some(OwnCall { info, .. }) = cx.ctx.self_call else {
         bail!("emit_clif: a self tail-call outside a self-recursive body");
     };
     let (skipped, invariant) = (&info.kernel.skipped_args, &info.kernel.tail_invariant);

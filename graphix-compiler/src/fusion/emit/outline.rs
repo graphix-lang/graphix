@@ -3,6 +3,7 @@
 //! `graphix_par_loop` runs in order or forked (`fusion::par_loop`,
 //! `design/parallel_eval.md` §10).
 
+use super::lower::OwnCall;
 use super::{
     abi::{JitEnv, STALE, ValueVar, local_payload_ty},
     body::{BodyCx, emit_kernel_abort},
@@ -263,7 +264,10 @@ fn emit_chunk(
         .iter()
         .map(|(k, fid)| (*k, names.borrow().import_func(*fid, b.func)))
         .collect();
-    let self_thunk = p.self_thunk_id.map(|t| names.borrow().import_func(t, b.func));
+    let self_call = p.self_call.map(|own| OwnCall {
+        thunk: names.borrow().import_func(own.thunk_id, b.func),
+        ..own
+    });
     let consts = RefCell::new(Vec::new());
     let ctx = LowerCtx {
         tail: TailCtx {
@@ -283,8 +287,6 @@ fn emit_chunk(
         closed_frame: RefCell::new(None),
         callee_refs: &callee_refs,
         callee_ids: p.callee_ids,
-        self_thunk,
-        self_thunk_id: p.self_thunk_id,
         helper_ids: p.helper_ids,
         helper_refs: HelperRefs::new(p.helper_ids, &names),
         chunks: p.chunks,
@@ -301,7 +303,7 @@ fn emit_chunk(
         pending_exit: RefCell::new(None),
         builtin_apply_sites: p.builtin_apply_sites,
         lambda_call_sites: p.lambda_call_sites,
-        self_call: p.self_call,
+        self_call,
         type_env: p.type_env,
     };
     let mut ccx = BodyCx { b: &mut b, env: &mut env, ctx: &ctx };

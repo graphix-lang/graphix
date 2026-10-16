@@ -46,9 +46,18 @@ use super::{
 pub(super) struct Callees<'a> {
     pub(super) refs: &'a BTreeMap<KernelKey, FuncRef>,
     pub(super) ids: &'a BTreeMap<KernelKey, FuncId>,
-    /// The spill thunk of a self-recursive body.
-    pub(super) thunk: Option<FuncRef>,
-    pub(super) thunk_id: Option<FuncId>,
+    pub(super) self_call: Option<OwnCall<'a>>,
+}
+
+/// A self-recursive body's call of itself: the self binding, the
+/// kernel's own call descriptor and the spill thunk a self-call takes
+/// when the remaining stack is inside the red zone.
+#[derive(Clone, Copy)]
+pub(crate) struct OwnCall<'a> {
+    pub(crate) bind: BindId,
+    pub(crate) info: &'a LambdaCallInfo,
+    pub(super) thunk: FuncRef,
+    pub(super) thunk_id: FuncId,
 }
 
 pub(super) fn compile_into_function<'a>(
@@ -151,8 +160,6 @@ pub(super) fn compile_into_function<'a>(
         wake_flag,
         callee_refs: callees.refs,
         callee_ids: callees.ids,
-        self_thunk: callees.thunk,
-        self_thunk_id: callees.thunk_id,
         helper_ids,
         helper_refs,
         chunks,
@@ -169,7 +176,7 @@ pub(super) fn compile_into_function<'a>(
         kernel,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
-        self_call: spec.self_call(),
+        self_call: callees.self_call,
         type_env: spec.type_env,
         claims: match spec.role {
             BodyRole::Parent => Channel::State,
@@ -505,20 +512,6 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
     /// The callees by id, for a chunk to import.
     pub(super) callee_ids: &'a BTreeMap<KernelKey, FuncId>,
-    /// The spill thunk a self-call takes when the remaining stack is
-    /// inside the red zone.
-    // CR claude for claude: [structure/low] `self_thunk`, `self_thunk_id` and
-    // `self_call` are one fact: `jit::emit_kernel_body` declares the thunk exactly when
-    // `spec.self_call()` is Some. Yet `LowerCtx`, `Callees` and the outlined chunk's
-    // params each carry them as independent Options. Because the types allow a
-    // self-call without a thunk, `emit_self_dispatch` keeps an error path for an
-    // impossible state ("self-call in a kernel with no spill thunk"). Hold one
-    // `Option<SelfCall<'a>>`, where `struct SelfCall { bind: BindId, info:
-    // &LambdaCallInfo, thunk: FuncRef, thunk_id: FuncId }`. Build it in
-    // `emit_kernel_body` where the thunk is declared and re-import `thunk` from
-    // `thunk_id` in the outliner. Then delete the error. (x-invalid-states-06)
-    pub(super) self_thunk: Option<FuncRef>,
-    pub(super) self_thunk_id: Option<FuncId>,
     pub(super) helper_ids: &'a HelperFuncIds,
     /// `FuncRef`s for the runtime helpers, by helper name.
     pub(super) helper_refs: HelperRefs<'a>,
@@ -559,9 +552,8 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) builtin_apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     /// Statically-resolved lambda call sites.
     pub(super) lambda_call_sites: &'a nohash::IntMap<ExprId, LambdaCallInfo>,
-    /// Set when this kernel is a self-recursive lambda body: the self
-    /// binding and the kernel's own call descriptor.
-    pub(super) self_call: Option<&'a (BindId, LambdaCallInfo)>,
+    /// Set when this kernel is a self-recursive lambda body.
+    pub(super) self_call: Option<OwnCall<'a>>,
     /// Type-resolution env snapshot ([`resolve_node_typ`]).
     pub(super) type_env: &'a Env,
 }

@@ -2,6 +2,7 @@
 //! marshalling, drops, pending cleanup) and the direct fastcall /
 //! typed-fastcall path.
 
+use super::lower::OwnCall;
 use crate::{
     Node, Rt, UserEvent,
     expr::ExprId,
@@ -737,6 +738,7 @@ fn emit_self_dispatch(
     clif_args: &[ClifValue],
     rmerge: Block,
     fn_name: &str,
+    thunk: FuncRef,
 ) -> Result<()> {
     let abort_bl = cx.b.create_block();
     let direct_bl = cx.b.create_block();
@@ -765,9 +767,6 @@ fn emit_self_dispatch(
     cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
     cx.b.switch_to_block(grow_bl);
     cx.b.seal_block(grow_bl);
-    let thunk = cx.ctx.self_thunk.ok_or_else(|| {
-        anyhow!("lambda call `{fn_name}`: self-call in a kernel with no spill thunk")
-    })?;
     let n = clif_args.len();
     let slot = cx.b.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
@@ -787,12 +786,23 @@ fn emit_self_dispatch(
     Ok(())
 }
 
+/// The kernel a lambda call site calls: another function's, or this
+/// self-recursive body's own.
+pub(crate) enum Called<'a> {
+    Other(&'a LambdaCallInfo),
+    Own(OwnCall<'a>),
+}
+
 pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
-    info: &LambdaCallInfo,
-    is_self: bool,
+    called: Called<'_>,
 ) -> Result<CompiledExpr> {
+    let (info, own) = match called {
+        Called::Other(info) => (info, None),
+        Called::Own(own) => (own.info, Some(own)),
+    };
+    let is_self = own.is_some();
     let fn_name = &info.kernel.fn_name;
     let slots = call_slots(cs, info)?;
     let ret = &info.kernel.return_type;
@@ -832,8 +842,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let rmerge = cx.b.create_block();
     cx.b.append_block_param(rmerge, types::I64);
     cx.b.append_block_param(rmerge, types::I64);
-    if is_self {
-        emit_self_dispatch(cx, func_ref, &clif_args, rmerge, fn_name)?;
+    if let Some(own) = own {
+        emit_self_dispatch(cx, func_ref, &clif_args, rmerge, fn_name, own.thunk)?;
     } else {
         let inst = cx.b.ins().call(func_ref, &clif_args);
         let (r0, r1) = callee_results(cx, inst, fn_name)?;
