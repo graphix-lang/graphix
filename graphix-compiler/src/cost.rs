@@ -709,32 +709,36 @@ pub struct ProbeSite {
     hist: Hist,
 }
 
-/// What a [`ProbeSite`] does with its items.
+/// What a fork point over `n` like items does with them, a collection's
+/// ([`ProbeSite`]) and a kernel loop's ([`LoopSite`]) alike.
 pub enum ProbePlan {
     Serial,
     /// Time the first item, then wait for the calibration if the rest is
     /// long enough ([`calibration_for`]).
     Uncalibrated,
-    /// Run the first `n` in order, timing each, then decide about the
-    /// rest.
-    Probe(usize),
+    /// Run the first items in order, as many as the site's estimate still
+    /// needs, timing them, then decide about the rest.
+    Probe,
     Fork {
         grain: usize,
     },
 }
 
-impl ProbeSite {
-    /// The plan for `n` items.
-    fn plan<R: Rt, E: UserEvent>(&self, ctx: &ExecCtx<'_, R, E>, n: usize) -> ProbePlan {
-        match ctx.fork_mode() {
-            ParMode::Off => ProbePlan::Serial,
-            _ if n < 2 => ProbePlan::Serial,
-            ParMode::Force => ProbePlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
-            ParMode::Auto if calibration().is_none() => ProbePlan::Uncalibrated,
-            ParMode::Auto => ProbePlan::Probe(self.probes(n)),
+impl ProbePlan {
+    /// The plan for `n` items under `mode`, `forced` the grain a forced
+    /// fork takes.
+    pub(crate) fn of(mode: ParMode, n: usize, forced: Option<u32>) -> Self {
+        match mode {
+            ParMode::Off => Self::Serial,
+            _ if n < 2 => Self::Serial,
+            ParMode::Force => Self::Fork { grain: forced_grain(forced, n) },
+            ParMode::Auto if calibration().is_none() => Self::Uncalibrated,
+            ParMode::Auto => Self::Probe,
         }
     }
+}
 
+impl ProbeSite {
     /// How many of `n` items to time before deciding about the rest.
     fn probes(&self, n: usize) -> usize {
         match self.hist.n < SETTLE {
@@ -777,15 +781,17 @@ impl ProbeSite {
         join: impl Fn(T, T) -> T,
     ) -> Option<T> {
         let (mut items, mut at) = (items, at);
-        let (cal, k) = match self.plan(ctx, items.len()) {
+        let (cal, k) = match ProbePlan::of(ctx.fork_mode(), items.len(), ctx.fork.forced)
+        {
             ProbePlan::Serial => (None, 0),
             ProbePlan::Fork { grain } => {
                 let r = rest(ctx, items, at, Some(grain))?;
                 return Some(join(acc, r));
             }
-            ProbePlan::Probe(k) => {
-                (Some(calibration().expect("a probe is planned once calibrated")), k)
-            }
+            ProbePlan::Probe => (
+                Some(calibration().expect("a probe is planned once calibrated")),
+                self.probes(items.len()),
+            ),
             ProbePlan::Uncalibrated => {
                 let first;
                 (first, items) = items.split_at_mut(1);

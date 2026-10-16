@@ -8,7 +8,7 @@ use super::emit_helpers::{
 };
 use crate::{
     branch::{self, Live},
-    cost::{self, LoopSite, Probes},
+    cost::{self, LoopSite, ProbePlan, Probes},
     tval::TagValue,
 };
 use graphix_types::{
@@ -174,30 +174,21 @@ pub(crate) unsafe fn run(
     let mut runs: LPooled<Vec<Run>> = LPooled::take();
     // SAFETY: the site is a constant of the running code's record.
     let site = unsafe { &*site };
-    // CR claude for claude: [structure/low] This match re-implements ProbeSite::plan
-    // and the uncalibrated-then-probe sequence of ProbeSite::run in cost.rs, and the
-    // copies already differ. On the uncalibrated path this one calls site.probes(len -
-    // at) before the calibration probe's tick is in the histogram (it is only folded in
-    // at LoopSite::grain), so it times one more probe than ProbeSite::run, which calls
-    // probed first. Any later change to the plan has to be made in both places. Build
-    // the plan once in cost.rs (a ProbePlan from mode, forced grain and n) and drive
-    // both ProbeSite::run and this loop from it, keeping only the run-a-chunk and abort
-    // callbacks here. (f-kernel-06)
-    let (at, grain) = match mode(&loan) {
-        ParMode::Off => unreachable!("an Off loan is filtered"),
-        ParMode::Force => {
-            let forced = if root { loan.forced } else { None };
-            (0, Some(cost::forced_grain(forced, len)))
-        }
-        ParMode::Auto => 'auto: {
+    let forced = if root { loan.forced } else { None };
+    let (at, grain) = match ProbePlan::of(mode(&loan), len, forced) {
+        ProbePlan::Serial => unreachable!("an Off loan and a short loop are filtered"),
+        ProbePlan::Fork { grain } => (0, Some(grain)),
+        plan @ (ProbePlan::Uncalibrated | ProbePlan::Probe) => 'auto: {
             if site.untimed(len) {
                 return unsafe { in_order(chunk, frame, len, find, out) };
             }
             let mut probes = Probes::new();
             let mut at = 0;
-            let cal = match cost::calibration() {
-                Some(cal) => cal,
-                None => {
+            let cal = match plan {
+                ProbePlan::Probe => {
+                    cost::calibration().expect("a probe is planned once calibrated")
+                }
+                _ => {
                     let mut r = Run::new(0, 1, find);
                     let (t0, started) = (cost::ticks(), Instant::now());
                     unsafe { run_here(chunk, frame, &mut r) };
