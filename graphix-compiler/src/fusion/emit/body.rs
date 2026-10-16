@@ -31,7 +31,7 @@ use super::{
         CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
         propagate_flags, scalar_disc, value_disc,
     },
-    call::{CompositeSource, emit_drop_local, emit_pending_cleanup},
+    call::{CompositeSource, emit_drop_local, emit_pending_abort},
     flow::{emit_body_tail, emit_scope_drops},
     jit::Names,
     lower::{
@@ -906,11 +906,8 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
 /// discards the out words and keeps its resident, as the node-walk's
 /// interrupted dispatch does. Terminates the block.
 pub(super) fn emit_kernel_abort(cx: &mut BodyCx) -> Result<()> {
-    let exit = pending_exit_block(cx.b, cx.ctx);
     cx.call_helper("graphix_abort_set", &[])?;
-    emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-    cx.b.ins().jump(exit, &[]);
-    Ok(())
+    emit_pending_abort(cx.b, cx.env, cx.ctx)
 }
 
 /// Emit `node` as the kernel's result under `return_type`'s

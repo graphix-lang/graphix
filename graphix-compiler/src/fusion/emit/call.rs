@@ -15,6 +15,7 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Result, anyhow};
+use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{
     Block, BlockArg, FuncRef, Inst, InstBuilder, MemFlags, StackSlotData, StackSlotKind,
     Value as ClifValue, condcodes::IntCC, types,
@@ -29,8 +30,7 @@ use super::{
         clean_disc, emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc,
         value_disc,
     },
-    body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
-    flow::emit_scope_drops,
+    body::{BodyCx, node_composite_source, node_is_bottom},
     lower::{CtxWord, LowerCtx, SiteLayout, TruncLeaf, TruncRec},
     nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
     record::KernelConst,
@@ -865,9 +865,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(abort_bl);
         cx.b.seal_block(abort_bl);
         emit_owned_drops(cx.b, cx.ctx, &drops)?;
-        let exit = pending_exit_block(cx.b, cx.ctx);
-        emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-        cx.b.ins().jump(exit, &[]);
+        emit_pending_abort(cx.b, cx.env, cx.ctx)?;
         cx.b.switch_to_block(cont_bl);
         cx.b.seal_block(cont_bl);
     }
@@ -1004,10 +1002,11 @@ pub(super) fn finalize_valarray(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifV
     Ok(call[0])
 }
 
-/// Emit drops for everything the kernel currently owns, for a
-/// whole-kernel abort path: the in-flight bufs, the owned HOF inputs,
-/// then `drop_owned_composites`.
-pub(super) fn emit_pending_cleanup(
+/// Leave the kernel from the current block for its pending exit,
+/// dropping everything it owns: the in-flight bufs and the held inputs
+/// here, then each owned local, newest first, down a ladder of blocks
+/// every abort shares, so the code is linear in the locals and the exits.
+pub(super) fn emit_pending_abort(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
     ctx: &LowerCtx,
@@ -1023,16 +1022,35 @@ pub(super) fn emit_pending_cleanup(
     for (kind, vv) in ctx.owned_input_stack.borrow().iter() {
         emit_drop_local(b, ctx, *kind, *vv)?;
     }
-    // CR claude for claude: [perf/medium] Every abort point (`emit_kernel_abort`: one
-    // per outlined loop, plus each inline loop's) emits the drops of every owned local
-    // in scope. A chain of n array lets therefore emits about n^2/2
-    // `graphix_valarray_drop` calls, and the CLIF and Cranelift link time grow
-    // quadratically with them. At n=400 the kernel is 605k CLIF lines and the link
-    // takes 0.8 s. With GRAPHIX_NO_OUTLINE it is still quadratic. Emit a cleanup ladder
-    // per scope instead: one block per owned local that drops it and jumps to the block
-    // of the local bound before it. An abort then jumps to the innermost live local's
-    // block, and code stays linear in locals plus exits. probe:
-    // design/review-2026-10-12/repro/x-perf-compile-06-clif-quadratic.sh
-    // (x-perf-compile-06)
-    emit_scope_drops(&mut BodyCx { b, env, ctx }, ctx.owned_floor)
+    let owned: SmallVec<[(usize, LocalKind, ValueVar); 8]> = env
+        .locals_above(ctx.owned_floor)
+        .enumerate()
+        .filter(|(_, (kind, _))| !matches!(kind, LocalKind::Scalar(_)))
+        .map(|(i, (kind, vv))| (ctx.owned_floor + i, kind, vv))
+        .collect();
+    let exit = super::body::pending_exit_block(b, ctx);
+    // the rung of each owned local, newest first, each going on to the
+    // next; a rung made before is filled already, and so is all below it
+    let mut fill: SmallVec<[(Block, LocalKind, ValueVar, Block); 8]> = SmallVec::new();
+    let mut next = exit;
+    for (i, kind, vv) in owned.iter() {
+        let key = (*i, vv.payload.index());
+        let rung = ctx.ladder.borrow().get(&key).copied();
+        next = match rung {
+            Some(r) => r,
+            None => {
+                let r = b.create_block();
+                ctx.ladder.borrow_mut().insert(key, r);
+                fill.push((r, *kind, *vv, next));
+                r
+            }
+        };
+    }
+    b.ins().jump(next, &[]);
+    for (rung, kind, vv, below) in fill.drain(..) {
+        b.switch_to_block(rung);
+        emit_drop_local(b, ctx, kind, vv)?;
+        b.ins().jump(below, &[]);
+    }
+    Ok(())
 }

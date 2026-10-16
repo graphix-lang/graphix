@@ -301,6 +301,7 @@ fn emit_chunk(
         names: &names,
         kernel: p.kernel,
         pending_exit: RefCell::new(None),
+        ladder: RefCell::default(),
         builtin_apply_sites: p.builtin_apply_sites,
         lambda_call_sites: p.lambda_call_sites,
         self_call,

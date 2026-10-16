@@ -171,6 +171,7 @@ pub(super) fn compile_into_function<'a>(
         collection_site: Cell::new(None),
         self_call_roots: RefCell::new(Vec::new()),
         pending_exit: RefCell::new(None),
+        ladder: RefCell::default(),
         consts,
         names,
         kernel,
@@ -525,8 +526,12 @@ pub(crate) struct LowerCtx<'a> {
     /// The env's first locals, below this mark, are borrowed from the
     /// body a chunk was outlined from: an abort drops only those above.
     pub(super) owned_floor: usize,
+    /// The abort path's cleanup ladder: for each owned local above the
+    /// floor, by its position and payload, a block that drops it and goes
+    /// on to the next one below ([`super::call::emit_pending_abort`]).
+    pub(super) ladder: RefCell<ahash::AHashMap<(usize, usize), Block>>,
     /// In-flight bufs between their `_new` and finalize, innermost
-    /// last; a whole-kernel abort drops them ([`emit_pending_cleanup`]).
+    /// last; a whole-kernel abort drops them ([`emit_pending_abort`]).
     pub(super) in_flight_bufs: RefCell<Vec<(BufKind, Variable)>>,
     /// Owned values held while a sibling emits (a loop's input array,
     /// an operand awaiting the other), freed by a pending exit there
