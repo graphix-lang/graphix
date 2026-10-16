@@ -314,6 +314,15 @@ pub struct BuiltinBindInfo {
     pub lambda_id: Option<LambdaId>,
 }
 
+impl graphix_types::tracked::SameValue for BuiltinBindInfo {
+    fn same_value(&self, other: &Self) -> bool {
+        self.name == other.name
+            && triomphe::Arc::ptr_eq(&self.argspec, &other.argspec)
+            && triomphe::Arc::ptr_eq(&self.typ, &other.typ)
+            && self.lambda_id == other.lambda_id
+    }
+}
+
 impl Refs {
     pub fn with_external_refs(&self, mut f: impl FnMut(BindId)) {
         for id in &*self.refed {

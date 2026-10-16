@@ -24,9 +24,38 @@ fn merged_keys<K: Hash + Eq + Clone>(
     Some(keys)
 }
 
+/// Whether two of a map's values are one write: identity for a shared
+/// value, equality for a plain one. [`TrackedMap::join`] asks it of each
+/// key a fork wrote, so a write made since the fork is never replaced
+/// unseen.
+pub trait SameValue {
+    fn same_value(&self, other: &Self) -> bool;
+}
+
+impl<T: ?Sized> SameValue for triomphe::Arc<T> {
+    fn same_value(&self, other: &Self) -> bool {
+        triomphe::Arc::ptr_eq(self, other)
+    }
+}
+
+macro_rules! same_by_eq {
+    ($($t:ty),*) => {$(
+        impl SameValue for $t {
+            fn same_value(&self, other: &Self) -> bool {
+                self == other
+            }
+        }
+    )*};
+}
+
+same_by_eq!(crate::BindId, crate::LambdaId, netidx_value::Value);
+
+#[cfg(test)]
+same_by_eq!(u32);
+
 /// A [`Map`] with fork and join.
 #[derive(Clone, Debug)]
-pub struct TrackedMap<K: Hash + Eq + Clone + Debug, V: Clone + Debug> {
+pub struct TrackedMap<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> {
     map: Map<K, V>,
     /// The keys written since the fork; `None` outside one.
     touched: Option<LPooled<Vec<K>>>,
@@ -34,23 +63,29 @@ pub struct TrackedMap<K: Hash + Eq + Clone + Debug, V: Clone + Debug> {
     generation: u64,
     /// The generation of the map this one forked from, at the fork.
     forked_at: u64,
+    /// The map this one forked from, as it stood at the fork.
+    base: Option<Map<K, V>>,
 }
 
-impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> Default for TrackedMap<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> Default
+    for TrackedMap<K, V>
+{
     fn default() -> Self {
         Self::from(Map::default())
     }
 }
 
-impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> From<Map<K, V>>
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> From<Map<K, V>>
     for TrackedMap<K, V>
 {
     fn from(map: Map<K, V>) -> Self {
-        Self { map, touched: None, generation: 0, forked_at: 0 }
+        Self { map, touched: None, generation: 0, forked_at: 0, base: None }
     }
 }
 
-impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> Deref for TrackedMap<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> Deref
+    for TrackedMap<K, V>
+{
     type Target = Map<K, V>;
 
     fn deref(&self) -> &Map<K, V> {
@@ -58,7 +93,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> Deref for TrackedMap<K, V> 
     }
 }
 
-impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V> {
     fn touch(&mut self, k: &K) {
         self.generation += 1;
         if let Some(t) = &mut self.touched {
@@ -138,27 +173,14 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
             touched: Some(LPooled::take()),
             generation: self.generation,
             forked_at: self.generation,
+            base: Some(self.map.clone()),
         }
     }
 
     /// Write back what `fork` wrote. A map written nowhere since the
     /// fork takes the fork's whole.
-    // CR claude for claude: [test-gap/low] No test covers fork/join: not the fast path
-    // (the parent is unwritten since the fork, so it takes the fork's whole map), the
-    // slow path, a fork of a fork, a remove then join, or propagation of the parent's
-    // `touched`. In the slow path, a key that a sibling task or the parent wrote after
-    // the fork is overwritten by this fork's value without a word. `impls` (keyed by
-    // trait, a whole Vec) and `names` (keyed by scope) would then silently drop an
-    // earlier task's entry if a task ever registered one. Add unit tests for these
-    // cases. Keep the base map at fork (an O(1) persistent clone), and debug-assert in
-    // the slow path that the parent's entry for each touched key is still the base's,
-    // so a conflicting write is reported instead of lost. (t-misc-04) (t-misc-04)
-    // 2026-10-14 claude: the fast path, the slow path, siblings, a fork of a fork,
-    // removes and an idle fork are tested (tracked::tests). The conflict check stands:
-    // it needs the base map kept at the fork and V: PartialEq, which not every value
-    // type here has.
     pub fn join(&mut self, fork: Self) {
-        let Self { map, touched, generation, forked_at } = fork;
+        let Self { map, touched, generation, forked_at, base } = fork;
         if self.generation == forked_at {
             self.map = map;
             self.generation = generation;
@@ -173,6 +195,14 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
             return;
         };
         for k in touched.drain(..) {
+            debug_assert!(
+                base.as_ref().is_none_or(|base| match (self.map.get(&k), base.get(&k)) {
+                    (None, None) => true,
+                    (Some(now), Some(then)) => now.same_value(then),
+                    _ => false,
+                }),
+                "a fork's write to {k:?} would replace a write made since the fork"
+            );
             match map.get(&k) {
                 Some(v) => {
                     self.map.insert_cow(k, v.clone());
@@ -298,7 +328,7 @@ impl<K: Hash + Eq + Clone + Debug> TrackedSet<K> {
     }
 }
 
-impl<'a, K: Hash + Eq + Clone + Debug, V: Clone + Debug> IntoIterator
+impl<'a, K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> IntoIterator
     for &'a TrackedMap<K, V>
 {
     type Item = <&'a Map<K, V> as IntoIterator>::Item;
@@ -358,6 +388,21 @@ mod tests {
         parent.insert(4, 4);
         parent.join(fork);
         assert_eq!(entries(&parent), [(2, 2), (3, 3), (4, 4)]);
+    }
+
+    /// A sibling's write to a key another sibling also wrote is reported,
+    /// never replaced unseen.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "would replace a write made since the fork")]
+    fn join_reports_a_conflicting_write() {
+        let mut parent = map(&[(1, 1)]);
+        let mut a = parent.fork();
+        let mut b = parent.fork();
+        a.insert(2, 2);
+        b.insert(2, 3);
+        parent.join(a);
+        parent.join(b);
     }
 
     /// Siblings forked together each bring back their own writes.

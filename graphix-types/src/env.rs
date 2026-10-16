@@ -192,6 +192,18 @@ pub struct ScopeNames {
     pub globs: Arc<Vec<Glob>>,
 }
 
+impl crate::tracked::SameValue for ScopeNames {
+    fn same_value(&self, other: &Self) -> bool {
+        self.imports.ptr_eq(&other.imports) && Arc::ptr_eq(&self.globs, &other.globs)
+    }
+}
+
+impl crate::tracked::SameValue for TraitMethodRef {
+    fn same_value(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 /// Where a glob import finds its names.
 #[derive(Debug, Clone, PartialEq, Eq, Pack)]
 pub enum Glob {
@@ -304,7 +316,7 @@ pub struct TraitMethodDef {
 
 /// Which trait method a dispatcher binding stands for
 /// ([`Env::trait_methods`]).
-#[derive(Debug, Clone, Copy, Pack)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pack)]
 #[pack(unwrapped)]
 pub struct TraitMethodRef {
     pub trait_id: TraitId,
