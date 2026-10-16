@@ -80,6 +80,9 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
     /// Requests not yet given an instance.
     pending: Vec<(Value, Q)>,
     running: Vec<(Request<R, E>, Q)>,
+    /// Whether the running instances may run apart, once decided; a new
+    /// function decides again.
+    independent: Option<bool>,
 }
 
 /// One call of the function over its own request binding.
@@ -156,6 +159,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             top_id,
             pending: Vec::new(),
             running: Vec::new(),
+            independent: None,
         })
     }
 
@@ -163,6 +167,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     pub fn set_fn(&mut self, ctx: &mut ExecCtx<'_, R, E>, f: Option<Value>, fired: bool) {
         if fired && let Some(v) = f {
             ctx.deliver(self.pid, TagValue::fired(v));
+            self.independent = None;
         }
     }
 
@@ -192,6 +197,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         // None: still running; Some(None): its asker stopped waiting
         let answers = branch::fork_instances(
             ctx,
+            &mut self.independent,
             &mut self.running,
             call_of,
             |ctx, (r, q)| match q.abandoned() {
@@ -262,6 +268,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             top_id,
             pending: Vec::new(),
             running: Vec::new(),
+            independent: None,
         })
     }
 }

@@ -933,11 +933,15 @@ where
 
 /// Update `items`, instances of functions the runtime started (a
 /// server's requests), each on a branch of its own when there are two or
-/// more and [`crate::analysis::independent`] finds them so, else in
-/// order. A fresh instance's call binds here first, so no branch
-/// compiles; `call` is an item's call.
+/// more and they are independent, else in order. `independent` is the
+/// caller's verdict on its instances: decided here once
+/// ([`crate::analysis::independent`]) and kept until the caller resets
+/// it, as instances of one function stand for each other. A fresh
+/// instance's call binds here first, so no branch compiles; `call` is
+/// an item's call.
 pub fn fork_instances<R, E, T, O, F>(
     ctx: &mut ExecCtx<'_, R, E>,
+    independent: &mut Option<bool>,
     items: &mut [T],
     call: for<'a> fn(&'a mut T) -> &'a mut Node<R, E>,
     f: F,
@@ -959,27 +963,13 @@ where
     if ctx.deferred_pending() {
         ctx.apply_deferred();
     }
-    // CR claude for claude: [perf/medium] Each server-handler update does two expensive
-    // things. It reruns `analysis::independent` over every running request instance,
-    // which rebuilds the static call graph and every instance summary. It also calls
-    // `apply_deferred` unconditionally, and in a forked branch that forks the whole
-    // `CompileCtx` through `CxView::deref_mut` even when nothing is pending. So a
-    // server holding many slow requests pays for all of them every cycle it updates,
-    // while every other fork site decides once. Fix: compute each instance's summary
-    // once, when it binds, and combine the cached summaries here (or decide each pair
-    // once). Call `apply_deferred` only when `deferred_pending()` is true. Also
-    // reported as (x-parallel-06). (c-analysis-branch-04)
-    // 2026-10-15 claude: apply_deferred now runs only when deferred_pending(). The
-    // independent half stands: it is cheaper since b4e2e7312 (instance summaries drop
-    // own binds, so two requests' summaries no longer carry each other's ids), but it
-    // still collects every running request's graph at each update; deciding once needs
-    // state the callers (http::serve, the rpc server) would hold, as SlotSite does for
-    // slots.
-    let fork = items.len() >= 2 && ctx.fork_mode() != ParMode::Off && {
+    if items.len() >= 2 && ctx.fork_mode() != ParMode::Off && independent.is_none() {
         let calls: LPooled<Vec<&Node<R, E>>> =
             items.iter_mut().map(|i| &*call(i)).collect();
-        crate::analysis::independent(calls.iter().copied(), ctx) == Some(true)
-    };
+        *independent = crate::analysis::independent(calls.iter().copied(), ctx);
+    }
+    let fork =
+        items.len() >= 2 && ctx.fork_mode() != ParMode::Off && *independent == Some(true);
     match fork {
         true => fork_each(ctx, items.iter_mut(), |c, item| f(c, item)),
         false => items.iter_mut().map(|item| f(ctx, item)).collect(),
