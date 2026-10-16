@@ -7,7 +7,7 @@ use graphix_compiler::ParMode;
 use graphix_package_core::{
     PrintSink,
     testing::{
-        Mode, as_i64s, compile_result, fixture_runtime, result_source,
+        FuseExpect, Mode, as_i64s, compile_result, fixture_runtime, result_source,
         updates_until_quiet,
     },
 };
@@ -25,6 +25,8 @@ pub(super) struct Delta {
     pub forks: u64,
     /// Runs of compile tasks building instances.
     pub build_forks: u64,
+    /// Fused-kernel and JIT invocations of the fixture's own program.
+    pub invocations: (u64, u64),
 }
 
 /// Run `code` (wrapped as `let result = {code}`) in `mode` until no
@@ -57,14 +59,34 @@ pub(super) async fn run_delta_with(
         },
     )
     .await?;
+    ctx.rt.control().reset_invocations();
     let res = compile_result(&ctx).await?;
     let deadline = Instant::now() + Duration::from_secs(20);
     let values = updates_until_quiet(&mut rx, res.exprs[0].id, quiet, deadline).await?;
     let out = sink.take();
     let control = ctx.rt.control();
     let (forks, build_forks) = (control.forks(), control.build_forks());
+    let invocations = control.invocations();
     ctx.shutdown().await;
-    Ok(Delta { values, out, forks, build_forks })
+    Ok(Delta { values, out, forks, build_forks, invocations })
+}
+
+/// [`run_delta`] for a fixture that holds on both engines: in the jit
+/// modes, `expect` says whether the program fuses, so a jit run that
+/// node-walks everything cannot pass for a kernel's.
+pub(super) async fn run_delta_fused(
+    code: &str,
+    mode: Mode,
+    expect: FuseExpect,
+) -> Result<(Vec<Value>, String)> {
+    let d = run_delta_with(code, mode, None, Duration::from_millis(700)).await?;
+    #[cfg(debug_assertions)]
+    if matches!(mode, Mode::Jit | Mode::JitPar) {
+        graphix_package_core::testing::check_fuse_expectation(d.invocations, expect)
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = expect;
+    Ok((d.values, d.out))
 }
 
 // A constant print message fires once in both engines.
@@ -76,7 +98,7 @@ const PRINT_CONST_ONCE: &str = r#"{
 }"#;
 
 async fn print_const_once(mode: Mode) -> Result<()> {
-    let (values, out) = run_delta(PRINT_CONST_ONCE, mode).await?;
+    let (values, out) = run_delta_fused(PRINT_CONST_ONCE, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![0, 1, 2, 3, 4, 5]);
     assert_eq!(out, "A\n");
     Ok(())
@@ -96,7 +118,7 @@ const PRINT_HOF_ONCE: &str = r#"{
 }"#;
 
 async fn print_hof_once(mode: Mode) -> Result<()> {
-    let (values, out) = run_delta(PRINT_HOF_ONCE, mode).await?;
+    let (values, out) = run_delta_fused(PRINT_HOF_ONCE, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![0]);
     let mut lines: Vec<&str> = out.lines().collect();
     lines[..2].sort();
@@ -122,7 +144,7 @@ const BOTTOM_PROPAGATES: &str = r#"{
 }"#;
 
 async fn builtin_bottom_propagates(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(BOTTOM_PROPAGATES, mode).await?;
+    let (values, _) = run_delta_fused(BOTTOM_PROPAGATES, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 9]);
     Ok(())
 }
@@ -144,7 +166,8 @@ const CALLEE_BACK_FROM_BOTTOM: &str = r#"{
 }"#;
 
 async fn callee_back_from_bottom(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(CALLEE_BACK_FROM_BOTTOM, mode).await?;
+    let (values, _) =
+        run_delta_fused(CALLEE_BACK_FROM_BOTTOM, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![0, 14]);
     Ok(())
 }
@@ -177,7 +200,8 @@ async fn callee_back_from_bottom_pauses(mode: Mode) -> Result<()> {
         "array::map(select in1 { 0 => [0], _ => never() }, |_| f(in0))[0]$",
         "array::fold(select in1 { 0 => [0], _ => never() }, 0, |acc, _| acc + f(in0))",
     ] {
-        let (values, _) = run_delta(&callee_pauses_program(call), mode).await?;
+        let (values, _) =
+            run_delta_fused(&callee_pauses_program(call), mode, FuseExpect::Jit).await?;
         assert_eq!(as_i64s(&values), vec![1, 1001, 1002, 2003, 3003], "{call}");
     }
     Ok(())
@@ -218,7 +242,8 @@ const MOVING_REFERENCE_WRITES_ONCE: &str = r#"{
 }"#;
 
 async fn moving_reference_writes_once(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(MOVING_REFERENCE_WRITES_ONCE, mode).await?;
+    let (values, _) =
+        run_delta_fused(MOVING_REFERENCE_WRITES_ONCE, mode, FuseExpect::Jit).await?;
     let last = values.last().map(|v| v.to_string());
     assert_eq!(
         last.as_deref(),
@@ -243,7 +268,7 @@ const ANY_WAKES_BOTTOM: &str = r#"{
 }"#;
 
 async fn any_wakes_bottom(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(ANY_WAKES_BOTTOM, mode).await?;
+    let (values, _) = run_delta_fused(ANY_WAKES_BOTTOM, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![10, 5, -1]);
     Ok(())
 }
@@ -261,7 +286,7 @@ const UNIQ_ACROSS_BOTTOM: &str = r#"{
 }"#;
 
 async fn uniq_across_bottom(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(UNIQ_ACROSS_BOTTOM, mode).await?;
+    let (values, _) = run_delta_fused(UNIQ_ACROSS_BOTTOM, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![10, 5, 5]);
     Ok(())
 }
@@ -293,7 +318,8 @@ const NO_ARM_WINDOW_PAUSES: &str = r#"{
 }"#;
 
 async fn no_arm_window_pauses(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(NO_ARM_WINDOW_PAUSES, mode).await?;
+    let (values, _) =
+        run_delta_fused(NO_ARM_WINDOW_PAUSES, mode, FuseExpect::Jit).await?;
     let shown: Vec<String> = values.iter().map(|v| v.to_string()).collect();
     assert_eq!(
         shown,
@@ -322,7 +348,8 @@ const UNTAKEN_GUARD_BINDS_NOTHING: &str = r#"{
 }"#;
 
 async fn untaken_guard_binds_nothing(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(UNTAKEN_GUARD_BINDS_NOTHING, mode).await?;
+    let (values, _) =
+        run_delta_fused(UNTAKEN_GUARD_BINDS_NOTHING, mode, FuseExpect::Jit).await?;
     let last = values.last().map(|v| v.to_string());
     assert_eq!(last.as_deref(), Some("[i64:206, i64:200, i64:1]"));
     Ok(())

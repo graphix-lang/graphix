@@ -16,19 +16,6 @@ pub(crate) async fn init(
 
 #[cfg(test)]
 /// One test per `testing::Mode` for each named `async fn(Mode) -> Result<()>`.
-// CR claude for claude: [test-gap/low] modes! runs a body in all four modes, but
-// nothing checks that the jit modes fused anything, as run!'s FuseExpect does. The
-// organic_deltas and dense_deltas cadence fixtures claim to hold on both engines, yet
-// some fuse nothing. SAME_ARM_REFIRE is one: graphix-fuzz run reports fused=0, so
-// same_arm_refire_emits's jit and jit_par tests are node-walk runs and the kernel's
-// same-arm re-fire is unpinned. Let run_delta return the fusion counters, or take a
-// FuseExpect, and assert it in Mode::Jit. For SAME_ARM_REFIRE, put `#[native]` on the
-// select so the kernel path is what the jit modes run: `let s = #[native] select x
-// {..}; count(s)` builds and gives 1 2 3. (tests-lang-rest-a-08)
-// 2026-10-13 claude: SAME_ARM_REFIRE's select is #[native] now, so its jit modes run the
-// kernel. The general check stands: run_delta reports no fusion counters and modes!
-// asserts no FuseExpect, so another cadence fixture whose jit modes fuse nothing still
-// passes as a node-walk run.
 macro_rules! modes {
     ($($test:ident),+ $(,)?) => {$(
         mod $test {

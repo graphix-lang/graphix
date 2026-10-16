@@ -2,9 +2,9 @@
 // input fires; no node stores a previous value or selection to decide a
 // tag. Do not adjust these expectations without a ruling.
 
-use super::dense_deltas::run_delta;
+use super::dense_deltas::run_delta_fused;
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::testing::{FuseExpect, Mode, as_i64s};
 
 // A scrutinee re-fire on the same arm emits, in the kernel too: x
 // delivers 1, 2, 2 into a const `_` arm; count [1, 2, 3].
@@ -15,7 +15,7 @@ const SAME_ARM_REFIRE: &str = r#"{
 }"#;
 
 async fn same_arm_refire_emits(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(SAME_ARM_REFIRE, mode).await?;
+    let (values, _) = run_delta_fused(SAME_ARM_REFIRE, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 2, 3]);
     Ok(())
 }
@@ -30,7 +30,7 @@ const GUARD_FIRE: &str = r#"{
 }"#;
 
 async fn guard_fire_emits(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(GUARD_FIRE, mode).await?;
+    let (values, _) = run_delta_fused(GUARD_FIRE, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 2, 3]);
     Ok(())
 }
@@ -46,7 +46,8 @@ const NEVER_PRODUCED_GUARD: &str = r#"{
 }"#;
 
 async fn never_produced_guard_is_unknown(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(NEVER_PRODUCED_GUARD, mode).await?;
+    let (values, _) =
+        run_delta_fused(NEVER_PRODUCED_GUARD, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![99]);
     Ok(())
 }
@@ -62,7 +63,7 @@ const GATING_SELECT: &str = r#"{
 }"#;
 
 async fn gating_select_samples(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(GATING_SELECT, mode).await?;
+    let (values, _) = run_delta_fused(GATING_SELECT, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 2, 3]);
     Ok(())
 }
@@ -77,7 +78,7 @@ const REC_SAME_ARGS: &str = r#"{
 }"#;
 
 async fn rec_same_args_fires(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(REC_SAME_ARGS, mode).await?;
+    let (values, _) = run_delta_fused(REC_SAME_ARGS, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 2, 3]);
     Ok(())
 }
@@ -97,7 +98,7 @@ const TAIL_SAME_ARGS: &str = r#"{
 }"#;
 
 async fn tail_same_args_fires(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(TAIL_SAME_ARGS, mode).await?;
+    let (values, _) = run_delta_fused(TAIL_SAME_ARGS, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 2, 3, 4]);
     Ok(())
 }
@@ -113,7 +114,7 @@ const CONST_TERMINAL: &str = r#"{
 }"#;
 
 async fn const_terminal_agrees(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(CONST_TERMINAL, mode).await?;
+    let (values, _) = run_delta_fused(CONST_TERMINAL, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 2, 3, 4]);
     Ok(())
 }
@@ -131,7 +132,7 @@ const CHAIN_TWIN: &str = r#"{
 }"#;
 
 async fn chain_matches_rec(mode: Mode) -> Result<()> {
-    let (values, _) = run_delta(CHAIN_TWIN, mode).await?;
+    let (values, _) = run_delta_fused(CHAIN_TWIN, mode, FuseExpect::Jit).await?;
     assert_eq!(as_i64s(&values), vec![1, 2, 3]);
     Ok(())
 }
