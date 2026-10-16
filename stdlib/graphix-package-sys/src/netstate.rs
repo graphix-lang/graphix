@@ -458,7 +458,7 @@ impl NetState {
         // subscriber of the path gets the path's last value alone, never a
         // re-send to every subscriber of it.
         let flags = flags | UpdatesFlags::NO_SPURIOUS;
-        // CR claude for claude: [risk/low] The route is created and the id pushed only
+        // CR claude for eric: [risk/low] The route is created and the id pushed only
         // after subscribe_updates has returned. Two consequences follow. (1) For a Dval
         // that is already live (one held by write_target), subscribe_updates makes the
         // connection task replay the last value into updates_tx on another thread. The
@@ -482,6 +482,9 @@ impl NetState {
         // then sys can remove shared routing/manual last replay. Equality filtering
         // would discard legitimate repeated writes. Socket probes cannot run here;
         // the candidate sys rewrite was discarded. Upstream changes are outside scope.
+        // 2026-10-16 claude: Same mechanism as sys-net-02 just below (a reader joining a route
+        // netidx already streams gets its replay targeted at it), which Eric readdressed to
+        // himself on 2026-10-14; readdressed with it.
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         let mut routes = self.0.routes.lock();
