@@ -86,14 +86,29 @@ impl<X: GXExt> Output<X> {
         packages: &[Box<dyn Package<X>>],
     ) -> Result<Self> {
         let mut e = e;
-        for pkg in packages {
+        for (i, pkg) in packages.iter().enumerate() {
             let r = pkg.maybe_init_custom(gx, env, e, run_on_main).await;
             match r.context("initializing custom display")? {
-                CustomResult::Custom(cdc) => return Ok(Self::Custom(cdc)),
+                CustomResult::Custom(cdc) => {
+                    Self::chosen(gx, packages, Some(i)).await;
+                    return Ok(Self::Custom(cdc));
+                }
                 CustomResult::NotCustom(ret) => e = ret,
             }
         }
+        Self::chosen(gx, packages, None).await;
         Ok(Self::Text(e))
+    }
+
+    /// Tell every package whose display, if any, shows the output.
+    async fn chosen(
+        gx: &GXHandle<X>,
+        packages: &[Box<dyn Package<X>>],
+        by: Option<usize>,
+    ) {
+        for (i, pkg) in packages.iter().enumerate() {
+            pkg.output_chosen(gx, by == Some(i)).await
+        }
     }
 
     async fn clear(&mut self) {
@@ -520,10 +535,13 @@ impl<X: GXExt> Shell<X> {
                 }
                 exprs.extend(r.exprs);
                 env = gx.get_env().await?;
-                if let Some(e) = exprs.pop() {
-                    *output =
-                        Output::from_expr(&gx, &env, e, run_on_main, &self.packages)
-                            .await?;
+                match exprs.pop() {
+                    Some(e) => {
+                        *output =
+                            Output::from_expr(&gx, &env, e, run_on_main, &self.packages)
+                                .await?
+                    }
+                    None => Output::chosen(&gx, &self.packages, None).await,
                 }
                 *newenv = None
             }
@@ -701,6 +719,7 @@ impl<X: GXExt> Shell<X> {
                                         });
                                     } else {
                                         output.clear().await;
+                                        Output::chosen(&gx, &self.packages, None).await;
                                     }
                                 }
                             }

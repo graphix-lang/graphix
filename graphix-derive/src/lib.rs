@@ -125,6 +125,8 @@ struct DefPackage {
     custom: Option<(syn::ExprClosure, syn::ExprClosure)>,
     /// `shutdown`, run as the process ends
     shutdown: Option<syn::ExprClosure>,
+    /// `output_chosen`, told whether this package's display shows the output
+    output_chosen: Option<syn::ExprClosure>,
 }
 
 impl syn::parse::Parse for DefPackage {
@@ -133,6 +135,7 @@ impl syn::parse::Parse for DefPackage {
         let mut is_custom = None;
         let mut init_custom = None;
         let mut shutdown = None;
+        let mut output_chosen = None;
         while !input.is_empty() {
             let key: Ident = input.parse()?;
             let _arrow: Token![=>] = input.parse()?;
@@ -151,6 +154,8 @@ impl syn::parse::Parse for DefPackage {
                 init_custom.replace(input.parse::<syn::ExprClosure>()?).is_some()
             } else if key == "shutdown" {
                 shutdown.replace(input.parse::<syn::ExprClosure>()?).is_some()
+            } else if key == "output_chosen" {
+                output_chosen.replace(input.parse::<syn::ExprClosure>()?).is_some()
             } else {
                 return Err(syn::Error::new(key.span(), "unknown key"));
             };
@@ -171,7 +176,12 @@ impl syn::parse::Parse for DefPackage {
                 return Err(syn::Error::new_spanned(init, "init_custom needs is_custom"));
             }
         };
-        Ok(DefPackage { builtins: builtins.unwrap_or_default(), custom, shutdown })
+        Ok(DefPackage {
+            builtins: builtins.unwrap_or_default(),
+            custom,
+            shutdown,
+            output_chosen,
+        })
     }
 }
 
@@ -405,6 +415,19 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let body = &f.body;
         quote! { fn shutdown(&self) { #body } }
     });
+    let output_chosen = input.output_chosen.as_ref().map(|f| {
+        check_args("output_chosen", vec!["gx", "mine"], &f.inputs);
+        let body = &f.body;
+        quote! {
+            fn output_chosen<'a>(
+                &'a self,
+                gx: &'a #p::graphix_rt::GXHandle<X>,
+                mine: bool,
+            ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ()> + 'a>> {
+                Box::pin(async move { #body })
+            }
+        }
+    });
     let test_harness = test_harness(&c);
     let package_name = &c.name;
     let dep_registers = c.runtime().filter(|d| d.name != c.name).map(|d| {
@@ -465,6 +488,8 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #main_program
 
             #shutdown
+
+            #output_chosen
         }
 
         #test_harness

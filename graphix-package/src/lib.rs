@@ -174,6 +174,17 @@ pub trait Package<X: GXExt>: Send + Sync {
     /// Run as the process ends, to hand off what only a drop hands off
     /// (statics are never dropped).
     fn shutdown(&self) {}
+
+    /// Told, once the shell has chosen what shows a program's output (a
+    /// package's display, text, or nothing), whether this package's
+    /// display does.
+    fn output_chosen<'a>(
+        &'a self,
+        _gx: &'a GXHandle<X>,
+        _mine: bool,
+    ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
+        Box::pin(async {})
+    }
 }
 
 /// Register `packages` in `ctx`: the resolver of their Graphix modules,

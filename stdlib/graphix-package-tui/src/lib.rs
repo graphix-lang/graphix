@@ -649,8 +649,8 @@ struct TuiControlInner {
     stop: Mutex<StopState>,
     suspend_tx: mpsc::UnboundedSender<Suspend>,
     suspend_rx: Mutex<Option<mpsc::UnboundedReceiver<Suspend>>>,
-    /// No display will ever run (a test harness): a suspend is refused
-    /// instead of waiting for one.
+    /// No display will run (a test harness, a program the shell shows as
+    /// text): a suspend is refused instead of waiting for one.
     headless: AtomicBool,
 }
 
@@ -670,6 +670,20 @@ impl Default for TuiControl {
 }
 
 impl TuiControl {
+    /// Whether a display will run: when none will, a suspend is refused,
+    /// those asked already included.
+    fn displayed(&self, display: bool) {
+        self.0.headless.store(!display, Ordering::Relaxed);
+        if display {
+            return;
+        }
+        if let Some(rx) = self.0.suspend_rx.lock().as_mut() {
+            while let Ok(Suspend { ack }) = rx.try_recv() {
+                let _ = ack.send(Err(anyhow!("no terminal display is running")));
+            }
+        }
+    }
+
     fn request_exit(&self) {
         let mut state = self.0.stop.lock();
         if let StopState::Running(stop) =
@@ -754,28 +768,6 @@ impl EvalCachedAsync for SuspendEv {
             if held.lock().is_some() {
                 return Value::Bool(true);
             }
-            // CR claude for claude: [bug/low] Only the test harness sets `headless`. In
-            // a script whose output is text, no display ever takes the parked
-            // `suspend_rx`, so the request is queued and `done.await` never returns.
-            // tui::suspend(true) then produces nothing, ever, instead of the
-            // TerminalError that mod.gxi `val suspend` promises "with no terminal
-            // display running". In the REPL, a request left from an earlier session is
-            // instead served by the next display when it starts. Refuse the request
-            // whenever no display owns the receiver and none is starting. A plain flag
-            // set inside `run` is not enough: Tui::start takes the receiver
-            // asynchronously, so a TUI program that suspends in its first cycle would
-            // race it. Mark the control as display-pending when the display is created
-            // and clear the mark when `run` returns the receiver. Add a non-harness
-            // test. probe: design/review-2026-10-12/repro/tui-core-03.gx (tui-core-03)
-            // 2026-10-13 codex: A direct SuspendEv::eval on default TuiControl
-            // timed out after 100 ms (no_display_suspend_probe). A correct refusal
-            // needs display discovery to complete before deciding no display:
-            // graphix-shell/src/lib.rs::load_env calls Output::from_expr only after
-            // gx.program/get_env, while graphix-rt can already run the first cycle.
-            // Coordinate that lifecycle in shell/runtime so initial TUI suspends
-            // wait for a pending display and text-only programs are refused. Merely
-            // setting a flag in Tui::start still races that first cycle. Those
-            // changes are outside scope; the CR remains unresolved.
             if control.0.headless.load(Ordering::Relaxed) {
                 return errf!("TerminalError", "no terminal display is running");
             }
@@ -1278,5 +1270,13 @@ graphix_derive::defpackage! {
     is_custom => |gx, env, e| graphix_package::shows_as(env, e, &["tui", "Tui"], |t| t),
     init_custom => |gx, env, stop, e, _run_on_main| {
         Ok(Box::new(Tui::<X>::start(gx, env.clone(), e, stop)))
+    },
+    output_chosen => |gx, mine| {
+        let tell = gx.with_ctx(move |ctx| {
+            ctx.libstate.get_or_default::<TuiControl>().displayed(mine)
+        });
+        if let Err(e) = tell.await {
+            log::debug!("tui: no runtime to tell of its display: {e:?}")
+        }
     },
 }
