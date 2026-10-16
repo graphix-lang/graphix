@@ -840,8 +840,12 @@ pub struct LoopSite {
     until: AtomicU64,
 }
 
-/// A loop's probes: each probed slot's ticks.
-pub(crate) type Probes = SmallVec<[u64; SETTLE as usize]>;
+/// A loop's probes: a probed run's ticks per slot and its slots.
+pub(crate) type Probes = SmallVec<[(u64, u16); SETTLE as usize]>;
+
+/// The fewest slots a probe times as one run: a slot timed alone carries
+/// the run's fixed cost, which makes a cheap loop look worth a fork.
+pub(crate) const PROBE_BATCH: usize = 16;
 
 impl LoopSite {
     /// Whether a loop of `n` slots runs in order, untimed.
@@ -866,8 +870,10 @@ impl LoopSite {
         n: usize,
     ) -> Option<usize> {
         let mut p = self.probe.lock();
-        for t in probes.iter() {
-            p.probed(cal, *t);
+        for (t, k) in probes.iter() {
+            for _ in 0..*k {
+                p.probed(cal, *t);
+            }
         }
         match p.grain(cal, n, CHUNKS_PER_WORKER) {
             None if p.hist.n >= SETTLE => {
@@ -948,7 +954,7 @@ mod tests {
         assert!(!l.untimed(3), "a fresh site times its loops");
         assert_eq!(l.probes(3), Some(3));
         // slots at T/64: loops under 128 slots cannot pay for a fork
-        let probes: Probes = [1 << 4; 4].into_iter().collect();
+        let probes: Probes = [(1 << 4, 4)].into_iter().collect();
         assert_eq!(l.grain(&cal, &probes, 0), None);
         assert!(l.untimed(127));
         assert!(!l.untimed(128), "a long enough loop is timed");

@@ -211,23 +211,12 @@ pub(crate) unsafe fn run(
                     match cost::calibration_for(len - 1, took) {
                         None => break 'auto (1, None),
                         Some(cal) => {
-                            probes.push(dt);
+                            probes.push((dt, 1));
                             cal
                         }
                     }
                 }
             };
-            // CR claude for claude: [perf/medium] Once the LoopSite's histogram has
-            // settled, ProbeSite::probes asks for one probe, so k is 1. That slot is
-            // timed as a run of its own, and its tick count includes the run's fixed
-            // cost (and any cold start). The estimate stays inflated, and est * n >= 2T
-            // keeps forking loops whose slots cost nanoseconds. Measured: a 100-slot `i
-            // * 3 + n` fold on a 2 ms timer forks in nearly every cycle under the
-            // default Auto mode. It spends about twice the CPU of GRAPHIX_PAR=off for
-            // the same wall time and output. Fix: once settled, time a batch of slots
-            // large enough to amortize the run's cost (as the unsettled path does with
-            // `each = total / k`), or feed the measured time of a whole in-order run
-            // back into the estimate when the loop does not fork. (x-rerun-1-05)
             // the first slot an uncalibrated loop timed is one of the probes
             let Some(k) = site.probes(len - at).map(|k| k.saturating_sub(probes.len()))
             else {
@@ -236,13 +225,18 @@ pub(crate) unsafe fn run(
                 }
                 break 'auto (at, None);
             };
+            // the probed slots run as one, at least a batch of them, so a
+            // run's fixed costs spread over them
+            let k = match k {
+                0 => 0,
+                k => k.max(cost::PROBE_BATCH).min(len - at),
+            };
             if k > 0 {
-                // the probed slots run as one, so a run's fixed costs spread over them
                 let mut r = Run::new(at, at + k, find);
                 let t0 = cost::ticks();
                 unsafe { run_here(chunk, frame, &mut r) };
                 let each = cost::ticks_since(t0) / k as u64;
-                probes.extend((0..k).map(|_| each));
+                probes.push((each, k as u16));
                 let aborted = r.aborted;
                 runs.push(r);
                 if aborted {
