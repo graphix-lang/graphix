@@ -186,19 +186,7 @@ def vendor_workspace_member(member_path, ws_deps, vendor_dir):
     if dest.exists():
         shutil.rmtree(dest)
 
-    # Copy the entire crate source. Skip:
-    #   - target/ build artifacts
-    #   - editor/VCS junk that has no business in a published tarball
-    #     (Emacs `.#foo` lockfiles are dangling symlinks while a file is
-    #     being edited, and copytree raises on them by default)
-    shutil.copytree(
-        ROOT / member_path,
-        dest,
-        ignore=shutil.ignore_patterns(
-            "target", ".#*", "#*#", "*~", ".DS_Store",
-        ),
-        ignore_dangling_symlinks=True,
-    )
+    copy_crate(ROOT / member_path, dest)
 
     # Overwrite Cargo.toml with resolved version
     write_cargo_toml(parsed, ws_deps, ROOT, ROOT / member_path, dest / "Cargo.toml")
@@ -208,6 +196,20 @@ def vendor_workspace_member(member_path, ws_deps, vendor_dir):
         json.dump({"files": {}}, f)
 
     print(f"  {name}-{version}")
+
+
+def copy_crate(src, dest):
+    """Copy a crate's source to `dest`, skipping target/ and editor/VCS junk
+    (Emacs `.#foo` lockfiles are dangling symlinks while a file is being
+    edited, and copytree raises on them by default)."""
+    shutil.copytree(
+        src,
+        dest,
+        ignore=shutil.ignore_patterns(
+            "target", ".#*", "#*#", "*~", ".DS_Store",
+        ),
+        ignore_dangling_symlinks=True,
+    )
 
 
 def find_workspace_root(crate_path):
@@ -236,15 +238,7 @@ def vendor_external_path_deps(ws_deps, vendor_dir):
     for name, dep in ws_deps.items():
         if isinstance(dep, dict) and "path" in dep:
             path = (ROOT / dep["path"]).resolve()
-            # CR claude for claude: [structure/low] A string-prefix test counts a
-            # sibling like ../graphix-extras as inside the workspace, so a path dep
-            # there is never vendored and the offline build fails. Use
-            # `path.is_relative_to(root_resolved)`. The copytree in the external-dep
-            # loop below repeats the member copy in vendor_member with a weaker ignore
-            # set (no `#*#`, `*~` or `.DS_Store`), so editor junk from ../netidx lands
-            # in vendor/. Factor one copy-crate helper with the member's ignores and
-            # call it from both places. (ide-tooling-13)
-            if not str(path).startswith(str(root_resolved)):
+            if not path.is_relative_to(root_resolved):
                 queue.append(path)
 
     if not queue:
@@ -285,7 +279,7 @@ def vendor_external_path_deps(ws_deps, vendor_dir):
         if dest.exists():
             shutil.rmtree(dest)
 
-        shutil.copytree(crate_path, dest, ignore=shutil.ignore_patterns("target", ".#*"))
+        copy_crate(crate_path, dest)
         write_cargo_toml(parsed, ext_ws_deps, ws_root or crate_path, crate_path, dest / "Cargo.toml")
         with open(dest / ".cargo-checksum.json", "w") as f:
             json.dump({"files": {}}, f)
