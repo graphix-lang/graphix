@@ -127,6 +127,10 @@ unsafe impl Send for Run {}
 // panic, or the wrong kernel resumes the panic. Fix: one guard type that installs a
 // fresh set of all kernel-run thread-locals on construction and restores the previous
 // set on Drop, used in all three places. (f-kernel-05)
+// 2026-10-15 claude: run_here now sets aside and restores an enclosing run's
+// KERNEL_PANIC, and a caught panic no longer sets KERNEL_ABORT (x-unsafe-01), so a
+// stolen chunk cannot take the outer panic as its own. The one guard over every
+// kernel-run thread-local, restored on unwind, is still to do.
 unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
     let prev_panic = emit_helpers::take_kernel_panic();
     let prev_abort = KERNEL_ABORT.with(|c| c.replace(false));
