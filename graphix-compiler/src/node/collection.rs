@@ -1,5 +1,6 @@
 use super::{
     NOP, WakeBit,
+    bind::Ref,
     callsite::{CallNode, CallSite},
     coretraits::with_hooks,
     genn,
@@ -10,8 +11,8 @@ use super::{
 };
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
-    ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent, View,
+    ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope,
+    SourcePosition, Tag, TagValue, Update, UserEvent, View,
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
@@ -459,14 +460,18 @@ impl Callback {
         Ok(Self { scope, id, typ, top_id, share })
     }
 
-    /// A fresh bind for one callback argument.
-    fn arg<R: Rt, E: UserEvent>(
+    /// A slot's argument: a variable only the slot's call reads, so no
+    /// name in the environment.
+    fn slot_arg<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut CompileCtx<R, E>,
         name: &str,
         typ: &Type,
     ) -> (BindId, Node<R, E>) {
-        genn::bind(ctx, &self.scope.lexical, name, typ.clone(), self.top_id)
+        let id = BindId::new();
+        let spec =
+            genn::name_spec(name, SourcePosition::default(), genn::SYNTHETIC.clone());
+        (id, Ref::new(ctx, id, typ.clone(), self.top_id, spec))
     }
 
     /// The callback parameter as written, the source a slot's call of a
@@ -701,13 +706,23 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
     // BindId without an env binding nothing looks up by name; run analyze_bound_callee
     // once per prototype definition and copy its facts to sibling instances; reuse the
     // prototype's instance types instead of instantiating per slot. (c-collection-03)
+    // 2026-10-16 claude: Done: apply_deferred and drop_deferred shrink pending_refs
+    // after a batch (a drain walked the table's whole capacity, so the slots' first
+    // large batch made every later bind quadratic: 300k slots 8.2 s, now 4.3 s on the
+    // perf profile, linear from 50k to 400k at about 10 us a slot); a slot's arguments
+    // are bare ids, no env binding (peak RSS at 100k 468 MB to 450 MB). Open:
+    // analyze_bound_callee (about 5% of a slot) writes each instance's plans into its
+    // own nodes, so running it once per prototype means copying node state; instantiate
+    // per slot (about 10%) and the about 4 KB a slot keeps. Measured with
+    // ~/tmp/target/perf/graphix --no-fusion over array::init(n, |i| i),
+    // GRAPHIX_PAR=off, taskset -c 2.
     fn new(
         ctx: &mut CompileCtx<R, E>,
         callback: &Callback,
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (id, element) = callback.arg(ctx, "collection_element", element_type);
+        let (id, element) = callback.slot_arg(ctx, "collection_element", element_type);
         let call = callback.call(ctx, smallvec![element], kind);
         Self { id, call, state: SlotState::Bottom }
     }
@@ -720,7 +735,6 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.delete(ctx);
         ctx.rt.store_release(&self.id);
-        ctx.env.unbind_variable(self.id);
     }
 }
 
@@ -1316,8 +1330,9 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
         element_type: &Type,
         kind: CallKind,
     ) -> Self {
-        let (acc_id, acc) = callback.arg(ctx, "collection_acc", acc_type);
-        let (element_id, element) = callback.arg(ctx, "collection_element", element_type);
+        let (acc_id, acc) = callback.slot_arg(ctx, "collection_acc", acc_type);
+        let (element_id, element) =
+            callback.slot_arg(ctx, "collection_element", element_type);
         let call = callback.call(ctx, smallvec![acc, element], kind);
         Self { acc_id, element_id, call, state: SlotState::Bottom }
     }
@@ -1326,7 +1341,6 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
         self.call.delete(ctx);
         for id in [self.acc_id, self.element_id] {
             ctx.rt.store_release(&id);
-            ctx.env.unbind_variable(id);
         }
     }
 }
