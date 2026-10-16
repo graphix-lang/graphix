@@ -961,32 +961,40 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         });
         any
     };
+    // CR claude for claude: [perf/low] `raises(node)` walks the argument and every
+    // callee body it reaches, and it runs for every argument even when no argument
+    // feeds. When nothing feeds, the result is Ok(None) regardless. Each level of
+    // the descent after a failed region repeats this, so a nest of calls that fail
+    // to fuse costs quadratic reachable walks. Compute `feeds` first and return
+    // early when none is true. Run `raises` only when some argument feeds, and only
+    // up to the last fed argument. The same layer also does redundant work:
+    // calls_a_function walks the whole subtree after it finds a call (make it stop
+    // at the first hit), and fuse_parts' visitor recomputes calls_a_function for
+    // parts that fuse_each has already partitioned by it. (f-mod-lowering-07)
+    // 2026-10-15 claude: Done: feeds are decided first, nothing fed returns early,
+    // and raises walks only the arguments up to the last fed one. Open: the
+    // calls_a_function early stop and fuse_parts' recomputation of it.
+    // 2026-10-15 claude: calls_a_function now stops descending at its first call.
+    // Open: fuse_parts' visitor still recomputes it for parts fuse_each partitioned
+    // by it; passing the partition's answer means a visit signature fuse_each's
+    // other callers share.
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
-    let mut fused_raise = false;
     for arg in cs.args.values_mut() {
-        let Some(node) = arg.node.as_mut() else {
-            feeds.push(false);
-            continue;
-        };
-        let mut discovery = lowering::BuiltinCallDiscovery::default();
-        let feed =
-            lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err();
-        // CR claude for claude: [perf/low] `raises(node)` walks the argument and every
-        // callee body it reaches, and it runs for every argument even when no argument
-        // feeds. When nothing feeds, the result is Ok(None) regardless. Each level of
-        // the descent after a failed region repeats this, so a nest of calls that fail
-        // to fuse costs quadratic reachable walks. Compute `feeds` first and return
-        // early when none is true. Run `raises` only when some argument feeds, and only
-        // up to the last fed argument. The same layer also does redundant work:
-        // calls_a_function walks the whole subtree after it finds a call (make it stop
-        // at the first hit), and fuse_parts' visitor recomputes calls_a_function for
-        // parts that fuse_each has already partitioned by it. (f-mod-lowering-07)
-        match (feed, raises(node)) {
+        let feed = arg.node.as_mut().is_some_and(|node| {
+            let mut discovery = lowering::BuiltinCallDiscovery::default();
+            lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err()
+        });
+        feeds.push(feed);
+    }
+    let Some(last) = feeds.iter().rposition(|f| *f) else { return Ok(None) };
+    let mut fused_raise = false;
+    for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
+        let Some(node) = arg.node.as_ref() else { continue };
+        match (*feed, raises(node)) {
             (true, true) if fused_raise => return Ok(None),
             (false, true) => fused_raise = true,
             _ => (),
         }
-        feeds.push(feed);
     }
     let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
     for (arg, feed) in cs.args.values_mut().zip(feeds) {
@@ -1196,16 +1204,23 @@ fn asserted_native<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
 }
 
 fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    let mut calls = false;
-    for_each_node(node, &mut |n| {
-        calls |= match n.view() {
+    fn walk<R: Rt, E: UserEvent>(n: &Node<R, E>, calls: &mut bool) {
+        *calls = match n.view() {
             NodeView::CallSite(cs) => {
                 matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_)))
             }
             NodeView::MapQ(_) | NodeView::FoldQ(_) => true,
             _ => false,
-        }
-    });
+        };
+        // the first call found ends the descent
+        for_each_child(n, &mut |c| {
+            if !*calls {
+                crate::stack::ensure_sufficient(|| walk(c, calls))
+            }
+        });
+    }
+    let mut calls = false;
+    walk(node, &mut calls);
     calls
 }
 
