@@ -558,20 +558,20 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
 }
 
 /// String interpolation `"x is [x]"`: push each part into a heap
-/// `String` (string parts consumed, scalars Display-rendered) and
-/// finalize to an owned ArcStr. Only String and scalar parts are
-/// lowered; any other shape Errs and the subtree node-walks.
+/// `String` (string parts consumed, scalars Display-rendered, any other
+/// part rendered at its type `typs[i]` as the node-walk renders it) and
+/// finalize to an owned ArcStr.
 pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     args: &[Node<R, E>],
+    typs: &[Type],
 ) -> Result<CompiledExpr> {
     let call = cx.call_helper("graphix_string_buf_new", &[])?;
     let buf = call[0];
     open_buf(cx, BufKind::String, buf);
     // A tainted part renders harmlessly; its taint folds into the result.
     let mut part_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
-    for a in args {
-        let part = a;
+    for (part, typ) in args.iter().zip(typs.iter()) {
         // Normalized so a select-valued part (an arm union) still classifies.
         let frozen = kernel_abi::freeze_for_abi_normalized(part.typ());
         match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t)) {
@@ -585,21 +585,19 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
                 part_discs.push(cv.disc);
                 cx.call_helper(string_buf_push_helper(p), &[buf, cv.payload])?;
             }
-            // CR claude for claude: [perf/medium] Any part that is not a String or a
-            // register scalar (a `[T, null]`, a variant, a decimal, an array, a struct)
-            // makes the whole interpolation and the region around it run on the
-            // node-walk. `|x: [i64, null], y: i64| -> string "v=[x] w=[y * 2]"` fuses
-            // nothing. StringInterpolate::update renders such parts with `TVal { env,
-            // typ, v }` under the display hooks, and a kernel already has KERNEL_ENV
-            // and the core-trait hooks on loan. Fix: add a borrowing
-            // `graphix_string_buf_push_value(buf, tv, typ)` helper that renders exactly
-            // as the node-walk does, with the part's type passed as a
-            // BodyCx::interned_type constant, and route every other ABI kind through
-            // it. (f-nodes-scalar-03)
-            other => {
+            Some(_) => {
+                let cv = emit_owned_value_operand_node(cx, part)?;
+                part_discs.push(cv.disc);
+                let typ = cx.interned_type(&typ.resolve_tvars())?;
+                cx.call_helper(
+                    "graphix_string_buf_push_value",
+                    &[buf, typ, cv.disc, cv.payload],
+                )?;
+            }
+            None => {
                 return Err(anyhow!(
-                    "emit_clif: string-interpolate part of shape {other:?} \
-                     — only String and scalar parts are lowered"
+                    "emit_clif: string-interpolate part of type {} has no ABI kind",
+                    part.typ()
                 ));
             }
         }

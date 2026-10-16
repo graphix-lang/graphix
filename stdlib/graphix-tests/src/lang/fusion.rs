@@ -2279,6 +2279,18 @@ run!(native_null_element_loops, r#"{
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
     FuseExpect::Jit);
 
+// An interpolated part of any kind fuses, rendered as the node-walk
+// renders it at its type, a core Display impl included.
+run!(native_interpolates_every_part_kind, r#"{
+    type Money = Abstract<i64>;
+    impl Display for Money { let fmt = |m| "$[m.0]" };
+    let f = |x: [i64, null], v: [`A, `B(string)], s: {a: i64, b: string}, xs: Array<f64>, m: Money, d: decimal| -> string
+        #[native] "x=[x] v=[v] s=[s] xs=[xs] m=[m] d=[d]";
+    (f(null, `B("q"), {a: 1, b: "z"}, [1.5, 2.0], Money(7), decimal:1.25), f(4, `A, {a: 2, b: "y"}, [], Money(-1), decimal:0.5))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap())
+    == r#"["x=null v=`B(\"q\") s={a: 1, b: \"z\"} xs=[1.5, 2] m=$7 d=1.25", "x=4 v=A s={a: 2, b: \"y\"} xs=[] m=$-1 d=0.5"]"#;
+    FuseExpect::Jit);
+
 // A literal is no fusion region, its value held by its node, and
 // #[native] on one passes: nothing node-walks.
 run!(native_on_a_literal, r#"{

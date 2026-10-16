@@ -1621,7 +1621,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_string_interpolate_node(cx, &self.args)
+        emit_string_interpolate_node(cx, &self.args, &self.typs)
     }
 }
 

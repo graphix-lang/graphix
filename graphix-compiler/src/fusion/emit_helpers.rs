@@ -1209,6 +1209,18 @@ unsafe fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: u64) {
     unsafe { &mut *buf }.push_str(&s);
 }
 
+/// Append `tv` as string interpolation renders a part of type `typ`
+/// (`StringInterpolate::update`), under the invoking kernel's env loan.
+/// Consumes `tv`.
+unsafe fn graphix_string_buf_push_value(buf: *mut StringBuf, typ: *const Type, tv: TagValue) {
+    use std::fmt::Write;
+    let (buf, typ, env) = unsafe { (&mut **buf, &*typ, kernel_env()) };
+    tv.with_value(|v| match v {
+        Value::String(s) => buf.push_str(s),
+        v => write!(buf, "{}", crate::typ::TVal { env, typ, v }).unwrap(),
+    })
+}
+
 }
 
 // The scaffold loops iterate a ValArray; List and Map sources flatten on
