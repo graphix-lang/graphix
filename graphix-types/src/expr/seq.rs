@@ -95,7 +95,7 @@ struct Parts<'a> {
 
 /// The seq `spec` lowered to its machine, every expression of which
 /// comes from `spec`'s source.
-// CR claude for claude: [readability/low] A type error in a seq step is reported under
+// CR claude for eric: [readability/low] A type error in a seq step is reported under
 // frames that quote the lowered machine, not the program. For `let go = 1; seq go { let
 // a = go + 1; let x = a + "s"; x }`, `--check` prints five frames naming `seqpc…`,
 // `machine seqpc…`, `let seqv…_1` and `let seqv…` before reaching `a + "s"`. None of
@@ -108,6 +108,17 @@ struct Parts<'a> {
 // image-restored ones have none, so frames would differ cold and warm. Needs a mark the
 // lowering sets on the expressions it builds (or the machine node rewriting the frames
 // its children add); not started.
+// 2026-10-16 claude: Readdressed to eric with x-errors-04, tests-seq-08 and
+// t-expr-core-08: all three need one decision, how the compiler marks the expressions a
+// lowering builds. Proposal: a lowering names what it binds with a leading '#'
+// (seqpc{id} becomes #seqpc{id}, and the other seq* names alike), which no source can
+// write, as block scope components already are (graphix_types::is_block_component). The
+// error printer then skips a frame whose expression binds or connects such a name, and
+// Connect tells a synthesized write by its target's name instead of by spec.end, so
+// packed and image-restored ASTs answer alike. The cost: --expand and the LSP would
+// show '#' names, and every reader of a lowered name keys on the prefix. The
+// alternative is a mark on Expr that packs and images carry, a format change to every
+// AST.
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };

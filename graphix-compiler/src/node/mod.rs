@@ -2648,7 +2648,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                             )
                         },
                     ),
-                    // CR claude for claude: [risk/low] This uses `spec.end`, a
+                    // CR claude for eric: [risk/low] This uses `spec.end`, a
                     // `WrittenAt`, as a 'the user wrote this' marker to choose the
                     // error. A `WrittenAt` must decide nothing, and `end` is NOWHERE
                     // for every expression that came from a packed package AST or an
@@ -2658,6 +2658,20 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
                     // connects explicitly (a flag on the connect node, set by the
                     // lowering that builds them) and test that instead.
                     // (t-expr-core-08)
+                    // 2026-10-16 claude: Readdressed to eric with x-errors-04,
+                    // tests-seq-08 and t-expr-core-08: all three need one decision,
+                    // how the compiler marks the expressions a lowering builds.
+                    // Proposal: a lowering names what it binds with a leading '#'
+                    // (seqpc{id} becomes #seqpc{id}, and the other seq* names
+                    // alike), which no source can write, as block scope components
+                    // already are (graphix_types::is_block_component). The error
+                    // printer then skips a frame whose expression binds or connects
+                    // such a name, and Connect tells a synthesized write by its
+                    // target's name instead of by spec.end, so packed and
+                    // image-restored ASTs answer alike. The cost: --expand and the
+                    // LSP would show '#' names, and every reader of a lowered name
+                    // keys on the prefix. The alternative is a mark on Expr that
+                    // packs and images carry, a format change to every AST.
                     Some(_) if self.spec.end.get().is_some() => {
                         write_mismatch(bind, written, &self.spec.ori)
                     }

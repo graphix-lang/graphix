@@ -51,7 +51,7 @@ impl fmt::Display for ErrorContext {
             }
         }
         let mut head = Head(LPooled::take(), false);
-        // CR claude for claude: [readability/low] The frame snippet is the printer's
+        // CR claude for eric: [readability/low] The frame snippet is the printer's
         // rendering of the frame's Expr, not what the user wrote. For lowered
         // constructs the chain shows compiler internals: an `until 5` in a seq gives
         // frames reading `{ let seqpc4611686018427393761: [`Idle..`, `machine seqpc.. {
@@ -70,6 +70,18 @@ impl fmt::Display for ErrorContext {
         // 2026-10-14 claude: tests-seq-08 is the same finding. Expr::end was weighed as
         // the mark and refused: it decides nothing by rule and is absent from packed and
         // image-restored ASTs.
+        // 2026-10-16 claude: Readdressed to eric with x-errors-04, tests-seq-08 and
+        // t-expr-core-08: all three need one decision, how the compiler marks the
+        // expressions a lowering builds. Proposal: a lowering names what it binds with a
+        // leading '#' (seqpc{id} becomes #seqpc{id}, and the other seq* names alike),
+        // which no source can write, as block scope components already are
+        // (graphix_types::is_block_component). The error printer then skips a frame
+        // whose expression binds or connects such a name, and Connect tells a
+        // synthesized write by its target's name instead of by spec.end, so packed and
+        // image-restored ASTs answer alike. The cost: --expand and the LSP would show
+        // '#' names, and every reader of a lowered name keys on the prefix. The
+        // alternative is a mark on Expr that packs and images carry, a format change to
+        // every AST.
         let complete = write!(head, "{}", self.0).is_ok();
         let Head(snippet, truncated) = head;
         if !complete && !truncated {
