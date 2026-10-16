@@ -105,13 +105,13 @@ fn lexical_relocating_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
     Ok(ModPath(p))
 }
 
-/// What a definition's compiles share: its seqs' lowerings (whose ids
+/// What a definition's compiles share: its lowerings (whose ids
 /// its check table has rows for), the check's specs and its lambda
 /// literals' shares.
 fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackError> {
-    let BodyShared { seqs, specs, literals } = shared;
-    encode_varint(seqs.len() as u64, buf);
-    for ((id, scope), e) in seqs.iter() {
+    let BodyShared { lowerings, specs, literals } = shared;
+    encode_varint(lowerings.len() as u64, buf);
+    for ((id, scope), e) in lowerings.iter() {
         id.encode(buf)?;
         lexical_relocating_encode(scope, buf)?;
         e.encode(buf)?;
@@ -134,7 +134,7 @@ fn shared_decode(buf: &mut impl Buf) -> Result<BodyShared, PackError> {
     for _ in 0..decode_varint(buf)? {
         let id = ExprId::decode(buf)?;
         let scope = lexical_relocating_decode(buf)?;
-        shared.seqs.insert((id, scope), Expr::decode(buf)?);
+        shared.lowerings.insert((id, scope), Expr::decode(buf)?);
     }
     for _ in 0..decode_varint(buf)? {
         let id = ExprId::decode(buf)?;

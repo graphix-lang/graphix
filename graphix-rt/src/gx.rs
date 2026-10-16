@@ -777,7 +777,7 @@ impl<X: GXExt> GX<X> {
                         ref_var_total,
                         store_len: self.ctx.rt.store.len(),
                         lambda_defs_len: self.ctx.lambda_defs.len(),
-                        lowered_seqs_len: self.ctx.lowered_seqs_len(),
+                        lowerings_len: self.ctx.lowerings_len(),
                         restored: self.restored,
                     });
                 }

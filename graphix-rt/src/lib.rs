@@ -562,8 +562,8 @@ pub struct EnvStats {
     pub store_len: usize,
     /// number of lambda definitions the context holds (`lambda_defs`)
     pub lambda_defs_len: usize,
-    /// number of seq lowerings the context keeps (`lowered_seqs`)
-    pub lowered_seqs_len: usize,
+    /// number of lowerings the live definitions keep
+    pub lowerings_len: usize,
     /// the registration was restored from an image (a bad image compiles
     /// cold instead)
     pub restored: bool,

@@ -36,7 +36,6 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
-use std::collections::hash_map::Entry;
 use triomphe::Arc;
 
 /// Every per-kind `compile` recurses back through here or through
@@ -513,21 +512,6 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
-        // CR claude for claude: [perf/low] eta_dispatcher runs ctx.env.lookup_bind only
-        // to ask whether the binding is a trait method. On the usual None answer,
-        // Ref::compile runs the same lookup again, so every reference, in every
-        // instance compile too, pays for two scope walks. Fix: resolve once and hand
-        // the resolved Bind to both (or do the trait-method test inside Ref::compile
-        // after its lookup). Separately, eta_dispatcher builds its Expr with fresh
-        // ExprIds at every compile, so an instance's eta nodes find no DefTable row and
-        // check themselves. Caching the eta Expr per binding and scope keeps the ids
-        // stable. (c-data-map-07)
-        // 2026-10-15 claude: Done: a reference resolves its name once; the trait-method
-        // test is in Ref::compile_value after that lookup (Ref::compile, for a call's
-        // own function, never eta-expands). Open: the eta Expr is still built with
-        // fresh ExprIds at each compile, so an instance's eta nodes find no DefTable
-        // row and check themselves; keeping the ids stable needs the expansion cached
-        // per binding and scope.
         ExprKind::Ref { name } => {
             Ref::compile_value(ctx, flags, spec.clone(), scope, top_id, name)
         }
@@ -552,17 +536,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
                 }
                 Ok(lowered)
             };
-            let lowered = match ctx.body.as_ref().map(|b| &b.share) {
-                None => lower(ctx)?,
-                Some(seqs) => {
-                    let mut seqs = seqs.lock();
-                    match seqs.seqs.entry((spec.id, scope.lexical.clone())) {
-                        Entry::Occupied(e) => e.get().clone(),
-                        Entry::Vacant(e) => e.insert(lower(ctx)?).clone(),
-                    }
-                }
-            };
-            compile(ctx, flags, lowered, scope, top_id)
+            let lowered =
+                lowering(ctx, spec, &scope.lexical, |ctx| lower(ctx).map(Some))?;
+            compile(ctx, flags, lowered.expect("a seq always lowers"), scope, top_id)
         }
         ExprKind::Until(_) => {
             bailat!(spec, "`until` is only legal in a seq block")
@@ -626,6 +602,23 @@ fn compile_kind<R: Rt, E: UserEvent>(
 /// value, the call resolves by its receiver. A call's own function stays
 /// a reference. `None` for any other name; a variadic method has no
 /// expansion (a lambda cannot pass its rest on) and is refused.
+/// `lower`'s rewrite of `spec`, once per definition body: every compile of
+/// the body takes the first compile's, so its expression ids are the ones
+/// the check's table has rows for.
+pub(super) fn lowering<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    spec: &Expr,
+    scope: &ModPath,
+    lower: impl FnOnce(&CompileCtx<R, E>) -> Result<Option<Expr>>,
+) -> Result<Option<Expr>> {
+    let Some(share) = ctx.body.as_ref().map(|b| &b.share) else { return lower(ctx) };
+    let key = (spec.id, scope.clone());
+    if let Some(e) = share.lock().lowerings.get(&key) {
+        return Ok(Some(e.clone()));
+    }
+    Ok(lower(ctx)?.map(|e| share.lock().lowerings.entry(key).or_insert(e).clone()))
+}
+
 pub(super) fn eta_dispatcher<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     spec: &Expr,

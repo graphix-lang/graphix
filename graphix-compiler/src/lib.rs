@@ -1318,10 +1318,11 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
     pub fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
-    /// The seq lowerings of the definition whose body is compiling
-    /// (`LambdaDef::shared`): each of its seqs lowers once, so every compile
-    /// of the body has its check's expression ids. A seq outside every
-    /// definition compiles once and is lowered where it stands.
+    /// What the definition whose body is compiling shares
+    /// (`LambdaDef::shared`): each expression it rewrites lowers once, so
+    /// every compile of the body has its check's expression ids. A seq
+    /// outside every definition compiles once and is lowered where it
+    /// stands.
     pub(crate) body: Option<node::lambda::BodyCompile>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
@@ -1451,14 +1452,14 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         }
     }
 
-    /// The seq lowerings the live definitions keep.
-    pub fn lowered_seqs_len(&self) -> usize {
+    /// The lowerings the live definitions keep.
+    pub fn lowerings_len(&self) -> usize {
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
         let mut n = 0;
         for (_, v) in self.lambda_defs.iter() {
             if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
                 node::lambda::BodyShared::visit(&d.shared, &mut seen, &mut |l| {
-                    n += l.seqs.len()
+                    n += l.lowerings.len()
                 })
             }
         }

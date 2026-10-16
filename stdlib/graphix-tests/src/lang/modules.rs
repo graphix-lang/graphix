@@ -1135,7 +1135,7 @@ async fn lowerings_kept(code: &str, last: Value) -> Result<usize> {
     )
     .await?;
     assert_eq!(values.last(), Some(&last), "{values:?}");
-    let kept = ctx.rt.env_stats().await?.lowered_seqs_len;
+    let kept = ctx.rt.env_stats().await?.lowerings_len;
     ctx.shutdown().await;
     Ok(kept)
 }
@@ -1176,7 +1176,7 @@ async fn dropped_compiles_keep_no_lowerings() -> Result<()> {
             let code = "(|x: i64| seq { let a = x; a + 1 })(1)";
             drop(ctx.rt.compile(ArcStr::from(code)).await?);
         }
-        let kept = ctx.rt.env_stats().await?.lowered_seqs_len;
+        let kept = ctx.rt.env_stats().await?.lowerings_len;
         ctx.shutdown().await;
         Ok(kept)
     }

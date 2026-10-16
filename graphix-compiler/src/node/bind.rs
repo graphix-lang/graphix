@@ -766,7 +766,9 @@ impl Ref {
             Some((_, bind)) => {
                 if let Some(flags) = value
                     && let Some(eta) =
-                        super::compiler::eta_dispatcher(ctx, &spec, name, bind)?
+                        super::compiler::lowering(ctx, &spec, &scope.lexical, |ctx| {
+                            super::compiler::eta_dispatcher(ctx, &spec, name, bind)
+                        })?
                 {
                     return compile(ctx, flags, eta, scope, top_id);
                 }
