@@ -83,7 +83,7 @@ impl LazyArmFacts {
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
         LazyArmFacts {
-            // CR claude for claude: [bug/medium] The tracker is built from each arm's
+            // CR claude for eric: [bug/medium] The tracker is built from each arm's
             // refs at the first update, and a dynamic call site's refs are only its
             // function node and arguments. So a variable captured by the closure the
             // site will dispatch (in1 in `|x| count(in1) + x`) is untracked until the
@@ -1343,7 +1343,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // non-recursive arm, with nothing to pause, enters under
                 // `init` alone.
                 let view = if sleep_on_deselect[i] { View::Wake } else { View::Birth };
-                // CR claude for claude: [bug/medium] An arm's tracked inputs come from
+                // CR claude for eric: [bug/medium] An arm's tracked inputs come from
                 // `TrackedFires::new` at the select's first update and are refreshed
                 // only in `deselect`. `Deref::refs` names its target only after the
                 // Deref's first update. So an arm selected for the first time reads
@@ -1364,6 +1364,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // wake_spent_directly). Open: a moving reference whose Deref changes
                 // target later is still tracked under its old one until a deselect
                 // refresh.
+                // 2026-10-16 claude: The open part (a moving reference's later target
+                // untracked until a refresh) needs the same mechanism
+                // tests-lang-rest-b-02 (wake.rs, Eric's) asks for, an input learned
+                // after the arm's last refresh: a per-variable fire epoch or seeding
+                // from what the arm reaches at run time. Readdressed with it.
                 let (t, v) =
                     ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx));
                 planes.emit(t, v)

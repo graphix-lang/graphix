@@ -45,7 +45,7 @@ fn typ_echain(param: Type) -> Type {
 
 /// The fields of `ErrChain<'a>` in a structurally typed world: a struct
 /// with exactly these names IS the chain.
-// CR claude for claude: [bug/medium] This decides chain-ness by the four field names
+// CR claude for eric: [bug/medium] This decides chain-ness by the four field names
 // alone. fix_echain_typ and is_chain_type therefore keep Error<{cause: i64, error: i64,
 // ori: i64, pos: i64}> unwrapped. At run time wrap_error extends the same value as a
 // chain: the old struct moves into `cause`, and `ori`/`pos` become the real Ori and
@@ -772,7 +772,7 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
 /// The error type a `?` delivers for `etyp`: the payload wrapped in an
 /// `ErrChain`, once. `wrap_error` chains a caught error rather than
 /// nesting it, so a chain arriving from a callee's throws keeps its type.
-// CR claude for claude: [bug/high] A struct payload with the chain's four field names
+// CR claude for eric: [bug/high] A struct payload with the chain's four field names
 // (cause/error/ori/pos) counts as a chain here, in `is_chain_type` and in
 // `Type::chain_type`, by its names alone. So `?` keeps the user's field types as the
 // thrown type. At run time, `wrap_error` (via `chain_error`) also recognizes it by its
