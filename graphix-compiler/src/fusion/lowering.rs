@@ -1199,6 +1199,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     site_ftype: &FnType,
     kernel_name: &ArcStr,
     ec: &CompileCtx<R, E>,
+    reads: &mut ReadsMemo,
 ) -> Result<triomphe::Arc<CachedKernel>, Refusal> {
     // The key is the site's type, not `g.typ()`: the instance shares
     // tvar cells with the def, so `g.typ()` reports whichever
@@ -1215,7 +1216,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     instance_agrees(g, &key.1, ec)?;
     let self_bind = g.self_bind();
     let mut formals = formal_slots(g, self_bind, ec)?;
-    let mut captures = capture_slots(g, self_bind, ec)?;
+    let mut captures = capture_slots(g, self_bind, ec, reads)?;
     let return_type =
         kernel_abi::freeze_for_abi_normalized(&expand_refs(&g.typ().rtype, &ec.env))
             .ok_or("its return type has no kernel encoding")?;
@@ -1374,6 +1375,93 @@ fn formal_slots<R: Rt, E: UserEvent>(
     Ok(out)
 }
 
+/// One discovery's [`external_reads`] of each lambda instance, and
+/// whether each binding they meet holds a function.
+#[derive(Default)]
+pub(crate) struct ReadsMemo {
+    reads: nohash::IntMap<LambdaInstanceId, Arc<[BindId]>>,
+    fn_shaped: nohash::IntMap<BindId, bool>,
+}
+
+impl ReadsMemo {
+    /// A function-valued binding is called, never captured.
+    fn captured<R: Rt, E: UserEvent>(
+        &mut self,
+        id: BindId,
+        ec: &CompileCtx<R, E>,
+    ) -> bool {
+        !*self.fn_shaped.entry(id).or_insert_with(|| {
+            ec.env
+                .by_id
+                .get(&id)
+                .is_some_and(|b| is_fn_shaped(&expand_refs(&b.typ, &ec.env), &ec.env))
+        })
+    }
+}
+
+/// What `g`'s body reads from outside `g` that is not a function, its
+/// callees' bodies included: its own reads (a builtin callee's walked
+/// whole) joined with each lambda callee's, each instance walked once
+/// (`memo`).
+fn external_reads<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    ec: &CompileCtx<R, E>,
+    memo: &mut ReadsMemo,
+) -> Arc<[BindId]> {
+    if let Some(r) = memo.reads.get(&g.instance_id()) {
+        return r.clone();
+    }
+    let reads = crate::stack::ensure_sufficient(|| {
+        let mut formals: LPooled<IntSet<BindId>> = LPooled::take();
+        for pat in g.args() {
+            pat.ids(&mut |id| {
+                formals.insert(id);
+            });
+        }
+        let mut refs = Refs::stopping_at_callees();
+        g.body().refs(&mut refs);
+        let callees = refs.take_callees();
+        let mut by_id: LPooled<nohash::IntMap<LambdaInstanceId, &GXLambda<R, E>>> =
+            LPooled::take();
+        if !callees.is_empty() {
+            fusion::for_each_node(g.body(), &mut |n| {
+                if let NodeView::CallSite(cs) = n.view()
+                    && let Some(ApplyView::Lambda(c)) = cs.resolved_apply()
+                {
+                    by_id.insert(c.instance_id(), c);
+                }
+            });
+        }
+        // a callee the node walk does not reach is read the long way
+        let mut own: LPooled<Vec<BindId>> = LPooled::take();
+        if callees.iter().any(|(id, _)| !by_id.contains_key(id)) {
+            let mut refs = Refs::default();
+            g.body().refs(&mut refs);
+            refs.with_external_refs(|id| own.push(id));
+            own.retain(|id| !formals.contains(id));
+            own.retain(|id| memo.captured(*id, ec));
+            return Arc::from_iter(own.drain(..));
+        }
+        refs.with_external_refs(|id| own.push(id));
+        let mut reads: LPooled<IntSet<BindId>> = LPooled::take();
+        for id in own.drain(..) {
+            if !formals.contains(&id) && memo.captured(id, ec) {
+                reads.insert(id);
+            }
+        }
+        for (id, _) in callees.iter() {
+            for b in external_reads(by_id[id], ec, memo).iter() {
+                if !refs.bound.contains(b) && !formals.contains(b) {
+                    reads.insert(*b);
+                }
+            }
+        }
+        Arc::from_iter(reads.drain())
+    });
+    memo.reads.insert(g.instance_id(), reads.clone());
+    reads
+}
+
 /// The outer bindings a lambda's body reads, in BindId order, as kernel
 /// params the caller forwards from its own env. A self-reference lowers
 /// as a call and a statically-resolved fn capture as a call, never as a
@@ -1382,43 +1470,18 @@ fn capture_slots<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: Option<BindId>,
     ec: &CompileCtx<R, E>,
+    memo: &mut ReadsMemo,
 ) -> Result<LPooled<Vec<(CaptureSlot, ParamKind)>>, Refusal> {
-    // Formal patterns bind outside the body, so `refs` reports them as
-    // external.
-    let mut arg_ids: LPooled<nohash::IntSet<BindId>> = LPooled::take();
-    for pat in g.args() {
-        pat.ids(&mut |id| {
-            arg_ids.insert(id);
-        });
-    }
-    // CR claude for claude: [perf/medium] This walk enters every callee instance below
-    // `g`, so a lambda at depth i of a call chain reports every function binding below
-    // it as external. Each one pays `expand_refs` and `is_fn_shaped` before it is
-    // skipped. `TypeMemo::cached` runs `unfolds_past`, a full type-size walk, before
-    // its cache lookup, so even a hit pays the walk. `structural_tail_loop` repeats the
-    // same transitive walk. Over a chain of 1600 lambdas, fusion's Callees phase takes
-    // about 3 s. Build a kernel's captures from its own body (`Refs::without_callees`)
-    // joined with its statically resolved callees' cached kernel captures. Skip
-    // fn-shaped binds before expanding them. Move the `unfolds_past` check after the
-    // `by_id` lookup and memoize its verdict with the entry. probe:
-    // design/review-2026-10-12/repro/x-perf-compile-07-callees-quadratic.gx
-    // (x-perf-compile-07)
-    let mut refs = Refs::default();
-    g.body().refs(&mut refs);
-    let mut external: LPooled<Vec<BindId>> = LPooled::take();
-    refs.with_external_refs(|id| {
-        if !arg_ids.contains(&id) && Some(id) != self_bind {
-            external.push(id);
-        }
-    });
+    let mut external: LPooled<Vec<BindId>> = external_reads(g, ec, memo)
+        .iter()
+        .copied()
+        .filter(|id| Some(*id) != self_bind)
+        .collect();
     external.sort_by_key(|id| id.inner());
     let mut out: LPooled<Vec<(CaptureSlot, ParamKind)>> = LPooled::take();
     for bind_id in external.drain(..) {
         let b = ec.env.by_id.get(&bind_id).ok_or("a capture has no binding")?;
         let typ = expand_refs(&b.typ, &ec.env);
-        if is_fn_shaped(&typ, &ec.env) {
-            continue;
-        }
         let no_slot = || format_compact!("capture `{}` has no kernel encoding", b.name);
         let kt = kernel_abi::freeze_for_abi_normalized(&typ).ok_or_else(no_slot)?;
         let kind = param_kind(&kt).ok_or_else(no_slot)?;

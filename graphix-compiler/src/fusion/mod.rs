@@ -834,6 +834,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     let mut worklist: LPooled<Vec<(&'n Node<R, E>, Option<kernel_abi::KernelKey>)>> =
         LPooled::take();
     worklist.push((root, None));
+    let mut reads = lowering::ReadsMemo::default();
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
@@ -868,7 +869,9 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             let Some(site_ftype) = cs.resolved_ftype() else {
                 return;
             };
-            let cached = match lowering::build_lambda_kernel(g, site_ftype, &name, ctx) {
+            let cached = match lowering::build_lambda_kernel(
+                g, site_ftype, &name, ctx, &mut reads,
+            ) {
                 Ok(cached) => cached,
                 Err(why) => {
                     let reason = format_compact!("lambda `{name}` has no kernel: {why}");
