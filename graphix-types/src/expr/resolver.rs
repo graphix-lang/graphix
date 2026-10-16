@@ -326,6 +326,35 @@ impl Resolution {
 /// beside it. Every resolver lays modules out this way.
 pub const MODULE_LAYOUTS: [(&str, &str); 2] = [(".gx", ".gxi"), ("/mod.gx", "/mod.gxi")];
 
+/// One layout of [`MODULE_LAYOUTS`] as a resolver probed it: its
+/// implementation and its interface, each by path and, when present, its
+/// contents.
+pub struct LayoutProbe<P, T> {
+    pub implementation: (P, Option<T>),
+    pub interface: (P, Option<T>),
+}
+
+/// The module `name` that both layouts' probes make, the one decision
+/// every resolver shares: the implementation found, paired with the
+/// interface beside it; `None` when neither layout has an implementation.
+/// Refused when both do, or when an interface stands beside the layout the
+/// module does not use.
+pub fn choose_layout<P: fmt::Display, T>(
+    name: &Path,
+    [l0, l1]: [LayoutProbe<P, T>; 2],
+) -> Result<Option<((P, T), Option<(P, T)>)>> {
+    let LayoutProbe { implementation: (p0, t0), interface: (q0, i0) } = l0;
+    let LayoutProbe { implementation: (p1, t1), interface: (q1, i1) } = l1;
+    match (t0, t1) {
+        (Some(_), Some(_)) => bail!("{p0} and {p1} both define module {name}"),
+        (Some(_), None) if i1.is_some() => Err(stray_interface(&q1, &p0)),
+        (None, Some(_)) if i0.is_some() => Err(stray_interface(&q0, &p1)),
+        (Some(t), None) => Ok(Some(((p0, t), i0.map(|i| (q0, i))))),
+        (None, Some(t)) => Ok(Some(((p1, t), i1.map(|i| (q1, i))))),
+        (None, None) => Ok(None),
+    }
+}
+
 /// Where the submodules of the module at `path` (its implementation or
 /// its interface) live: `{stem}/` beside `{stem}.gx`, its own directory
 /// for `mod.gx`.
@@ -368,31 +397,21 @@ fn resolve_from_vfs(
     {
         return Resolution::TryNextMethod;
     }
-    let path = |file: &str| scope.append(&format_compact!("{name}{file}"));
-    let at = |file: &str| vfs.get(&path(file));
-    // an interface pairs with the implementation beside it, as on disk
-    let [(imp0, intf0), (imp1, intf1)] = MODULE_LAYOUTS;
-    match (at(imp0), at(imp1)) {
-        (Some(_), Some(_)) => Resolution::Broken(anyhow::anyhow!(
-            "{} and {} both define module {name}",
-            path(imp0),
-            path(imp1)
-        )),
-        (Some(_), None) if at(intf1).is_some() => {
-            Resolution::Broken(stray_interface(&path(intf1), &path(imp0)))
-        }
-        (None, Some(_)) if at(intf0).is_some() => {
-            Resolution::Broken(stray_interface(&path(intf0), &path(imp1)))
-        }
-        (Some(e), None) => Resolution::Resolved {
-            interface: at(intf0).map(unit),
-            implementation: unit(e),
+    let probe = |(imp, intf): (&str, &str)| {
+        let at = |file: &str| {
+            let path = scope.append(&format_compact!("{name}{file}"));
+            let entry = vfs.get(&path);
+            (path, entry)
+        };
+        LayoutProbe { implementation: at(imp), interface: at(intf) }
+    };
+    match choose_layout(name, MODULE_LAYOUTS.map(probe)) {
+        Err(e) => Resolution::Broken(e),
+        Ok(None) => Resolution::TryNextMethod,
+        Ok(Some(((_, imp), intf))) => Resolution::Resolved {
+            interface: intf.map(|(_, e)| unit(e)),
+            implementation: unit(imp),
         },
-        (None, Some(e)) => Resolution::Resolved {
-            interface: at(intf1).map(unit),
-            implementation: unit(e),
-        },
-        (None, None) => Resolution::TryNextMethod,
     }
 }
 
@@ -447,56 +466,39 @@ async fn resolve_from_files(
     // directory, so `m/x` would read base/m/m/x.gx. The VFS-only chaining is the fix
     // that holds.
     let rel = Path::parts(&name).collect::<Vec<_>>().join("/");
-    let mut found: SmallVec<[(PathBuf, Option<ArcStr>, PathBuf, Option<ArcStr>); 2]> =
-        SmallVec::new();
-    for (imp, intf) in MODULE_LAYOUTS {
+    struct Shown(PathBuf);
+    impl fmt::Display for Shown {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.0.display().fmt(f)
+        }
+    }
+    let probe = async |(imp, intf): (&str, &str)| -> Result<LayoutProbe<Shown, ArcStr>> {
         let (imp, intf) =
             (base.join(format!("{rel}{imp}")), base.join(format!("{rel}{intf}")));
-        let imp_text = match read(overrides, probes, &imp).await {
-            Ok(t) => t,
+        let imp_text = read(overrides, probes, &imp).await?;
+        let intf_text = read(overrides, probes, &intf).await?;
+        Ok(LayoutProbe {
+            implementation: (Shown(imp), imp_text),
+            interface: (Shown(intf), intf_text),
+        })
+    };
+    let [l0, l1] = MODULE_LAYOUTS;
+    let found = match probe(l0).await {
+        Err(e) => return Resolution::Broken(e),
+        Ok(p0) => match probe(l1).await {
             Err(e) => return Resolution::Broken(e),
-        };
-        let intf_text = match read(overrides, probes, &intf).await {
-            Ok(t) => t,
-            Err(e) => return Resolution::Broken(e),
-        };
-        found.push((imp, imp_text, intf, intf_text));
-    }
-    let [(imp0, t0, intf0, i0), (imp1, t1, intf1, i1)] =
-        <[_; 2]>::try_from(found.into_vec()).ok().expect("two layouts");
-    match (t0, t1) {
-        (Some(_), Some(_)) => {
-            return Resolution::Broken(anyhow::anyhow!(
-                "{} and {} both define module {name}",
-                imp0.display(),
-                imp1.display()
-            ));
-        }
-        (Some(_), None) if i1.is_some() => {
-            return Resolution::Broken(stray_interface(
-                &intf1.display(),
-                &imp0.display(),
-            ));
-        }
-        (None, Some(_)) if i0.is_some() => {
-            return Resolution::Broken(stray_interface(
-                &intf0.display(),
-                &imp1.display(),
-            ));
-        }
-        (Some(text), None) => {
+            Ok(p1) => [p0, p1],
+        },
+    };
+    match choose_layout(name, found) {
+        Err(e) => return Resolution::Broken(e),
+        Ok(Some(((Shown(imp), text), intf))) => {
             return Resolution::Resolved {
-                interface: i0.map(|text| unit(text, intf0)),
-                implementation: unit(text, imp0),
+                interface: intf.map(|(Shown(path), text)| unit(text, path)),
+                implementation: unit(text, imp),
             };
         }
-        (None, Some(text)) => {
-            return Resolution::Resolved {
-                interface: i1.map(|text| unit(text, intf1)),
-                implementation: unit(text, imp1),
-            };
-        }
-        (None, None) => (),
+        Ok(None) => (),
     }
     let [(file, _), (mod_file, _)] = MODULE_LAYOUTS;
     errors.push(anyhow::anyhow!(
@@ -1176,6 +1178,39 @@ mod test {
     }
 
     use super::*;
+
+    /// Every resolver's layout decision: one implementation pairs with the
+    /// interface beside it; two implementations, or an interface beside the
+    /// unused layout, are refused.
+    #[test]
+    fn choose_layout_decides_for_every_resolver() {
+        let probe = |imp: Option<&'static str>, intf: Option<&'static str>| LayoutProbe {
+            implementation: ("m.gx", imp),
+            interface: ("m.gxi", intf),
+        };
+        let probe_mod =
+            |imp: Option<&'static str>, intf: Option<&'static str>| LayoutProbe {
+                implementation: ("m/mod.gx", imp),
+                interface: ("m/mod.gxi", intf),
+            };
+        let name = Path::from("m");
+        let chosen = |l| choose_layout(&name, l).map_err(|e| e.to_string());
+        assert_eq!(chosen([probe(None, None), probe_mod(None, None)]), Ok(None));
+        assert_eq!(
+            chosen([probe(Some("i"), Some("s")), probe_mod(None, None)]),
+            Ok(Some((("m.gx", "i"), Some(("m.gxi", "s")))))
+        );
+        assert_eq!(
+            chosen([probe(None, None), probe_mod(Some("i"), None)]),
+            Ok(Some((("m/mod.gx", "i"), None)))
+        );
+        let both = chosen([probe(Some("a"), None), probe_mod(Some("b"), None)]);
+        assert!(both.unwrap_err().contains("both define module m"));
+        let stray = chosen([probe(None, Some("s")), probe_mod(Some("i"), None)]);
+        assert!(stray.unwrap_err().contains("m.gxi is no interface"));
+        let stray = chosen([probe(Some("i"), None), probe_mod(None, Some("s"))]);
+        assert!(stray.unwrap_err().contains("m/mod.gxi is no interface"));
+    }
     use crate::expr::WrittenAt;
     use arcstr::literal;
 
