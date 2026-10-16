@@ -322,10 +322,28 @@ fn root_blocker<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&'static str> 
 /// The `(source, target)` prims of a cast emitted inline: numeric
 /// scalar to numeric scalar, branchless and infallible. Every other
 /// cast is a discovered call site.
-pub(crate) fn inline_cast(source: &Type, target: &Type) -> Option<(PrimType, PrimType)> {
+pub(crate) fn inline_cast(source: &Type, target: &Type) -> Option<FittingCast> {
     let src = scalar_prim(source).filter(|p| p.is_numeric())?;
     let tgt = PrimType::from_type(target).filter(|p| p.is_numeric())?;
-    always_fits(src, tgt).then_some((src, tgt))
+    always_fits(src, tgt).then_some(FittingCast { src, tgt })
+}
+
+/// A numeric cast every source value survives: an integer widened,
+/// any number to a float. Only [`inline_cast`] makes one.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FittingCast {
+    src: PrimType,
+    tgt: PrimType,
+}
+
+impl FittingCast {
+    pub(crate) fn src(self) -> PrimType {
+        self.src
+    }
+
+    pub(crate) fn tgt(self) -> PrimType {
+        self.tgt
+    }
 }
 
 /// Whether every `src` value converts to `tgt` with no refusal: any number

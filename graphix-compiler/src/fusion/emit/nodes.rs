@@ -532,9 +532,10 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     target: &Type,
     expr_id: ExprId,
 ) -> Result<CompiledExpr> {
-    if let Some((src, tgt)) = lowering::inline_cast(inner.typ(), target) {
+    if let Some(cast) = lowering::inline_cast(inner.typ(), target) {
+        let tgt = cast.tgt();
         let cv = inner.emit_clif(cx)?;
-        let value = compile_cast(cx.b, cv.payload, src, tgt);
+        let value = compile_cast(cx.b, cv.payload, cast);
         let base = scalar_disc(cx.b, tgt);
         let disc = propagate_flags(cx.b, base, &[cv.disc]);
         // The cast node's static type is the fallible `[T, Error]`

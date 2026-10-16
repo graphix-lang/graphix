@@ -3,7 +3,10 @@
 //! `compile_const`/`compile_bin`/`compile_cmp`/`compile_cast`.
 
 use crate::{
-    fusion::kernel_abi::{self, AbiKind, PrimType},
+    fusion::{
+        kernel_abi::{self, AbiKind, PrimType},
+        lowering::FittingCast,
+    },
     node::op::{ArithOp, CmpOp},
     typ::Type,
 };
@@ -350,47 +353,13 @@ pub(super) fn compile_cmp(
     }
 }
 
-/// x64 encodes fcvt only to i32/i64, so a narrow target converts at
-/// i32, clamps to the target's range, then reduces.
-fn fcvt_sat_narrow(
-    b: &mut FunctionBuilder,
-    v: ClifValue,
-    dst: PrimType,
-    dst_ty: ClifType,
-    dst_size: u32,
-) -> ClifValue {
-    if dst.is_signed() {
-        let wide = b.ins().fcvt_to_sint_sat(types::I32, v);
-        let (lo, hi) = if dst_size == 1 { (-128, 127) } else { (-32768, 32767) };
-        let lo = b.ins().iconst(types::I32, lo);
-        let hi = b.ins().iconst(types::I32, hi);
-        let clamped = b.ins().smax(wide, lo);
-        let clamped = b.ins().smin(clamped, hi);
-        b.ins().ireduce(dst_ty, clamped)
-    } else {
-        let wide = b.ins().fcvt_to_uint_sat(types::I32, v);
-        let hi = if dst_size == 1 { 255 } else { 65535 };
-        let hi = b.ins().iconst(types::I32, hi);
-        let clamped = b.ins().umin(wide, hi);
-        b.ins().ireduce(dst_ty, clamped)
-    }
-}
-
-// CR claude for claude: [dead/low] lowering::inline_cast, through always_fits, only
-// lets through integer widening, any number to a float, and float to float. So the
-// float->int arm ("Saturate like Rust `as`"), fcvt_sat_narrow, the ireduce arm and the
-// same-size integer arm are unreachable. They also encode the wrong semantics: an
-// integer cast either holds the value exactly or is an InvalidCast, so if always_fits
-// were ever widened, these arms would silently saturate or wrap where the node-walk
-// refuses. Fix: delete them, and have inline_cast return a pair type that only it can
-// build (e.g. `FittingCast`), which compile_cast takes, so a non-fitting pair cannot
-// reach emission. (f-nodes-scalar-04)
+/// `v` cast as `cast` says: an integer widened, a number to a float.
 pub(super) fn compile_cast(
     b: &mut FunctionBuilder,
     v: ClifValue,
-    src: PrimType,
-    dst: PrimType,
+    cast: FittingCast,
 ) -> ClifValue {
+    let (src, dst) = (cast.src(), cast.tgt());
     if prim_to_clif(src) == prim_to_clif(dst) && src.is_float() == dst.is_float() {
         return v;
     }
@@ -398,16 +367,10 @@ pub(super) fn compile_cast(
     let src_size = clif_size(src);
     let dst_size = clif_size(dst);
     if src.is_integer() && dst.is_integer() {
-        if src_size < dst_size {
-            if src.is_signed() {
-                b.ins().sextend(dst_ty, v)
-            } else {
-                b.ins().uextend(dst_ty, v)
-            }
-        } else if src_size > dst_size {
-            b.ins().ireduce(dst_ty, v)
+        if src.is_signed() {
+            b.ins().sextend(dst_ty, v)
         } else {
-            v
+            b.ins().uextend(dst_ty, v)
         }
     } else if src.is_integer() && dst.is_float() {
         // x64 has no fcvt encoding for an i8/i16 source.
@@ -425,23 +388,10 @@ pub(super) fn compile_cast(
         } else {
             b.ins().fcvt_from_uint(dst_ty, v)
         }
-    } else if src.is_float() && dst.is_integer() {
-        // Saturate like Rust `as`.
-        if dst_size < 4 {
-            fcvt_sat_narrow(b, v, dst, dst_ty, dst_size)
-        } else if dst.is_signed() {
-            b.ins().fcvt_to_sint_sat(dst_ty, v)
-        } else {
-            b.ins().fcvt_to_uint_sat(dst_ty, v)
-        }
-    } else if src.is_float() && dst.is_float() {
-        if src_size < dst_size {
-            b.ins().fpromote(dst_ty, v)
-        } else {
-            b.ins().fdemote(dst_ty, v)
-        }
+    } else if src_size < dst_size {
+        b.ins().fpromote(dst_ty, v)
     } else {
-        unreachable!("compile_cast: bool casts should be rejected before emission");
+        b.ins().fdemote(dst_ty, v)
     }
 }
 
