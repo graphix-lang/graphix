@@ -1111,23 +1111,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 );
             }
             // dropping the proc unpublishes it
-            // CR claude for claude: [bug/medium] Dropping the Proc does not unpublish
-            // it in time. netidx_protocols::rpc::server::Proc holds only a stop sender;
-            // the published Vals live in its ProcInner task and drop only after that
-            // task sees the stop. Re-publishing at the same path in the same cycle
-            // therefore often fails with PublishRpcError "already published". `current`
-            // then stays None, so the rpc is offline (calls go unanswered or are
-            // cancelled) until #path, #doc or #spec fires again. A reactive #doc fails
-            // on 2-4 of 10 changes. Fix the root cause in netidx-protocols: make
-            // server::Proc own its Vals, or give it a synchronous unpublish, so a drop
-            // frees the path at once the way publisher::Val's drop does. Then add a pin
-            // that changes #doc and calls the rpc after each change. probe:
-            // design/review-2026-10-12/repro/sys-net-03.gx (sys-net-03)
-            // 2026-10-13 codex: Needs synchronous publication ownership/unpublish in
-            // ../netidx/netidx-protocols/src/rpc.rs: server::ProcInner owns the Vals,
-            // while server::Proc only owns its stop sender and id. That upstream
-            // change is outside scope. sys-net-03.gx is unverified because the
-            // sandbox cannot run netidx sockets; no retry workaround was added.
             self.current = None;
             if let (Some(path), Some(doc), Some(spec)) = (&pathv, &docv, &specv)
                 && let Err(e) = self.publish(ctx, path, doc, spec)

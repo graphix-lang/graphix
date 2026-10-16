@@ -168,6 +168,25 @@ run!(net_rpc_refused_cast_answered, r#"{
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::I64(7)])
 }; FuseExpect::Jit);
 
+// A changed #doc republishes the rpc at its path: the old one frees the
+// path when it is dropped, so each republish succeeds and the call after
+// it is answered.
+run!(net_rpc_republish_answers, r#"{
+  let p = "/local/rpc_republish";
+  let t = sys::time::timer(duration:60.ms, true);
+  let k = 0;
+  k <- t ~ k + 1;
+  let r = sys::net::rpc(#path: p, #doc: "doc [k]", #spec: {x: {default: 0, doc: "x"}},
+    #f: |a: {x: i64}| a.x + k);
+  let fails = 0;
+  fails <- r ~ fails + 1;
+  let res: i64 = sys::net::call(p, sys::time::after_idle(duration:25.ms, t) ~ {x: 100})$;
+  let answers = array::group(res, |n, _| n >= 6);
+  (array::len(answers), answers ~ fails)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(6), Value::I64(0)])
+}; FuseExpect::None);
+
 // A reply to a call the client moved on from lands nowhere: the value
 // settles on the latest call's answer.
 run!(net_rpc_latest_call_wins, r#"{
