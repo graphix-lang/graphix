@@ -1654,6 +1654,17 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // both go with deciding these sites at analysis.
     // a constant or a variable read publishes nothing and calls nothing,
     // so beside at most one child that does there is nothing to decide
+    // 2026-10-16 claude: Measured 10-16 (quick build): the probe chain at 800 and 1600
+    // functions takes 0.55 and 1.92 s serial, 1.13 and 7.08 s under auto. Caching each
+    // instance's transitive summary (sound only for statically bound callees) would
+    // not make it linear: a chain function's summary reads every function binding
+    // below it, so the summaries themselves grow by a binding per level and their
+    // unions stay quadratic. Two ways out: decide these sites at analysis, as
+    // proposed, from the one set of summaries analyze builds; or note that siblings at
+    // a non-block fork point cannot read each other's lets, so their summaries need
+    // only the reads a sibling could publish (connect targets and references), which
+    // keeps them small. The second changes what the parallel planner trusts and wants
+    // its own pins.
     let inert =
         |n: &&Node<R, E>| matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
     if children.clone().filter(|n| !inert(n)).nth(1).is_none() {
