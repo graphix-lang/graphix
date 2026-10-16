@@ -100,7 +100,7 @@ macro_rules! reader_error {
                 }
                 _ => false,
             };
-            FuseExpect::None
+            FuseExpect::Jit
         );
     };
 }

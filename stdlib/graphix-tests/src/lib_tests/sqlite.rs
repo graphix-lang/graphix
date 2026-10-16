@@ -124,4 +124,4 @@ run!(sqlite_duplicate_columns_refused, r#"{
     "[r]"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.contains("two columns are named id"))
-}; FuseExpect::None);
+}; FuseExpect::Jit);

@@ -960,7 +960,7 @@ run!(
         type T = Abstract<i64>;
         let show = || -> string "[T(5) == T(5)] [T(5) == T(6)] [T(5)]"
     "#
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 // A destructuring `let` implements every `val` it binds.
 run!(

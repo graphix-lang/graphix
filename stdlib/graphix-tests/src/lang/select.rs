@@ -3359,12 +3359,12 @@ run!(
 run!(coverage_all_bind_covers_every_member, r#"{
     let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => "[a] [b]" };
     (g((1, "s")), g(("s", 1)))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("1 s"), Value::from("s 1")]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("1 s"), Value::from("s 1")]); FuseExpect::Jit);
 
 run!(coverage_all_bind_struct_covers_every_member, r#"{
     let g = |p: [{x: i64, y: string}, {x: string, y: i64}]| select p { {x, y} => "[x] [y]" };
     (g({x: 1, y: "s"}), g({x: "s", y: 1}))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("1 s"), Value::from("s 1")]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("1 s"), Value::from("s 1")]); FuseExpect::Jit);
 
 run!(coverage_all_bind_second_arm_dead, r#"{
     let g = |p: [(i64, string), (string, i64)]| select p { (a, b) => 0, (c, d) => 1 };

@@ -1593,7 +1593,7 @@ run!(method_parameter_of_trait_type, r#"{
     trait Sh { val sh: fn(self, c: Display) -> string };
     impl Sh for K { let sh = |k, c| "[k.0]:[c]" };
     Sh::sh(K(1), J("a"))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1:J(a)"); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1:J(a)"); FuseExpect::Jit);
 
 // A union of primitives as a self dispatches per primitive.
 run!(primitive_union_self, r#"{

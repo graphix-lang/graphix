@@ -458,7 +458,7 @@ run!(
 }"#,
     |v: Result<&Value>| {
         matches!(v, Ok(Value::String(s)) if &**s == "🍇||💗💖🍇")
-    }; FuseExpect::None
+    }; FuseExpect::Jit
 );
 
 // A `%s` precision counts bytes and never cuts inside a char; a missing
