@@ -213,23 +213,17 @@ macro_rules! jit_helper_fn {
             unsafe { out.write(r) }
         }
     };
-    // CR claude for claude: [risk/medium] jit_helpers! gives a helper the out-pointer
-    // return only when it is written with the literal token `-> TagValue` or `->
-    // ChildBlock`. A helper written `-> crate::TagValue`, `-> tval::TagValue`, `->
-    // ManuallyDrop<TagValue>`, or through an alias lands in this arm instead and
-    // returns the pair by value. Its registry entry still records ret = [Pair] through
-    // HelperRet, so helper_signature has the JIT pass a trailing out-pointer that the
-    // helper never writes, and the kernel then reads an unwritten slot as a Value. It
-    // compiles without a warning because improper_ctypes_definitions is allowed
-    // module-wide. Probe: design/review-2026-10-12/repro/f-helpers-02.sh. Fix: choose
-    // the arm from the type rather than the token, for example with a HelperRet
-    // associated const or type, or add `const _: () = assert!(!matches!(<$ret as
-    // HelperRet>::ABI, [AbiTy::Pair]));` to this arm. While here, merge the four
-    // safe/unsafe x TagValue/ChildBlock pair arms, and correct the module doc, which
-    // still says a TagValue crosses the seam by value in two registers. (f-helpers-02)
     ([$($attr:meta)*] [$($unsafety:ident)?] $name:ident ($($p:ident: $t:ty),*) [$($ret:ty)?] $body:block) => {
         $(#[$attr])*
         pub(crate) $($unsafety)? extern "C" fn $name($($p: <$t as HelperArg>::Wire),*) $(-> $ret)? {
+            // a pair return is spelled `-> TagValue` or `-> ChildBlock`, the
+            // out-pointer arm: by value, its words would never be written
+            $(const {
+                assert!(
+                    !matches!(<$ret as HelperRet>::ABI, [AbiTy::Pair]),
+                    "a pair return must be written -> TagValue or -> ChildBlock"
+                )
+            };)?
             // SAFETY: the call site passes each parameter's wire form
             $(let $p: $t = unsafe { <$t as HelperArg>::from_wire($p) };)*
             $body
