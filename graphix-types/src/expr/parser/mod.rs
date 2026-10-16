@@ -1460,9 +1460,32 @@ parser! {
     }
 }
 
-/// Run `p` over all of `text`, trailing whitespace allowed; a failure is
-/// reported against `ori()`.
-fn parse_all<'a, T, P>(
+/// Run the parser `$p` builds over all of `$text`, trailing whitespace
+/// allowed: first over the plain stream, whose errors cost nothing, and
+/// only when that fails again under `easy`, whose errors make the
+/// message (the passes share the grammar, so they agree). A failure is
+/// reported against `$ori()`.
+macro_rules! parse_all {
+    ($text:expr, $ori:expr, $p:expr) => {{
+        let text: &str = $text;
+        let _profile = profile::phase(Phase::Parse);
+        let quick = grow::parsing(text, || {
+            ($p).skip(spaces())
+                .skip(eof())
+                .parse(position::Stream::with_positioner(text, SourcePosition::default()))
+                .map(|(r, _)| r)
+        });
+        match quick {
+            Ok(r) => Ok(r),
+            Err(_) => explain(text, $ori, $p),
+        }
+    }};
+}
+#[cfg(test)]
+use parse_all;
+
+/// Parse `text` under `easy` for a failure's message.
+fn explain<'a, T, P>(
     text: &'a str,
     ori: impl FnOnce() -> Arc<Origin>,
     p: P,
@@ -1470,24 +1493,9 @@ fn parse_all<'a, T, P>(
 where
     P: Parser<easy::Stream<position::Stream<&'a str, SourcePosition>>, Output = T>,
 {
-    let _profile = profile::phase(Phase::Parse);
     grow::parsing(text, || {
         p.skip(spaces())
             .skip(eof())
-            // CR claude for claude: [perf/low] Parsing user text is slower than
-            // checking it. A file of 4000 `let xN = N + 1;` lines spends about 0.4-1 s
-            // in the Parse phase against about 40 ms in ModuleCheck (debug build,
-            // GRAPHIX_PROFILE). Every script start and every LSP check of an edited
-            // file pays this, since only the stdlib arrives pre-packed. Likely causes,
-            // not yet profiled: - every failed alternative under `easy_parse` builds
-            // and merges `easy::Errors`, even where `many`/`optional` then throws them
-            // away; - `expr()` and `primary` try their alternatives in a fixed order
-            // (keywords first, `reference()` last), and `literal()` runs `idx()` before
-            // the netidx value parser. Measure the release build first. Then try
-            // parsing with a cheap error type and re-running under `easy_parse` only on
-            // failure, to build the message (FURTHEST/REASON are thread-locals, so the
-            // second pass reproduces them), and dispatching on the first character in
-            // `expr()` and `primary`. (t-parser-a-03)
             .easy_parse(position::Stream::new(text))
             .map(|(r, _)| r)
             .map_err(|mut e| {
@@ -1530,10 +1538,13 @@ pub fn without_shebang(text: &ArcStr) -> ArcStr {
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());
-    let items = sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
-        ExprKind::NoOp.to_expr(pos).ending(pos)
-    });
-    let mut r: LPooled<Vec<Expr>> = parse_all(&ori.text, || ori.clone(), items)?;
+    let mut r: LPooled<Vec<Expr>> = parse_all!(
+        &ori.text,
+        || ori.clone(),
+        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
+            ExprKind::NoOp.to_expr(pos).ending(pos)
+        })
+    )?;
     Ok(Arc::from_iter(r.drain(..)))
 }
 
@@ -1541,8 +1552,11 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());
-    let items = sep_by_tok(sig_item(), semisep(), attempt(spaces().with(eof())));
-    let mut r: LPooled<Vec<SigItem>> = parse_all(&ori.text, || ori.clone(), items)?;
+    let mut r: LPooled<Vec<SigItem>> = parse_all!(
+        &ori.text,
+        || ori.clone(),
+        sep_by_tok(sig_item(), semisep(), attempt(spaces().with(eof())))
+    )?;
     Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })
 }
 
@@ -1552,19 +1566,19 @@ fn text_origin(s: &str) -> impl FnOnce() -> Arc<Origin> + '_ {
 
 /// Parse one and only one expression.
 pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
-    parse_all(s, text_origin(s), expr())
+    parse_all!(s, text_origin(s), expr())
 }
 
 /// Parse one fntype expression
 pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
-    parse_all(s, text_origin(s), fntype())
+    parse_all!(s, text_origin(s), fntype())
 }
 
 /// Parse one type expression
 pub fn parse_type(s: &str) -> anyhow::Result<Type> {
-    parse_all(s, text_origin(s), typ())
+    parse_all!(s, text_origin(s), typ())
 }
 
 pub(super) fn parse_path(s: &str) -> anyhow::Result<ModPath> {
-    parse_all(s, text_origin(s), modpath())
+    parse_all!(s, text_origin(s), modpath())
 }

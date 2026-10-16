@@ -15,11 +15,11 @@ fn refx(name: &str) -> Expr {
 }
 
 fn parse_doc(s: &str) -> anyhow::Result<Doc> {
-    parse_all(s, text_origin(s), doc_comment())
+    parse_all!(s, text_origin(s), doc_comment())
 }
 
 fn parse_structure_pattern(s: &str) -> anyhow::Result<StructurePattern> {
-    parse_all(s, text_origin(s), structure_pattern())
+    parse_all!(s, text_origin(s), structure_pattern())
 }
 
 #[test]
@@ -948,7 +948,7 @@ select foo(b) {
 #[test]
 fn pattern0() {
     let s = r#"i64 as a if a < 10"#;
-    let p = parse_all(s, text_origin(s), super::pattern()).unwrap();
+    let p = parse_all!(s, text_origin(s), super::pattern()).unwrap();
     assert_eq!(p.type_predicate, Some(Type::Primitive(Typ::I64.into())));
     assert!(
         matches!(&p.structure_predicate, StructurePattern::Bind(n) if &*n.name == "a")
