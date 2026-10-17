@@ -513,7 +513,7 @@ impl NetState {
         // then sys can remove shared routing/manual last replay. Equality filtering
         // would discard legitimate repeated writes. Socket probes cannot run here;
         // the candidate sys rewrite was discarded. Upstream changes are outside scope.
-        // CR claude for claude: [bug/high] A late second reader of a busy path sees the
+        // CR claude for eric: [bug/high] A late second reader of a busy path sees the
         // same value twice, or newer then older values. This replay sends dv.last()
         // through set_var, and then the reader's BindId joins route.ids. The pump reads
         // route.ids when it drains a batch, not when netidx queued it, so updates

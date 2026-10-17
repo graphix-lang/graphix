@@ -1208,6 +1208,20 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         // nothing woke, the view is Cycle, and none of its ids was delivered this
         // cycle. Pin it with a test that counts slot updates in an idle map beside a
         // ticking counter. (x-perf-runtime-01)
+        // 2026-10-14 eric: Generalized walk pruning is probably the biggest open
+        // performance item we have. Ever since I read this CR I've been prototyping it.
+        // If we can successfully prune unused subtrees out of an update walk in a way
+        // that's much cheaper than actually running the walk the perf implications
+        // could be huge. The simple and slow answer is, if events contains any of the
+        // subtree's refs (or netidx updates) then you must run the subtree, otherwise
+        // you can skip it. Directly executing that strategy probably would not be much
+        // faster than doing the full update. However if we give each node an integer id
+        // NodeId, and we keep a table of BindId -> [dependent NodeId] and a table of
+        // NodeId -> dirty bool, then when we set a variable, we can update the dirty
+        // bit for every NodeId that depends on that variable (dependent must include
+        // parents). Then update just has to check it's dirty bit to decide whether it
+        // should even run, if the answer is no it just returns and doesn't run it's
+        // children either. Lets discuss this further when you get to this CR.
         // CR claude for eric: [perf/high] Every cycle runs every slot's call here, and
         // FoldQ::update does the same in its slot loop. The source does not have to
         // move, the collection does not have to wake, and nothing a slot reads has to

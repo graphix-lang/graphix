@@ -251,6 +251,10 @@ fn parse_sheet<RS: Read + Seek + Clone>(rs: RS, sheet: &str) -> Value {
 // over their used area. xls is held to 65536 x 256 by its format; an ods file with a
 // far cell still allocates inside calamine before parse_sheet runs. Closing that needs
 // calamine's ods reader changed or replaced. small-pkgs-02 was this same defect.
+// 2026-10-14 eric: lets add a new CR type to the CR skill, `CR claude for upstream`
+// where we log bugs we find in upstream packages. We can then decide whether it's ok
+// to release with them, and track our outstanding upstream PRs at the CR site. This,
+// sled, and handlebars-rs are the first ones in the class.
 // 2026-10-16 claude: ods closed in this package: check_ods streams an ods file's
 // content.xml before calamine opens it and refuses (XlsErr) a workbook whose any table
 // calamine would expand past MAX_CELLS, both the row elements it holds out to their

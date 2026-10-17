@@ -661,6 +661,9 @@ impl StructPatternNode {
             // that matches. probe:
             // design/review-2026-10-12/repro/x-typecheck-patterns-01.gx
             // (x-typecheck-patterns-01)
+            // eric 2026-10-13: Consider also degenerate variant unions like
+            // [A(i64, string), A(string, i64)], select should reject an attempt
+            // to match on this type.
             // 2026-10-15 claude: narrowed per member now (Type::narrow_pattern, the
             // same rule as an inferred predicate since 2943b591e): P as (x, y) over
             // [(i64, string), (string, i64)] types x [i64, string] and y [string, i64],

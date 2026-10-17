@@ -143,6 +143,8 @@ fn pump(mut subscriber: sled::Subscriber, tx: mpsc::UnboundedSender<sled::Event>
         // registered subscriber on cancellation, and Subscriber::next_timeout
         // to consume cancelled reservations. That dependency is outside this
         // worktree scope; retain the db2-01.gx probe for the dependency fix.
+        // 2026-10-14 eric: We should work around it, but also checkout
+        // sled and prepare a PR to upstream.
         // 2026-10-16 claude: Worked around in this package: pump() reads the Subscriber on
         // a thread of its own with next_timeout and consumes a dropped reservation by
         // polling, so writers never wait on the runtime and watch_prefix no longer meets a
