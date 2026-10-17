@@ -58,26 +58,6 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 /// The process's clipboard, one instance for every call and the event
 /// loop: on X11 the instance owns what was written, so dropping it after
 /// each call would lose the text unless a clipboard manager took it.
-// XCR claude for claude: [risk/low] A static is never dropped, and the shell ends with
-// std::process::exit or a return from main. arboard's X11 backend (Wayland too, since
-// wayland-data-control is off) hands the selection to a clipboard manager only in the
-// Drop of the last Clipboard. So text written by write_text, or copied from a widget,
-// is lost when graphix exits, even on a desktop whose manager would have kept it. Fix:
-// take the Option and drop the instance when the session ends, in GuiHandler::finish
-// and on the shell's exit path before it exits (for example a package shutdown hook).
-// That keeps one instance while running and still does the handover. (gui-core-06)
-// 2026-10-13 codex: Needs a package shutdown hook in graphix-package/src/lib.rs
-// and invocation before graphix-shell/src/main.rs calls process::exit, including
-// clipboard-only programs with no Gui display. arboard's X11 Clipboard::drop is
-// the handover path; a static never runs it. Desktop handover needs an X11 socket
-// and clipboard manager and was not verified in this sandbox.
-// 2026-10-16 claude: Package::shutdown (a defpackage key, default nothing) runs for
-// every stdlib package after the runtime thread ends, before the shell exits on
-// success, error or an exit code; gui's drops the clipboard (clipboard::release), so
-// the last instance's drop hands the selection to the manager. Not verified on a
-// desktop: no clipboard tool on this box. Check: graphix -e
-// 'gui::clipboard::write_text("x")' with a clipboard manager running, then paste after
-// it exits.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
 pub(crate) fn clipboard<T>(

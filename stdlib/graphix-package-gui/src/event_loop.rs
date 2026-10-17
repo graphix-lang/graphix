@@ -139,6 +139,8 @@ fn redraw_deadline(dirty: bool, at: Option<Instant>, now: Instant) -> Option<Ins
     if dirty { Some(now) } else { at }
 }
 
+/// Open each of `bids`, a failure stopping none after it: the first
+/// failure is the result, each later one is reported here.
 fn open_windows(
     bids: &[BindId],
     mut open: impl FnMut(BindId) -> Result<()>,
@@ -146,8 +148,10 @@ fn open_windows(
     let mut first_error = None;
     for &bid in bids {
         if let Err(e) = open(bid) {
-            error!(target: FAILURE_TARGET, "open window: {e:?}");
-            first_error.get_or_insert(e);
+            match first_error {
+                None => first_error = Some(e),
+                Some(_) => error!(target: FAILURE_TARGET, "open window: {e:?}"),
+            }
         }
     }
     match first_error {
@@ -303,23 +307,6 @@ impl<X: GXExt> GuiHandler<X> {
                 .rt
                 .block_on(self.gx.compile_ref(bid))
                 .context("compile_ref for window bind id")?;
-            // XCR claude for claude: [bug/medium] The first window that fails to open
-            // (ResolvedWindow::compile refusing a property, create_window, gpu init,
-            // surface creation) returns from reconcile here. Every window after it in
-            // the root array stays unopened, and each later root fire repeats the same
-            // failure in the same order. The error reaches only `error!` under the gui
-            // package's target in user_event, and the shell's default logger turns that
-            // target off. So `[bad, good]` shows no window, prints nothing and never
-            // exits, while `[good, bad]` opens the good one. Fix: open every window and
-            // log each failure under FAILURE_TARGET. Do the same for the other GUI
-            // `error!` sites in user_event (open of a pending window, handle_update,
-            // set_deref). When no window can be shown, end the display with Stop's Err.
-            // probe: design/review-2026-10-12/repro/gui-core-05.gx (run it through
-            // gui-core-03.sh). (gui-core-05)
-            // 2026-10-13 codex: a_failed_window_does_not_skip_later_windows fails
-            // before open_windows continues after errors, and passes after. The OS
-            // probe gui-core-03.sh cannot start: D-Bus socket binding is refused.
-            // Review the real-window and Stop error paths outside the sandbox.
             self.open(event_loop, bid, wref)
         })
     }

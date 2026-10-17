@@ -259,6 +259,9 @@ pub(super) struct GX<X: GXExt> {
     /// made in the cycle its first argument is delivered, which a write
     /// already waiting on that variable puts off.
     calls: VecDeque<CallInFlight>,
+    /// Answers whose call's cycle queued writes: they go out at the end of
+    /// the next cycle, once those writes have landed.
+    held_answers: Vec<(ExprId, Value)>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Resolvers,
     batch_pool: Pool<Vec<GXEvent>>,
@@ -304,6 +307,7 @@ impl<X: GXExt> GX<X> {
             nodes: IndexMap::default(),
             callables: IntMap::default(),
             calls: VecDeque::new(),
+            held_answers: Vec::new(),
             sub: cfg.sub,
             resolvers: std::sync::Arc::from(cfg.resolvers),
             batch_pool: Pool::new(10, 1000000),
@@ -510,12 +514,22 @@ impl<X: GXExt> GX<X> {
             // between cycles.
             graphix_compiler::with_control(&control, || {
                 self.update_nodes(&mut batch);
+                for (answer, v) in self.held_answers.drain(..) {
+                    batch.push(GXEvent::Updated(answer, v))
+                }
+                let writes_queued = !self.ctx.rt.var_updates.is_empty();
                 for (expr, answer) in answering.drain(..) {
-                    let v = batch.iter().find_map(|e| match e {
-                        GXEvent::Updated(id, v) if *id == expr => Some(v.clone()),
-                        _ => None,
-                    });
-                    batch.push(GXEvent::Updated(answer, v.unwrap_or(Value::Null)))
+                    let v = batch
+                        .iter()
+                        .find_map(|e| match e {
+                            GXEvent::Updated(id, v) if *id == expr => Some(v.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or(Value::Null);
+                    match writes_queued {
+                        true => self.held_answers.push((answer, v)),
+                        false => batch.push(GXEvent::Updated(answer, v)),
+                    }
                 }
             })
         };
@@ -821,7 +835,8 @@ impl<X: GXExt> GX<X> {
     }
 
     fn cycle_ready(&self) -> bool {
-        !self.ctx.rt.updated.is_empty()
+        !self.held_answers.is_empty()
+            || !self.ctx.rt.updated.is_empty()
             || !self.ctx.rt.var_updates.is_empty()
             || !self.ctx.rt.custom_updates.is_empty()
             || self.ctx.rt.ext.is_ready()

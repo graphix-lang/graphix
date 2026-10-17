@@ -479,23 +479,6 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 /// echo builds on what the user did, not on the stale value.
 pub(crate) struct Echoes<T>(std::collections::VecDeque<(ExprId, Option<T>)>);
 
-// XCR claude for claude: [bug/medium] Only `delivered` retires a send, and it runs only
-// when the value ref updates. A send the handler never writes back is shown forever and
-// is never freed. This happens when the handler rejects the change, as input validation
-// does, or writes another variable. A checkbox over `false` whose handler writes
-// nothing stays drawn checked, and its second click sends `false`. A text_input over ""
-// sends "ab" for the key b. Both contradict the book, which says the widget displays
-// the reference. `TextEditorW::pending` has the same logic and keeps a full copy of the
-// document per keystroke: 150 keys into a 64 KiB doc retain about 10 MB until `content`
-// changes. Fix: retire a send that is still unechoed once its call's cycle has ended
-// (`Callable::call_answered` reports that point), so the control falls back to the
-// program's value. Have text_editor use `Echoes<ArcStr>` instead of its own queue.
-// Probe: design/review-2026-10-12/repro/gui-widgets-b-02.rs. (gui-widgets-b-02)
-// 2026-10-13 codex: rejected_*_returns_to_the_program_value and
-// an_echo_keeps_its_answer_slot_until_the_cycle_ends pin retirement.
-// text_editor_keeps_its_cursor_through_echoes pins deferred frame preparation.
-// Review frame timing: a call answer can precede downstream ref updates;
-// real winit delivery is not exercised by the headless tests.
 impl<T: PartialEq> Echoes<T> {
     pub(crate) fn new() -> Self {
         Self(std::collections::VecDeque::new())

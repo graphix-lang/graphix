@@ -962,22 +962,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 _ => None,
             });
         }
-        // XCR claude for claude: [perf/medium] Each connection sends its own
-        // HttpReqEvent under the server's one BindId, and the runtime delivers one
-        // custom event per id per cycle, queuing the rest. N simultaneous requests
-        // therefore start over N cycles. A sync handler answers in the cycle it starts,
-        // so Handler::update's fork_instances never holds two of them, and the
-        // advertised forking of a server's requests only happens for async handlers
-        // that happen to finish together. Each request also pays for a whole cycle.
-        // Fix: connections push (request, reply) into a shared queue and send a wake
-        // event, or the event carries every waiting request, so Handler::push gets the
-        // whole batch in one cycle. sys::net's rpc server (its take_custom then
-        // handler.push) needs the same change. (http-sqlite-db1-09)
-        // 2026-10-13 claude: connections post into the server's core::Inbox and send
-        // a wake only when none is on its way; a wake takes every request posted, and
-        // publish_rpc does the same. Delivery is pinned by http_concurrent_requests_pair
-        // and the net rpc tests; the batching itself depends on arrival timing and has
-        // no deterministic pin.
         if ctx.event.take_custom(&self.var.id).is_some() {
             let mut asked: LPooled<Vec<Asked>> = LPooled::take();
             self.inbox.take(&mut *asked);

@@ -47,24 +47,6 @@ pub struct TextSizeV(pub f32);
 impl FromValue for TextSizeV {
     fn from_value(v: Value) -> Result<Self> {
         let f = v.cast_to::<f64>()? as f32;
-        // XCR claude for claude: [bug/medium] Any finite positive size is accepted, but
-        // swash/zeno cannot rasterize a glyph at huge sizes. At #size 100000 zeno's
-        // Format::buffer_size overflows u32 (a panic in debug, a wrap in release, and
-        // its unchecked to_fixed is UB further out). The panic then unwinds into the
-        // drop of GuiHandler, where render::WindowSurface destroys a surface the frame
-        // still holds: a second panic, then an abort with a core dump. Every widget
-        // that takes TextSizeV (text, canvas, text_input, text_editor, radio, toggle,
-        // markdown) can reach this from a data-driven size. Refuse sizes above a fixed
-        // bound (e.g. 4096 px), the same way 0.0 is refused, and state the bound in
-        // this doc and in the .gxi docs for #size. Separately, teardown should not
-        // panic during unwind (drop the frame's texture before the surface). probe:
-        // design/review-2026-10-12/repro/gui-core-04.gx (driver gui-core-05.sh)
-        // (gui-core-04)
-        // 2026-10-13 codex: text_sizes_fit_the_rasterizer and
-        // an_unpresented_frame_drops_before_unwinding_resumes fail before their fixes.
-        // Rendering now drops an acquired frame outside unwinding before resuming the
-        // original panic. The real-window abort probe needs D-Bus/display sockets and
-        // remains unverified here; review that teardown path outside the sandbox.
         if f.is_finite() && f > 0.0 && f <= 4096.0 {
             Ok(Self(f))
         } else {

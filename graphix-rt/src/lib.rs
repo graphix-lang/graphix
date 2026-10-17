@@ -366,10 +366,12 @@ impl<X: GXExt> Callable<X> {
         self.send(args, false)
     }
 
-    /// Call the lambda and have it answer: at the end of the cycle that
-    /// writes `args`, an update under `self.answer` carries what the call
-    /// site produced in that cycle, null when it produced nothing. A later
-    /// output of the call site answers nothing.
+    /// Call the lambda and have it answer: an update under `self.answer`
+    /// carries what the call site produced in the cycle that writes
+    /// `args`, null when it produced nothing. It arrives at the end of that
+    /// cycle, or, when that cycle queued writes (a handler's `<-`), at the
+    /// end of the next, so their updates come first. A later output of
+    /// the call site answers nothing.
     pub async fn call_answered(&self, args: ValArray) -> Result<()> {
         check_args(&self.typ, &self.env, &args)?;
         self.send(args, true)
