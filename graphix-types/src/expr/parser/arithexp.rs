@@ -171,6 +171,20 @@ where
         })
 }
 
+/// Where a literal may start, consuming nothing: never at a letter that
+/// begins no keyword value (`true`) or typed literal's prefix (`i64:`),
+/// so most references skip the value parser.
+fn literal_start<I>() -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    const LITERAL_LETTERS: &str = "abdefinutvz";
+    look_ahead(satisfy(|c: char| !c.is_alphabetic() || LITERAL_LETTERS.contains(c)))
+        .map(|_| ())
+}
+
 fn primary<I>(key: bool) -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -193,7 +207,7 @@ where
         interpolated().map(|e| (e, None)),
         brace().map(|e| (e, None)),
         paren_group(),
-        attempt(literal()).map(|e| (e, None)),
+        attempt(literal_start().with(literal())).map(|e| (e, None)),
         // after `literal()`, so that a signed numeric literal is a constant
         prefix('-', key, ExprKind::Neg).map(|e| (e, None)),
         construct().map(|e| (e, None)),
