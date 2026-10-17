@@ -2277,6 +2277,16 @@ run!(native_null_element_loops, r#"{
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
     FuseExpect::Jit);
 
+// A variant pattern tests a nullable variant, null failing the tag test.
+run!(native_variant_pattern_over_a_nullable, r#"{
+    let f = |v: [`Found(i64), null]| select v {
+        `Found(x) => x,
+        null as _ => 0
+    };
+    (#[native] f(`Found(7)), #[native] f(null))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:7, i64:0]";
+    FuseExpect::Jit);
+
 // A bind the guard and the body both read is installed once, for the
 // guard, and the body reads it; every exit drops it, the arms not taken,
 // a false guard and the fallback included.

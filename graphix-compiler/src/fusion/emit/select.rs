@@ -1766,10 +1766,13 @@ fn emit_structure_cond(
             if let Some(id) = all {
                 binds.push(SelectArmBind::Value { id: *id, kind: LocalKind::Value });
             }
+            // the tag test is false of any other value, null included
             let (disc, payload) = match scrut {
-                SelectScrut::Value { kind: ValueKind::Variant, disc, payload } => {
-                    (disc, payload)
-                }
+                SelectScrut::Value {
+                    kind: ValueKind::Variant | ValueKind::Nullable | ValueKind::Value,
+                    disc,
+                    payload,
+                } => (disc, payload),
                 _ => {
                     return Err(anyhow!(
                         "emit_clif: variant pattern over non-variant \

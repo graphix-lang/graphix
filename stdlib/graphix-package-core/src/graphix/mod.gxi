@@ -74,32 +74,15 @@ trait Collection {
     /// the elements `f` accepts
     val filter: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> self<'a> throws 'e
         = |c, f| filter_map(c, |x| select f(x) { true => x, false => null });
-    // CR claude for claude: [perf/medium] This default folds a `(bool, Option<'a>)`
-    // tuple. In a fused loop a tuple accumulator costs 10 to 20x a scalar one, even
-    // `(i64, i64)` with no union and no destructuring pattern. #[native] accepts the
-    // fold, so the cost is in the kernel loop, most likely a composite built and
-    // dropped every iteration. Map's find and every user Collection's find pay it.
-    // Probe: design/review-2026-10-12/repro/examples-rest-04.gx (0.07 to 0.09 s against
-    // 0.007 s for the scalar fold, debug, 500k). Fix the root cause in fusion: carry a
-    // fixed-arity tuple or struct accumulator as one loop-carried value per field, and
-    // build the composite at loop exit. Then re-time this default. (examples-rest-04)
-    // 2026-10-16 claude: Done in part: a fold whose acc is a tuple of scalars, named by
-    // one parameter, built by a tuple literal and read only field by field (p.0),
-    // carries each field in its own register and builds the tuple once after the loop
-    // (scaffold::emit_fold_fields_loop, JitEnv::unpack); the probe runs in 2.7 ms
-    // against 73 ms (quick build), the scalar fold's time; pin
-    // lang::fusion::native_tuple_acc_folds. Open: this default, whose body is a select
-    // whose arms build the tuple and whose acc holds an Option (a two-word Value
-    // field), and a destructured acc parameter.
     /// the first element `f` accepts
     val find: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> Option<'a> throws 'e
         = |c, f| {
-            let init: Option<'a> = null;
-            let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
-                true => (done, acc),
-                false => select f(x) { true => (true, x), false => (false, acc) }
+            let init: [`Found('a), null] = null;
+            let found = fold(c, init, |acc, x| select acc {
+                null as _ => select f(x) { true => `Found(x), false => null },
+                found => found
             });
-            found
+            select found { `Found(x) => x, null as _ => null }
         };
     /// the first value `f` maps an element to
     val find_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> Option<'b> throws 'e

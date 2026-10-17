@@ -89,6 +89,24 @@ run!(
     FuseExpect::Jit
 );
 
+// `find`'s default over a map: the first value `f` accepts, a null one
+// included, which ends the search (`5` after it is not the answer); the
+// fold fuses.
+run!(
+    collection_map_find_stops_at_a_null,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[null, i64:5, null]",
+    "/test.gx" => r#"
+        use Collection::*;
+        let m: Map<i64, [i64, null]> = {1 => 4, 2 => null, 3 => 5};
+        let result = (
+            #[native] find(m, |x: [i64, null]| select x { null as _ => true, 5 => true, _ => false }),
+            #[native] find(m, |x: [i64, null]| select x { 5 => true, _ => false }),
+            #[native] find(m, |x: [i64, null]| select x { 7 => true, _ => false })
+        )
+    "#;
+    FuseExpect::Jit
+);
+
 // A cons list the program defines as a union typedef; `L<'_>` names the
 // constructor and `L<i64>` decomposes to it by name.
 run!(
