@@ -2277,6 +2277,19 @@ run!(native_null_element_loops, r#"{
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[[null, null], [null, null]]";
     FuseExpect::Jit);
 
+// A bind the guard and the body both read is installed once, for the
+// guard, and the body reads it; every exit drops it, the arms not taken,
+// a false guard and the fallback included.
+run!(native_guard_and_body_share_a_bind, r#"{
+    let f = |v: [`A(Array<i64>), `B(string)], lim: i64| select v {
+        `A(xs) if array::len(xs) > lim => array::len(xs) + xs[0]$,
+        `B(s) if str::len(s) > lim => str::len(s),
+        _ => 0
+    };
+    (#[native] f(`A([5, 6, 7]), 2), #[native] f(`A([5]), 2), #[native] f(`B("abcd"), 2), #[native] f(`B("a"), 2))
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:8, i64:0, i64:4, i64:0]";
+    FuseExpect::Jit);
+
 // A union of composites rides a kernel as the Value it is: an arm that
 // tests a member's type reads the value as that member, its guard
 // included, and a function taking such a union has a kernel.

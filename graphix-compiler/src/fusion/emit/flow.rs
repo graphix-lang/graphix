@@ -269,7 +269,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         sel,
         scrut,
         &scrut_typ,
-        &mut |cx, body, mark, guards_stale| {
+        &mut |cx, body, mark, _drops_from, guards_stale| {
             // A consulted guard's fire is an own fire too.
             let cur = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
             let n = cx.b.ins().band(cur, guards_stale);

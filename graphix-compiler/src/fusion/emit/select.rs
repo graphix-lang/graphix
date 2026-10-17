@@ -254,11 +254,12 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         sel,
         scrut,
         &scrut_typ,
-        &mut |cx, body, mark, guards_stale| {
+        &mut |cx, body, mark, drops_from, guards_stale| {
             emit_select_value_arm(
                 cx,
                 body,
                 mark,
+                drops_from,
                 merge_shape,
                 merge,
                 scrut_disc,
@@ -750,8 +751,10 @@ fn emit_arm_condition<R: Rt, E: UserEvent>(
 /// The shared arm chain: pattern conditions, per-arm binds and the
 /// fail-block plumbing, identical between value and tail position.
 /// `emit_arm` runs in the matched block with the arm's binds installed
-/// and must leave it terminated; it gets the env mark to truncate to
-/// and the AND of the consulted guards' STALE bits at its point
+/// and must leave it terminated; it gets the env mark to truncate to,
+/// the mark every local above which it drops (the guard prologue's binds
+/// live until the select ends, so every exit drops them), and the AND of
+/// the consulted guards' STALE bits at its point
 /// (structure-failed arms and arms below the taken one contribute
 /// nothing). `emit_miss` handles a tainted scrutinee, which makes no
 /// selection and consults no guard; `emit_undet` the undecidable
@@ -761,7 +764,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     sel: &Select<R, E>,
     scrut: SelectScrut,
     scrut_typ: &Type,
-    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, ClifValue) -> Result<()>,
+    emit_arm: &mut dyn FnMut(
+        &mut BodyCx,
+        &Node<R, E>,
+        usize,
+        usize,
+        ClifValue,
+    ) -> Result<()>,
     emit_miss: &mut dyn FnMut(&mut BodyCx) -> Result<()>,
     emit_undet: &mut dyn FnMut(&mut BodyCx, ClifValue) -> Result<()>,
 ) -> Result<()> {
@@ -773,17 +782,18 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // binds is evaluated here once per invocation and the chain reads
     // it; the consulted folds happen along the chain into `acc`.
     let mut guard_vals: SmallVec<[Option<GuardPlanes>; 8]> = smallvec::smallvec![None; n];
+    // the prologue's binds stay installed, masked by their arm's
+    // condition, for the arm's body to read; every exit drops them
+    let smark = cx.env.mark();
     // a non-or arm's condition and bind specs from the prologue, which
     // dominates the chain: the chain reuses them
-    let mut conds: SmallVec<
-        [Option<(Option<ClifValue>, SmallVec<[SelectArmBind; 8]>)>; 8],
-    > = (0..n).map(|_| None).collect();
+    let mut conds: SmallVec<[Option<Option<ClifValue>>; 8]> =
+        (0..n).map(|_| None).collect();
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
         if guard_is_pure_of_binds(pat, &g.node) {
             continue;
         }
-        let gmark = cx.env.mark();
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
         let mut pcond = emit_arm_condition(cx, pat, scrut, scrut_typ, None, &mut binds)?;
         if !pat.explicit_type_predicate
@@ -795,35 +805,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 None => typed,
             });
         }
-        // CR claude for claude: [perf/low] For a guard that reads its arm's binds, this
-        // prologue clones every owned bind (strings, Values, a slice's rest as a fresh
-        // subslice) under the mask, evaluates the guard and drops them. The chain later
-        // calls install_arm_binds again for the same bind specs, so a taken arm clones
-        // its owned binds twice per invocation, and the bind code is emitted twice.
-        // Keep the prologue's masked locals alive and have the chain's matched block
-        // reuse them. Drop them once at the select's exits: the arm exit, guard-false,
-        // undecided and no-match. The mask already makes them drop-safe on every path.
-        // (f-select-06)
-        // 2026-10-16 claude: Done in part: an arm's matched block installs only the
-        // binds its body reads, and a guard it runs there (a guard the prologue ran
-        // read its own copies), so a bind only the guard reads is cloned once
-        // (SelectArmBind::id; the A(xs) if len(xs) > lim probe agrees on both engines
-        // and stays native). Open: a bind both the guard and the body read is still
-        // cloned twice; keeping the prologue's locals alive means dropping, at every
-        // select exit, the clones of the arms that exit never visited.
         install_arm_binds(cx, &binds, scrut, pcond)?;
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
-        // The masked installs clone owned payload binds per invocation;
-        // drop them before the truncate.
-        emit_scope_drops(cx, gmark)?;
-        cx.env.truncate(gmark);
         guard_vals[i] = Some(GuardPlanes { eff, gbot, gs });
         if !matches!(&pat.structure_predicate, StructPatternNode::Or { .. }) {
-            conds[i] = Some((pcond, binds));
+            conds[i] = Some(pcond);
         }
     }
     // At any read this holds the fold over exactly the consultation
@@ -854,11 +844,9 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let or_fail = matches!(&pat.structure_predicate, StructPatternNode::Or { .. })
             .then(|| cx.b.create_block());
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+        // a non-or arm the prologue ran has its binds installed already
         let pcond = match conds[i].take() {
-            Some((pcond, prologue_binds)) => {
-                binds = prologue_binds;
-                pcond
-            }
+            Some(pcond) => pcond,
             None => emit_arm_condition(cx, pat, scrut, scrut_typ, or_fail, &mut binds)?,
         };
         let matched = cx.b.create_block();
@@ -893,6 +881,14 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // arm installs only the binds its body, or a guard it runs itself, reads, so
         // the A(xs) if array::len(xs) > lim => 1 arm no longer clones xs in its matched
         // block.
+        // 2026-10-17 claude: The first fix offered here is in too (f-select-06): a
+        // non-or arm the guard prologue ran keeps the prologue's masked binds into the
+        // chain, its body reads them, and every exit drops them (an arm's exit, the
+        // miss and undecided blocks; a tail terminator drops the env). Both halves are
+        // done, so this arm clones its payload once per invocation. The A(xs) if
+        // array::len(xs) > lim => array::len(xs) kernel calls the clone helper once
+        // where it called it twice. Pin
+        // lang::fusion::native_guard_and_body_share_a_bind.
         let mut reads = Refs::default();
         body.refs(&mut reads);
         if let Some(g) = &pat.guard
@@ -950,7 +946,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.seal_block(body_blk);
         }
         let guards_stale = cx.b.use_var(acc);
-        emit_arm(cx, body, mark, guards_stale)?;
+        emit_arm(cx, body, mark, smark, guards_stale)?;
         match fail {
             Some(f) => {
                 cx.b.switch_to_block(f);
@@ -966,12 +962,25 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             None => break,
         }
     }
+    // past the chain the prologue's binds are out of scope, dropped here
+    // on the two exits no arm took
+    let prologue: SmallVec<[(LocalKind, ValueVar); 8]> =
+        cx.env.locals_above(smark).collect();
+    cx.env.truncate(smark);
+    let drop_prologue = |cx: &mut BodyCx| -> Result<()> {
+        for (kind, vv) in prologue.iter() {
+            emit_drop_local(cx.b, cx.ctx, *kind, *vv)?;
+        }
+        Ok(())
+    };
     cx.b.switch_to_block(miss_bl);
     cx.b.seal_block(miss_bl);
+    drop_prologue(cx)?;
     emit_miss(cx)?;
     if let Some(ub) = undet_bl {
         cx.b.switch_to_block(ub);
         cx.b.seal_block(ub);
+        drop_prologue(cx)?;
         // The undecidable outcome is fresh iff a consumed input fired:
         // the scrutinee or a consulted guard.
         let ss = cx.b.ins().band_imm(sdisc, STALE);
@@ -1495,6 +1504,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     body: &Node<R, E>,
     mark: usize,
+    drops_from: usize,
     merge_shape: SelectMerge,
     merge: Block,
     scrut_disc: ClifValue,
@@ -1541,7 +1551,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     let d = fold_stale(cx.b, d, guards_stale);
     // Drop the arm's owned pattern binds; the widening above made the
     // result independently owned.
-    emit_scope_drops(cx, mark)?;
+    emit_scope_drops(cx, drops_from)?;
     cx.env.truncate(mark);
     cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(payload)]);
     Ok(())
