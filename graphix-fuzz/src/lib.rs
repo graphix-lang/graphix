@@ -4242,6 +4242,12 @@ fn child_command() -> tokio::process::Command {
     if let Some(o) = std::env::var_os("GRAPHIX_FUZZ_CHILD_ASAN_OPTIONS") {
         cmd.env("ASAN_OPTIONS", o);
     }
+    // glibc reserves 64 MB of address space per thread's arena, a gigabyte
+    // over a child's threads, which the address-space cap would count as
+    // the program's
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        cmd.env("MALLOC_ARENA_MAX", "2");
+    }
     cmd
 }
 
@@ -4729,30 +4735,6 @@ async fn died(
     // that engine's runaway. The runs in flight at the death are re-run
     // alone, each with its node-walk twin; with none logged, the plain
     // engine pair.
-    // XCR claude for claude: [risk/medium] This re-runs only the two plain no-cache
-    // serial runs (run-one is run_program). check-one also makes the cold and warm
-    // image sessions, the dispatch route, the forked Par/JitPar runs and settle's
-    // slow-budget remakes, and Oracle::make runs each group concurrently under one
-    // RLIMIT_AS. A death that the two plain runs alone do not reproduce therefore comes
-    // out as (Some(true), Some(true)) and is recorded as Agree, and the session and
-    // forked comparisons are never made. That includes a runaway confined to an image
-    // decode or a forked branch. probe:
-    // design/review-2026-10-12/repro/x-fix-fuzz-tests-03.sh (under a 2 GB cap both
-    // run-one children trace, check-one aborts with "memory allocation of 576000024
-    // bytes failed", and check-isolated prints AGREE). Fix: have check-one report the
-    // run in flight when it dies (a progress line on stderr naming the Run). Then
-    // re-run that Run alone (run-one taking mode, route, session and par mode), and
-    // call it containment only when the node-walk's run of the same path also dies.
-    // (x-fix-fuzz-tests-03)
-    // 2026-10-12 claude: a check child now logs each run it makes (RUN/DONE on
-    // stderr, GRAPHIX_FUZZ_RUN_LOG); a death re-runs every JIT run in flight alone
-    // (run-one takes `mode route session`, sessions and forked runs included) beside
-    // its node-walk twin, and is a crash when the JIT run dies alone beside a
-    // node-walk value. Runs that died only together are checked again one at a time
-    // (GRAPHIX_FUZZ_SERIAL_RUNS). Left: one child's runs still accumulate memory, so
-    // under the repro's 2 GB cap the serial check dies at the second run (Jit
-    // NoCache) although that run alone traces; it reads AGREE, its later comparisons
-    // unmade. Only one child per run would make every comparison under the cap.
     let mut flight: Vec<Run> = Vec::new();
     for l in stderr.lines() {
         if let Some(r) = l.strip_prefix("RUN ").and_then(Run::parse) {
