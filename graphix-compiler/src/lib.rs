@@ -1986,7 +1986,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 
     /// Undo what a failed compile deferred: delete what it discarded and
     /// forget the references it recorded.
-    // CR claude for claude: [risk/low] unref_var cancels a pending (id, top_id) count
+    // XCR claude for claude: [risk/low] unref_var cancels a pending (id, top_id) count
     // by key, whichever node recorded it. One deferred batch can hold both an OLD
     // discard whose references are already registered (CallSite::clear_prepared_bind
     // discards the previous callee apply) and a NEW build's pending references to the
@@ -2017,6 +2017,15 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     // fresh, and at a run-time rebind, where it is registered); a node would have to
     // carry its batch. Still unreachable: a run-time body fails to build only on a
     // compiler bug.
+    // 2026-10-17 claude: Closed at the one mixed batch: CallSite::bind (the run-time
+    // rebind) now clears the previous binding and applies that batch before it builds,
+    // so a build's batch holds only what it made: on failure its deletes cancel only
+    // its own pending counts and the rest are cleared, and the old callee's delete has
+    // already reached the runtime. The other drop_deferred callers start from an empty
+    // batch (module recompile deletes its old nodes through clear_compiled first;
+    // roots, images and the checker build fresh). GXRt::unref_var's debug assertion is
+    // what fails if a count goes unregistered. No pin: a run-time body fails to build
+    // only on a compiler bug.
     pub fn drop_deferred(&mut self) {
         if !self.deferred_pending() {
             return;

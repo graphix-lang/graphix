@@ -1613,14 +1613,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         f: &LambdaDef<R, E>,
         set: &mut Published,
     ) -> Result<()> {
-        // a failed build registers nothing it recorded
+        // the previous binding leaves in a batch of its own, so the build's
+        // holds only what it made: a failed build registers nothing it
+        // recorded, and its deletes cancel only its own pending refs
+        self.clear_prepared_bind(ctx);
+        ctx.apply_deferred();
         let defaults = match self.build_bound(ctx, fv, f) {
             Ok(d) => {
                 ctx.apply_deferred();
                 d
             }
             Err(e) => {
-                // the deletes cancel their own pending refs, then the rest go
                 self.clear_prepared_bind(ctx);
                 ctx.drop_deferred();
                 return Err(e);
