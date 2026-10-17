@@ -1377,29 +1377,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 .get(&ArgKey::Named(name.clone()))
                 .is_some_and(|a| a.stage.is_default())
         };
-        // XCR claude for claude: [bug/medium] The check skips a default whose label the
-        // site's fn type does not declare. fill_omitted adds a placeholder only for
-        // labels the site's ftype names, so `omitted` is false for such a label. This
-        // early return then gives Ok(true), and the per-definition loop below would
-        // skip the label for the same reason. At the build, prepare_bind compiles every
-        // formal the site does not pass, and checked_default refuses it. So `--check`
-        // and the LSP accept a program that the run refuses: `let f = 'a: Number |#d:
-        // 'a = 5, x: 'a| x + d; let h: fn(x: f64) -> f64 = f; h(1.5)` passes the check
-        // and the run fails with "'a: f64 does not contain i64". Fix: judge omission by
-        // the definition, not the site's type. For each definition the callee may be,
-        // check every defaulted label the site does not pass (no entry in self.args, or
-        // a default stage), and drop this early return or base it on those labels.
-        // Fixing the coercion that hides the label (c-callsite-02) would also cover it.
-        // probe: design/review-2026-10-12/repro/c-callsite-03.gx (c-callsite-03)
-        // 2026-10-14 claude: every place a function value meets a fn type that hides or
-        // makes optional a label is judged now (callsite::check_hidden_defaults from
-        // call arguments, a let's annotation, a <-, a declared return type, through
-        // unions, fields, tuples, variants, arrays, lists, maps, references and
-        // typedefs), so a call through such a type is never reached by an unjudged
-        // value; this early return stands on that. Pins:
-        // lang::functions::default_hidden_by_* (the probe's annotation form is
-        // default_hidden_by_an_annotation's twin). Review: is there another coercion
-        // site?
         if !ftype.args.iter().any(|a| a.label().is_some_and(omitted)) {
             return Ok(true);
         }

@@ -86,18 +86,6 @@ pub(super) fn emit_outlined(
     cx.emit_slot_truncates()?;
     let locals: SmallVec<[ValueVar; 16]> =
         cx.env.locals.iter().map(|l| l.words).collect();
-    // XCR claude for claude: [bug/high] Each outlined loop gets a fresh stack slot that
-    // holds every local in `cx.env.locals`, not only the ones the chunk reads, and
-    // these slots are never reused across sequential loops. A kernel's frame therefore
-    // grows as loops x locals. 500 chained `array::map` lets in one lambda overflow the
-    // runtime thread's stack ("stack overflow, aborting"), and at 800 the run gets a
-    // plain SIGSEGV. `isa_with` never sets `enable_probestack`, so a frame larger than
-    // the guard page jumps past it instead of faulting on it. --no-fusion and
-    // GRAPHIX_NO_OUTLINE=1 give the right answer. Suggested fix: allocate one
-    // chunk-frame record per kernel and reuse it, store only the chunk's free locals,
-    // and turn on inline stack probes in `isa_with`. probe:
-    // design/review-2026-10-12/repro/x-perf-compile-01.gx (x-perf-compile-01)
-    // 2026-10-14 codex: outlined_loop_stack_space passes in all four modes and overflows the JIT stack when frame reuse is reverted. The shared frame is sized to the largest call; marshalling still includes all visible locals. Inline probes are enabled by the helper-spill fix.
     let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
     let ctx_word =
         CtxWord { init: cx.ctx.init_flag, wake: cx.ctx.wake_flag }.encode(cx.b);

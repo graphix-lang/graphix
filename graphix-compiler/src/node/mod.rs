@@ -2723,11 +2723,11 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             return Ok(());
         }
         let rhs = &ctx.monomorphic(self.rhs.typ());
-        let bind = match ctx.env.by_id.get(&self.src_id) {
+        let btyp = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
-            Some(bind) => bind,
+            Some(bind) => bind.typ.clone(),
         };
-        let targets = bind.typ.with_deref(|t| match t {
+        let targets = btyp.with_deref(|t| match t {
             None => Ok(None),
             Some(Type::ByRef(m, t)) => Ok(Some(vec![(*m, (**t).clone())])),
             Some(Type::Set(ts)) => ts
@@ -2735,7 +2735,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 .map(|t| {
                     t.with_deref(|t| match t {
                         Some(Type::ByRef(m, t)) => Ok((*m, (**t).clone())),
-                        _ => bail!("can't write through {}: not a reference", bind.typ),
+                        _ => bail!("can't write through {btyp}: not a reference"),
                     })
                 })
                 .collect::<Result<Vec<_>>>()
@@ -2746,18 +2746,29 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             // an unbound reference is inferred writable at the written type
             None => {
                 let typ = Type::ByRef(Mutability::Mut, Arc::new(rhs.clone()));
-                wrap!(self, bind.typ.check_contains(&ctx.env, &typ))
+                wrap!(self, btyp.check_contains(&ctx.env, &typ))
             }
             // a write must fit every reference the binding may hold
             Some(targets) => {
                 for (m, t) in targets {
                     if m == Mutability::Shared {
                         bail!(
-                            "can't write through a read-only reference ({}): take it with `&mut`",
-                            bind.typ
+                            "can't write through a read-only reference ({btyp}): take it with `&mut`"
                         )
                     }
                     wrap!(self, t.check_contains(&ctx.env, rhs))?;
+                    wrap!(
+                        self,
+                        callsite::check_hidden_defaults(
+                            ctx,
+                            BitFlags::empty(),
+                            &Scope::root(),
+                            self.spec.id,
+                            &t,
+                            rhs,
+                            callsite::Narrowing::Copy
+                        )
+                    )?;
                 }
                 Ok(())
             }

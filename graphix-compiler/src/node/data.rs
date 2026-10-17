@@ -1115,12 +1115,25 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         let styp = self.source.typ().clone();
+        let top_id = self.spec.id;
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {
                 let (i, typ) = struct_field_type(ctx, &styp, &rep.name)?;
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
                 if check {
                     wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
+                    wrap!(
+                        rep.n,
+                        super::callsite::check_hidden_defaults(
+                            ctx,
+                            BitFlags::empty(),
+                            &Scope::root(),
+                            top_id,
+                            &typ,
+                            &rep.n.typ(),
+                            super::callsite::Narrowing::Copy
+                        )
+                    )?;
                 }
                 rep.index = Some(i);
             }

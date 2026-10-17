@@ -2775,6 +2775,26 @@ run!(default_hidden_by_a_connect, r#"
 }
 "#, refused("string does not contain i64"); FuseExpect::None);
 
+run!(default_hidden_by_a_with_update, r#"
+{
+    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let s = {h: |x: f64| x};
+    let s2 = {s with h: f};
+    (s2.h)(1.5)
+}
+"#, refused("does not contain i64"); FuseExpect::None);
+
+run!(default_hidden_by_a_reference_write, r#"
+{
+    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let g = |x: f64| x;
+    let r = &mut g;
+    *r <- f;
+    let h = *r;
+    h(1.5)
+}
+"#, refused("does not contain i64"); FuseExpect::None);
+
 run!(default_hidden_by_an_optional_callback, r#"
 {
     let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
