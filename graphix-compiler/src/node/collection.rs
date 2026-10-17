@@ -695,7 +695,7 @@ struct Slot<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Slot<R, E> {
-    // CR claude for claude: [perf/medium] Every slot is a full run-time bind: an env
+    // CR claude for eric: [perf/medium] Every slot is a full run-time bind: an env
     // binding for the synthetic `collection_element` argument, a fresh instantiate of
     // the callback type, and at first dispatch build_bound (compile, typecheck0/1,
     // analysis::analyze_bound_callee and share::fuse_slot). The analysis gives the same
@@ -716,6 +716,14 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
     // per slot (about 10%) and the about 4 KB a slot keeps. Measured with
     // ~/tmp/target/perf/graphix --no-fusion over array::init(n, |i| i),
     // GRAPHIX_PAR=off, taskset -c 2.
+    // 2026-10-17 claude: Profiled 10-17 (perf build, --no-fusion, array::init(100000,
+    // |i| i), 2.4 s): no hot spot left. Self time spreads over the runtime's per-slot
+    // variables (read_var, the store's and the event's maps, ref_var: about 15%), the
+    // per-slot env copy and insert (about 10%), instantiation's cell work (about 5%)
+    // and a long tail. What remains is the slot itself: each is a full node graph with
+    // its own variables, so going further means slots sharing their prototype's graph,
+    // the node-graph sharing question left open (not ruled out, not advocated).
+    // Readdressed for that decision.
     fn new(
         ctx: &mut CompileCtx<R, E>,
         callback: &Callback,
