@@ -488,15 +488,14 @@ pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
 /// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
 /// carry and stays interpreted.
 /// A fold's acc carried one register per field: a tuple of scalars
-/// named by one parameter, built by a tuple literal and read only field
-/// by field (`p.0`).
+/// built by a tuple literal, its parameter destructured into names or
+/// one name read only field by field (`p.0`).
 fn unpackable_acc<R: Rt, E: UserEvent>(
     cx: &BodyCx,
     acc_type: &Type,
     acc: &CallbackParam,
     body: &Node<R, E>,
-) -> Option<(BindId, SmallVec<[PrimType; 4]>)> {
-    let id = acc.id.filter(|_| acc.binds.is_empty())?;
+) -> Option<(scaffold::AccNames, SmallVec<[PrimType; 4]>)> {
     let Type::Tuple(ts) = acc_type else { return None };
     let prims: SmallVec<[PrimType; 4]> = ts
         .iter()
@@ -514,6 +513,10 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
     if !fields_fit {
         return None;
     }
+    if !acc.binds.is_empty() {
+        return Some((scaffold::AccNames::Fields(acc.binds.clone()), prims));
+    }
+    let id = acc.id?;
     let (mut reads, mut field_reads) = (0usize, 0usize);
     fusion::for_each_node(body, &mut |n| match n.view() {
         NodeView::Ref(r) if r.id == id => reads += 1,
@@ -525,7 +528,7 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
         }
         _ => (),
     });
-    (reads == field_reads).then_some((id, prims))
+    (reads == field_reads).then_some((scaffold::AccNames::Whole(id), prims))
 }
 
 pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
@@ -550,7 +553,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     if emit::node_is_bottom(body) {
         return Ok(None);
     }
-    if let Some((id, prims)) = unpackable_acc(cx, &acc_type, acc, body) {
+    if let Some((names, prims)) = unpackable_acc(cx, &acc_type, acc, body) {
         return emit_loop(cx, source, flavor, |cx, src| {
             let sites = emit::slot_state_sites(cx, body);
             scaffold::emit_fold_fields_loop(
@@ -558,7 +561,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
                 src,
                 &prims,
                 &acc.name,
-                id,
+                &names,
                 &element.elem(&element_type, &element_leaves),
                 &sites,
                 emit::node_composite_source(init),

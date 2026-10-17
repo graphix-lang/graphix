@@ -1230,12 +1230,20 @@ where
 /// one register per field: each iteration binds the fields as locals the
 /// acc's field reads take (`JitEnv::unpack`), `fields` emits the body's
 /// fields, and the tuple is built once, after the loop.
+/// How a fold's callback names an acc it carries field by field.
+pub(crate) enum AccNames {
+    /// One name, read field by field (`p.0`).
+    Whole(BindId),
+    /// A tuple pattern's names, each with its field.
+    Fields(Vec<(BindId, usize)>),
+}
+
 pub(crate) fn emit_fold_fields_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     prims: &[PrimType],
     acc_name: &ArcStr,
-    acc_id: BindId,
+    acc_names: &AccNames,
     elem: &HofElem,
     state_sites: &[ExprId],
     init_src: CompositeSource,
@@ -1290,17 +1298,27 @@ where
                 cx.b.def_var(carry, d);
             }
             let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
-            for (p, v) in prims.iter().zip(vars.iter()) {
+            for (k, (p, v)) in prims.iter().zip(vars.iter()).enumerate() {
+                let id = match acc_names {
+                    AccNames::Whole(_) => BindId::new(),
+                    AccNames::Fields(leaves) => {
+                        match leaves.iter().find(|(_, i)| *i == k) {
+                            Some((id, _)) => *id,
+                            None => continue,
+                        }
+                    }
+                };
                 let c = cx.b.use_var(carry);
                 let base = scalar_disc(cx.b, *p);
                 let d = cx.b.ins().bor(base, c);
                 let dv = cx.b.declare_var(types::I64);
                 cx.b.def_var(dv, d);
-                let id = BindId::new();
                 bind_scalar_var_with_disc(cx, acc_name.clone(), *p, *v, dv, Some(id));
                 ids.push(id);
             }
-            cx.env.unpack(acc_id, ids);
+            if let AccNames::Whole(acc_id) = acc_names {
+                cx.env.unpack(*acc_id, ids);
+            }
             bind_elem(cx, arr.disc, arr.ptr, i, elem)
         },
         fields,

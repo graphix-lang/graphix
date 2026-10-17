@@ -2334,6 +2334,20 @@ run!(native_tuple_acc_folds, r#"{
     == "[[i64:499500, f64:1.1051653926032188], [i64:7, i64:8], [i64:249503, i64:250004], [[i64:3, i64:2], [i64:12, i64:3]]]";
     FuseExpect::Jit);
 
+// A tuple acc destructured into names carries each field in a register,
+// a name left out (`_`) included.
+run!(native_destructured_tuple_acc_folds, r#"{
+    let xs = array::init(1000, |i| i);
+    let e: Array<i64> = [];
+    (
+        #[native] array::fold(xs, (0, 0), |(s, n), x| (s + x, n + 1)),
+        #[native] array::fold(e, (7, 8), |(a, b), x| (b + x, a)),
+        #[native] array::fold(xs, (1, 2.0), |(_, f), x| (x, f * 1.0001))
+    )
+}"#, |v: Result<&Value>| format!("{}", v.unwrap())
+    == "[[i64:499500, i64:1000], [i64:7, i64:8], [i64:999, f64:2.2103307852064376]]";
+    FuseExpect::Jit);
+
 // A destructuring let's `_` decides nothing of the value it matches: a
 // fold whose accumulator a `(_, found)` takes apart keeps its own
 // accumulator type, so the loop fuses.
