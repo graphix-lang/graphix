@@ -396,6 +396,9 @@ pub(crate) struct SlotTable {
     pub(super) base: ClifValue,
     /// The table pointer may be null and must be guarded.
     pub(super) guarded: bool,
+    /// For a lambda call site's callee blocks, their words per slot; a
+    /// site's state word otherwise.
+    pub(super) blocks: Option<u32>,
 }
 
 /// One open scaffold loop's per-slot state tables. A site consults the

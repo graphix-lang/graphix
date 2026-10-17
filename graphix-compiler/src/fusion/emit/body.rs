@@ -511,7 +511,27 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 site: *id,
                 base: table,
                 guarded: matches!(word, StateWord::Guarded { .. }),
+                blocks: None,
             });
+            // a call site's callee blocks too, so an iteration only
+            // indexes them
+            let layout = self.ctx.lambda_call_sites.get(id).and_then(|info| {
+                let callee = !std::ptr::eq(&*info.kernel, self.ctx.kernel);
+                callee.then(|| {
+                    self.callee_site_layout(kernel_abi::kernel_key(&info.kernel))
+                })?
+            });
+            if let Some(layout) = layout.filter(|l| l.words > 0) {
+                let (base, rec) =
+                    super::call::callee_table(self, layout, &enclosing, (len, src_disc))?;
+                pending.push(rec);
+                tables.push(SlotTable {
+                    site: *id,
+                    base,
+                    guarded: false,
+                    blocks: Some(layout.words),
+                });
+            }
         }
         Ok((tables, pending))
     }
@@ -691,7 +711,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 return None;
             }
             let SlotTable { base, guarded, .. } =
-                *f.tables.iter().find(|t| t.site == id)?;
+                *f.tables.iter().find(|t| t.site == id && t.blocks.is_none())?;
             (f.idx_var, base, guarded)
         };
         let i = self.b.use_var(idx_var);
@@ -704,6 +724,19 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         } else {
             StateWord::Sure(addr)
         })
+    }
+
+    /// The innermost open loop's table of callee blocks for the call
+    /// site `id`, with the loop's slot ordinal, when the loop claimed one
+    /// and the site is at its depth.
+    pub(crate) fn callee_block_table(&self, id: ExprId) -> Option<(Variable, ClifValue)> {
+        let frames = self.ctx.slot_tables.borrow();
+        let f = frames.last()?;
+        if f.depth != self.env.loop_depth {
+            return None;
+        }
+        let t = f.tables.iter().find(|t| t.site == id && t.blocks.is_some())?;
+        Some((f.idx_var, t.base))
     }
 
     /// Claim the word that roots a self-call's per-activation block

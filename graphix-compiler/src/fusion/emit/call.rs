@@ -427,6 +427,7 @@ fn emit_site_block(
     cx: &mut BodyCx,
     info: &LambdaCallInfo,
     is_self: bool,
+    site: ExprId,
 ) -> Result<(ClifValue, Option<ClifValue>)> {
     let key = kernel_abi::kernel_key(&info.kernel);
     let layout = match cx.callee_site_layout(key) {
@@ -470,38 +471,67 @@ fn emit_site_block(
         }
         Some(l) => l.clone(),
     };
-    claim_callee_block(cx, &layout).map(|block| (block, None))
+    claim_callee_block(cx, &layout, site).map(|block| (block, None))
 }
 
-/// A static callee's block, carved out of this body's memory.
-// CR claude for claude: [perf/low] An in-loop call site whose callee has a site layout
-// walks its whole chain in every innermost iteration: `emit_dir_walk` plus a
-// `graphix_slot_state_table`/`_blocks` ensure, n_dirs + 1 helper calls per slot per
-// call, all idempotent after the first. A collection site's per-slot words are ensured
-// once in the preheader by `open_slot_tables`, and each slot only indexes the table.
-// Size these blocks the same way: make the call site's preheader leaf `layout.words`
-// wide (or a `SiteLeaf` blocks leaf) in `claim_slot_tables`, so an iteration computes
-// `table + i * stride * 8` and calls nothing. (f-scaffold-body-08)
-fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue> {
+/// A static callee's block, carved out of this body's memory: in a loop,
+/// its slot's in the table the loop's preheader sized, else (a site the
+/// preheader did not see) in the table the chain reaches this iteration.
+fn claim_callee_block(
+    cx: &mut BodyCx,
+    layout: &SiteLayout,
+    site: ExprId,
+) -> Result<ClifValue> {
     if layout.words == 0 {
         return Ok(cx.b.ins().iconst(types::I64, 0));
     }
     if cx.env.loop_depth == 0 {
         return Ok(claim_block_run(cx, layout));
     }
-    // In-loop call site: the chain runs per innermost iteration; the
-    // ensures are idempotent after the first.
-    let frames: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
-        let fs = cx.ctx.slot_tables.borrow();
-        debug_assert_eq!(
-            fs.len(),
-            cx.env.loop_depth as usize,
-            "slot-table frames out of sync with loop depth"
-        );
-        fs.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
+    let (idx, table) = match cx.callee_block_table(site) {
+        Some(t) => t,
+        None => {
+            let frames: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
+                let fs = cx.ctx.slot_tables.borrow();
+                debug_assert_eq!(
+                    fs.len(),
+                    cx.env.loop_depth as usize,
+                    "slot-table frames out of sync with loop depth"
+                );
+                fs.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
+            };
+            let n_dirs = frames.len() - 1;
+            let (llen, ldisc, lidx) = frames[n_dirs];
+            let (table, rec) =
+                callee_table(cx, layout, &frames[..n_dirs], (llen, ldisc))?;
+            if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
+                f.pending.push(rec);
+            }
+            (lidx, table)
+        }
     };
-    let n_dirs = frames.len() - 1;
-    let (dirs, leaf_frame) = (&frames[..n_dirs], frames[n_dirs]);
+    let i = cx.b.use_var(idx);
+    let off = cx.b.ins().imul_imm(i, (layout.words as i64) * 8);
+    let addr = cx.b.ins().iadd(table, off);
+    // a null table is a body with no memory, whose callees have none
+    let live = cx.b.ins().icmp_imm(IntCC::NotEqual, table, 0);
+    let zero = cx.b.ins().iconst(types::I64, 0);
+    Ok(cx.b.ins().select(live, addr, zero))
+}
+
+/// A callee's blocks for every slot of the innermost loop `leaf` (its
+/// length and source disc), `layout.words` a slot, in a table reached
+/// from an anchor of this body through the enclosing loops `dirs`; null
+/// when this body has no memory. The truncate record goes with the loop
+/// the table is the leaf of: its len-0 epochs never reach this ensure, so
+/// every enclosing loop's exit re-ensures it to truncate on a shrink.
+pub(super) fn callee_table(
+    cx: &mut BodyCx,
+    layout: &SiteLayout,
+    dirs: &[(ClifValue, ClifValue, Variable)],
+    leaf: (ClifValue, ClifValue),
+) -> Result<(ClifValue, TruncRec)> {
+    let n_dirs = dirs.len();
     let leaf_rt = if layout.anchors.is_empty() && layout.self_blocks.is_empty() {
         None
     } else {
@@ -511,67 +541,53 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
             self_blocks: layout.self_blocks.clone(),
         }))
     };
-    // This chain's per-iteration ensure never runs on a len-0 epoch, so
-    // every enclosing loop's exit re-ensures it at its level
-    // (`BodyCx::emit_slot_truncates`) to truncate on shrink.
-    let trunc_rec = |anchor| TruncRec {
-        anchor,
+    let (trunc, anchor) = cx.claim_anchor(n_dirs as u32, leaf_rt.clone());
+    let rec = TruncRec {
+        anchor: trunc,
         n_dirs: n_dirs as u32,
         leaf: match &leaf_rt {
             None => TruncLeaf::Table { stride: layout.words },
             Some(l) => TruncLeaf::Blocks(l.clone()),
         },
     };
-    let (trunc, anchor) = cx.claim_anchor(n_dirs as u32, leaf_rt.clone());
-    if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
-        f.pending.push(trunc_rec(trunc));
-    }
+    let (llen, ldisc) = leaf;
     let emit_chain = |cx: &mut BodyCx, word_addr: ClifValue| -> Result<ClifValue> {
         let leaf_ptr = match &leaf_rt {
             None => cx.b.ins().iconst(types::I64, 0),
             Some(l) => cx.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
         };
         let word_addr = cx.emit_dir_walk(word_addr, dirs, n_dirs, leaf_ptr)?;
-        let (llen, ldisc, lidx) = leaf_frame;
         let lvalid = emit_untainted_i64(cx.b, ldisc);
-        let table = match &leaf_rt {
+        Ok(match &leaf_rt {
             // the leaf a chunk's own loop sizes is shared by the chunks
             _ if n_dirs == 0 && cx.ctx.chunk => {
                 let stride = cx.b.ins().iconst(types::I64, layout.words as i64);
                 let words = cx.b.ins().imul(llen, stride);
-                let call = cx.call_helper(
+                cx.call_helper(
                     "graphix_slot_state_table_shared",
                     &[word_addr, words, lvalid],
-                )?;
-                call[0]
+                )?[0]
             }
             None => {
                 let stride = cx.b.ins().iconst(types::I64, layout.words as i64);
                 let words = cx.b.ins().imul(llen, stride);
                 let own0 = cx.b.ins().iconst(types::I64, 0);
-                let call = cx.call_helper(
+                cx.call_helper(
                     "graphix_slot_state_table",
                     &[word_addr, words, lvalid, own0, leaf_ptr],
-                )?;
-                call[0]
+                )?[0]
             }
-            Some(_) => {
-                let call = cx.call_helper(
-                    "graphix_slot_state_blocks",
-                    &[word_addr, llen, lvalid, leaf_ptr],
-                )?;
-                call[0]
-            }
-        };
-        let i = cx.b.use_var(lidx);
-        let stride_bytes = cx.b.ins().imul_imm(i, (layout.words as i64) * 8);
-        Ok(cx.b.ins().iadd(table, stride_bytes))
+            Some(_) => cx.call_helper(
+                "graphix_slot_state_blocks",
+                &[word_addr, llen, lvalid, leaf_ptr],
+            )?[0],
+        })
     };
     let zero = cx.b.ins().iconst(types::I64, 0);
-    let [block] = anchor.with_addr(cx, [zero], |cx, addr| {
+    let [table] = anchor.with_addr(cx, [zero], |cx, addr| {
         Ok::<_, anyhow::Error>([emit_chain(cx, addr)?])
     })?;
-    Ok(block)
+    Ok((table, rec))
 }
 
 fn callee_results(
@@ -819,7 +835,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let mut clif_args: SmallVec<[ClifValue; 24]> =
         SmallVec::with_capacity(slot_cvs.len() * 2 + 3);
     let context = emit_callee_context_word(cx, cs.spec().id);
-    let (site_block, fresh) = emit_site_block(cx, info, is_self)?;
+    let (site_block, fresh) = emit_site_block(cx, info, is_self, cs.spec().id)?;
     // a self-call's activation made just now is born with the init view
     let context = match fresh {
         None => context,

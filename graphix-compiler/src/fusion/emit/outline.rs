@@ -227,6 +227,7 @@ fn emit_chunk(
             site: t.site,
             base: load(&mut b, types::I64, HEADER + j),
             guarded: t.guarded,
+            blocks: t.blocks,
         })
         .collect();
     // The body's locals, borrowed: the body drops them.
