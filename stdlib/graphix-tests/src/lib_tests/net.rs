@@ -247,8 +247,9 @@ run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // The publish twin: a sleeping arm unpublishes and a re-woken one
-// republishes from the present value; the observer sees each window as
-// an error between the values.
+// republishes from the present value; the observer sees each window it
+// catches as an error after a value, each value even and past the last.
+// Its resubscribe backs off at random, so it may miss a window.
 const NET_PUB_REWAKE: &str = r#"
 {
   let x = i64:0;
@@ -265,7 +266,15 @@ const NET_PUB_REWAKE: &str = r#"
 
 run!(net_publish_arm_rewake, NET_PUB_REWAKE, |v: Result<&Value>| {
     let gone = r#"error:["SubscribeError", "unsubscribed"]"#;
-    matches!(v, Ok(v) if v.to_string() == format!("[i64:0, {gone}, i64:2, {gone}]"))
+    let Ok(Value::Array(a)) = v else { return false };
+    let mut last = -1;
+    a.chunks(2).all(|w| match w {
+        [Value::I64(n), e] if *n > last && n % 2 == 0 && e.to_string() == gone => {
+            last = *n;
+            true
+        }
+        _ => false,
+    })
 }; FuseExpect::Jit);
 
 // A written value the on_write callback cannot take answers the writer and

@@ -568,7 +568,7 @@ modes!(block_issues_together);
 // as it stands at entry, once.
 async fn block_connect_every_run(mode: Mode) -> Result<()> {
     let code = r#"{
-        let t = sys::time::timer(duration:150.ms, 3) ~ 1;
+        let t = sys::time::timer(duration:300.ms, 3) ~ 1;
         let n = 0;
         n <- t ~ n + 1;
         let a = 0;
@@ -579,7 +579,7 @@ async fn block_connect_every_run(mode: Mode) -> Result<()> {
             { a <- sys::time::after_idle(duration:30.ms, n); l <- n; 0 };
             n
         };
-        let out = sys::time::after_idle(duration:100.ms, r) ~ (r, a, l, lw);
+        let out = sys::time::after_idle(duration:50.ms, r) ~ (r, a, l, lw);
         array::group(out, |c, _| c == 3)
     }"#;
     let (values, _) = run_delta(code, mode).await?;
