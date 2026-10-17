@@ -1835,35 +1835,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                     future::Either::Left((Ok(v), _)) => v,
                     // a panicking eval still answers, so the site runs its next call
                     future::Either::Left((Err(_), _)) => {
-                        // XCR claude for claude: [bug/medium] x-panics-05 fixed at the
-                        // symptom: a caught panic replies an error outside the declared
-                        // type. The fix catches the async builtin's panic and replies
-                        // `errf!("Panicked", ..)` (lib.rs). The root cause,
-                        // netidx-core's Duration::decode calling
-                        // Duration::new(u64::MAX, 1e9), still panics and still prints a
-                        // panic message to stderr. `Panicked` is not in pack::read's
-                        // declared error type ([`PackErr, `InvalidCast]), so a handler
-                        // that is exhaustive over the declared errors matches nothing.
-                        // The checker considers such a select complete. Failure: With
-                        // GRAPHIX_ABORT_ON_NO_MATCH=1 the program below aborts: 'select
-                        // e.0.error {..}: no arm matches ["Panicked", "pack_read
-                        // panicked"]: a coverage hole in the check' (exit 134). Without
-                        // it the select is silently bottom and r is never printed.
-                        // stderr also shows 'panicked .. overflow in Duration::new',
-                        // which corrupts a TUI. Fix: Fix the decode in netidx-core: use
-                        // Duration::checked_add or validate ns < 1e9 and return a
-                        // PackError. In the catch, map a panic to the builtin's own
-                        // declared error tag (`PackErr` here), or declare `Panicked` in
-                        // every async builtin's error type, so the static types stay
-                        // honest. Unverified: the reviewer's report, not checked by a
-                        // verifier. (x-rerun-8-08)
-                        // 2026-10-13 claude: netidx-core's Duration::decode refuses
-                        // the overflow (netidx dc8540eb), pinned by
-                        // lib_tests::pack::pack_read_oversize_duration_nanos. A caught
-                        // panic now answers the first string-payload variant of the
-                        // error the call declares (panic_tag), or nothing, logged as a
-                        // failure, when it declares none. No program reaches that path
-                        // now, so it has no pin.
                         log::error!(target: graphix_compiler::FAILURE_TARGET, "{} panicked", T::NAME);
                         match &panic_tag {
                             Some(tag) => errf!(tag.clone(), "{} panicked", T::NAME),

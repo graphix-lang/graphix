@@ -265,18 +265,6 @@ impl ContainsHist {
 
 /// A union whose open member's cell another member mentions, as
 /// `['b, Array<'b>]`: where a member goes decides that cell.
-// XCR claude for claude: [readability/low] The doc above this function is two docs run
-// together. Its first two lines ('A cell whose chain of bindings ends open...') belong
-// to is_unbound_tvar, which now has none. Likewise, the 'A constructor application
-// (`self<'a>`, `'c<'b>`) ...' paragraph that opens place_members' doc belongs to
-// app_contains, which has none. Move each back to its function. In this function, the
-// candidate filter uses `!tv.is_bound()` while the other filter uses is_unbound_tvar,
-// which follows a chain of bindings. A bare member that is an alias of an open cell is
-// therefore neither a candidate nor an 'other', and its cell goes unseen. Use the
-// open-cell notion (TVar::open_cell) on both sides. (x-fix-types-13)
-// 2026-10-13 claude: docs moved; both sides, and the cells the other members mention,
-// now compare by TVar::open_cell. No pin: I found no program that puts an alias of an
-// open cell in a union this function sees; the gates are green.
 fn shares_bare_cell(s0: &[Type]) -> bool {
     let open = |tv: &TVar| tv.open_cell().map(|c| c.cell_addr());
     s0.iter()
@@ -302,7 +290,6 @@ fn nesting(t: &Type) -> usize {
     })
 }
 
-/// A variable whose chain of bindings ends open.
 /// The flags a probe guiding a decision under `flags` runs with: it holds
 /// a rigid cell rigid wherever the decision will, so a member it admits
 /// does not fail on that cell.
@@ -313,6 +300,7 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     }
 }
 
+/// A variable whose chain of bindings ends open.
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
