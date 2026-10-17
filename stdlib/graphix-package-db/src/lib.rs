@@ -8,6 +8,7 @@ mod encoding;
 mod subscribe;
 mod tree;
 mod txn;
+mod watch;
 
 use cursor::{DbCursorNew, DbCursorRange, DbCursorRead, DbCursorReadMany};
 use subscribe::{DbOnChange, DbOnInsert, DbOnRemove, DbSubscribe};

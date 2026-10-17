@@ -1,9 +1,10 @@
 use crate::{
-    encoding::for_batch_ops,
     tree::{
         Db, KeyTyp, META_TREE, MetaStore, OpenTreeEv, TreeOpener, TreeTypes, blocking,
         blocking_op, get_db, insert_arg, key_arg, meta_key, raw_args, value_or_null,
+        writes_arg,
     },
+    watch::{self, Changes, Watches},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
@@ -19,7 +20,8 @@ use sled::{
         ConflictableTransactionError, TransactionError, Transactional, TransactionalTree,
     },
 };
-use std::{collections::hash_map::Entry, fmt, sync::Arc};
+use smallvec::SmallVec;
+use std::{cell::RefCell, collections::hash_map::Entry, fmt, sync::Arc};
 
 /// The tree a transaction's part is over: one that stood when it was
 /// opened, or a name the commit creates, empty until then.
@@ -129,7 +131,9 @@ impl TxnState {
     fn check_and_apply(
         &self,
         tx: &[TransactionalTree],
+        changes: &RefCell<&mut Changes>,
     ) -> Result<(), ConflictableTransactionError<Refused>> {
+        changes.borrow_mut().clear();
         let abort = |r| Err(ConflictableTransactionError::Abort(r));
         for (t, tx) in self.trees.iter().zip(tx) {
             for (k, v) in &t.read {
@@ -145,12 +149,13 @@ impl TxnState {
                 }
             }
         }
-        for (t, tx) in self.trees.iter().zip(tx) {
+        for (i, (t, tx)) in self.trees.iter().zip(tx).enumerate() {
             for (k, v) in &t.write {
-                match v {
+                let old = match v {
                     Some(v) => tx.insert(k.clone(), v.clone())?,
                     None => tx.remove(k.clone())?,
                 };
+                changes.borrow_mut().record(i, k, old.as_deref(), v.as_deref());
             }
         }
         Ok(())
@@ -203,7 +208,18 @@ impl TxnState {
         if trees.is_empty() {
             return Ok(Value::Null);
         }
-        match (&trees[..]).transaction(|tx| self.check_and_apply(tx)) {
+        let watches: LPooled<Vec<Arc<Watches>>> =
+            trees[..self.trees.len()].iter().map(|t| self.db.watches(t)).collect();
+        let locked: SmallVec<[&Watches; 4]> = watches.iter().map(|w| &**w).collect();
+        let res = watch::write(&locked, |changes| {
+            let changes = RefCell::new(changes);
+            let res = (&trees[..]).transaction(|tx| self.check_and_apply(tx, &changes));
+            if res.is_err() {
+                changes.borrow_mut().clear();
+            }
+            Ok(res)
+        })?;
+        match res {
             Ok(()) => {
                 // CR claude for eric: [bug/low] commit applies the transaction and then
                 // flushes. If the flush fails (disk full, an I/O error), the program
@@ -293,21 +309,6 @@ graphix_package_core::impl_abstract_arc!(
     TxnTreeValue,
     static TXN_TREE_WRAPPER = "db::txn::TxnTree"
 );
-
-type Writes = LPooled<Vec<(IVec, Option<IVec>)>>;
-
-fn writes_arg(tree: impl KeyTyp, [batch]: [Value; 1]) -> Result<Writes> {
-    match batch {
-        Value::Array(a) => {
-            let mut writes: Writes = LPooled::take();
-            for_batch_ops(tree.key_typ(), &a, |k, v| {
-                writes.push((IVec::from(k), v.map(IVec::from)))
-            })?;
-            Ok(writes)
-        }
-        v => bail!("not a batch: {v}"),
-    }
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnBeginEv;
@@ -498,6 +499,46 @@ mod test {
         assert_ne!(*ENCODED_ON.lock(), Some(thread::current().id()));
         assert!(ENCODED_ON.lock().is_some());
         let _: Option<EncodingProbe> = None;
+        Ok(())
+    }
+
+    /// A commit sends its changes to the trees' watches; one that fails
+    /// sends nothing.
+    #[tokio::test]
+    async fn commit_reaches_watches() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open_db(dir.path().to_str().unwrap().into()).await?;
+        let tree = db.open_tree("t")?;
+        let (tx, mut heard) = futures::channel::mpsc::unbounded();
+        let _watch = db.watches(&tree).add(b"k", tx);
+        let types = TreeTypes::string_to_string();
+        let enc = |v: &str| {
+            crate::encoding::encode_value(&Value::String(ArcStr::from(v))).unwrap()
+        };
+        let commit = |write: &str, read: bool| -> Result<Value> {
+            let write = IVec::from(enc(write).as_slice());
+            let mut state = TxnState {
+                trees: Vec::new(),
+                opened: AHashMap::new(),
+                pending_meta: AHashMap::new(),
+                db: db.clone(),
+            };
+            let t = state.open_tree(Some("t".into()), types.clone())?;
+            if read {
+                state.tree(t)?.get(b"k1")?;
+                tree.insert(b"k1", enc("moved").as_slice())?;
+            }
+            state.tree(t)?.put(b"k1", Some(write.clone()))?;
+            state.tree(t)?.put(b"other", Some(write))?;
+            state.commit()
+        };
+        assert_eq!(commit("v", false)?, Value::Null);
+        let change = heard.try_recv()?;
+        assert_eq!(&*change.key, b"k1");
+        assert_eq!(change.value.as_deref(), Some(enc("v").as_slice()));
+        assert!(heard.try_recv().is_err(), "a key outside the prefix was heard");
+        assert!(matches!(commit("w", true)?, Value::Error(_)), "expected Conflict");
+        assert!(heard.try_recv().is_err(), "a failed commit was heard");
         Ok(())
     }
 

@@ -18,7 +18,9 @@ use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
+use smallvec::SmallVec;
 use std::{
+    cell::RefCell,
     fmt,
     marker::PhantomData,
     ops::Deref,
@@ -27,8 +29,12 @@ use std::{
     sync::{Arc, LazyLock, Weak},
 };
 
-use crate::encoding::{
-    ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
+use crate::{
+    encoding::{
+        ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value,
+        for_batch_ops,
+    },
+    watch::{self, Changes, Watches},
 };
 
 use sled::transaction::{ConflictableTransactionError, TransactionError, Transactional};
@@ -42,6 +48,8 @@ pub(crate) struct Database {
     /// transaction's commit that created a tree and failed drops only one
     /// nothing else has claimed.
     pub(crate) creating: Mutex<()>,
+    /// The watches on each tree, by its name, while anything holds them.
+    watches: Mutex<AHashMap<sled::IVec, Weak<Watches>>>,
     // The database drops before waiting openers are notified.
     _registration: Registration,
 }
@@ -51,6 +59,27 @@ impl Deref for Database {
 
     fn deref(&self) -> &Self::Target {
         &self.db
+    }
+}
+
+impl Database {
+    /// The watches on `tree`.
+    pub(crate) fn watches(&self, tree: &sled::Tree) -> Arc<Watches> {
+        let mut all = self.watches.lock();
+        let name = tree.name();
+        if let Some(w) = all.get(&name).and_then(Weak::upgrade) {
+            return w;
+        }
+        all.retain(|_, w| w.strong_count() > 0);
+        let w = Arc::new(Watches::default());
+        all.insert(name, Arc::downgrade(&w));
+        w
+    }
+
+    /// End the watches on a dropped tree: one made later under its name
+    /// starts with none.
+    fn forget_watches(&self, name: &[u8]) {
+        self.watches.lock().remove(name);
     }
 }
 
@@ -101,6 +130,7 @@ fn try_open_db(path: &str) -> Result<Option<Db>> {
     let db = Arc::new(Reaped::new(Database {
         db,
         creating: Mutex::new(()),
+        watches: Mutex::new(AHashMap::new()),
         _registration: Registration(path.clone()),
     }));
     open.insert(path, Arc::downgrade(&db));
@@ -123,7 +153,90 @@ pub(super) async fn open_db(path: ArcStr) -> Result<Db> {
 pub(crate) struct TreeInner {
     pub(crate) tree: sled::Tree,
     pub(crate) key_typ: Option<Typ>,
+    pub(crate) watches: Arc<Watches>,
     _db: Db,
+}
+
+impl TreeInner {
+    /// Write to the tree with `f`, which records what it changed as tree 0.
+    fn write<T>(
+        &self,
+        f: impl FnOnce(&sled::Tree, &mut Changes) -> Result<T>,
+    ) -> Result<T> {
+        watch::write(&[&self.watches], |changes| f(&self.tree, changes))
+    }
+
+    pub(crate) fn insert(&self, key: &[u8], value: &[u8]) -> Result<Option<sled::IVec>> {
+        self.write(|tree, changes| {
+            let old = tree.insert(key, value)?;
+            changes.record(0, key, old.as_deref(), Some(value));
+            Ok(old)
+        })
+    }
+
+    pub(crate) fn remove(&self, key: &[u8]) -> Result<Option<sled::IVec>> {
+        self.write(|tree, changes| {
+            let old = tree.remove(key)?;
+            changes.record(0, key, old.as_deref(), None);
+            Ok(old)
+        })
+    }
+
+    /// Remove the least key's entry, or the greatest's when `max`.
+    pub(crate) fn pop(&self, max: bool) -> Result<Option<(sled::IVec, sled::IVec)>> {
+        self.write(|tree, changes| {
+            let popped = if max { tree.pop_max()? } else { tree.pop_min()? };
+            if let Some((k, v)) = &popped {
+                changes.record(0, k, Some(v), None);
+            }
+            Ok(popped)
+        })
+    }
+
+    pub(crate) fn compare_and_swap(
+        &self,
+        key: &[u8],
+        old: Option<&[u8]>,
+        new: Option<&[u8]>,
+    ) -> Result<Result<(), sled::CompareAndSwapError>> {
+        self.write(|tree, changes| {
+            let res = tree.compare_and_swap(key, old, new)?;
+            if res.is_ok() {
+                changes.record(0, key, old, new);
+            }
+            Ok(res)
+        })
+    }
+
+    /// Apply `writes` in order, atomically.
+    pub(crate) fn apply_batch(&self, writes: &Writes) -> Result<()> {
+        self.write(|tree, changes| {
+            if changes.wanted() {
+                let mut now: LPooled<AHashMap<sled::IVec, Option<sled::IVec>>> =
+                    LPooled::take();
+                for (k, v) in writes.iter() {
+                    let old = match now.get(k) {
+                        Some(old) => old.clone(),
+                        None => tree.get(k)?,
+                    };
+                    changes.record(0, k, old.as_deref(), v.as_deref());
+                    now.insert(k.clone(), v.clone());
+                }
+            }
+            let mut batch = sled::Batch::default();
+            for (k, v) in writes.iter() {
+                match v {
+                    Some(v) => batch.insert(k.clone(), v.clone()),
+                    None => batch.remove(k.clone()),
+                }
+            }
+            if let Err(e) = tree.apply_batch(batch) {
+                changes.clear();
+                return Err(e.into());
+            }
+            Ok(())
+        })
+    }
 }
 
 pub(crate) type Tree = Arc<Reaped<TreeInner>>;
@@ -142,10 +255,13 @@ pub(crate) fn get_tree_inner(cached: &CachedVals, idx: usize) -> Option<Tree> {
     cached.abstract_arg::<TreeValue>(idx).map(|t| t.inner.clone())
 }
 
+pub(crate) fn tree_inner(db: Db, tree: sled::Tree, key_typ: Option<Typ>) -> Tree {
+    let watches = db.watches(&tree);
+    Arc::new(Reaped::new(TreeInner { tree, key_typ, watches, _db: db }))
+}
+
 pub(super) fn wrap_tree(db: Db, tree: sled::Tree, key_typ: Option<Typ>) -> Value {
-    TREE_WRAPPER.wrap(TreeValue {
-        inner: Arc::new(Reaped::new(TreeInner { tree, key_typ, _db: db })),
-    })
+    TREE_WRAPPER.wrap(TreeValue { inner: tree_inner(db, tree, key_typ) })
 }
 
 /// Run `f` on a blocking thread; its error, or its panic, is a `DbErr`.
@@ -492,9 +608,19 @@ pub(crate) fn key_arg(
     encode_key(tree_key.key_typ(), &key)
 }
 
-pub(crate) fn batch_arg(tree: impl KeyTyp, [batch]: [Value; 1]) -> Result<sled::Batch> {
+/// A batch's writes in order, each a key and the value it writes (`None`
+/// removes).
+pub(crate) type Writes = LPooled<Vec<(sled::IVec, Option<sled::IVec>)>>;
+
+pub(crate) fn writes_arg(tree: impl KeyTyp, [batch]: [Value; 1]) -> Result<Writes> {
     match batch {
-        Value::Array(a) => parse_batch_ops(tree.key_typ(), &a),
+        Value::Array(a) => {
+            let mut writes: Writes = LPooled::take();
+            for_batch_ops(tree.key_typ(), &a, |k, v| {
+                writes.push((sled::IVec::from(k), v.map(sled::IVec::from)))
+            })?;
+            Ok(writes)
+        }
         v => bail!("not a batch: {v}"),
     }
 }
@@ -567,15 +693,13 @@ db_op!(DbTreeNamesEv, DbTreeNames, "db_tree_names", |db| {
 
 tree_op!(DbFirstEv, DbFirst, "db_first", |t| entry(&t, t.tree.first()?));
 tree_op!(DbLastEv, DbLast, "db_last", |t| entry(&t, t.tree.last()?));
-tree_op!(DbPopMinEv, DbPopMin, "db_pop_min", |t| entry(&t, t.tree.pop_min()?));
-tree_op!(DbPopMaxEv, DbPopMax, "db_pop_max", |t| entry(&t, t.tree.pop_max()?));
+tree_op!(DbPopMinEv, DbPopMin, "db_pop_min", |t| entry(&t, t.pop(false)?));
+tree_op!(DbPopMaxEv, DbPopMax, "db_pop_max", |t| entry(&t, t.pop(true)?));
 tree_op!(DbLenEv, DbLen, "db_len", |t| Ok(Value::U64(t.tree.len() as u64)));
 tree_op!(DbIsEmptyEv, DbIsEmpty, "db_is_empty", |t| Ok(Value::Bool(t.tree.is_empty())));
 
 tree_arg_op!(DbGetEv, DbGet, "db_get", |t, k| value_or_null(t.tree.get(&*k)?));
-tree_arg_op!(DbRemoveEv, DbRemove, "db_remove", |t, k| value_or_null(
-    t.tree.remove(&*k)?
-));
+tree_arg_op!(DbRemoveEv, DbRemove, "db_remove", |t, k| value_or_null(t.remove(&k)?));
 tree_arg_op!(DbContainsKeyEv, DbContainsKey, "db_contains_key", |t, k| Ok(Value::Bool(
     t.tree.contains_key(&*k)?
 )));
@@ -587,10 +711,10 @@ tree_arg_op!(
     "db_insert",
     insert_arg,
     2,
-    |t, (k, v)| value_or_null(t.tree.insert(&*k, v.as_slice())?)
+    |t, (k, v)| value_or_null(t.insert(&k, &v)?)
 );
-tree_arg_op!(DbBatchEv, DbBatch, "db_batch", batch_arg, 1, |t, b| {
-    t.tree.apply_batch(b)?;
+tree_arg_op!(DbBatchEv, DbBatch, "db_batch", writes_arg, 1, |t, writes| {
+    t.apply_batch(&writes)?;
     Ok(Value::Null)
 });
 tree_arg_op!(DbGetManyEv, DbGetMany, "db_get_many", many_keys_arg, 1, |t, keys| {
@@ -609,7 +733,7 @@ tree_arg_op!(
     |t, (k, old, new)| {
         let old = old.as_ref().map(|v| v.as_slice());
         let new = new.as_ref().map(|v| v.as_slice());
-        match t.tree.compare_and_swap(k.as_slice(), old, new)? {
+        match t.compare_and_swap(&k, old, new)? {
             Ok(()) => Ok(Value::Null),
             Err(e) => Ok(Value::Array(ValArray::from([
                 Value::String(literal!("Mismatch")),
@@ -651,6 +775,7 @@ db_name_op!(DbDropTreeEv, DbDropTree, "db_drop_tree", |db, name: ArcStr| {
     meta_key(Some(&name))?;
     let _creating = db.creating.lock();
     let existed = db.drop_tree(name.as_bytes())?;
+    db.forget_watches(name.as_bytes());
     db.open_tree(META_TREE)?.remove(name.as_bytes())?;
     Ok(Value::Bool(existed))
 });
@@ -689,7 +814,7 @@ struct ImportTree {
     entries: LPooled<Vec<[Vec<u8>; 2]>>,
 }
 
-fn import_data(db: &sled::Db, data: ExportData) -> Result<()> {
+fn import_data(db: &Database, data: ExportData) -> Result<()> {
     if data.trees.is_empty() {
         return Ok(());
     }
@@ -743,23 +868,35 @@ fn import_data(db: &sled::Db, data: ExportData) -> Result<()> {
         .iter()
         .map(|tree| db.open_tree(&tree.name))
         .collect::<sled::Result<LPooled<Vec<_>>>>()?;
-    match trees.as_slice().transaction(|tx| {
-        for (src, dest) in data.iter().zip(tx) {
-            for [key, value] in &*src.entries {
-                if dest.get(key)?.is_some() {
-                    return Err(ConflictableTransactionError::Abort(anyhow!(
-                        "import would overwrite an existing key"
-                    )));
+    let watches: LPooled<Vec<Arc<Watches>>> =
+        trees.iter().map(|t| db.watches(t)).collect();
+    let locked: SmallVec<[&Watches; 4]> = watches.iter().map(|w| &**w).collect();
+    watch::write(&locked, |changes| {
+        let changes = RefCell::new(changes);
+        let res = trees.as_slice().transaction(|tx| {
+            changes.borrow_mut().clear();
+            for (i, (src, dest)) in data.iter().zip(tx).enumerate() {
+                for [key, value] in &*src.entries {
+                    if dest.get(key)?.is_some() {
+                        return Err(ConflictableTransactionError::Abort(anyhow!(
+                            "import would overwrite an existing key"
+                        )));
+                    }
+                    dest.insert(key.as_slice(), value.as_slice())?;
+                    changes.borrow_mut().record(i, key, None, Some(value));
                 }
-                dest.insert(key.as_slice(), value.as_slice())?;
             }
+            Ok(())
+        });
+        if res.is_err() {
+            changes.borrow_mut().clear();
         }
-        Ok(())
-    }) {
-        Ok(()) => Ok(()),
-        Err(TransactionError::Abort(e)) => Err(e),
-        Err(TransactionError::Storage(e)) => Err(e.into()),
-    }
+        match res {
+            Ok(()) => Ok(()),
+            Err(TransactionError::Abort(e)) => Err(e),
+            Err(TransactionError::Storage(e)) => Err(e.into()),
+        }
+    })
 }
 
 db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {

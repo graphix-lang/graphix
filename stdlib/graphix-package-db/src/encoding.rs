@@ -372,18 +372,6 @@ pub(crate) fn for_batch_ops(
     Ok(())
 }
 
-pub(crate) fn parse_batch_ops(
-    key_typ: Option<Typ>,
-    arr: &ValArray,
-) -> Result<sled::Batch> {
-    let mut batch = sled::Batch::default();
-    for_batch_ops(key_typ, arr, |k, v| match v {
-        Some(v) => batch.insert(k, v),
-        None => batch.remove(k),
-    })?;
-    Ok(batch)
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
