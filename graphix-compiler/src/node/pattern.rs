@@ -645,35 +645,6 @@ impl StructPatternNode {
                 None => shape,
             };
             let shape = shape.any_as_tvar();
-            // XCR claude for eric: [bug/critical] Under a written union,
-            // check_contains binds the pattern's cells to the FIRST member that fits,
-            // but the runtime test still admits every member the constructor matches.
-            // With `P = [(i64, string), (string, i64)]`, `P as (x, y)` types x as i64
-            // while a ("s", 1) value binds "s" into it. The check accepts this. The JIT
-            // then panics in the runtime thread (fusion/kernel.rs, "runtime String does
-            // not match the compiled Scalar(I64) slot"), and the node-walk runs `x + 1`
-            // on a string. Full tuple, variant (`A(x, y)) and full struct ({x, y})
-            // patterns all do this. Only partial struct patterns are refused, through
-            // unique_completion. The rep_collision guard below does not catch it. Fix:
-            // refuse when the shape can match more than one member of the union, using
-            // unique_completion's counting and its "matches more than one member"
-            // message, or type each bind as the union of its position over every member
-            // that matches. probe:
-            // design/review-2026-10-12/repro/x-typecheck-patterns-01.gx
-            // (x-typecheck-patterns-01)
-            // eric 2026-10-13: Consider also degenerate variant unions like
-            // [A(i64, string), A(string, i64)], select should reject an attempt
-            // to match on this type.
-            // 2026-10-15 claude: narrowed per member now (Type::narrow_pattern, the
-            // same rule as an inferred predicate since 2943b591e): P as (x, y) over
-            // [(i64, string), (string, i64)] types x [i64, string] and y [string, i64],
-            // its run-time test admits both members, and x + 1 is refused. Pins:
-            // lang::select::written_union_binds_every_member,
-            // written_union_bind_is_a_union. Eric's 10-13 question stands and is yours:
-            // today `A(x, y) over [`A(i64, string), `A(string, i64)] is accepted the
-            // same way (x [i64, string]; a probe prints ("1 s", "t 2")); refusing it
-            // would be a new rule beside the one-runtime-form rule, which this match
-            // does not break since it tells nothing apart.
             if !type_predicate.narrow_pattern(env, &shape)? {
                 type_predicate.check_contains(env, &shape)?;
             }
