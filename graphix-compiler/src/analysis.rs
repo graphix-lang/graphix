@@ -1194,6 +1194,15 @@ impl Vars {
     }
 }
 
+/// What a summary keeps: the variables read and written, or only
+/// whether reads are unknown (through a reference, an opaque call), with
+/// the ordered and unbound bits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Detail {
+    Ids,
+    Flags,
+}
+
 /// What code reads and writes, following statically resolved calls,
 /// and whether it may call an ordered builtin ([`crate::BuiltIn::ORDERED`]).
 #[derive(Default)]
@@ -1320,12 +1329,16 @@ fn local_summary<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
+    detail: Detail,
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
+    let ids = detail == Detail::Ids;
     fusion::for_each_node(n, &mut |x| match x.view() {
         NodeView::Ref(r) => {
-            s.reads.ids.insert(r.id);
+            if ids {
+                s.reads.ids.insert(r.id);
+            }
         }
         // a kernel reads only through its feeders, and through the core-trait
         // impls its region may run
@@ -1333,15 +1346,21 @@ fn local_summary<R: Rt, E: UserEvent>(
             if k.facts().hooks {
                 s.opaque()
             }
-            k.feeders().iter().for_each(|f| local_summary(f, graph, ctx, s, callees))
+            k.feeders()
+                .iter()
+                .for_each(|f| local_summary(f, graph, ctx, detail, s, callees))
         }
         NodeView::Connect(c) => {
-            s.writes.ids.insert(c.id);
+            if ids {
+                s.writes.ids.insert(c.id);
+            }
         }
         // the write reads the reference to find its target
         NodeView::ConnectDeref(c) => {
             s.writes.refs = true;
-            s.reads.ids.insert(c.src_id);
+            if ids {
+                s.reads.ids.insert(c.src_id);
+            }
         }
         NodeView::Deref(_) => s.reads.refs = true,
         NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
@@ -1408,6 +1427,7 @@ fn local_summary<R: Rt, E: UserEvent>(
 fn instance_summaries<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
+    detail: Detail,
     roots: impl IntoIterator<Item = LambdaInstanceId>,
 ) -> LPooled<IntMap<LambdaInstanceId, Summary>> {
     let mut callees: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
@@ -1421,11 +1441,13 @@ fn instance_summaries<R: Rt, E: UserEvent>(
         let Some(g) = graph.instances.get(&i) else { continue };
         let mut s = Summary::default();
         let mut cs = SmallVec::new();
-        local_summary(g.body(), graph, ctx, &mut s, &mut cs);
-        let mut refs = Refs::without_callees();
-        g.body().refs(&mut refs);
-        refs.with_bound(|id| s.forget(id));
-        g.args().iter().for_each(|p| p.ids(&mut |id| s.forget(id)));
+        local_summary(g.body(), graph, ctx, detail, &mut s, &mut cs);
+        if detail == Detail::Ids {
+            let mut refs = Refs::without_callees();
+            g.body().refs(&mut refs);
+            refs.with_bound(|id| s.forget(id));
+            g.args().iter().for_each(|p| p.ids(&mut |id| s.forget(id)));
+        }
         stack.extend(cs.iter().copied());
         sums.insert(i, s);
         callees.insert(i, cs);
@@ -1474,12 +1496,14 @@ pub(crate) fn plan_block<R: Rt, E: UserEvent>(
 fn accesses<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
+    detail: Detail,
 ) -> LPooled<Vec<Summary>> {
     let graph = collect_static_graph_of(children.clone());
-    let locals = local_summaries(children, &graph, ctx);
+    let locals = local_summaries(children, &graph, ctx, detail);
     let sums = instance_summaries(
         &graph,
         ctx,
+        detail,
         locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
     );
     with_callees(&locals, &sums)
@@ -1490,12 +1514,13 @@ fn local_summaries<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>>,
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
+    detail: Detail,
 ) -> LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> {
     children
         .map(|n| {
             let mut s = Summary::default();
             let mut cs = SmallVec::new();
-            local_summary(n, graph, ctx, &mut s, &mut cs);
+            local_summary(n, graph, ctx, detail, &mut s, &mut cs);
             (s, cs)
         })
         .collect()
@@ -1530,13 +1555,16 @@ fn plan_blocks<R: Rt, E: UserEvent>(
     if graph.blocks.iter().all(|b| b.planned.get().is_some()) {
         return;
     }
-    let sums = instance_summaries(graph, ctx, graph.instances.keys().copied());
+    let sums =
+        instance_summaries(graph, ctx, Detail::Ids, graph.instances.keys().copied());
     for b in graph.blocks.iter() {
         if b.planned.get().is_some() {
             continue;
         }
-        let accesses =
-            with_callees(&local_summaries(b.children.iter(), graph, ctx), &sums);
+        let accesses = with_callees(
+            &local_summaries(b.children.iter(), graph, ctx, Detail::Ids),
+            &sums,
+        );
         let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
         let _ = b.planned.set(plan);
     }
@@ -1665,12 +1693,49 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // only the reads a sibling could publish (connect targets and references), which
     // keeps them small. The second changes what the parallel planner trusts and wants
     // its own pins.
+    // 2026-10-17 claude: The common case is linear now: a sibling's lets are named by
+    // no other sibling, so independent first takes summaries with no read or write ids
+    // (Detail::Flags) and, when no sibling but the last makes a reference and none
+    // reads through one or calls something opaque, decides by the ordered calls alone.
+    // Every site of the probe chain takes that path; GRAPHIX_PAR=auto at 1600
+    // functions 16.6-16.9 s -> 6.1 s against 5.0 s off (quick, under background load).
+    // What stands: the flags pass still walks the static graph below each site
+    // (quadratic in node visits, cheap ones), siblings that use references or opaque
+    // calls take the full quadratic path, and a warm start's first cycle stays serial;
+    // deciding at analysis and imaging the verdict covers all three.
     let inert =
         |n: &&Node<R, E>| matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
     if children.clone().filter(|n| !inert(n)).nth(1).is_none() {
         return Some(true);
     }
-    let accesses = accesses(children.clone(), ctx);
+    // A sibling's lets are named by no other sibling, so only a reference
+    // reaches what one publishes: with no reference made before the last
+    // sibling and none read through or opaque, the ordered calls decide,
+    // and no sibling's reads need collecting.
+    let flags = accesses(children.clone(), ctx, Detail::Flags);
+    let mut cells = Vars::default();
+    let n = flags.len();
+    for c in children.clone().take(n.saturating_sub(1)) {
+        fusion::for_each_node(c, &mut |x| {
+            if let NodeView::ByRef(b) = x.view() {
+                cells.ids.insert(b.id);
+            }
+        });
+    }
+    if cells.is_empty() && !flags.iter().any(|a| a.reads.unknown()) {
+        let mut ordered = false;
+        for a in flags.iter() {
+            if a.ordered && ordered {
+                return match flags.iter().any(|a| a.unbound) {
+                    true => None,
+                    false => Some(false),
+                };
+            }
+            ordered |= a.ordered;
+        }
+        return Some(true);
+    }
+    let accesses = accesses(children.clone(), ctx, Detail::Ids);
     let mut published = Vars::default();
     let mut ordered = false;
     for (n, access) in children.zip(accesses.iter()) {
@@ -1708,7 +1773,7 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     explain: &mut dyn FnMut(usize, RunBreak),
 ) -> Box<[(u32, u32)]> {
-    let accesses = accesses(children.iter(), ctx);
+    let accesses = accesses(children.iter(), ctx, Detail::Ids);
     plan_runs(children, catches, &accesses, explain)
 }
 
@@ -1793,7 +1858,7 @@ fn plan_machines<R: Rt, E: UserEvent>(
                         let mut sum = Summary::default();
                         let mut cs = SmallVec::new();
                         s.nodes.iter().for_each(|n| {
-                            local_summary(n, graph, ctx, &mut sum, &mut cs)
+                            local_summary(n, graph, ctx, Detail::Ids, &mut sum, &mut cs)
                         });
                         (sum, cs)
                     })
@@ -1803,6 +1868,7 @@ fn plan_machines<R: Rt, E: UserEvent>(
     let sums = instance_summaries(
         graph,
         ctx,
+        Detail::Ids,
         steps.iter().flat_map(|m| m.iter().flat_map(|(_, cs)| cs.iter().copied())),
     );
     for ((m, holder), local) in machines.iter().zip(steps.iter()) {
