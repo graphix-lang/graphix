@@ -316,6 +316,26 @@ run!(net_second_subscriber, r#"
     matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(1), Value::I64(42)])
 }; FuseExpect::None);
 
+// A reader that wakes gets the path's value though NetState held no Dval of
+// it while it slept: the rpc client the call keeps does, so netidx still
+// streams the path and sends a new reader nothing.
+run!(net_rewoken_reader_of_a_held_path, r#"
+{
+  sys::net::rpc(#path: "/local/pin/held", #doc: "d", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x)$;
+  let c: i64 = sys::net::call("/local/pin/held", sys::time::timer(duration:50.ms, false) ~ {x: 5})$;
+  let on = true;
+  on <- sys::time::timer(duration:150.ms, true) ~ !on;
+  let b = select on {
+    true => { let x: Array<string> = sys::net::subscribe("/local/pin/held")$; x },
+    false => ["off"]
+  };
+  let seen = count(select b { [s] if s == "off" => never(), x => x });
+  sys::time::timer(duration:700.ms, false) ~ (c, seen)
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[0] == Value::I64(5) && matches!(a[1], Value::I64(n) if n >= 2))
+}; FuseExpect::Jit);
+
 // Every update of a burst reaches the subscriber, in order.
 run!(net_burst_in_order, r#"
 {

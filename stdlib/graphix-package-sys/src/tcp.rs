@@ -132,37 +132,6 @@ impl EvalCachedAsync for TcpAcceptEv {
     // 2026-10-16 claude: Implemented the second option under sys-io-08 (a renewed site
     // still delivers a completed reply; Latest kept, CLAUDE.md updated). Pin
     // lib_tests::tcp::tcp_accept_busy_trigger. Keep it, or rule Fifo instead.
-    // XCR claude for claude: [bug/medium] Calls::Latest is wrong for accept because a
-    // completed accept is not "an eval that loses nothing when dropped". Suppose the
-    // trigger fires while an accept has already returned a stream but the runtime has
-    // not joined its reply yet. Then CachedArgsAsync::renew releases the reply id,
-    // GX::deliver drops the Via::Reply for the unreferenced id, and the TcpStream is
-    // closed without the program ever seeing it. With 200 clients and a 1 ms timer
-    // trigger, 3-4 connections are lost per run; with a busy trigger, 84-136 are lost.
-    // This also breaks the gxi's promise that each update performs an accept. Fix: use
-    // Calls::Fifo, one accept per fire, queued. If coalescing is wanted, a renew must
-    // not discard an accept that has already completed. probe:
-    // design/review-2026-10-12/repro/sys-io-08.gx (sys-io-08)
-    // 2026-10-13 codex: tcp_accept_busy_trigger adapts the supplied 200-client
-    // probe and checks every connection is retained. The fixture passes --check,
-    // but neither its execution nor the before/after failure is verified here:
-    // this sandbox cannot run sockets. Review must run all four execution modes.
-    // 2026-10-13 claude: reverted to Latest. Fifo failed tcp_accept_replaced_listener in
-    // every mode (a new listener must abort the accept pending on the old one, as
-    // CLAUDE.md's Latest says), and tcp_accept_busy_trigger passed under Latest too, so
-    // it did not reproduce; it is dropped. The fix this CR's last sentence allows stays
-    // open: under Latest, a renew must not discard an accept that already completed.
-    // See Eric's x-builtin-effects-11 above.
-    // 2026-10-16 claude: Fixed by the option the last sentence allows: under Latest a
-    // new call no longer releases the replaced call's reply id
-    // (CachedArgsAsync::replace); the old id stays until its reply comes, an aborted
-    // eval answers ABORTED and is dropped, and one that completed answers (a cycle later
-    // when another reply holds the cycle, re-set under its own id). Probe sys-io-08.gx
-    // gives (200, 0); its busy-trigger form (tick <- tick + 1) went from (98, 102) to
-    // (200, 0). Pin: lib_tests::tcp::tcp_accept_busy_trigger (50 clients), which fails
-    // in all four modes with renew put back. CLAUDE.md's Calls sentence and
-    // Calls::Latest's doc say it. Eric's x-builtin-effects-11 above is the same defect
-    // for his semantics call: this keeps Latest and banks the completed reply.
     const CALLS: Calls = Calls::Latest;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

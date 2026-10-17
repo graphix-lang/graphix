@@ -22,7 +22,8 @@ use netidx::{
     },
     resolver_client::ChangeTracker,
     subscriber::{
-        Dval, Event as NEvent, SubId, Subscriber, SubscriberBuilder, UpdatesFlags,
+        Dval, DvalWeak, Event as NEvent, SubId, Subscriber, SubscriberBuilder,
+        UpdatesFlags,
     },
 };
 use netidx_derive::IntoValue;
@@ -234,20 +235,40 @@ async fn build(
 struct Routes {
     subs: IntMap<SubId, Route>,
     writes: IntMap<Id, BindId>,
+    /// Each subscription the updates channel is registered on, while it
+    /// lives: netidx keeps the registration as long as any Dval of the
+    /// path does, ours or another holder's (an rpc client, a data table),
+    /// and then sends a new reader nothing (`NO_SPURIOUS`), so the
+    /// subscribe replays the last value itself.
+    registered: IntMap<SubId, DvalWeak>,
+    /// The size `registered` is pruned of ended subscriptions at.
+    prune_at: usize,
+}
+
+impl Routes {
+    /// Record that the updates channel is registered on `dv`; whether it
+    /// was already.
+    fn register(&mut self, dv: &Dval) -> bool {
+        if self.registered.contains_key(&dv.id()) {
+            return true;
+        }
+        if self.registered.len() >= self.prune_at {
+            self.registered.retain(|_, w| w.upgrade().is_some());
+            self.prune_at = (self.registered.len() * 2).max(64);
+        }
+        self.registered.insert(dv.id(), dv.downgrade());
+        false
+    }
 }
 
 /// One subscription's routing. netidx SHARES Dvals by path: several
 /// builtins subscribing the same path get the same SubId, so routing is a
 /// fan-out list. The route lives while any Dval this state handed out for
-/// the SubId does (a reader's or a write target's), and so knows whether
-/// the updates channel is registered on it:
-/// netidx then sends a new reader nothing (`NO_SPURIOUS`), and the
-/// subscribe replays the last value itself.
+/// the SubId does (a reader's or a write target's).
 #[derive(Default)]
 struct Route {
     ids: smallvec::SmallVec<[BindId; 2]>,
     held: usize,
-    streamed: bool,
 }
 
 struct PendingRequest(AbortHandle);
@@ -485,34 +506,16 @@ impl NetState {
         // 2026-10-16 claude: Same mechanism as sys-net-02 just below (a reader joining a route
         // netidx already streams gets its replay targeted at it), which Eric readdressed to
         // himself on 2026-10-14; readdressed with it.
+        // 2026-10-17 claude: Point (2) is fixed with sys-net-02: Routes::register remembers,
+        // per SubId and while the subscription lives (a DvalWeak), that the updates channel is
+        // registered, so a reader subscribing after its route was removed gets the replay. Pin
+        // lib_tests::net::net_rewoken_reader_of_a_held_path. Point (1), the replay racing the
+        // route's creation, stands.
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         let mut routes = self.0.routes.lock();
+        let streamed = routes.register(&dv);
         let route = routes.subs.entry(dv.id()).or_default();
-        // CR claude for claude: [bug/medium] `streamed` only says whether a Dval that
-        // NetState handed out is still alive. It does not say whether netidx still has
-        // the shared updates channel registered, and that registration lasts as long as
-        // any Dval of the path. The rpc client cache in `call_rpc`, the gui
-        // data_table's raw `subscriber`, or an embedder sharing the subscriber can each
-        // keep one alive. When a subscribe arm sleeps, `drop_dval` removes the route.
-        // On wake, the subscribe creates a new route with `streamed = false` and
-        // replays nothing, and netidx sends no last value because NO_SPURIOUS sees the
-        // channel is already registered. The reader then stays bottom until the
-        // publisher's value changes. Fix: give each reader its own channel with plain
-        // BEGIN_WITH_LAST so netidx decides when to send the last value (the same root
-        // fix as the late-subscriber finding), or always replay `dv.last()` here and
-        // drop the duplicate in the pump. probe:
-        // design/review-2026-10-12/repro/sys-net-02.gx (sys-net-02)
-        // 2026-10-13 codex: The suggested per-reader BEGIN_WITH_LAST channel needs an upstream
-        // fix first: ../netidx/netidx/src/subscriber/connection.rs::handle_connect_stream
-        // pushes its replay into stream_batch, and process_updates_batch broadcasts
-        // that replay to every channel on the subscription. New readers would fire
-        // existing readers too (contrary to net_second_subscriber), and several
-        // channel registrations in one batch can replay duplicates to new readers.
-        // Netidx must target the replay at the joining channel in stream order;
-        // then sys can remove shared routing/manual last replay. Equality filtering
-        // would discard legitimate repeated writes. Socket probes cannot run here;
-        // the candidate sys rewrite was discarded. Upstream changes are outside scope.
         // CR claude for eric: [bug/high] A late second reader of a busy path sees the
         // same value twice, or newer then older values. This replay sends dv.last()
         // through set_var, and then the reader's BindId joins route.ids. The pump reads
@@ -539,13 +542,12 @@ impl NetState {
         // then sys can remove shared routing/manual last replay. Equality filtering
         // would discard legitimate repeated writes. Socket probes cannot run here;
         // the candidate sys rewrite was discarded. Upstream changes are outside scope.
-        if route.streamed
+        if streamed
             && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
             && let ev @ NEvent::Update(_) = dv.last()
         {
             ctx.rt.set_var(id, translate(ev));
         }
-        route.streamed = true;
         route.held += 1;
         route.ids.push(id);
         Ok(dv)
