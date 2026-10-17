@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d3d2e6fa.js";
+            window.path_to_searchindex_js = "searchindex-dd0c8226.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -5212,32 +5212,15 @@ trait Collection {
     /// the elements `f` accepts
     val filter: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; self&lt;'a&gt; throws 'e
         = |c, f| filter_map(c, |x| select f(x) { true =&gt; x, false =&gt; null });
-    // CR claude for claude: [perf/medium] This default folds a `(bool, Option&lt;'a&gt;)`
-    // tuple. In a fused loop a tuple accumulator costs 10 to 20x a scalar one, even
-    // `(i64, i64)` with no union and no destructuring pattern. #[native] accepts the
-    // fold, so the cost is in the kernel loop, most likely a composite built and
-    // dropped every iteration. Map's find and every user Collection's find pay it.
-    // Probe: design/review-2026-10-12/repro/examples-rest-04.gx (0.07 to 0.09 s against
-    // 0.007 s for the scalar fold, debug, 500k). Fix the root cause in fusion: carry a
-    // fixed-arity tuple or struct accumulator as one loop-carried value per field, and
-    // build the composite at loop exit. Then re-time this default. (examples-rest-04)
-    // 2026-10-16 claude: Done in part: a fold whose acc is a tuple of scalars, named by
-    // one parameter, built by a tuple literal and read only field by field (p.0),
-    // carries each field in its own register and builds the tuple once after the loop
-    // (scaffold::emit_fold_fields_loop, JitEnv::unpack); the probe runs in 2.7 ms
-    // against 73 ms (quick build), the scalar fold's time; pin
-    // lang::fusion::native_tuple_acc_folds. Open: this default, whose body is a select
-    // whose arms build the tuple and whose acc holds an Option (a two-word Value
-    // field), and a destructured acc parameter.
     /// the first element `f` accepts
     val find: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e
         = |c, f| {
-            let init: Option&lt;'a&gt; = null;
-            let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
-                true =&gt; (done, acc),
-                false =&gt; select f(x) { true =&gt; (true, x), false =&gt; (false, acc) }
+            let init: [`Found('a), null] = null;
+            let found = fold(c, init, |acc, x| select acc {
+                null as _ =&gt; select f(x) { true =&gt; `Found(x), false =&gt; null },
+                found =&gt; found
             });
-            found
+            select found { `Found(x) =&gt; x, null as _ =&gt; null }
         };
     /// the first value `f` maps an element to
     val find_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e
@@ -7684,19 +7667,6 @@ so a script prints either and exits, 0 for help and non-zero for an
 error, as the example does.</p>
 <h2 id="example-2"><a class="header" href="#example-2">Example</a></h2>
 <pre><code class="language-graphix">
-// XCR claude for claude: [doc-drift/medium] args::parse returns clap's help text,
-// version text and usage errors as `ArgError(string)`, and this example drops all of
-// them with `$`. As a result `cli.gx -- --help` and `cli.gx -- --bogus` both print
-// nothing and exit 0. Select on the result instead: print the ArgError text and exit,
-// with code 0 for help and version and non-zero for a usage error. In args.md, say that
-// help, version and usage errors come back as ArgError, that parse reads the program's
-// own arguments (sys::args), and that a flag's value in `values` is the string "true"
-// or "false". (book-stdlib-08)
-// 2026-10-13 claude: help and version text now come back as
-// `ArgHelp(string), distinct from a usage error's `ArgError (Parse::update, mod.gxi), so
-// the example exits 0 for them and 2 for a usage error; args.md documents both, sys::args
-// and the flag strings. Review the new variant: it changes parse's type. Pins:
-// lib_tests::args::parse_help_is_arg_help, parse_usage_error.
 let cli: args::ParseResult = select args::parse(
     args::command(
         #name: "example",
