@@ -3,12 +3,12 @@
 //! accessors; a read applies the path to the root's value, a write
 //! rebuilds the root's value along it.
 
-use crate::{abstract_value, expr::Expr};
+use crate::{abstract_value, expr::Expr, rep};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
-use netidx_value::{ValArray, ValError, Value};
+use netidx_value::{ValError, Value};
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
 use triomphe::Arc;
@@ -95,8 +95,10 @@ fn index_of(len: usize, i: i64) -> Result<usize> {
 }
 
 /// The position and value of the struct field `name`.
-fn field_of<'a>(pairs: &'a ValArray, name: &str) -> Result<(usize, &'a Value)> {
-    crate::rep::field_named(pairs, name).ok_or_else(|| anyhow!("no field {name}"))
+fn field_of<'a>(v: &'a Value, name: &str) -> Result<(usize, &'a Value)> {
+    rep::struct_fields(v)
+        .and_then(|fields| rep::field_named(fields, name))
+        .ok_or_else(|| anyhow!("no field {name}"))
 }
 
 /// The value at `path` inside `root`. A map step compares keys, so the
@@ -105,12 +107,14 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
     let mut cur = root;
     for step in path {
         cur = match (step, cur) {
-            (Step::Index(i), Value::Array(a)) => &a[index_of(a.len(), *i)?],
+            (Step::Index(i), v) if let Some(a) = rep::indexed(v) => {
+                &a[index_of(a.len(), *i)?]
+            }
             (Step::Index(0), Value::Error(e)) => e,
             (Step::Index(0), v) if abstract_value::get(v).is_some() => {
                 &abstract_value::get(v).unwrap().payload
             }
-            (Step::Field(name), Value::Array(pairs)) => field_of(pairs, name)?.1,
+            (Step::Field(name), v) => field_of(v, name)?.1,
             (Step::Key(k), Value::Map(m)) => {
                 m.get(k).ok_or_else(|| anyhow!("no key {k}"))?
             }
@@ -129,32 +133,18 @@ pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
         return Ok(abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), payload));
     }
     match (step, root) {
-        (Step::Index(i), Value::Array(a)) => {
+        (Step::Index(i), root) if let Some(a) = rep::indexed(root) => {
             let j = index_of(a.len(), *i)?;
             let inner = write_path(&a[j], rest, v)?;
-            Ok(Value::Array(ValArray::from_iter_exact(
-                a.iter()
-                    .enumerate()
-                    .map(|(k, e)| if k == j { inner.clone() } else { e.clone() }),
-            )))
+            Ok(rep::replace_indexed(root, j, inner).expect("indexed"))
         }
         (Step::Index(0), Value::Error(e)) => {
             Ok(Value::Error(ValError::new(write_path(e, rest, v)?)))
         }
-        (Step::Field(name), Value::Array(pairs)) => {
-            let (j, cur) = field_of(pairs, name)?;
+        (Step::Field(name), root) => {
+            let (j, cur) = field_of(root, name)?;
             let inner = write_path(cur, rest, v)?;
-            Ok(Value::Array(ValArray::from_iter_exact(pairs.iter().enumerate().map(
-                |(k, e)| {
-                    if k == j {
-                        Value::Array(ValArray::from_iter_exact(
-                            [Value::String(name.clone()), inner.clone()].into_iter(),
-                        ))
-                    } else {
-                        e.clone()
-                    }
-                },
-            ))))
+            Ok(rep::replace_field(root, j, inner).expect("a struct"))
         }
         (Step::Key(k), Value::Map(m)) => {
             let inner = match m.get(k) {

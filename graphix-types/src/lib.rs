@@ -97,22 +97,26 @@ impl<T: Copy + 'static> Drop for Restore<T> {
 #[macro_export]
 macro_rules! err {
     ($tag:expr, $err:literal) => {{
-        let e: Value = ($tag.clone(), ::arcstr::literal!($err)).into();
-        Value::Error(e.into())
+        let tag = ::arcstr::ArcStr::from($tag.clone());
+        let msg = ::netidx_value::Value::from(::arcstr::literal!($err));
+        ::netidx_value::Value::Error($crate::rep::make_variant(tag, [msg]).into())
     }};
 }
 
 #[macro_export]
 macro_rules! errf {
     ($tag:expr, $fmt:expr, $($args:expr),*) => {{
-        let msg: ArcStr = ::compact_str::format_compact!($fmt, $($args),*).as_str().into();
-        let e: Value = ($tag.clone(), msg).into();
-        Value::Error(e.into())
+        let msg: ::arcstr::ArcStr =
+            ::compact_str::format_compact!($fmt, $($args),*).as_str().into();
+        let tag = ::arcstr::ArcStr::from($tag.clone());
+        let e = $crate::rep::make_variant(tag, [::netidx_value::Value::from(msg)]);
+        ::netidx_value::Value::Error(e.into())
     }};
     ($tag:expr, $fmt:expr) => {{
-        let msg: ArcStr = ::compact_str::format_compact!($fmt).as_str().into();
-        let e: Value = ($tag.clone(), msg).into();
-        Value::Error(e.into())
+        let msg: ::arcstr::ArcStr = ::compact_str::format_compact!($fmt).as_str().into();
+        let tag = ::arcstr::ArcStr::from($tag.clone());
+        let e = $crate::rep::make_variant(tag, [::netidx_value::Value::from(msg)]);
+        ::netidx_value::Value::Error(e.into())
     }};
 }
 

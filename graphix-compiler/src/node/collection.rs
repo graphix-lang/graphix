@@ -200,18 +200,16 @@ impl MapCollection for ValArray {
 type ValueMap = CMap<Value, Value, 32>;
 
 /// The Map-HOF pair encoding: each `(k, v)` entry crosses the callback
-/// as `Value::Array([k, v])`. Every encoder and decoder, interpreted
-/// or JIT, goes through `make_pair` / [`split_pair`].
+/// as the tuple `(k, v)`. Every encoder and decoder, interpreted or JIT,
+/// goes through `make_pair` / [`split_pair`].
 pub(crate) fn make_pair(key: &Value, value: &Value) -> Value {
-    Value::Array(ValArray::from_iter_exact([key.clone(), value.clone()].into_iter()))
+    crate::rep::tuple([key.clone(), value.clone()])
 }
 
 /// See [`make_pair`].
 pub(crate) fn split_pair(value: &Value) -> Option<(Value, Value)> {
-    match value {
-        Value::Array(values) if values.len() == 2 => {
-            Some((values[0].clone(), values[1].clone()))
-        }
+    match crate::rep::tuple_elems(value)? {
+        [k, v] => Some((k.clone(), v.clone())),
         _ => None,
     }
 }

@@ -567,10 +567,10 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
 }
 
 fn ordering_of(v: &Value) -> Option<Ordering> {
-    match v {
-        Value::String(s) if &**s == "Less" => Some(Ordering::Less),
-        Value::String(s) if &**s == "Equal" => Some(Ordering::Equal),
-        Value::String(s) if &**s == "Greater" => Some(Ordering::Greater),
+    match crate::rep::variant(v)? {
+        (tag, []) if &**tag == "Less" => Some(Ordering::Less),
+        (tag, []) if &**tag == "Equal" => Some(Ordering::Equal),
+        (tag, []) if &**tag == "Greater" => Some(Ordering::Greater),
         _ => None,
     }
 }

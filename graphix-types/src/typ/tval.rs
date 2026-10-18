@@ -1,5 +1,5 @@
 use super::{PrintFlag, Type, cast::IsAFlags};
-use crate::{abstract_value, env::Env, list, typ::format_with_flags};
+use crate::{abstract_value, env::Env, list, rep, typ::format_with_flags};
 use ahash::AHashMap;
 use netidx_value::{NakedValue, Typ, Value};
 use poolshark::local::LPooled;
@@ -141,13 +141,13 @@ impl fmt::Display for NakedPrefix<'_> {
 /// the form says nothing.
 pub(super) fn has_form(t: &Type, v: &Value) -> bool {
     match (t, v) {
-        (Type::Array(_), Value::Array(_)) => true,
+        (Type::Array(_), v) => rep::array_elems(v).is_some(),
         (Type::List(_), v) => list::is_list(v),
-        (Type::Tuple(ts), Value::Array(a)) => a.len() == ts.len(),
-        (Type::Struct(fs), Value::Array(a)) => a.len() == fs.len(),
-        (Type::Variant(tag, ps, _), v @ (Value::String(_) | Value::Array(_))) => {
-            crate::rep::is_variant(v, tag, ps.len())
+        (Type::Tuple(ts), v) => rep::tuple_elems(v).is_some_and(|a| a.len() == ts.len()),
+        (Type::Struct(fs), v) => {
+            rep::struct_fields(v).is_some_and(|a| a.len() == fs.len())
         }
+        (Type::Variant(tag, ps, _), v) => rep::is_variant(v, tag, ps.len()),
         (Type::Map { .. }, Value::Map(_))
         | (Type::Error(_), Value::Error(_))
         | (Type::Abstract { .. }, Value::Abstract(_)) => true,
@@ -259,7 +259,7 @@ impl<'a> TVal<'a> {
                 };
                 r
             }
-            (Type::Array(et), Value::Array(a)) => {
+            (Type::Array(et), v) if let Some(a) = rep::array_elems(v) => {
                 write!(f, "[")?;
                 for (i, v) in a.iter().enumerate() {
                     Self { typ: et, env: self.env, v }.fmt_int(f, hist)?;
@@ -307,11 +307,11 @@ impl<'a> TVal<'a> {
             (Type::Map { .. }, v) => fmt_naked(f, v),
             // a reference's id is the session's, never the program's
             (Type::ByRef(..), _) => write!(f, "&ref"),
-            (Type::Struct(flds), Value::Array(a)) => {
+            (Type::Struct(flds), v) if let Some(a) = rep::struct_fields(v) => {
                 write!(f, "{{")?;
                 for (i, ((n, et, _), v)) in flds.iter().zip(a.iter()).enumerate() {
                     write!(f, "{n}: ")?;
-                    match crate::rep::field(v) {
+                    match rep::field(v) {
                         Some((_, v)) => {
                             Self { typ: et, env: self.env, v }.fmt_int(f, hist)?
                         }
@@ -324,7 +324,7 @@ impl<'a> TVal<'a> {
                 write!(f, "}}")
             }
             (Type::Struct(_), v) => fmt_naked(f, v),
-            (Type::Tuple(flds), Value::Array(a)) => {
+            (Type::Tuple(flds), v) if let Some(a) = rep::tuple_elems(v) => {
                 write!(f, "(")?;
                 for (i, (t, v)) in flds.iter().zip(a.iter()).enumerate() {
                     Self { typ: t, env: self.env, v }.fmt_int(f, hist)?;
@@ -343,9 +343,12 @@ impl<'a> TVal<'a> {
                 Some(typ) => TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist),
                 None => fmt_naked(f, v),
             },
-            (Type::Variant(n, flds, _), Value::Array(a)) if a.len() >= 2 => {
+            (Type::Variant(n, flds, _), v)
+                if let Some((_, payload)) = rep::variant(v)
+                    && !payload.is_empty() =>
+            {
                 write!(f, "`{n}(")?;
-                for (i, (t, v)) in flds.iter().zip(a[1..].iter()).enumerate() {
+                for (i, (t, v)) in flds.iter().zip(payload.iter()).enumerate() {
                     Self { typ: t, env: self.env, v }.fmt_int(f, hist)?;
                     if i < flds.len() - 1 {
                         write!(f, ", ")?
@@ -353,7 +356,9 @@ impl<'a> TVal<'a> {
                 }
                 write!(f, ")")
             }
-            (Type::Variant(_, _, _), Value::String(s)) => write!(f, "`{s}"),
+            (Type::Variant(_, _, _), v) if let Some((tag, [])) = rep::variant(v) => {
+                write!(f, "`{tag}")
+            }
             (Type::Variant(_, _, _), v) => fmt_naked(f, v),
             (Type::Set(ts), v) => match member_of(self.env, ts, v) {
                 None => fmt_naked(f, v),

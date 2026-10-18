@@ -24,7 +24,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{Typ, ValArray, Value};
+use netidx_value::{Typ, Value};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -645,8 +645,7 @@ fn wrap_arith_error(result: Value) -> Value {
                 Value::String(s) => Value::String(s.clone()),
                 e => Value::from(format_compact!("{e}")),
             };
-            let tag = Value::String(ARITH_ERR_TAG.clone());
-            Value::Error(Value::Array(ValArray::from_iter([tag, msg])).into())
+            Value::Error(crate::rep::make_variant(ARITH_ERR_TAG.clone(), [msg]).into())
         }
         v => v,
     }

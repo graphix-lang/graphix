@@ -681,7 +681,7 @@ impl Type {
                         }
                         Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
                     }
-                    Value::Array(elts) => Ok(cast_elts(
+                    v if let Some(elts) = rep::array_elems(v) => Ok(cast_elts(
                         &elts[..],
                         |v| v,
                         |_, el| et.cast_int(env, cx, src, el),
@@ -740,7 +740,7 @@ impl Type {
                         }
                         Ok(changed.then(|| list::from_iter(out.drain(..))))
                     }
-                    Value::Array(elts) => {
+                    v if let Some(elts) = rep::array_elems(v) => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for el in elts.iter() {
                             let c = et.cast_int(env, cx, src, el)?;
@@ -781,11 +781,11 @@ impl Type {
                         }
                         Ok(changed.then(|| Value::Map(Map::from_iter(out.drain(..)))))
                     }
-                    Value::Array(a) => {
+                    v if let Some(a) = rep::array_elems(v) => {
                         let mut out: LPooled<Vec<(Value, Value)>> = LPooled::take();
                         for p in a.iter() {
-                            match p {
-                                Value::Array(p) if p.len() == 2 => {
+                            match rep::read_tuple(p).map(|p| p.elems()) {
+                                Some(p @ [_, _]) => {
                                     let kv = entry(&p[0], &p[1])?;
                                     out.push(
                                         kv.unwrap_or_else(|| {
@@ -811,21 +811,29 @@ impl Type {
                     Some(Type::Tuple(ss)) if ss.len() == ts.len() => Some(ss),
                     _ => None,
                 };
-                match v {
-                    Value::Array(elts) if elts.len() == ts.len() => Ok(cast_elts(
-                        &elts[..],
-                        |v| v,
-                        |i, el| ts[i].cast_int(env, cx, ss.map(|ss| &ss[i]), el),
-                    )?
-                    .map(|mut a| Value::Array(ValArray::from_iter_exact(a.drain(..))))),
-                    Value::Array(_) => Err(self.cast_fail("tuple size mismatch", v)),
-                    _ => Err(self.cast_fail("not a tuple", v)),
+                match rep::read_tuple(v) {
+                    Some(parts) if parts.elems().len() == ts.len() => {
+                        let elts = parts.elems();
+                        let cast = cast_elts(
+                            elts,
+                            |v| v,
+                            |i, el| ts[i].cast_int(env, cx, ss.map(|ss| &ss[i]), el),
+                        )?;
+                        Ok(match (cast, parts.held()) {
+                            (None, true) => None,
+                            (None, false) => Some(rep::tuple(elts.iter().cloned())),
+                            (Some(mut a), _) => Some(rep::tuple(a.drain(..))),
+                        })
+                    }
+                    Some(_) => Err(self.cast_fail("tuple size mismatch", v)),
+                    None => Err(self.cast_fail("not a tuple", v)),
                 }
             }
             Type::Struct(ts) => {
-                let Value::Array(elts) = v else {
+                let Some(parts) = rep::read_struct(v) else {
                     return Err(self.cast_fail("not a struct", v));
                 };
+                let elts = parts.elems();
                 if elts.len() > ts.len() {
                     return Err(self.cast_fail("struct size mismatch", v));
                 }
@@ -879,7 +887,7 @@ impl Type {
                     |(_, fv)| *fv,
                     |i, fv| ts[i].1.cast_int(env, cx, ss.map(|ss| &ss[i].1), fv),
                 )?;
-                if sorted && cast.is_none() {
+                if sorted && cast.is_none() && parts.held() {
                     return Ok(None);
                 }
                 let mut out: LPooled<Vec<Value>> = LPooled::take();
@@ -890,10 +898,12 @@ impl Type {
                     };
                     out.push(rep::make_field((*n).clone(), fv));
                 }
-                Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
+                Ok(Some(rep::structure_of_fields(out.drain(..))))
             }
-            Type::Variant(tag, ts, _) if ts.is_empty() => match v {
-                Value::String(s) if s == tag => Ok(None),
+            Type::Variant(tag, ts, _) if ts.is_empty() => match rep::read_variant(v) {
+                Some((t, parts)) if t == tag && parts.elems().is_empty() => {
+                    Ok((!parts.held()).then(|| rep::make_variant(tag.clone(), [])))
+                }
                 _ => Err(self.cast_fail("variant tag mismatch", v)),
             },
             Type::Variant(tag, ts, _) => {
@@ -907,32 +917,38 @@ impl Type {
                     _ => None,
                 };
                 let payload = |i: usize| ss.map(|ss| &ss[i]);
-                match v {
-                    Value::Array(elts) if elts.len() == ts.len() + 1 => {
-                        let Some((_, elts)) = rep::variant(v).filter(|(t, _)| *t == tag)
-                        else {
+                let read = rep::read_variant(v);
+                match (read, rep::array_elems(v)) {
+                    (Some((t, parts)), _) if parts.elems().len() == ts.len() => {
+                        if t != tag {
                             return Err(self.cast_fail("variant tag mismatch", v));
-                        };
-                        Ok(cast_elts(
+                        }
+                        let elts = parts.elems();
+                        let cast = cast_elts(
                             elts,
                             |v| v,
                             |i, el| ts[i].cast_int(env, cx, payload(i), el),
-                        )?
-                        .map(|mut a| {
-                            a.insert(0, Value::String(tag.clone()));
-                            Value::Array(ValArray::from_iter_exact(a.drain(..)))
-                        }))
+                        )?;
+                        Ok(match (cast, parts.held()) {
+                            (None, true) => None,
+                            (None, false) => {
+                                Some(rep::make_variant(tag.clone(), elts.iter().cloned()))
+                            }
+                            (Some(mut a), _) => {
+                                Some(rep::make_variant(tag.clone(), a.drain(..)))
+                            }
+                        })
                     }
-                    Value::Array(elts) if elts.len() == ts.len() => {
+                    // a payload written without its tag, as json may carry it
+                    (_, Some(elts)) if elts.len() == ts.len() => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
-                        out.push(Value::String(tag.clone()));
                         for (i, el) in elts.iter().enumerate() {
                             let c = ts[i].cast_int(env, cx, payload(i), el)?;
                             out.push(c.unwrap_or_else(|| el.clone()));
                         }
-                        Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
+                        Ok(Some(rep::make_variant(tag.clone(), out.drain(..))))
                     }
-                    Value::Array(_) => Err(self.cast_fail("variant length mismatch", v)),
+                    (_, Some(_)) => Err(self.cast_fail("variant length mismatch", v)),
                     _ => Err(self.cast_fail("not a variant", v)),
                 }
             }
@@ -1137,7 +1153,7 @@ impl Type {
             Type::Array(et)
                 if matches!(&**et, Type::Any) && !flags.contains(IsAFlags::Strict) =>
             {
-                matches!(v, Value::Array(_))
+                rep::array_elems(v).is_some()
             }
             Type::Array(et) => match v {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
@@ -1180,8 +1196,8 @@ impl Type {
                 _ => false,
             },
             Type::ByRef(..) => crate::reference::cell(v).is_some(),
-            Type::Tuple(ts) => match v {
-                Value::Array(elts) => {
+            Type::Tuple(ts) => match rep::tuple_elems(v) {
+                Some(elts) => {
                     elts.len() == ts.len()
                         && ts
                             .iter()
@@ -1190,8 +1206,8 @@ impl Type {
                 }
                 _ => false,
             },
-            Type::Struct(ts) => match v {
-                Value::Array(elts) => {
+            Type::Struct(ts) => match rep::struct_fields(v) {
+                Some(elts) => {
                     elts.len() == ts.len()
                         && ts.iter().zip(elts.iter()).all(|((n, t, _), v)| {
                             match rep::field(v) {
@@ -2070,14 +2086,9 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
 /// Why a `Cast` implementation refused: the message of its
 /// `` `InvalidCast(why) ``, else the error as it prints.
 fn refusal(e: &Value) -> Cow<'static, str> {
-    match e {
-        Value::Array(a)
-            if a.len() == 2
-                && let Value::String(s) = &a[1] =>
-        {
-            Cow::Owned(s.to_string())
-        }
-        e => Cow::Owned(format!("{}", NakedPrefix(e))),
+    match rep::variant(e) {
+        Some((_, [Value::String(s)])) => Cow::Owned(s.to_string()),
+        _ => Cow::Owned(format!("{}", NakedPrefix(e))),
     }
 }
 
@@ -2086,15 +2097,7 @@ fn refusal(e: &Value) -> Cow<'static, str> {
 fn carries_tag(env: &Env, t: &Type, v: &Value) -> bool {
     let Some(head) = rep_head(env, t) else { return false };
     let Type::Variant(tag, args, _) = &*head else { return false };
-    match v {
-        Value::String(s) => args.is_empty() && s == tag,
-        Value::Array(a) => {
-            !args.is_empty()
-                && a.len() == args.len() + 1
-                && matches!(&a[0], Value::String(s) if s == tag)
-        }
-        _ => false,
-    }
+    rep::read_variant(v).is_some_and(|(t, p)| t == tag && p.elems().len() == args.len())
 }
 
 /// The primitives `v` reads as without leaving its runtime class: every
@@ -2112,7 +2115,7 @@ fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
         Some(Type::Primitive(s)) => s.intersects(own_class(v)),
         Some(Type::Set(ts)) => ts.iter().any(|t| in_own_class(env, t, v)),
         Some(Type::Variant(_, args, _)) if args.is_empty() => {
-            matches!(v, Value::String(_))
+            rep::read_variant(v).is_some_and(|(_, p)| p.elems().is_empty())
         }
         Some(
             Type::Array(_)
@@ -2278,10 +2281,10 @@ fn map_refs(
         let Some(t) = rep_head(env, t) else { return v.clone() };
         let t = &*t;
         let mut each = |ts: &mut dyn Iterator<Item = (&Type, &Value)>| {
-            let mut vs: LPooled<Vec<Value>> =
+            let vs: LPooled<Vec<Value>> =
                 Iterator::map(&mut &mut *ts, |(t, v)| map_refs(env, holds, t, v, f))
                     .collect();
-            Value::Array(ValArray::from_iter_exact(vs.drain(..)))
+            vs
         };
         match (t, v) {
             (Type::ByRef(..), v) => f(v),
@@ -2292,22 +2295,35 @@ fn map_refs(
             (Type::Error(e), Value::Error(x)) => {
                 Value::Error(map_refs(env, holds, e, x, f).into())
             }
-            (Type::Array(e), Value::Array(x)) => each(&mut x.iter().map(|v| (&**e, v))),
+            (Type::Array(e), v) if let Some(x) = rep::array_elems(v) => {
+                let mut vs = each(&mut x.iter().map(|v| (&**e, v)));
+                Value::Array(ValArray::from_iter_exact(vs.drain(..)))
+            }
             (Type::List(e), v) => {
                 let vs: LPooled<Vec<Value>> = list::Iter::new(v.clone())
                     .map(|v| map_refs(env, holds, e, &v, f))
                     .collect();
                 list::from_iter(vs.iter().cloned())
             }
-            (Type::Tuple(ts), Value::Array(x)) if x.len() == ts.len() => {
-                each(&mut ts.iter().zip(x.iter()))
+            (Type::Tuple(ts), v)
+                if let Some(x) = rep::tuple_elems(v)
+                    && x.len() == ts.len() =>
+            {
+                let mut vs = each(&mut ts.iter().zip(x.iter()));
+                rep::tuple(vs.drain(..))
             }
-            (Type::Variant(tag, ts, _), Value::Array(x)) if x.len() == ts.len() + 1 => {
-                let name =
-                    Type::Variant(tag.clone(), Arc::from_iter([]), WrittenAt::NOWHERE);
-                each(&mut std::iter::once(&name).chain(ts.iter()).zip(x.iter()))
+            (Type::Variant(tag, ts, _), v)
+                if let Some((_, x)) = rep::variant(v)
+                    && !x.is_empty()
+                    && x.len() == ts.len() =>
+            {
+                let mut vs = each(&mut ts.iter().zip(x.iter()));
+                rep::make_variant(tag.clone(), vs.drain(..))
             }
-            (Type::Struct(fs), Value::Array(x)) if x.len() == fs.len() => {
+            (Type::Struct(fs), v)
+                if let Some(x) = rep::struct_fields(v)
+                    && x.len() == fs.len() =>
+            {
                 let mut vs: LPooled<Vec<Value>> = fs
                     .iter()
                     .zip(x.iter())
@@ -2318,7 +2334,7 @@ fn map_refs(
                         None => field.clone(),
                     })
                     .collect();
-                Value::Array(ValArray::from_iter_exact(vs.drain(..)))
+                rep::structure_of_fields(vs.drain(..))
             }
             (Type::Map { value, .. }, Value::Map(m)) => Value::Map(
                 m.into_iter()

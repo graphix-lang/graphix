@@ -244,13 +244,18 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                     Some(payload) => [prim_to_value_disc(*prim) as u64, payload],
                     None => mismatch(v),
                 },
-                (
-                    ParamKind::Array { .. }
-                    | ParamKind::Tuple { .. }
-                    | ParamKind::Struct { .. },
-                    Value::Array(_),
-                )
-                | (ParamKind::String, Value::String(_))
+                (ParamKind::Array { .. }, v) if crate::rep::array_elems(v).is_some() => {
+                    value_words(v)
+                }
+                (ParamKind::Tuple { .. }, v) if crate::rep::tuple_elems(v).is_some() => {
+                    value_words(v)
+                }
+                (ParamKind::Struct { .. }, v)
+                    if crate::rep::struct_fields(v).is_some() =>
+                {
+                    value_words(v)
+                }
+                (ParamKind::String, Value::String(_))
                 | (
                     ParamKind::Variant { .. }
                     | ParamKind::Nullable { .. }

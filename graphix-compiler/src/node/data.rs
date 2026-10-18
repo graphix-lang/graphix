@@ -16,6 +16,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
+    rep,
     typ::{AbstractId, Type},
     wrap,
 };
@@ -23,7 +24,7 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint};
-use netidx_value::{ValArray, Value};
+use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::iter;
@@ -162,7 +163,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         if self.n.is_empty() {
             return super::produce_constant(ctx.event, &mut self.resident, || {
-                Value::Array(ValArray::from([]))
+                rep::structure_of_fields([])
             });
         }
         let fields = self.n.len();
@@ -173,22 +174,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         // holds, unless a wake recomputed it
         let held = match self.resident.is_bottom() || woke {
             true => None,
-            false => self.resident.with_value(|v| match v {
-                Value::Array(a) if a.len() == fields => Some(a.clone()),
-                _ => None,
+            false => self.resident.with_value(|v| {
+                rep::struct_fields(v)
+                    .is_some_and(|f| f.len() == fields)
+                    .then(|| v.clone())
             }),
         };
+        let held = held.as_ref().and_then(rep::struct_fields);
         let iter =
-            self.names.iter().zip(prods).enumerate().map(|(i, (name, tv))| match &held {
+            self.names.iter().zip(prods).enumerate().map(|(i, (name, tv))| match held {
                 Some(held) if !tv.tag().triggers() => held[i].clone(),
-                _ => {
-                    let name = Value::String(name.clone());
-                    Value::Array(ValArray::from_iter_exact(
-                        [name, tv.value_cloned()].into_iter(),
-                    ))
-                }
+                _ => rep::make_field(name.clone(), tv.value_cloned()),
             });
-        let v = Value::Array(ValArray::from_iter_exact(iter));
+        let v = rep::structure_of_fields(iter);
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -323,19 +321,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             self.replace.iter_mut().map(|r| r.n.update(ctx)).collect();
         let tag = vals.iter().fold(src.tag(), |t, v| t.join(v.tag()));
         // an unshaped (non-struct-rep) source is bottom
-        let shaped = src.with_value(|v| matches!(v, Value::Array(_)));
+        let shaped = src.with_value(|v| rep::struct_fields(v).is_some());
         dense_gate!(self, tag, tag.is_bottom() || !shaped);
         let v = src.with_value(|src| {
-            let Value::Array(src) = src else { unreachable!("gated on the shape") };
+            let src = rep::struct_fields(src).expect("gated on the shape");
             let mut fields: LPooled<Vec<Value>> = src.iter().cloned().collect();
             for (i, v) in index.iter().zip(vals.iter()) {
                 if let Some(i) = *i
-                    && let Some((name, _)) = crate::rep::field_at(src, i)
+                    && let Some((name, _)) = rep::field_at(src, i)
                 {
-                    fields[i] = crate::rep::make_field(name.clone(), v.value_cloned());
+                    fields[i] = rep::make_field(name.clone(), v.value_cloned());
                 }
             }
-            Value::Array(ValArray::from_iter_exact(fields.drain(..)))
+            rep::structure_of_fields(fields.drain(..))
         });
         self.resident.set(TagValue::tagged(v, tag))
     }
@@ -454,11 +452,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         if tag.is_bottom() {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
-        let res = tv.with_value(|v| match (v, self.sorted_field_idx) {
-            (Value::Array(a), Some(i)) => {
-                crate::rep::field_at(a, i).map(|(_, v)| v.clone())
-            }
-            _ => None,
+        let res = tv.with_value(|v| {
+            let fields = rep::struct_fields(v)?;
+            rep::field_at(fields, self.sorted_field_idx?).map(|(_, v)| v.clone())
         });
         match res {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
@@ -557,8 +553,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     composite_plumbing!(Tuple);
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let (vals, tag) = gathered!(self, ctx, Value::Array(ValArray::from([])));
-        let v = Value::Array(ValArray::from_iter_exact(vals));
+        let (vals, tag) = gathered!(self, ctx, rep::tuple([]));
+        let v = rep::tuple(vals);
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -642,9 +638,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     composite_plumbing!(Variant);
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let (vals, tag) = gathered!(self, ctx, Value::String(self.tag.clone()));
-        let a = iter::once(Value::String(self.tag.clone())).chain(vals);
-        let v = Value::Array(ValArray::from_iter(a));
+        let (vals, tag) = gathered!(self, ctx, rep::make_variant(self.tag.clone(), []));
+        let v = rep::make_variant(self.tag.clone(), vals);
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -1027,9 +1022,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         let v = tv.value_cloned();
-        let res = match v {
-            Value::Array(a) => a.get(self.field).map(|v| v.clone()),
-            Value::Error(v) => Some((*v).clone()),
+        let res = match &v {
+            Value::Array(_) => {
+                rep::tuple_elems(&v).and_then(|e| e.get(self.field)).cloned()
+            }
+            Value::Error(v) => Some((**v).clone()),
             Value::Abstract(_) if self.field == 0 => {
                 abstract_value::get(&v).map(|g| g.payload.clone())
             }

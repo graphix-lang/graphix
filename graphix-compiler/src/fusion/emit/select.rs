@@ -482,14 +482,19 @@ fn emit_composite_pattern_cond_inner(
                     }
                 }
             };
+            // a tuple's elements start at its base in its array
+            let base = match kind {
+                SliceKind::Tuple => crate::rep::TUPLE_BASE,
+                _ => 0,
+            };
             let leaves = pbinds
                 .iter()
                 .enumerate()
                 .map(|(j, sub)| {
-                    Ok(LeafSpec { idx: ElemIdx::FromStart(j), sub, typ: elt(j)? })
+                    Ok(LeafSpec { idx: ElemIdx::FromStart(base + j), sub, typ: elt(j)? })
                 })
                 .collect::<Result<SmallVec<[_; 8]>>>()?;
-            (leaves, IntCC::Equal, pbinds.len())
+            (leaves, IntCC::Equal, base + pbinds.len())
         }
         StructPatternNode::SlicePrefix { list, all, prefix, tail } => {
             if *list {

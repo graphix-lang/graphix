@@ -1,6 +1,7 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
+    rep,
     typ::{FnType, Mutability, TVar, Type},
 };
 use arcstr::{ArcStr, literal};
@@ -955,12 +956,14 @@ impl Source {
         match self {
             Self::File(pb) => {
                 let s = pb.as_os_str().to_string_lossy();
-                (literal!("File"), ArcStr::from(s)).into()
+                rep::make_variant(literal!("File"), [Value::from(ArcStr::from(s))])
             }
-            Self::Netidx(p) => (literal!("Netidx"), p.clone()).into(),
-            Self::Vfs(s) => (literal!("Vfs"), s.clone()).into(),
-            Self::Program => literal!("Program").into(),
-            Self::Unspecified => literal!("Unspecified").into(),
+            Self::Netidx(p) => {
+                rep::make_variant(literal!("Netidx"), [Value::from(p.clone())])
+            }
+            Self::Vfs(s) => rep::make_variant(literal!("Vfs"), [Value::from(s.clone())]),
+            Self::Program => rep::make_variant(literal!("Program"), []),
+            Self::Unspecified => rep::make_variant(literal!("Unspecified"), []),
         }
     }
 }
@@ -1009,12 +1012,11 @@ impl Origin {
             Source::Unspecified | Source::Program => self.text.clone(),
             Source::File(_) | Source::Netidx(_) | Source::Vfs(_) => ArcStr::new(),
         };
-        [
+        rep::structure([
             (literal!("parent"), p),
             (literal!("source"), self.source.to_value()),
             (literal!("text"), Value::from(text)),
-        ]
-        .into()
+        ])
     }
 
     /// The origin of source text that came from nowhere in particular.

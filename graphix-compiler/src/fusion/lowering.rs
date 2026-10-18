@@ -598,25 +598,18 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
             Value::Array(a) => crate::node::list::from_iter(a.iter().cloned()),
             v => v,
         }),
-        NodeView::Tuple(t) => const_valarray(&t.n),
-        NodeView::Variant(v) if v.n.is_empty() => Some(Value::String(v.tag.clone())),
+        NodeView::Tuple(t) => {
+            let mut vals = const_values(&t.n)?;
+            Some(crate::rep::tuple(vals.drain(..)))
+        }
         NodeView::Variant(v) => {
-            let mut vals: LPooled<Vec<Value>> = LPooled::take();
-            vals.push(Value::String(v.tag.clone()));
-            for c in v.n.iter() {
-                vals.push(node_const_value(c)?);
-            }
-            Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
+            let mut vals = const_values(&v.n)?;
+            Some(crate::rep::make_variant(v.tag.clone(), vals.drain(..)))
         }
         NodeView::Struct(st) => {
-            let mut fields: LPooled<Vec<Value>> = LPooled::take();
-            for (name, c) in st.names.iter().zip(st.n.iter()) {
-                let pair = [Value::String(name.clone()), node_const_value(c)?];
-                fields.push(Value::Array(netidx_value::ValArray::from_iter_exact(
-                    pair.into_iter(),
-                )));
-            }
-            Some(Value::Array(netidx_value::ValArray::from_iter_exact(fields.drain(..))))
+            let mut vals = const_values(&st.n)?;
+            let fields = st.names.iter().cloned().zip(vals.drain(..));
+            Some(crate::rep::structure(fields))
         }
         NodeView::Map(m) => {
             let (keys, values) = m.entries();
@@ -629,11 +622,19 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
 /// Fold element nodes into a constant `Value::Array` (the runtime shape
 /// of array and tuple literals), or `None` if any element isn't constant.
 fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
+    let mut vals = const_values(elems)?;
+    Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
+}
+
+/// The constant value of each node, or `None` if one isn't constant.
+fn const_values<R: Rt, E: UserEvent>(
+    elems: &[Node<R, E>],
+) -> Option<LPooled<Vec<Value>>> {
     let mut vals: LPooled<Vec<Value>> = LPooled::take();
     for c in elems.iter() {
         vals.push(node_const_value(c)?);
     }
-    Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
+    Some(vals)
 }
 
 /// Fold parallel key/value node slices into a constant `Value::Map`,

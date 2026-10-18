@@ -16,6 +16,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, opt_node_decode, opt_node_encode, put_tag},
     },
+    rep,
     typ::Type,
     wrap,
 };
@@ -24,7 +25,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{Typ, ValArray, Value};
+use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use std::{fmt, sync::OnceLock};
 use triomphe::Arc;
@@ -32,13 +33,13 @@ use triomphe::Arc;
 /// The `error` field of a raised chain link.
 fn chain_error(e: &Value) -> Option<Value> {
     const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
-    let Value::Array(fields) = e else { return None };
+    let fields = rep::struct_fields(e)?;
     if fields.len() != NAMES.len() {
         return None;
     }
     let mut error = None;
     for (f, name) in fields.iter().zip(NAMES) {
-        match crate::rep::field(f) {
+        match rep::field(f) {
             Some((n, v)) if n == name => {
                 if name == "error" {
                     error = Some(v.clone())
@@ -62,11 +63,11 @@ pub(crate) struct SiteValues {
 impl SiteValues {
     fn get(&self, spec: &Expr) -> &[Value; 3] {
         self.values.get_or_init(|| {
-            let pos = [
-                (literal!("column"), spec.pos.column),
-                (literal!("line"), spec.pos.line),
-            ];
-            [spec.ori.to_value(), pos.into(), null_error(spec)]
+            let pos = rep::structure([
+                (literal!("column"), Value::from(spec.pos.column)),
+                (literal!("line"), Value::from(spec.pos.line)),
+            ]);
+            [spec.ori.to_value(), pos, null_error(spec)]
         })
     }
 
@@ -89,13 +90,12 @@ impl SiteValues {
             Some(error) => (e, error),
             None => (Value::Null, e),
         };
-        [
+        rep::structure([
             (literal!("cause"), cause),
             (literal!("error"), error),
             (literal!("ori"), ori.clone()),
             (literal!("pos"), pos.clone()),
-        ]
-        .into()
+        ])
     }
 }
 
@@ -646,8 +646,7 @@ pub(crate) fn null_error(spec: &Expr) -> Value {
         }
         _ => format_compact!("{spec}"),
     };
-    let tag = Value::String(NULL_ERR_TAG.clone());
-    Value::Array(ValArray::from_iter([tag, Value::from(operand)]))
+    rep::make_variant(NULL_ERR_TAG.clone(), [Value::from(operand)])
 }
 
 /// Where a swallowed error or a failed operator reports itself, in both

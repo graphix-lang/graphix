@@ -193,15 +193,15 @@ impl<X: GXExt> Ref<X> {
     }
 }
 
-/// The bind id a widget value's struct holds in the field `name`: a
-/// struct value is an array of `[name, value]` pairs.
+/// The bind id a widget value's struct holds in the field `name`.
 #[doc(hidden)]
 pub fn field_id(v: &Value, name: &str) -> Result<BindId> {
-    match v {
-        Value::Array(fields) => graphix_compiler::rep::field_named(fields, name)
+    use graphix_compiler::rep;
+    match rep::struct_fields(v) {
+        Some(fields) => rep::field_named(fields, name)
             .and_then(|(_, v)| v.clone().cast_to::<BindId>().ok())
             .ok_or_else(|| anyhow!("no field {name}")),
-        _ => bail!("expected a struct with the field {name}, got {v}"),
+        None => bail!("expected a struct with the field {name}, got {v}"),
     }
 }
 

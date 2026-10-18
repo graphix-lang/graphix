@@ -906,7 +906,8 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
                     Type::Primitive(netidx_value::Typ::String.into()),
                     resolve_node_typ(cx.ctx, field_typ),
                 ]));
-                let idx = cx.b.ins().iconst(types::I64, i as i64);
+                let idx =
+                    cx.b.ins().iconst(types::I64, (crate::rep::STRUCT_BASE + i) as i64);
                 // Guarded: a tainted source's placeholder has no fields.
                 let cv = emit_taint_guarded_read(cx, src_disc, &pair, |cx| {
                     let read = ElementRead::ArrayIndex;
@@ -1133,9 +1134,13 @@ pub(crate) fn emit_field_ref_node<R: Rt, E: UserEvent>(
     elem_typ: &Type,
     of: FieldOf,
 ) -> Result<CompiledExpr> {
-    let (kind, read) = match of {
-        FieldOf::Tuple => (AbiKind::Tuple, ElementRead::ArrayIndex),
-        FieldOf::Struct => (AbiKind::Struct, ElementRead::StructField),
+    // a tuple's elements start at its base in its array; a struct field
+    // is read by its sorted index through `rep`
+    let (kind, read, base) = match of {
+        FieldOf::Tuple => {
+            (AbiKind::Tuple, ElementRead::ArrayIndex, crate::rep::TUPLE_BASE)
+        }
+        FieldOf::Struct => (AbiKind::Struct, ElementRead::StructField, 0),
     };
     // a tuple bound as its fields reads the field's own local
     if let (FieldOf::Tuple, NodeView::Ref(r)) = (of, source.view())
@@ -1146,7 +1151,7 @@ pub(crate) fn emit_field_ref_node<R: Rt, E: UserEvent>(
     // an element type may be a Ref to an abstract type name
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let arr = emit_accessor_source_node(cx, source, kind)?;
-    let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
+    let idx_const = cx.b.ins().iconst(types::I64, (base + idx) as i64);
     let result = emit_taint_guarded_read(cx, arr.disc, &elem_typ, |cx| {
         compile_element_read(cx.b, arr.ptr, idx_const, &elem_typ, read, cx.ctx)
     })?;
