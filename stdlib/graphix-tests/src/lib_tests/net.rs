@@ -59,8 +59,8 @@ run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
     // the i64 write reaches the callback cast to its string type
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            // the written i64 casts to "i64:43"
-            [Value::I64(42), Value::I64(6)] => true,
+            // the written i64 casts to "43"
+            [Value::I64(42), Value::I64(2)] => true,
             _ => false,
         },
         _ => false,

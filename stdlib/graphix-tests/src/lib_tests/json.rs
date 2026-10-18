@@ -49,6 +49,19 @@ run!(json_struct, r#"{
     format!("{}", v.unwrap()) == r#"[["x", i64:42], ["y", "hi"]]"#
 }; FuseExpect::None);
 
+// An optional field reads the array it holds, and an optional small
+// integer that does not hold the number is an InvalidCast, never absent.
+run!(json_optional_fields_read_exactly, r#"{
+    type W = {small: [i8, null], weights: [Array<f64>, null]};
+    let w: W = json::read("{\"small\": 7, \"weights\": \[1, 2\]}")?;
+    let r: Result<{small: [i8, null]}, [`JsonErr(string), `InvalidCast(string)]> =
+        json::read("{\"small\": 300}");
+    (w, select r { error as e => "[e]", _ => "read" })
+}"#, |v: Result<&Value>| {
+    format!("{}", v.unwrap())
+        == r#"[[["small", i8:7], ["weights", [f64:1., f64:2.]]], "error:[\"InvalidCast\", \"can't cast 300 to [i8, null]: no primitive conversion\"]"]"#
+}; FuseExpect::Jit);
+
 run!(json_read_bytes, r#"{
     let b = json::write_bytes(42)$;
     let v: i64 = json::read(b)?;

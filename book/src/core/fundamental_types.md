@@ -203,8 +203,8 @@ such expressions are surrounded by unescaped `[]` in the string. For example,
 "/foo/bar/1/999"
 ```
 
-Values in an interpolation need not be strings, they will be cast to a string
-when they are used. You can write a literal `[` or `]` in a string by escaping
+Values in an interpolation need not be strings, they are printed into the
+string when they are used. You can write a literal `[` or `]` in a string by escaping
 it.
 
 ```graphix
@@ -275,7 +275,18 @@ is not used very often, as it provides very few guarantees, however it has it's
 place. For example, `queue`'s `#clock` argument is `Any`: any value at all can
 tick it. Usually the first thing you do with a value of type `Any` is call
 `cast` to turn it into the type you expect (or an error), or use a `select`
-expression to match its type (more on select later). Reading data whose type
+expression to match its type (more on select later). A cast keeps a
+value's kind: a number converts to another number (an integer type only
+when it holds the value exactly), and a union target takes a member of
+the value's own kind first, so `cast<[i8, Array<f64>]>([1, 2])` is
+`[1., 2.]`. Across kinds a cast only parses a string (`cast<i64>("42")`,
+`cast<bool>("true")`), prints a number, bool, datetime or duration
+plainly (`cast<string>(42)` is `"42"`), converts between a number and
+a datetime (Unix seconds) or a duration (seconds), turns a bool into a
+number (1 or 0), or reads an array of numbers as bytes; anything else,
+such as `cast<bool>(1)` or `cast<string>([1, 2])`, is an `InvalidCast`
+error.
+Reading data whose type
 the program cannot see, a netidx subscription or a json document, is
 type-directed instead: `sys::net::subscribe` returns the type you annotate
 and casts what arrives to it.

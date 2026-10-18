@@ -432,7 +432,7 @@ async fn program_image_restores() -> Result<()> {
     assert_eq!(
         format!("{last}"),
         "[i64:22, i64:5, i64:20, \"pt 3 4 sum 20\", i64:9, [i64:2, i64:3], i64:10, i64:2, \
-         i64:8, \"two\", i64:-1, \"pt 3 4 sum 20\", i64:10, i64:11, \"i64:10\"]"
+         i64:8, \"two\", i64:-1, \"pt 3 4 sum 20\", i64:10, i64:11, \"10\"]"
     );
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
     assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));

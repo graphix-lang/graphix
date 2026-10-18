@@ -17,7 +17,7 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::{BitFlags, bitflags, make_bitflags};
 use immutable_chunkmap::map::Map;
-use netidx_value::{Typ, ValArray, Value};
+use netidx_value::{NakedValue, Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{borrow::Cow, fmt, mem, ops::ControlFlow};
@@ -566,29 +566,12 @@ impl Type {
                         self.cast_fail("an abstract value has no primitive form", v)
                     );
                 }
-                // CR claude for eric: [bug/high] When the integer member of a
-                // primitive-set target refuses a number, this falls through to netidx's
-                // lossy `Value::cast` for a sibling member. A number (or a datetime,
-                // duration or bool) casts to `null` unconditionally, to `bool` by
-                // truthiness, and to `string` in the typed form "i64:300". So
-                // `cast<[i8, null]>(300)` is null, `cast<[i8, bool]>(300)` is true and
-                // `cast<[i8, string]>(300)` is "i64:300". In practice an optional
-                // small-int field holding 300 in `json::read` or `str::parse` reads as
-                // absent with no `InvalidCast`. Both engines agree, so the fuzzer
-                // cannot see it. This breaks the integer-cast rule ("holds the value
-                // exactly or is an InvalidCast") and json round-tripping. A string
-                // source is already refused here, so the rule is uneven too. Proposed
-                // rule: in `convert`, `Null` accepts only `Value::Null` (the
-                // omitted-field path still works), `Bool` only a bool or
-                // "true"/"false", and a number reaches `String` only by its plain
-                // display or not at all inside a union with a numeric member. Then pin
-                // `json::read` and `str::parse` into `[i8, null]`. Probe:
-                // design/review-2026-10-12/repro/x-engine-collections-01.gx
-                // (x-engine-collections-01)
-                // 2026-10-13 claude: the null part is done: convert takes nothing to
-                // null or to an error (x-security-02), so `cast<[i8, null]>(300)` is an
-                // InvalidCast. The bool and string parts stand.
-                match s.iter().find_map(|t| convert(v.clone(), t)) {
+                let own = own_class(v);
+                match (*s & own)
+                    .iter()
+                    .chain((*s & !own).iter())
+                    .find_map(|t| convert(v.clone(), t))
+                {
                     Some(v) => Ok(Some(v)),
                     None => Err(self.cast_fail("no primitive conversion", v)),
                 }
@@ -935,7 +918,8 @@ impl Type {
                 r
             }
             // A member the value already inhabits wins; else the first
-            // member it converts to.
+            // member of its own runtime class it converts to; else the
+            // first member it converts to across classes.
             Type::Set(ts) => {
                 // a member whose tag the value carries is its reading,
                 // whatever a tagless reading of an earlier member says
@@ -950,33 +934,22 @@ impl Type {
                     }
                     return Err(refused.expect("a tagged member was tried"));
                 }
-                // CR claude for eric: [bug/high] When no member holds the value, this
-                // takes the first member that converts, and primitive members sort
-                // first while `convert` falls back to netidx `Value::cast`, which turns
-                // an array into its first element, null, a bool or its Display string.
-                // So cast<[Array<f64>, null]>([1, 2]) is null, cast<[bool,
-                // Array<f64>]>([1, 2]) is true, cast<[string, Array<f64>]>([1, 2]) is
-                // "[i64:1, i64:2]", and json::read of {"weights": [1, 2, 3]} into
-                // {weights: [Array<f64>, null]} silently yields weights: null. A plain
-                // cast<i64>([5, 6, 7]) is 5, against the rule that an integer cast
-                // holds the value exactly or is an InvalidCast. Proposed fix: `convert`
-                // refuses an array or map source for every scalar target, and this pass
-                // tries the members of the value's own runtime class first, falling
-                // back to cross-class conversions only when none of them converts;
-                // which cross-class conversions remain (number to null, anything to
-                // string) is a cast rule to decide. probe:
-                // design/review-2026-10-12/repro/t-cast-setops-03.gx (t-cast-setops-03)
+                let own: LPooled<Vec<bool>> =
+                    ts.iter().map(|t| in_own_class(env, t, v)).collect();
                 let mut converted = None;
-                for t in ts.iter() {
-                    match t.cast_int(env, cx, src, v) {
-                        Ok(None) => return Ok(None),
-                        Ok(Some(c)) if converted.is_none() => converted = Some(c),
-                        Ok(Some(_)) | Err(_) => (),
+                for pass in [true, false] {
+                    for (t, _) in ts.iter().zip(own.iter()).filter(|(_, o)| **o == pass) {
+                        match t.cast_int(env, cx, src, v) {
+                            Ok(None) => return Ok(None),
+                            Ok(Some(c)) if converted.is_none() => converted = Some(c),
+                            Ok(Some(_)) | Err(_) => (),
+                        }
+                    }
+                    if let Some(c) = converted {
+                        return Ok(Some(c));
                     }
                 }
-                converted
-                    .map(Some)
-                    .ok_or_else(|| self.cast_fail("no member admits it", v))
+                Err(self.cast_fail("no member admits it", v))
             }
         }
     }
@@ -2048,16 +2021,47 @@ fn carries_tag(env: &Env, t: &Type, v: &Value) -> bool {
     }
 }
 
-/// `v` as the primitive `t`. An integer target holds the value exactly
-/// or refuses it, whatever the source: a number, a float (its fraction
-/// dropped) or a string; every other conversion is netidx's.
-/// `v` as the primitive `t`, exactly or not at all. Nothing converts to
-/// null or to an error, and an array or a map converts only to bytes (an
-/// array of numbers, as json carries them), a map or an array, or its
-/// printed string.
+/// The primitives `v` reads as without leaving its runtime class: every
+/// number for a number, its own primitive for anything else.
+fn own_class(v: &Value) -> BitFlags<Typ> {
+    let t = Typ::get(v);
+    if t.is_number() { Typ::number() } else { t.into() }
+}
+
+/// Whether `t` may read `v` without leaving `v`'s runtime class, which a
+/// union tries before any conversion across classes.
+fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
+    ensure_sufficient(|| match rep_head(env, t).as_deref() {
+        None | Some(Type::Bottom) => true,
+        Some(Type::Primitive(s)) => s.intersects(own_class(v)),
+        Some(Type::Set(ts)) => ts.iter().any(|t| in_own_class(env, t, v)),
+        Some(Type::Variant(_, args, _)) if args.is_empty() => {
+            matches!(v, Value::String(_))
+        }
+        Some(
+            Type::Array(_)
+            | Type::List(_)
+            | Type::Tuple(_)
+            | Type::Struct(_)
+            | Type::Variant(..),
+        ) => matches!(v, Value::Array(_)),
+        Some(Type::Map { .. }) => matches!(v, Value::Map(_)),
+        Some(Type::Error(_)) => matches!(v, Value::Error(_)),
+        Some(_) => matches!(v, Value::Abstract(_)),
+    })
+}
+
+/// `v` as the primitive `t`, exactly or not at all. A number, a bool (1 or
+/// 0), a datetime (Unix seconds) and a duration (seconds) convert to a
+/// number, a number
+/// to a datetime or a duration (an integer target holds it exactly, a
+/// fraction is dropped), a string to what it parses as, a number, bool,
+/// datetime or duration to its plain printed form, and an array of
+/// numbers to bytes. Nothing converts to null or to an error.
 fn convert(v: Value, t: Typ) -> Option<Value> {
     match (&v, t) {
-        (_, Typ::Null | Typ::Error) => return None,
+        (_, Typ::Null | Typ::Error) => None,
+        (v, t) if Typ::get(v) == t => Some(v.clone()),
         (Value::Array(a), Typ::Bytes) => {
             let mut bytes: LPooled<Vec<u8>> = LPooled::take();
             for el in a.iter() {
@@ -2066,21 +2070,57 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
                     _ => return None,
                 }
             }
-            return Some(Value::Bytes(bytes::Bytes::copy_from_slice(&bytes).into()));
+            Some(Value::Bytes(bytes::Bytes::copy_from_slice(&bytes).into()))
         }
-        (Value::Array(_) | Value::Map(_), Typ::Map | Typ::Array | Typ::String) => {
-            return v.cast(t);
-        }
-        (Value::Array(_) | Value::Map(_), _) => return None,
-        (Value::String(s), t) if t != Typ::String && parses_to_collection(s) => {
-            return None;
-        }
-        _ => (),
+        (Value::Array(_) | Value::Map(_), Typ::Map | Typ::Array) => v.cast(t),
+        (Value::String(s), t) => parse(s, t),
+        (_, Typ::String) => printed(&v),
+        (_, Typ::DateTime | Typ::Duration) if Typ::get(&v).is_number() => v.cast(t),
+        (_, t) if t.is_integer() && counts(&v) => integer(&v, t),
+        (_, t) if t.is_number() && counts(&v) => v.cast(t),
+        _ => None,
     }
-    if !is_integer(t) {
-        return v.cast(t);
+}
+
+/// The string `s` read as the primitive `t`.
+fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
+    if t == Typ::DateTime
+        && let Ok(d) = chrono::DateTime::parse_from_rfc3339(s)
+    {
+        return Some(Value::DateTime(Arc::new(d.with_timezone(&chrono::Utc))));
     }
-    let n = match &v {
+    if t.is_integer()
+        && let Ok(n) = s.trim().parse::<i128>()
+    {
+        return of_int(n, t);
+    }
+    if parses_to_collection(s) {
+        return None;
+    }
+    match s.parse::<Value>() {
+        Ok(Value::String(_)) | Err(_) => None,
+        Ok(parsed) => convert(parsed, t),
+    }
+}
+
+/// A number, bool, datetime or duration printed without its type: a
+/// datetime in RFC3339 and a duration in seconds, as json writes them.
+fn printed(v: &Value) -> Option<Value> {
+    let s = match v {
+        Value::Bool(b) => format_compact!("{b}"),
+        Value::DateTime(d) => format_compact!("{}", d.to_rfc3339()),
+        Value::Duration(d) => format_compact!("{}", d.as_secs_f64()),
+        v if Typ::get(v).is_number() => format_compact!("{}", NakedValue(v)),
+        _ => return None,
+    };
+    Some(Value::String(s.as_str().into()))
+}
+
+/// `v`, a number, bool, datetime or duration, as the integer type `t`, exactly
+/// or not at all; a fraction, of a float or of a second, is dropped
+/// first.
+fn integer(v: &Value, t: Typ) -> Option<Value> {
+    let n = match v {
         Value::I8(n) => *n as i128,
         Value::I16(n) => *n as i128,
         Value::I32(n) | Value::Z32(n) => *n as i128,
@@ -2091,18 +2131,22 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
         Value::U64(n) | Value::V64(n) => *n as i128,
         Value::F32(f) => float_int(*f as f64)?,
         Value::F64(f) => float_int(*f)?,
-        Value::String(s) => match s.trim().parse::<i128>() {
-            Ok(n) => n,
-            Err(_) => match s.parse::<Value>() {
-                Ok(Value::String(_)) | Err(_) => return None,
-                Ok(parsed) => return convert(parsed, t),
-            },
-        },
-        Value::Bool(_) | Value::Decimal(_) | Value::DateTime(_) | Value::Duration(_) => {
-            return v.cast(t);
-        }
-        _ => return None,
+        Value::Bool(b) => *b as i128,
+        Value::DateTime(d) => d.timestamp() as i128,
+        Value::Duration(d) => d.as_secs() as i128,
+        v => return v.clone().cast(t),
     };
+    of_int(n, t)
+}
+
+/// Whether `v` reads as a number: a number, a bool (1 or 0), a datetime
+/// (its Unix seconds) or a duration (its seconds).
+fn counts(v: &Value) -> bool {
+    matches!(v, Value::Bool(_) | Value::DateTime(_) | Value::Duration(_))
+        || Typ::get(v).is_number()
+}
+
+fn of_int(n: i128, t: Typ) -> Option<Value> {
     match t {
         Typ::I8 => i8::try_from(n).ok().map(Value::I8),
         Typ::I16 => i16::try_from(n).ok().map(Value::I16),
@@ -2125,24 +2169,6 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 fn parses_to_collection(s: &str) -> bool {
     matches!(s.trim_start().as_bytes().first(), Some(b'[' | b'{'))
         && matches!(s.parse::<Value>(), Ok(Value::Array(_) | Value::Map(_)))
-}
-
-fn is_integer(t: Typ) -> bool {
-    matches!(
-        t,
-        Typ::I8
-            | Typ::I16
-            | Typ::I32
-            | Typ::Z32
-            | Typ::I64
-            | Typ::Z64
-            | Typ::U8
-            | Typ::U16
-            | Typ::U32
-            | Typ::V32
-            | Typ::U64
-            | Typ::V64
-    )
 }
 
 /// A float's integer part, `None` for NaN or an infinity.
