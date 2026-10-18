@@ -324,3 +324,13 @@ review probes `design/review-2026-10-12/repro/x-perf-runtime-01a` 10.0 s
 run) 0.28 -> 0.10 s at 2000 slots and 2.02 -> 0.37 s at 20000. Pin:
 `lang::prune::idle_map_beside_a_ticking_counter` (1000 more idle slots
 cost their first walks only: 2000 walks pruned, 204400 unpruned).
+
+**Real programs** (quick, pinned 0-3, best of three runs, off -> on):
+netidx-admin `milestone_latency`: role-menu Down/Up p50 2.05 -> 0.27 ms
+(p95 2.9 -> 0.4); modal text field Char p95 4.4 -> 0.37 ms, p50 and
+Backspace unchanged; app build and first frame unchanged (~405 ms). The
+serial bench corpus (`bench/run.sh`, `GRAPHIX_PAR=off`): `stream_stats`
+node-walk 17.7 -> 0.64 s; every other program, either engine, within
+noise (±2%), so a program that changes everywhere each cycle pays
+nothing measurable. The walked/skipped counter (`note_boundary`, a shared
+atomic) is invisible beside a no-op on the forked mark probe.
