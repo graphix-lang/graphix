@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-59decac4.js";
+            window.path_to_searchindex_js = "../searchindex-60a092d0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -406,8 +406,8 @@ the value’s own kind first, so <code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2]
 plainly (<code>cast&lt;string&gt;(42)</code> is <code>"42"</code>), converts between a number and
 a datetime (Unix seconds) or a duration (seconds), turns a bool into a
 number (1 or 0), or reads an array of numbers as bytes; anything else,
-such as <code>cast&lt;bool&gt;(1)</code> or <code>cast&lt;string&gt;([1, 2])</code>, is an <code>InvalidCast</code>
-error.
+such as <code>cast&lt;bool&gt;(1)</code>, <code>cast&lt;string&gt;([1, 2])</code> or <code>cast&lt;Array&lt;i64&gt;&gt;(5)</code>,
+is an <code>InvalidCast</code> error.
 Reading data whose type
 the program cannot see, a netidx subscription or a json document, is
 type-directed instead: <code>sys::net::subscribe</code> returns the type you annotate
