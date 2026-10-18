@@ -284,8 +284,8 @@ the value's own kind first, so `cast<[i8, Array<f64>]>([1, 2])` is
 plainly (`cast<string>(42)` is `"42"`), converts between a number and
 a datetime (Unix seconds) or a duration (seconds), turns a bool into a
 number (1 or 0), or reads an array of numbers as bytes; anything else,
-such as `cast<bool>(1)` or `cast<string>([1, 2])`, is an `InvalidCast`
-error.
+such as `cast<bool>(1)`, `cast<string>([1, 2])` or `cast<Array<i64>>(5)`,
+is an `InvalidCast` error.
 Reading data whose type
 the program cannot see, a netidx subscription or a json document, is
 type-directed instead: `sys::net::subscribe` returns the type you annotate

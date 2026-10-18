@@ -617,12 +617,12 @@ run!(cast_to_an_integer_is_exact, CAST_TO_AN_INTEGER_IS_EXACT, |v: Result<&Value
         == "[true, true, true, true, true, true, u8:200, i16:-3, u64:18446744073709551615, i64:300, u8:3, f64:-5.]"
 });
 
-// A cast leaves a value's runtime class only by parsing a string, by
-// printing a number, bool, datetime or duration plainly, between a
-// number and a datetime (Unix seconds) or a duration (seconds), from a
-// bool to a number (1 or 0), or by
-// reading an array of numbers as bytes; a union tries the members of the
-// value's own class first.
+// A cast leaves a value's runtime class only by parsing a string into a
+// scalar, by printing a number, bool, datetime or duration plainly,
+// between a number and a datetime (Unix seconds) or a duration
+// (seconds), from a bool to a number (1 or 0), or by reading an array of
+// numbers as bytes; no scalar becomes a collection, and a union tries
+// the members of the value's own class first.
 const CAST_STAYS_IN_CLASS: &str = r#"
 (
   cast<string>(42),
@@ -642,13 +642,15 @@ const CAST_STAYS_IN_CLASS: &str = r#"
   select cast<bool>("1") { error as _ => true, _ => false },
   select cast<[i8, bool]>(300) { error as _ => true, _ => false },
   select cast<string>([1, 2]) { error as _ => true, _ => false },
-  select cast<bool>(duration:1.s) { error as _ => true, _ => false }
+  select cast<bool>(duration:1.s) { error as _ => true, _ => false },
+  select cast<Array<i64>>(5) { error as _ => true, _ => false },
+  select cast<List<i64>>(5) { error as _ => true, _ => false }
 )
 "#;
 
 run!(cast_stays_in_class, CAST_STAYS_IN_CLASS, |v: Result<&Value>| {
     format!("{}", v.unwrap())
-        == r#"["42", "1.5", "true", "300", [f64:1., f64:2.], [f64:1., f64:2.], true, duration:1.5s, f64:1.5, i64:1577836800, datetime:"2020-01-01 00:00:00 UTC", i64:1, f64:0., true, true, true, true, true]"#
+        == r#"["42", "1.5", "true", "300", [f64:1., f64:2.], [f64:1., f64:2.], true, duration:1.5s, f64:1.5, i64:1577836800, datetime:"2020-01-01 00:00:00 UTC", i64:1, f64:0., true, true, true, true, true, true, true]"#
 });
 
 // A rec def whose base arm returns a param: the elem union is honestly

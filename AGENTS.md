@@ -562,7 +562,7 @@ A cast to an integer type, a type-directed read's included, holds the
 value exactly or is an `InvalidCast` (a float drops its fraction; a
 union target takes the first member in canonical order, narrowest
 integer first, that holds it). A cast leaves a value's runtime class
-only to parse a string, to print a number, bool, datetime or duration
+only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
 plainly (`"42"`), between a number and a datetime (Unix seconds) or a
 duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a union target tries the members of the value's own
 class first (`typ/cast.rs::convert`, `in_own_class`). The JIT inlines

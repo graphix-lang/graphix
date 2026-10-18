@@ -687,10 +687,7 @@ impl Type {
                         |_, el| et.cast_int(env, cx, src, el),
                     )?
                     .map(|mut a| Value::Array(ValArray::from_iter_exact(a.drain(..))))),
-                    v => {
-                        let c = et.cast_int(env, cx, src, v)?;
-                        Ok(Some(Value::Array([c.unwrap_or_else(|| v.clone())].into())))
-                    }
+                    v => Err(self.cast_fail("not an array", v)),
                 }
             }
             Type::List(et) => {
@@ -751,10 +748,7 @@ impl Type {
                         }
                         Ok(Some(list::from_iter(out.drain(..))))
                     }
-                    v => {
-                        let c = et.cast_int(env, cx, src, v)?;
-                        Ok(Some(list::from_iter([c.unwrap_or_else(|| v.clone())])))
-                    }
+                    v => Err(self.cast_fail("not a list", v)),
                 }
             }
             Type::Map { key, value } => {
