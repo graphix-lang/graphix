@@ -9,6 +9,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
+use graphix_compiler::rep;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
 use netidx_value::Value;
@@ -236,7 +237,7 @@ impl TxnState {
                 Ok(Value::Null)
             }
             Err(TransactionError::Abort(Refused::Conflict)) => {
-                Ok(Value::Error(Value::String(literal!("Conflict")).into()))
+                Ok(Value::Error(rep::make_variant(literal!("Conflict"), []).into()))
             }
             Err(TransactionError::Abort(Refused::Meta(e))) => Err(e),
             Err(TransactionError::Storage(e)) => Err(e.into()),

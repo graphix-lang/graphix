@@ -32,6 +32,7 @@ impl<X: GXExt> LayerW<X> {
         let p = LayerProps::compile(&gx, &v).await.context("layer")?;
         let size = SizeReport::compile(&gx, &v).await?;
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             child: Value,
         }
@@ -61,6 +62,7 @@ pub(super) struct OverlayW<X: GXExt> {
 impl<X: GXExt> OverlayW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             base: Value,
         }

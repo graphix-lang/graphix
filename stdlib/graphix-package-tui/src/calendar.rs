@@ -31,6 +31,7 @@ struct DateV(Date);
 impl FromValue for DateV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             day: i64,
             month: i64,
@@ -46,6 +47,7 @@ impl FromValue for DateV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct EventV {
     date: DateV,
     style: StyleV,

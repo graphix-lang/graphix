@@ -18,18 +18,21 @@ use ratatui::{
 };
 
 #[derive(Debug, Clone, Copy, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct SelectedV {
     x: Index,
     y: Index,
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct CellV {
     content: LineV,
     style: Option<StyleV>,
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct RowV {
     cells: Vec<CellV>,
     height: Option<Dim>,

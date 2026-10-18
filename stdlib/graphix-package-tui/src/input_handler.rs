@@ -6,7 +6,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MediaKeyCode,
     ModifierKeyCode, MouseButton, MouseEvent, MouseEventKind,
 };
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{Callable, GXExt, GXHandle, Ref};
 use log::{debug, error};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 
 fn media_keycode_to_value(kc: &MediaKeyCode) -> Value {
     use MediaKeyCode::*;
-    match kc {
+    let tag = match kc {
         Play => literal!("Play"),
         Pause => literal!("Pause"),
         PlayPause => literal!("PlayPause"),
@@ -31,13 +31,13 @@ fn media_keycode_to_value(kc: &MediaKeyCode) -> Value {
         LowerVolume => literal!("LowerVolume"),
         RaiseVolume => literal!("RaiseVolume"),
         MuteVolume => literal!("MuteVolume"),
-    }
-    .into()
+    };
+    rep::make_variant(tag, [])
 }
 
 fn modifier_keycode_to_value(mc: &ModifierKeyCode) -> Value {
     use ModifierKeyCode::*;
-    match mc {
+    let tag = match mc {
         LeftShift => literal!("LeftShift"),
         LeftControl => literal!("LeftControl"),
         LeftAlt => literal!("LeftAlt"),
@@ -52,8 +52,8 @@ fn modifier_keycode_to_value(mc: &ModifierKeyCode) -> Value {
         RightMeta => literal!("RightMeta"),
         IsoLevel3Shift => literal!("IsoLevel3Shift"),
         IsoLevel5Shift => literal!("IsoLevel5Shift"),
-    }
-    .into()
+    };
+    rep::make_variant(tag, [])
 }
 
 fn keycode_to_value(kc: &KeyCode) -> Value {
@@ -155,25 +155,22 @@ fn keycode_to_value(kc: &KeyCode) -> Value {
         literal!("~"),
     ];
     use KeyCode::*;
-    match kc {
-        Backspace => literal!("Backspace").into(),
-        Enter => literal!("Enter").into(),
-        Left => literal!("Left").into(),
-        Right => literal!("Right").into(),
-        Up => literal!("Up").into(),
-        Down => literal!("Down").into(),
-        Home => literal!("Home").into(),
-        End => literal!("End").into(),
-        PageUp => literal!("PageUp").into(),
-        PageDown => literal!("PageDown").into(),
-        Tab => literal!("Tab").into(),
-        BackTab => literal!("BackTab").into(),
-        Delete => literal!("Delete").into(),
-        Insert => literal!("Insert").into(),
-        F(n) => ValArray::from_iter_exact(
-            [literal!("F").into(), (*n as i64).into()].into_iter(),
-        )
-        .into(),
+    let tag = match kc {
+        Backspace => literal!("Backspace"),
+        Enter => literal!("Enter"),
+        Left => literal!("Left"),
+        Right => literal!("Right"),
+        Up => literal!("Up"),
+        Down => literal!("Down"),
+        Home => literal!("Home"),
+        End => literal!("End"),
+        PageUp => literal!("PageUp"),
+        PageDown => literal!("PageDown"),
+        Tab => literal!("Tab"),
+        BackTab => literal!("BackTab"),
+        Delete => literal!("Delete"),
+        Insert => literal!("Insert"),
+        F(n) => return rep::make_variant(literal!("F"), [(*n as i64).into()]),
         Char(c) => {
             if c.len_utf8() == 1 {
                 let mut buf = [0u8];
@@ -181,11 +178,10 @@ fn keycode_to_value(kc: &KeyCode) -> Value {
                 if buf[0] >= 32 {
                     let i = (buf[0] - 32) as usize;
                     if i < ASCII.len() {
-                        return ValArray::from_iter_exact(
-                            [literal!("Char").into(), ASCII[i].clone().into()]
-                                .into_iter(),
-                        )
-                        .into();
+                        return rep::make_variant(
+                            literal!("Char"),
+                            [ASCII[i].clone().into()],
+                        );
                     }
                 }
             }
@@ -193,77 +189,79 @@ fn keycode_to_value(kc: &KeyCode) -> Value {
                 c.encode_utf8(buf);
             })
             .unwrap();
-            ValArray::from_iter_exact([literal!("Char").into(), s.into()].into_iter())
-                .into()
+            return rep::make_variant(literal!("Char"), [s.into()]);
         }
-        Null => literal!("Null").into(),
-        Esc => literal!("Esc").into(),
-        CapsLock => literal!("CapsLock").into(),
-        ScrollLock => literal!("ScrollLock").into(),
-        NumLock => literal!("NumLock").into(),
-        PrintScreen => literal!("PrintScreen").into(),
-        Pause => literal!("Pause").into(),
-        Menu => literal!("Menu").into(),
-        KeypadBegin => literal!("KeypadBegin").into(),
-        Media(mc) => ValArray::from_iter_exact(
-            [literal!("Media").into(), media_keycode_to_value(mc).into()].into_iter(),
-        )
-        .into(),
-        Modifier(mc) => ValArray::from_iter_exact(
-            [literal!("Modifier").into(), modifier_keycode_to_value(mc).into()]
-                .into_iter(),
-        )
-        .into(),
-    }
+        Null => literal!("Null"),
+        Esc => literal!("Esc"),
+        CapsLock => literal!("CapsLock"),
+        ScrollLock => literal!("ScrollLock"),
+        NumLock => literal!("NumLock"),
+        PrintScreen => literal!("PrintScreen"),
+        Pause => literal!("Pause"),
+        Menu => literal!("Menu"),
+        KeypadBegin => literal!("KeypadBegin"),
+        Media(mc) => {
+            return rep::make_variant(literal!("Media"), [media_keycode_to_value(mc)]);
+        }
+        Modifier(mc) => {
+            return rep::make_variant(
+                literal!("Modifier"),
+                [modifier_keycode_to_value(mc)],
+            );
+        }
+    };
+    rep::make_variant(tag, [])
 }
 
 fn key_modifiers_to_value(k: &KeyModifiers) -> Value {
     let mut res: SmallVec<[Value; 6]> = smallvec![];
     if k.contains(KeyModifiers::SHIFT) {
-        res.push(literal!("Shift").into());
+        res.push(rep::make_variant(literal!("Shift"), []));
     }
     if k.contains(KeyModifiers::CONTROL) {
-        res.push(literal!("Control").into());
+        res.push(rep::make_variant(literal!("Control"), []));
     }
     if k.contains(KeyModifiers::ALT) {
-        res.push(literal!("Alt").into());
+        res.push(rep::make_variant(literal!("Alt"), []));
     }
     if k.contains(KeyModifiers::SUPER) {
-        res.push(literal!("Super").into());
+        res.push(rep::make_variant(literal!("Super"), []));
     }
     if k.contains(KeyModifiers::HYPER) {
-        res.push(literal!("Hyper").into());
+        res.push(rep::make_variant(literal!("Hyper"), []));
     }
     if k.contains(KeyModifiers::META) {
-        res.push(literal!("Meta").into());
+        res.push(rep::make_variant(literal!("Meta"), []));
     }
     ValArray::from_iter_exact(res.into_iter()).into()
 }
 
 fn key_event_kind_to_value(k: &KeyEventKind) -> Value {
-    match k {
-        KeyEventKind::Press => literal!("Press").into(),
-        KeyEventKind::Release => literal!("Release").into(),
-        KeyEventKind::Repeat => literal!("Repeat").into(),
-    }
+    let tag = match k {
+        KeyEventKind::Press => literal!("Press"),
+        KeyEventKind::Release => literal!("Release"),
+        KeyEventKind::Repeat => literal!("Repeat"),
+    };
+    rep::make_variant(tag, [])
 }
 
 fn key_event_states_to_value(s: &KeyEventState) -> Value {
     let mut res: SmallVec<[Value; 3]> = smallvec![];
     if s.contains(KeyEventState::KEYPAD) {
-        res.push(literal!("Keypad").into());
+        res.push(rep::make_variant(literal!("Keypad"), []));
     }
     if s.contains(KeyEventState::CAPS_LOCK) {
-        res.push(literal!("CapsLock").into());
+        res.push(rep::make_variant(literal!("CapsLock"), []));
     }
     if s.contains(KeyEventState::NUM_LOCK) {
-        res.push(literal!("NumLock").into());
+        res.push(rep::make_variant(literal!("NumLock"), []));
     }
     ValArray::from_iter_exact(res.into_iter()).into()
 }
 
 fn key_event_to_value(e: &KeyEvent) -> Value {
     #[derive(IntoValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         code: Value,
         kind: Value,
@@ -280,37 +278,31 @@ fn key_event_to_value(e: &KeyEvent) -> Value {
 }
 
 fn mouse_button_to_value(b: &MouseButton) -> Value {
-    match b {
-        MouseButton::Left => literal!("Left").into(),
-        MouseButton::Right => literal!("Right").into(),
-        MouseButton::Middle => literal!("Middle").into(),
-    }
+    let tag = match b {
+        MouseButton::Left => literal!("Left"),
+        MouseButton::Right => literal!("Right"),
+        MouseButton::Middle => literal!("Middle"),
+    };
+    rep::make_variant(tag, [])
 }
 
 fn mouse_event_kind_to_value(k: &MouseEventKind) -> Value {
-    match k {
-        MouseEventKind::Down(b) => ValArray::from_iter_exact(
-            [literal!("Down").into(), mouse_button_to_value(b).into()].into_iter(),
-        )
-        .into(),
-        MouseEventKind::Up(b) => ValArray::from_iter_exact(
-            [literal!("Up").into(), mouse_button_to_value(b).into()].into_iter(),
-        )
-        .into(),
-        MouseEventKind::Drag(b) => ValArray::from_iter_exact(
-            [literal!("Drag").into(), mouse_button_to_value(b).into()].into_iter(),
-        )
-        .into(),
-        MouseEventKind::Moved => literal!("Moved").into(),
-        MouseEventKind::ScrollDown => literal!("ScrollDown").into(),
-        MouseEventKind::ScrollUp => literal!("ScrollUp").into(),
-        MouseEventKind::ScrollLeft => literal!("ScrollLeft").into(),
-        MouseEventKind::ScrollRight => literal!("ScrollRight").into(),
-    }
+    let (tag, button) = match k {
+        MouseEventKind::Down(b) => (literal!("Down"), Some(b)),
+        MouseEventKind::Up(b) => (literal!("Up"), Some(b)),
+        MouseEventKind::Drag(b) => (literal!("Drag"), Some(b)),
+        MouseEventKind::Moved => (literal!("Moved"), None),
+        MouseEventKind::ScrollDown => (literal!("ScrollDown"), None),
+        MouseEventKind::ScrollUp => (literal!("ScrollUp"), None),
+        MouseEventKind::ScrollLeft => (literal!("ScrollLeft"), None),
+        MouseEventKind::ScrollRight => (literal!("ScrollRight"), None),
+    };
+    rep::make_variant(tag, button.map(mouse_button_to_value))
 }
 
 fn mouse_event_to_value(e: &MouseEvent) -> Value {
     #[derive(IntoValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         column: i64,
         kind: Value,
@@ -328,25 +320,17 @@ fn mouse_event_to_value(e: &MouseEvent) -> Value {
 
 pub(super) fn event_to_value(e: &Event) -> Value {
     match e {
-        Event::FocusGained => literal!("FocusGained").into(),
-        Event::FocusLost => literal!("FocusLost").into(),
-        Event::Key(e) => ValArray::from_iter_exact(
-            [literal!("Key").into(), key_event_to_value(e)].into_iter(),
-        )
-        .into(),
-        Event::Mouse(e) => ValArray::from_iter_exact(
-            [literal!("Mouse").into(), mouse_event_to_value(e)].into_iter(),
-        )
-        .into(),
-        Event::Paste(s) => ValArray::from_iter_exact(
-            [literal!("Paste").into(), ArcStr::from(s).into()].into_iter(),
-        )
-        .into(),
-        Event::Resize(x, y) => ValArray::from_iter_exact(
-            [literal!("Resize").into(), (*x as i64).into(), (*y as i64).into()]
-                .into_iter(),
-        )
-        .into(),
+        Event::FocusGained => rep::make_variant(literal!("FocusGained"), []),
+        Event::FocusLost => rep::make_variant(literal!("FocusLost"), []),
+        Event::Key(e) => rep::make_variant(literal!("Key"), [key_event_to_value(e)]),
+        Event::Mouse(e) => {
+            rep::make_variant(literal!("Mouse"), [mouse_event_to_value(e)])
+        }
+        Event::Paste(s) => rep::make_variant(literal!("Paste"), [ArcStr::from(s).into()]),
+        Event::Resize(x, y) => rep::make_variant(
+            literal!("Resize"),
+            [(*x as i64).into(), (*y as i64).into()],
+        ),
     }
 }
 
@@ -413,13 +397,11 @@ impl<X: GXExt> InputHandlerW<X> {
     /// event when it continues, and an event the handler did not answer
     /// (its call produced nothing, or raised) goes nowhere.
     async fn answered(&mut self, ev: Value, answer: Value) -> Result<()> {
-        match answer {
-            Value::String(s) if &*s == "Continue" => {
-                self.child.w.handle_event(ev).await?
-            }
-            Value::String(s) if &*s == "Stop" => (),
-            Value::Null => debug!("the handler did not answer {ev}"),
-            v => error!("invalid response from input handler {v}"),
+        match rep::variant(&answer) {
+            Some((s, [])) if s == "Continue" => self.child.w.handle_event(ev).await?,
+            Some((s, [])) if s == "Stop" => (),
+            _ if answer == Value::Null => debug!("the handler did not answer {ev}"),
+            _ => error!("invalid response from input handler {answer}"),
         }
         Ok(())
     }

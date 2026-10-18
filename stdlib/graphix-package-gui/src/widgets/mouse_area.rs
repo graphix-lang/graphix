@@ -1,11 +1,16 @@
 use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use anyhow::{Context, Result};
-use arcstr::literal;
+use arcstr::{ArcStr, literal};
 use futures::try_join;
-use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle};
+use graphix_compiler::{expr::ExprId, rep};
+use graphix_rt::{CallableId, GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+
+/// The call of `id` with the `MouseButton` `tag`.
+fn button_call(id: CallableId, tag: ArcStr) -> Message {
+    Message::Call(id, ValArray::from_iter([rep::make_variant(tag, [])]))
+}
 
 pub(crate) struct MouseAreaW<X: GXExt> {
     gx: GXHandle<X>,
@@ -74,33 +79,15 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         let mut ma = widget::MouseArea::new(self.child.w.view());
         if let Some(c) = &self.on_press.f {
             let id = c.id();
-            ma = ma.on_press(Message::Call(
-                id,
-                ValArray::from_iter([Value::String(literal!("Left"))]),
-            ));
-            ma = ma.on_right_press(Message::Call(
-                id,
-                ValArray::from_iter([Value::String(literal!("Right"))]),
-            ));
-            ma = ma.on_middle_press(Message::Call(
-                id,
-                ValArray::from_iter([Value::String(literal!("Middle"))]),
-            ));
+            ma = ma.on_press(button_call(id, literal!("Left")));
+            ma = ma.on_right_press(button_call(id, literal!("Right")));
+            ma = ma.on_middle_press(button_call(id, literal!("Middle")));
         }
         if let Some(c) = &self.on_release.f {
             let id = c.id();
-            ma = ma.on_release(Message::Call(
-                id,
-                ValArray::from_iter([Value::String(literal!("Left"))]),
-            ));
-            ma = ma.on_right_release(Message::Call(
-                id,
-                ValArray::from_iter([Value::String(literal!("Right"))]),
-            ));
-            ma = ma.on_middle_release(Message::Call(
-                id,
-                ValArray::from_iter([Value::String(literal!("Middle"))]),
-            ));
+            ma = ma.on_release(button_call(id, literal!("Left")));
+            ma = ma.on_right_release(button_call(id, literal!("Right")));
+            ma = ma.on_middle_release(button_call(id, literal!("Middle")));
         }
         if let Some(c) = &self.on_enter.f {
             ma = ma.on_enter(Message::Call(c.id(), ValArray::from_iter([Value::Null])));
@@ -111,11 +98,10 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         if let Some(c) = &self.on_move.f {
             let id = c.id();
             ma = ma.on_move(move |point| {
-                let point_val: Value = [
+                let point_val = rep::structure([
                     (literal!("x"), Value::F64(point.x as f64)),
                     (literal!("y"), Value::F64(point.y as f64)),
-                ]
-                .into();
+                ]);
                 Message::Call(id, ValArray::from_iter([point_val]))
             });
         }

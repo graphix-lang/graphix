@@ -340,6 +340,7 @@ impl<X: GXExt> DataTableW<X> {
         self.selection =
             self.selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Table {
             columns: Value,
             rows: Value,

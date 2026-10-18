@@ -6,10 +6,11 @@ use graphix_compiler::{
     expr::ExprId,
     image::{self, ImageBuf},
     node::genn,
+    rep,
     typ::{FnType, Type},
 };
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{ValArray, Value};
+use netidx_value::Value;
 
 use crate::seam_value;
 
@@ -71,9 +72,7 @@ crate::fast_builtin!(pub(crate) Xor, XorEv, "core_opt_xor", fc_xor);
 fn fc_zip(args: &[Value]) -> Option<Value> {
     match &args[..] {
         [Value::Null, _] | [_, Value::Null] => Some(Value::Null),
-        [a, b] => Some(Value::Array(ValArray::from_iter_exact(
-            [a.clone(), b.clone()].into_iter(),
-        ))),
+        [a, b] => Some(rep::tuple([a.clone(), b.clone()])),
         _ => None,
     }
 }
@@ -82,12 +81,8 @@ crate::fast_builtin!(pub(crate) Zip, ZipEv, "core_opt_zip", fc_zip);
 
 fn fc_unzip(args: &[Value]) -> Option<Value> {
     match &args[0] {
-        Value::Null => Some(Value::Array(ValArray::from_iter_exact(
-            [Value::Null, Value::Null].into_iter(),
-        ))),
-        Value::Array(pair) if pair.len() == 2 => Some(Value::Array(
-            ValArray::from_iter_exact([pair[0].clone(), pair[1].clone()].into_iter()),
-        )),
+        Value::Null => Some(rep::tuple([Value::Null, Value::Null])),
+        p if rep::tuple_elems(p).is_some_and(|e| e.len() == 2) => Some(p.clone()),
         _ => None,
     }
 }

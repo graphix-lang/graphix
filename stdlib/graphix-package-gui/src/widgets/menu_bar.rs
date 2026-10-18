@@ -30,6 +30,7 @@ pub(crate) enum MenuItemKind<X: GXExt> {
 impl<X: GXExt> MenuItemKind<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         enum Repr {
             Divider,
             Action(Value),

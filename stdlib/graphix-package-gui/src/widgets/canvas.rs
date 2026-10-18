@@ -19,6 +19,7 @@ pub(crate) struct PointV(pub(crate) Point);
 impl FromValue for PointV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             x: Finite,
             y: Finite,
@@ -29,12 +30,14 @@ impl FromValue for PointV {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(crate) struct StrokeV {
     color: ColorV,
     width: Finite,
 }
 
 #[derive(Clone, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(crate) enum CanvasShape {
     Line {
         from: PointV,
@@ -106,6 +109,7 @@ pub(crate) enum CanvasShape {
 }
 
 #[derive(Clone, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(crate) enum PathSegment {
     MoveTo(PointV),
     LineTo(PointV),
@@ -116,6 +120,7 @@ pub(crate) enum PathSegment {
 }
 
 #[derive(Clone, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(crate) struct ShapeVec(pub Vec<CanvasShape>);
 
 graphix_rt::props! {

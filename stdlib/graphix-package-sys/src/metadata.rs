@@ -2,7 +2,7 @@ use std::fs::FileType;
 
 use arcstr::{ArcStr, literal};
 use chrono::{DateTime, Utc};
-use graphix_compiler::errf;
+use graphix_compiler::{errf, rep};
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_derive::IntoValue;
 use netidx_value::Value;
@@ -59,41 +59,42 @@ pub(crate) type IsDir = CachedArgsAsync<IsDirEv>;
 
 pub(crate) fn convert_filetype(typ: FileType) -> Value {
     #[cfg(unix)]
-    {
+    let tag = {
         use std::os::unix::fs::FileTypeExt;
         if typ.is_dir() {
-            Value::String(literal!("Dir"))
+            literal!("Dir")
         } else if typ.is_file() {
-            Value::String(literal!("File"))
+            literal!("File")
         } else if typ.is_symlink() {
-            Value::String(literal!("Symlink"))
+            literal!("Symlink")
         } else if typ.is_block_device() {
-            Value::String(literal!("BlockDev"))
+            literal!("BlockDev")
         } else if typ.is_char_device() {
-            Value::String(literal!("CharDev"))
+            literal!("CharDev")
         } else if typ.is_fifo() {
-            Value::String(literal!("Fifo"))
+            literal!("Fifo")
         } else if typ.is_socket() {
-            Value::String(literal!("Socket"))
+            literal!("Socket")
         } else {
-            Value::Null
+            return Value::Null;
         }
-    }
+    };
     #[cfg(windows)]
-    {
+    let tag = {
         use std::os::windows::fs::FileTypeExt;
         if typ.is_dir() {
-            Value::String(literal!("Dir"))
+            literal!("Dir")
         } else if typ.is_file() {
-            Value::String(literal!("File"))
+            literal!("File")
         } else if typ.is_symlink_file() {
-            Value::String(literal!("Symlink"))
+            literal!("Symlink")
         } else if typ.is_symlink_dir() {
-            Value::String(literal!("SymlinkDir"))
+            literal!("SymlinkDir")
         } else {
-            Value::Null
+            return Value::Null;
         }
-    }
+    };
+    rep::make_variant(tag, [])
 }
 
 pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
@@ -110,10 +111,14 @@ pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
         }
         #[cfg(windows)]
         {
-            Value::from((literal!("ReadOnly"), m.permissions().readonly()))
+            rep::make_variant(
+                literal!("ReadOnly"),
+                [Value::Bool(m.permissions().readonly())],
+            )
         }
     };
     #[derive(IntoValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         accessed: Option<DateTime<Utc>>,
         created: Option<DateTime<Utc>>,

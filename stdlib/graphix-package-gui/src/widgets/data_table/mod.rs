@@ -158,6 +158,7 @@ impl<X: GXExt> DataTableW<X> {
         // Fields alphabetical: on_activate, on_header_click, on_select,
         // on_update, selection, show_row_name, sort_by, table
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             on_activate: BindId,
             on_header_click: BindId,

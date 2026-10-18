@@ -1,6 +1,6 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
-use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::Effect, errf};
+use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::Effect, errf, rep};
 use netidx_value::{PBytes, ValArray, Value};
 
 use crate::{CachedArgs, CachedVals, EvalCached, fast_get};
@@ -82,20 +82,10 @@ fn fc_bytes_len(args: &[Value]) -> Option<Value> {
 
 crate::fast_builtin!(pub(crate) BytesLen, BytesLenEv, "core_bytes_len", fc_bytes_len);
 
-fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
-    match v {
-        Value::Array(a) if !a.is_empty() => match &a[0] {
-            Value::String(tag) => Some((tag, &a[1..])),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Write one spec element; a payload of another shape than its tag
 /// declares (a checker hole) is no value, never undefined behaviour.
 fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
-    let (tag, args) = variant_tag(v)?;
+    let (tag, args) = rep::variant(v)?;
     match (&**tag, args.first()?) {
         ("I8", Value::I8(x)) => buf.put_i8(*x),
         ("U8", Value::U8(x)) => buf.put_u8(*x),
@@ -322,7 +312,7 @@ fn decode<R: Rt, E: UserEvent>(
     let Value::Array(spec) = from.value(1)? else { return None };
     let mut d = Decoder { buf: &buf, pos: 0, written: Default::default() };
     for elem in spec.iter() {
-        let (tag, args) = variant_tag(elem)?;
+        let (tag, args) = rep::variant(elem)?;
         match d.element(ctx, tag, args) {
             Ok(Some(())) => (),
             Ok(None) => return None,

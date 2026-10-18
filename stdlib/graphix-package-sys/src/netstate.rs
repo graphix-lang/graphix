@@ -789,6 +789,7 @@ impl NetState {
                             tbl.rows.drain(..).map(|name| Value::String(name.into()));
                         let rows = Value::Array(ValArray::from_iter_exact(rows));
                         #[derive(IntoValue)]
+                        #[value(shape = "graphix_compiler::rep::GraphixShape")]
                         struct Table {
                             columns: Value,
                             rows: Value,

@@ -2,7 +2,7 @@ use super::{StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
@@ -22,7 +22,7 @@ struct RenderDirectionV(RenderDirection);
 
 impl FromValue for RenderDirectionV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "LeftToRight" => Ok(Self(RenderDirection::LeftToRight)),
             "RightToLeft" => Ok(Self(RenderDirection::RightToLeft)),
             s => bail!("invalid render direction {s}"),
@@ -38,9 +38,10 @@ struct Bar {
 
 impl FromValue for Bar {
     fn from_value(v: Value) -> Result<Self> {
-        let (value, style) = match v {
-            Value::Array(_) => {
+        let (value, style) = match rep::struct_fields(&v) {
+            Some(_) => {
                 #[derive(FromValue)]
+                #[value(shape = "graphix_compiler::rep::GraphixShape")]
                 struct Fields {
                     style: Option<StyleV>,
                     value: Option<f64>,
@@ -48,7 +49,7 @@ impl FromValue for Bar {
                 let Fields { style, value } = v.cast_to()?;
                 (value, style.map(|s| s.0))
             }
-            v => (v.cast_to::<Option<f64>>()?, None),
+            None => (v.cast_to::<Option<f64>>()?, None),
         };
         Ok(Self { value: value.filter(|v| v.is_finite()), style })
     }

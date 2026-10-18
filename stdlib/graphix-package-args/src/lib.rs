@@ -18,6 +18,7 @@ use netidx_value::ValArray;
 use poolshark::local::LPooled;
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 enum Kind {
     Positional,
     Option,
@@ -25,6 +26,7 @@ enum Kind {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct Arg {
     name: ArcStr,
     kind: Kind,
@@ -35,6 +37,7 @@ struct Arg {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct Command {
     name: ArcStr,
     version: Option<ArcStr>,
@@ -285,6 +288,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
                 let mut values = CMap::new();
                 extract_matches(&matches, &spec, &mut command_chain, &mut values);
                 #[derive(IntoValue)]
+                #[value(shape = "graphix_compiler::rep::GraphixShape")]
                 struct Fields {
                     command: ValArray,
                     values: Value,

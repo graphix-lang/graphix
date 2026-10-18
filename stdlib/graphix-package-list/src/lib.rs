@@ -2,9 +2,12 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use graphix_compiler::node::list::{
-    Iter as ListIter, cons as make_cons, cons_all, from_iter as from_iter_back, is_list,
-    is_nil, nil as make_nil, split as get_cons, to_array,
+use graphix_compiler::{
+    node::list::{
+        Iter as ListIter, cons as make_cons, cons_all, from_iter as from_iter_back,
+        is_list, is_nil, nil as make_nil, split as get_cons, to_array,
+    },
+    rep,
 };
 use graphix_package_core::sort_values;
 use netidx::subscriber::Value;
@@ -59,9 +62,7 @@ graphix_package_core::fast_builtin!(Tail, TailEv, "list_tail", fc_tail);
 
 fn fc_uncons(args: &[Value]) -> Option<Value> {
     match get_cons(&args[0]) {
-        Some((head, tail)) => Some(Value::Array(ValArray::from_iter_exact(
-            [head.clone(), tail.clone()].into_iter(),
-        ))),
+        Some((head, tail)) => Some(rep::tuple([head.clone(), tail.clone()])),
         None => Some(Value::Null),
     }
 }
@@ -215,7 +216,7 @@ graphix_package_core::fast_builtin!(Flatten, FlattenEv, "list_flatten", fc_flatt
 
 fn fc_sort(args: &[Value]) -> Option<Value> {
     match args {
-        [Value::String(dir), Value::Bool(numeric), list] if is_list(list) => {
+        [dir, Value::Bool(numeric), list] if is_list(list) => {
             let mut sorted = sort_values(dir, *numeric, ListIter::new(list.clone()))?;
             Some(cons_all(&mut sorted, make_nil()))
         }
@@ -231,7 +232,9 @@ fn fc_enumerate(args: &[Value]) -> Option<Value> {
         return None;
     }
     Some(from_iter_back(
-        ListIter::new(list.clone()).enumerate().map(|(i, v)| (i as i64, v).into()),
+        ListIter::new(list.clone())
+            .enumerate()
+            .map(|(i, v)| rep::tuple([Value::I64(i as i64), v])),
     ))
 }
 
@@ -248,7 +251,9 @@ fn fc_zip(args: &[Value]) -> Option<Value> {
         return None;
     }
     Some(from_iter_back(
-        ListIter::new(l0.clone()).zip(ListIter::new(l1.clone())).map(|p| p.into()),
+        ListIter::new(l0.clone())
+            .zip(ListIter::new(l1.clone()))
+            .map(|(v0, v1)| rep::tuple([v0, v1])),
     ))
 }
 
@@ -262,16 +267,14 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
     let mut t0: LPooled<Vec<Value>> = LPooled::take();
     let mut t1: LPooled<Vec<Value>> = LPooled::take();
     for v in ListIter::new(list.clone()) {
-        if let Value::Array(a) = v
-            && a.len() == 2
-        {
-            t0.push(a[0].clone());
-            t1.push(a[1].clone());
+        if let Some([v0, v1]) = rep::tuple_elems(&v) {
+            t0.push(v0.clone());
+            t1.push(v1.clone());
         }
     }
     let v0 = cons_all(&mut t0, make_nil());
     let v1 = cons_all(&mut t1, make_nil());
-    Some(Value::Array(ValArray::from_iter_exact([v0, v1].into_iter())))
+    Some(rep::tuple([v0, v1]))
 }
 
 graphix_package_core::fast_builtin!(Unzip, UnzipEv, "list_unzip", fc_unzip);

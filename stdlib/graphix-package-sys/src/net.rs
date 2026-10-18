@@ -1,7 +1,6 @@
 use crate::netstate::{NetRpcWake, NetState, NetWrite};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
-use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
     UserEvent,
@@ -10,6 +9,7 @@ use graphix_compiler::{
     expr::ExprId,
     image::{self, ImageBuf},
     node::{coretraits, genn},
+    rep,
     typ::{FnType, Type},
 };
 use graphix_package_core::{
@@ -26,7 +26,6 @@ use netidx_core::{
 };
 use netidx_derive::FromValue;
 use netidx_protocols::rpc::server::{self, ArgSpec};
-use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::any::Any;
 
@@ -45,9 +44,9 @@ fn as_path(v: Value) -> Option<Path> {
 
 fn remote_err(tag: &ArcStr, e: &Value) -> Value {
     match e {
-        Value::String(msg) => {
-            Value::Error(Value::from((tag.clone(), msg.clone())).into())
-        }
+        Value::String(msg) => Value::Error(
+            rep::make_variant(tag.clone(), [Value::String(msg.clone())]).into(),
+        ),
         e => errf!(tag, "{e}"),
     }
 }
@@ -425,19 +424,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             let path = as_path(path.clone()).ok_or_else(|| anyhow!("invalid path"))?;
             let args = match args {
                 Value::Null => vec![],
-                Value::Array(args) => args
-                    .iter()
-                    .map(|v| match v {
-                        Value::Array(p) => match &**p {
-                            [Value::String(name), value] => {
-                                Ok((name.clone(), value.clone()))
-                            }
-                            _ => Err(anyhow!("rpc args expected [name, value] pair")),
-                        },
-                        _ => Err(anyhow!("rpc args expected [name, value] pair")),
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-                _ => bail!("rpc args expected to be a struct or null"),
+                args => match rep::read_struct(args).map(rep::Parts::elems) {
+                    Some(fields) => fields
+                        .iter()
+                        .map(|f| match rep::field(f) {
+                            Some((name, value)) => Ok((name.clone(), value.clone())),
+                            None => Err(anyhow!("rpc args expected [name, value] pair")),
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    None => bail!("rpc args expected to be a struct or null"),
+                },
             };
             Ok((path, args))
         }
@@ -766,9 +762,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 let net = NetState::get(ctx);
                 match net.publish(ctx, path.clone(), $v.clone(), self.wid) {
                     Err(e) => {
-                        let msg: ArcStr = format_compact!("{e:#}").as_str().into();
-                        let e: Value = (literal!("PublishError"), msg).into();
-                        return self.out.set(TagValue::fired(Value::Error(e.into())));
+                        let e = errf!("PublishError", "{e:#}");
+                        return self.out.set(TagValue::fired(e));
                     }
                     Ok(id) => {
                         self.current = Some((path, id));
@@ -897,33 +892,34 @@ fn args_struct(args: &mut LPooled<Vec<(ArcStr, Value)>>) -> Value {
         return Value::Null;
     }
     args.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    Value::Array(ValArray::from_iter_exact(
-        args.drain(..).map(|(n, v)| Value::Array(ValArray::from([Value::String(n), v]))),
-    ))
+    rep::structure(args.drain(..))
 }
 
 /// An rpc's spec, from `#spec`: each field's `{default, doc}`.
 fn parse_spec(spec: &Value) -> Result<Vec<ArgSpec>> {
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct RpcArg {
         default: Value,
         doc: Value,
     }
     let fields = match spec {
         Value::Null => return Ok(vec![]),
-        Value::Array(fields) => fields,
-        v => bail!("rpc #spec must be a struct or null, not {v}"),
+        v => match rep::read_struct(v).map(rep::Parts::elems) {
+            Some(fields) => fields,
+            None => bail!("rpc #spec must be a struct or null, not {v}"),
+        },
     };
     fields
         .iter()
-        .map(|field| match field {
-            Value::Array(p) if let [Value::String(name), arg] = &p[..] => {
+        .map(|field| match rep::field(field) {
+            Some((name, arg)) => {
                 let RpcArg { default, doc } = arg.clone().cast_to::<RpcArg>().map_err(|e| {
                     anyhow!("rpc #spec field '{name}' must be {{default: 'a, doc: string}}: {e}")
                 })?;
                 Ok(ArgSpec { name: name.clone(), doc, default_value: default })
             }
-            v => bail!("rpc #spec must be a struct, not {v}"),
+            None => bail!("rpc #spec must be a struct, not {field}"),
         })
         .collect()
 }

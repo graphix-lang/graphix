@@ -3,7 +3,6 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::{Context, Result, anyhow, bail};
-use arcstr::ArcStr;
 use async_trait::async_trait;
 use barchart::BarChartW;
 use block::BlockW;
@@ -27,6 +26,7 @@ use graphix_compiler::{
     errf,
     expr::{ExprId, ModPath},
     image::{self, ImageBuf},
+    rep,
     typ::FnType,
 };
 use graphix_package::{CustomDisplay, Stop};
@@ -109,14 +109,11 @@ struct AlignmentV(Alignment);
 
 impl FromValue for AlignmentV {
     fn from_value(v: Value) -> Result<Self> {
-        match v {
-            Value::String(s) => match &*s {
-                "Left" => Ok(AlignmentV(Alignment::Left)),
-                "Right" => Ok(AlignmentV(Alignment::Right)),
-                "Center" => Ok(AlignmentV(Alignment::Center)),
-                s => bail!("invalid alignment {s}"),
-            },
-            v => bail!("invalid alignment {v}"),
+        match rep::bare_tag(&v)? {
+            "Left" => Ok(AlignmentV(Alignment::Left)),
+            "Right" => Ok(AlignmentV(Alignment::Right)),
+            "Center" => Ok(AlignmentV(Alignment::Center)),
+            s => bail!("invalid alignment {s}"),
         }
     }
 }
@@ -126,8 +123,8 @@ struct ColorV(Color);
 
 impl FromValue for ColorV {
     fn from_value(v: Value) -> Result<Self> {
-        match v {
-            Value::String(s) => match &*s {
+        match rep::variant(&v) {
+            Some((s, [])) => match s.as_str() {
                 "Reset" => Ok(Self(Color::Reset)),
                 "Black" => Ok(Self(Color::Black)),
                 "Red" => Ok(Self(Color::Red)),
@@ -147,22 +144,22 @@ impl FromValue for ColorV {
                 "White" => Ok(Self(Color::White)),
                 s => bail!("invalid color name {s}"),
             },
-            v => match v.cast_to::<(ArcStr, Value)>()? {
-                (s, v) if &*s == "Rgb" => {
+            Some((s, [v])) => match s.as_str() {
+                "Rgb" => {
                     #[derive(FromValue)]
+                    #[value(shape = "graphix_compiler::rep::GraphixShape")]
                     struct Rgb {
                         b: Byte,
                         g: Byte,
                         r: Byte,
                     }
-                    let Rgb { b, g, r } = v.cast_to()?;
+                    let Rgb { b, g, r } = v.clone().cast_to()?;
                     Ok(Self(Color::Rgb(r.0, g.0, b.0)))
                 }
-                (s, v) if &*s == "Indexed" => {
-                    Ok(Self(Color::Indexed(v.cast_to::<Byte>()?.0)))
-                }
-                (s, v) => bail!("invalid color ({s} {v})"),
+                "Indexed" => Ok(Self(Color::Indexed(v.clone().cast_to::<Byte>()?.0))),
+                s => bail!("invalid color ({s} {v})"),
             },
+            _ => bail!("invalid color {v}"),
         }
     }
 }
@@ -173,20 +170,24 @@ struct ModifierV(Modifier);
 impl FromValue for ModifierV {
     fn from_value(v: Value) -> Result<Self> {
         let mut m = Modifier::empty();
-        if let Some(o) = v.cast_to::<Option<SmallVec<[ArcStr; 2]>>>()? {
-            for s in o {
-                match &*s {
-                    "Bold" => m |= Modifier::BOLD,
-                    "Dim" => m |= Modifier::DIM,
-                    "Italic" => m |= Modifier::ITALIC,
-                    "Underlined" => m |= Modifier::UNDERLINED,
-                    "SlowBlink" => m |= Modifier::SLOW_BLINK,
-                    "RapidBlink" => m |= Modifier::RAPID_BLINK,
-                    "Reversed" => m |= Modifier::REVERSED,
-                    "Hidden" => m |= Modifier::HIDDEN,
-                    "CrossedOut" => m |= Modifier::CROSSED_OUT,
-                    s => bail!("invalid modifier {s}"),
-                }
+        let modifiers = match &v {
+            Value::Null => &[][..],
+            v => {
+                &rep::array_elems(v).ok_or_else(|| anyhow!("invalid modifiers {v}"))?[..]
+            }
+        };
+        for s in modifiers {
+            match rep::bare_tag(s)? {
+                "Bold" => m |= Modifier::BOLD,
+                "Dim" => m |= Modifier::DIM,
+                "Italic" => m |= Modifier::ITALIC,
+                "Underlined" => m |= Modifier::UNDERLINED,
+                "SlowBlink" => m |= Modifier::SLOW_BLINK,
+                "RapidBlink" => m |= Modifier::RAPID_BLINK,
+                "Reversed" => m |= Modifier::REVERSED,
+                "Hidden" => m |= Modifier::HIDDEN,
+                "CrossedOut" => m |= Modifier::CROSSED_OUT,
+                s => bail!("invalid modifier {s}"),
             }
         }
         Ok(Self(m))
@@ -199,6 +200,7 @@ struct StyleV(Style);
 impl FromValue for StyleV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             add_modifier: ModifierV,
             bg: Option<ColorV>,
@@ -223,6 +225,7 @@ struct SpanV(Span<'static>);
 impl FromValue for SpanV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             content: String,
             style: StyleV,
@@ -238,6 +241,7 @@ struct LineV(Line<'static>);
 impl FromValue for LineV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             alignment: Option<AlignmentV>,
             spans: Value,
@@ -273,7 +277,7 @@ struct FlexV(Flex);
 
 impl FromValue for FlexV {
     fn from_value(v: Value) -> Result<Self> {
-        let t = match &*v.cast_to::<ArcStr>()? {
+        let t = match rep::bare_tag(&v)? {
             "Legacy" => Flex::Legacy,
             "Start" => Flex::Start,
             "End" => Flex::End,
@@ -289,10 +293,16 @@ impl FromValue for FlexV {
 
 /// A scroll in content lines (y) and chars (x).
 #[derive(Debug, Clone, Copy, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct ScrollV {
     x: Offset,
     y: Offset,
 }
+
+/// A point, the Graphix tuple `(f64, f64)`.
+#[derive(Clone, Copy, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
+struct PointV(f64, f64);
 
 /// An axis range; a bound that is not a number is read as the empty
 /// range, which draws nothing (ratatui paints a NaN at the edge).
@@ -305,6 +315,7 @@ struct BoundsV {
 impl FromValue for BoundsV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             max: f64,
             min: f64,
@@ -324,7 +335,7 @@ struct TitlePositionV(TitlePosition);
 
 impl FromValue for TitlePositionV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Top" => Ok(Self(TitlePosition::Top)),
             "Bottom" => Ok(Self(TitlePosition::Bottom)),
             s => bail!("invalid position {s}"),
@@ -337,7 +348,7 @@ struct DirectionV(Direction);
 
 impl FromValue for DirectionV {
     fn from_value(v: Value) -> Result<Self> {
-        let t = match &*v.cast_to::<ArcStr>()? {
+        let t = match rep::bare_tag(&v)? {
             "Horizontal" => Direction::Horizontal,
             "Vertical" => Direction::Vertical,
             s => bail!("invalid direction tag {s}"),
@@ -351,7 +362,7 @@ struct HighlightSpacingV(ratatui::widgets::HighlightSpacing);
 
 impl FromValue for HighlightSpacingV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Always" => Ok(Self(ratatui::widgets::HighlightSpacing::Always)),
             "Never" => Ok(Self(ratatui::widgets::HighlightSpacing::Never)),
             "WhenSelected" => Ok(Self(ratatui::widgets::HighlightSpacing::WhenSelected)),
@@ -361,6 +372,7 @@ impl FromValue for HighlightSpacingV {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, IntoValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct SizeV {
     width: i64,
     height: i64,
@@ -389,7 +401,7 @@ struct MarkerV(symbols::Marker);
 
 impl FromValue for MarkerV {
     fn from_value(v: Value) -> Result<Self> {
-        let m = match &*v.cast_to::<ArcStr>()? {
+        let m = match rep::bare_tag(&v)? {
             "Dot" => symbols::Marker::Dot,
             "Block" => symbols::Marker::Block,
             "Bar" => symbols::Marker::Bar,
@@ -471,25 +483,29 @@ type CompRes = Pin<Box<dyn Future<Output = Result<TuiW>> + Send + Sync + 'static
 
 fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompRes {
     Box::pin(async move {
-        match source.cast_to::<(ArcStr, Value)>()? {
-            (s, v) if &s == "Text" => TextW::compile(gx, v).await,
-            (s, v) if &s == "Paragraph" => ParagraphW::compile(gx, v).await,
-            (s, v) if &s == "Block" => BlockW::compile(gx, v).await,
-            (s, v) if &s == "Scrollbar" => ScrollbarW::compile(gx, v).await,
-            (s, v) if &s == "Layout" => LayoutW::compile(gx, v).await,
-            (s, v) if &s == "BarChart" => BarChartW::compile(gx, v).await,
-            (s, v) if &s == "Chart" => ChartW::compile(gx, v).await,
-            (s, v) if &s == "Sparkline" => SparklineW::compile(gx, v).await,
-            (s, v) if &s == "LineGauge" => LineGaugeW::compile(gx, v).await,
-            (s, v) if &s == "Calendar" => CalendarW::compile(gx, v).await,
-            (s, v) if &s == "Table" => table::TableW::compile(gx, v).await,
-            (s, v) if &s == "Gauge" => GaugeW::compile(gx, v).await,
-            (s, v) if &s == "List" => ListW::compile(gx, v).await,
-            (s, v) if &s == "Tabs" => tabs::TabsW::compile(gx, v).await,
-            (s, v) if &s == "Canvas" => canvas::CanvasW::compile(gx, v).await,
-            (s, v) if &s == "Overlay" => overlay::OverlayW::compile(gx, v).await,
-            (s, v) if &s == "InputHandler" => InputHandlerW::compile(gx, v).await,
-            (s, v) => bail!("invalid widget type `{s}({v})"),
+        let Some((s, [v])) = rep::variant(&source) else {
+            bail!("invalid widget {source}")
+        };
+        let v = v.clone();
+        match s.as_str() {
+            "Text" => TextW::compile(gx, v).await,
+            "Paragraph" => ParagraphW::compile(gx, v).await,
+            "Block" => BlockW::compile(gx, v).await,
+            "Scrollbar" => ScrollbarW::compile(gx, v).await,
+            "Layout" => LayoutW::compile(gx, v).await,
+            "BarChart" => BarChartW::compile(gx, v).await,
+            "Chart" => ChartW::compile(gx, v).await,
+            "Sparkline" => SparklineW::compile(gx, v).await,
+            "LineGauge" => LineGaugeW::compile(gx, v).await,
+            "Calendar" => CalendarW::compile(gx, v).await,
+            "Table" => table::TableW::compile(gx, v).await,
+            "Gauge" => GaugeW::compile(gx, v).await,
+            "List" => ListW::compile(gx, v).await,
+            "Tabs" => tabs::TabsW::compile(gx, v).await,
+            "Canvas" => canvas::CanvasW::compile(gx, v).await,
+            "Overlay" => overlay::OverlayW::compile(gx, v).await,
+            "InputHandler" => InputHandlerW::compile(gx, v).await,
+            s => bail!("invalid widget type `{s}({v})"),
         }
     })
 }
@@ -598,6 +614,7 @@ struct SizeReport<X: GXExt> {
 impl<X: GXExt> SizeReport<X> {
     async fn compile(gx: &GXHandle<X>, v: &Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             size: Option<BindId>,
         }

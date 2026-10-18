@@ -2,7 +2,7 @@ use super::{ChildW, SizeReport, StyleV, TuiW, TuiWidget, validate::ScrollCount};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
@@ -16,7 +16,7 @@ struct ScrollbarOrientationV(ScrollbarOrientation);
 
 impl FromValue for ScrollbarOrientationV {
     fn from_value(v: Value) -> Result<Self> {
-        let v = match &*v.cast_to::<ArcStr>()? {
+        let v = match rep::bare_tag(&v)? {
             "VerticalRight" => ScrollbarOrientation::VerticalRight,
             "VerticalLeft" => ScrollbarOrientation::VerticalLeft,
             "HorizontalBottom" => ScrollbarOrientation::HorizontalBottom,

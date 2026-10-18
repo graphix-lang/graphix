@@ -99,6 +99,7 @@ impl EvalCachedAsync for ReadDirEv {
                 Ok(Err(e)) => errf!("IOError", "could not read directory {path}: {e:#}"),
                 Ok(Ok(mut ents)) => {
                     #[derive(IntoValue)]
+                    #[value(shape = "graphix_compiler::rep::GraphixShape")]
                     struct Fields {
                         depth: i64,
                         file_name: ArcStr,

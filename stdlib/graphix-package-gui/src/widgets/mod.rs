@@ -2,7 +2,7 @@ use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use compact_str::CompactString;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
@@ -738,7 +738,10 @@ flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 /// avoid infinite-size futures from recursive async calls.
 pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
     Box::pin(async move {
-        let (s, v) = source.cast_to::<(ArcStr, Value)>()?;
+        let Some((s, [v])) = rep::variant(&source) else {
+            bail!("invalid gui widget {source}")
+        };
+        let v = v.clone();
         match s.as_str() {
             "Text" => text::TextW::compile(gx, v).await,
             "Column" => ColumnW::compile(gx, v).await,

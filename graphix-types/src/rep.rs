@@ -203,6 +203,14 @@ pub fn variant(v: &Value) -> Option<(&ArcStr, &[Value])> {
     }
 }
 
+/// The tag of `v`, a variant without a payload.
+pub fn bare_tag(v: &Value) -> anyhow::Result<&str> {
+    match variant(v) {
+        Some((tag, [])) => Ok(tag.as_str()),
+        _ => anyhow::bail!("expected a variant without a payload, got {v}"),
+    }
+}
+
 /// Whether `v` is the variant `tag` with `arity` payload values.
 pub fn is_variant(v: &Value, tag: &str, arity: usize) -> bool {
     variant(v).is_some_and(|(t, p)| t == tag && p.len() == arity)
@@ -211,4 +219,42 @@ pub fn is_variant(v: &Value, tag: &str, arity: usize) -> bool {
 /// The payload value at `i` of the variant `v`.
 pub fn payload(v: &Value, i: usize) -> Option<&Value> {
     variant(v).and_then(|(_, p)| p.get(i))
+}
+
+/// The derives' [`netidx_value::Shape`] for a type Graphix code sees:
+/// `#[value(shape = "graphix_compiler::rep::GraphixShape")]`. Its reads
+/// take data in its written form as well as values.
+pub struct GraphixShape;
+
+impl netidx_value::Shape for GraphixShape {
+    fn make_struct(
+        fields: impl IntoIterator<Item = (ArcStr, Value), IntoIter: ExactSizeIterator>,
+    ) -> Value {
+        structure(fields)
+    }
+
+    fn struct_fields(v: &Value) -> Option<&[Value]> {
+        read_struct(v).map(Parts::elems)
+    }
+
+    fn make_tuple(
+        elems: impl IntoIterator<Item = Value, IntoIter: ExactSizeIterator>,
+    ) -> Value {
+        tuple(elems)
+    }
+
+    fn tuple_elems(v: &Value) -> Option<&[Value]> {
+        read_tuple(v).map(Parts::elems)
+    }
+
+    fn make_variant(
+        tag: ArcStr,
+        payload: impl IntoIterator<Item = Value, IntoIter: ExactSizeIterator>,
+    ) -> Value {
+        make_variant(tag, payload)
+    }
+
+    fn variant(v: &Value) -> Option<(&ArcStr, &[Value])> {
+        read_variant(v).map(|(tag, p)| (tag, p.elems()))
+    }
 }

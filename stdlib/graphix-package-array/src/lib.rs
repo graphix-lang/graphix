@@ -11,6 +11,7 @@ use graphix_compiler::{
     expr::ExprId,
     image::{self, ImageBuf},
     node::genn,
+    rep,
     typ::{FnType, Type},
 };
 use graphix_package_core::{bottom_of, seam_tick, seam_value, sort_values};
@@ -110,7 +111,7 @@ graphix_package_core::fast_builtin!(Flatten, FlattenEv, "array_flatten", fc_flat
 
 fn fc_sort(args: &[Value]) -> Option<Value> {
     match args {
-        [Value::String(dir), Value::Bool(numeric), Value::Array(a)] => {
+        [dir, Value::Bool(numeric), Value::Array(a)] => {
             let mut sorted = sort_values(dir, *numeric, a.iter().cloned())?;
             Some(Value::Array(ValArray::from_iter_exact(sorted.drain(..))))
         }
@@ -141,7 +142,9 @@ graphix_package_core::fast_builtin!(Dedup, DedupEv, "array_dedup", fc_dedup);
 fn fc_enumerate(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => Some(Value::Array(ValArray::from_iter_exact(
-            a.iter().enumerate().map(|(i, v)| (i as i64, v.clone()).into()),
+            a.iter()
+                .enumerate()
+                .map(|(i, v)| rep::tuple([Value::I64(i as i64), v.clone()])),
         ))),
         _ => None,
     }
@@ -158,7 +161,9 @@ fn fc_zip(args: &[Value]) -> Option<Value> {
     match args {
         [Value::Array(a0), Value::Array(a1)] => {
             Some(Value::Array(ValArray::from_iter_exact(
-                a0.iter().cloned().zip(a1.iter().cloned()).map(|p| p.into()),
+                a0.iter()
+                    .zip(a1.iter())
+                    .map(|(v0, v1)| rep::tuple([v0.clone(), v1.clone()])),
             )))
         }
         _ => None,
@@ -173,19 +178,14 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
             let mut t0: LPooled<Vec<Value>> = LPooled::take();
             let mut t1: LPooled<Vec<Value>> = LPooled::take();
             for v in a {
-                if let Value::Array(a) = v {
-                    match &a[..] {
-                        [v0, v1] => {
-                            t0.push(v0.clone());
-                            t1.push(v1.clone());
-                        }
-                        _ => (),
-                    }
+                if let Some([v0, v1]) = rep::tuple_elems(v) {
+                    t0.push(v0.clone());
+                    t1.push(v1.clone());
                 }
             }
             let v0 = Value::Array(ValArray::from_iter_exact(t0.drain(..)));
             let v1 = Value::Array(ValArray::from_iter_exact(t1.drain(..)));
-            Some(Value::Array(ValArray::from_iter_exact([v0, v1].into_iter())))
+            Some(rep::tuple([v0, v1]))
         }
         _ => None,
     }

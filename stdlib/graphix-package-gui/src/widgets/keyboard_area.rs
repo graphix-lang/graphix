@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use arcstr::literal;
 use compact_str::format_compact;
 use futures::try_join;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle};
 use iced_core::keyboard;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -45,20 +45,18 @@ pub(crate) fn key_event_to_value(
         }
         keyboard::Key::Unidentified => Value::String(literal!("Unidentified")),
     };
-    let mods: Value = [
+    let mods = rep::structure([
         (literal!("alt"), Value::Bool(modifiers.alt())),
         (literal!("ctrl"), Value::Bool(modifiers.control())),
         (literal!("logo"), Value::Bool(modifiers.logo())),
         (literal!("shift"), Value::Bool(modifiers.shift())),
-    ]
-    .into();
-    [
+    ]);
+    rep::structure([
         (literal!("key"), key),
         (literal!("modifiers"), mods),
         (literal!("repeat"), Value::Bool(repeat)),
         (literal!("text"), Value::String(text.unwrap_or("").into())),
-    ]
-    .into()
+    ])
 }
 
 impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {

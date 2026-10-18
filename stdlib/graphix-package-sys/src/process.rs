@@ -151,6 +151,7 @@ fn get_proc(cached: &CachedVals, idx: usize) -> Option<ProcValue> {
 }
 
 #[derive(Debug, Clone, IntoValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(crate) struct ExitStatusValue {
     code: Option<i64>,
     success: bool,
@@ -163,6 +164,7 @@ impl From<StdExitStatus> for ExitStatusValue {
 }
 
 #[derive(Debug, Clone, Copy, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 enum Stdio {
     Pipe,
     Inherit,
@@ -170,6 +172,7 @@ enum Stdio {
 }
 
 #[derive(Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct StdioConfig {
     stdin: Stdio,
     stdout: Stdio,
@@ -177,6 +180,7 @@ struct StdioConfig {
 }
 
 #[derive(Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(crate) struct SpawnOptions {
     command: ArcStr,
     args: Vec<ArcStr>,
@@ -188,6 +192,7 @@ pub(crate) struct SpawnOptions {
 }
 
 #[derive(Debug, IntoValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct ChildBundle {
     proc: ProcValue,
     pid: i64,

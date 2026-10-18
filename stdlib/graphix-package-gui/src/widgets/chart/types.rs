@@ -2,6 +2,7 @@ use crate::types::{ColorV, TextSizeV};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use chrono::{DateTime, Utc};
+use graphix_compiler::rep;
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use plotters::prelude::SeriesLabelPosition;
@@ -54,6 +55,16 @@ fn is_time_series(a: &[Value], x_of: impl Fn(&Value) -> Option<&Value>) -> bool 
     a.first().and_then(x_of).is_some_and(|x| matches!(x, Value::DateTime(_)))
 }
 
+/// A Graphix tuple `(x, y)`.
+#[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
+struct Pair<X>(X, f64);
+
+/// A Graphix tuple `(x, y, z)`.
+#[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
+struct Triple(f64, f64, f64);
+
 fn array(v: Value, what: &str) -> Result<netidx::protocol::valarray::ValArray> {
     match v {
         Value::Array(a) => Ok(a),
@@ -70,18 +81,15 @@ pub struct XYData {
 impl FromValue for XYData {
     fn from_value(v: Value) -> Result<Self> {
         let a = array(v, "xy")?;
-        let time = is_time_series(&a, |p| match p {
-            Value::Array(t) => t.first(),
-            _ => None,
-        });
+        let time = is_time_series(&a, |p| rep::tuple_elems(p).and_then(|t| t.first()));
         let pts = a
             .iter()
             .map(|v| match time {
                 true => v
                     .clone()
-                    .cast_to::<(DateTime<Utc>, f64)>()
-                    .map(|(x, y)| (datetime_ms(&x), y)),
-                false => v.clone().cast_to::<(f64, f64)>(),
+                    .cast_to::<Pair<DateTime<Utc>>>()
+                    .map(|Pair(x, y)| (datetime_ms(&x), y)),
+                false => v.clone().cast_to::<Pair<f64>>().map(|Pair(x, y)| (x, y)),
             })
             .collect::<Result<_>>()?;
         Ok(Self { time, pts })
@@ -99,7 +107,7 @@ impl FromValue for BarData {
         };
         Ok(Self(
             a.iter()
-                .map(|v| v.clone().cast_to::<(ArcStr, f64)>())
+                .map(|v| v.clone().cast_to::<Pair<ArcStr>>().map(|Pair(l, y)| (l, y)))
                 .collect::<Result<_>>()?,
         ))
     }
@@ -154,20 +162,13 @@ fn point_x(time: bool, x: Value) -> Result<f64> {
 }
 
 fn struct_x(p: &Value) -> Option<&Value> {
-    match p {
-        Value::Array(fields) => fields.iter().find_map(|f| match f {
-            Value::Array(kv) if kv.len() == 2 && kv[0] == Value::from("x") => {
-                Some(&kv[1])
-            }
-            _ => None,
-        }),
-        _ => None,
-    }
+    rep::struct_fields(p).and_then(|f| rep::field_named(f, "x")).map(|(_, x)| x)
 }
 
 impl FromValue for OHLCData {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct P {
             x: Value,
             open: f64,
@@ -191,6 +192,7 @@ impl FromValue for OHLCData {
 impl FromValue for EBData {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct P {
             x: Value,
             min: f64,
@@ -221,7 +223,7 @@ impl FromValue for XYZData {
         };
         Ok(Self(
             a.iter()
-                .map(|v| v.clone().cast_to::<(f64, f64, f64)>())
+                .map(|v| v.clone().cast_to::<Triple>().map(|Triple(x, y, z)| (x, y, z)))
                 .collect::<Result<_>>()?,
         ))
     }
@@ -244,7 +246,7 @@ impl FromValue for SurfaceData {
             };
             let row: Vec<(f64, f64, f64)> = row_a
                 .iter()
-                .map(|v| v.clone().cast_to::<(f64, f64, f64)>())
+                .map(|v| v.clone().cast_to::<Triple>().map(|Triple(x, y, z)| (x, y, z)))
                 .collect::<Result<_>>()?;
             rows.push(row);
         }
@@ -253,6 +255,7 @@ impl FromValue for SurfaceData {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct SeriesStyleV {
     pub color: Option<ChartColor>,
     pub label: Option<String>,
@@ -261,6 +264,7 @@ pub struct SeriesStyleV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct BarStyleV {
     pub color: Option<ChartColor>,
     pub label: Option<String>,
@@ -268,6 +272,7 @@ pub struct BarStyleV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct CandlestickStyleV {
     pub gain_color: Option<ChartColor>,
     pub loss_color: Option<ChartColor>,
@@ -276,6 +281,7 @@ pub struct CandlestickStyleV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct PieStyleV {
     pub colors: Option<Vec<ChartColor>>,
     pub donut: Option<f64>,
@@ -285,6 +291,7 @@ pub struct PieStyleV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct SurfaceStyleV {
     pub color: Option<ChartColor>,
     pub color_by_z: Option<bool>,
@@ -292,6 +299,7 @@ pub struct SurfaceStyleV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct MeshStyleV {
     pub show_x_grid: Option<bool>,
     pub show_y_grid: Option<bool>,
@@ -311,6 +319,7 @@ pub struct MeshStyleV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct LegendStyleV {
     pub background: Option<ChartColor>,
     pub border: Option<ChartColor>,
@@ -323,7 +332,7 @@ pub struct LegendPositionV(pub SeriesLabelPosition);
 
 impl FromValue for LegendPositionV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "UpperLeft" => Ok(Self(SeriesLabelPosition::UpperLeft)),
             "UpperRight" => Ok(Self(SeriesLabelPosition::UpperRight)),
             "LowerLeft" => Ok(Self(SeriesLabelPosition::LowerLeft)),
@@ -338,6 +347,7 @@ impl FromValue for LegendPositionV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct ChartStyleV {
     pub background: Option<ChartColor>,
     pub margin: Option<f64>,
@@ -351,9 +361,11 @@ pub struct ChartStyleV {
 
 /// Newtype for Option<ChartStyleV> to satisfy orphan rules.
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct OptChartStyle(pub Option<ChartStyleV>);
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct Projection3DV {
     pub pitch: Option<f64>,
     pub scale: Option<f64>,
@@ -361,9 +373,11 @@ pub struct Projection3DV {
 }
 
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct OptProjection3D(pub Option<Projection3DV>);
 
 #[derive(Clone, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct AxisRange {
     pub min: f64,
     pub max: f64,
@@ -371,6 +385,7 @@ pub struct AxisRange {
 
 /// Newtype for Option<AxisRange> to satisfy orphan rules.
 #[derive(Clone, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct OptAxisRange(pub Option<AxisRange>);
 
 /// The x-axis range; in ms since the epoch when `time`.
@@ -386,6 +401,7 @@ pub struct OptXAxisRange(pub Option<XAxisRange>);
 impl FromValue for OptXAxisRange {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             min: Value,
             max: Value,

@@ -2,9 +2,9 @@ use super::{
     LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, finish_update,
     into_borrowed_line, reconcile, update_children, validate::Index,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
@@ -46,9 +46,11 @@ impl<X: GXExt> TabsW<X> {
         let mut sources: LPooled<Vec<Value>> = LPooled::take();
         self.titles.clear();
         for tab in v.cast_to::<ValArray>()?.iter() {
-            let (title, source) = tab.clone().cast_to::<(LineV, Value)>()?;
-            self.titles.push(title);
-            sources.push(source);
+            let Some([title, source]) = rep::tuple_elems(tab) else {
+                bail!("invalid tab {tab}")
+            };
+            self.titles.push(title.clone().cast_to()?);
+            sources.push(source.clone());
         }
         reconcile(&mut self.tabs, sources.drain(..), |v| compile(self.gx.clone(), v))
             .await

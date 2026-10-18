@@ -152,16 +152,7 @@ pub(super) fn has_form(t: &Type, v: &Value) -> bool {
         | (Type::Error(_), Value::Error(_))
         | (Type::Abstract { .. }, Value::Abstract(_)) => true,
         (Type::Primitive(p), v) => p.contains(Typ::get(v)),
-        (
-            Type::Array(_)
-            | Type::Tuple(_)
-            | Type::Struct(_)
-            | Type::Variant(..)
-            | Type::Map { .. }
-            | Type::Error(_)
-            | Type::Abstract { .. },
-            _,
-        ) => false,
+        (Type::Map { .. } | Type::Error(_) | Type::Abstract { .. }, _) => false,
         _ => true,
     }
 }

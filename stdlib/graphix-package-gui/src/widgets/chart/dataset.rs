@@ -76,6 +76,7 @@ impl<X: GXExt> DatasetEntry<X> {
 
 /// Dataset metadata parsed from the datasets array value before ref compilation.
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 enum DatasetMeta {
     Line { data: BindId, style: SeriesStyleV },
     Scatter { data: BindId, style: SeriesStyleV },

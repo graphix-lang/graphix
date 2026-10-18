@@ -23,6 +23,7 @@ pub(super) struct ConstraintV(pub Constraint);
 impl FromValue for ConstraintV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         enum Repr {
             Min(Offset),
             Max(Offset),
@@ -52,6 +53,7 @@ struct SpacingV(Spacing);
 impl FromValue for SpacingV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         enum Repr {
             Space(Dim),
             Overlap(Dim),
@@ -72,6 +74,7 @@ struct Slot<X: GXExt> {
 impl<X: GXExt> Slot<X> {
     async fn compile(gx: GXHandle<X>, v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             child: Value,
             constraint: ConstraintV,

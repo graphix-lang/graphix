@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arcstr::{ArcStr, literal};
+use arcstr::literal;
 use futures::{channel::mpsc, future, prelude::*};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
@@ -8,6 +8,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
+    rep,
     typ::{FnType, Type},
 };
 use graphix_package_core::{CachedVals, Invocation, data_target, read_back, write_data};
@@ -418,20 +419,17 @@ macro_rules! db_event_accessor {
 
 db_event_accessor!(DbOnChange, "db_subscription_on_change", |se| Some(match se {
     DbEvent::Insert { key, value } => {
-        Value::Array(ValArray::from([
-            literal!("Insert").into(),
-            key.clone(),
-            value.clone(),
-        ]))
+        rep::make_variant(literal!("Insert"), [key.clone(), value.clone()])
     }
     DbEvent::Remove { key } => {
-        Value::Array(ValArray::from([literal!("Remove").into(), key.clone()]))
+        rep::make_variant(literal!("Remove"), [key.clone()])
     }
 }));
 
 db_event_accessor!(DbOnInsert, "db_subscription_on_insert", |se| match se {
     DbEvent::Insert { key, value } => {
         #[derive(IntoValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             key: Value,
             value: Value,
@@ -444,6 +442,7 @@ db_event_accessor!(DbOnInsert, "db_subscription_on_insert", |se| match se {
 db_event_accessor!(DbOnRemove, "db_subscription_on_remove", |se| match se {
     DbEvent::Remove { key } => {
         #[derive(IntoValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             key: Value,
         }

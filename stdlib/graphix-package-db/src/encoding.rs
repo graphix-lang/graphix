@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use chrono::DateTime;
 use enumflags2::BitFlags;
+use graphix_compiler::rep;
 use netidx::publisher::Typ;
 use netidx_core::pack::Pack;
 use netidx_value::{ValArray, ValError, Value};
@@ -355,17 +356,11 @@ pub(crate) fn for_batch_ops(
     mut f: impl FnMut(&[u8], Option<&[u8]>),
 ) -> Result<()> {
     for op in arr.iter() {
-        match op {
-            Value::Array(a) => match &a[..] {
-                [Value::String(tag), k, v] if &**tag == "Insert" => f(
-                    encode_key(key_typ, k)?.as_slice(),
-                    Some(encode_value(v)?.as_slice()),
-                ),
-                [Value::String(tag), k] if &**tag == "Remove" => {
-                    f(encode_key(key_typ, k)?.as_slice(), None)
-                }
-                _ => bail!("not a batch op: {op}"),
-            },
+        match rep::read_variant(op).map(|(tag, p)| (tag.as_str(), p.elems())) {
+            Some(("Insert", [k, v])) => {
+                f(encode_key(key_typ, k)?.as_slice(), Some(encode_value(v)?.as_slice()))
+            }
+            Some(("Remove", [k])) => f(encode_key(key_typ, k)?.as_slice(), None),
             _ => bail!("not a batch op: {op}"),
         }
     }

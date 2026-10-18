@@ -5,7 +5,7 @@
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
-use graphix_compiler::{env::Env, err, errf, expr::split_escaped, typ::FnType};
+use graphix_compiler::{env::Env, err, errf, expr::split_escaped, rep, typ::FnType};
 use graphix_package_core::{FastMemo, cast_target};
 use netidx::{path::Path, subscriber::Value};
 use netidx_derive::FromValue;
@@ -172,10 +172,7 @@ fn fc_row_col(args: &[Value]) -> Option<Value> {
                 Some(s) => s,
                 None => return Some(Value::Null),
             };
-            Some(Value::Array(ValArray::from([
-                Value::String(row.into()),
-                Value::String(col.into()),
-            ])))
+            Some(rep::tuple([Value::String(row.into()), Value::String(col.into())]))
         }
         _ => None,
     }
@@ -245,10 +242,11 @@ fn build_escape(esc: Value) -> Result<Escape> {
         c.is_control()
     }
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         escape: ArcStr,
         escape_char: ArcStr,
-        tr: SmallVec<[(ArcStr, ArcStr); 8]>,
+        tr: SmallVec<[Value; 8]>,
     }
     let Fields { escape, escape_char, tr } = esc.cast_to().context("parse escape")?;
     let Some(escape_char) = one_char(&Value::String(escape_char)) else {
@@ -256,13 +254,15 @@ fn build_escape(esc: Value) -> Result<Escape> {
     };
     let to_escape = escape.chars().collect::<SmallVec<[char; 32]>>();
     let tr = tr
-        .into_iter()
-        .map(|(k, v)| match one_char(&Value::String(k.clone())) {
-            Some(c) => Ok((c, v)),
-            None => bail!("escape: tr key {k} is invalid, expected 1 character"),
+        .iter()
+        .map(|kv| match rep::read_tuple(kv).map(rep::Parts::elems) {
+            Some([key @ Value::String(k), Value::String(v)]) => match one_char(key) {
+                Some(c) => Ok((c, v.as_str())),
+                None => bail!("escape: tr key {k} is invalid, expected 1 character"),
+            },
+            _ => bail!("escape: tr entry {kv} is not a pair of strings"),
         })
         .collect::<Result<SmallVec<[_; 8]>>>()?;
-    let tr = tr.iter().map(|(c, s)| (*c, s.as_str())).collect::<SmallVec<[_; 8]>>();
     Escape::new(escape_char, &to_escape, &tr, Some(escape_non_printing))
 }
 
@@ -415,10 +415,9 @@ fn fc_split_once(args: &[Value]) -> Option<Value> {
     match &args[1] {
         Value::String(s) => match s.split_once(&**pat) {
             None => Some(Value::Null),
-            Some((s0, s1)) => Some(Value::Array(ValArray::from([
-                Value::String(s0.into()),
-                Value::String(s1.into()),
-            ]))),
+            Some((s0, s1)) => {
+                Some(rep::tuple([Value::String(s0.into()), Value::String(s1.into())]))
+            }
         },
         _ => None,
     }
@@ -439,10 +438,9 @@ fn fc_rsplit_once(args: &[Value]) -> Option<Value> {
     match &args[1] {
         Value::String(s) => match s.rsplit_once(&**pat) {
             None => Some(Value::Null),
-            Some((s0, s1)) => Some(Value::Array(ValArray::from([
-                Value::String(s0.into()),
-                Value::String(s1.into()),
-            ]))),
+            Some((s0, s1)) => {
+                Some(rep::tuple([Value::String(s0.into()), Value::String(s1.into())]))
+            }
         },
         _ => None,
     }

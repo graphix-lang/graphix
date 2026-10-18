@@ -2,6 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use graphix_compiler::rep;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::fmt::Debug;
@@ -61,11 +62,7 @@ impl graphix_package_core::Elements for MapElems {
     fn cursor(v: Value) -> Option<Self::Cursor> {
         match v {
             Value::Map(m) if m.len() > 0 => {
-                let pair = |(k, v): (&Value, &Value)| {
-                    Value::Array(ValArray::from_iter_exact(
-                        [k.clone(), v.clone()].into_iter(),
-                    ))
-                };
+                let pair = |(k, v): (&Value, &Value)| rep::tuple([k.clone(), v.clone()]);
                 Some((0, graphix_compiler::valarray_of(m.len(), m.into_iter().map(pair))))
             }
             _ => None,

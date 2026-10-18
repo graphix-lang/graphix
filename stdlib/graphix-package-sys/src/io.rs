@@ -1,5 +1,4 @@
 use anyhow::Result;
-use arcstr::ArcStr;
 use bytes::{BufMut, Bytes};
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{

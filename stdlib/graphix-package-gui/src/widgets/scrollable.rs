@@ -2,7 +2,7 @@ use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use crate::types::{LengthV, ScrollDirectionV};
 use anyhow::{Context, Result};
 use futures::try_join;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -75,11 +75,10 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
             let id = c.id();
             sc = sc.on_scroll(move |viewport| {
                 let off = viewport.absolute_offset();
-                let offset_val: Value = [
+                let offset_val = rep::structure([
                     (arcstr::literal!("x"), Value::F64(off.x as f64)),
                     (arcstr::literal!("y"), Value::F64(off.y as f64)),
-                ]
-                .into();
+                ]);
                 Message::Call(id, ValArray::from_iter([offset_val]))
             });
         }

@@ -3,7 +3,7 @@ use crate::{
     tree::{Reaped, Tree, blocking, get_tree_inner},
 };
 use anyhow::Result;
-use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect};
+use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect, rep};
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, write_data,
 };
@@ -27,7 +27,7 @@ impl CursorInner {
             Some(r) => {
                 let (k, v) = r?;
                 let entry = [decode_key(self.tree.key_typ, &k)?, decode_value(&v)?];
-                Ok(Some(Value::Array(ValArray::from(entry))))
+                Ok(Some(rep::tuple(entry)))
             }
         }
     }
@@ -83,6 +83,7 @@ pub(crate) type DbCursorNew = CachedArgs<DbCursorNewEv>;
 /// A range bound's key encoded, `None` when no key can have it.
 fn parse_bound(key_typ: Option<Typ>, v: &Value) -> Option<Option<Bound<Vec<u8>>>> {
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     enum Repr {
         Included(Value),
         Excluded(Value),

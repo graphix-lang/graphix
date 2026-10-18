@@ -14,6 +14,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
+    rep,
     typ::FnType,
 };
 use graphix_package_core::{CachedVals, Invocation, RtVar, seam_arg, seam_tick};
@@ -50,21 +51,22 @@ macro_rules! impl_value_conv {
     ($enum:ident { $($variant:ident),* $(,)? }) => {
         impl FromValue for $enum {
             fn from_value(v: Value) -> anyhow::Result<Self> {
-                match v {
-                    Value::String(s) => match &*s {
+                match rep::read_variant(&v) {
+                    Some((s, p)) if p.elems().is_empty() => match s.as_str() {
                         $(stringify!($variant) => Ok(Self(Interest::$variant)),)*
                         _ => Err(anyhow::anyhow!("Invalid {} variant: {}", stringify!($enum), s)),
                     },
-                    _ => Err(anyhow::anyhow!("Expected string value for {}, got: {:?}", stringify!($enum), v)),
+                    _ => Err(anyhow::anyhow!("Expected a variant for {}, got: {:?}", stringify!($enum), v)),
                 }
             }
         }
 
         impl Into<Value> for $enum {
             fn into(self) -> Value {
-                match *self {
-                    $(Interest::$variant => Value::String(literal!(stringify!($variant))),)*
-                }
+                let tag = match *self {
+                    $(Interest::$variant => literal!(stringify!($variant)),)*
+                };
+                rep::make_variant(tag, [])
             }
         }
     };
@@ -533,6 +535,7 @@ impl WatchKind for EventsKind {
             EventKind::Error(_) => unreachable!(),
         };
         #[derive(IntoValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             event: Value,
             paths: ValArray,

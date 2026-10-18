@@ -451,17 +451,18 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
         (Some(Type::Set(ts)), v) => {
             shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
         }
-        (Some(Type::Struct(fs)), Value::Array(a)) if fs.len() == a.len() => {
-            let mut entries: LPooled<Vec<_>> = LPooled::take();
-            for (f, (_, t, _)) in a.iter().zip(fs.iter()) {
-                if let Value::Array(p) = f
-                    && let [Value::String(k), v] = &p[..]
-                {
-                    entries.push((k.clone(), v.clone(), Some(t.clone())));
+        (Some(Type::Struct(fs)), v) => match rep::read_struct(v).map(rep::Parts::elems) {
+            Some(a) if fs.len() == a.len() => {
+                let mut entries: LPooled<Vec<_>> = LPooled::take();
+                for (f, (_, t, _)) in a.iter().zip(fs.iter()) {
+                    if let Some((k, v)) = rep::field(f) {
+                        entries.push((k.clone(), v.clone(), Some(t.clone())));
+                    }
                 }
+                Shape::Object(entries, Keys::Fields)
             }
-            Shape::Object(entries, Keys::Fields)
-        }
+            _ => untyped_shape(v),
+        },
         (Some(Type::Map { value, .. }), Value::Map(m)) => Shape::Object(
             m.into_iter()
                 .map(|(k, v)| {
@@ -478,9 +479,15 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
                 .map(|x| (x, Some(Type::clone(e))))
                 .collect(),
         ),
-        (Some(Type::Tuple(ts)), Value::Array(a)) if ts.len() == a.len() => Shape::Seq(
-            a.iter().zip(ts.iter()).map(|(x, t)| (x.clone(), Some(t.clone()))).collect(),
-        ),
+        (Some(Type::Tuple(ts)), v) => match rep::read_tuple(v).map(rep::Parts::elems) {
+            Some(a) if ts.len() == a.len() => Shape::Seq(
+                a.iter()
+                    .zip(ts.iter())
+                    .map(|(x, t)| (x.clone(), Some(t.clone())))
+                    .collect(),
+            ),
+            _ => untyped_shape(v),
+        },
         // what `abstract_value::to_data` wrote the value as: its
         // representation where the `Cast` implementation leaves it
         (Some(Type::Abstract { id, params }), v) => {
@@ -490,11 +497,18 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
                 None => untyped_shape(v),
             }
         }
-        (Some(Type::Variant(_, ps, _)), Value::Array(a)) if a.len() == ps.len() + 1 => {
-            let payload =
-                a[1..].iter().zip(ps.iter()).map(|(x, t)| (x.clone(), Some(t.clone())));
-            Shape::Seq(std::iter::once((a[0].clone(), None)).chain(payload).collect())
-        }
+        (Some(Type::Variant(_, ps, _)), v) => match rep::read_variant(v) {
+            Some((tag, p)) if !ps.is_empty() && p.elems().len() == ps.len() => {
+                let payload = p
+                    .elems()
+                    .iter()
+                    .zip(ps.iter())
+                    .map(|(x, t)| (x.clone(), Some(t.clone())));
+                let tag = (Value::String(tag.clone()), None);
+                Shape::Seq(std::iter::once(tag).chain(payload).collect())
+            }
+            _ => untyped_shape(v),
+        },
         (_, v) => untyped_shape(v),
     }
 }
@@ -524,13 +538,17 @@ fn constructor(env: &Env, t: &Type) -> Option<Type> {
 }
 
 fn untyped_shape(v: &Value) -> Shape {
-    match v {
-        Value::Array(a) if rep::is_struct(a) => Shape::Object(
-            a.iter()
+    if let Some(fs) = rep::read_struct(v).map(rep::Parts::elems)
+        && rep::is_struct(fs)
+    {
+        return Shape::Object(
+            fs.iter()
                 .filter_map(|f| rep::field(f).map(|(k, v)| (k.clone(), v.clone(), None)))
                 .collect(),
             Keys::Fields,
-        ),
+        );
+    }
+    match v {
         Value::Array(a) => Shape::Seq(a.iter().map(|x| (x.clone(), None)).collect()),
         Value::Map(m) => Shape::Object(
             m.into_iter()
@@ -1293,11 +1311,12 @@ pub fn fast_eval_typed<R: Rt, E: UserEvent>(
 /// is the `Direction` tag (`Ascending`/`Descending`, anything else is
 /// no value), `numeric` compares values cast to f64.
 pub fn sort_values(
-    dir: &str,
+    dir: &Value,
     numeric: bool,
     vals: impl Iterator<Item = Value>,
 ) -> Option<LPooled<Vec<Value>>> {
-    let descending = match dir {
+    let Some((dir, [])) = rep::variant(dir) else { return None };
+    let descending = match dir.as_str() {
         "Ascending" => false,
         "Descending" => true,
         _ => return None,
@@ -3219,6 +3238,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
 }
 
 #[derive(Debug, Clone, Copy, netidx_derive::FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 enum Level {
     Trace,
     Debug,
@@ -3271,9 +3291,9 @@ impl Pack for LogDest {
 
 impl FromValue for LogDest {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.clone().cast_to::<ArcStr>()? {
-            "Stdout" => Ok(Self::Stdout),
-            "Stderr" => Ok(Self::Stderr),
+        match rep::read_variant(&v).map(|(tag, p)| (tag.as_str(), p.elems().len())) {
+            Some(("Stdout", 0)) => Ok(Self::Stdout),
+            Some(("Stderr", 0)) => Ok(Self::Stderr),
             _ => Ok(Self::Log(v.cast_to()?)),
         }
     }

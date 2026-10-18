@@ -1,11 +1,10 @@
 use super::{
-    AlignmentV, BoundsV, LineV, MarkerV, StyleV, TuiW, TuiWidget, compile_each,
+    AlignmentV, BoundsV, LineV, MarkerV, PointV, StyleV, TuiW, TuiWidget, compile_each,
     into_borrowed_line, layout::ConstraintV,
 };
-use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
@@ -20,7 +19,7 @@ struct GraphTypeV(GraphType);
 
 impl FromValue for GraphTypeV {
     fn from_value(v: Value) -> Result<Self> {
-        let g = match &*v.cast_to::<ArcStr>()? {
+        let g = match rep::bare_tag(&v)? {
             "Scatter" => GraphType::Scatter,
             "Line" => GraphType::Line,
             "Bar" => GraphType::Bar,
@@ -35,7 +34,7 @@ struct LegendPositionV(LegendPosition);
 
 impl FromValue for LegendPositionV {
     fn from_value(v: Value) -> Result<Self> {
-        let p = match &*v.cast_to::<ArcStr>()? {
+        let p = match rep::bare_tag(&v)? {
             "Top" => LegendPosition::Top,
             "TopRight" => LegendPosition::TopRight,
             "TopLeft" => LegendPosition::TopLeft,
@@ -59,6 +58,7 @@ struct AxisV {
 impl FromValue for AxisV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             bounds: BoundsV,
             labels: Option<Vec<LineV>>,
@@ -96,6 +96,7 @@ impl AxisV {
 }
 
 #[derive(Clone, Copy, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct HLConstraintsV {
     height: ConstraintV,
     width: ConstraintV,
@@ -130,19 +131,12 @@ impl<X: GXExt> DatasetW<X> {
     /// The finite points: ratatui paints a NaN at the canvas edge.
     fn set_data(&mut self, v: &Value) -> Result<()> {
         self.data.clear();
-        match v {
-            Value::Array(a) => {
-                for v in a {
-                    let (x, y) = v
-                        .clone()
-                        .cast_to::<(f64, f64)>()
-                        .context("invalid dataset pair")?;
-                    if x.is_finite() && y.is_finite() {
-                        self.data.push((x, y));
-                    }
-                }
+        let points = rep::array_elems(v).ok_or_else(|| anyhow!("invalid dataset {v}"))?;
+        for p in points.iter() {
+            let PointV(x, y) = p.clone().cast_to().context("invalid dataset pair")?;
+            if x.is_finite() && y.is_finite() {
+                self.data.push((x, y));
             }
-            v => bail!("invalid dataset {v}"),
         }
         Ok(())
     }

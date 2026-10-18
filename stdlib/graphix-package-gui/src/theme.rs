@@ -45,6 +45,7 @@ pub(crate) fn view_theme() -> GraphixTheme {
 }
 
 #[derive(Clone, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct StyleOverrides {
     pub button: Option<ButtonSpec>,
     pub checkbox: Option<CheckboxSpec>,
@@ -62,6 +63,7 @@ pub struct StyleOverrides {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct ButtonSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,
@@ -71,6 +73,7 @@ pub struct ButtonSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct CheckboxSpec {
     pub accent: Option<ColorV>,
     pub background: Option<ColorV>,
@@ -82,6 +85,7 @@ pub struct CheckboxSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct TextInputSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,
@@ -94,6 +98,7 @@ pub struct TextInputSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct TogglerSpec {
     pub background: Option<ColorV>,
     pub background_border_color: Option<ColorV>,
@@ -104,6 +109,7 @@ pub struct TogglerSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct SliderSpec {
     pub handle_border_color: Option<ColorV>,
     pub handle_border_width: Option<f32>,
@@ -115,6 +121,7 @@ pub struct SliderSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct RadioSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,
@@ -124,6 +131,7 @@ pub struct RadioSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct PickListSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,
@@ -135,6 +143,7 @@ pub struct PickListSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct TextEditorSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,
@@ -146,6 +155,7 @@ pub struct TextEditorSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct ContainerSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,
@@ -155,6 +165,7 @@ pub struct ContainerSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct ScrollableSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,
@@ -164,6 +175,7 @@ pub struct ScrollableSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct ProgressBarSpec {
     pub background: Option<ColorV>,
     pub bar_color: Option<ColorV>,
@@ -171,6 +183,7 @@ pub struct ProgressBarSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct RuleSpec {
     pub color: Option<ColorV>,
     /// How much of its container's length the line covers, 0 to 100.
@@ -179,6 +192,7 @@ pub struct RuleSpec {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct MenuSpec {
     pub background: Option<ColorV>,
     pub border_color: Option<ColorV>,

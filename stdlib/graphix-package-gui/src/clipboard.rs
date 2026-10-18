@@ -303,6 +303,7 @@ impl ClipboardOp for ClearOp {
 pub(crate) type Clear = CachedArgsAsync<ClipboardBuiltin<ClearOp>>;
 
 #[derive(FromValue, IntoValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct ClipboardImage {
     width: u32,
     height: u32,
@@ -328,6 +329,7 @@ pub(crate) fn image_args_from_value(v: &Value) -> Result<ImageArgs, Value> {
 
 pub(crate) fn html_args_from_value(v: &Value) -> Option<HtmlArgs> {
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         html: ArcStr,
         alt_text: ArcStr,

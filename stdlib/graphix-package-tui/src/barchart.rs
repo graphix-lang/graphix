@@ -53,6 +53,7 @@ struct BarGroupW<X: GXExt> {
 impl<X: GXExt> BarGroupW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             bars: Value,
             label: Option<LineV>,

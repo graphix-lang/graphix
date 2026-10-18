@@ -1,4 +1,4 @@
-use super::{BoundsV, ColorV, LineV, MarkerV, TuiW, TuiWidget, compile_each};
+use super::{BoundsV, ColorV, LineV, MarkerV, PointV, TuiW, TuiWidget, compile_each};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::{BindId, expr::ExprId};
@@ -19,6 +19,7 @@ struct CanvasLineV(Line);
 impl FromValue for CanvasLineV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             color: ColorV,
             x1: f64,
@@ -37,6 +38,7 @@ struct CanvasCircleV(Circle);
 impl FromValue for CanvasCircleV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             color: ColorV,
             radius: f64,
@@ -54,6 +56,7 @@ struct CanvasRectangleV(Rectangle);
 impl FromValue for CanvasRectangleV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             color: ColorV,
             height: f64,
@@ -76,18 +79,23 @@ struct CanvasPointsV {
 impl FromValue for CanvasPointsV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             color: ColorV,
-            coords: Option<Vec<(f64, f64)>>,
+            coords: Option<Vec<PointV>>,
         }
         let Fields { color, coords } = v.cast_to()?;
-        let mut coords = coords.unwrap_or_default();
-        coords.retain(|(x, y)| x.is_finite() && y.is_finite());
+        let coords = coords
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|PointV(x, y)| (x.is_finite() && y.is_finite()).then_some((x, y)))
+            .collect();
         Ok(Self { color, coords })
     }
 }
 
 #[derive(Clone, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct CanvasLabelV {
     line: LineV,
     x: f64,
@@ -95,6 +103,7 @@ struct CanvasLabelV {
 }
 
 #[derive(Clone, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 enum ShapeV {
     Line(CanvasLineV),
     Circle(CanvasCircleV),

@@ -1,6 +1,6 @@
 use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::errf;
+use graphix_compiler::{errf, rep};
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 use std::{io::SeekFrom, sync::Arc};
@@ -17,7 +17,8 @@ impl EvalCachedAsync for FileOpenEv {
     const NAME: &str = "sys_fs_open";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        Some((cached.get::<ArcStr>(0)?, cached.get::<ArcStr>(1)?))
+        let (mode, []) = rep::variant(cached.value(0)?)? else { return None };
+        Some((mode.clone(), cached.get::<ArcStr>(1)?))
     }
 
     fn eval((mode, path): Self::Args) -> impl Future<Output = Value> + Send {
@@ -93,8 +94,9 @@ impl EvalCachedAsync for FileSeekEv {
 }
 
 fn parse_seek_from(v: &Value) -> Option<SeekFrom> {
-    let (tag, payload): (ArcStr, Value) = v.clone().cast_to().ok()?;
-    match &*tag {
+    let (tag, [payload]) = rep::variant(v)? else { return None };
+    let payload = payload.clone();
+    match tag.as_str() {
         "Start" => Some(SeekFrom::Start(payload.cast_to::<u64>().ok()?)),
         "End" => Some(SeekFrom::End(payload.cast_to::<i64>().ok()?)),
         "Current" => Some(SeekFrom::Current(payload.cast_to::<i64>().ok()?)),

@@ -13,6 +13,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
+    rep,
     typ::FnType,
 };
 use graphix_package_core::{
@@ -85,9 +86,7 @@ fn value_to_header_map(
     let mut map = reqwest::header::HeaderMap::new();
     let Value::Array(arr) = v else { return Ok(map) };
     for pair in arr.iter() {
-        if let Value::Array(p) = pair
-            && let [Value::String(k), Value::String(v)] = &p[..]
-        {
+        if let Some([Value::String(k), Value::String(v)]) = rep::tuple_elems(pair) {
             let name = HeaderName::from_bytes(k.as_bytes())
                 .map_err(|e| http_err(format_args!("invalid header name {k:?}: {e}")))?;
             let val = HeaderValue::from_str(v).map_err(|e| {
@@ -107,14 +106,15 @@ fn headers_to_value<'a>(
 ) -> Value {
     Value::Array(ValArray::from_iter(iter.map(|(k, v)| {
         let v = String::from_utf8_lossy(v.as_bytes());
-        Value::Array(ValArray::from([
+        rep::tuple([
             Value::String(ArcStr::from(k.as_str())),
             Value::String(ArcStr::from(&*v)),
-        ]))
+        ])
     })))
 }
 
 #[derive(IntoValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct Response<B> {
     body: B,
     headers: Value,
@@ -361,7 +361,10 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some(RequestArgs {
-            method: cached.get::<ArcStr>(0)?,
+            method: match rep::variant(cached.value(0)?)? {
+                (method, []) => method.clone(),
+                _ => return None,
+            },
             headers: cached.value(1)?.clone(),
             body: cached.get::<Option<B>>(2)?,
             timeout: cached.get::<Option<Duration>>(3)?,
@@ -478,6 +481,7 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
         return text_response(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         body: ArcStr,
         headers: ValArray,
@@ -492,8 +496,8 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     };
     let mut response = hyper::Response::builder().status(status);
     for h in headers.iter() {
-        if let Value::Array(pair) = h
-            && let [Value::String(k), Value::String(v)] = &pair[..]
+        if let Some([Value::String(k), Value::String(v)]) =
+            rep::read_tuple(h).map(rep::Parts::elems)
         {
             response = response.header(&**k, &**v);
         }
@@ -547,6 +551,7 @@ async fn handle_http_request(
         Ok(_) | Err(_) => None,
     };
     #[derive(IntoValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         body: Option<ArcStr>,
         headers: Value,

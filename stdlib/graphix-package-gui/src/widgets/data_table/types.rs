@@ -7,7 +7,7 @@ use super::{
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
-use graphix_compiler::BindId;
+use graphix_compiler::{BindId, rep};
 use graphix_rt::{Callable, GXExt, Ref};
 use indexmap::IndexSet;
 use log::warn;
@@ -109,12 +109,14 @@ pub(super) struct ResizeDrag {
 }
 
 #[derive(Clone, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(super) struct SortBy {
     pub(super) column: ArcStr,
     pub(super) direction: SortDirection,
 }
 
 #[derive(Clone, PartialEq, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(super) enum SortDirection {
     Ascending,
     Descending,
@@ -222,11 +224,13 @@ pub(super) fn parse_selection(v: &Value) -> Selection {
 
 fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Choice {
         id: ArcStr,
         label: ArcStr,
     }
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     enum Repr {
         Text { on_edit: Option<Value> },
         Toggle { on_edit: Option<Value> },
@@ -296,6 +300,7 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
         });
     }
     #[derive(FromValue)]
+    #[value(shape = "graphix_compiler::rep::GraphixShape")]
     struct Fields {
         name: ArcStr,
         typ: Value,
@@ -396,9 +401,9 @@ impl Source {
     fn parse(v: Option<&Value>) -> Self {
         match v {
             None | Some(Value::Null) => Source::Netidx(Fallback::None),
-            Some(v) => match v.clone().cast_to::<(ArcStr, Value)>() {
-                Ok((tag, payload)) if tag.as_str() == "Netidx" => {
-                    Source::Netidx(Fallback::from_value(payload))
+            Some(v) => match rep::variant(v) {
+                Some((tag, [payload])) if tag == "Netidx" => {
+                    Source::Netidx(Fallback::from_value(payload.clone()))
                 }
                 _ => Source::Static(Fallback::from_value(v.clone())),
             },

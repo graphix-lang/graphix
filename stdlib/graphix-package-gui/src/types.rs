@@ -1,7 +1,7 @@
 use crate::theme::{GraphixTheme, StyleOverrides};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
-use graphix_compiler::abstract_value::payload as abstract_payload;
+use graphix_compiler::{abstract_value::payload as abstract_payload, rep};
 use iced_core::{
     Color, ContentFit, Font, Length, Padding, Size,
     alignment::{Horizontal, Vertical},
@@ -25,6 +25,7 @@ pub struct LengthV(pub Length);
 impl FromValue for LengthV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         enum Repr {
             Fill,
             Shrink,
@@ -61,6 +62,7 @@ pub struct PaddingV(pub Padding);
 impl FromValue for PaddingV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         enum Repr {
             All(f32),
             Axis { x: f32, y: f32 },
@@ -82,6 +84,7 @@ pub struct SizeV(pub Size);
 impl FromValue for SizeV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             width: Finite,
             height: Finite,
@@ -110,6 +113,7 @@ impl FromValue for Finite {
 impl From<SizeV> for Value {
     fn from(SizeV(s): SizeV) -> Value {
         #[derive(IntoValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             width: f64,
             height: f64,
@@ -124,6 +128,7 @@ pub struct ColorV(pub Color);
 impl FromValue for ColorV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             r: f32,
             g: f32,
@@ -150,7 +155,7 @@ pub struct HAlignV(pub Horizontal);
 
 impl FromValue for HAlignV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Left" => Ok(Self(Horizontal::Left)),
             "Center" => Ok(Self(Horizontal::Center)),
             "Right" => Ok(Self(Horizontal::Right)),
@@ -164,7 +169,7 @@ pub struct VAlignV(pub Vertical);
 
 impl FromValue for VAlignV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Top" => Ok(Self(Vertical::Top)),
             "Center" => Ok(Self(Vertical::Center)),
             "Bottom" => Ok(Self(Vertical::Bottom)),
@@ -179,22 +184,23 @@ pub struct FontV(pub Font);
 impl FromValue for FontV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             family: Value,
-            weight: ArcStr,
-            style: ArcStr,
+            weight: Value,
+            style: Value,
         }
         let Fields { family, weight, style } = v.cast_to()?;
-        let family = match family {
-            Value::String(s) => match &*s {
+        let family = match rep::variant(&family) {
+            Some((s, [])) => match s.as_str() {
                 "SansSerif" => Family::SansSerif,
                 "Serif" => Family::Serif,
                 "Monospace" => Family::Monospace,
                 s => bail!("invalid font family {s}"),
             },
-            v => match v.cast_to::<(ArcStr, Value)>()? {
-                (s, v) if &*s == "Name" => {
-                    let name = v.cast_to::<ArcStr>()?;
+            Some((s, [name])) => match s.as_str() {
+                "Name" => {
+                    let name = name.clone().cast_to::<ArcStr>()?;
                     let mut cache = FONT_NAMES.lock();
                     let interned = match cache.get(name.as_str()) {
                         Some(&s) => s,
@@ -207,10 +213,11 @@ impl FromValue for FontV {
                     };
                     Family::Name(interned)
                 }
-                (s, _) => bail!("invalid font family {s}"),
+                s => bail!("invalid font family {s}"),
             },
+            _ => bail!("invalid font family {family}"),
         };
-        let weight = match &*weight {
+        let weight = match rep::bare_tag(&weight)? {
             "Thin" => Weight::Thin,
             "ExtraLight" => Weight::ExtraLight,
             "Light" => Weight::Light,
@@ -222,7 +229,7 @@ impl FromValue for FontV {
             "Black" => Weight::Black,
             s => bail!("invalid font weight {s}"),
         };
-        let style = match &*style {
+        let style = match rep::bare_tag(&style)? {
             "Normal" => Style::Normal,
             "Italic" => Style::Italic,
             "Oblique" => Style::Oblique,
@@ -238,6 +245,7 @@ pub struct PaletteV(pub iced_core::theme::palette::Palette);
 impl FromValue for PaletteV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             background: ColorV,
             text: ColorV,
@@ -265,9 +273,9 @@ pub struct ThemeV(pub GraphixTheme);
 impl FromValue for ThemeV {
     fn from_value(v: Value) -> Result<Self> {
         use iced_core::Theme;
-        match v {
-            Value::String(s) => {
-                let inner = match &*s {
+        match rep::variant(&v) {
+            Some((s, [])) => {
+                let inner = match s.as_str() {
                     "Light" => Theme::Light,
                     "Dark" => Theme::Dark,
                     "Dracula" => Theme::Dracula,
@@ -294,28 +302,30 @@ impl FromValue for ThemeV {
                 };
                 Ok(Self(GraphixTheme { inner, overrides: None }))
             }
-            v => match v.cast_to::<(ArcStr, Value)>()? {
-                (s, v) if &*s == "CustomPalette" => {
-                    let palette = PaletteV::from_value(v)?;
+            Some((s, [v])) => match s.as_str() {
+                "CustomPalette" => {
+                    let palette = PaletteV::from_value(v.clone())?;
                     Ok(Self(GraphixTheme {
                         inner: Theme::custom("Custom", palette.0),
                         overrides: None,
                     }))
                 }
-                (s, v) if &*s == "Custom" => {
+                "Custom" => {
                     #[derive(FromValue)]
+                    #[value(shape = "graphix_compiler::rep::GraphixShape")]
                     struct Fields {
                         palette: PaletteV,
                     }
                     let Fields { palette } = v.clone().cast_to()?;
-                    let overrides = v.cast_to::<StyleOverrides>()?;
+                    let overrides = v.clone().cast_to::<StyleOverrides>()?;
                     Ok(Self(GraphixTheme {
                         inner: Theme::custom("Custom", palette.0),
                         overrides: Some(Arc::new(overrides)),
                     }))
                 }
-                (s, _) => bail!("invalid theme {s}"),
+                s => bail!("invalid theme {s}"),
             },
+            _ => bail!("invalid theme {v}"),
         }
     }
 }
@@ -325,7 +335,7 @@ pub struct ScrollDirectionV(pub scrollable::Direction);
 
 impl FromValue for ScrollDirectionV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Vertical" => Ok(Self(scrollable::Direction::Vertical(
                 scrollable::Scrollbar::default(),
             ))),
@@ -346,7 +356,7 @@ pub struct TooltipPositionV(pub tooltip::Position);
 
 impl FromValue for TooltipPositionV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Top" => Ok(Self(tooltip::Position::Top)),
             "Bottom" => Ok(Self(tooltip::Position::Bottom)),
             "Left" => Ok(Self(tooltip::Position::Left)),
@@ -362,7 +372,7 @@ pub struct ContentFitV(pub ContentFit);
 
 impl FromValue for ContentFitV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Fill" => Ok(Self(ContentFit::Fill)),
             "Contain" => Ok(Self(ContentFit::Contain)),
             "Cover" => Ok(Self(ContentFit::Cover)),
@@ -472,21 +482,24 @@ impl FromValue for ImageSourceV {
             Value::String(s) => Ok(Self::Path(s.to_string())),
             Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
             v => {
-                let (tag, val) = v.cast_to::<(ArcStr, Value)>()?;
-                match &*tag {
+                let Some((tag, [val])) = rep::variant(&v) else {
+                    bail!("invalid ImageSource {v}")
+                };
+                match tag.as_str() {
                     "Bytes" => match val {
-                        Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
+                        Value::Bytes(b) => Ok(Self::Bytes((**b).clone())),
                         _ => bail!("ImageSource Bytes: expected bytes value"),
                     },
-                    "Svg" => Ok(Self::Svg(val.cast_to::<String>()?)),
+                    "Svg" => Ok(Self::Svg(val.clone().cast_to::<String>()?)),
                     "Rgba" => {
                         #[derive(FromValue)]
+                        #[value(shape = "graphix_compiler::rep::GraphixShape")]
                         struct Fields {
                             width: u32,
                             height: u32,
                             pixels: iced_core::Bytes,
                         }
-                        let Fields { width, height, pixels } = val.cast_to()?;
+                        let Fields { width, height, pixels } = val.clone().cast_to()?;
                         check_rgba(width, height, pixels.len())?;
                         Ok(Self::Rgba { width, height, pixels })
                     }
@@ -498,6 +511,7 @@ impl FromValue for ImageSourceV {
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub enum GridColumnsV {
     Fixed(usize),
     Fluid(f32),
@@ -510,6 +524,7 @@ impl FromValue for GridSizingV {
     fn from_value(v: Value) -> Result<Self> {
         use iced_widget::grid::Sizing;
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         enum Repr {
             AspectRatio(f32),
             EvenlyDistribute(LengthV),
@@ -532,6 +547,7 @@ pub struct ShortcutV {
 impl FromValue for ShortcutV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             alt: bool,
             ctrl: bool,

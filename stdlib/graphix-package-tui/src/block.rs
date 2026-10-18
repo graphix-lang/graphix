@@ -2,10 +2,9 @@ use super::{
     AlignmentV, ChildW, LineV, SizeReport, StyleV, TitlePositionV, TuiW, TuiWidget,
     into_borrowed_line, validate::Dim,
 };
-use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{expr::ExprId, rep};
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
@@ -15,21 +14,17 @@ use ratatui::{
     symbols::merge::MergeStrategy,
     widgets::{Block, BorderType, Borders, Padding},
 };
-use smallvec::SmallVec;
 
 #[derive(Clone, Copy)]
 struct MergeStrategyV(MergeStrategy);
 
 impl FromValue for MergeStrategyV {
     fn from_value(v: Value) -> Result<Self> {
-        match v {
-            Value::String(s) => match &*s {
-                "Replace" => Ok(Self(MergeStrategy::Replace)),
-                "Exact" => Ok(Self(MergeStrategy::Exact)),
-                "Fuzzy" => Ok(Self(MergeStrategy::Fuzzy)),
-                s => bail!("invalid merge strategy {s}"),
-            },
-            v => bail!("invalid merge strategy {v}"),
+        match rep::bare_tag(&v)? {
+            "Replace" => Ok(Self(MergeStrategy::Replace)),
+            "Exact" => Ok(Self(MergeStrategy::Exact)),
+            "Fuzzy" => Ok(Self(MergeStrategy::Fuzzy)),
+            s => bail!("invalid merge strategy {s}"),
         }
     }
 }
@@ -39,16 +34,18 @@ struct BordersV(Borders);
 
 impl FromValue for BordersV {
     fn from_value(v: Value) -> Result<Self> {
-        match v {
-            Value::String(s) => match &*s {
+        match rep::variant(&v) {
+            Some((s, [])) => match s.as_str() {
                 "All" => Ok(Self(Borders::all())),
                 "None" => Ok(Self(Borders::empty())),
                 s => bail!("invalid borders {s}"),
             },
-            v => {
+            _ => {
                 let mut res = Borders::empty();
-                for b in v.cast_to::<SmallVec<[ArcStr; 4]>>()? {
-                    match &*b {
+                let borders =
+                    rep::array_elems(&v).ok_or_else(|| anyhow!("invalid borders {v}"))?;
+                for b in borders.iter() {
+                    match rep::bare_tag(b)? {
                         "Top" => res.insert(Borders::TOP),
                         "Right" => res.insert(Borders::RIGHT),
                         "Bottom" => res.insert(Borders::BOTTOM),
@@ -67,7 +64,7 @@ struct BorderTypeV(BorderType);
 
 impl FromValue for BorderTypeV {
     fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
+        match rep::bare_tag(&v)? {
             "Plain" => Ok(Self(BorderType::Plain)),
             "Rounded" => Ok(Self(BorderType::Rounded)),
             "Double" => Ok(Self(BorderType::Double)),
@@ -85,6 +82,7 @@ struct PaddingV(Padding);
 impl FromValue for PaddingV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
+        #[value(shape = "graphix_compiler::rep::GraphixShape")]
         struct Fields {
             bottom: Dim,
             left: Dim,

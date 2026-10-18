@@ -11,6 +11,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::ImageBuf,
+    rep,
     typ::{FnType, abstract_uuid},
 };
 use graphix_package_core::{
@@ -613,14 +614,14 @@ impl EvalCachedAsync for GxTempDirEv {
             None
         } else {
             let dir = cached.get::<Option<ArcStr>>(0).flatten();
-            let name = cached
-                .get::<Option<(ArcStr, ArcStr)>>(1)
-                .and_then(|v| v)
-                .and_then(|(tag, v)| match &*tag {
-                    "Prefix" => Some(Name::Prefix(v)),
-                    "Suffix" => Some(Name::Suffix(v)),
+            let name = match cached.value(1).and_then(rep::variant) {
+                Some((tag, [Value::String(v)])) => match tag.as_str() {
+                    "Prefix" => Some(Name::Prefix(v.clone())),
+                    "Suffix" => Some(Name::Suffix(v.clone())),
                     _ => None,
-                });
+                },
+                _ => None,
+            };
             let _ = cached.get::<Value>(2)?;
             Some(TempDirArgs { dir, name })
         }

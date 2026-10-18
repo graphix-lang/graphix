@@ -9,6 +9,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::ImageBuf,
+    rep,
     typ::{FnType, Type},
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
@@ -283,10 +284,9 @@ pub(crate) fn value_or_null(v: Option<sled::IVec>) -> Result<Value> {
 fn entry(tree: &TreeInner, e: Option<(sled::IVec, sled::IVec)>) -> Result<Value> {
     match e {
         None => Ok(Value::Null),
-        Some((k, v)) => Ok(Value::Array(ValArray::from([
-            decode_key(tree.key_typ, &k)?,
-            decode_value(&v)?,
-        ]))),
+        Some((k, v)) => {
+            Ok(rep::tuple([decode_key(tree.key_typ, &k)?, decode_value(&v)?]))
+        }
     }
 }
 
@@ -738,10 +738,9 @@ tree_arg_op!(
         let new = new.as_ref().map(|v| v.as_slice());
         match t.compare_and_swap(&k, old, new)? {
             Ok(()) => Ok(Value::Null),
-            Err(e) => Ok(Value::Array(ValArray::from([
-                Value::String(literal!("Mismatch")),
-                value_or_null(e.current)?,
-            ]))),
+            Err(e) => {
+                Ok(rep::make_variant(literal!("Mismatch"), [value_or_null(e.current)?]))
+            }
         }
     }
 );
@@ -766,10 +765,7 @@ db_name_op!(DbGetTypeEv, DbGetType, "db_get_type", |db, name: Option<ArcStr>| {
         None => Ok(Value::Null),
         Some(stored) => {
             let (k, v) = parse_meta(key, &stored)?;
-            Ok(Value::Array(ValArray::from([
-                Value::String(k.into()),
-                Value::String(v.into()),
-            ])))
+            Ok(rep::tuple([Value::String(k.into()), Value::String(v.into())]))
         }
     }
 });
