@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6676cd5c.js";
+            window.path_to_searchindex_js = "searchindex-59decac4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -3902,6 +3902,44 @@ its fellow bottom keys. A <code>fmt</code> that produces nothing prints the
 structural form and logs a warning.</p>
 <p>Values compared where no Graphix code can run — on the wire, in the
 REPL’s echo of a bare expression — compare and print structurally.</p>
+<h2 id="abstract-types-in-data-cast"><a class="header" href="#abstract-types-in-data-cast">Abstract Types in Data: Cast</a></h2>
+<p>An abstract type hides its representation, so data can’t make one by
+shape: a cast, a typed read (<code>json::read</code>, <code>pack::read</code>,
+<code>sys::net::subscribe</code>, a <code>db</code> tree) and a writer (<code>json::write_str</code>,
+<code>pack::write_bytes</code>, <code>sys::net::publish</code>, a <code>db</code> insert) reach an
+abstract type only through its implementation of the core trait <code>Cast</code>:</p>
+<pre><code class="language-graphix ignore">trait Cast {
+    val to_value: fn(self) -&gt; Any;
+    val from_value: fn(v: Any) -&gt; Result&lt;self, `InvalidCast(string)&gt;
+};
+</code></pre>
+<p>A writer writes what <code>to_value</code> returns, and a read makes the value
+with <code>from_value</code>, which may refuse the data:</p>
+<pre><code class="language-graphix ignore">type Sorted = Abstract&lt;Array&lt;i64&gt;&gt;;
+impl Cast for Sorted {
+    let to_value = |s: Sorted| s.0;
+    let from_value = |v| select cast&lt;Array&lt;i64&gt;&gt;(v) {
+        error as e =&gt; e,
+        a =&gt; select array::sort(a) == a {
+            true =&gt; Sorted(a),
+            false =&gt; error(`InvalidCast("not sorted"))
+        }
+    }
+};
+let s: Result&lt;Sorted, [`JsonErr(string), `InvalidCast(string)]&gt; = json::read("\[2, 1\]")
+</code></pre>
+<p><code>s</code> is the error <code>can't cast [2, 1] to Sorted: not sorted</code>.</p>
+<p>Only the module that defines the type implements <code>Cast</code>, where the
+representation is visible, and a method it leaves out is the
+representation itself: <code>impl Cast for Point {}</code> reads and writes
+<code>Point</code> as its representation, checked by nothing but the cast to it.
+A representation that holds a function or a reference crosses no
+data, so its implementation writes both methods. A type with no
+implementation is refused by the compiler wherever data would carry
+it: as a cast’s target, a read’s target or a written value. A program
+never calls <code>to_value</code> or <code>from_value</code> itself.</p>
+<p>A writer’s value has the bound <code>'a: Data</code>: no function, no reference,
+and no abstract type without <code>Cast</code>.</p>
 <h2 id="constructor-traits-collection"><a class="header" href="#constructor-traits-collection">Constructor Traits: <code>Collection</code></a></h2>
 <p>A trait’s receiver can be a type <em>constructor</em> rather than a type.
 Writing <code>self&lt;'a&gt;</code> in a method signature — <code>self</code> applied to an
@@ -5187,6 +5225,22 @@ trait Ord {
 trait Display {
     /// the printed form of `self`
     val fmt: fn(self) -&gt; string
+};
+
+/// Data. An abstract type crosses data only through its implementation:
+/// a cast or a typed read (`json::read`, `pack::read`,
+/// `sys::net::subscribe`, ..) makes a value with `from_value`, and a
+/// writer (`json::write`, `pack::write`, `sys::net::publish`, ..)
+/// writes what `to_value` returns. Only the module that defines the
+/// type, where its representation is visible, implements it, and a
+/// method it leaves out is the representation itself: `impl Cast for T
+/// {}` reads and writes `T` as its representation. Casts and writers
+/// call the methods, a program never does. Implicitly `#[sync]`.
+trait Cast {
+    /// the data `self` is written as
+    val to_value: fn(self) -&gt; Any;
+    /// the value `v` reads as, or why it can't
+    val from_value: fn(v: Any) -&gt; Result&lt;self, `InvalidCast(string)&gt;
 };
 
 /// A collection: a type constructor whose values can be traversed and
@@ -6821,13 +6875,13 @@ type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
 /// Write the value to the specified path. When its arm wakes, write the
 /// standing value again.
-val write: fn(path: string, value: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
 val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
 /// call the specified rpc. args must be a struct or null.
-val call: fn&lt;'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
 /// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
@@ -6837,7 +6891,7 @@ val call: fn&lt;'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`R
 /// Each call runs an instance of f of its own and is answered by its first
 /// value, or by the error it raises. A call runs to its answer whether or not
 /// the caller is still waiting; one f never answers holds the call.
-val rpc: fn(
+val rpc: fn&lt;'spec: Data, 'result: Data&gt;(
     #path:string,
     #doc:string,
     #spec:'spec,
@@ -6851,7 +6905,7 @@ val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `L
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
 /// Publish the specifed value at the specified path.
-val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+val publish: fn&lt;'v: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers-and-time-arithmetic"><a class="header" href="#systime---timers-and-time-arithmetic">sys::time - Timers and Time Arithmetic</a></h1>
@@ -7109,12 +7163,12 @@ val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`J
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
 /// map is an object, an array, tuple or list an array.
-val write_str: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 </code></pre>
 <p>Parsing takes <code>bytes</code> or a <code>string</code>, so parsing from a stream is
 reading the stream (<a href="#sysio">sys::io</a>):</p>
@@ -7166,12 +7220,12 @@ table.</p>
 val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a TOML string.
-val write_str: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
+val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
 /// Serialize a value to TOML bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, toml::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">
@@ -7197,7 +7251,7 @@ val read: fn&lt;'b: Concrete&gt;(input: bytes) -&gt; Result&lt;'b, [`PackErr(str
 /// Encode a value to packed binary bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, pack::write_bytes(v)?)`.
-val write_bytes: fn(value: Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data&gt;(value: 'a) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
 </code></pre>
 <p>The Pack format is a compact binary encoding native to netidx. It is
 more space-efficient than JSON or TOML and supports the full range of
@@ -7337,7 +7391,7 @@ val drop_tree: fn(db: Db, name: string) -&gt; Result&lt;bool, `DbErr(string)&gt;
 /// Pass null for the default (unnamed) tree. The key and value
 /// types are recorded on first open; reopening the same tree with
 /// different types returns a `DbErr`.
-val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Ordered + Data, 'v: Concrete + Data&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
 val get: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -7450,7 +7504,7 @@ val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 /// Open a tree within the transaction. Pass null for the default tree. A tree
 /// that does not exist yet is created when the transaction commits, and not
 /// at all when it rolls back or fails.
-val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Ordered + Data, 'v: Concrete + Data&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -7719,7 +7773,7 @@ rendering.</p>
 <pre><code class="language-graphix">/// Render a Handlebars template with the given data context.
 /// Use #partials to register named partial templates (as a struct or map).
 /// Use #strict to error on missing variables instead of rendering empty strings.
-val render: fn(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
+val render: fn&lt;'b: Data&gt;(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example-3"><a class="header" href="#example-3">Example</a></h2>
 <pre><code class="language-graphix">

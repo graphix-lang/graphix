@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6676cd5c.js";
+            window.path_to_searchindex_js = "../searchindex-59decac4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -222,7 +222,7 @@ val drop_tree: fn(db: Db, name: string) -&gt; Result&lt;bool, `DbErr(string)&gt;
 /// Pass null for the default (unnamed) tree. The key and value
 /// types are recorded on first open; reopening the same tree with
 /// different types returns a `DbErr`.
-val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Ordered + Data, 'v: Concrete + Data&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
 val get: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -335,7 +335,7 @@ val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 /// Open a tree within the transaction. Pass null for the default tree. A tree
 /// that does not exist yet is created when the transaction commits, and not
 /// at all when it rolls back or fails.
-val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Ordered + Data, 'v: Concrete + Data&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;

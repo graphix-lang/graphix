@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6676cd5c.js";
+            window.path_to_searchindex_js = "../searchindex-59decac4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -186,7 +186,7 @@ val read: fn&lt;'b: Concrete&gt;(input: bytes) -&gt; Result&lt;'b, [`PackErr(str
 /// Encode a value to packed binary bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, pack::write_bytes(v)?)`.
-val write_bytes: fn(value: Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data&gt;(value: 'a) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
 </code></pre>
 <p>The Pack format is a compact binary encoding native to netidx. It is
 more space-efficient than JSON or TOML and supports the full range of

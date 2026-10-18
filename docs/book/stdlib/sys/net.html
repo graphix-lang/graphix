@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-6676cd5c.js";
+            window.path_to_searchindex_js = "../../searchindex-59decac4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -182,13 +182,13 @@ type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
 /// Write the value to the specified path. When its arm wakes, write the
 /// standing value again.
-val write: fn(path: string, value: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
+val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
 /// subscribe to the specified path
 val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
 /// call the specified rpc. args must be a struct or null.
-val call: fn&lt;'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+val call: fn&lt;'a: Data, 'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
 /// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
@@ -198,7 +198,7 @@ val call: fn&lt;'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`R
 /// Each call runs an instance of f of its own and is answered by its first
 /// value, or by the error it raises. A call runs to its answer whether or not
 /// the caller is still waiting; one f never answers holds the call.
-val rpc: fn(
+val rpc: fn&lt;'spec: Data, 'result: Data&gt;(
     #path:string,
     #doc:string,
     #spec:'spec,
@@ -212,7 +212,7 @@ val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `L
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
 /// Publish the specifed value at the specified path.
-val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
+val publish: fn&lt;'v: Data&gt;(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: 'v) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 
                     </main>

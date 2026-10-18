@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6676cd5c.js";
+            window.path_to_searchindex_js = "../searchindex-59decac4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -379,6 +379,44 @@ its fellow bottom keys. A <code>fmt</code> that produces nothing prints the
 structural form and logs a warning.</p>
 <p>Values compared where no Graphix code can run — on the wire, in the
 REPL’s echo of a bare expression — compare and print structurally.</p>
+<h2 id="abstract-types-in-data-cast"><a class="header" href="#abstract-types-in-data-cast">Abstract Types in Data: Cast</a></h2>
+<p>An abstract type hides its representation, so data can’t make one by
+shape: a cast, a typed read (<code>json::read</code>, <code>pack::read</code>,
+<code>sys::net::subscribe</code>, a <code>db</code> tree) and a writer (<code>json::write_str</code>,
+<code>pack::write_bytes</code>, <code>sys::net::publish</code>, a <code>db</code> insert) reach an
+abstract type only through its implementation of the core trait <code>Cast</code>:</p>
+<pre><code class="language-graphix ignore">trait Cast {
+    val to_value: fn(self) -&gt; Any;
+    val from_value: fn(v: Any) -&gt; Result&lt;self, `InvalidCast(string)&gt;
+};
+</code></pre>
+<p>A writer writes what <code>to_value</code> returns, and a read makes the value
+with <code>from_value</code>, which may refuse the data:</p>
+<pre><code class="language-graphix ignore">type Sorted = Abstract&lt;Array&lt;i64&gt;&gt;;
+impl Cast for Sorted {
+    let to_value = |s: Sorted| s.0;
+    let from_value = |v| select cast&lt;Array&lt;i64&gt;&gt;(v) {
+        error as e =&gt; e,
+        a =&gt; select array::sort(a) == a {
+            true =&gt; Sorted(a),
+            false =&gt; error(`InvalidCast("not sorted"))
+        }
+    }
+};
+let s: Result&lt;Sorted, [`JsonErr(string), `InvalidCast(string)]&gt; = json::read("\[2, 1\]")
+</code></pre>
+<p><code>s</code> is the error <code>can't cast [2, 1] to Sorted: not sorted</code>.</p>
+<p>Only the module that defines the type implements <code>Cast</code>, where the
+representation is visible, and a method it leaves out is the
+representation itself: <code>impl Cast for Point {}</code> reads and writes
+<code>Point</code> as its representation, checked by nothing but the cast to it.
+A representation that holds a function or a reference crosses no
+data, so its implementation writes both methods. A type with no
+implementation is refused by the compiler wherever data would carry
+it: as a cast’s target, a read’s target or a written value. A program
+never calls <code>to_value</code> or <code>from_value</code> itself.</p>
+<p>A writer’s value has the bound <code>'a: Data</code>: no function, no reference,
+and no abstract type without <code>Cast</code>.</p>
 <h2 id="constructor-traits-collection"><a class="header" href="#constructor-traits-collection">Constructor Traits: <code>Collection</code></a></h2>
 <p>A trait’s receiver can be a type <em>constructor</em> rather than a type.
 Writing <code>self&lt;'a&gt;</code> in a method signature — <code>self</code> applied to an

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6676cd5c.js";
+            window.path_to_searchindex_js = "../searchindex-59decac4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -220,6 +220,22 @@ trait Ord {
 trait Display {
     /// the printed form of `self`
     val fmt: fn(self) -&gt; string
+};
+
+/// Data. An abstract type crosses data only through its implementation:
+/// a cast or a typed read (`json::read`, `pack::read`,
+/// `sys::net::subscribe`, ..) makes a value with `from_value`, and a
+/// writer (`json::write`, `pack::write`, `sys::net::publish`, ..)
+/// writes what `to_value` returns. Only the module that defines the
+/// type, where its representation is visible, implements it, and a
+/// method it leaves out is the representation itself: `impl Cast for T
+/// {}` reads and writes `T` as its representation. Casts and writers
+/// call the methods, a program never does. Implicitly `#[sync]`.
+trait Cast {
+    /// the data `self` is written as
+    val to_value: fn(self) -&gt; Any;
+    /// the value `v` reads as, or why it can't
+    val from_value: fn(v: Any) -&gt; Result&lt;self, `InvalidCast(string)&gt;
 };
 
 /// A collection: a type constructor whose values can be traversed and

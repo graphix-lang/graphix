@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6676cd5c.js";
+            window.path_to_searchindex_js = "../searchindex-59decac4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -185,12 +185,12 @@ val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`J
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
 /// map is an object, an array, tuple or list an array.
-val write_str: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+val write_str: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn&lt;'a: Data&gt;(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 </code></pre>
 <p>Parsing takes <code>bytes</code> or a <code>string</code>, so parsing from a stream is
 reading the stream (<a href="sys/io.html">sys::io</a>):</p>
