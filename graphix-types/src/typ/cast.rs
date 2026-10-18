@@ -1125,6 +1125,11 @@ impl Type {
                 Some(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
                 None => false,
             },
+            Type::List(et)
+                if matches!(&**et, Type::Any) && !flags.contains(IsAFlags::Strict) =>
+            {
+                list::is_list(v)
+            }
             // Walk the spine iteratively (heads recurse).
             Type::List(et) => {
                 let mut cur = v;
