@@ -72,4 +72,5 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `must_reject.md` | Must-reject mutation from the base's types (rigid consumers, ten families, verdicts); labeled/optional argument generation for every lane |
 | `parallel_compile.md` | the compile context and its forks; compile tasks own the cells they create and the check decides every cell; parallel code generation, module checks and statement elaboration; instances by substitution |
 | `parallel_eval.md` | forked independent subtrees of a cycle on the evaluation pool, serial-equivalent by branch views merged in order; fork decisions measured per site (`Auto`, the default); `#[parallel]`/`#[serial]`; kernel loops as chunks |
+| `walk_pruning.md` | DESIGN, not built: per-boundary scheduling (statements, instance bodies, select arms) by read registrations and cycle stamps; what marks a boundary dirty; atomic vs layered marks under parallel eval; the prune audit and `Pair::Prune` |
 | `program_image.md` | the registration and program images as built: cached compilation, block-relocated IDs, the lexical edit log, first-dispatch materialization |
