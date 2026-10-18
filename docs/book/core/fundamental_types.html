@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ea0e1c90.js";
+            window.path_to_searchindex_js = "../searchindex-6676cd5c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -341,8 +341,8 @@ such expressions are surrounded by unescaped <code>[]</code> in the string. For 
 -: string
 "/foo/bar/1/999"
 </code></pre>
-<p>Values in an interpolation need not be strings, they will be cast to a string
-when they are used. You can write a literal <code>[</code> or <code>]</code> in a string by escaping
+<p>Values in an interpolation need not be strings, they are printed into the
+string when they are used. You can write a literal <code>[</code> or <code>]</code> in a string by escaping
 it.</p>
 <pre><code class="language-graphix">〉"this is a string with a \[ and a \] but it isn't an interpolation"
 -: string
@@ -397,7 +397,18 @@ is not used very often, as it provides very few guarantees, however it has it’
 place. For example, <code>queue</code>’s <code>#clock</code> argument is <code>Any</code>: any value at all can
 tick it. Usually the first thing you do with a value of type <code>Any</code> is call
 <code>cast</code> to turn it into the type you expect (or an error), or use a <code>select</code>
-expression to match its type (more on select later). Reading data whose type
+expression to match its type (more on select later). A cast keeps a
+value’s kind: a number converts to another number (an integer type only
+when it holds the value exactly), and a union target takes a member of
+the value’s own kind first, so <code>cast&lt;[i8, Array&lt;f64&gt;]&gt;([1, 2])</code> is
+<code>[1., 2.]</code>. Across kinds a cast only parses a string (<code>cast&lt;i64&gt;("42")</code>,
+<code>cast&lt;bool&gt;("true")</code>), prints a number, bool, datetime or duration
+plainly (<code>cast&lt;string&gt;(42)</code> is <code>"42"</code>), converts between a number and
+a datetime (Unix seconds) or a duration (seconds), turns a bool into a
+number (1 or 0), or reads an array of numbers as bytes; anything else,
+such as <code>cast&lt;bool&gt;(1)</code> or <code>cast&lt;string&gt;([1, 2])</code>, is an <code>InvalidCast</code>
+error.
+Reading data whose type
 the program cannot see, a netidx subscription or a json document, is
 type-directed instead: <code>sys::net::subscribe</code> returns the type you annotate
 and casts what arrives to it.</p>
