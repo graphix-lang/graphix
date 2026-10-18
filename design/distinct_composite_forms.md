@@ -206,8 +206,9 @@ This removes the cross-kind collisions:
 **Same-kind collisions remain.** Two maps, two errors, two references,
 two functions, and two composites whose parts may collide (`[]` is any
 array) are each one kind on both sides, so only types tell them apart.
-For `Result<'a, E>` the proposal is a predicate bound on the typedef,
-`type Result<'r: NoError, 'e> = ['r, Error<'e>]` (open). Any other
+For `Result<'a, E>` it is a predicate bound on the typedef,
+`type Result<'r: NoError, 'e> = ['r, Error<'e>]` (built,
+`design/tvar_constraints.md`). Any other
 generic union with an open member beside one of these is refused at the
 definition, as `==` refuses it today.
 

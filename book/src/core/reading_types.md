@@ -214,7 +214,7 @@ A function type without `throws` throws nothing. A parameter written
 The `Result` type is a convenient way to represent success or error:
 
 ```graphix
-type Result<'r, 'e> = ['r, Error<'e>]
+type Result<'r: NoError, 'e> = ['r, Error<'e>]
 ```
 
 So a function signature like:
@@ -224,6 +224,11 @@ val parse: fn(s: string) -> Result<i64, `ParseError>
 ```
 
 Returns either an `i64` (success) or an `Error<`ParseError>` (failure).
+
+The `NoError` bound says the success type holds no error itself, so the
+error member is the only error in a result and `error as e` always picks
+it out. `Result<[i64, Error<`A>], `B>` is refused; write the union of
+the errors instead, `Result<i64, [`A, `B]>`.
 
 See [Error Handling](./error.md) for complete details on working with errors.
 

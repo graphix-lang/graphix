@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-42f2acf1.js";
+            window.path_to_searchindex_js = "../searchindex-344897c7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -302,12 +302,16 @@ set(&amp;mut x, 1)
 <code>f: fn(x: 'a) -&gt; bool</code> refuses a callback that can throw; write <code>throws 'e</code> to accept one and pass its errors on.</p>
 <h3 id="result-type"><a class="header" href="#result-type">Result Type</a></h3>
 <p>The <code>Result</code> type is a convenient way to represent success or error:</p>
-<pre><code class="language-graphix">type Result&lt;'r, 'e&gt; = ['r, Error&lt;'e&gt;]
+<pre><code class="language-graphix">type Result&lt;'r: NoError, 'e&gt; = ['r, Error&lt;'e&gt;]
 </code></pre>
 <p>So a function signature like:</p>
 <pre><code class="language-graphix">val parse: fn(s: string) -&gt; Result&lt;i64, `ParseError&gt;
 </code></pre>
 <p>Returns either an <code>i64</code> (success) or an <code>Error&lt;</code>ParseError&gt;` (failure).</p>
+<p>The <code>NoError</code> bound says the success type holds no error itself, so the
+error member is the only error in a result and <code>error as e</code> always picks
+it out. <code>Result&lt;[i64, Error&lt;</code>A&gt;], <code>B&gt;</code> is refused; write the union of
+the errors instead, <code>Result&lt;i64, [</code>A, <code>B]&gt;</code>.</p>
 <p>See <a href="./error.html">Error Handling</a> for complete details on working with errors.</p>
 <h2 id="set-types"><a class="header" href="#set-types">Set Types</a></h2>
 <p>Square brackets <code>[...]</code> denote a set type - the value can be any one of the types in the set:</p>

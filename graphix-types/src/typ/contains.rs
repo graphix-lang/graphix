@@ -1240,6 +1240,8 @@ impl Type {
             (_, Self::Singleton) => Ok(false),
             (Self::OneNumber, t) => t.one_number_holds(env, commit),
             (_, Self::OneNumber) => Ok(false),
+            (Self::NoError, t) => Ok(!t.may_be_error(env, commit)?),
+            (_, Self::NoError) => Ok(false),
             (Self::Discernible, t) => {
                 Ok(t.indiscernible(env, Open::Benign, false).is_none())
             }
@@ -1582,6 +1584,18 @@ impl Type {
                     return Ok(false);
                 }
                 if !cell_constraints_ok(t1, env, hist, t0)? {
+                    // a `NoError` cell below a union holding errors takes
+                    // the union without them: `Primitive ⊇ 'r` gives `'r`
+                    // every primitive but `error`
+                    if t1.cell_constraints().contains(&Self::NoError)
+                        && let Some(w) = t0.without_errors(env)?
+                        && cell_constraints_ok(t1, env, hist, &w)?
+                    {
+                        if commit && !t1.is_rigid() {
+                            t1.bind(w);
+                        }
+                        return Ok(true);
+                    }
                     // a union the cell's constraints refuse whole may
                     // still hold it in one member: `['b, null] ⊇ 'r`
                     // with `'r` within `Array<_>`, by `'b`; a union of

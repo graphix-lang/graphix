@@ -144,6 +144,7 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
         "Function",
         "Singleton",
         "OneNumber",
+        "NoError",
         "Discernible",
         "Ordered",
     ];

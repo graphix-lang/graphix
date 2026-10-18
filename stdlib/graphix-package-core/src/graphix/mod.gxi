@@ -8,7 +8,7 @@ type NotNull = [Number, string, error, array, datetime, duration, bytes, bool];
 type Primitive = [NotNull, null];
 type PrimNoErr = [Number, string, bool, array, datetime, duration, bytes, null];
 type Log = [`Trace, `Debug, `Info, `Warn, `Error, `Stdout, `Stderr];
-type Result<'r, 'e> = ['r, Error<'e>];
+type Result<'r: NoError, 'e> = ['r, Error<'e>];
 type Option<'a> = ['a, null];
 
 /// The result of a three-way comparison.

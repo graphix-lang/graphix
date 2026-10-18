@@ -435,6 +435,7 @@ fn bound(inner: impl Strategy<Value = Type>) -> impl Strategy<Value = Type> {
         1 => Just(Type::Function),
         1 => Just(Type::Singleton),
         1 => Just(Type::OneNumber),
+        1 => Just(Type::NoError),
         1 => Just(Type::Discernible),
         1 => Just(Type::Ordered),
     ]

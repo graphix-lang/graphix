@@ -852,7 +852,10 @@ macro_rules! arith_op {
                     Value::Error(e) if !$checked => {
                         if trig {
                             let site = diagnostic_site(&self.spec);
-                            report_failure!(&format_compact!("arith error {site} {e}"));
+                            report_failure!(&format_compact!(
+                                "arith error {site} {}",
+                                crate::typ::Naked(&e)
+                            ));
                         }
                         self.resident.set_bottom_as(tag)
                     }

@@ -213,6 +213,7 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         | Type::Data
         | Type::Singleton
         | Type::OneNumber
+        | Type::NoError
         | Type::Discernible
         | Type::Ordered
         | Type::Function => return None,

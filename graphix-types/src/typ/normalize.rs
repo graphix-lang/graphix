@@ -86,6 +86,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Function
         | Type::Singleton
         | Type::OneNumber
+        | Type::NoError
         | Type::Discernible
         | Type::Ordered
         | Type::Ref(_)
@@ -471,11 +472,13 @@ impl Type {
             | (Type::Function, _)
             | (Type::Singleton, _)
             | (Type::OneNumber, _)
+            | (Type::NoError, _)
             | (Type::Discernible, _)
             | (Type::Ordered, _)
             | (_, Type::Function)
             | (_, Type::Singleton)
             | (_, Type::OneNumber)
+            | (_, Type::NoError)
             | (_, Type::Discernible)
             | (_, Type::Ordered)
             | (_, Type::Data)

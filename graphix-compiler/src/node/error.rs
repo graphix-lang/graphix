@@ -659,8 +659,8 @@ pub fn diagnostic_site(spec: &Expr) -> ArcStr {
 }
 
 /// What a handler-less `?` at `site` reports for the error payload `e`.
-pub(crate) fn unhandled_msg(site: &str, e: &dyn fmt::Display) -> ArcStr {
-    format_compact!("unhandled error {site} {e}").as_str().into()
+pub(crate) fn unhandled_msg(site: &str, e: &Value) -> ArcStr {
+    format_compact!("unhandled error {site} {}", crate::typ::Naked(e)).as_str().into()
 }
 
 /// An error nothing handles, or a hot operator's failure: logged from
@@ -689,7 +689,7 @@ pub(crate) fn report_coverage_hole(what: &dyn fmt::Display) {
 /// calling module.
 macro_rules! report_ignored {
     ($site:expr, $e:expr) => {
-        log::warn!("ignored error {} {}", $site, $e)
+        log::warn!("ignored error {} {}", $site, $crate::typ::Naked($e))
     };
 }
 pub(crate) use report_ignored;
@@ -1596,7 +1596,10 @@ impl ErrorRelay {
                 let (id, _) = parent.id();
                 ctx.rt.set_var(id, e.clone())
             }
-            None => report_failure!(&format_compact!("unhandled error {e}")),
+            None => report_failure!(&format_compact!(
+                "unhandled error {}",
+                crate::typ::Naked(&e)
+            )),
         }
         Some(e)
     }

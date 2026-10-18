@@ -121,7 +121,7 @@ let browser = |
                 let name = select str::basename(row) { null as _ => "", s => s };
                 select mode {
                     `List => {
-                        let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
+                        let v: Result<PrimNoErr, [`InvalidCast(string), `SubscribeError(string)]> =
                             throttle(#rate, net::subscribe(row));
                         [name, "[any(uniq(row) ~ "#SUB", v)]"]
                     },
@@ -130,7 +130,7 @@ let browser = |
                         let a = array::map(array::init(col_slots, |c| c), |c| {
                             let col = (structure.columns)[slot_item(viewport.x, col_slots, c)]$;
                             let path = "[row]/[col]";
-                            let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
+                            let v: Result<PrimNoErr, [`InvalidCast(string), `SubscribeError(string)]> =
                                 throttle(#rate, net::subscribe(path));
                             "[any(uniq(path) ~ "#SUB", v)]"
                         });

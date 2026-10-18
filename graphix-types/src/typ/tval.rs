@@ -284,6 +284,7 @@ impl<'a> TVal<'a> {
                 | Type::Function
                 | Type::Singleton
                 | Type::OneNumber
+                | Type::NoError
                 | Type::Discernible
                 | Type::Ordered
                 | Type::Bottom

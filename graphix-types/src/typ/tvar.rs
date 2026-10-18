@@ -669,6 +669,7 @@ fn require_bounds(cons: &[Type], t: &Type) {
             Type::Data => t.require_data(),
             Type::Singleton => t.require_singleton(),
             Type::OneNumber => t.require_one_number(),
+            Type::NoError => t.require_no_error(),
             Type::Discernible | Type::Ordered => t.require_compared(c),
             _ => (),
         }
@@ -1365,6 +1366,95 @@ impl Type {
         let mut parts = UnionParts::new(Measure::Numbers);
         self.union_parts(Some((env, commit)), &mut parts)?;
         Ok(parts.known <= 1)
+    }
+
+    /// Whether a value of `self` may be an error as the type stands: a
+    /// member is an `Error`, holds the primitive `error` or is `Any`.
+    /// `NoError ⊇ self` is its negation; an open member may be anything
+    /// its own conjuncts admit and is not counted.
+    pub(crate) fn may_be_error(&self, env: &Env, commit: bool) -> Result<bool> {
+        ensure_sufficient(|| match self {
+            Type::Error(_) | Type::Any => Ok(true),
+            Type::Primitive(p) => Ok(p.contains(netidx_value::Typ::Error)),
+            Type::Set(ts) => {
+                for t in ts.iter() {
+                    if t.may_be_error(env, commit)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Type::TVar(tv) => match tv.binding() {
+                None => Ok(false),
+                Some(b) => b.may_be_error(env, commit),
+            },
+            Type::Ref(_) => match self.lookup_ref_with(env, commit)? {
+                Some(t) => t.may_be_error(env, commit),
+                None => Ok(true),
+            },
+            _ => Ok(false),
+        })
+    }
+
+    /// `self` without the members a value of which may be an error, its
+    /// type references expanded; `None` when nothing is left or `Any`
+    /// is a member.
+    pub(crate) fn without_errors(&self, env: &Env) -> Result<Option<Type>> {
+        fn go(t: &Type, env: &Env, out: &mut LPooled<Vec<Type>>) -> Result<bool> {
+            ensure_sufficient(|| match t {
+                Type::Any => Ok(false),
+                Type::Error(_) | Type::Bottom => Ok(true),
+                Type::Primitive(p) => {
+                    let mut p = *p;
+                    p.remove(netidx_value::Typ::Error);
+                    if !p.is_empty() {
+                        out.push(Type::Primitive(p))
+                    }
+                    Ok(true)
+                }
+                Type::Set(ts) => {
+                    for t in ts.iter() {
+                        if !go(t, env, out)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => go(&b, env, out),
+                    None => Ok({
+                        out.push(t.clone());
+                        true
+                    }),
+                },
+                Type::Ref(_) if t.may_be_error(env, false)? => {
+                    go(&t.lookup_ref(env)?, env, out)
+                }
+                t => Ok({
+                    out.push(t.clone());
+                    true
+                }),
+            })
+        }
+        let mut out: LPooled<Vec<Type>> = LPooled::take();
+        if !go(self, env, &mut out)? || out.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(match out.len() {
+            1 => out.pop().unwrap(),
+            _ => Type::Set(Arc::from_iter(out.drain(..))).normalize(),
+        }))
+    }
+
+    /// The open members of a `NoError` cell's binding are each `NoError`.
+    pub(crate) fn require_no_error(&self) {
+        let mut parts = UnionParts::new(Measure::Members);
+        if self.union_parts(None, &mut parts).is_err() {
+            return;
+        }
+        for tv in parts.open.drain(..) {
+            tv.add_cell_constraint(Type::NoError)
+        }
     }
 
     /// The members of `self` read as a union into `parts`; a type

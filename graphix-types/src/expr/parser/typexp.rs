@@ -84,6 +84,7 @@ where
             "Function" => Type::Function,
             "Singleton" => Type::Singleton,
             "OneNumber" => Type::OneNumber,
+            "NoError" => Type::NoError,
             "Discernible" => Type::Discernible,
             "Ordered" => Type::Ordered,
             _ => return None,

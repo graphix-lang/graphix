@@ -1351,7 +1351,8 @@ impl FnType {
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
         // or a bound of the typedef parameter it fills, implies it; a
         // predicate follows from a bound that holds it of every type the
-        // bound admits, none with an unknown part
+        // bound admits, none with an unknown part; a predicate bound implies
+        // itself, and `Ordered` implies `Discernible`
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
             let mut sig_tcs = sig_tv.cell_constraints();
             if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
@@ -1359,7 +1360,9 @@ impl FnType {
             }
             for s in sig_tcs.iter() {
                 if s == impl_tc
-                    || ((!impl_tc.is_predicate() || !s.holds_unknown(env))
+                    || matches!((s, impl_tc), (Type::Ordered, Type::Discernible))
+                    || (!s.is_predicate()
+                        && (!impl_tc.is_predicate() || !s.holds_unknown(env))
                         && impl_tc.contains_with_flags(probe, env, s)?)
                 {
                     return Ok(());

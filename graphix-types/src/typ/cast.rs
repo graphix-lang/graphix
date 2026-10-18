@@ -572,6 +572,7 @@ impl Type {
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
+            | Type::NoError
             | Type::Ordered
             | Type::Discernible => Err(self.cast_fail("a constraint", v)),
             Type::Bottom | Type::Any => Ok(None),
@@ -1062,7 +1063,8 @@ impl Type {
             | Type::Singleton
             | Type::Discernible
             | Type::Ordered
-            | Type::OneNumber => false,
+            | Type::OneNumber
+            | Type::NoError => false,
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
             // structure; a repeat off the path is union backtracking.
@@ -1395,6 +1397,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         | Type::Data
         | Type::Singleton
         | Type::OneNumber
+        | Type::NoError
         | Type::Discernible
         | Type::Ordered
         | Type::Function => MemberFacts::EXACT,
@@ -1486,7 +1489,8 @@ fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
         | Type::Singleton
         | Type::Discernible
         | Type::Ordered
-        | Type::OneNumber => None,
+        | Type::OneNumber
+        | Type::NoError => None,
         t => Some(Cow::Borrowed(t)),
     })
 }

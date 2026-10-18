@@ -99,6 +99,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         | Type::Function
         | Type::Singleton
         | Type::OneNumber
+        | Type::NoError
         | Type::Discernible
         | Type::Ordered
         | Type::Primitive(_)
@@ -1074,6 +1075,9 @@ pub enum Type {
     /// most one numeric type (`[i64, null]`, not `[i64, f64, null]`).
     /// Legal only as a constraint.
     OneNumber,
+    /// The conjunct `'a: NoError`: no value of whatever binds the cell is
+    /// an error (`Result`'s success type). Legal only as a constraint.
+    NoError,
     /// The conjunct `'a: Discernible`: no union anywhere in whatever binds
     /// the cell holds two members with one runtime form
     /// ([`Type::rep_ambiguity`]), so its values compare and hash as their
@@ -1098,6 +1102,7 @@ impl Debug for Type {
             Self::Function => f.write_str("Function"),
             Self::Singleton => f.write_str("Singleton"),
             Self::OneNumber => f.write_str("OneNumber"),
+            Self::NoError => f.write_str("NoError"),
             Self::Discernible => f.write_str("Discernible"),
             Self::Ordered => f.write_str("Ordered"),
             Self::Primitive(p) => f.debug_tuple("Primitive").field(p).finish(),
@@ -1181,6 +1186,7 @@ mod tag {
     pub const DISCERNIBLE: u8 = 23;
     pub const ORDERED: u8 = 24;
     pub const DATA: u8 = 25;
+    pub const NO_ERROR: u8 = 26;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -1240,6 +1246,7 @@ impl Type {
             Type::Function => out.put_u8(tag::FUNCTION),
             Type::Singleton => out.put_u8(tag::SINGLETON),
             Type::OneNumber => out.put_u8(tag::ONE_NUMBER),
+            Type::NoError => out.put_u8(tag::NO_ERROR),
             Type::Discernible => out.put_u8(tag::DISCERNIBLE),
             Type::Ordered => out.put_u8(tag::ORDERED),
             Type::Primitive(p) => {
@@ -1336,6 +1343,7 @@ impl Type {
             | Type::Data
             | Type::Function
             | Type::OneNumber
+            | Type::NoError
             | Type::Discernible
             | Type::Ordered
             | Type::Singleton => 0,
@@ -1369,6 +1377,7 @@ impl Type {
             Type::Function => Ok(buf.put_u8(tag::FUNCTION)),
             Type::Singleton => Ok(buf.put_u8(tag::SINGLETON)),
             Type::OneNumber => Ok(buf.put_u8(tag::ONE_NUMBER)),
+            Type::NoError => Ok(buf.put_u8(tag::NO_ERROR)),
             Type::Discernible => Ok(buf.put_u8(tag::DISCERNIBLE)),
             Type::Ordered => Ok(buf.put_u8(tag::ORDERED)),
             Type::Primitive(p) => {
@@ -1451,6 +1460,7 @@ impl Type {
             tag::FUNCTION => Type::Function,
             tag::SINGLETON => Type::Singleton,
             tag::ONE_NUMBER => Type::OneNumber,
+            tag::NO_ERROR => Type::NoError,
             tag::DISCERNIBLE => Type::Discernible,
             tag::ORDERED => Type::Ordered,
             tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
@@ -1528,6 +1538,7 @@ impl PartialEq for Type {
             (Type::Function, _) => matches!(other, Type::Function),
             (Type::Singleton, _) => matches!(other, Type::Singleton),
             (Type::OneNumber, _) => matches!(other, Type::OneNumber),
+            (Type::NoError, _) => matches!(other, Type::NoError),
             (Type::Discernible, _) => matches!(other, Type::Discernible),
             (Type::Ordered, _) => matches!(other, Type::Ordered),
             (Type::Primitive(a), _) => matches!(other, Type::Primitive(b) if a == b),
@@ -1555,6 +1566,7 @@ impl Type {
             Type::Function => matches!(other, Type::Function),
             Type::Singleton => matches!(other, Type::Singleton),
             Type::OneNumber => matches!(other, Type::OneNumber),
+            Type::NoError => matches!(other, Type::NoError),
             Type::Discernible => matches!(other, Type::Discernible),
             Type::Ordered => matches!(other, Type::Ordered),
             Type::Primitive(a) => matches!(other, Type::Primitive(b) if a == b),
@@ -1619,6 +1631,7 @@ impl Type {
             Type::Function => tag::FUNCTION,
             Type::Singleton => tag::SINGLETON,
             Type::OneNumber => tag::ONE_NUMBER,
+            Type::NoError => tag::NO_ERROR,
             Type::Discernible => tag::DISCERNIBLE,
             Type::Ordered => tag::ORDERED,
         }
@@ -1670,6 +1683,7 @@ impl Ord for Type {
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
+            | Type::NoError
             | Type::Discernible
             | Type::Ordered
             | Type::Primitive(_) => self.cmp_fields(other),
@@ -1689,6 +1703,7 @@ impl Hash for Type {
             | Type::Data
             | Type::Function
             | Type::OneNumber
+            | Type::NoError
             | Type::Discernible
             | Type::Ordered
             | Type::Singleton => (),
@@ -1727,6 +1742,7 @@ impl Hash for Type {
                 | Type::Function
                 | Type::Singleton
                 | Type::OneNumber
+                | Type::NoError
                 | Type::Discernible
                 | Type::Ordered
                 | Type::Primitive(_) => (),
@@ -1763,6 +1779,7 @@ impl Drop for Type {
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
+            | Type::NoError
             | Type::Discernible
             | Type::Ordered
             | Type::Primitive(_)
@@ -1794,6 +1811,7 @@ impl Drop for Type {
                 | Type::Function
                 | Type::Singleton
                 | Type::OneNumber
+                | Type::NoError
                 | Type::Discernible
                 | Type::Ordered
                 | Type::Primitive(_) => (),
@@ -1892,6 +1910,7 @@ impl Type {
             | Type::Data
             | Type::Singleton
             | Type::OneNumber
+            | Type::NoError
             | Type::Discernible
             | Type::Ordered
             | Type::Function => ControlFlow::Continue(()),
@@ -2008,6 +2027,7 @@ impl Type {
             | Type::Data
             | Type::Singleton
             | Type::OneNumber
+            | Type::NoError
             | Type::Discernible
             | Type::Ordered
             | Type::Function => None,
@@ -2789,7 +2809,8 @@ impl Type {
             | Self::Singleton
             | Self::Discernible
             | Self::Ordered
-            | Self::OneNumber => f(Some(self)),
+            | Self::OneNumber
+            | Self::NoError => f(Some(self)),
             Self::Bottom
             | Self::Abstract { .. }
             | Self::Any
@@ -2821,6 +2842,7 @@ impl Type {
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
+            | Type::NoError
             | Type::Discernible
             | Type::Ordered => true,
             Type::Bottom

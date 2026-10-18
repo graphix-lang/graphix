@@ -1928,6 +1928,7 @@ fn list_is_a_reserved_type_name() {
         "Function",
         "Singleton",
         "OneNumber",
+        "NoError",
         "Discernible",
         "Ordered",
     ] {

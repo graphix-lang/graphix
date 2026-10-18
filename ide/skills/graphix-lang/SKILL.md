@@ -141,6 +141,7 @@ Array<i64>  Map<string, i64>  List<i64>   // List: [<1, 2>] literals, O(1) tail
 `Tag | `Tag(i64, string)       // variants
 [i64, string]                  // union; [T, null] is the option type
 Error<`MyErr>  &i64  &mut i64  // error; read-only, writable reference
+Result<T, `E>                  // [T, Error<`E>]; T may hold no error (NoError bound)
 fn(x: i64) -> string throws `E // positional params in fn TYPES must be named
 type Point = {x: f64, y: f64}; type Maybe<'a> = ['a, null]
 type List2<'a> = [`Cons('a, List2<'a>), `Nil]   // recursive

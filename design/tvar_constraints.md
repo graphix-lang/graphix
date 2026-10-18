@@ -350,9 +350,10 @@ adds it; it is written, for a nullable number of one numeric type:
 
 `'a: Discernible` (`Type::Discernible`, parsed only as a bound) says no
 union anywhere in whatever binds the cell holds two members with one
-runtime form (`Type::rep_ambiguity`): a tuple, struct, list or payload
-variant and an array, a bare variant and a string, a reference and a
-number or another reference, two function types. Members that share a
+runtime form (`Type::rep_ambiguity`): two function types, a Rust-backed
+abstract type at two instantiations (a tuple, struct, variant and list
+each carry their kind's marker, `design/distinct_composite_forms.md`, and
+a comparison reads a reference as what it names). Members that share a
 constructor are told apart by their parts; a union under a reference,
 a function or an abstract type is not looked at. Values of such a type
 compare and hash as their types do. Comparison (`==` and the
@@ -381,6 +382,27 @@ as arithmetic hands it `Singleton`, so each call checks it.
   keys (a map read from data).
 - Like `Singleton`, it is never a witness and refuses no open or ⊥ cell
   at the terminal settle.
+
+### `NoError`: a conjunct that is a predicate
+
+`'r: NoError` (`Type::NoError`, parsed only as a bound) says no value of
+whatever binds the cell is an error: no member is an `Error<..>`, holds
+the primitive `error`, or is `Any`. `Result` carries it on its success
+type, `type Result<'r: NoError, 'e> = ['r, Error<'e>]`, so a result's
+error member is the only error in it and `error as e` over a result tells
+the two apart. A typedef parameter's bound applies where the reference
+expands (`lookup_ref_by`): an open argument takes the conjunct, a known
+one is checked, so `Result<[i64, Error<`F>], `E>` is refused, and a
+generic definition's variable passed as `Result`'s success type carries
+it in its signature.
+
+- `NoError ⊇ t` (`Type::may_be_error` negated) reads `t`'s members
+  through bindings and type references; an error nested in a collection
+  is no member. An open cell is admitted.
+- A bind of a `NoError` cell hands the conjunct to its binding's open
+  members (`Type::require_no_error`).
+- Like `Singleton`, it is never a witness, travels as a conjunct and
+  refuses no open or ⊥ cell at the terminal settle.
 
 ### `Ordered`: `Discernible` without references
 

@@ -1155,7 +1155,10 @@ cycle, across workers; the compiler never pins threads.
   and mixed numerics included, if it is `Discernible` (`Ordered` for the
   orderings). `OneNumber`, a written
   bound only, holds a type to at most one numeric type (`'a: [Number,
-  null] + OneNumber`). An interface declares every bound its
+  null] + OneNumber`). `NoError` holds a type to no member a value of
+  which is an error (`Error<..>`, the primitive `error`, `Any`):
+  `type Result<'r: NoError, 'e>`, so a result's error member is its only
+  error (`design/tvar_constraints.md`). An interface declares every bound its
   implementation's variables carry, a typedef parameter's bound counting
   (`FnType::sig_matches`).
 

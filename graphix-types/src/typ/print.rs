@@ -165,6 +165,7 @@ impl Type {
             Self::Function => write!(f, "Function"),
             Self::Singleton => write!(f, "Singleton"),
             Self::OneNumber => write!(f, "OneNumber"),
+            Self::NoError => write!(f, "NoError"),
             Self::Discernible => write!(f, "Discernible"),
             Self::Ordered => write!(f, "Ordered"),
             Self::Bottom => write!(f, "_"),
@@ -250,6 +251,7 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::Data
         | Type::Singleton
         | Type::OneNumber
+        | Type::NoError
         | Type::Discernible
         | Type::Ordered
         | Type::Function => false,
@@ -286,6 +288,7 @@ impl PrettyDisplay for Type {
             | Self::Data
             | Self::Singleton
             | Self::OneNumber
+            | Self::NoError
             | Self::Discernible
             | Self::Ordered
             | Self::Function => {

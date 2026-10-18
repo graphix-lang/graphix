@@ -1862,6 +1862,28 @@ async fn discernible_refuses_one_runtime_form() -> Result<()> {
     Ok(())
 }
 
+// `Result`'s success type holds no error (`'r: NoError`): its error member
+// is the only error in it, wherever the success type comes from.
+run!(result_success_holding_an_error_refused,
+    "{ let r: Result<[i64, Error<`F>], `E> = 1; r }",
+    refused("NoError does not contain [i64, Error<`F>]"); FuseExpect::None);
+
+run!(result_success_bound_reaches_a_generic_call, r#"{
+    let succeed = |x: 'a| -> Result<'a, `E> x;
+    let e: [i64, Error<`F>] = 1;
+    succeed(e)
+}"#, refused("NoError does not contain [i64, Error<`F>]"); FuseExpect::None);
+
+run!(
+    result_success_without_errors,
+    r#"{
+    let succeed = |x: 'a| -> Result<'a, `E> x;
+    let n: [i64, null] = null;
+    (succeed(1)$, succeed("s")$, succeed(n)$)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[i64:1, "s", null]"#)
+);
+
 const DISCERNIBLE_ACCEPTS: &str = r#"{
   let f = |x, y| x == y;
   let g = |o: Option<'a>| o == o;

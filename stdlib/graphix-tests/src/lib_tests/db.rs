@@ -1129,15 +1129,15 @@ run_with_tempdir!(
     }
 );
 
-// A value that cannot be stored is a DbErr, not silence: a tree of `Any`
+// A value that cannot be stored is a DbErr, not silence: a tree of `Array<Any>`
 // holding a handle backed by Rust (a tree of `db::Db` is refused by the
 // check, `lang::cast_trait::db_tree_of_a_handle_refused`).
 run_with_tempdir!(
     name: db_unstorable_value,
     code: r#"{{
         let db = db::open("{}")$;
-        let t: db::Tree<string, Any> = db::tree(db, null)$;
-        is_err(db::insert(t, "k", db))
+        let t: db::Tree<string, Array<Any>> = db::tree(db, null)$;
+        is_err(db::insert(t, "k", [db]))
     }}"#,
     setup: |td| { td.path().join("unstorable.db") },
     expect: |v: Value| -> Result<()> {
