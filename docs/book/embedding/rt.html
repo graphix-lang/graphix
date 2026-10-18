@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-dd0c8226.js";
+            window.path_to_searchindex_js = "../searchindex-ea0e1c90.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -255,8 +255,9 @@ which should be common for large structures that don’t change often.</p>
 <code>#[derive(FromValue, IntoValue)]</code> from the <code>netidx-derive</code> crate maps a struct’s
 named fields onto the Graphix struct’s fields by name, and an enum’s variants
 onto Graphix variants (<code>`Tag</code>, <code>`Tag(a, b)</code>, <code>`Tag({ .. })</code>). A field
-passed by reference (<code>&amp;T</code>) is a <code>u64</code> bind id. The generated code names
-<code>netidx_value</code> and <code>anyhow</code>, so the crate depends on both.</p>
+passed by reference (<code>&amp;T</code>) reads as a <code>BindId</code>, a reference’s own value
+(<code>graphix_compiler::reference::cell</code> reads one from a <code>Value</code>). The generated
+code names <code>netidx_value</code> and <code>anyhow</code>, so the crate depends on both.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// the Graphix type {x: f64, y: f64, label: &amp;string}
@@ -264,7 +265,7 @@ passed by reference (<code>&amp;T</code>) is a <code>u64</code> bind id. The gen
 struct Point {
     x: f64,
     y: f64,
-    label: u64,
+    label: BindId,
 }
 <span class="boring">}</span></code></pre>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
