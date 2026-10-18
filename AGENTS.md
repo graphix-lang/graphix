@@ -728,7 +728,9 @@ node graph IS the IR — there is no parallel typed IR
   still routes the taken arm's own fires. **Consulted-guard rule**: arms
   are consulted top-down, structure then guard; a consulted guard whose
   channel is bottom makes the selection undecidable; a never-produced
-  guard is unknown, not false. `&&`/`||` are strict (`false && ⊥ = ⊥`).
+  guard is unknown, not false; a guard ticks every cycle but sees the
+  scrutinee's value only where the chain reaches its arm (never one an
+  earlier arm claimed). `&&`/`||` are strict (`false && ⊥ = ⊥`).
 - **Sleep is pause, not reset.** Value-channel state survives an arm's
   sleep (`Held` residents at the select scrutinee, pattern guard and
   `~`'s arg; `CachedVals` staging; collection slots; a `<-` target's

@@ -1185,45 +1185,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
         // Guards are live nodes and tick every cycle, even under a
-        // tainted scrutinee. The bind is delivered only to an arm whose
-        // shape admits the value: the checker narrowed the binds by that
-        // shape, and a guard fused to the narrowing must never see the
-        // value an earlier arm claimed.
-        // CR claude for eric: [bug/high] This loop binds the scrutinee into every
-        // guarded arm whose own shape admits the value, including arms below one that
-        // already claimed it with a literal or a true guard. So a guard the chain never
-        // consults still runs over that value, and its effects happen. Examples:
-        // `select x { -1 => .., n if check(n)? => .., _ => .. }` raises to the
-        // enclosing catch each time x is -1, and `select x { 0 => .., n if 10 / n > 5
-        // => .., _ => .. }` logs "attempt to divide by zero". The design's own Ruling
-        // 1a example (`[x, y] => .., [x, y, tail..] if x / y == 0 => ..` over a pair
-        // with y = 0) logs every cycle too. The kernel's guard prologue in
-        // `emit_select_chain` does the same deliberately, so both engines agree
-        // (graphix-fuzz check AGREE), and the comment above this loop states an
-        // invariant that does not hold. Ruling needed: a guard below the claim point
-        // either keeps ticking with no bind delivered, which needs a claimed flag that
-        // follows the consult chain here and a not-yet-claimed mask on the prologue's
-        // binds in the kernel, or its effects are declared part of the semantics and
-        // design/activation_state.md says so. probe:
-        // design/review-2026-10-12/repro/c-select-seq-01.gx (and c-select-seq-01b.gx
-        // with --no-fusion). (c-select-seq-01)
-        // a guarded arm's shape test, which the chain below reuses
+        // tainted scrutinee. The bind is delivered only to an arm the
+        // chain reaches whose shape admits the value: the checker narrowed
+        // the binds by that shape, and no guard sees the value an earlier
+        // arm claimed (`open` is the chain still running at arm `i`).
+        // An arm's shape test, which the chain below reuses.
         let mut shaped: SmallVec<[Option<bool>; 16]> = smallvec![None; arms.len()];
-        for &i in guarded.iter() {
+        let live = arg.value.as_ref().filter(|_| !arg.tag.is_bottom());
+        let mut open = live.is_some();
+        for i in 0..guarded.last().map_or(0, |l| l + 1) {
             let (pat, shallow) = (&mut arms[i].0, &shallow[i]);
-            let saved = match arg.value.as_ref() {
-                Some(v) if !arg.tag.is_bottom() => {
-                    let s = pat.shape_matches(&ctx.env, shallow.as_ref(), v);
-                    shaped[i] = Some(s);
-                    s.then(|| pat.bind_tentative(ctx, v, arg_prod))
-                }
-                _ => None,
-            };
+            let reach = live.filter(|_| open).filter(|v| {
+                let s = pat.shape_matches(&ctx.env, shallow.as_ref(), v);
+                shaped[i] = Some(s);
+                s
+            });
+            if pat.guard.is_none() {
+                open &= reach.is_none();
+                continue;
+            }
+            let saved = reach.map(|v| pat.bind_tentative(ctx, v, arg_prod));
             if let Some(t) = pat.update(ctx) {
                 guard_tags.push((i, t));
             }
             if let Some(saved) = saved {
                 pat.retract(ctx, saved);
+                open &= matches!(pat.arm_match(true), ArmMatch::GuardFalse);
             }
         }
         // Any guard fire drives a re-match; whether it affects the

@@ -722,13 +722,14 @@ struct GuardPlanes {
 /// Arm `pat`'s pattern condition against `scrut`, pushing its binds
 /// onto `binds`; `None` when the arm matches unconditionally. An
 /// or-pattern installs its shared binds itself, in the chain's done
-/// block (`nomatch` as for [`emit_or_chain`]).
+/// block (`nomatch` and `mask` as for [`emit_or_chain`]).
 fn emit_arm_condition<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     pat: &PatternNode<R, E>,
     scrut: SelectScrut,
     scrut_typ: &Type,
     nomatch: Option<Block>,
+    mask: Option<ClifValue>,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<ClifValue>> {
     if let StructPatternNode::Or { alts } = &pat.structure_predicate {
@@ -737,7 +738,15 @@ fn emit_arm_condition<R: Rt, E: UserEvent>(
                 "emit_clif: explicit type predicate on an or-pattern arm not lowerable"
             );
         }
-        let m = emit_or_chain(cx, alts, &pat.type_predicate, scrut, scrut_typ, nomatch)?;
+        let m = emit_or_chain(
+            cx,
+            alts,
+            &pat.type_predicate,
+            scrut,
+            scrut_typ,
+            nomatch,
+            mask,
+        )?;
         return Ok(Some(m));
     }
     let (tcond, scond) = emit_arm_cond(cx, pat, scrut, scrut_typ, binds)?;
@@ -778,24 +787,54 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     let miss_bl = cx.b.create_block();
     let n = sel.arms.len();
     // The guard prologue: the node-walk ticks every arm's guard every
-    // cycle before matching, so every guard that is not pure in its
-    // binds is evaluated here once per invocation and the chain reads
-    // it; the consulted folds happen along the chain into `acc`.
+    // cycle before matching, so every guard down to the last that is not
+    // pure in its binds is evaluated here once per invocation and the
+    // chain reads it; the consulted folds happen along the chain into
+    // `acc`. A guard sees its binds only where the chain reaches its arm
+    // (`open`: no earlier arm claimed the value, no guard was bottom).
     let mut guard_vals: SmallVec<[Option<GuardPlanes>; 8]> = smallvec::smallvec![None; n];
     // the prologue's binds stay installed, masked by their arm's
-    // condition, for the arm's body to read; every exit drops them
+    // condition and reach, for the arm's body to read; every exit drops
+    // them
     let smark = cx.env.mark();
     // a non-or arm's condition and bind specs from the prologue, which
     // dominates the chain: the chain reuses them
     let mut conds: SmallVec<[Option<Option<ClifValue>>; 8]> =
         (0..n).map(|_| None).collect();
-    for (i, (pat, _)) in sel.arms.iter().enumerate() {
-        let Some(g) = &pat.guard else { continue };
-        if guard_is_pure_of_binds(pat, &g.node) {
+    let impure = sel.arms.iter().rposition(|(pat, _)| {
+        pat.guard.as_ref().is_some_and(|g| !guard_is_pure_of_binds(pat, &g.node))
+    });
+    let open = cx.b.declare_var(types::I8);
+    let reaches_first = cx.b.ins().iconst(types::I8, 1);
+    cx.b.def_var(open, reaches_first);
+    for (i, (pat, _)) in sel.arms.iter().enumerate().take(impure.map_or(0, |l| l + 1)) {
+        let reached = cx.b.use_var(open);
+        let Some(g) = &pat.guard else {
+            // an unguarded arm claims by its condition; its binds are the
+            // chain's
+            let mark = cx.env.mark();
+            let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+            let cond =
+                emit_arm_condition(cx, pat, scrut, scrut_typ, None, None, &mut binds)?;
+            emit_scope_drops(cx, mark)?;
+            cx.env.truncate(mark);
+            let still = match cond {
+                Some(c) => cx.b.ins().band_not(reached, c),
+                None => cx.b.ins().iconst(types::I8, 0),
+            };
+            cx.b.def_var(open, still);
             continue;
-        }
+        };
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-        let mut pcond = emit_arm_condition(cx, pat, scrut, scrut_typ, None, &mut binds)?;
+        let mut pcond = emit_arm_condition(
+            cx,
+            pat,
+            scrut,
+            scrut_typ,
+            None,
+            Some(reached),
+            &mut binds,
+        )?;
         if !pat.explicit_type_predicate
             && let Some(typed) =
                 emit_inferred_guard_cond(cx, &pat.type_predicate, scrut, scrut_typ)?
@@ -805,13 +844,22 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 None => typed,
             });
         }
-        install_arm_binds(cx, &binds, scrut, pcond)?;
+        let mask = match pcond {
+            Some(c) => cx.b.ins().band(c, reached),
+            None => reached,
+        };
+        install_arm_binds(cx, &binds, scrut, Some(mask))?;
         let gcv = g.node.emit_clif(cx)?;
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         guard_vals[i] = Some(GuardPlanes { eff, gbot, gs });
+        // the chain stops at this arm when it takes it or its guard is bottom
+        let stops = cx.b.ins().bor(eff, gbot);
+        let claims = cx.b.ins().band(mask, stops);
+        let still = cx.b.ins().band_not(reached, claims);
+        cx.b.def_var(open, still);
         if !matches!(&pat.structure_predicate, StructPatternNode::Or { .. }) {
             conds[i] = Some(pcond);
         }
@@ -847,7 +895,9 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // a non-or arm the prologue ran has its binds installed already
         let pcond = match conds[i].take() {
             Some(pcond) => pcond,
-            None => emit_arm_condition(cx, pat, scrut, scrut_typ, or_fail, &mut binds)?,
+            None => {
+                emit_arm_condition(cx, pat, scrut, scrut_typ, or_fail, None, &mut binds)?
+            }
         };
         let matched = cx.b.create_block();
         let fail: Option<Block> = match or_fail {
@@ -1978,7 +2028,8 @@ fn placeholder_for_kind(
 /// BindIds (layout from alternative 0; a mismatch Errs, never
 /// miscompiles). `nomatch`: `Some` = the caller's fail block, jumped
 /// with no binds; `None` = route through `done` with matched=0 and
-/// tainted placeholders. Returns the matched i8 with the builder in
+/// tainted placeholders. Where `mask` is false the binds read as bottom
+/// too (an arm the chain does not reach). Returns the matched i8 with the builder in
 /// `done` and the binds installed; the caller's env mark, taken before
 /// this, scopes the arm-exit drops over them.
 fn emit_or_chain(
@@ -1988,6 +2039,7 @@ fn emit_or_chain(
     scrut: SelectScrut,
     scrut_typ: &Type,
     nomatch: Option<Block>,
+    mask: Option<ClifValue>,
 ) -> Result<ClifValue> {
     // Each alternative tests against its own member of the arm's
     // inferred Set; a non-Set predicate applies whole.
@@ -2091,14 +2143,8 @@ fn emit_or_chain(
         cx.b.block_params(d).iter().copied().collect();
     let matched = params[0];
     for (i, (id, kind)) in layout.iter().enumerate() {
-        bind_local(
-            cx,
-            PAT_BIND_NAME,
-            params[1 + 2 * i],
-            params[2 + 2 * i],
-            *kind,
-            Some(*id),
-        );
+        let disc = mask_unmatched(cx, params[1 + 2 * i], mask);
+        bind_local(cx, PAT_BIND_NAME, disc, params[2 + 2 * i], *kind, Some(*id));
     }
     Ok(matched)
 }

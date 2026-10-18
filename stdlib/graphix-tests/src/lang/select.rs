@@ -3921,3 +3921,63 @@ run!(
         let result = f(error([`B]))
     "#
 ; FuseExpect::None);
+
+// A guard sees the scrutinee's value only where the chain reaches its
+// arm: an earlier arm that claims the value keeps it from every guard
+// below, so `check(-1)?` never runs and never raises.
+run!(guard_below_the_claim_never_sees_the_value, r#"{
+  let step = 0;
+  step <- select step { n if n < 6 => n + 1, _ => never() };
+  let x = step % 3 - 1;
+  let caught = 0;
+  let check = |n: i64| select n { k if k < 0 => error(`Neg(k)), k => k > 0 };
+  let r = {
+    catch(e) caught <- e ~ caught + 1;
+    select x { -1 => "neg", n if check(n)? => "pos", _ => "zero" }
+  };
+  select step { 6 => (r, caught), _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["neg", i64:0]"#)
+}; FuseExpect::Jit);
+
+// The same for a guard whose arithmetic would fail on the claimed value.
+run!(guard_below_the_claim_never_divides_by_it, r#"{
+  let step = 0;
+  step <- select step { n if n < 4 => n + 1, _ => never() };
+  let x = step % 2;
+  let caught = 0;
+  let r = {
+    catch(e) caught <- e ~ caught + 1;
+    select x { 0 => "zero", n if (10 /? n)? > 5 => "big", _ => "small" }
+  };
+  select step { 4 => (r, caught), _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["zero", i64:0]"#)
+}; FuseExpect::Jit);
+
+// A guard below the claim still ticks on its other inputs: `count` sees
+// every fire of `t` while its arm is not reached.
+run!(guard_below_the_claim_still_ticks, r#"{
+  let t = 0;
+  t <- select t { n if n < 4 => n + 1, _ => never() };
+  let x = select t { 4 => 2, _ => 1 };
+  let r = select x { 1 => "one", n if count(t) > 3 => "counted [n]", _ => "other" };
+  select t { 4 => r, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "counted 2")
+}; FuseExpect::Jit);
+
+// The kernel's guard prologue reaches an impure guard past an unguarded
+// arm, an or-arm and a pure guard, each of which may claim the value.
+run!(native_guard_prologue_follows_the_chain, r#"{
+  let f = |x: i64| -> string #[native] select x {
+    0 => "zero",
+    1 | 2 => "small",
+    n if n < 5 => "pure",
+    n if str::len(str::concat("a", "b")) + n > 10 => "impure",
+    _ => "other"
+  };
+  array::map([0, 1, 2, 3, 4, 5, 6, 9, 20], f)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["zero", "small", "small", "pure", "pure", "other", "other", "impure", "impure"]"#)
+}; FuseExpect::Jit);
