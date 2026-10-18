@@ -2111,6 +2111,10 @@ pub(crate) enum PendingSettle {
     /// members with one runtime form (only map keys for `Keys`), open
     /// cells read as any type they may yet bind.
     Discernible { typ: Type, what: Discerned, spec: Arc<Expr> },
+    /// A select arm's type test against what else reaches it: no two
+    /// members with one runtime form, open cells read as any type they
+    /// may yet bind.
+    Told { test: Type, rest: Type, spec: Arc<Expr> },
 }
 
 /// What a [`PendingSettle::Discernible`] judges.
@@ -2179,6 +2183,7 @@ impl PendingSettle {
                 PendingSettle::Discernible { typ, what, spec } => {
                     (discernible(env, typ, what), spec)
                 }
+                PendingSettle::Told { test, rest, spec } => (told(env, test, rest), spec),
                 PendingSettle::Site { ftype, spec, .. } => {
                     (site_bounds(env, ftype), spec)
                 }
@@ -2211,6 +2216,29 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether a select arm testing for `test` tells it from `rest`, what
+/// else reaches the arm, open cells read as any type they may yet bind.
+fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
+    let Some((a, b)) = test.rep_collision_open(env, rest) else { return Ok(()) };
+    let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+    format_with_flags(PrintFlag::DerefTVars, || {
+        let (test, rest) = (test.resolve_tvars(), rest.resolve_tvars());
+        if open(&a) || open(&b) {
+            let known = if open(&a) { b.resolve_tvars() } else { a.resolve_tvars() };
+            bail!(
+                "this pattern tests for {test} among {rest}, but a type variable there \
+                 isn't known here and may share {known}'s runtime form: annotate it"
+            )
+        }
+        bail!(
+            "this pattern can't tell {} from {}: both have the same runtime form; wrap \
+             them in distinct variants",
+            a.resolve_tvars(),
+            b.resolve_tvars()
+        )
+    })
 }
 
 fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {

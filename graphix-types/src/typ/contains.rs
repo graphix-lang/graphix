@@ -1059,6 +1059,16 @@ impl Type {
                 });
             }
             if let Some((a, b)) = Self::dispatch_collision(env, &members) {
+                let open =
+                    |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+                if open(&a) || open(&b) {
+                    let known = if open(&a) { &b } else { &a };
+                    return Some(anyhow::anyhow!(
+                        "a {} call over {t} tests each member, but a type variable in it \
+                         isn't known here and may share {known}'s runtime form: annotate it",
+                        def.name
+                    ));
+                }
                 return Some(anyhow::anyhow!(
                     "a {} call over {t} can't tell {a} from {b}: both have the same \
                      runtime form; wrap them in distinct variants",
@@ -1070,41 +1080,31 @@ impl Type {
     }
 
     /// The members a dispatch over `t` tests, a union of primitives split
-    /// into its primitives.
+    /// into its primitives and an open cell kept as one member.
     fn dispatch_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
-        let mut found: SmallVec<[Type; 8]> = SmallVec::new();
-        crate::expr::union_members(env, t, &mut found)?;
-        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        for m in found.drain(..) {
-            match m {
-                Self::Primitive(p) => {
-                    members.extend(p.iter().map(|b| Self::Primitive(b.into())))
+        fn go(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => go(env, &b, out),
+                    None => Ok(out.push(t.clone())),
+                },
+                Type::Set(ts) => ts.iter().try_for_each(|t| go(env, t, out)),
+                Type::Ref(_) => go(env, &t.lookup_ref(env)?, out),
+                Type::Primitive(p) => {
+                    Ok(out.extend(p.iter().map(|b| Type::Primitive(b.into()))))
                 }
-                m => members.push(m),
-            }
+                t => Ok(out.push(t.clone())),
+            })
         }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        go(env, t, &mut members)?;
         Ok(members)
     }
 
     /// Two members a dispatch's runtime test can't tell apart.
-    // CR claude for eric: [bug/high] Type::rep_collision tests with Open::Benign, so an
-    // open member never collides. A definition like `'b: Show |x: [string, 'b]|
-    // Show::show(x)` therefore passes trait_contains and the check. Then f(`A) is
-    // refused at elaboration by the instance's dispatch select ("can't tell string from
-    // `A"), so --check and the LSP report clean a program the build refuses. The
-    // plain-select form has the same hole and gives a wrong answer instead. `|x:
-    // [string, 'b]| select x { string as s => s, _ => "other" }` checked against f(`A)
-    // is never refused: it returns "A" through the string arm on both engines, because
-    // an instance takes its definition's types and the arm's per-arm rep_collision in
-    // select.rs never runs again. Fixing this means choosing a rule. Option one: refuse
-    // an open union member at the definition (Open::Unknown: "annotate it"). Option
-    // two: give the open cells a pending settle like PendingSettle::Discernible, so the
-    // check of each call site refuses a binding that collides with a sibling member.
-    // Probe: design/review-2026-10-12/repro/x-typecheck-patterns-05.gx (its header
-    // holds the select sibling). (x-typecheck-patterns-05)
     fn dispatch_collision(env: &Env, members: &[Type]) -> Option<(Type, Type)> {
         members.iter().enumerate().find_map(|(i, a)| {
-            members[i + 1..].iter().find_map(|b| a.rep_collision(env, b))
+            members[i + 1..].iter().find_map(|b| a.rep_collision_open(env, b))
         })
     }
 

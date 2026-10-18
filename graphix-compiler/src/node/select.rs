@@ -1636,22 +1636,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             pat.bind_narrowed(&ctx.env, &narrowed, checking).at(&site)?;
             // a runtime test can't tell apart two types with one runtime form
-            // CR claude for eric: [bug/medium] The one-runtime-form check runs only in
-            // the definition's check, and Type::rep_collision reads an open cell as
-            // Open::Benign. An instance never re-checks (typecheck0_instance), so a
-            // generic select escapes the rule. `|x: 'a| select x { string as s => .., v
-            // => .. }` applied to `A takes the string arm. `|x: [(string, i64), 'a]|
-            // select x { (s, n) => .., v => .. }` applied to `A(41) destructures the
-            // variant as a tuple. Both engines give these wrong answers, and the check
-            // accepts them. The comparisons refuse the same types at the definition
-            // (Open::Unknown through PendingSettle::Discernible), so the two halves of
-            // the rule disagree. A fix needs a rule: either refuse an open member here
-            // as the comparisons do ("annotate it"), or give the select's open cells a
-            // deferred constraint, like the Discernible bound, so each call checks its
-            // substitution against the arm's predicate. The second also has to cross
-            // interface vals. probe:
-            // design/review-2026-10-12/repro/x-typecheck-patterns-04.gx
-            // (x-typecheck-patterns-04)
             if checking
                 && pat.explicit_type_predicate
                 && pat.type_predicate.ref_over_any(&ctx.env, &reaching)
@@ -1666,18 +1650,24 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 }))
                 .at(&site);
             }
-            if checking
-                && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate)
-                && let Some((a, b)) = pat.type_predicate.rep_collision(&ctx.env, &rest)
-            {
-                let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
-                return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                    anyhow!(
-                        "this pattern can't tell {a} from {b}: both have the same \
-                         runtime form; wrap them in distinct variants"
-                    )
-                }))
-                .at(&site);
+            if checking && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate) {
+                if let Some((a, b)) = pat.type_predicate.rep_collision(&ctx.env, &rest) {
+                    let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
+                    return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                        anyhow!(
+                            "this pattern can't tell {a} from {b}: both have the same \
+                             runtime form; wrap them in distinct variants"
+                        )
+                    }))
+                    .at(&site);
+                }
+                let test = pat.type_predicate.clone();
+                let judgment = crate::PendingSettle::Told {
+                    test,
+                    rest,
+                    spec: Arc::new(site.clone()),
+                };
+                super::defer_judgment(ctx, judgment);
             }
             // The guard typechecks after the narrowing so it sees the
             // arm's binds at their settled type; it must be bool.

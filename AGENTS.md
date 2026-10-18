@@ -1018,7 +1018,11 @@ cycle, across workers; the compiler never pins threads.
   form: a reference and another reference, two function types, a
   Rust-backed abstract at two instantiations.
   Checked per arm, after its narrowing, in the definition's check;
-  members that share a constructor are told apart by their parts. A
+  members that share a constructor are told apart by their parts. An open
+  member there, or in a union dispatch, reads as any type it may yet bind
+  (`Open::Unknown`, judged at the statement's settle, `PendingSettle::
+  Told`): beside a member whose form another type may share it is refused
+  ("annotate it"), a `NoError` cell sharing no error's form. A
   compared type (`==` and the orderings), a map key type and what the
   stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,
   `map::` keys) may hold no such pair anywhere: the `'a: Discernible`

@@ -1527,13 +1527,28 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
         Type::TVar(tv) => tv.open_cell(),
         _ => None,
     };
+    // a `NoError` cell is never an error, so it shares no error's form
+    let shares = |cell: &super::TVar, t: &Type| {
+        shares_form(env, t)
+            && !(cell.cell_constraints().contains(&Type::NoError) && error_only(env, t))
+    };
     let collides = match (open(a), open(b)) {
         (Some(x), Some(y)) => x.cell_addr() != y.cell_addr(),
-        (Some(_), None) => shares_form(env, b),
-        (None, Some(_)) => shares_form(env, a),
+        (Some(x), None) => shares(&x, b),
+        (None, Some(y)) => shares(&y, a),
         (None, None) => false,
     };
     collides.then(|| (a.clone(), b.clone()))
+}
+
+/// Whether every value of `t` is an error.
+fn error_only(env: &Env, t: &Type) -> bool {
+    ensure_sufficient(|| match rep_head(env, t).as_deref() {
+        Some(Type::Error(_)) => true,
+        Some(Type::Primitive(p)) => *p == BitFlags::from(Typ::Error),
+        Some(Type::Set(ts)) => ts.iter().all(|t| error_only(env, t)),
+        _ => false,
+    })
 }
 
 /// The primitive tags a value of the (non-primitive) head `t` has; a
@@ -1729,18 +1744,29 @@ fn rep_collision(
             None,
             || Some((a.clone(), b.clone())),
             |seen| {
-                let (Some(ha), Some(hb)) = (rep_head(env, a), rep_head(env, b)) else {
-                    return match open {
-                        Open::Benign => None,
-                        Open::Unknown => open_collision(env, a, b),
+                let mut pairs =
+                    |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
+                        xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
+                            .find(Option::is_some)
+                            .flatten()
+                    };
+                let (ha, hb) = (rep_head(env, a), rep_head(env, b));
+                let (Some(ha), Some(hb)) = (ha.as_deref(), hb.as_deref()) else {
+                    // an open side meets each member of a union on the other
+                    return match (open, ha.as_deref(), hb.as_deref()) {
+                        (Open::Benign, _, _) => None,
+                        (Open::Unknown, _, Some(Type::Set(ts))) => {
+                            pairs(seen, &mut ts.iter().map(|t| (a, t)))
+                        }
+                        (Open::Unknown, Some(Type::Set(ts)), _) => {
+                            pairs(seen, &mut ts.iter().map(|t| (t, b)))
+                        }
+                        (Open::Unknown, _, _) => open_collision(env, a, b),
                     };
                 };
-                let (a, b) = (&*ha, &*hb);
-                let mut pairs = |xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
-                    xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
-                        .find(Option::is_some)
-                        .flatten()
-                };
+                let (a, b) = (ha, hb);
+                let mut pairs =
+                    |xs: &mut dyn Iterator<Item = (&Type, &Type)>| pairs(seen, xs);
                 match (a, b) {
                     (Type::Bottom, _) | (_, Type::Bottom) => None,
                     (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
@@ -1807,6 +1833,12 @@ impl Type {
     /// test that tells them apart can't tell such a value's type.
     pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<(Type, Type)> {
         rep_collision(env, &mut RepSeen::default(), Open::Benign, self, t)
+    }
+
+    /// [`Self::rep_collision`] with an open cell read as any type it may
+    /// yet bind ([`Open::Unknown`]): what a definition must rule out.
+    pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<(Type, Type)> {
+        rep_collision(env, &mut RepSeen::default(), Open::Unknown, self, t)
     }
 }
 

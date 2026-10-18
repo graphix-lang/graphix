@@ -260,6 +260,15 @@ the typed printer does; interpolating a bare variant gives `` `A ``.
 HOF destructure leaves and the tuple fold accumulator index from
 `TUPLE_BASE`.
 
+**Open members** (x-typecheck-patterns-04/05, Eric 10-18: refuse at the
+definition). A select arm's type test against what else reaches it is
+judged again at the statement's settle with open cells read as any type
+they may yet bind (`PendingSettle::Told`), and a union dispatch reads its
+open members the same way (`dispatch_members` keeps them): beside a
+reference, a function, an error, a map, an array or a Rust-backed abstract
+an open member is refused ("annotate it"). A `NoError` cell shares no
+error's form, so a select over `Result<'a, E>` stays legal.
+
 **Seq machines.** A machine's `pc` holds its step labels as bare variants
 (`seq_machine.rs`, `SeqAbort`).
 

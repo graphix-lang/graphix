@@ -3173,6 +3173,48 @@ run!(trait_bound_tells_tag_from_string, SAME_FORM_TRAIT_BOUND, |v: Result<&Value
     matches!(v, Ok(Value::String(s)) if &**s == "string")
 }; FuseExpect::Jit);
 
+// An open member beside one whose runtime form another type may share is
+// refused at the definition: no call is checked against the arm's test
+// (x-typecheck-patterns-04/05).
+run!(open_member_beside_a_reference_refused, r#"{
+  let f = |x: [&i64, 'b]| select x { &i64 as r => "int ref", _ => "other" };
+  let s = "s";
+  f(&s)
+}"#, refused("annotate it"); FuseExpect::None);
+
+run!(open_member_in_a_dispatch_refused, r#"{
+  trait Show { val show: fn(self) -> string };
+  impl Show for &i64 { let show = |x| "int ref" };
+  impl Show for &string { let show = |x| "string ref" };
+  let f = 'b: Show |x: [&i64, 'b]| Show::show(x);
+  let s = "s";
+  f(&s)
+}"#, refused("annotate it"); FuseExpect::None);
+
+run!(open_member_beside_an_error_refused, r#"{
+  let f = |r: ['a, Error<`E>]| select r { error as e => 0, v => 1 };
+  f(1)
+}"#, refused("annotate it"); FuseExpect::None);
+
+// A result's success type is never an error (`NoError`), so its error arm
+// tells it apart.
+run!(open_result_success_told_from_its_error, r#"{
+  let f = |r: Result<'a, `E>| select r { error as e => 0, v => 1 };
+  (f(1), f("s"), f(error(`E)))
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:1, i64:0]"); FuseExpect::Jit);
+
+// A variant arm over a generic union is told apart by its tag: the open
+// cells in its payload meet themselves, not a sibling's form.
+run!(
+    variant_arm_over_a_generic_union,
+    r#"{
+  type Ev<'r: NoError> = [`A(i64), `Done(Result<'r, `E>)];
+  let f = |e: Ev<'r>| -> Result<'r, `E> select e { `Done(r) => r, _ => never() };
+  f(`Done(1))$
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
 // `"A"` and `` `A `` are two values: unequal, and two map keys.
 const SAME_FORM_COMPARE: &str = r#"
 {
