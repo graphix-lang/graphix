@@ -1384,7 +1384,10 @@ impl FnType {
                     for impl_tc in tv.cell_constraints() {
                         if matches!(
                             impl_tc,
-                            Type::Discernible | Type::Ordered | Type::Concrete
+                            Type::Discernible
+                                | Type::Ordered
+                                | Type::Concrete
+                                | Type::Data
                         ) {
                             let mut vars: LPooled<Vec<TVar>> = LPooled::take();
                             sig_type.tvar_occurrences(&mut vars);

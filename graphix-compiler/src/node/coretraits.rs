@@ -1,16 +1,17 @@
-//! The core traits `Eq`, `Ord` and `Display`.
+//! The core traits `Eq`, `Ord`, `Display` and `Cast`.
 //!
 //! A user implementation is consulted from `Value`'s own
-//! `eq`/`partial_cmp`/`Debug` on a `GxAbstract`, through a thread-local
-//! handle loaned by [`with_hooks`]; without a loan or an
-//! implementation the structural case applies. A bottoming
-//! implementation resolves per key like NaN: a bottom key sorts below
-//! every real key and equal to other bottom keys.
+//! `eq`/`partial_cmp`/`Debug` on a `GxAbstract`, and from the cast walk
+//! and the writers for `Cast`, through a thread-local handle loaned by
+//! [`with_hooks`]; without a loan or an implementation the structural
+//! case applies, and `Cast` refuses. A bottoming implementation resolves
+//! per key like NaN: a bottom key sorts below every real key and equal
+//! to other bottom keys.
 
 use super::genn::SynthCall;
 use crate::{
     BindId, Event, ExecCtx, Rt, Scope, TagValue, UserEvent, View,
-    abstract_value::{self, GxAbstract, ValueHookDispatch},
+    abstract_value::{self, CastHook, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
     expr::ExprId,
     typ::{AbstractId, CoreTrait, FnType, TVar, Type},
@@ -25,9 +26,48 @@ use smallvec::SmallVec;
 use std::cmp::Ordering;
 use triomphe::Arc;
 
+/// A core trait method the runtime calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Method {
+    Eq,
+    Cmp,
+    Fmt,
+    ToValue,
+    FromValue,
+}
+
+impl Method {
+    fn of(self) -> CoreTrait {
+        match self {
+            Self::Eq => CoreTrait::Eq,
+            Self::Cmp => CoreTrait::Ord,
+            Self::Fmt => CoreTrait::Display,
+            Self::ToValue | Self::FromValue => CoreTrait::Cast,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Cmp => "cmp",
+            Self::Fmt => "fmt",
+            Self::ToValue => "to_value",
+            Self::FromValue => "from_value",
+        }
+    }
+
+    /// The types of a site's arguments, for the implementing type `typ`.
+    fn arg_types(self, typ: &Type) -> SmallVec<[Type; 2]> {
+        match self {
+            Self::Eq | Self::Cmp => SmallVec::from_iter([typ.clone(), typ.clone()]),
+            Self::Fmt | Self::ToValue => SmallVec::from_iter([typ.clone()]),
+            Self::FromValue => SmallVec::from_iter([Type::Any]),
+        }
+    }
+}
+
 /// A hook: the implementation's method binding, the type it was found
-/// for (the argument type of the call site) and the method's signature
-/// at that instantiation.
+/// for and the method's signature at that instantiation.
 #[derive(Debug, Clone)]
 struct Hook {
     bind: BindId,
@@ -35,33 +75,48 @@ struct Hook {
     ftype: Arc<FnType>,
 }
 
-/// The hook of the implementation `im` of `t`, whose sites bind their
-/// arguments at `target`; `open` is the substitution of the declared
-/// variables that matched it. The method's own signature is
-/// instantiated through it: a declared variable settles to ⊥ once the
-/// body is checked, which a plain reset would carry as a solved fact.
+/// The hook of the method `m` of the implementation `im`, at `target`;
+/// `open` is the substitution of the declared variables that matched it.
+/// The method's own signature is instantiated through it: a declared
+/// variable settles to ⊥ once the body is checked, which a plain reset
+/// would carry as a solved fact. `None` is a `Cast` method the
+/// implementation leaves out: the representation.
 fn hook_of(
     env: &Env,
-    t: CoreTrait,
+    m: Method,
     im: &ImplDef,
     target: &Type,
     open: &AHashMap<ArcStr, Type>,
-) -> Result<Hook> {
+) -> Result<Option<Hook>> {
+    let t = m.of();
     let def = env
         .trait_def(t.id())
         .ok_or_else(|| anyhow!("core trait {:?} is not defined", t))?;
-    let m = def
+    let decl = def
         .methods
         .iter()
-        .find(|m| m.name == t.method())
-        .ok_or_else(|| anyhow!("core trait {} lacks {}", def.name, t.method()))?;
-    let Some(bind) = im.methods.get(t.method()).copied().or(m.default) else {
-        return Err(anyhow!("impl {} for {} has no {}", def.name, im.target, m.name));
+        .find(|d| d.name == m.name())
+        .ok_or_else(|| anyhow!("core trait {} lacks {}", def.name, m.name()))?;
+    let bind = match im.methods.get(m.name()).copied().or(decl.default) {
+        Some(bind) => bind,
+        None if CoreTrait::representation_default(t.id()) => return Ok(None),
+        None => {
+            return Err(anyhow!(
+                "impl {} for {} has no {}",
+                def.name,
+                im.target,
+                m.name()
+            ));
+        }
     };
     let Some(ftype) = method_ftype(env, bind) else {
         return Err(anyhow!("core trait method {bind:?} is not a function"));
     };
-    Ok(Hook { bind, typ: target.clone(), ftype: Arc::new(ftype.replace_tvars(open)) })
+    Ok(Some(Hook {
+        bind,
+        typ: target.clone(),
+        ftype: Arc::new(ftype.replace_tvars(open)),
+    }))
 }
 
 /// The trait's implementation list, whose identity is the version an
@@ -150,9 +205,10 @@ struct HookSite<R: Rt, E: UserEvent> {
 }
 
 /// The hook of one implementation and a pool of sites bound at one
-/// concrete instantiation; a re-entrant dispatch uses a fresh site.
+/// concrete instantiation; a re-entrant dispatch uses a fresh site. No
+/// hook is the representation.
 struct Candidate<R: Rt, E: UserEvent> {
-    hook: Hook,
+    hook: Option<Hook>,
     pool: Vec<HookSite<R, E>>,
 }
 
@@ -167,20 +223,19 @@ struct SiteEntry<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
     /// The slot of the instantiation `typ`, resolved at its first sight.
-    fn slot(&mut self, env: &Env, t: CoreTrait, typ: &Type) -> usize {
+    fn slot(&mut self, env: &Env, m: Method, typ: &Type) -> usize {
         match self.by_type.iter().position(|(seen, _)| seen == typ) {
             Some(i) => i,
             None => {
-                let candidate =
-                    impl_for(env, t, typ).and_then(|(im, open)| {
-                        match hook_of(env, t, &im, typ, &open) {
-                            Ok(hook) => Some(Candidate { hook, pool: Vec::new() }),
-                            Err(e) => {
-                                log::error!("core trait lookup for {typ}: {e:?}");
-                                None
-                            }
+                let candidate = impl_for(env, m.of(), typ).and_then(|(im, open)| {
+                    match hook_of(env, m, &im, typ, &open) {
+                        Ok(hook) => Some(Candidate { hook, pool: Vec::new() }),
+                        Err(e) => {
+                            log::error!("core trait lookup for {typ}: {e:?}");
+                            None
                         }
-                    });
+                    }
+                });
                 self.by_type.push((typ.clone(), candidate));
                 self.by_type.len() - 1
             }
@@ -195,7 +250,7 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
     }
 }
 
-/// The per-context registry, keyed `(trait, tag)`. An entry resolves on
+/// The per-context registry, keyed `(method, tag)`. An entry resolves on
 /// first use and is rebuilt when the trait's implementation list
 /// changes (`impls_version`). The seam runs its sites over events of
 /// its own (`spare`, the ones not in a dispatch), never the caller's,
@@ -234,12 +289,12 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for CoreHookSites<R, E> {
 
 fn build_site<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
-    t: CoreTrait,
+    m: Method,
     h: &Hook,
 ) -> Result<HookSite<R, E>> {
     let top_id = ExprId::new();
     let prefix = format_compact!("#seam{}", top_id.inner());
-    let types = (0..t.arity()).map(|_| h.typ.clone());
+    let types = m.arg_types(&h.typ).into_iter();
     // built mid-cycle, as a run-time bind is: a task of its own, its
     // settles drained when it returns
     let call = super::with_runtime_settles(ctx, |ctx| {
@@ -249,17 +304,45 @@ fn build_site<R: Rt, E: UserEvent>(
     Ok(HookSite { call: call?, first: true })
 }
 
-/// Run the implementation of `t` on `args`, values of one abstract
-/// type. `None` = no implementation; `Some(None)` = it produced no
-/// value this cycle (the bottom the callers' rules resolve);
-/// `Some(Some(v))` = its result.
+/// What a dispatch found.
+enum Hooked {
+    /// No implementation applies.
+    None,
+    /// A `Cast` method the implementation leaves out.
+    Representation,
+    /// The implementation ran: its value, or `None` when it produced none
+    /// this cycle (the bottom the callers' rules resolve).
+    Ran(Option<Value>),
+}
+
+impl Hooked {
+    /// A structural trait's answer: `None` = no implementation.
+    fn ran(self) -> Option<Option<Value>> {
+        match self {
+            Self::Ran(v) => Some(v),
+            Self::None | Self::Representation => None,
+        }
+    }
+
+    fn cast(self) -> Option<CastHook> {
+        match self {
+            Self::None => None,
+            Self::Representation => Some(CastHook::Representation),
+            Self::Ran(v) => Some(CastHook::Ran(v)),
+        }
+    }
+}
+
+/// Run the method `m` of the implementation for the abstract type `typ`
+/// on `args`.
 fn call_hook<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
-    t: CoreTrait,
-    args: &[&GxAbstract],
-) -> Option<Option<Value>> {
+    m: Method,
+    typ: &Type,
+    args: &[Value],
+) -> Hooked {
     let mut event = ctx.core_hook_sites.lock().take_event(&ctx.event.user);
-    let r = call_hook_over(&mut ctx.with_event(&mut event), t, args);
+    let r = call_hook_over(&mut ctx.with_event(&mut event), m, typ, args);
     ctx.core_hook_sites.lock().give_event(event);
     r
 }
@@ -286,24 +369,25 @@ fn same_version(
     }
 }
 
-/// Take a site for `args` out of the registry, building one when the
+enum Taken<R: Rt, E: UserEvent> {
+    None,
+    Representation,
+    Site(Loan<R, E>),
+}
+
+/// Take a site for `typ` out of the registry, building one when the
 /// pool is empty. The entry stays in the registry, so a re-entrant
 /// dispatch for the same tag finds it; a nested call takes another site.
 /// The registry is locked only while it is read or written: a site is
 /// built and run outside it.
 fn take_site<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
-    t: CoreTrait,
-    args: &[&GxAbstract],
-) -> Option<Loan<R, E>> {
-    let typ = args[0].typ();
-    // an implementation is for one instantiation: a pair constructed at
-    // two takes the structural case
-    if args[1..].iter().any(|g| g.typ() != typ) {
-        return None;
-    }
-    let key = (t as u8, args[0].id);
-    let version = impls_version(&ctx.env, t);
+    m: Method,
+    typ: &Type,
+) -> Taken<R, E> {
+    let Type::Abstract { id, .. } = typ else { return Taken::None };
+    let key = (m as u8, *id);
+    let version = impls_version(&ctx.env, m.of());
     let (stale, found) = {
         let mut reg = ctx.core_hook_sites.lock();
         let stale = match reg.sites.get(&key) {
@@ -314,10 +398,11 @@ fn take_site<R: Rt, E: UserEvent>(
             version: version.clone(),
             by_type: SmallVec::new(),
         });
-        let slot = entry.slot(&ctx.cx.env, t, &typ);
-        let found = entry
-            .candidate(slot, &typ)
-            .map(|c| (slot, c.pool.pop().ok_or_else(|| c.hook.clone())));
+        let slot = entry.slot(&ctx.cx.env, m, typ);
+        let found = entry.candidate(slot, typ).map(|c| match &c.hook {
+            None => None,
+            Some(hook) => Some((slot, c.pool.pop().ok_or_else(|| hook.clone()))),
+        });
         (stale, found)
     };
     for (_, c) in stale.into_iter().flat_map(|e| e.by_type) {
@@ -325,10 +410,14 @@ fn take_site<R: Rt, E: UserEvent>(
             s.call.delete(ctx);
         }
     }
-    let (slot, site) = found?;
+    let (slot, site) = match found {
+        None => return Taken::None,
+        Some(None) => return Taken::Representation,
+        Some(Some(found)) => found,
+    };
     let site = match site {
         Ok(s) => s,
-        Err(hook) => match build_site(ctx, t, &hook) {
+        Err(hook) => match build_site(ctx, m, &hook) {
             Ok(s) => s,
             Err(e) => {
                 log::error!("core trait site for {}: {e:?}", hook.typ);
@@ -337,15 +426,15 @@ fn take_site<R: Rt, E: UserEvent>(
                 if let Some(e) = ctx.core_hook_sites.lock().sites.get_mut(&key)
                     && same_version(&e.version, &version)
                     && let Some((seen, c)) = e.by_type.get_mut(slot)
-                    && *seen == typ
+                    && seen == typ
                 {
                     *c = None;
                 }
-                return None;
+                return Taken::None;
             }
         },
     };
-    Some(Loan { key, version, slot, typ, site })
+    Taken::Site(Loan { key, version, slot, typ: typ.clone(), site })
 }
 
 fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, loan: Loan<R, E>) {
@@ -371,14 +460,18 @@ fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, loan: Loan<R, E
 
 fn call_hook_over<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
-    t: CoreTrait,
-    args: &[&GxAbstract],
-) -> Option<Option<Value>> {
-    let mut loan = take_site(ctx, t, args)?;
+    m: Method,
+    typ: &Type,
+    args: &[Value],
+) -> Hooked {
+    let mut loan = match take_site(ctx, m, typ) {
+        Taken::None => return Hooked::None,
+        Taken::Representation => return Hooked::Representation,
+        Taken::Site(loan) => loan,
+    };
     let s = &mut loan.site;
-    for (id, g) in s.call.args.iter().zip(args.iter()) {
-        let v = as_value(g);
-        ctx.deliver(*id, TagValue::fired(v));
+    for (id, v) in s.call.args.iter().zip(args.iter()) {
+        ctx.deliver(*id, TagValue::fired(v.clone()));
     }
     let view =
         if std::mem::replace(&mut s.first, false) { View::Birth } else { View::Cycle };
@@ -388,7 +481,7 @@ fn call_hook_over<R: Rt, E: UserEvent>(
         if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
     });
     return_site(ctx, loan);
-    Some(r)
+    Hooked::Ran(r)
 }
 
 struct HookState<'a, R: Rt, E: UserEvent> {
@@ -411,13 +504,29 @@ fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
     );
 }
 
+/// Run the method `m` on a pair of one abstract type: `None` = no
+/// implementation, or a pair constructed at two instantiations, which
+/// takes the structural case.
+fn pair<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    m: Method,
+    a: &GxAbstract,
+    b: &GxAbstract,
+) -> Option<Option<Value>> {
+    let typ = a.typ();
+    if b.typ() != typ {
+        return None;
+    }
+    call_hook(ctx, m, &typ, &[as_value(a), as_value(b)]).ran()
+}
+
 /// Does the implementation bottom on the key `k`?
 fn key_bottoms<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
-    t: CoreTrait,
+    m: Method,
     k: &GxAbstract,
 ) -> bool {
-    matches!(call_hook(ctx, t, &[k, k]), Some(None))
+    matches!(pair(ctx, m, k, k), Some(None))
 }
 
 fn dispatch_eq_applies<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> bool {
@@ -435,7 +544,7 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
     // SAFETY: `state` points into the live `with_hooks` frame.
     let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
     let ctx = unsafe { &mut *s.ctx };
-    match call_hook(ctx, CoreTrait::Eq, &[a, b])? {
+    match pair(ctx, Method::Eq, a, b)? {
         Some(Value::Bool(x)) => Some(x),
         Some(v) => {
             log::warn!("core Eq for {} returned a non-bool {v:?}", a.name);
@@ -443,8 +552,8 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
         }
         // bottom keys are equal to each other and to nothing real
         None => {
-            let ab = key_bottoms(ctx, CoreTrait::Eq, a);
-            let bb = key_bottoms(ctx, CoreTrait::Eq, b);
+            let ab = key_bottoms(ctx, Method::Eq, a);
+            let bb = key_bottoms(ctx, Method::Eq, b);
             Some(match (ab, bb) {
                 (true, true) => true,
                 (true, false) | (false, true) => false,
@@ -474,7 +583,7 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
     // SAFETY: as in `dispatch_eq`.
     let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
     let ctx = unsafe { &mut *s.ctx };
-    match call_hook(ctx, CoreTrait::Ord, &[a, b])? {
+    match pair(ctx, Method::Cmp, a, b)? {
         Some(v) => match ordering_of(&v) {
             Some(o) => Some(o),
             None => {
@@ -486,8 +595,8 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
         // per key it stays total: bottom keys below every real key,
         // equal among themselves
         None => {
-            let ab = key_bottoms(ctx, CoreTrait::Ord, a);
-            let bb = key_bottoms(ctx, CoreTrait::Ord, b);
+            let ab = key_bottoms(ctx, Method::Cmp, a);
+            let bb = key_bottoms(ctx, Method::Cmp, b);
             Some(match (ab, bb) {
                 (true, true) => Ordering::Equal,
                 (true, false) => Ordering::Less,
@@ -505,7 +614,7 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
     // SAFETY: as in `dispatch_eq`.
     let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
     let ctx = unsafe { &mut *s.ctx };
-    match call_hook(ctx, CoreTrait::Display, &[a])? {
+    match call_hook(ctx, Method::Fmt, &a.typ(), &[as_value(a)]).ran()? {
         Some(Value::String(s)) => Some(s),
         Some(v) => {
             log::warn!("core Display for {} returned a non-string {v:?}", a.name);
@@ -521,9 +630,30 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
     }
 }
 
+fn dispatch_to_value<R: Rt, E: UserEvent>(
+    state: *mut u8,
+    a: &GxAbstract,
+) -> Option<CastHook> {
+    // SAFETY: as in `dispatch_eq`.
+    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
+    let ctx = unsafe { &mut *s.ctx };
+    call_hook(ctx, Method::ToValue, &a.typ(), &[as_value(a)]).cast()
+}
+
+fn dispatch_from_value<R: Rt, E: UserEvent>(
+    state: *mut u8,
+    target: &Type,
+    v: &Value,
+) -> Option<CastHook> {
+    // SAFETY: as in `dispatch_eq`.
+    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
+    let ctx = unsafe { &mut *s.ctx };
+    call_hook(ctx, Method::FromValue, target, std::slice::from_ref(v)).cast()
+}
+
 /// Can a core-trait hook fire: is any core trait implemented?
 pub fn hooks_live(env: &Env) -> bool {
-    [CoreTrait::Eq, CoreTrait::Ord, CoreTrait::Display]
+    [CoreTrait::Eq, CoreTrait::Ord, CoreTrait::Display, CoreTrait::Cast]
         .into_iter()
         .any(|t| env.impls.get(&t.id()).is_some_and(|l| !l.is_empty()))
 }
@@ -547,6 +677,8 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
         eq_applies: dispatch_eq_applies::<R, E>,
         cmp: dispatch_cmp::<R, E>,
         fmt: dispatch_fmt::<R, E>,
+        to_value: dispatch_to_value::<R, E>,
+        from_value: dispatch_from_value::<R, E>,
     };
     abstract_value::with_value_hooks(&handle, f)
 }

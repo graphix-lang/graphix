@@ -1,7 +1,7 @@
-let write = |path: string, value: Any| -> Result<_, `WriteError(string)> 'sys_net_write;
+let write = 'a: Data |path: string, value: 'a| -> Result<_, `WriteError(string)> 'sys_net_write;
 let subscribe = 'a: Concrete |path: string| -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]> 'sys_net_subscribe;
-let call = 'b: Concrete |path: string, args: 'a| -> Result<'b, [`RpcError(string), `InvalidCast(string)]> 'sys_net_call;
-let rpc = |
+let call = 'a: Data, 'b: Concrete |path: string, args: 'a| -> Result<'b, [`RpcError(string), `InvalidCast(string)]> 'sys_net_call;
+let rpc = 'spec: Data, 'result: Data |
     #path: string,
     #doc: string,
     #spec: 'spec,
@@ -11,5 +11,5 @@ let list = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Array<string>, `ListError(string)> 'sys_net_list;
 let list_table = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Table, `ListError(string)> 'sys_net_list_table;
-let publish = |#on_write: fn(v: 'a) -> _ throws 'e = |v: Any| never(v), path: string, v: Any|
+let publish = 'v: Data |#on_write: fn(v: 'a) -> _ throws 'e = |v: Any| never(v), path: string, v: 'v|
     -> Result<_, `PublishError(string)> throws 'e 'sys_net_publish

@@ -216,6 +216,11 @@ so it would be dead API.
 
 ## 6. Core traits: `Eq`, `Ord`, `Display`
 
+A fourth core trait, `Cast`, rides the same seam: its methods are what
+casts and writers call for an abstract type (design/abstract_cast.md).
+Unlike the three below it has no structural default for every type,
+no operator dispatches it, and a program never calls its methods.
+
 Declared in core's interface (`graphix-package-core/src/graphix/
 mod.gxi`): `trait Eq { val eq: fn(self, other: self) -> bool }`,
 `trait Ord { val cmp: fn(self, other: self) -> Ordering }` with

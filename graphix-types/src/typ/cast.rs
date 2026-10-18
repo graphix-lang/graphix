@@ -1,12 +1,13 @@
 use crate::{
     AbstractTypeRegistry, CAST_ERR_TAG, PrintFlag,
+    abstract_value::{self, CastHook},
     env::Env,
     errf,
     expr::{ModPath, WrittenAt},
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        Type, TypeRef, params_size,
+        AbstractId, Type, TypeRef, params_size,
         setops::union_identical,
         tval::{NakedPrefix, has_form, member_of},
     },
@@ -42,7 +43,7 @@ pub enum IsAFlags {
 /// its members and discards every failure but the last.
 #[derive(Debug)]
 struct CastFail {
-    why: &'static str,
+    why: Cow<'static, str>,
     to: Type,
     v: Value,
 }
@@ -284,9 +285,7 @@ impl Type {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
-            Type::Abstract { .. } => {
-                bail!("can't cast a value to an abstract type; use its constructor")
-            }
+            Type::Abstract { .. } => Ok(()),
             Type::TVar(_) => match self.deref_cloned() {
                 Some(t) => t.check_cast_int(env, seen),
                 None => bail!("can't cast a value to a free type variable"),
@@ -450,6 +449,58 @@ impl Type {
         })
     }
 
+    /// Whether a value of this type can hold an abstract value that
+    /// crosses no data: a Rust-backed one, or a Graphix one with no `Cast`
+    /// implementation. No cast or read reaches one and no writer writes
+    /// it.
+    pub fn holds_uncastable(&self, env: &Env) -> bool {
+        self.uncastable(env).is_some()
+    }
+
+    /// Whether `Data ⊇ self` holds as the type stands: no reference, no
+    /// function and no abstract type [`Self::holds_uncastable`] refuses;
+    /// open cells hold (a bind hands them the conjunct).
+    pub(crate) fn data_holds(&self, env: &Env) -> bool {
+        !self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::ByRef(..) | Type::Fn(_) => Some(true),
+            Type::Abstract { id, .. } if !env.casts(*id) => Some(true),
+            _ => None,
+        })
+    }
+
+    /// The first abstract type [`Self::holds_uncastable`] finds.
+    pub fn uncastable(&self, env: &Env) -> Option<Type> {
+        self.uncastable_but(env, &|_| false)
+    }
+
+    /// Every abstract type this type names, through its definitions.
+    pub(crate) fn abstract_ids(&self, env: &Env, out: &mut Vec<AbstractId>) {
+        let out = std::cell::RefCell::new(out);
+        self.holds(env, &mut Verdicts::new(), &|t| {
+            if let Type::Abstract { id, .. } = t {
+                out.borrow_mut().push(*id);
+            }
+            None
+        });
+    }
+
+    /// [`Self::uncastable`], passing over the abstract types `skip` says.
+    pub(crate) fn uncastable_but(
+        &self,
+        env: &Env,
+        skip: &dyn Fn(AbstractId) -> bool,
+    ) -> Option<Type> {
+        let found = std::cell::RefCell::new(None);
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Abstract { id, .. } if !env.casts(*id) && !skip(*id) => {
+                *found.borrow_mut() = Some(t.clone());
+                Some(true)
+            }
+            _ => None,
+        });
+        found.into_inner()
+    }
+
     /// Whether some part of this type is one `leaf` says yes to; `leaf`
     /// stops the walk at a part it decides.
     fn holds(
@@ -502,8 +553,8 @@ impl Type {
         ensure_sufficient(|| self.cast_inner(env, cx, src, v))
     }
 
-    fn cast_fail(&self, why: &'static str, v: &Value) -> CastFail {
-        CastFail { why, to: self.clone(), v: v.clone() }
+    fn cast_fail(&self, why: impl Into<Cow<'static, str>>, v: &Value) -> CastFail {
+        CastFail { why: why.into(), to: self.clone(), v: v.clone() }
     }
 
     fn cast_inner(
@@ -520,6 +571,7 @@ impl Type {
             },
             Type::Hole => Err(self.cast_fail("a type constructor", v)),
             Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
@@ -531,25 +583,38 @@ impl Type {
                 _ => Err(self.cast_fail("not a function", v)),
             },
             Type::Abstract { id, params } => {
-                if !self.is_a(env, v) {
-                    return Err(self.cast_fail("not this abstract type", v));
-                }
-                // a Rust-backed abstract's payload is Rust's to check
-                let (Some(g), Some(rep)) =
-                    (crate::abstract_value::get(v), env.abstract_reps.get(id))
-                else {
-                    return Ok(None);
+                let Some(rep) = env.abstract_reps.get(id) else {
+                    // a Rust-backed abstract is Rust's: only its own values
+                    return match self.is_a(env, v) {
+                        true => Ok(None),
+                        false => Err(self.cast_fail("not this abstract type", v)),
+                    };
                 };
-                Ok(rep.instantiate_with(params).cast_int(env, cx, None, &g.payload)?.map(
-                    |payload| {
-                        crate::abstract_value::wrap(
+                let held = abstract_value::get(v).filter(|g| g.id == *id);
+                if held.is_some_and(|g| g.params == *params) {
+                    return Ok(None);
+                }
+                match abstract_value::from_value(self, v) {
+                    None => Err(self.cast_fail("it has no Cast implementation", v)),
+                    Some(CastHook::Ran(None)) => {
+                        Err(self.cast_fail("its Cast implementation produced nothing", v))
+                    }
+                    Some(CastHook::Ran(Some(Value::Error(e)))) => {
+                        Err(self.cast_fail(refusal(&e), v))
+                    }
+                    Some(CastHook::Ran(Some(r))) => Ok(Some(r)),
+                    Some(CastHook::Representation) => {
+                        let data = held.map_or(v, |g| &g.payload);
+                        let payload =
+                            rep.instantiate_with(params).cast_int(env, cx, None, data)?;
+                        Ok(Some(abstract_value::wrap(
                             *id,
-                            g.name.clone(),
-                            g.params.clone(),
-                            payload,
-                        )
-                    },
-                ))
+                            rep.name.clone(),
+                            params.clone(),
+                            payload.unwrap_or_else(|| data.clone()),
+                        )))
+                    }
+                }
             }
             Type::ByRef(..) => {
                 Err(self.cast_fail("a reference can't be read from data", v))
@@ -1018,6 +1083,7 @@ impl Type {
             },
             Type::Hole
             | Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::Singleton
             | Type::Discernible
@@ -1342,6 +1408,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         | Type::App(..)
         | Type::Hole
         | Type::Concrete
+        | Type::Data
         | Type::Singleton
         | Type::OneNumber
         | Type::Discernible
@@ -1440,6 +1507,7 @@ fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
         Type::Any
         | Type::Hole
         | Type::Concrete
+        | Type::Data
         | Type::Function
         | Type::Singleton
         | Type::Discernible
@@ -2003,6 +2071,20 @@ fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type) -> bool {
             },
         )
     })
+}
+
+/// Why a `Cast` implementation refused: the message of its
+/// `` `InvalidCast(why) ``, else the error as it prints.
+fn refusal(e: &Value) -> Cow<'static, str> {
+    match e {
+        Value::Array(a)
+            if a.len() == 2
+                && let Value::String(s) = &a[1] =>
+        {
+            Cow::Owned(s.to_string())
+        }
+        e => Cow::Owned(format!("{}", NakedPrefix(e))),
+    }
 }
 
 /// Whether `v` is the variant `t` names in its own form: the tag of a

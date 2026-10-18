@@ -7,6 +7,7 @@ use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::{
+    abstract_value::to_data,
     env::Env,
     errf,
     typ::{FnType, Type},
@@ -101,7 +102,6 @@ fn to_toml(
             Ok(toml::Value::Array(vals.drain(..).collect()))
         }
         Shape::Leaf => leaf_to_toml(value),
-        Shape::Ref => Err("a reference cannot be written as TOML".into()),
     }
 }
 
@@ -181,8 +181,11 @@ type TomlRead = CachedArgsAsync<TypedRead<Toml>>;
 /// site says, or the error to answer with.
 fn encode(env: &Env, ft: &FnType, args: &[Value]) -> Option<Result<String, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let toml_val = match value_to_toml(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?)
-    {
+    let data = match to_data(args.get(1)?) {
+        Ok(d) => d,
+        Err(e) => return Some(Err(errf!("TomlErr", "{e}"))),
+    };
+    let toml_val = match value_to_toml(env, ft.args.get(1).map(|a| &a.typ), &data) {
         Ok(t) => t,
         Err(e) => return Some(Err(errf!("TomlErr", "{e}"))),
     };

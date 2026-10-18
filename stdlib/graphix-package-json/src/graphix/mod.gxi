@@ -5,9 +5,9 @@ val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`JsonErr(strin
 
 /// Serialize a value to a JSON string, as its type says: a struct or a
 /// map is an object, an array, tuple or list an array.
-val write_str: fn(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;
+val write_str: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;
 
 /// Serialize a value to JSON bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: 'a) -> Result<bytes, `JsonErr(string)>;
+val write_bytes: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<bytes, `JsonErr(string)>;

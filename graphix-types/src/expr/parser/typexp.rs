@@ -80,6 +80,7 @@ where
     fn predicate(word: &str) -> Option<Type> {
         Some(match word {
             "Concrete" => Type::Concrete,
+            "Data" => Type::Data,
             "Function" => Type::Function,
             "Singleton" => Type::Singleton,
             "OneNumber" => Type::OneNumber,

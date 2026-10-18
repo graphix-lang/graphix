@@ -95,6 +95,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         | Type::App(..)
         | Type::Hole
         | Type::Concrete
+        | Type::Data
         | Type::Function
         | Type::Singleton
         | Type::OneNumber
@@ -489,17 +490,25 @@ impl TraitId {
 
 impl nohash::IsEnabled for TraitId {}
 
-/// The core traits `Eq`, `Ord` and `Display`, which ride the value.
+/// The core traits, whose implementations the runtime consults on its
+/// own: `Eq`, `Ord` and `Display` ride the value, `Cast` carries an
+/// abstract type across data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreTrait {
     Eq,
     Ord,
     Display,
+    Cast,
 }
 
-static CORE_IDS: LazyLock<[TraitId; 3]> = LazyLock::new(|| {
+static CORE_IDS: LazyLock<[TraitId; 4]> = LazyLock::new(|| {
     let core = ModPath::from(["core"]);
-    [TraitId::of(&core, "Eq"), TraitId::of(&core, "Ord"), TraitId::of(&core, "Display")]
+    [
+        TraitId::of(&core, "Eq"),
+        TraitId::of(&core, "Ord"),
+        TraitId::of(&core, "Display"),
+        TraitId::of(&core, "Cast"),
+    ]
 });
 
 impl CoreTrait {
@@ -508,24 +517,21 @@ impl CoreTrait {
     }
 
     pub fn of_id(id: TraitId) -> Option<Self> {
-        [Self::Eq, Self::Ord, Self::Display].into_iter().find(|t| t.id() == id)
+        [Self::Eq, Self::Ord, Self::Display, Self::Cast]
+            .into_iter()
+            .find(|t| t.id() == id)
     }
 
-    #[doc(hidden)]
-    pub fn method(self) -> &'static str {
-        match self {
-            Self::Eq => "eq",
-            Self::Ord => "cmp",
-            Self::Display => "fmt",
-        }
+    /// Whether every type has the trait by its structure, and its
+    /// methods are the operators and printers: `Eq`, `Ord`, `Display`.
+    pub fn structural(self) -> bool {
+        self != Self::Cast
     }
 
-    #[doc(hidden)]
-    pub fn arity(self) -> usize {
-        match self {
-            Self::Eq | Self::Ord => 2,
-            Self::Display => 1,
-        }
+    /// Whether a method an implementation leaves out is the type's
+    /// representation itself: `Cast`'s.
+    pub fn representation_default(id: TraitId) -> bool {
+        Self::of_id(id) == Some(Self::Cast)
     }
 }
 
@@ -1060,7 +1066,14 @@ pub enum Type {
     // only tvar/settle/contains match on the kind. The second is to take bounds out of
     // Type altogether, as a constraint enum on the cell, so a bound in a type position
     // cannot be written. (x-dup-07)
+    // 2026-10-18 claude: `Data` (the writers' bound) was added beside these, through the
+    // same thirty arms.
     Concrete,
+    /// The conjunct `'a: Data`: whatever binds the cell is data a writer
+    /// can write: no reference, no function and no abstract type without
+    /// a `Cast` implementation; an open cell holds. Legal only as a
+    /// constraint.
+    Data,
     /// The conjunct `'a: Function`: whatever binds the cell is a function
     /// type, so a builtin wrapping a function can read its signature.
     /// Legal only as a constraint.
@@ -1093,6 +1106,7 @@ impl Debug for Type {
             Self::Any => f.write_str("Any"),
             Self::Hole => f.write_str("Hole"),
             Self::Concrete => f.write_str("Concrete"),
+            Self::Data => f.write_str("Data"),
             Self::Function => f.write_str("Function"),
             Self::Singleton => f.write_str("Singleton"),
             Self::OneNumber => f.write_str("OneNumber"),
@@ -1178,6 +1192,7 @@ mod tag {
     pub const BYREF_MUT: u8 = 22;
     pub const DISCERNIBLE: u8 = 23;
     pub const ORDERED: u8 = 24;
+    pub const DATA: u8 = 25;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -1233,6 +1248,7 @@ impl Type {
             Type::Any => out.put_u8(tag::ANY),
             Type::Hole => out.put_u8(tag::HOLE),
             Type::Concrete => out.put_u8(tag::CONCRETE),
+            Type::Data => out.put_u8(tag::DATA),
             Type::Function => out.put_u8(tag::FUNCTION),
             Type::Singleton => out.put_u8(tag::SINGLETON),
             Type::OneNumber => out.put_u8(tag::ONE_NUMBER),
@@ -1329,6 +1345,7 @@ impl Type {
             | Type::Any
             | Type::Hole
             | Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::OneNumber
             | Type::Discernible
@@ -1360,6 +1377,7 @@ impl Type {
             Type::Any => Ok(buf.put_u8(tag::ANY)),
             Type::Hole => Ok(buf.put_u8(tag::HOLE)),
             Type::Concrete => Ok(buf.put_u8(tag::CONCRETE)),
+            Type::Data => Ok(buf.put_u8(tag::DATA)),
             Type::Function => Ok(buf.put_u8(tag::FUNCTION)),
             Type::Singleton => Ok(buf.put_u8(tag::SINGLETON)),
             Type::OneNumber => Ok(buf.put_u8(tag::ONE_NUMBER)),
@@ -1441,6 +1459,7 @@ impl Type {
             tag::ANY => Type::Any,
             tag::HOLE => Type::Hole,
             tag::CONCRETE => Type::Concrete,
+            tag::DATA => Type::Data,
             tag::FUNCTION => Type::Function,
             tag::SINGLETON => Type::Singleton,
             tag::ONE_NUMBER => Type::OneNumber,
@@ -1517,6 +1536,7 @@ impl PartialEq for Type {
             (Type::Any, _) => matches!(other, Type::Any),
             (Type::Hole, _) => matches!(other, Type::Hole),
             (Type::Concrete, _) => matches!(other, Type::Concrete),
+            (Type::Data, _) => matches!(other, Type::Data),
             (Type::Function, _) => matches!(other, Type::Function),
             (Type::Singleton, _) => matches!(other, Type::Singleton),
             (Type::OneNumber, _) => matches!(other, Type::OneNumber),
@@ -1543,6 +1563,7 @@ impl Type {
             Type::Any => matches!(other, Type::Any),
             Type::Hole => matches!(other, Type::Hole),
             Type::Concrete => matches!(other, Type::Concrete),
+            Type::Data => matches!(other, Type::Data),
             Type::Function => matches!(other, Type::Function),
             Type::Singleton => matches!(other, Type::Singleton),
             Type::OneNumber => matches!(other, Type::OneNumber),
@@ -1606,6 +1627,7 @@ impl Type {
             Type::App(..) => tag::APP,
             Type::Hole => tag::HOLE,
             Type::Concrete => tag::CONCRETE,
+            Type::Data => tag::DATA,
             Type::Function => tag::FUNCTION,
             Type::Singleton => tag::SINGLETON,
             Type::OneNumber => tag::ONE_NUMBER,
@@ -1656,6 +1678,7 @@ impl Ord for Type {
             | Type::Any
             | Type::Hole
             | Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
@@ -1675,6 +1698,7 @@ impl Hash for Type {
             | Type::Any
             | Type::Hole
             | Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::OneNumber
             | Type::Discernible
@@ -1711,6 +1735,7 @@ impl Hash for Type {
                 | Type::Any
                 | Type::Hole
                 | Type::Concrete
+                | Type::Data
                 | Type::Function
                 | Type::Singleton
                 | Type::OneNumber
@@ -1746,6 +1771,7 @@ impl Drop for Type {
             | Type::Any
             | Type::Hole
             | Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
@@ -1776,6 +1802,7 @@ impl Drop for Type {
                 | Type::Any
                 | Type::Hole
                 | Type::Concrete
+                | Type::Data
                 | Type::Function
                 | Type::Singleton
                 | Type::OneNumber
@@ -1874,6 +1901,7 @@ impl Type {
             | Type::TVar(_)
             | Type::Hole
             | Type::Concrete
+            | Type::Data
             | Type::Singleton
             | Type::OneNumber
             | Type::Discernible
@@ -1952,6 +1980,18 @@ impl Type {
         })
     }
 
+    /// Whether a trait method's `self` occurs in this type.
+    pub fn mentions_self(&self) -> bool {
+        crate::stack::ensure_sufficient(|| match self {
+            Type::TVar(tv) if &*tv.name == "self" => true,
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found |= c.mentions_self());
+                found
+            }
+        })
+    }
+
     /// [`Self::try_for_each_child`] without early exit.
     #[doc(hidden)]
     pub fn for_each_child(&self, f: &mut impl FnMut(&Type)) {
@@ -1977,6 +2017,7 @@ impl Type {
             | Type::TVar(_)
             | Type::Hole
             | Type::Concrete
+            | Type::Data
             | Type::Singleton
             | Type::OneNumber
             | Type::Discernible
@@ -2755,6 +2796,7 @@ impl Type {
             },
             Self::Hole
             | Self::Concrete
+            | Self::Data
             | Self::Function
             | Self::Singleton
             | Self::Discernible
@@ -2787,6 +2829,7 @@ impl Type {
     pub fn is_predicate(&self) -> bool {
         match self {
             Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::Singleton
             | Type::OneNumber

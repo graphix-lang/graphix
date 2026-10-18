@@ -25,7 +25,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{
-        FnType, Mutability, Type,
+        CoreTrait, FnType, Mutability, Type,
         tvar::{AtLevel, Level},
     },
     wrap,
@@ -765,6 +765,17 @@ impl Ref {
         match resolved {
             None => bailat!(spec, "{name} not defined"),
             Some((_, bind)) => {
+                if ctx
+                    .env
+                    .trait_methods
+                    .get(&bind.id)
+                    .is_some_and(|tm| tm.trait_id == CoreTrait::Cast.id())
+                {
+                    bailat!(
+                        spec,
+                        "{name} is called by casts and writers, never by a program"
+                    )
+                }
                 if let Some(flags) = value
                     && let Some(eta) =
                         super::compiler::lowering(ctx, &spec, &scope.lexical, |ctx| {

@@ -1924,6 +1924,7 @@ fn list_is_a_reserved_type_name() {
         "Error",
         "Abstract",
         "Concrete",
+        "Data",
         "Function",
         "Singleton",
         "OneNumber",

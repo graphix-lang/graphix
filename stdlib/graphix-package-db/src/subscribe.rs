@@ -8,9 +8,9 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
-    typ::FnType,
+    typ::{FnType, Type},
 };
-use graphix_package_core::{CachedVals, Invocation};
+use graphix_package_core::{CachedVals, Invocation, data_target, read_back, write_data};
 use netidx::publisher::Typ;
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::IntoValue;
@@ -198,10 +198,10 @@ impl DbSubscribe {
     fn watch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
         let Some(tree) = get_tree_inner(&self.args, 1) else { return };
-        let prefix = match self.args.value(0) {
-            None => return,
-            Some(Value::Null) => Ok(GPooled::orphan(vec![])),
-            Some(v) => encode_prefix(tree.key_typ, v),
+        let prefix = match self.args.value(0).map(|v| write_data(ctx, v)) {
+            None | Some(Err(_)) => return,
+            Some(Ok(Value::Null)) => Ok(GPooled::orphan(vec![])),
+            Some(Ok(v)) => encode_prefix(tree.key_typ, &v),
         };
         let Ok(prefix) = prefix else { return };
         let (tx, rx) = mpsc::channel(1);
@@ -297,6 +297,8 @@ macro_rules! db_event_accessor {
             top_id: ExprId,
             cached: CachedVals,
             bind_id: Option<BindId>,
+            /// what the events are read back as, where that needs `Cast`
+            data: Option<Type>,
             out: TagValue,
         }
 
@@ -305,9 +307,9 @@ macro_rules! db_event_accessor {
             const NAME: &str = $builtin_name;
 
             fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut CompileCtx<R, E>,
+                ctx: &'a mut CompileCtx<R, E>,
                 _typ: &'a FnType,
-                _resolved: Option<&'d FnType>,
+                resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
                 from: &'c [Node<R, E>],
                 top_id: ExprId,
@@ -316,6 +318,7 @@ macro_rules! db_event_accessor {
                     top_id,
                     cached: CachedVals::new(from),
                     bind_id: None,
+                    data: data_target(&ctx.env, resolved),
                     out: TagValue::phantom(),
                 }))
             }
@@ -328,10 +331,17 @@ macro_rules! db_event_accessor {
                 let top_id = ExprId::decode(buf)?;
                 let cached = CachedVals::image_decode(buf)?;
                 let bind_id = <Option<BindId>>::decode(buf)?;
+                let data = <Option<Type>>::decode(buf)?;
                 if let Some(bid) = bind_id {
                     ctx.record_ref(bid, top_id);
                 }
-                Ok(Box::new($name { top_id, cached, bind_id, out: TagValue::phantom() }))
+                Ok(Box::new($name {
+                    top_id,
+                    cached,
+                    bind_id,
+                    data,
+                    out: TagValue::phantom(),
+                }))
             }
         }
 
@@ -339,7 +349,18 @@ macro_rules! db_event_accessor {
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 self.top_id.encode(buf)?;
                 self.cached.image_encode(buf)?;
-                self.bind_id.encode(buf)
+                self.bind_id.encode(buf)?;
+                self.data.encode(buf)
+            }
+
+            fn typecheck1(
+                &mut self,
+                ctx: &mut CompileCtx<R, E>,
+                _from: &mut [Node<R, E>],
+                resolved: &FnType,
+            ) -> Result<()> {
+                self.data = data_target(&ctx.env, Some(resolved));
+                Ok(())
             }
 
             fn update(
@@ -367,7 +388,14 @@ macro_rules! db_event_accessor {
                     }
                 }
                 match scan_db_events(self.bind_id, ctx.event, $convert) {
-                    Some(v) => self.out.set(TagValue::fired(v)),
+                    Some(v @ Value::Error(_)) => self.out.set(TagValue::fired(v)),
+                    Some(v) => {
+                        let v = match &self.data {
+                            Some(t) => read_back(ctx, t, &literal!("DbErr"), v),
+                            None => v,
+                        };
+                        self.out.set(TagValue::fired(v))
+                    }
                     None => self.out.ride(),
                 }
             }

@@ -1129,12 +1129,14 @@ run_with_tempdir!(
     }
 );
 
-// A value that cannot be stored is a DbErr, not silence.
+// A value that cannot be stored is a DbErr, not silence: a tree of `Any`
+// holding a handle backed by Rust (a tree of `db::Db` is refused by the
+// check, `lang::cast_trait::db_tree_of_a_handle_refused`).
 run_with_tempdir!(
     name: db_unstorable_value,
     code: r#"{{
         let db = db::open("{}")$;
-        let t: db::Tree<string, db::Db> = db::tree(db, null)$;
+        let t: db::Tree<string, Any> = db::tree(db, null)$;
         is_err(db::insert(t, "k", db))
     }}"#,
     setup: |td| { td.path().join("unstorable.db") },
@@ -1498,6 +1500,42 @@ run_with_tempdir!(
     setup: |td| { td.path().join("accessor_wake.db") },
     expect: |v: Value| -> Result<()> {
         assert_eq!(v, arr([Value::I64(1), Value::I64(1), Value::I64(2)]));
+        Ok(())
+    }
+);
+
+// A tree stores an abstract value as the data its `Cast` writes and reads
+// it back through `from_value`; a tree holding other data refuses to open
+// as one of `Sorted`, so nothing reads it as one.
+run_with_tempdir!(
+    name: db_abstract_round_trip_through_cast,
+    code: r#"{{
+        type Sorted = Abstract<Array<i64>>;
+        impl Cast for Sorted {{
+            let from_value = |v| select cast<Array<i64>>(v) {{
+                error as e => e,
+                a => select array::sort(a) == a {{
+                    true => Sorted(a),
+                    false => error(`InvalidCast("not sorted"))
+                }}
+            }}
+        }};
+        let db = db::open("{}")$;
+        let t: db::Tree<string, Sorted> = db::tree(db, "sorted")$;
+        let raw: db::Tree<string, Array<i64>> = db::tree(db, "raw")$;
+        let a = db::insert(t, "a", Sorted([1, 3]));
+        let b = db::insert(raw, "b", [3, 1]);
+        let r: Result<db::Tree<string, Sorted>, `DbErr(string)> = db::tree(db, b ~ "raw");
+        ("[db::get(t, a ~ "a")]", is_err(r))
+    }}"#,
+    setup: |td| {
+        td.path().join("test_abstract.db")
+    },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(
+            v.to_string(),
+            r#"["Sorted([1, 3])", true]"#
+        );
         Ok(())
     }
 );

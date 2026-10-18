@@ -120,6 +120,7 @@ impl Identity {
             | (Type::Any, Type::Any)
             | (Type::Hole, Type::Hole)
             | (Type::Concrete, Type::Concrete)
+            | (Type::Data, Type::Data)
             | (Type::Function, Type::Function)
             | (Type::OneNumber, Type::OneNumber)
             | (Type::Discernible, Type::Discernible)
@@ -309,6 +310,7 @@ impl Type {
             | (Type::Hole, _)
             | (_, Type::Hole)
             | (Type::Concrete, _)
+            | (Type::Data, _)
             | (Type::Function, _)
             | (Type::Singleton, _)
             | (Type::OneNumber, _)
@@ -319,6 +321,7 @@ impl Type {
             | (_, Type::OneNumber)
             | (_, Type::Discernible)
             | (_, Type::Ordered)
+            | (_, Type::Data)
             | (_, Type::Concrete) => {
                 if self == t {
                     Ok(self.clone())
@@ -546,6 +549,7 @@ impl Type {
             | (Type::Hole, _)
             | (_, Type::Hole)
             | (Type::Concrete, _)
+            | (Type::Data, _)
             | (Type::Function, _)
             | (Type::Singleton, _)
             | (Type::OneNumber, _)
@@ -556,6 +560,7 @@ impl Type {
             | (_, Type::OneNumber)
             | (_, Type::Discernible)
             | (_, Type::Ordered)
+            | (_, Type::Data)
             | (_, Type::Concrete) => Ok(if self == t {
                 Type::Primitive(BitFlags::empty())
             } else {

@@ -247,7 +247,7 @@ impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
         ctx: &mut ExecCtx<'_, R, E>,
         v: Value,
     ) -> Option<Value> {
-        Some(F::read(&self.target, &ctx.env, v))
+        Some(coretraits::with_display_hooks(ctx, |env| F::read(&self.target, env, v)))
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -417,13 +417,11 @@ pub fn map_key(k: &Value) -> String {
 }
 
 /// How a writer serializes a value: an object's entries or a sequence's
-/// elements, each with the type that directs it, or a leaf; or a
-/// reference, which is not data and no writer writes.
+/// elements, each with the type that directs it, or a leaf.
 pub enum Shape {
     Object(LPooled<Vec<(ArcStr, Value, Option<Type>)>>, Keys),
     Seq(LPooled<Vec<(Value, Option<Type>)>>),
     Leaf,
-    Ref,
 }
 
 /// Whose keys an object's are: a struct's fields, which a cast reads
@@ -443,12 +441,13 @@ pub fn f32_as_written(n: f32) -> f64 {
 /// `v`'s shape under `t`, the type its call site gave it: a struct or a
 /// map is an object; an array, a list, a tuple or a variant's tag and
 /// payload a sequence; a union reads as the first member `v` inhabits.
+/// `v` is what `abstract_value::to_data` made of a value: it holds no
+/// abstract value.
 /// Where the type says nothing (`None`, `Any`, an open variable), a
 /// non-empty array of `(string, _)` pairs in key order reads as an object.
 pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
     let typed = t.and_then(|t| constructor(env, t));
     match (typed.as_ref(), v) {
-        (Some(Type::ByRef(..)), _) => Shape::Ref,
         (Some(Type::Set(ts)), v) => {
             shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
         }
@@ -482,6 +481,15 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
         (Some(Type::Tuple(ts)), Value::Array(a)) if ts.len() == a.len() => Shape::Seq(
             a.iter().zip(ts.iter()).map(|(x, t)| (x.clone(), Some(t.clone()))).collect(),
         ),
+        // what `abstract_value::to_data` wrote the value as: its
+        // representation where the `Cast` implementation leaves it
+        (Some(Type::Abstract { id, params }), v) => {
+            match env.abstract_reps.get(id).filter(|_| env.written_as_representation(*id))
+            {
+                Some(rep) => shape(env, Some(&rep.instantiate_with(params)), v),
+                None => untyped_shape(v),
+            }
+        }
         (Some(Type::Variant(_, ps, _)), Value::Array(a)) if a.len() == ps.len() + 1 => {
             let payload =
                 a[1..].iter().zip(ps.iter()).map(|(x, t)| (x.clone(), Some(t.clone())));
@@ -489,6 +497,17 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
         }
         (_, v) => untyped_shape(v),
     }
+}
+
+/// `v` as a writer writes it: every abstract value in it replaced by the
+/// data its `Cast` implementation makes of it
+/// (`abstract_value::to_data`), under the hooks the implementation runs
+/// through.
+pub fn write_data<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    v: &Value,
+) -> Result<Value> {
+    coretraits::with_hooks(ctx, || graphix_compiler::abstract_value::to_data(v))
 }
 
 /// `t` through its variables and names to its constructor; `None` for
@@ -654,6 +673,24 @@ pub struct CachedVals {
     /// Each argument's last value and the tag it arrived with.
     slots: Box<[(Option<Value>, Tag)]>,
     evaluated: Evaluated,
+}
+
+impl CachedVals {
+    /// The slots with those at `idx` as data leaving the program
+    /// ([`write_data`]).
+    fn as_data<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        idx: &[usize],
+    ) -> Result<CachedVals> {
+        let mut slots = self.slots.clone();
+        for i in idx {
+            if let Some((Some(v), _)) = slots.get_mut(*i) {
+                *v = write_data(ctx, v)?;
+            }
+        }
+        Ok(CachedVals { slots, evaluated: self.evaluated })
+    }
 }
 
 /// Whether `eval` (or `quiet`) has run over the slots as they stand.
@@ -1437,6 +1474,16 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
 
     const CALLS: Calls = Calls::Fifo;
 
+    /// The arguments that leave as data (a store's keys and values):
+    /// each abstract value in them is written as its `Cast`
+    /// implementation says ([`write_data`]) before `prepare_args`.
+    const DATA_ARGS: &[usize] = &[];
+
+    /// Whether the answer is data read back as the call's resolved success
+    /// type: cast to it, which reads an abstract type through its `Cast`
+    /// implementation.
+    const DATA_RESULT: bool = false;
+
     type Args: Debug + Any + Send + Sync;
 
     fn init<R: Rt, E: UserEvent>(
@@ -1588,8 +1635,45 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     /// the error tag a panicking eval answers under, from the call's
     /// declared return type; none when it declares no such error
     panic_tag: Option<ArcStr>,
+    /// the type a `DATA_RESULT` answer is read back as, where it holds an
+    /// abstract type
+    data_result: Option<Type>,
     out: TagValue,
     t: T,
+}
+
+/// The type a builtin answering with stored data reads it back as: its
+/// success type, where reading it can need a `Cast` implementation.
+pub fn data_target(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
+    extract_cast_type(resolved).filter(|t| t.holds_abstract(env))
+}
+
+/// Stored data `v` read back as `t` ([`data_target`]); data it can't be is
+/// an error tagged `tag`.
+pub fn read_back<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    t: &Type,
+    tag: &ArcStr,
+    v: Value,
+) -> Value {
+    match coretraits::with_display_hooks(ctx, |env| t.cast_value(env, v)) {
+        Value::Error(e) => errf!(tag.clone(), "{e}"),
+        v => v,
+    }
+}
+
+fn data_result<T: EvalCachedAsync>(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
+    T::DATA_RESULT.then(|| data_target(env, resolved)).flatten()
+}
+
+impl<T: EvalCachedAsync> CachedArgsAsync<T> {
+    /// Data that does not cross, answered as the call's declared error.
+    fn not_data(&self, why: &impl std::fmt::Display) -> Value {
+        match &self.panic_tag {
+            Some(tag) => errf!(tag.clone(), "{why}"),
+            None => errf!(literal!("InvalidCast"), "{why}"),
+        }
+    }
 }
 
 /// The tag a caught panic answers under: the first variant with one
@@ -1702,6 +1786,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     ) -> Result<Box<dyn Apply<R, E>>> {
         let var = RtVar::new(ctx, top_id);
         let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
+        let data_result = data_result::<T>(&ctx.env, resolved);
         let t = CachedArgsAsync::<T> {
             slept: false,
             var,
@@ -1711,6 +1796,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             replaced: SmallVec::new(),
             abort: None,
             panic_tag,
+            data_result,
             out: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
@@ -1726,6 +1812,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         let cached = CachedVals::image_decode(buf)?;
         let var = RtVar::image_decode(ctx, buf)?;
         let panic_tag = Pack::decode(buf)?;
+        let data_result = Pack::decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
         Ok(Box::new(Self {
             slept,
@@ -1736,6 +1823,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             replaced: SmallVec::new(),
             abort: None,
             panic_tag,
+            data_result,
             out: TagValue::phantom(),
             t,
         }))
@@ -1753,6 +1841,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.image_encode(buf)?;
         self.var.image_encode(buf)?;
         self.panic_tag.encode(buf)?;
+        self.data_result.encode(buf)?;
         self.t.image_encode(buf)
     }
 
@@ -1813,11 +1902,32 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                 ctx.rt.set_var(self.var.id, v);
             }
         }
-        let res = reply.and_then(|v| match v {
+        let mut res = reply.and_then(|v| match v {
             v if self.panic_tag.is_none() && v == *PANICKED => None,
             v => self.t.map_value(ctx, v),
         });
-        if start && let Some(args) = self.t.prepare_args(&self.cached) {
+        if let (Some(t), Some(v)) = (&self.data_result, &res)
+            && !matches!(v, Value::Error(_))
+        {
+            let tag = self.panic_tag.clone().unwrap_or(literal!("InvalidCast"));
+            res = Some(read_back(ctx, t, &tag, res.take().expect("a value")));
+        }
+        let data;
+        let cached = match T::DATA_ARGS {
+            _ if !start => &self.cached,
+            [] => &self.cached,
+            idx => match self.cached.as_data(ctx, idx) {
+                Ok(c) => {
+                    data = c;
+                    &data
+                }
+                Err(e) => {
+                    let e = self.not_data(&compact_str::format_compact!("{e:#}"));
+                    return self.out.set(TagValue::fired(e));
+                }
+            },
+        };
+        if start && let Some(args) = self.t.prepare_args(cached) {
             if T::CALLS == Calls::Latest && self.inflight > 0 {
                 self.replace(ctx);
             }
@@ -1870,6 +1980,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
+        self.data_result = data_result::<T>(&ctx.env, Some(resolved));
         self.t.typecheck1(ctx, from, resolved)
     }
 

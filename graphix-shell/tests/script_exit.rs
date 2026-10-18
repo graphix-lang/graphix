@@ -53,11 +53,13 @@ fn a_stopped_runtime_says_why() {
     }
 }
 
-/// An abstract value read before the program mints any decodes as one:
-/// the wrapper is registered before the first value is read.
+/// Bytes holding an abstract value, read before the program mints any,
+/// are known for one and refused: the wrapper is registered before the
+/// first value is read, and only an image decodes one.
 #[test]
 fn an_abstract_value_reads_before_any_is_minted() {
     let program = "type Box = Abstract<i64>;\n\
+        impl Cast for Box {};\n\
         let t = sys::time::after_idle(duration:50.ms, null);\n\
         let r: Result<Box, [`PackErr(string), `InvalidCast(string)]> = \
         pack::read(t ~ bytes:GydaDDF+kktOYbgtbxPJpH0IgVt4u3Lm5Q8DQm94AAYAAAAAAAAABQ==);\n\
@@ -65,5 +67,9 @@ fn an_abstract_value_reads_before_any_is_minted() {
         select r { error as e => \"refused: [e]\", b => \"accepted: [b.0]\" }\n";
     let cache = tempfile::tempdir().expect("tempdir");
     let (out, err) = run(program, cache.path(), &[]);
-    assert_eq!(out.trim(), "\"accepted: 5\"", "{err}");
+    assert_eq!(
+        out.trim(),
+        r#""refused: error:[\"PackErr\", \"InvalidFormat\"]""#,
+        "{err}"
+    );
 }

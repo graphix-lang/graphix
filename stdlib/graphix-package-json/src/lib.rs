@@ -8,6 +8,7 @@ use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
+    abstract_value::to_data,
     env::Env,
     errf,
     typ::{FnType, Type},
@@ -196,7 +197,6 @@ impl Serialize for JsonView<'_> {
                 seq.end()
             }
             Shape::Leaf => serialize_leaf(self.value, s),
-            Shape::Ref => Err(S::Error::custom("a reference cannot be written as JSON")),
         }
     }
 }
@@ -273,7 +273,11 @@ fn encode(
     args: &[Value],
 ) -> Option<Result<LPooled<Vec<u8>>, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let json = JsonView::new(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?);
+    let data = match to_data(args.get(1)?) {
+        Ok(d) => d,
+        Err(e) => return Some(Err(errf!("JsonErr", "{e}"))),
+    };
+    let json = JsonView::new(env, ft.args.get(1).map(|a| &a.typ), &data);
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
     let res = if pretty {
         serde_json::to_writer_pretty(&mut *buf, &json)

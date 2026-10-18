@@ -219,9 +219,12 @@ An image carries each cell's level and each definition's depth.
 ### `Concrete`: a conjunct that is a predicate
 
 `'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever
-binds the cell is fully known: no open cell, no ⊥ and no reference in
+binds the cell is fully known: no open cell, no ⊥, no reference in
 it (a value read from data can't be a reference: a number would become
-one to whatever variable has that id). The
+one to whatever variable has that id) and no abstract type without a
+`Cast` implementation (design/abstract_cast.md). `'a: Data`, the
+writers' bound, is its sibling: no reference, no function and no such
+abstract type, an open cell admitted and never refused at the settle. The
 type-directed builtins declare it on their target (`str::parse`, the
 json/toml/pack/sqlite reads, `sys::net::subscribe`/`call`, the db
 trees); their `Apply::typecheck1` hooks only extract the type they cast

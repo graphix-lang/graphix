@@ -53,18 +53,16 @@ where
                 let self_index = ft.args.iter().position(|a| {
                     matches!(&a.kind, FnArgKind::Positional { name: Some(n) } if &**n == "self")
                 });
-                match self_index {
-                    None => refuse(
+                if self_index.is_none() && !ft.rtype.mentions_self() {
+                    return refuse(
                         end,
-                        "a trait method needs a `self` parameter (`fn(self, ..)`)",
+                        "a trait method takes a `self` parameter (`fn(self, ..)`) or \
+                         returns `self`",
                     )
-                    .right(),
-                    Some(self_index) => {
-                        let comments = Comments::of(comments.drain(..));
-                        value(TraitMethod { comments, doc, name, typ: ft, self_index, default })
-                            .left()
-                    }
+                    .right();
                 }
+                let comments = Comments::of(comments.drain(..));
+                value(TraitMethod { comments, doc, name, typ: ft, self_index, default }).left()
             }
             _ => refuse(end, "a trait method must have a function type").right(),
         })

@@ -4,7 +4,7 @@
 )]
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use graphix_compiler::{env::Env, errf};
+use graphix_compiler::{abstract_value::to_data, env::Env, errf};
 use graphix_package_core::{
     CachedArgsAsync, CachedVals, CastTarget, ReadFormat, TypedRead,
 };
@@ -48,7 +48,10 @@ impl ReadFormat for Packed {
 type PackRead = CachedArgsAsync<TypedRead<Packed>>;
 
 fn fc_write_bytes(args: &[Value]) -> Option<Value> {
-    let v = args.first()?;
+    let v = match to_data(args.first()?) {
+        Ok(v) => v,
+        Err(e) => return Some(errf!("PackErr", "{e}")),
+    };
     let len = v.encoded_len();
     let mut buf = Vec::with_capacity(len);
     Some(match v.encode(&mut buf) {

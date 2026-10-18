@@ -5,7 +5,7 @@ use crate::{
 use anyhow::Result;
 use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect};
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, write_data,
 };
 use netidx::publisher::Typ;
 use netidx_derive::FromValue;
@@ -68,11 +68,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
     const NAME: &str = "db_cursor_new";
     const EFFECT: Effect = Effect::Sync;
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 1)?;
-        let iter = match from.value(0)? {
+        let iter = match write_data(ctx, from.value(0)?).ok()? {
             Value::Null => Some(tree.tree.iter()),
-            v => encode_prefix(tree.key_typ, v).ok().map(|p| tree.tree.scan_prefix(&*p)),
+            v => encode_prefix(tree.key_typ, &v).ok().map(|p| tree.tree.scan_prefix(&*p)),
         };
         Some(wrap_cursor(iter, tree))
     }
@@ -102,10 +102,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorRangeEv {
     const NAME: &str = "db_cursor_range";
     const EFFECT: Effect = Effect::Sync;
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let tree = get_tree_inner(from, 2)?;
-        let lo = parse_bound(tree.key_typ, from.value(0)?)?;
-        let hi = parse_bound(tree.key_typ, from.value(1)?)?;
+        let lo = parse_bound(tree.key_typ, &write_data(ctx, from.value(0)?).ok()?)?;
+        let hi = parse_bound(tree.key_typ, &write_data(ctx, from.value(1)?).ok()?)?;
         let iter = lo.zip(hi).map(|r| tree.tree.range(r));
         Some(wrap_cursor(iter, tree))
     }
@@ -120,6 +120,7 @@ impl EvalCachedAsync for DbCursorReadEv {
     type Args = Cursor;
 
     const NAME: &str = "db_cursor_read";
+    const DATA_RESULT: bool = true;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.value(1)?;
@@ -140,6 +141,7 @@ impl EvalCachedAsync for DbCursorReadManyEv {
     type Args = (Cursor, i64);
 
     const NAME: &str = "db_cursor_read_many";
+    const DATA_RESULT: bool = true;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_cursor(cached)?, cached.get::<i64>(1)?))

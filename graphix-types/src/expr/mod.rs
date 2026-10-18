@@ -247,8 +247,10 @@ pub struct TraitMethod {
     pub name: Name,
     pub typ: Arc<FnType>,
     /// Index of the positional `self` parameter in `typ.args` — the
-    /// argument whose type selects the implementation at a call.
-    pub self_index: usize,
+    /// argument whose type selects the implementation at a call; `None`
+    /// for a method whose `self` is only its result, which no call
+    /// dispatches.
+    pub self_index: Option<usize>,
     pub default: Option<Expr>,
 }
 

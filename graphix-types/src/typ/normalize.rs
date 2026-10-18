@@ -82,6 +82,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::App(..)
         | Type::Hole
         | Type::Concrete
+        | Type::Data
         | Type::Function
         | Type::Singleton
         | Type::OneNumber
@@ -466,6 +467,7 @@ impl Type {
             | (Type::Hole, _)
             | (_, Type::Hole)
             | (Type::Concrete, _)
+            | (Type::Data, _)
             | (Type::Function, _)
             | (Type::Singleton, _)
             | (Type::OneNumber, _)
@@ -476,6 +478,7 @@ impl Type {
             | (_, Type::OneNumber)
             | (_, Type::Discernible)
             | (_, Type::Ordered)
+            | (_, Type::Data)
             | (_, Type::Concrete) => {
                 if union_identical(self, t) {
                     Some(self.clone())

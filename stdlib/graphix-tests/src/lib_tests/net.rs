@@ -23,6 +23,35 @@ run!(net_pub_sub, NET_PUB_SUB, |v: Result<&Value>| {
     }
 }; FuseExpect::None);
 
+// A publication carries the data an abstract value's `Cast` writes, and
+// a subscriber reads it back through `from_value`, which refuses what the
+// type does not hold: here a plain array that is not sorted.
+const NET_ABSTRACT_THROUGH_CAST: &str = r#"
+{
+  type Sorted = Abstract<Array<i64>>;
+  impl Cast for Sorted {
+    let from_value = |v| select cast<Array<i64>>(v) {
+      error as e => e,
+      a => select array::sort(a) == a {
+        true => Sorted(a),
+        false => error(`InvalidCast("not sorted"))
+      }
+    }
+  };
+  sys::net::publish("/local/sorted", Sorted([1, 2]));
+  sys::net::publish("/local/plain", [2, 1]);
+  let good: Result<Sorted, [`SubscribeError(string), `InvalidCast(string)]> =
+    sys::net::subscribe("/local/sorted");
+  let bad: Result<Sorted, [`SubscribeError(string), `InvalidCast(string)]> =
+    sys::net::subscribe("/local/plain");
+  "[good] [bad]"
+}
+"#;
+
+run!(net_abstract_through_cast, NET_ABSTRACT_THROUGH_CAST, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"Sorted([1, 2]) error:["InvalidCast", "can't cast [2, 1] to Sorted: not sorted"]"#)
+}; FuseExpect::Jit);
+
 const NET_WRITE0: &str = r#"
 {
   let p = "/local/foo";

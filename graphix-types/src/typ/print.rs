@@ -161,6 +161,7 @@ impl Type {
             },
             Self::Hole => write!(f, "'_"),
             Self::Concrete => write!(f, "Concrete"),
+            Self::Data => write!(f, "Data"),
             Self::Function => write!(f, "Function"),
             Self::Singleton => write!(f, "Singleton"),
             Self::OneNumber => write!(f, "OneNumber"),
@@ -246,6 +247,7 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::App(..)
         | Type::Hole
         | Type::Concrete
+        | Type::Data
         | Type::Singleton
         | Type::OneNumber
         | Type::Discernible
@@ -281,6 +283,7 @@ impl PrettyDisplay for Type {
             | Self::App(..)
             | Self::Hole
             | Self::Concrete
+            | Self::Data
             | Self::Singleton
             | Self::OneNumber
             | Self::Discernible

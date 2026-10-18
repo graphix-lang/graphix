@@ -1532,6 +1532,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             }
             Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
             Type::Concrete
+            | Type::Data
             | Type::Function
             | Type::Singleton
             | Type::OneNumber

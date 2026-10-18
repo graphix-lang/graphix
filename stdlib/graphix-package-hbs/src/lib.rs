@@ -5,6 +5,7 @@
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use graphix_compiler::{
+    abstract_value::to_data,
     env::Env,
     errf,
     typ::{FnType, Type},
@@ -43,7 +44,7 @@ fn register_partials(
             }
             Ok(())
         }
-        Shape::Seq(_) | Shape::Leaf | Shape::Ref => {
+        Shape::Seq(_) | Shape::Leaf => {
             Err(format!("partials must be a struct, map, or null, got {partials}"))
         }
     }
@@ -160,8 +161,12 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {
             let data_type = ft.args.get(3).map(|a| &a.typ);
+            let data = match to_data(data) {
+                Ok(d) => d,
+                Err(e) => return Some(errf!("HbsErr", "{e}")),
+            };
             // handlebars renders from a JSON tree, built here once
-            let view = JsonView::new(env, data_type, data);
+            let view = JsonView::new(env, data_type, &data);
             let json_data = match serde_json::to_value(view) {
                 Ok(j @ handlebars::JsonValue::Object(_)) => j,
                 Ok(_) => {

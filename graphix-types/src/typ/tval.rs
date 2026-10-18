@@ -224,6 +224,7 @@ impl<'a> TVal<'a> {
                 | Type::Abstract { .. }
                 | Type::Hole
                 | Type::Concrete
+                | Type::Data
                 | Type::Function
                 | Type::Singleton
                 | Type::OneNumber

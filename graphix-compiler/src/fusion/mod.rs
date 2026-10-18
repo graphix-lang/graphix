@@ -210,6 +210,7 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         | Type::Abstract { .. }
         | Type::Hole
         | Type::Concrete
+        | Type::Data
         | Type::Singleton
         | Type::OneNumber
         | Type::Discernible

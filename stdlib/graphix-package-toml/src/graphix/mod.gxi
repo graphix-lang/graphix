@@ -4,9 +4,9 @@
 val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`TomlErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a TOML string.
-val write_str: fn(?#pretty: bool, value: 'a) -> Result<string, `TomlErr(string)>;
+val write_str: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<string, `TomlErr(string)>;
 
 /// Serialize a value to TOML bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, toml::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: 'a) -> Result<bytes, `TomlErr(string)>;
+val write_bytes: fn<'a: Data>(?#pretty: bool, value: 'a) -> Result<bytes, `TomlErr(string)>;

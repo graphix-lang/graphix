@@ -272,16 +272,23 @@ run!(f32_written_as_held, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == r#"{"c":0.1} c = 0.1 true"#)
 }; FuseExpect::Jit);
 
-// A reference is not data: the writers refuse it rather than write its
-// cell's id as a number.
+// A reference is not data: a writer's `Data` bound refuses one the check
+// sees, and the writers refuse one only the value holds rather than write
+// its cell.
+run!(writers_refuse_a_typed_reference, r#"{
+    let x = 5;
+    json::write_str({a: &x, b: 1})
+}"#, refused("is not data: a writer writes no function and no reference"); FuseExpect::None);
+
 run!(writers_refuse_references, r#"{
     let x = 5;
-    let j = select json::write_str({a: &x, b: 1}) { error as e => "[e]", s => s };
-    let t = select toml::write_str({a: &x, b: 1}) { error as e => "[e]", s => s };
-    let h = select hbs::render("{{a}}", {a: &x, b: 1}) { error as e => "[e]", s => s };
+    let v: Any = {a: &x, b: 1};
+    let j = select json::write_str(v) { error as e => "[e]", s => s };
+    let t = select toml::write_str(v) { error as e => "[e]", s => s };
+    let h = select hbs::render("{{a}}", v) { error as e => "[e]", s => s };
     "[j]|[t]|[h]"
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"error:["JsonErr", "a reference cannot be written as JSON"]|error:["TomlErr", "a reference cannot be written as TOML"]|error:["HbsErr", "a reference cannot be written as JSON"]"#)
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:["JsonErr", "a reference is not data"]|error:["TomlErr", "a reference is not data"]|error:["HbsErr", "a reference is not data"]"#)
 }; FuseExpect::Jit);
 
 // A composite map key is written as println shows it, naked at every

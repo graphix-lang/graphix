@@ -138,20 +138,20 @@ run!(pack_read_oversize_duration_nanos, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == r#"error:["PackErr", "InvalidFormat"]"#)
 }; FuseExpect::Jit);
 
-// Abstract values nest at most 1024 deep in bytes; the writer refuses a
-// deeper one, as the reader would, instead of writing what never reads.
+// A writer writes abstract values nested at most 1024 deep as data and
+// refuses a deeper one.
 run!(pack_abstract_too_deep_is_refused_by_the_writer, r#"{
     type T = Abstract<[T, null]>;
+    impl Cast for T {};
     let v = array::fold(array::init(1100, |i| i), T(null), |acc, i| T(acc));
     select pack::write_bytes(v) { error as e => "[e]", _ => "written" }
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if s.contains("TooBig"))
+    matches!(v, Ok(Value::String(s)) if s.contains("more than 1024 abstract values deep"))
 }; FuseExpect::Jit);
 
-// A read of a Graphix abstract type casts the payload against the
-// representation: bytes written where `Box` held a string do not read as
-// a `Box` that holds an i64. `Box` is at module level in both programs,
-// so it is one type to the reader's id check.
+// A read of an abstract type whose `Cast` leaves `from_value` out casts
+// the data against the reader's representation: what was written where
+// `Box` held a string does not read as a `Box` that holds an i64.
 #[tokio::test(flavor = "current_thread")]
 async fn pack_abstract_read_checks_the_payload() -> Result<()> {
     use graphix_package_core::testing::{
@@ -169,11 +169,13 @@ async fn pack_abstract_read_checks_the_payload() -> Result<()> {
     }
     let written = result(
         r#"type Box = Abstract<string>;
+        impl Cast for Box {};
         let result = pack::write_bytes(Box("hello"))$"#,
     )
     .await?;
     let read = result(&format!(
         r#"type Box = Abstract<i64>;
+        impl Cast for Box {{}};
         let r: Result<Box, [`InvalidCast(string), `PackErr(string)]> = pack::read({written});
         let result = select r {{ error as e => "[e]", b => "[b.0 + 1]" }}"#
     ))
@@ -184,15 +186,3 @@ async fn pack_abstract_read_checks_the_payload() -> Result<()> {
     );
     Ok(())
 }
-
-// Data never carries a reference: an abstract whose representation is
-// one reads as an InvalidCast, and the referent is untouched.
-run!(pack_abstract_read_refuses_a_reference, r#"{
-    type R = Abstract<&mut i64>;
-    let secret = 5;
-    let forged: Result<R, [`InvalidCast(string), `PackErr(string)]> =
-        pack::read(pack::write_bytes(R(&mut secret))$);
-    (select forged { error as e => "[e]", _ => "read" }, secret)
-}"#, |v: Result<&Value>| {
-    matches!(v, Ok(v) if v.to_string() == r#"["error:[\"InvalidCast\", \"can't cast &ref to &mut i64: a reference can't be read from data\"]", i64:5]"#)
-}; FuseExpect::Jit);

@@ -2068,7 +2068,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         let v = if self.src_ref {
             errf!(CAST_ERR_TAG, "can't cast a reference")
         } else {
-            self.target.cast_from(&ctx.env, self.n.typ(), v)
+            let (target, src) = (&self.target, self.n.typ());
+            coretraits::with_display_hooks(ctx, |env| target.cast_from(env, src, v))
         };
         self.resident.set(TagValue::tagged(v, tag))
     }
@@ -2094,6 +2095,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))?;
         if self.n.typ().holds_ref(&ctx.env) {
             bailat!(self.spec, "can't cast a reference")
+        }
+        if self.target.holds_uncastable(&ctx.env) {
+            bailat!(
+                self.spec,
+                "can't cast to {}: it holds an abstract type with no Cast implementation",
+                self.target
+            )
         }
         defer_written_map_keys(ctx, &self.target, &self.spec);
         Ok(())

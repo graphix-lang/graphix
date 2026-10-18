@@ -6,8 +6,8 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair, TVar,
-        TraitId, Type, node_addr, params_size, probe_key,
+        AbstractId, AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair,
+        TVar, TraitId, Type, node_addr, params_size, probe_key,
         setops::union_identical,
         tvar::{CellFact, Fresh, would_cycle_inner},
     },
@@ -964,11 +964,61 @@ impl Type {
         if let Some(e) = self.trait_refusal(env, t) {
             return e;
         }
+        if let Some(e) = self.uncastable_refusal(env, t) {
+            return e;
+        }
         anyhow::Error::new(TypeMismatch {
             expected: self.clone(),
             actual: t.clone(),
             apart: same_name_apart(self, t),
         })
+    }
+
+    /// A type-directed read's target or a writer's value, an open cell
+    /// bounded by `Concrete` or `Data`, refuses a type holding an abstract
+    /// type that crosses no data: name it.
+    fn uncastable_refusal(&self, env: &Env, t: &Self) -> Option<anyhow::Error> {
+        fn bounded(t: &Type, by: &dyn Fn(&TVar) -> bool) -> bool {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => bounded(&b, by),
+                    None => by(tv),
+                },
+                t => {
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found |= bounded(c, by));
+                    found
+                }
+            })
+        }
+        let either = |by: &dyn Fn(&TVar) -> bool| bounded(self, by) || bounded(t, by);
+        if !either(&|tv| tv.requires_concrete() || tv.requires_data()) {
+            return None;
+        }
+        // the open side's own abstract types are the operation's (a tree
+        // handle), not the data's: the data's is the other side's
+        let open =
+            |t: &Type| bounded(t, &|tv| tv.requires_concrete() || tv.requires_data());
+        let (bound, data) = if open(t) { (t, self) } else { (self, t) };
+        let mut own: LPooled<Vec<AbstractId>> = LPooled::take();
+        bound.abstract_ids(env, &mut *own);
+        if let Some(a) = data.uncastable_but(env, &|id| own.contains(&id)) {
+            return Some(anyhow::anyhow!(
+                "{a} has no Cast implementation, so no read, cast or writer reaches \
+                 it: implement Cast for it where it is defined"
+            ));
+        }
+        let code = |t: &Type| t.holds_fn(env) || t.holds_ref(env);
+        if either(&|tv| tv.requires_data()) && (code(self) || code(t)) {
+            let t = if code(t) { t } else { self };
+            return Some(anyhow::anyhow!(
+                "{}",
+                format_with_flags(PrintFlag::DerefTVars, || format_compact!(
+                    "{t} is not data: a writer writes no function and no reference"
+                ))
+            ));
+        }
+        None
     }
 
     /// An open cell bounded by a trait refuses a type with a member that
@@ -1180,8 +1230,10 @@ impl Type {
             return behind.contains_int(flags, env, hist, t);
         }
         match (self, t) {
-            (Self::Concrete, t) => Ok(t.concrete_holds()),
+            (Self::Concrete, t) => Ok(t.concrete_holds() && !t.holds_uncastable(env)),
             (_, Self::Concrete) => Ok(false),
+            (Self::Data, t) => Ok(t.data_holds(env)),
+            (_, Self::Data) => Ok(false),
             (Self::Function, t) => t.function_holds(env, commit),
             (_, Self::Function) => Ok(false),
             (Self::Singleton, t) => t.singleton_holds(env, commit),
@@ -2373,8 +2425,8 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        // The core traits have a structural default for every type.
-        if CoreTrait::of_id(tid).is_some() {
+        // Eq, Ord and Display have a structural default for every type
+        if CoreTrait::of_id(tid).is_some_and(CoreTrait::structural) {
             return Ok(true);
         }
         // a union implements a trait when every member does, unless a method

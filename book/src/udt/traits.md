@@ -266,6 +266,54 @@ structural form and logs a warning.
 Values compared where no Graphix code can run — on the wire, in the
 REPL's echo of a bare expression — compare and print structurally.
 
+## Abstract Types in Data: Cast
+
+An abstract type hides its representation, so data can't make one by
+shape: a cast, a typed read (`json::read`, `pack::read`,
+`sys::net::subscribe`, a `db` tree) and a writer (`json::write_str`,
+`pack::write_bytes`, `sys::net::publish`, a `db` insert) reach an
+abstract type only through its implementation of the core trait `Cast`:
+
+```graphix,ignore
+trait Cast {
+    val to_value: fn(self) -> Any;
+    val from_value: fn(v: Any) -> Result<self, `InvalidCast(string)>
+};
+```
+
+A writer writes what `to_value` returns, and a read makes the value
+with `from_value`, which may refuse the data:
+
+```graphix,ignore
+type Sorted = Abstract<Array<i64>>;
+impl Cast for Sorted {
+    let to_value = |s: Sorted| s.0;
+    let from_value = |v| select cast<Array<i64>>(v) {
+        error as e => e,
+        a => select array::sort(a) == a {
+            true => Sorted(a),
+            false => error(`InvalidCast("not sorted"))
+        }
+    }
+};
+let s: Result<Sorted, [`JsonErr(string), `InvalidCast(string)]> = json::read("\[2, 1\]")
+```
+
+`s` is the error `can't cast [2, 1] to Sorted: not sorted`.
+
+Only the module that defines the type implements `Cast`, where the
+representation is visible, and a method it leaves out is the
+representation itself: `impl Cast for Point {}` reads and writes
+`Point` as its representation, checked by nothing but the cast to it.
+A representation that holds a function or a reference crosses no
+data, so its implementation writes both methods. A type with no
+implementation is refused by the compiler wherever data would carry
+it: as a cast's target, a read's target or a written value. A program
+never calls `to_value` or `from_value` itself.
+
+A writer's value has the bound `'a: Data`: no function, no reference,
+and no abstract type without `Cast`.
+
 ## Constructor Traits: `Collection`
 
 A trait's receiver can be a type *constructor* rather than a type.

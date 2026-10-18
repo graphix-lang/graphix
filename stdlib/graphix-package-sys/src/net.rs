@@ -9,11 +9,11 @@ use graphix_compiler::{
     err, errf,
     expr::ExprId,
     image::{self, ImageBuf},
-    node::genn,
+    node::{coretraits, genn},
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CastTarget, Handler, Inbox, Reply, RtVar, castable, seam_arg,
+    CastTarget, Handler, Inbox, Reply, RtVar, castable, seam_arg, write_data,
 };
 use netidx::{
     path::Path,
@@ -176,6 +176,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
             self.dv = Either::Left((p, dv));
         }
         if standing && let Some(val) = val {
+            let val = match write_data(ctx, &val) {
+                Ok(val) => val,
+                Err(e) => {
+                    let e = errf!(literal!("WriteError"), "{e:#}");
+                    return self.out.set(TagValue::fired(e));
+                }
+            };
             match &mut self.dv {
                 Either::Right(q) => q.push(val),
                 Either::Left((_, dv)) => {
@@ -308,12 +315,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         }
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
-        let res = self.cur.as_ref().and_then(|_| {
-            ctx.event.variables.get(&self.var.id).map(|v| match v.value_cloned() {
-                // the pump's unsubscribe, or the publisher's own error
-                Value::Error(e) => remote_err(&ERR_TAG, &e),
-                v => self.target.cast(&ctx.env, v),
-            })
+        let got = self.cur.as_ref().and_then(|_| {
+            ctx.event.variables.get(&self.var.id).map(|v| v.value_cloned())
+        });
+        let res = got.map(|v| match v {
+            // the pump's unsubscribe, or the publisher's own error
+            Value::Error(e) => remote_err(&ERR_TAG, &e),
+            v => coretraits::with_display_hooks(ctx, |env| self.target.cast(env, v)),
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -440,7 +448,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             && let (Some(path), Some(args)) = (&path, &args)
         {
             self.remint(ctx);
-            match parse_args(path, args) {
+            let args = match write_data(ctx, args) {
+                Ok(args) => args,
+                Err(e) => {
+                    return self
+                        .out
+                        .set(TagValue::fired(errf!(literal!("RpcError"), "{e:#}")));
+                }
+            };
+            match parse_args(path, &args) {
                 Err(e) => {
                     return self
                         .out
@@ -451,9 +467,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                 }
             }
         }
-        let res = ctx.event.variables.get(&self.var.id).map(|v| match v.value_cloned() {
+        let got = ctx.event.variables.get(&self.var.id).map(|v| v.value_cloned());
+        let res = got.map(|v| match v {
             Value::Error(e) => remote_err(&literal!("RpcError"), &e),
-            v => self.target.cast(&ctx.env, v),
+            v => coretraits::with_display_hooks(ctx, |env| self.target.cast(env, v)),
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -775,6 +792,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         {
             NetState::get(ctx).unpublish(id);
         }
+        let published = val.filter(|_| path_fired || val_fired || woke);
+        let val = match published.map(|v| write_data(ctx, &v)).transpose() {
+            Ok(val) => val,
+            Err(e) => {
+                let e = errf!(literal!("PublishError"), "{e:#}");
+                return self.out.set(TagValue::fired(e));
+            }
+        };
         if let (Some(Value::String(path)), Some(v)) = (&pathv, &val) {
             match &self.current {
                 None if path_fired || val_fired || woke => publish!(path, v),
@@ -789,7 +814,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
                     let v = match &self.cast_typ {
-                        Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
+                        Some(typ) => coretraits::with_display_hooks(ctx, |env| {
+                            typ.cast_value(env, req.value.clone())
+                        }),
                         None => req.value.clone(),
                     };
                     // a value the handler cannot take is the writer's error
@@ -858,6 +885,10 @@ impl Reply for RpcReply {
     fn reply(mut self, v: Value) {
         self.0.reply.send(v)
     }
+
+    fn data(&self) -> Option<ArcStr> {
+        Some(literal!("RpcError"))
+    }
 }
 
 /// Named arguments as a struct value, sorted by name; none is null.
@@ -925,7 +956,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
     /// The call's arguments as the handler takes them: the spec's
     /// defaults under the arguments given, sorted into a struct and cast to
     /// its argument type.
-    fn arg(&self, ctx: &ExecCtx<'_, R, E>, call: &server::RpcCall) -> Value {
+    fn arg(&self, ctx: &mut ExecCtx<'_, R, E>, call: &server::RpcCall) -> Value {
         let mut args: LPooled<Vec<(ArcStr, Value)>> = self
             .defaults
             .iter()
@@ -935,7 +966,9 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
             .collect();
         let args = args_struct(&mut args);
         match &self.cast_typ {
-            Some(typ) => typ.cast_value(&ctx.env, args),
+            Some(typ) => {
+                coretraits::with_display_hooks(ctx, |env| typ.cast_value(env, args))
+            }
             None => args,
         }
     }
@@ -948,13 +981,15 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         spec: &Value,
     ) -> Result<()> {
         let path = as_path(path.clone()).ok_or_else(|| anyhow!("invalid path {path}"))?;
-        let spec = parse_spec(spec)?;
+        let spec = parse_spec(&write_data(ctx, spec)?)?;
         self.defaults =
             spec.iter().map(|a| (a.name.clone(), a.default_value.clone())).collect();
         if let Some(typ) = &self.cast_typ {
             let mut defaults: LPooled<Vec<(ArcStr, Value)>> =
                 self.defaults.iter().cloned().collect();
-            if let Value::Error(e) = typ.cast_value(&ctx.env, args_struct(&mut defaults))
+            let defaults = args_struct(&mut defaults);
+            if let Value::Error(e) =
+                coretraits::with_display_hooks(ctx, |env| typ.cast_value(env, defaults))
             {
                 bail!("rpc #spec does not fit #f's argument {typ}: {e}")
             }

@@ -666,6 +666,7 @@ fn require_bounds(cons: &[Type], t: &Type) {
     for c in cons {
         match c {
             Type::Concrete => t.require_concrete(),
+            Type::Data => t.require_data(),
             Type::Singleton => t.require_singleton(),
             Type::OneNumber => t.require_one_number(),
             Type::Discernible | Type::Ordered => t.require_compared(c),
@@ -1075,6 +1076,11 @@ impl TVar {
     #[doc(hidden)]
     pub fn requires_concrete(&self) -> bool {
         self.cell().read().constraints.iter().any(|c| matches!(c, Type::Concrete))
+    }
+
+    /// Whether the cell holds the `Data` conjunct.
+    pub(crate) fn requires_data(&self) -> bool {
+        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Data))
     }
 
     /// Whether the cell holds the `Function` conjunct.
@@ -1557,6 +1563,19 @@ impl Type {
             },
             Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.require_concrete()),
             t => t.for_each_child(&mut |c| c.require_concrete()),
+        })
+    }
+
+    /// Hand the `Data` conjunct to every open cell the type reaches
+    /// outside a function, which is no data whatever it holds.
+    pub(crate) fn require_data(&self) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => b.require_data(),
+                None => tv.add_cell_constraint(Type::Data),
+            },
+            Type::Fn(_) => (),
+            t => t.for_each_child(&mut |c| c.require_data()),
         })
     }
 

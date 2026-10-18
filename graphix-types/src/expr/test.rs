@@ -431,6 +431,7 @@ fn bound(inner: impl Strategy<Value = Type>) -> impl Strategy<Value = Type> {
     prop_oneof![
         6 => inner,
         1 => Just(Type::Concrete),
+        1 => Just(Type::Data),
         1 => Just(Type::Function),
         1 => Just(Type::Singleton),
         1 => Just(Type::OneNumber),
@@ -791,7 +792,7 @@ macro_rules! trait_decl {
                         doc: Doc(doc),
                         name: name.into(),
                         typ,
-                        self_index: 0,
+                        self_index: Some(0),
                         default,
                     });
                 ExprKind::Trait(Arc::new(TraitExpr {

@@ -144,6 +144,11 @@ pub(crate) fn set_in_session(on: bool) -> bool {
     IN_SESSION.with(|s| s.replace(on))
 }
 
+/// Whether an image session is encoding or decoding on this thread.
+pub(crate) fn in_session() -> bool {
+    IN_SESSION.with(|s| s.get())
+}
+
 /// An [`image_id!`] type with no relocation under an image session is
 /// missing from the session's domains: written or read raw, its ids would
 /// collide with the reader's.

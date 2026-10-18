@@ -8,7 +8,10 @@ use crate::{
     mod_root,
     profile::{self, Phase},
     tracked::{TrackedMap, TrackedSet},
-    typ::{AbstractId, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef, Unguarded},
+    typ::{
+        AbstractId, CoreTrait, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef,
+        Unguarded,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
@@ -276,23 +279,13 @@ impl TraitDef {
     /// Whether a method takes `self` beyond its receiver: a union cannot
     /// implement such a trait, since a call narrows only the receiver.
     pub fn takes_self_beyond_receiver(&self) -> bool {
-        fn mentions_self(t: &Type) -> bool {
-            crate::stack::ensure_sufficient(|| match t {
-                Type::TVar(tv) if &*tv.name == "self" => true,
-                t => {
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found |= mentions_self(c));
-                    found
-                }
-            })
-        }
         self.methods.iter().any(|m| {
             m.typ
                 .args
                 .iter()
                 .enumerate()
-                .any(|(i, a)| i != m.self_index && mentions_self(&a.typ))
-                || m.typ.vargs.as_ref().is_some_and(mentions_self)
+                .any(|(i, a)| Some(i) != m.self_index && a.typ.mentions_self())
+                || m.typ.vargs.as_ref().is_some_and(|t| t.mentions_self())
         })
     }
 }
@@ -304,8 +297,9 @@ pub struct TraitMethodDef {
     /// The declared signature with the receiver `self` constrained by
     /// the trait: `fn<self: Trait>(self, ..) -> T`.
     pub typ: Arc<FnType>,
-    /// Index of the `self` parameter in `typ.args`.
-    pub self_index: usize,
+    /// Index of the `self` parameter in `typ.args`; `None` when `self` is
+    /// only the result.
+    pub self_index: Option<usize>,
     /// The dispatcher binding at `path::name`, resolved to an
     /// implementation by the self argument's type.
     pub dispatcher: BindId,
@@ -1153,7 +1147,7 @@ impl Env {
         &mut self,
         scope: &ModPath,
         name: &ArcStr,
-        methods: impl Iterator<Item = (ArcStr, SourcePosition, Arc<FnType>, usize)>,
+        methods: impl Iterator<Item = (ArcStr, SourcePosition, Arc<FnType>, Option<usize>)>,
         doc: Option<ArcStr>,
         pos: SourcePosition,
         ori: Arc<Origin>,
@@ -1313,6 +1307,25 @@ impl Env {
         } else {
             self.impls.insert(im.trait_id, Arc::new(list));
         }
+    }
+
+    /// Whether the abstract type `id` crosses data: it has a `Cast`
+    /// implementation.
+    pub fn casts(&self, id: AbstractId) -> bool {
+        self.impls_of(CoreTrait::Cast.id()).is_some_and(|l| {
+            l.iter().any(|im| self.head_abstract(&im.target) == Some(id))
+        })
+    }
+
+    /// Whether the abstract type `id` is written as its representation:
+    /// its `Cast` implementation leaves `to_value` out.
+    pub fn written_as_representation(&self, id: AbstractId) -> bool {
+        self.impls_of(CoreTrait::Cast.id()).is_some_and(|l| {
+            l.iter().any(|im| {
+                self.head_abstract(&im.target) == Some(id)
+                    && !im.methods.contains_key("to_value")
+            })
+        })
     }
 
     /// The abstract type an impl head names, through its typedef: two

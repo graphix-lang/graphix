@@ -18,7 +18,7 @@ use crate::{
     node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
     typ::{
-        FnArgKind, FnArgType, FnType, TVar, Type,
+        CoreTrait, FnArgKind, FnArgType, FnType, TVar, Type,
         tvar::{AtLevel, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
@@ -701,9 +701,15 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                                 )
                                 .at(i.spec())
                             })?;
+                        let mut representation: Map<CompactString, BindId> =
+                            declared.methods.clone();
                         for (name, outer) in declared.methods.into_iter() {
                             let (inner, private_inner) = match i.def.methods.get(name) {
                                 Some(id) => (*id, true),
+                                None if CoreTrait::representation_default(trait_id) => {
+                                    representation.remove_cow(name);
+                                    continue;
+                                }
                                 None => {
                                     let default = trait_def
                                         .methods
@@ -720,6 +726,15 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                                 }
                             };
                             proxy.push(Proxy { inner, outer: *outer, private_inner });
+                        }
+                        // a method the implementation leaves out is the
+                        // representation, which the declared impl must say
+                        if representation.len() < declared.methods.len() {
+                            ctx.env.unregister_impl(&declared);
+                            ctx.env.register_impl(Arc::new(ImplDef {
+                                methods: representation,
+                                ..(*declared).clone()
+                            }))?;
                         }
                         false
                     }

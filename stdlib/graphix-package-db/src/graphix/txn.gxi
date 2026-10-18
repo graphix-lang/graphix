@@ -14,7 +14,7 @@ val begin: fn(db: Db) -> Result<Txn, `DbErr(string)>;
 /// Open a tree within the transaction. Pass null for the default tree. A tree
 /// that does not exist yet is created when the transaction commits, and not
 /// at all when it rolls back or fails.
-val tree: fn<'k: Concrete + Ordered, 'v: Concrete>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
+val tree: fn<'k: Concrete + Ordered + Data, 'v: Concrete + Data>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;

@@ -196,7 +196,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let tref = trait_ref(&scope.lexical, &t.name, spec.pos, &spec.ori);
-        let mut sigs: LPooled<Vec<(ArcStr, SourcePosition, Arc<FnType>, usize)>> =
+        let mut sigs: LPooled<Vec<(ArcStr, SourcePosition, Arc<FnType>, Option<usize>)>> =
             LPooled::take();
         for m in t.methods.iter() {
             let ft = method_sig(&ctx.env, &m.typ, &tref, &scope.lexical)?;
@@ -415,6 +415,15 @@ pub(crate) fn check_target(
             trait_def.name
         )
     }
+    if !declared && CoreTrait::of_id(trait_def.id) == Some(CoreTrait::Cast) {
+        match &canonical {
+            Type::Abstract { id, .. } if env.abstract_rep(*id, scope).is_some() => (),
+            _ => bail!(
+                "impl Cast for {target}: only an abstract type implements Cast, \
+                 where its representation is visible"
+            ),
+        }
+    }
     match &canonical {
         Type::Abstract { id, .. } => {
             let resolved = match target {
@@ -617,8 +626,24 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             e.dec = dec;
             exprs.push(e);
         }
+        if CoreTrait::representation_default(trait_id)
+            && trait_def.methods.iter().any(|d| !provided.contains(&d.name))
+            && let Type::Abstract { id, .. } =
+                target.lookup_ref(&ctx.env).unwrap_or(target.clone())
+            && let Some(rep) = ctx.env.abstract_reps.get(&id)
+            && (rep.rep.holds_ref(&ctx.env) || rep.rep.holds_fn(&ctx.env))
+        {
+            bailat!(
+                spec,
+                "impl Cast for {target}: its representation holds a function or a \
+                 reference, which no data carries; write to_value and from_value"
+            )
+        }
         for d in trait_def.methods.iter() {
-            if !provided.contains(&d.name) && d.default.is_none() {
+            if !provided.contains(&d.name)
+                && d.default.is_none()
+                && !CoreTrait::representation_default(trait_id)
+            {
                 bailat!(
                     spec,
                     "impl {} for {target} is missing the required method {}",
@@ -822,7 +847,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(ftype) = self.ftype.as_ref() else { return Ok(None) };
         // Dispatch reasons per union member, so the self type must be in
         // union normal form with its cells settled first.
-        let mut self_t = match ftype.args.get(m.self_index) {
+        let mut self_t = match m.self_index.and_then(|i| ftype.args.get(i)) {
             Some(a) => {
                 let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                 a.typ.collect_tvars(&mut tvs);
@@ -869,7 +894,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self_t
             )
         }
-        if let Some(core) = CoreTrait::of_id(def.id) {
+        if let Some(core) = CoreTrait::of_id(def.id).filter(|c| c.structural()) {
             return self.lower_core_call(ctx, core);
         }
         // a union self dispatches per member, a union of primitives (one
@@ -1028,6 +1053,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             (CoreTrait::Eq | CoreTrait::Ord, None) => {
                 bailat!(spec, "core trait call without its other argument")
             }
+            (CoreTrait::Cast, _) => unreachable!("Cast has no operator"),
         };
         let scope = self.scope.clone();
         let node = lower_over_operands(
@@ -1079,7 +1105,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let self_key = self
             .ftype
             .as_ref()
-            .and_then(|ft| ArgKey::of_formals(&ft.args).nth(m.self_index));
+            .and_then(|ft| ArgKey::of_formals(&ft.args).nth(m.self_index?));
         let (mut operands, names) = self.take_operands(self_key.as_ref())?;
         let call_args: LPooled<Vec<(Option<ArcStr>, Expr)>> = names
             .iter()

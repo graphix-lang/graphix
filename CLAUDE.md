@@ -384,10 +384,16 @@ duration (seconds), from a bool to a number (1 or 0), or to read an array of num
 class first (`typ/cast.rs::convert`, `in_own_class`). The JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
 reads a field the data omits as null wherever the field's type
-admits null (`typ/cast.rs`), a cast to a Graphix abstract type casts
-its payload against the representation (a Rust-backed one checks its
-id alone), and a string parses as an RFC3339 datetime, so what the
-json and toml writers emit reads back into its type.
+admits null (`typ/cast.rs`), and a string parses as an RFC3339
+datetime, so what the json and toml writers emit reads back into its
+type. An abstract type crosses data only through its core `Cast` impl
+(`design/abstract_cast.md`): casts and reads make it with `from_value`
+(a value already of the type is held), writers write its `to_value`
+(`abstract_value::to_data`), only the defining module implements it
+and a method it leaves out is the representation; a type with no impl,
+a Rust-backed one included, is refused by the check as a cast or read
+target (`Concrete`) and as a written value (`'a: Data`), and an abstract
+value decodes only under an image session.
 A reference is its own runtime form (`graphix_types::reference`, an
 abstract holding its cell), never a number: a cast whose source can
 hold one is refused (`Type::holds_ref`), and where only an instance
@@ -445,7 +451,11 @@ from its args (a regex, a template registry) lives in a bounded
 thread-local `FastMemo`, never in state. A type-directed builtin
 (`str::parse`, the reads) declares its target `'b: Concrete`; the checker
 refuses the target where it settles open or holds a reference (data
-can't be one; the run-time cast refuses one too), and the builtin's
+can't be one; the run-time cast refuses one too) or an abstract type
+with no `Cast` impl, a writer declares its value `'a: Data` (no
+reference, function or such abstract type; open is fine), an async
+builtin's `DATA_ARGS`/`DATA_RESULT` convert a store's keys and values
+both ways, and the builtin's
 `typecheck1` only extracts the type, never refuses
 (`design/tvar_constraints.md`); a builtin that wraps a function
 (`queuefn`) declares it `'a: Function` the same way. A definition's call sites settle with
@@ -854,7 +864,9 @@ cycle, across workers; the compiler never pins threads.
 - **Traits v1** (`design/traits.md`): static dispatch on the self
   argument's type; a union self lowers to a select; impls are global
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,
-  operators, printers, both engines). A quantifier bounded by
+  operators, printers, both engines), and core `Cast` the casts and
+  writers (no structural default, never called by a program); a method
+  may take `self` only in its result, and no call dispatches it. A quantifier bounded by
   constructor traits alone (`'c: Collection`) is a constructor applied
   (`'c<'c#elem>`), as a trait-typed parameter (`c: Collection`) is, and
   an interface's bounds pair with the implementation's through the

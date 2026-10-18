@@ -5,6 +5,7 @@ mod async_restart;
 mod attributes;
 mod basics;
 mod byref;
+mod cast_trait;
 mod collection;
 mod datetime;
 mod dense_deltas;

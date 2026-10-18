@@ -126,14 +126,10 @@ is installed and an `Eq` impl applies to the id (`eq_applies`: a user
 loan state, so a hashed or ordered container is filled and probed under
 one loan state. Pack writes every field; abstract values nest at most 1024
 deep in bytes (each level is a reader around the last), and the writer
-refuses deeper ones with `TooBig`, as the reader would. A cast to a
-Graphix abstract type, a read from bytes included, checks the id and the
-params and then casts the payload against the representation at those
-params (`Type::cast_inner`), so bytes written under another definition
-at the same path are an `InvalidCast`, and a representation holding a
-reference never reads (data carries none); a Rust-backed abstract checks
-its id alone. Pins: `lib_tests::pack::pack_abstract_read_checks_the_payload`,
-`pack_abstract_read_refuses_a_reference`. `Type::Abstract`
+refuses deeper ones with `TooBig`, as the reader would; only an image
+session decodes one. Data never carries an abstract value: a type
+crosses data through its `Cast` implementation, which only its defining
+module writes (design/abstract_cast.md). `Type::Abstract`
 carries the id and the params, so `Display` consults a process-global
 `AbstractId → name` registry, filled when an id is minted and when a
 restored environment decodes — diagnostics print `Box`, not the word

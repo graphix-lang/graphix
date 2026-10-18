@@ -3,10 +3,13 @@
 //! identity and its payload, minted only by the constructor `T(..)`.
 
 use crate::typ::{AbstractId, Type};
+use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
+use immutable_chunkmap::map::Map;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
+use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
+use poolshark::local::LPooled;
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -18,7 +21,8 @@ use std::{
 use triomphe::Arc;
 
 /// The seam through which user `Eq`/`Ord`/`Display` impls reach
-/// `Value`'s own comparison and printing. A frame holding `&mut
+/// `Value`'s own comparison and printing, and `Cast` impls the cast walk
+/// and the writers. A frame holding `&mut
 /// ExecCtx` loans a type-erased dispatch handle into a thread-local
 /// for the duration of an operation (`node::coretraits::
 /// with_hooks`); with no loan installed the structural case
@@ -42,6 +46,22 @@ pub struct ValueHookDispatch {
     pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
     #[doc(hidden)]
     pub fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
+    /// `None` means no `Cast` implementation.
+    #[doc(hidden)]
+    pub to_value: fn(*mut u8, &GxAbstract) -> Option<CastHook>,
+    /// The value read as the abstract type, the `Type::Abstract` given;
+    /// `None` means no `Cast` implementation.
+    #[doc(hidden)]
+    pub from_value: fn(*mut u8, &Type, &Value) -> Option<CastHook>,
+}
+
+/// What a `Cast` implementation made of a value.
+#[doc(hidden)]
+pub enum CastHook {
+    /// The implementation leaves the method out: the representation.
+    Representation,
+    /// Its result, `None` when it produced none.
+    Ran(Option<Value>),
 }
 
 thread_local! {
@@ -114,6 +134,91 @@ impl GxAbstract {
     pub(crate) fn displayed(&self) -> Option<ArcStr> {
         hooked(|h| (h.fmt)(h.state, self))
     }
+
+    /// The data this value is written as, by its `Cast` implementation;
+    /// `None` when there is none or the hooks are not armed.
+    pub fn to_value(&self) -> Option<CastHook> {
+        hooked(|h| (h.to_value)(h.state, self))
+    }
+}
+
+/// `v` with every abstract value in it replaced by the data its `Cast`
+/// implementation writes it as, through the hooks: what a writer
+/// writes. An abstract value with no implementation, a Rust-backed one
+/// included, is refused, and so is an implementation that writes its
+/// own type inside itself without end.
+pub fn to_data(v: &Value) -> Result<Value> {
+    Ok(rewrite(v, 0)?.unwrap_or_else(|| v.clone()))
+}
+
+/// [`to_data`] of `v`, `None` when nothing in it changed; `depth` counts
+/// the implementations written through so far.
+fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
+    crate::stack::ensure_sufficient(|| match v {
+        Value::Abstract(_) => {
+            if crate::reference::cell(v).is_some() {
+                return Err(anyhow!("a reference is not data"));
+            }
+            let Some(g) = get(v) else {
+                return Err(anyhow!("a value of a type backed by Rust is not data"));
+            };
+            if depth >= MAX_DEPTH {
+                return Err(anyhow!(
+                    "{} is written as data more than {MAX_DEPTH} abstract values deep",
+                    g.name
+                ));
+            }
+            let data = match g.to_value() {
+                None => return Err(anyhow!("{} has no Cast implementation", g.name)),
+                Some(CastHook::Representation) => g.payload.clone(),
+                Some(CastHook::Ran(Some(d))) => d,
+                Some(CastHook::Ran(None)) => {
+                    return Err(anyhow!(
+                        "the Cast implementation of {} produced nothing",
+                        g.name
+                    ));
+                }
+            };
+            Ok(Some(rewrite(&data, depth + 1)?.unwrap_or(data)))
+        }
+        Value::Array(a) => {
+            let mut out: LPooled<Vec<Value>> = LPooled::take();
+            for (i, e) in a.iter().enumerate() {
+                match rewrite(e, depth)? {
+                    Some(e) => {
+                        if out.is_empty() {
+                            out.extend(a[..i].iter().cloned());
+                        }
+                        out.push(e)
+                    }
+                    None if !out.is_empty() => out.push(e.clone()),
+                    None => (),
+                }
+            }
+            Ok((!out.is_empty())
+                .then(|| Value::Array(ValArray::from_iter_exact(out.drain(..)))))
+        }
+        Value::Map(m) => {
+            let mut out: LPooled<Vec<(Value, Value)>> = LPooled::take();
+            let mut changed = false;
+            for (k, e) in m.into_iter() {
+                let (k1, e1) = (rewrite(k, depth)?, rewrite(e, depth)?);
+                changed |= k1.is_some() || e1.is_some();
+                out.push((
+                    k1.unwrap_or_else(|| k.clone()),
+                    e1.unwrap_or_else(|| e.clone()),
+                ));
+            }
+            Ok(changed.then(|| Value::Map(Map::from_iter(out.drain(..)))))
+        }
+        _ => Ok(None),
+    })
+}
+
+/// `v` read as the abstract type `t` by its `Cast` implementation;
+/// `None` when there is none or the hooks are not armed.
+pub fn from_value(t: &Type, v: &Value) -> Option<CastHook> {
+    hooked(|h| (h.from_value)(h.state, t, v))
 }
 
 impl fmt::Debug for GxAbstract {
@@ -178,7 +283,13 @@ impl Pack for GxAbstract {
         })
     }
 
+    /// Only an image restores an abstract value: everything else is data,
+    /// where an abstract type comes from its `Cast` implementation, and
+    /// bytes holding one are forged or stale.
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if !crate::ids::in_session() {
+            return Err(PackError::InvalidFormat);
+        }
         nested(&DECODE_DEPTH, || {
             Ok(GxAbstract {
                 id: Pack::decode(buf)?,
@@ -276,4 +387,27 @@ pub fn get(v: &Value) -> Option<&GxAbstract> {
 /// that consumes a type whose constructor lives in Graphix.
 pub fn payload(v: &Value) -> Option<&Value> {
     get(v).map(|g| &g.payload)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Writers write an abstract value as data, so bytes holding one are
+    /// forged or stale: only an image session reads them.
+    #[test]
+    fn abstract_value_decodes_only_under_an_image() {
+        let v = GxAbstract {
+            id: AbstractId::of(&crate::expr::ModPath::from(["m"]), "T"),
+            name: arcstr::literal!("T"),
+            params: Arc::from_iter([]),
+            payload: Value::I64(1),
+        };
+        let mut buf = Vec::new();
+        v.encode(&mut buf).unwrap();
+        assert!(matches!(
+            GxAbstract::decode(&mut &buf[..]),
+            Err(PackError::InvalidFormat)
+        ));
+    }
 }

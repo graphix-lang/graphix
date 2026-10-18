@@ -6,4 +6,4 @@ val read: fn<'b: Concrete>(input: bytes) -> Result<'b, [`PackErr(string), `Inval
 /// Encode a value to packed binary bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, pack::write_bytes(v)?)`.
-val write_bytes: fn(value: Any) -> Result<bytes, `PackErr(string)>;
+val write_bytes: fn<'a: Data>(value: 'a) -> Result<bytes, `PackErr(string)>;

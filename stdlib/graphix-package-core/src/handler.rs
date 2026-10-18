@@ -1,7 +1,8 @@
 use anyhow::{Result, bail};
+use arcstr::ArcStr;
 use graphix_compiler::{
     BindId, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue, TagView,
-    UserEvent, branch,
+    UserEvent, branch, errf,
     expr::ExprId,
     image::{self, ImageBuf},
     node::{ErrorRelay, genn},
@@ -18,6 +19,12 @@ pub trait Reply: Send + 'static {
     /// The asker stopped waiting.
     fn abandoned(&self) -> bool {
         false
+    }
+
+    /// Whether the answer leaves as data ([`crate::write_data`]), and the
+    /// tag of the error answered when it is none.
+    fn data(&self) -> Option<ArcStr> {
+        None
     }
 }
 
@@ -210,6 +217,12 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             let (mut r, q) = self.running.swap_remove(i);
             r.delete(ctx);
             if let Some(v) = answer {
+                let v = match q.data() {
+                    None => v,
+                    Some(tag) => {
+                        crate::write_data(ctx, &v).unwrap_or_else(|e| errf!(tag, "{e:#}"))
+                    }
+                };
                 q.reply(v)
             }
         }

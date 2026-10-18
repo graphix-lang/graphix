@@ -533,6 +533,9 @@ macro_rules! blocking_op {
         impl EvalCachedAsync for $ev {
             type Args = $args;
             const NAME: &str = $name;
+            // every argument past the handle is a key or a value
+            const DATA_ARGS: &[usize] = &[1, 2, 3, 4];
+            const DATA_RESULT: bool = true;
 
             fn prepare_args(&mut self, $cached: &CachedVals) -> Option<Self::Args> {
                 $prepare

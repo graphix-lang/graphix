@@ -40,6 +40,22 @@ trait Display {
     val fmt: fn(self) -> string
 };
 
+/// Data. An abstract type crosses data only through its implementation:
+/// a cast or a typed read (`json::read`, `pack::read`,
+/// `sys::net::subscribe`, ..) makes a value with `from_value`, and a
+/// writer (`json::write`, `pack::write`, `sys::net::publish`, ..)
+/// writes what `to_value` returns. Only the module that defines the
+/// type, where its representation is visible, implements it, and a
+/// method it leaves out is the representation itself: `impl Cast for T
+/// {}` reads and writes `T` as its representation. Casts and writers
+/// call the methods, a program never does. Implicitly `#[sync]`.
+trait Cast {
+    /// the data `self` is written as
+    val to_value: fn(self) -> Any;
+    /// the value `v` reads as, or why it can't
+    val from_value: fn(v: Any) -> Result<self, `InvalidCast(string)>
+};
+
 /// A collection: a type constructor whose values can be traversed and
 /// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
 /// program implements it for. `self<'a>` is the constructor applied to

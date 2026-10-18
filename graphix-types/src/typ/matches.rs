@@ -172,6 +172,7 @@ impl Type {
             (Type::Hole, _)
             | (_, Type::Hole)
             | (Type::Concrete, _)
+            | (Type::Data, _)
             | (Type::Function, _)
             | (Type::Singleton, _)
             | (Type::OneNumber, _)
@@ -182,6 +183,7 @@ impl Type {
             | (_, Type::OneNumber)
             | (_, Type::Discernible)
             | (_, Type::Ordered)
+            | (_, Type::Data)
             | (_, Type::Concrete) => Ok(self == t),
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
@@ -480,6 +482,7 @@ impl Type {
             }
             (Self::Hole, Self::Hole)
             | (Self::Concrete, Self::Concrete)
+            | (Self::Data, Self::Data)
             | (Self::Function, Self::Function)
             | (Self::OneNumber, Self::OneNumber)
             | (Self::Discernible, Self::Discernible)
