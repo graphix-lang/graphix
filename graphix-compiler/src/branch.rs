@@ -8,8 +8,9 @@
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue, UserEvent,
     cost::{ForkSite, Meter, Plan},
-    expr::{Expr, ExprId},
+    expr::Expr,
     node::{callsite::CallNode, place::Path},
+    prune::{BoundaryRef, Reader},
 };
 use futures::channel::mpsc;
 use graphix_types::stack::{Control, ParMode, with_control};
@@ -44,8 +45,8 @@ pub(crate) fn stored_value(e: Option<&(TagValue, u64)>) -> Option<Value> {
 /// A runtime call a forked branch made, replayed into its parent at the
 /// merge in the order the branch made it.
 enum RtOp {
-    RefVar(BindId, ExprId),
-    UnrefVar(BindId, ExprId),
+    RefVar(BindId, Reader),
+    UnrefVar(BindId, Reader),
     SetVar(BindId, Value),
     SetLevel(BindId, Value),
     PatchVar(BindId, Path, Value, Option<Arc<Expr>>),
@@ -69,6 +70,9 @@ pub struct ForkRt<R: Rt> {
     reads: Option<parking_lot::Mutex<IntSet<BindId>>>,
     store: IntMap<BindId, Option<(TagValue, u64)>>,
     ref_paths: IntMap<BindId, Option<(BindId, Path)>>,
+    /// The readers this branch registered, which the runtime learns only
+    /// at the merge: a delivery this cycle marks them too.
+    readers: IntMap<BindId, SmallVec<[Reader; 1]>>,
     log: Vec<RtOp>,
 }
 
@@ -107,6 +111,7 @@ impl<R: Rt> ForkRt<R> {
                 .then(|| parking_lot::Mutex::new(IntSet::default())),
             store: IntMap::default(),
             ref_paths: IntMap::default(),
+            readers: IntMap::default(),
             log: Vec::new(),
         }
     }
@@ -144,12 +149,43 @@ impl<'a, R: Rt> RtView<'a, R> {
     }
 
     #[inline]
-    pub fn ref_var(&mut self, id: BindId, ref_by: ExprId) {
-        logged!(self, ref_var(id, ref_by), RtOp::RefVar(id, ref_by))
+    pub fn ref_var(&mut self, id: BindId, by: Reader) {
+        if let Self::Fork(f) = self {
+            f.readers.entry(id).or_default().push(by.clone());
+        }
+        logged!(self, ref_var(id, by), RtOp::RefVar(id, by))
     }
 
-    pub fn unref_var(&mut self, id: BindId, ref_by: ExprId) {
-        logged!(self, unref_var(id, ref_by), RtOp::UnrefVar(id, ref_by))
+    /// Each reader of `id`: the runtime's and those the branches above
+    /// registered this cycle.
+    fn each_reader(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
+        let mut view: &RtView<'_, R> = self;
+        loop {
+            match view {
+                RtView::Root(r) => return r.readers(id, f),
+                RtView::Fork(fk) => {
+                    if let Some(rs) = fk.readers.get(id) {
+                        rs.iter().for_each(&mut *f)
+                    }
+                    view = fk.parent();
+                }
+            }
+        }
+    }
+
+    pub fn unref_var(&mut self, id: BindId, by: Reader) {
+        logged!(self, unref_var(id, by), RtOp::UnrefVar(id, by))
+    }
+
+    /// Mark every boundary that reads `id`: it was delivered this cycle.
+    pub fn mark_readers(&mut self, id: BindId) {
+        let cycle = self.cycle();
+        self.each_reader(&id, &mut |r| r.mark(cycle))
+    }
+
+    /// Whether `b` was marked this cycle, or is held dirty.
+    pub fn dirty(&self, b: &BoundaryRef) -> bool {
+        b.marked(self.cycle())
     }
 
     #[inline]
@@ -177,6 +213,7 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     #[inline]
     pub fn notify_set(&mut self, id: BindId) {
+        self.mark_readers(id);
         logged!(self, notify_set(id), RtOp::NotifySet(id))
     }
 
@@ -251,6 +288,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                 f.store.insert(id, Some((tv, f.cycle)));
             }
         }
+        self.mark_readers(id)
     }
 
     pub fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
@@ -326,7 +364,7 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// Apply what the forked branch `child` did, after everything this
     /// view did before the fork and before anything it does after.
     pub(crate) fn merge(&mut self, child: ForkRt<R>) {
-        let ForkRt { parent: _, cycle: _, reads, store, ref_paths, log } = child;
+        let ForkRt { parent: _, cycle: _, reads, store, ref_paths, readers, log } = child;
         match self {
             Self::Fork(f) => {
                 if let (Some(mine), Some(theirs)) = (&f.reads, reads) {
@@ -334,6 +372,9 @@ impl<'a, R: Rt> RtView<'a, R> {
                 }
                 f.store.extend(store);
                 f.ref_paths.extend(ref_paths);
+                for (id, rs) in readers {
+                    f.readers.entry(id).or_default().extend(rs);
+                }
                 f.log.extend(log);
             }
             Self::Root(r) => {
@@ -785,6 +826,8 @@ struct Shared<'a, R: Rt, E: UserEvent> {
     fork_depth: u8,
     par: graphix_types::stack::ParMode,
     fork: ForkFlags,
+    boundary: Option<BoundaryRef>,
+    prune: graphix_types::stack::PruneMode,
 }
 
 impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
@@ -798,6 +841,8 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
             fork_depth: ctx.fork_depth + 1,
             par: ctx.par,
             fork: ctx.fork,
+            boundary: ctx.boundary.clone(),
+            prune: ctx.prune,
         }
     }
 
@@ -817,6 +862,8 @@ impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
             fork_depth: self.fork_depth,
             par: self.par,
             fork: self.fork,
+            boundary: self.boundary.clone(),
+            prune: self.prune,
         }
     }
 }

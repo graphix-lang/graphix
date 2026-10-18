@@ -16,6 +16,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, opt_node_decode, opt_node_encode, put_tag},
     },
+    prune::BoundaryRef,
     rep,
     typ::Type,
     wrap,
@@ -112,6 +113,8 @@ pub struct Catch<R: Rt, E: UserEvent> {
     thrown: Option<Type>,
     bind_id: BindId,
     top_id: ExprId,
+    /// The boundary this catch polls its handler from.
+    polled: Option<BoundaryRef>,
 }
 
 /// A seq machine's handler, or a `try` body arm's jump: the action run
@@ -254,6 +257,8 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         let bind_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         ctx.record_ref(bind_id, top_id);
+        let polled = ctx.boundary.clone();
+        own_handler.polled_by(&polled);
         Ok(Node::new(Self {
             spec,
             handler,
@@ -264,6 +269,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             thrown,
             bind_id,
             top_id,
+            polled,
         }))
     }
 
@@ -326,22 +332,26 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             }),
         };
         ctx.record_ref(bind_id, top_id);
+        let own_handler = covered.dynamic.handler().unwrap();
+        let polled = ctx.boundary.clone();
+        own_handler.polled_by(&polled);
         let node = Node::new(Self {
             spec,
             handler,
             action,
-            own_handler: covered.dynamic.handler().unwrap(),
+            own_handler,
             receipts: Receipts::default(),
             constraint: c.constraint.clone(),
             thrown: None,
             bind_id,
             top_id,
+            polled,
         });
         Ok((node, covered))
     }
 
-    fn give_up_in_flight(&mut self) {
-        self.receipts.give_up(&self.own_handler)
+    fn give_up_in_flight(&mut self, cycle: u64) {
+        self.receipts.give_up(&self.own_handler, cycle)
     }
 }
 
@@ -429,7 +439,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.give_up_in_flight();
+        self.give_up_in_flight(ctx.rt.cycle());
+        self.own_handler.unpolled_by(&self.polled);
         ctx.release_var(self.bind_id, self.top_id);
         ctx.env.unbind_variable(self.bind_id);
         self.handler.delete(ctx);
@@ -440,7 +451,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.give_up_in_flight();
+        self.give_up_in_flight(ctx.rt.cycle());
         self.handler.sleep(ctx);
         if let Some(abort) = &mut self.action {
             abort.node.sleep(ctx);
@@ -714,7 +725,7 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     if handler_top != own_top {
         ctx.rt.set_var(id, v)
     } else {
-        if let Err(tv) = ctx.event.variables.try_insert(id, TagValue::fired(v)) {
+        if let Err(tv) = ctx.try_publish(id, TagValue::fired(v)) {
             ctx.rt.set_var(id, tv.value())
         }
     }
@@ -974,7 +985,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 };
                 match handler {
                     Some(handler) => {
-                        handler.raise();
+                        handler.raise(ctx.rt.cycle());
                         deliver_error(ctx, handler, *top_id, spec, raised, values, e);
                     }
                     None => report_failure!(&unhandled_msg(&diagnostic_site(spec), &e)),
@@ -1082,6 +1093,8 @@ pub struct SeqGuard<R: Rt, E: UserEvent> {
     machine: ErrorHandler,
     state: GuardState,
     resident: TagValue,
+    /// The boundary this guard polls its handlers from.
+    polled: Option<BoundaryRef>,
 }
 
 impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
@@ -1093,6 +1106,8 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
         let n = decode_node(ctx, buf)?;
         let handler = image::handler_decode(buf)?;
         let machine = image::handler_decode(buf)?;
+        let polled = ctx.boundary.clone();
+        handler.polled_by(&polled);
         Ok(Node::new(Self {
             spec,
             n,
@@ -1100,6 +1115,7 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
             machine,
             state: GuardState::Sleeping,
             resident: TagValue::phantom(),
+            polled,
         }))
     }
 
@@ -1115,6 +1131,8 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
             scope.dynamic.handler().ok_or_else(|| anyhow!("BUG: seq handler"))?;
         let machine = handler.machine().ok_or_else(|| anyhow!("BUG: seq machine"))?;
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
+        let polled = ctx.boundary.clone();
+        handler.polled_by(&polled);
         Ok(Node::new(Self {
             spec,
             n,
@@ -1122,6 +1140,7 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
             machine,
             state: GuardState::Sleeping,
             resident: TagValue::phantom(),
+            polled,
         }))
     }
 }
@@ -1133,6 +1152,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
         f(&mut self.n)
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.handler.unpolled_by(&self.polled);
+        self.n.delete(ctx)
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1536,16 +1560,16 @@ impl Receipts {
             return None;
         }
         self.acked += 1;
-        handler.handled();
+        handler.handled(cycle);
         Some(v)
     }
 
     /// Acknowledge every raise not taken yet, so no enclosing handler
     /// waits on them; their deliveries are passed over.
-    fn give_up(&mut self, handler: &ErrorHandler) {
+    fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
         while self.acked < handler.raised() {
             self.acked += 1;
-            handler.handled();
+            handler.handled(cycle);
         }
     }
 
@@ -1592,7 +1616,7 @@ impl ErrorRelay {
         let e = self.receipts.take(ctx, &self.handler)?;
         match self.handler.parent().handler() {
             Some(parent) => {
-                parent.raise();
+                parent.raise(ctx.rt.cycle());
                 let (id, _) = parent.id();
                 ctx.rt.set_var(id, e.clone())
             }
@@ -1606,12 +1630,12 @@ impl ErrorRelay {
 
     /// Raises in flight when the function sleeps or is deleted are
     /// acknowledged, so no enclosing handler waits on them.
-    pub fn give_up_in_flight(&mut self) {
-        self.receipts.give_up(&self.handler)
+    pub fn give_up_in_flight(&mut self, cycle: u64) {
+        self.receipts.give_up(&self.handler, cycle)
     }
 
     pub fn delete<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.give_up_in_flight();
+        self.give_up_in_flight(ctx.rt.cycle());
         let (bind_id, top_id) = self.handler.id();
         ctx.release_var(bind_id, top_id);
         ctx.env.unbind_variable(bind_id);

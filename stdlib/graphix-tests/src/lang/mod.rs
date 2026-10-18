@@ -24,6 +24,7 @@ mod organic_deltas;
 mod par_attrs;
 mod par_loops;
 mod printing;
+mod prune;
 mod select;
 mod seq;
 mod seq_abort;

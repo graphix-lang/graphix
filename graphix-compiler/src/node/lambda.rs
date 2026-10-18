@@ -1107,7 +1107,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             argpats.push(pattern);
         }
         let mut p = profile::phase(Phase::InstanceGraph);
-        let body = build_body(ctx, &argpats)?;
+        let body = super::prune::Prune::compile(ctx, |ctx| build_body(ctx, &argpats))?;
         let instance_id = LambdaInstanceId::new();
         profile::instance(&mut p, instance_id, id, body.spec());
         drop(p);

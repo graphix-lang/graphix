@@ -1773,7 +1773,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ) {
         for id in defaults {
             if let Some(v) = ctx.rt.store_value(id)
-                && ctx.event.variables.try_insert(*id, TagValue::fired(v)).is_ok()
+                && ctx.try_publish(*id, TagValue::fired(v)).is_ok()
             {
                 set.push(*id);
             }
@@ -2490,7 +2490,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn release_held(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(held) = self.held.take() {
             for id in held.iter() {
-                ctx.rt.unref_var(*id, self.top_id)
+                let reader = ctx.reader(self.top_id);
+                ctx.rt.unref_var(*id, reader)
             }
         }
     }
@@ -2512,17 +2513,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             None => Err(anyhow!("instance {instance:?} is not in the image")),
             Some(at) => {
                 let image = dec.image().clone();
-                let outer =
-                    mem::replace(&mut dec.ext::<image::Restored>().in_instance, true);
-                let decoded = image::DecodeImage::with(&mut dec, || {
+                image::DecodeImage::with(&mut dec, || {
                     let Some(mut sub) = image.get(at as usize..) else {
                         bail!("instance {instance:?} at {at} is past the image")
                     };
                     GXLambda::image_decode(ctx, &mut sub)
                         .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
-                });
-                dec.ext::<image::Restored>().in_instance = outer;
-                decoded
+                })
             }
         };
         // an instance whose kernels do not install is deleted, not dropped
@@ -2537,6 +2534,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let apply: Box<dyn Apply<R, E>> = match decoded {
             Ok(g) => {
                 ctx.apply_deferred();
+                self.release_held(ctx);
                 Box::new(g)
             }
             Err(e) => {
@@ -2613,15 +2611,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         site.callee = callee;
         site.static_target = static_target;
         site.recursive_edge = AtomicBool::new(recursive_edge);
-        // an imaged tree's reads schedule this statement before its bodies
-        // decode, as a cold compile's registrations do; the site decoded
-        // outside every heap instance holds them for the whole tree
-        // (recorded, so a failed read unwinds them)
-        let in_instance =
-            image::decoding(|d| d.ext::<image::Restored>().in_instance).unwrap_or(false);
-        if let Callee::Imaged { instance, refs, .. } = &site.callee
-            && !in_instance
-        {
+        // an imaged callee's reads schedule this site's boundary before its
+        // body decodes, as a cold compile's registrations do; the site holds
+        // them until the body decodes and registers its own (recorded, so a
+        // failed read unwinds them)
+        if let Callee::Imaged { instance, refs, .. } = &site.callee {
             let held: Box<[BindId]> =
                 refs.flat(*instance).refed.iter().copied().collect();
             for id in held.iter() {
@@ -3387,7 +3381,7 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
             }
         }
         if let Some(t) = overlay {
-            ctx.event.variables.insert(id, TagValue::tagged(v, t));
+            ctx.publish(id, TagValue::tagged(v, t));
         }
     };
     match (feeds, bottom) {

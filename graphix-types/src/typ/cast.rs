@@ -1749,7 +1749,7 @@ fn rep_collision(
             None,
             || Some((a.clone(), b.clone())),
             |seen| {
-                let mut pairs =
+                let pairs =
                     |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
                         xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
                             .find(Option::is_some)

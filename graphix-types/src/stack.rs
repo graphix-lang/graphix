@@ -284,6 +284,10 @@ pub struct Control {
     /// Live activations its cycles bound, and how many it may hold.
     activations: AtomicU64,
     activation_budget: AtomicU64,
+    prune: AtomicU8,
+    /// Boundaries its cycles walked and skipped.
+    walked: AtomicU64,
+    skipped: AtomicU64,
 }
 
 /// How a runtime forks the independent subtrees of a cycle
@@ -312,6 +316,33 @@ impl ParMode {
     }
 }
 
+/// Whether a cycle skips the boundaries nothing they read reached
+/// (`design/walk_pruning.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PruneMode {
+    /// Every boundary is walked.
+    Off,
+    /// A clean boundary rides its resident.
+    On,
+    /// Every boundary is walked, and one pruning would have skipped must
+    /// change nothing.
+    Audit,
+}
+
+impl PruneMode {
+    /// `GRAPHIX_PRUNE` (`off`, `on` or `audit`), else `On`.
+    pub fn from_env() -> Self {
+        static MODE: LazyLock<PruneMode> =
+            LazyLock::new(|| match std::env::var("GRAPHIX_PRUNE").as_deref() {
+                Ok("off") => PruneMode::Off,
+                Ok("audit") => PruneMode::Audit,
+                _ => PruneMode::On,
+            });
+        *MODE
+    }
+}
+
 impl Default for Control {
     fn default() -> Self {
         Self::new()
@@ -334,7 +365,35 @@ impl Control {
             activation_budget: AtomicU64::new(
                 DEFAULT_ACTIVATIONS.load(Ordering::Relaxed),
             ),
+            prune: AtomicU8::new(PruneMode::from_env() as u8),
+            walked: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
         }
+    }
+
+    pub fn prune_mode(&self) -> PruneMode {
+        match self.prune.load(Ordering::Relaxed) {
+            0 => PruneMode::Off,
+            2 => PruneMode::Audit,
+            _ => PruneMode::On,
+        }
+    }
+
+    pub fn set_prune_mode(&self, mode: PruneMode) {
+        self.prune.store(mode as u8, Ordering::Relaxed)
+    }
+
+    /// Count a boundary walked, or skipped.
+    pub fn note_boundary(&self, walked: bool) {
+        match walked {
+            true => self.walked.fetch_add(1, Ordering::Relaxed),
+            false => self.skipped.fetch_add(1, Ordering::Relaxed),
+        };
+    }
+
+    /// The boundaries this runtime's cycles walked and skipped.
+    pub fn boundaries(&self) -> (u64, u64) {
+        (self.walked.load(Ordering::Relaxed), self.skipped.load(Ordering::Relaxed))
     }
 
     /// Fused kernel runs and JIT wrapper entries since the last reset.

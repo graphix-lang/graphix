@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    BindId, CFlag, ParMode,
+    BindId, CFlag, ParMode, PruneMode,
     env::Env,
     expr::{ExprId, Load, Origin, ResolverRef, Source, VfsEntry, VfsResolver},
     rep,
@@ -143,6 +143,9 @@ pub enum Mode {
     Jit,
     Par,
     JitPar,
+    /// The node-walk walking every boundary: walk pruning's reference
+    /// (`design/walk_pruning.md`). Not among [`Mode::ALL`].
+    Unpruned,
 }
 
 impl Mode {
@@ -150,22 +153,32 @@ impl Mode {
 
     pub fn flags(self) -> BitFlags<CFlag> {
         match self {
-            Mode::Interp | Mode::Par => CFlag::FusionDisabled.into(),
+            Mode::Interp | Mode::Par | Mode::Unpruned => CFlag::FusionDisabled.into(),
             Mode::Jit | Mode::JitPar => BitFlags::empty(),
         }
     }
 
     pub fn node_walk(self) -> bool {
-        matches!(self, Mode::Interp | Mode::Par)
+        matches!(self, Mode::Interp | Mode::Par | Mode::Unpruned)
+    }
+
+    /// Whether the runtime skips clean boundaries.
+    pub fn prune(self) -> PruneMode {
+        match self {
+            Mode::Unpruned => PruneMode::Off,
+            _ => PruneMode::from_env(),
+        }
     }
 
     /// The serial modes fork nothing unless `GRAPHIX_PAR` says otherwise.
     pub fn par(self) -> ParMode {
         match self {
-            Mode::Interp | Mode::Jit => match std::env::var_os("GRAPHIX_PAR") {
-                Some(_) => ParMode::from_env(),
-                None => ParMode::Off,
-            },
+            Mode::Interp | Mode::Jit | Mode::Unpruned => {
+                match std::env::var_os("GRAPHIX_PAR") {
+                    Some(_) => ParMode::from_env(),
+                    None => ParMode::Off,
+                }
+            }
             Mode::Par | Mode::JitPar => ParMode::Force,
         }
     }
@@ -199,6 +212,7 @@ where
     let ctx = TestCtx::start(
         config(tx, register, vec![VfsResolver::new(tbl)], |ctx| {
             ctx.control.set_par_mode(mode.par());
+            ctx.control.set_prune_mode(mode.prune());
             setup(ctx)
         })?
         .flags(mode.flags()),

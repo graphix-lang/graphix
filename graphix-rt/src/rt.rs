@@ -5,6 +5,7 @@ use graphix_compiler::{
     BindId, CustomBuiltinType, ExecState, Rt, TagValue,
     expr::{Expr, ExprId},
     node::place::{Path, VarUpdate},
+    prune::Reader,
 };
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
@@ -160,9 +161,9 @@ pub struct GXRt<X: GXExt> {
     /// Bumped after each cycle's nodes ran; also the trace
     /// recorder's cycle number.
     pub(super) cycle: u64,
-    /// Each variable's readers and how many times each reads it: under a
-    /// script one expression, inline.
-    pub(super) by_ref: IntMap<BindId, SmallVec<[(ExprId, u32); 1]>>,
+    /// Each variable's readers (the root expression and the boundary
+    /// around the read) and how many times each reads it.
+    pub(super) by_ref: IntMap<BindId, SmallVec<[(Reader, u32); 1]>>,
     pub(super) var_updates: Waiting<VarUpdate>,
     /// The place each place-reference cell stands for (`Rt::set_ref_path`).
     pub(super) ref_paths: IntMap<BindId, (BindId, Path)>,
@@ -276,7 +277,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         }
     }
 
-    fn ref_var(&mut self, id: BindId, ref_by: ExprId) {
+    fn ref_var(&mut self, id: BindId, ref_by: Reader) {
         if dbg_vars() {
             eprintln!("REF_VAR {id:?} by {ref_by:?}");
         }
@@ -287,13 +288,25 @@ impl<X: GXExt> Rt for GXRt<X> {
         }
     }
 
-    fn unref_var(&mut self, id: BindId, ref_by: ExprId) {
+    fn readers(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
+        if let Some(readers) = self.by_ref.get(id) {
+            readers.iter().for_each(|(r, _)| f(r))
+        }
+    }
+
+    fn unref_var(&mut self, id: BindId, ref_by: Reader) {
         if dbg_vars() {
             eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
         }
         let readers = self.by_ref.get_mut(&id);
         let i = readers.as_ref().and_then(|r| r.iter().position(|(e, _)| *e == ref_by));
-        debug_assert!(i.is_some(), "unref_var of an unregistered {id:?} by {ref_by:?}");
+        debug_assert!(
+            i.is_some(),
+            "unref_var of an unregistered {id:?} by {ref_by:?}, registered by {:?}",
+            readers
+                .as_ref()
+                .map(|r| r.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>())
+        );
         if let Some(readers) = readers {
             if let Some(i) = i {
                 readers[i].1 -= 1;
@@ -355,8 +368,8 @@ impl<X: GXExt> Rt for GXRt<X> {
             eprintln!("NOTIFY_SET {id:?} -> {:?}", self.by_ref.get(&id));
         }
         if let Some(refed) = self.by_ref.get(&id) {
-            for (eid, _) in refed {
-                self.updated.entry(*eid).or_default();
+            for (r, _) in refed {
+                self.updated.entry(r.root).or_default();
             }
         }
     }

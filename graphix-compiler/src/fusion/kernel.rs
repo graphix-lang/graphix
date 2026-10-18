@@ -450,7 +450,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 .find(|((h, t), _)| h.same(&site.handler) && *t == site.own_top)
                 .map_or((&site.handler, site.own_top), |(_, (h, t))| (h, *t));
             if let Value::Error(e) = v {
-                handler.raise();
+                handler.raise(ctx.rt.cycle());
                 crate::node::error::deliver_error(
                     ctx,
                     handler,

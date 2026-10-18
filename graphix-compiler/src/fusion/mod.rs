@@ -941,6 +941,10 @@ pub fn fuse<R: Rt, E: UserEvent>(
     child: &mut Node<R, E>,
     ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<()> {
+    // a pruning boundary keeps its place: what fuses is its child, in it
+    if let Some(p) = child.as_prune_mut() {
+        return p.fuse_child(ctx);
+    }
     if let Some(new) = try_fuse(child, ctx)? {
         ctx.discard(std::mem::replace(child, new));
         check_node_attributes(child, ctx)?;
@@ -1076,7 +1080,7 @@ fn fuse_fed<R: Rt, E: UserEvent>(
     }
 }
 
-fn descend<R: Rt, E: UserEvent>(
+pub(crate) fn descend<R: Rt, E: UserEvent>(
     child: &mut Node<R, E>,
     ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<()> {

@@ -363,6 +363,24 @@ running program's failures (an unhandled `?`, a hot operator's failure)
 are logged under `graphix_compiler::FAILURE_TARGET`, never printed; the
 shell shows that target on stderr.
 
+**Walk pruning** (`design/walk_pruning.md`): a block statement, a select
+arm body and an instance body each sit in a `Prune` boundary
+(`prune::BoundaryRef`, parent-linked), which rides its resident in a
+`Cycle` view when nothing marked it this cycle. A registration names its
+root and the boundary around the reader (`prune::Reader`), taken from the
+traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
+copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a
+pending reference keep theirs). Every this-cycle write marks its readers'
+boundaries and their ancestors: a stamped `store_insert`, `notify_set`,
+`ExecCtx::publish`/`try_publish` (never `event.variables.insert` from a
+node), the cycle's deliveries; state a node polls without a variable
+marks its pollers (error handlers: `ErrorHandler::polled_by`). `Prune`
+is transparent to analyses (view, children, spec, `downcast_*`);
+`fusion::fuse` fuses its child inside it. `GRAPHIX_PRUNE=off|on|audit`
+(on by default; `Control::set_prune_mode`): the audit walks everything
+and panics where a skip would have changed a production or published;
+the fuzzer's `Pair::Prune` compares against `Mode::Unpruned`.
+
 **Session images** (`design/program_image.md`): the shell caches the
 session state before any cycle (`graphix-compiler/src/image/` over
 the session core in `graphix-types/src/image/`) under
@@ -413,9 +431,9 @@ root nodes for the whole session. A program image writes instance
 bodies to a heap after the eager part with an instance table, which
 holds each instance's own reads and its callees by instance; a call
 site keeps `Callee::Imaged` and decodes the body on its first
-dispatch, synchronously, through `ExecCtx::image_decoder`; a site
-decoded outside every heap instance registers the reads of its whole
-tree until it is deleted, and the sites inside register nothing; a builtin callee travels as its own bytes:
+dispatch, synchronously, through `ExecCtx::image_decoder`; an imaged
+site holds its callee's flat reads under its boundary until the callee
+decodes, whose nodes then register their own; a builtin callee travels as its own bytes:
 every `Apply` owns `image_encode` and every `BuiltIn` an
 `image_decode` (no defaults — a builtin without a codec does not
 compile), wrapper payloads implement `graphix_package_core::ImageState`
@@ -1207,6 +1225,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
 | `GRAPHIX_ABORT_ON_NO_MATCH=1` | an abort at a select no arm matched, a coverage hole (both engines report it once; the fuzzer's children set it, so a hole is a crash finding) |
 | `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |
+| `GRAPHIX_PRUNE=audit` | walk pruning walks every boundary and panics where a skip would have changed a production or published (`off` walks everything) |
 | `GRAPHIX_PAR_T=<ticks>` | the fork threshold fixed in place of the calibration (a tiny one makes every `Auto` site probe and fork) |
 | `GRAPHIX_DBG_PAR=1` | the fork threshold's calibration and each kernel loop forked |
 | `GRAPHIX_NO_OUTLINE=1` | kernel loops emitted inline, never as chunks (A/B for the outlining) |

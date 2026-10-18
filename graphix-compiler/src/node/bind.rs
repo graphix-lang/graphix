@@ -1684,9 +1684,9 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
             }
             (_, p) => {
                 self.release(ctx);
-                ctx.rt.ref_var(id, self.top_id);
+                ctx.ref_var(id, self.top_id);
                 if cell != id {
-                    ctx.rt.ref_var(cell, self.top_id);
+                    ctx.ref_var(cell, self.top_id);
                 }
                 self.addr = Some(Addr { cell, id, path: p.unwrap_or_default() });
                 Moved::Target
@@ -1709,7 +1709,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
             ctx.unref_var(a.cell, top_id);
         }
         if cell != a.id {
-            ctx.rt.ref_var(cell, top_id);
+            ctx.ref_var(cell, top_id);
         }
         a.cell = cell;
     }

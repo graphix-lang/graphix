@@ -327,7 +327,11 @@ answers with until the body exists; `sleep` and `delete` leave an
 imaged instance imaged. The first dispatch decodes the body
 synchronously inside `update` through the decoder the context retains,
 and binds it; nested sites inside the body are imaged in turn, so
-laziness cascades. A decode failure falls back to fresh static
+laziness cascades. Until its body decodes, an imaged site holds its
+callee's flat reads, registered under its own boundary, so a delivery
+marks the boundaries between it and the root (`design/walk_pruning.md`);
+it releases them once the decoded body's nodes have registered their
+own. A decode failure falls back to fresh static
 resolution. The shell maps the entry into memory, which saves a copy; the
 checksum (`image::sealed`) reads the whole entry once at restore, so
 a lazy decode saves decode work, not I/O.

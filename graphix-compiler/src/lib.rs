@@ -26,9 +26,10 @@ pub mod image;
 pub mod node;
 pub mod node_shape;
 pub(crate) mod perfdbg;
+pub mod prune;
 
 pub use node::{WriteTarget, error::diagnostic_site, module::check_script_sig};
-pub use stack::{Budget, Control, CtlFlag, ParMode, with_control};
+pub use stack::{Budget, Control, CtlFlag, ParMode, PruneMode, with_control};
 pub use stack::{set_activation_budget, set_stack_budget};
 pub mod tval;
 
@@ -423,9 +424,28 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.fuse(ctx))
     }
 
+    /// The node, if it is a pruning boundary.
+    pub(crate) fn as_prune_mut(&mut self) -> Option<&mut node::prune::Prune<R, E>> {
+        (&mut **self.0 as &mut dyn Any).downcast_mut::<node::prune::Prune<R, E>>()
+    }
+
+    /// The node as a `T`, seeing through a pruning boundary.
+    pub(crate) fn downcast_ref<T: Update<R, E>>(&self) -> Option<&T> {
+        let node: &dyn Any = &**self.0;
+        match node.downcast_ref::<node::prune::Prune<R, E>>() {
+            Some(p) => p.child().downcast_ref::<T>(),
+            None => node.downcast_ref::<T>(),
+        }
+    }
+
+    /// The node as a `T`, seeing through a pruning boundary.
     pub(crate) fn downcast_mut<T: Update<R, E>>(&mut self) -> Option<&mut T> {
-        let node: &mut dyn Update<R, E> = &mut **self.0;
-        (node as &mut dyn Any).downcast_mut::<T>()
+        let node: &mut dyn Any = &mut **self.0;
+        if node.is::<node::prune::Prune<R, E>>() {
+            let p = node.downcast_mut::<node::prune::Prune<R, E>>().expect("checked");
+            return p.child_mut().downcast_mut::<T>();
+        }
+        node.downcast_mut::<T>()
     }
 
     pub fn image_encode(
@@ -1036,11 +1056,15 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
 pub const FAILURE_TARGET: &str = "graphix::failure";
 
 pub trait Rt: Debug + Any + Send + Sync {
-    /// Called whenever a bound variable (or lambda) is referenced;
-    /// `ref_by` is the toplevel expression containing the reference,
-    /// which must be updated when the variable changes.
-    fn ref_var(&mut self, id: BindId, ref_by: ExprId);
-    fn unref_var(&mut self, id: BindId, ref_by: ExprId);
+    /// Called whenever a bound variable (or lambda) is referenced; `by`
+    /// names the toplevel expression containing the reference, which must
+    /// be updated when the variable changes, and the boundary around it,
+    /// which a delivery marks (`design/walk_pruning.md`).
+    fn ref_var(&mut self, id: BindId, by: prune::Reader);
+    fn unref_var(&mut self, id: BindId, by: prune::Reader);
+
+    /// Each reader `id` has.
+    fn readers(&self, id: &BindId, f: &mut dyn FnMut(&prune::Reader));
 
     /// Queue a variable write for the next cycle. Writes to distinct
     /// variables are delivered in one event; a second write to the same
@@ -1356,9 +1380,12 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// References compiled but not yet registered with the runtime, by
     /// variable and top expression: compiling reaches no runtime, and
     /// [`ExecCtx::apply_deferred`] registers them.
-    pub(crate) pending_refs: AHashMap<(BindId, ExprId), usize>,
-    /// What compiling abandoned, for the runtime to delete.
-    discarded: Vec<Discarded<R, E>>,
+    pub(crate) pending_refs: AHashMap<(BindId, prune::Reader), usize>,
+    /// What compiling abandoned, for the runtime to delete, each with the
+    /// boundary it was compiled in.
+    discarded: Vec<(Discarded<R, E>, Option<prune::BoundaryRef>)>,
+    /// The boundary the compile is inside (`design/walk_pruning.md`).
+    pub(crate) boundary: Option<prune::BoundaryRef>,
     /// The id of the concurrent compile task this one runs in
     /// ([`typ::tvar::InTask`]); 0 at the root.
     /// This task's share of the compile's profile ([`profile::Task`]).
@@ -1424,6 +1451,11 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
     pub(crate) par: graphix_types::stack::ParMode,
     /// What the code around the node being updated says about forking.
     pub(crate) fork: branch::ForkFlags,
+    /// The boundary the walk is inside (`design/walk_pruning.md`); the
+    /// compile view takes it whenever the walk compiles.
+    pub(crate) boundary: Option<prune::BoundaryRef>,
+    /// The runtime's prune mode when the view was made.
+    pub(crate) prune: PruneMode,
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
@@ -1438,7 +1470,11 @@ impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
 impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
     #[inline]
     fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
-        &mut self.cx
+        let cx = &mut *self.cx;
+        if cx.boundary != self.boundary {
+            cx.boundary = self.boundary.clone();
+        }
+        cx
     }
 }
 
@@ -1504,6 +1540,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             attr_absorbed: Mutex::new(IntSet::default()),
             pending_refs: AHashMap::default(),
             discarded: Vec::new(),
+            boundary: self.boundary.clone(),
             profile: profile::Task::fork(),
             fusion: self.fusion.fork(),
         }
@@ -1547,6 +1584,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             attr_absorbed,
             pending_refs,
             discarded,
+            boundary: _,
             profile,
             fusion,
         } = fork;
@@ -1580,24 +1618,42 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// Record that `top_id` reads `id`: the runtime is told at the next
     /// [`ExecCtx::apply_deferred`].
     pub fn record_ref(&mut self, id: BindId, top_id: ExprId) {
-        *self.pending_refs.entry((id, top_id)).or_default() += 1;
+        let reader = self.reader(top_id);
+        *self.pending_refs.entry((id, reader)).or_default() += 1;
+    }
+
+    /// The reader a node at `top_id` inside the current boundary is.
+    pub fn reader(&self, top_id: ExprId) -> prune::Reader {
+        prune::Reader { root: top_id, boundary: self.boundary.clone() }
+    }
+
+    /// `f` compiling inside `boundary`.
+    pub fn in_boundary<T>(
+        &mut self,
+        boundary: &Option<prune::BoundaryRef>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let outer = mem::replace(&mut self.boundary, boundary.clone());
+        let r = f(self);
+        self.boundary = outer;
+        r
     }
 
     /// Abandon a node compiling built: it is deleted, with the runtime,
     /// at the next [`ExecCtx::apply_deferred`].
     pub fn discard(&mut self, node: Node<R, E>) {
-        self.discarded.push(Discarded::Node(node));
+        self.discarded.push((Discarded::Node(node), self.boundary.clone()));
     }
 
     /// [`Self::discard`] for an application.
     pub fn discard_apply(&mut self, apply: Box<dyn Apply<R, E>>) {
-        self.discarded.push(Discarded::Apply(apply));
+        self.discarded.push((Discarded::Apply(apply), self.boundary.clone()));
     }
 
     /// Forget the value the runtime stores for `id`, at the next
     /// [`ExecCtx::apply_deferred`].
     pub fn discard_stored(&mut self, id: BindId) {
-        self.discarded.push(Discarded::Stored(id));
+        self.discarded.push((Discarded::Stored(id), self.boundary.clone()));
     }
 
     env_restore_methods!();
@@ -1794,6 +1850,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 attr_absorbed: Mutex::new(IntSet::default()),
                 pending_refs: AHashMap::default(),
                 discarded: Vec::new(),
+                boundary: None,
                 profile: profile::Task::default(),
                 fusion: fusion::FusionCtx::new(),
             },
@@ -1825,6 +1882,8 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             fork_depth: 0,
             par: control.par_mode(),
             fork: branch::ForkFlags::default(),
+            boundary: None,
+            prune: control.prune_mode(),
         }
     }
 }
@@ -1918,6 +1977,8 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             fork_depth: self.fork_depth,
             par: self.par,
             fork: self.fork,
+            boundary: self.boundary.clone(),
+            prune: self.prune,
         }
     }
 
@@ -1945,16 +2006,56 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
     /// cancelled, any other unregistered.
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
+        let key = (id, self.reader(top_id));
         // read through the view first: a branch that compiled nothing
         // must not fork its compile view to find nothing pending
-        if !self.cx.pending_refs.contains_key(&(id, top_id)) {
-            return self.rt.unref_var(id, top_id);
+        if !self.cx.pending_refs.contains_key(&key) {
+            return self.rt.unref_var(id, key.1);
         }
-        let n = self.cx.pending_refs.get_mut(&(id, top_id)).expect("checked above");
+        let n = self.cx.pending_refs.get_mut(&key).expect("checked above");
         *n -= 1;
         if *n == 0 {
-            self.cx.pending_refs.remove(&(id, top_id));
+            self.cx.pending_refs.remove(&key);
         }
+    }
+
+    /// Register now that the node at `top_id` reads `id`: a read the walk
+    /// learns at run time.
+    pub fn ref_var(&mut self, id: BindId, top_id: ExprId) {
+        let reader = self.reader(top_id);
+        self.rt.ref_var(id, reader)
+    }
+
+    /// The reader a node at `top_id` inside the walk's boundary is.
+    pub fn reader(&self, top_id: ExprId) -> prune::Reader {
+        prune::Reader { root: top_id, boundary: self.boundary.clone() }
+    }
+
+    /// `f` walking inside `boundary`.
+    pub fn in_boundary<T>(
+        &mut self,
+        boundary: &Option<prune::BoundaryRef>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let outer = mem::replace(&mut self.boundary, boundary.clone());
+        let r = f(self);
+        self.boundary = outer;
+        r
+    }
+
+    /// Deliver `tv` to `id` this cycle in the event alone (its store entry
+    /// stands as it is), marking its readers' boundaries.
+    pub fn publish(&mut self, id: BindId, tv: TagValue) {
+        self.event.variables.insert(id, tv);
+        self.rt.mark_readers(id)
+    }
+
+    /// [`Self::publish`] unless `id` was delivered this cycle already, when
+    /// `tv` comes back.
+    pub fn try_publish(&mut self, id: BindId, tv: TagValue) -> Result<(), TagValue> {
+        self.event.variables.try_insert(id, tv)?;
+        self.rt.mark_readers(id);
+        Ok(())
     }
 
     /// Apply to the runtime what compiling deferred: delete what it
@@ -1967,9 +2068,9 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         }
         // registered first, so each discard's delete reaches the runtime,
         // whether it was registered before this batch or in it
-        for ((id, top_id), n) in self.cx.pending_refs.drain() {
+        for ((id, reader), n) in self.cx.pending_refs.drain() {
             for _ in 0..n {
-                self.rt.ref_var(id, top_id);
+                self.rt.ref_var(id, reader.clone());
             }
         }
         self.shrink_pending_refs();
@@ -2038,12 +2139,12 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     }
 
     fn delete_discarded(&mut self) {
-        for d in mem::take(&mut self.cx.discarded) {
-            match d {
-                Discarded::Node(mut n) => n.delete(self),
-                Discarded::Apply(mut a) => a.delete(self),
-                Discarded::Stored(id) => self.rt.store_release(&id),
-            }
+        for (d, boundary) in mem::take(&mut self.cx.discarded) {
+            self.in_boundary(&boundary, |ctx| match d {
+                Discarded::Node(mut n) => n.delete(ctx),
+                Discarded::Apply(mut a) => a.delete(ctx),
+                Discarded::Stored(id) => ctx.rt.store_release(&id),
+            })
         }
     }
 
@@ -2377,6 +2478,9 @@ struct DynNode {
     aborts: AtomicU64,
     /// Raised to descendant handlers and not yet processed by them.
     nested: AtomicU64,
+    /// The boundaries of the nodes that poll this handler's state, which a
+    /// raise, a handling or an abort marks (`design/walk_pruning.md`).
+    pollers: Mutex<SmallVec<[prune::BoundaryRef; 2]>>,
     /// The handler that reads the error was checked: a raise compiled
     /// later must fit the type it was checked at.
     sealed: AtomicBool,
@@ -2395,20 +2499,23 @@ impl ErrorHandler {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
-    pub(crate) fn raise(&self) {
+    pub(crate) fn raise(&self, cycle: u64) {
         self.0.raised.fetch_add(1, Ordering::Relaxed);
+        self.mark_pollers(cycle);
         let mut parent = self.0.parent.0.as_ref();
         while let Some(handler) = parent {
             handler.0.nested.fetch_add(1, Ordering::Relaxed);
+            handler.mark_pollers(cycle);
             parent = handler.0.parent.0.as_ref();
         }
     }
 
-    pub(crate) fn handled(&self) {
+    pub(crate) fn handled(&self, cycle: u64) {
         let mut parent = self.0.parent.0.as_ref();
         while let Some(handler) = parent {
             let pending = handler.0.nested.fetch_sub(1, Ordering::Relaxed);
             debug_assert!(pending > 0, "unraised nested error");
+            handler.mark_pollers(cycle);
             parent = handler.0.parent.0.as_ref();
         }
     }
@@ -2417,6 +2524,45 @@ impl ErrorHandler {
     pub(crate) fn abort(&self, cycle: u64) {
         self.0.aborts.fetch_add(1, Ordering::Relaxed);
         self.0.aborted.store(cycle.wrapping_add(1), Ordering::Relaxed);
+        self.mark_pollers(cycle);
+    }
+
+    /// A node inside `boundary` polls this handler's state.
+    pub(crate) fn poll_from(&self, boundary: &Option<prune::BoundaryRef>) {
+        if let Some(b) = boundary {
+            self.0.pollers.lock().push(b.clone())
+        }
+    }
+
+    /// Undo one [`Self::poll_from`].
+    pub(crate) fn unpoll(&self, boundary: &Option<prune::BoundaryRef>) {
+        if let Some(b) = boundary {
+            let mut pollers = self.0.pollers.lock();
+            if let Some(i) = pollers.iter().position(|p| p == b) {
+                pollers.swap_remove(i);
+            }
+        }
+    }
+
+    /// A node inside `boundary` polls this handler and the machine
+    /// covering it.
+    pub(crate) fn polled_by(&self, boundary: &Option<prune::BoundaryRef>) {
+        self.poll_from(boundary);
+        if let Some(m) = self.machine().filter(|m| !m.same(self)) {
+            m.poll_from(boundary)
+        }
+    }
+
+    /// Undo one [`Self::polled_by`].
+    pub(crate) fn unpolled_by(&self, boundary: &Option<prune::BoundaryRef>) {
+        self.unpoll(boundary);
+        if let Some(m) = self.machine().filter(|m| !m.same(self)) {
+            m.unpoll(boundary)
+        }
+    }
+
+    fn mark_pollers(&self, cycle: u64) {
+        self.0.pollers.lock().iter().for_each(|b| b.mark(cycle))
     }
 
     /// Whether an `abort(..)` fired in `cycle`: a step entered in that
@@ -2505,6 +2651,7 @@ impl DynScope {
             raised: AtomicU64::new(0),
             aborts: AtomicU64::new(0),
             nested: AtomicU64::new(0),
+            pollers: Mutex::new(SmallVec::new()),
             sealed: AtomicBool::new(false),
             parent: self.clone(),
         }))))
@@ -2872,6 +3019,7 @@ impl Saved {
             attr_absorbed: _,
             pending_refs: _,
             discarded: _,
+            boundary: _,
             profile: _,
             fusion: _,
         } = ctx;

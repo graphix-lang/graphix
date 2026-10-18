@@ -34,7 +34,7 @@ use netidx_core::{
 };
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
-use std::{any::Any, fmt::Write, mem, sync::LazyLock};
+use std::{fmt::Write, mem, sync::LazyLock};
 use triomphe::Arc;
 
 /// What one item of a `use` installs.
@@ -567,7 +567,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     // a name a later `let` shadows is not the one the interface exports
     let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
     for n in nodes {
-        if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>() {
+        if let Some(bind) = n.downcast_ref::<Bind<R, E>>() {
             bind.pattern.ids(&mut |id| {
                 if let Some(b) = ctx.env.by_id.get(&id) {
                     effective.insert(b.name.clone(), id);
@@ -577,7 +577,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     }
     for n in nodes {
         let mut check_node = || -> Result<()> {
-            if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
+            if let Some(bind) = n.downcast_ref::<Bind<R, E>>()
                 && let Some(binds) = ctx.env.binds.get(&scope.lexical)
             {
                 // every name the `let` binds, each with its own binding; a
@@ -673,7 +673,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                 let declared =
                     ctx.env.impl_entry(trait_id, &target)?.expect("bound by bind_sig");
                 let mut fulfilled = nodes.iter().filter_map(|n| {
-                    (&**n as &dyn Any).downcast_ref::<traits::Impl<R, E>>().filter(|i| {
+                    n.downcast_ref::<traits::Impl<R, E>>().filter(|i| {
                         i.fulfils.as_ref().is_some_and(|d| Arc::ptr_eq(d, &declared))
                     })
                 });
@@ -1325,7 +1325,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             }
             refs.with_external_refs(|id| {
                 if let Some(v) = ctx.rt.store_value(&id)
-                    && ctx.event.variables.try_insert(id, TagValue::fired(v)).is_ok()
+                    && ctx.try_publish(id, TagValue::fired(v)).is_ok()
                 {
                     primed.push(id)
                 }

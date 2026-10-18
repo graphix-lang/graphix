@@ -286,7 +286,9 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 .at(&pattern_site(pat, body))?;
                 pat.structure_predicate
                     .ids(&mut |id| ctx.env.mark_pattern_bind(id, inputs.clone()));
-                let n = compile(ctx, flags, body.clone(), &scope, top_id)?;
+                let n = super::prune::Prune::compile(ctx, |ctx| {
+                    compile(ctx, flags, body.clone(), &scope, top_id)
+                })?;
                 Ok((pat, n))
             })
             .collect::<Result<Vec<_>>>()

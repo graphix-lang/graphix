@@ -52,7 +52,7 @@ pub fn fuzz_par(mode: Mode) -> ParMode {
     match mode {
         Mode::Par => ParMode::Force,
         Mode::JitPar => ParMode::Auto,
-        Mode::Interp | Mode::Jit => ParMode::Off,
+        Mode::Interp | Mode::Jit | Mode::Unpruned => ParMode::Off,
     }
 }
 
@@ -495,6 +495,7 @@ async fn start_session(
             ctx.libstate.set(seeded);
             ctx.libstate.set(exit_req);
             ctx.control.set_par_mode(fuzz_par(mode));
+            ctx.control.set_prune_mode(mode.prune());
         })?
         .flags(mode.flags())
         .registration(registration);
@@ -1401,6 +1402,10 @@ pub enum Pair {
     /// kernel loops included, at `Auto` over [`AUTO_T`], so every site
     /// probes and forks (`Mode::JitPar`).
     Par(Mode),
+    /// The node-walk walking every boundary (`reference`) vs the pruned
+    /// node-walk (`tested`): skipping a boundary changed the program
+    /// (`design/walk_pruning.md`).
+    Prune,
 }
 
 /// The label of one session run, for a finding's outcome fields.
@@ -1421,6 +1426,7 @@ fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
         (Jit, Dispatch, Warm) => "jit/dispatch/warm",
         (Par, _, _) => "par",
         (JitPar, _, _) => "jit-par",
+        (Unpruned, _, _) => "unpruned",
     }
 }
 
@@ -1456,6 +1462,9 @@ impl Divergence {
                      a program the definition and call-site checks passed: a \
                      type-system bug)"
             }
+            (Pair::Prune, _) => {
+                "walk pruning bug (pruned node-walk != unpruned node-walk)"
+            }
             (Pair::Par(Mode::Par), _) => {
                 "parallel evaluation bug (forked node-walk != serial node-walk)"
             }
@@ -1475,13 +1484,13 @@ impl Divergence {
                 "fusion/JIT bug (final values, interp != jit)"
             }
             (Pair::Engine, _) => "fusion/JIT bug (interp != jit)",
-            (Pair::Cold(Mode::Interp | Mode::Par, _), _) => {
+            (Pair::Cold(Mode::Interp | Mode::Par | Mode::Unpruned, _), _) => {
                 "image bug: writing the program image changed the program (interp)"
             }
             (Pair::Cold(Mode::Jit | Mode::JitPar, _), _) => {
                 "image bug: writing the program image changed the program (jit)"
             }
-            (Pair::Warm(Mode::Interp | Mode::Par, _), _) => {
+            (Pair::Warm(Mode::Interp | Mode::Par | Mode::Unpruned, _), _) => {
                 "image bug: the restored program differs from the cold one (interp)"
             }
             (Pair::Warm(Mode::Jit | Mode::JitPar, _), _) => {
@@ -1499,6 +1508,7 @@ impl Divergence {
             Pair::Twin => ("trace", "trace"),
             Pair::Rejected | Pair::Accepted => ("interp", "jit"),
             Pair::Check => ("check", "build"),
+            Pair::Prune => ("interp/unpruned", "interp"),
             Pair::Par(Mode::Par) => ("interp", "interp/par"),
             Pair::Par(_) => ("interp", "jit/par"),
             Pair::Cold(m, r) => (
@@ -1646,6 +1656,7 @@ impl Run {
             "Jit" => Mode::Jit,
             "Par" => Mode::Par,
             "JitPar" => Mode::JitPar,
+            "Unpruned" => Mode::Unpruned,
             _ => return None,
         };
         let route = match w.next()? {
@@ -1690,6 +1701,7 @@ impl Pair {
             }
             Pair::Route => (Run::plain(Mode::Interp, i), Run::plain(Mode::Interp, j)),
             Pair::Par(m) => (Run::plain(Mode::Interp, i), Run::plain(m, i)),
+            Pair::Prune => (Run::plain(Mode::Unpruned, i), Run::plain(Mode::Interp, i)),
             Pair::Cold(m, r) => (Run::plain(m, r), session(m, r, Session::Cold)),
             Pair::Warm(m, r) => {
                 (session(m, r, Session::Cold), session(m, r, Session::Warm))
@@ -1730,6 +1742,7 @@ fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
     if par_enabled() {
         out.extend([Pair::Par(Mode::Par), Pair::Par(Mode::JitPar)]);
     }
+    out.push(Pair::Prune);
     out
 }
 
@@ -4435,6 +4448,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
             (Mode::Jit, Route::Dispatch) => "jit-dispatch",
             (Mode::Par, _) => "par",
             (Mode::JitPar, _) => "jit-par",
+            (Mode::Unpruned, _) => "unpruned",
         });
     }
     bad
@@ -4461,13 +4475,14 @@ async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> 
 }
 
 /// What a selfcheck child reports, one per line of its verdict file.
-pub const SELFCHECK_MODES: [&str; 7] = [
+pub const SELFCHECK_MODES: [&str; 8] = [
     "interp",
     "jit",
     "interp-dispatch",
     "jit-dispatch",
     "par",
     "jit-par",
+    "unpruned",
     "inconclusive",
 ];
 
@@ -6389,7 +6404,8 @@ mod trace_probes {
         let ctx = async {
             TestCtx::start(
                 config(tx, REGISTER, vec![resolver], move |ctx| {
-                    ctx.control.set_par_mode(fuzz_par(mode))
+                    ctx.control.set_par_mode(fuzz_par(mode));
+                    ctx.control.set_prune_mode(mode.prune())
                 })?
                 .flags(mode.flags()),
             )

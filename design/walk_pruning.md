@@ -1,8 +1,9 @@
 # Walk pruning
 
-Status: design, 2026-10-18 (Eric: boundary granularity, all boundaries
-at once, atomics vs layered merges to be measured). Not built. Resolves
-x-perf-runtime-01 and x-alloc-01 when built.
+Status: design 2026-10-18 (Eric: boundary granularity, all boundaries
+at once, atomics vs layered merges to be measured); built, see "As built",
+which supersedes the sections above it where they differ. Resolves
+x-perf-runtime-01 and x-alloc-01.
 
 ## The problem
 
@@ -174,10 +175,8 @@ cycle runs because the publication marks it before the walk reaches it.
   merges the delta upward in program order, as `RtOp`s replay.
 
 Both satisfy the same invariant; atomics cost a fence per mark, layered
-costs a lookup chain per check. Built behind
-`GRAPHIX_PRUNE_MARKS=atomic|layered` and measured on the parallel
-benches and the GUI/TUI latency milestones under `GRAPHIX_PAR=auto` and
-`force`; the loser is deleted and the variable with it.
+costs a lookup chain per check. Both were built and measured; atomic
+stamps won and the layered marks are deleted (see "As built").
 
 ## Fusion, images, the REPL
 
@@ -242,3 +241,86 @@ design), netidx-admin's milestone latency, and fuzzer throughput.
   through the `Reader` they captured. A read that learns its id only
   inside an update must register before that update's boundary could
   next be skipped, which is the case today for roots.
+
+## As built
+
+**Boundaries** (`graphix-compiler/src/prune.rs`, `node/prune.rs`). A
+boundary is a `BoundaryRef`, an `Arc` holding its parent, an atomic stamp
+(the last cycle it was marked) and a sticky count; no slab, so compiling
+makes one without reaching the runtime and an id is never reused. A
+`Prune` node wraps each block statement (`compile_block_children`, so
+module bodies and seq steps too), each select arm body and each instance
+body (`GXLambda::new_with_body`). It is transparent: its view,
+`for_each_child`, spec, type, refs and `emit_clif` are its child's, and
+`Node::downcast_ref`/`downcast_mut` see through it. Its `update` rides
+its resident when it walked before, the view is `Cycle` and the runtime
+says it is not dirty; every other method runs the child inside its
+boundary.
+
+**The current boundary is the traversal's.** `CompileCtx::boundary` and
+`ExecCtx::boundary`, set by `in_boundary` around every traversal of a
+`Prune`'s child; `ExecCtx`'s `deref_mut` copies it into the compile view,
+so a compile the walk makes (a run-time bind, a decode) registers where it
+runs. A registration is a `Reader { root, boundary }`: `record_ref` and
+`ExecCtx::ref_var`/`unref_var` take the root and read the boundary from
+the context, and `pending_refs` and each discard keep the boundary they
+were made in (`delete_discarded` deletes under it). The runtime's
+debug assertion that every unregistration matches a registration is
+what catches a node traversed outside its boundary.
+
+**Marks.** `RtView::mark_readers` marks the boundary of every reader of
+an id: on a stamped `store_insert`, on `notify_set`, and through
+`ExecCtx::publish`/`try_publish` for a write to the event alone (the
+call site's formals, a same-root raise, a module's prime). The root's
+`wake_readers` marks for the cycle's deliveries. A fork also keeps the
+readers it registered this cycle, which the runtime learns only at the
+join, and marks them too (a core-trait hook site built in a branch and
+called again in the same cycle). A wake's catch-up injections need no
+mark: they run under `Wake`.
+
+**Shared state.** An error handler keeps the boundaries of the nodes that
+poll it (`Catch`, `SeqGuard`: `ErrorHandler::polled_by`, released at
+delete); `raise`, `handled` and `abort` mark them, an ancestor's too where
+they move its nested count. Nothing needed `sticky` so far; the audit
+decides.
+
+**Fusion** steps into a boundary: `fusion::fuse` on a `Prune` fuses its
+child inside it (`Prune::fuse_child`), so a kernel replaces the child and
+the boundary stays, and everything fusion builds there registers where
+it lives. A region rooted above a `Prune` emits through it and replaces
+it whole; its feeders register in the outer boundary, where the kernel
+lives.
+
+**Images.** An imaged call site holds its callee's flat reads under its
+own boundary until the callee materializes, then releases them: the
+decoded body's nodes register their own. (Before, only the site decoded
+outside every heap instance held them, for the whole tree, which would
+have left the boundaries in between unmarked.)
+
+**Modes.** `PruneMode::{Off, On, Audit}` on `Control`, from
+`GRAPHIX_PRUNE` (default `on`); the audit walks every boundary and panics
+where one it would have skipped delivered anything but its ridden
+resident or published an entry that fires or differs from the store (a
+stale republication of the store's value reads as none). `Control::boundaries()` counts
+boundaries walked and skipped. The fuzzer's `Pair::Prune` compares
+`Mode::Unpruned` (the node-walk walking every boundary) with the pruned
+node-walk.
+
+**Marks are atomic stamps.** A mark made in a forked branch is a store to
+the boundary's stamp, visible to every branch at once; marking is
+monotone, so a sibling that sees it early only walks a boundary the
+serial walk would also walk or skip with the same result. Measured
+against layered marks (a per-branch delta set merged at the join), on a
+quick build, best of three, `--no-fusion`, 20000 map slots each
+publishing two `let`s per tick over 290 ticks: serial 5.35 s both;
+`auto` x4 3.41 s atomic vs 4.05 s layered; `force` x12 10.1 vs 12.3;
+`auto` x12 4.07 vs 4.68. The parallel benches (`bench/par.sh`) tie, as
+do pruning on and off there: they do work every cycle.
+
+**Measured** (quick build, `chrt -f 50`, `--no-cache`, off -> on): the
+review probes `design/review-2026-10-12/repro/x-perf-runtime-01a` 10.0 s
+-> 5.0 ms node-walk (5.0 s -> 5.3 ms fused), `-01b` 2.03 s -> 5.4 ms,
+`-01c` 149 ms -> 8.9 ms; `x-alloc-01.sh` (300 unrelated cycles, whole
+run) 0.28 -> 0.10 s at 2000 slots and 2.02 -> 0.37 s at 20000. Pin:
+`lang::prune::idle_map_beside_a_ticking_counter` (1000 more idle slots
+cost their first walks only: 2000 walks pruned, 204400 unpruned).

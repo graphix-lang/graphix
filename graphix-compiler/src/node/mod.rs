@@ -60,6 +60,7 @@ pub(crate) mod module;
 pub(crate) mod op;
 pub(crate) mod pattern;
 pub mod place;
+pub(crate) mod prune;
 pub(crate) mod select;
 pub(crate) mod seq_machine;
 pub mod traits;
@@ -800,9 +801,12 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
             catches.push(i);
         }
         let at = StmtAt::Block { value: !module && i + 1 == n };
-        let (node, next) = compile_statement(ctx, flags, e, &scope, top_id, at)?;
+        let boundary = prune::Prune::boundary(ctx);
+        let (node, next) = ctx.in_boundary(&boundary, |ctx| {
+            compile_statement(ctx, flags, e, &scope, top_id, at)
+        })?;
         scope = next;
-        children.push(node);
+        children.push(prune::Prune::wrap(boundary, node));
         Ok::<_, anyhow::Error>(())
     });
     ctx.written_lets.pop();

@@ -117,7 +117,7 @@ impl TrackedFires {
 
     /// Re-collect arm `i`'s refs, at a deselect, when its subtree is
     /// fully materialized.
-    // CR claude for eric: [perf/low] Every select deselect and every seq step passage
+    // CR claude for claude: [perf/low] Every select deselect and every seq step passage
     // call this. It builds a fresh Refs and walks the arm's entire subtree with `refs`,
     // descending into every bound callee instance and every collection slot. It then
     // rebuilds the arm's input map and the select-wide `all` set. The arm's refs change
@@ -130,6 +130,12 @@ impl TrackedFires {
     // generalized walk pruning (his 2026-10-14 note on x-perf-runtime-01: a NodeId per
     // node, BindId -> dependent NodeIds, a dirty bit per node). Readdressed to Eric so
     // both are designed once.
+    // 2026-10-18 claude: Walk pruning is built (design/walk_pruning.md), but its marks
+    // record deliveries, not structural change: a boundary is marked when something it
+    // reads is written this cycle, never when a CallSite under it binds or a collection
+    // resizes. So it does not give this refresh the generation it needs. That
+    // generation is a separate, local fix (a counter the arm's binds and resizes bump),
+    // no longer coupled to the pruning design; readdressed to claude.
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
         let Self { per_arm, consumes, all, pending, carried, ran: _ } = self;
         let mut r = Refs::default();

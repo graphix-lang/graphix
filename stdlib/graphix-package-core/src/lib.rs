@@ -672,7 +672,7 @@ impl RtVar {
     /// the caller releases it once what is owed under it has come.
     pub fn fresh<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> BindId {
         let old = std::mem::replace(&mut self.id, BindId::new());
-        ctx.rt.ref_var(self.id, self.top_id);
+        ctx.ref_var(self.id, self.top_id);
         old
     }
 
@@ -3025,7 +3025,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                     emit!($cause)
                 } else {
                     let tid = BindId::new();
-                    ctx.rt.ref_var(tid, self.top_id);
+                    ctx.ref_var(tid, self.top_id);
                     ctx.rt.set_timer(tid, self.wait - (now - last));
                     self.run = Run::Pending { last, tid };
                     ride!()

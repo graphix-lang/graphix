@@ -110,7 +110,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
                     }
                     let id = BindId::new();
                     self.id = Some(id);
-                    ctx.rt.ref_var(id, self.eid);
+                    ctx.ref_var(id, self.eid);
                     ctx.rt.set_timer(id, dur);
                     return self.out.ride();
                 }
@@ -231,7 +231,7 @@ impl Timer {
         {
             let id = BindId::new();
             self.id = Some(id);
-            ctx.rt.ref_var(id, self.eid);
+            ctx.ref_var(id, self.eid);
             ctx.rt.set_timer(id, dur);
         }
     }

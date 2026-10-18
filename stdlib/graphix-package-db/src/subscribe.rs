@@ -384,7 +384,7 @@ macro_rules! db_event_accessor {
                         }
                         self.bind_id = self.cached.value(0).and_then(extract_sub_bind_id);
                         if let Some(bid) = self.bind_id {
-                            ctx.rt.ref_var(bid, self.top_id);
+                            ctx.ref_var(bid, self.top_id);
                         }
                     }
                 }

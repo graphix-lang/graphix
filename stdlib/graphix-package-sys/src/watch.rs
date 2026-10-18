@@ -636,7 +636,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
                 extract_bind_ids(v, &mut self.bind_ids);
             }
             for bid in &self.bind_ids {
-                ctx.rt.ref_var(*bid, self.var.top_id());
+                ctx.ref_var(*bid, self.var.top_id());
             }
         }
         for bid in &self.bind_ids {

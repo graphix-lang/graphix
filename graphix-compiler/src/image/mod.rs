@@ -72,9 +72,6 @@ pub(crate) struct Restored {
     pub(crate) instances: AHashMap<LambdaInstanceId, u64>,
     /// What each instance in the heap reads, its callees by instance.
     pub(crate) instance_refs: triomphe::Arc<InstanceRefsTable>,
-    /// A heap instance is decoding: its imaged sites' reads are held by
-    /// the site that registered the whole tree.
-    pub(crate) in_instance: bool,
 }
 
 /// A dynamic scope is the chain of handlers a `?` sees; each handler is

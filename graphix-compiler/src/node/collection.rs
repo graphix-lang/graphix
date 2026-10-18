@@ -1196,55 +1196,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 return self.resident.set(TagValue::tagged(v, tag));
             }
         }
-        // CR claude for eric: [perf/high] Every update runs every standing slot's
-        // callback, even when take_source reports the source quiet and the event has no
-        // variable any slot reads. FoldQ::update's slot loop, CallSite::update_call and
-        // GXLambda::update do the same for each recursion activation. So a node-walk
-        // cycle costs the whole program plus all of its slots and activations, not what
-        // changed. An idle `array::map(src, |x| uniq(x) * 2)` of 2000 elements beside a
-        // ticking counter makes each tick about 50x slower than at size 0 (probe:
-        // design/review-2026-10-12/repro/x-perf-runtime-01a.gx; also -01b for recursion
-        // and -01c for queued writes, whose drain time is quadratic). The fused path
-        // rides its resident when no feeder triggered (FusedKernel::update), so this
-        // cost lands on node-walk residue: stateful builtins, `<-`, references, async
-        // calls. That is what UI code is made of. A fix applies R1 at slot and instance
-        // granularity. Each slot or bound instance keeps the BindIds its subtree reads
-        // (from `refs`, refreshed at rebind), with an inverse index beside rt.by_ref. A
-        // slot is skipped and its SlotState ridden when the source did not move,
-        // nothing woke, the view is Cycle, and none of its ids was delivered this
-        // cycle. Pin it with a test that counts slot updates in an idle map beside a
-        // ticking counter. (x-perf-runtime-01)
-        // 2026-10-14 eric: Generalized walk pruning is probably the biggest open
-        // performance item we have. Ever since I read this CR I've been prototyping it.
-        // If we can successfully prune unused subtrees out of an update walk in a way
-        // that's much cheaper than actually running the walk the perf implications
-        // could be huge. The simple and slow answer is, if events contains any of the
-        // subtree's refs (or netidx updates) then you must run the subtree, otherwise
-        // you can skip it. Directly executing that strategy probably would not be much
-        // faster than doing the full update. However if we give each node an integer id
-        // NodeId, and we keep a table of BindId -> [dependent NodeId] and a table of
-        // NodeId -> dirty bool, then when we set a variable, we can update the dirty
-        // bit for every NodeId that depends on that variable (dependent must include
-        // parents). Then update just has to check it's dirty bit to decide whether it
-        // should even run, if the answer is no it just returns and doesn't run it's
-        // children either. Lets discuss this further when you get to this CR.
-        // CR claude for eric: [perf/high] Every cycle runs every slot's call here, and
-        // FoldQ::update does the same in its slot loop. The source does not have to
-        // move, the collection does not have to wake, and nothing a slot reads has to
-        // fire: a root Block updates all of its statements each cycle. So one unrelated
-        // variable's cycle costs O(live slots in the program). Fusion hides this only
-        // when the callback fuses whole; a callback holding `~`, state, a reference or
-        // an async builtin (most TUI/GUI row builders) is node-walked, and every
-        // keypress pays for every row. probe:
-        // design/review-2026-10-12/repro/x-alloc-01.sh gives 300 unrelated cycles in
-        // 0.62 s at 2000 slots and 3.95 s at 20000 (debug build). A fix is a gate: at
-        // bind/resize, record the BindIds the slots read, internal ids included (the
-        // refs walk or the slots' by_ref registrations). Skip the slot pass and ride
-        // the resident when the source did not trigger, the node did not wake, the view
-        // is not init, and none of those ids is in ctx.event.variables or the cycle's
-        // custom deliveries. The same gate would apply to any CallSite whose instance
-        // read nothing that fired. This changes the node-walk's dense update model, so
-        // it needs your decision on whether and where to gate. (x-alloc-01)
         let rebound = ctx.event.variables.contains_key(&self.callback.id);
         let slots = woken_slots(ctx, old_len, paused, |ctx, views| {
             update_slots(ctx, &mut self.slots, &mut self.fork, views, rebound)

@@ -596,9 +596,11 @@ impl<X: GXExt> GX<X> {
 
     /// Readers of `id` update this cycle.
     fn wake_readers(&mut self, id: &BindId) {
-        if let Some(exps) = self.ctx.rt.by_ref.get(id) {
-            for (e, _) in exps {
-                self.ctx.rt.updated.entry(*e).or_insert(false);
+        let cycle = self.ctx.rt.cycle;
+        if let Some(readers) = self.ctx.rt.by_ref.get(id) {
+            for (r, _) in readers {
+                self.ctx.rt.updated.entry(r.root).or_insert(false);
+                r.mark(cycle);
             }
         }
     }
