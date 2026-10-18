@@ -121,9 +121,7 @@ fn cast_elts<T>(
 /// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
 type RefKey = (usize, Arc<[Type]>);
 
-/// A cast in progress: the refs expanded on the way to each value, and
-/// whether the value is data from a format that writes a list as a flat
-/// array, whose arrays are never a list's cells.
+/// A cast in progress: the refs expanded on the way to each value.
 struct CastCx {
     hist: LPooled<AHashSet<(RefKey, usize)>>,
     /// The params sizes on the path of each (definition, value address).
@@ -131,7 +129,6 @@ struct CastCx {
     /// Each reference's expansion, by definition and params allocation,
     /// with the params held so the allocation stays theirs.
     expanded: LPooled<AHashMap<(usize, usize), (Arc<[Type]>, Type)>>,
-    data: bool,
 }
 
 /// An `is_a` walk's state: the references on its path with the value
@@ -620,6 +617,16 @@ impl Type {
                 Err(self.cast_fail("a reference can't be read from data", v))
             }
             Type::Primitive(s) => {
+                // a tuple, struct, variant or list is no primitive; a bare
+                // variant reads as a string by its tag
+                if rep::kind(v).is_some() {
+                    return match rep::variant(v) {
+                        Some((tag, [])) if s.contains(Typ::String) => {
+                            Ok(Some(Value::String(tag.clone())))
+                        }
+                        _ => Err(self.cast_fail("no primitive holds it", v)),
+                    };
+                }
                 if s.contains(Typ::get(v)) {
                     return Ok(None);
                 }
@@ -659,13 +666,10 @@ impl Type {
                     v => Err(self.cast_fail("not an error", v)),
                 }
             }
-            // An array and a list share `Value::Array`: the source's
-            // static type says which one the value is, the shape only
-            // when the source is unknown.
+            // a list reads as the array of its elements
             Type::Array(et) => {
                 let src = src_head(src, env, v);
-                let from_list = matches!(&src, Some(Type::List(_)));
-                if from_list && !list::is_list(v) {
+                if matches!(&src, Some(Type::List(_))) && !list::is_list(v) {
                     return Err(self.cast_fail("not a list", v));
                 }
                 let src = match &src {
@@ -673,7 +677,7 @@ impl Type {
                     _ => None,
                 };
                 match v {
-                    _ if from_list => {
+                    v if list::is_list(v) => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         for el in list::Iter::new(v.clone()) {
                             let c = et.cast_int(env, cx, src, &el)?;
@@ -692,41 +696,15 @@ impl Type {
             }
             Type::List(et) => {
                 let src = src_head(src, env, v);
-                let spine = match &src {
-                    Some(Type::List(_)) if !list::is_list(v) => {
-                        return Err(self.cast_fail("not a list", v));
-                    }
-                    Some(Type::List(_)) => true,
-                    Some(Type::Array(_)) => false,
-                    // CR claude for eric: [bug/medium] With no source type, this
-                    // guesses that any array that parses as a cons spine is already a
-                    // list. An ordinary array whose last element is [] (or a 2-array
-                    // chain ending in one) is then walked as a spine and loses
-                    // elements. `cast<List<Array<i64>>>` of an Any `[[1], []]` gives a
-                    // 1-element list. The json writer flattens a List to a plain array
-                    // (core's Shape::Seq), so `json::write_str([<[1, 2], []>])` gives
-                    // "[[1,2],[]]", and `json::read` of that into List<Array<i64>>
-                    // gives `[<[1, 2]>]`. That breaks the rule that what the json and
-                    // toml writers emit reads back into its type. The guess exists so
-                    // that a List widened to Any can be cast back, so fixing it needs a
-                    // decision. Options: a cons rep a flat array cannot be mistaken
-                    // for; readers (json, toml, netidx data) that cast with an Array
-                    // source so they never sniff; or drop the sniff and convert untyped
-                    // arrays element by element. Pin `[[1], []]` and the json round
-                    // trip either way. probe:
-                    // design/review-2026-10-12/repro/t-expr-core-01.gx (t-expr-core-01)
-                    // 2026-10-13 claude: the data readers (json, toml, sqlite) now cast
-                    // through cast_data, so their arrays never reach this guess; what
-                    // stands is the in-language cast of an Any. Pins:
-                    // lib_tests::json::flat_list_round_trips (json and toml).
-                    _ => !cx.data && list::len(v).is_some(),
-                };
+                if matches!(&src, Some(Type::List(_))) && !list::is_list(v) {
+                    return Err(self.cast_fail("not a list", v));
+                }
                 let src = match &src {
                     Some(Type::Array(s) | Type::List(s)) => Some(&**s),
                     _ => None,
                 };
                 match v {
-                    _ if spine => {
+                    v if list::is_list(v) => {
                         let mut out: LPooled<Vec<Value>> = LPooled::take();
                         let mut changed = false;
                         for el in list::Iter::new(v.clone()) {
@@ -1033,34 +1011,20 @@ impl Type {
     /// `InvalidCast` error value. An array and a list are told apart by
     /// shape.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, false, v)
-    }
-
-    /// [`Self::cast_value`] of data decoded from a format that writes a
-    /// list as a flat array (json, toml): every array in it is an array,
-    /// never a list's cells.
-    pub fn cast_data(&self, env: &Env, v: Value) -> Value {
-        self.cast_value_int(env, None, true, v)
+        self.cast_value_int(env, None, v)
     }
 
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
     /// decides whether a value is an array or a list.
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
-        self.cast_value_int(env, Some(src), false, v)
+        self.cast_value_int(env, Some(src), v)
     }
 
-    fn cast_value_int(
-        &self,
-        env: &Env,
-        src: Option<&Type>,
-        data: bool,
-        v: Value,
-    ) -> Value {
+    fn cast_value_int(&self, env: &Env, src: Option<&Type>, v: Value) -> Value {
         let mut cx = CastCx {
             hist: LPooled::take(),
             sizes: LPooled::take(),
             expanded: LPooled::take(),
-            data,
         };
         match self.cast_int(env, &mut cx, src, &v) {
             Ok(None) => v,
@@ -1124,7 +1088,7 @@ impl Type {
                     r
                 }
             }
-            Type::Primitive(t) => t.contains(Typ::get(&v)),
+            Type::Primitive(t) => rep::kind(v).is_none() && t.contains(Typ::get(&v)),
             Type::Abstract { id, params } => match v {
                 Value::Abstract(a) => {
                     match a.downcast_ref::<crate::abstract_value::GxAbstract>() {
@@ -1155,9 +1119,9 @@ impl Type {
             {
                 rep::array_elems(v).is_some()
             }
-            Type::Array(et) => match v {
-                Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
-                _ => false,
+            Type::Array(et) => match rep::array_elems(v) {
+                Some(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
+                None => false,
             },
             // Walk the spine iteratively (heads recurse).
             Type::List(et) => {
@@ -1363,15 +1327,26 @@ fn shapes_collide(t: &Type, env: &Env, seen: &mut LPooled<Vec<usize>>) -> bool {
     })
 }
 
-/// A flattened union member's runtime footprint. Variants, tuples,
-/// structs and arrays all inhabit `Value::Array`; `arr` is the
-/// member's constraint within that class. `exact`: the full `is_a` is
-/// already O(1).
+/// A flattened union member's runtime footprint. Arrays, tuples,
+/// structs, variants with a payload and lists all inhabit
+/// `Value::Array`, each kind under its own marker; `arr` is the member's
+/// constraint within that class. `exact`: the full `is_a` is already
+/// O(1).
 struct MemberFacts {
-    arr: Option<(Option<ArcStr>, ArrCon)>,
+    arr: Option<(Form, ArrCon)>,
     map: bool,
     error: bool,
     exact: bool,
+}
+
+/// What a member's array is: its kind, and a variant's tag.
+#[derive(Clone, PartialEq, Eq)]
+enum Form {
+    Array,
+    Tuple,
+    Struct,
+    Variant(ArcStr),
+    List,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1383,28 +1358,27 @@ enum ArrCon {
 impl MemberFacts {
     const EXACT: Self = MemberFacts { arr: None, map: false, error: false, exact: true };
 
-    fn arr(tag: Option<ArcStr>, con: ArrCon) -> Self {
-        MemberFacts { arr: Some((tag, con)), map: false, error: false, exact: false }
+    fn arr(form: Form, con: ArrCon) -> Self {
+        MemberFacts { arr: Some((form, con)), map: false, error: false, exact: false }
     }
 }
 
 fn member_facts(t: &Type) -> MemberFacts {
     match t {
         Type::Primitive(bits) => MemberFacts {
-            arr: bits.contains(Typ::Array).then_some((None, ArrCon::AnyLen)),
+            arr: bits.contains(Typ::Array).then_some((Form::Array, ArrCon::AnyLen)),
             map: bits.contains(Typ::Map),
             error: bits.contains(Typ::Error),
             exact: true,
         },
         Type::Variant(_, ps, _) if ps.is_empty() => MemberFacts::EXACT,
         Type::Variant(tag, ps, _) => {
-            MemberFacts::arr(Some(tag.clone()), ArrCon::Len(ps.len() + 1))
+            MemberFacts::arr(Form::Variant(tag.clone()), ArrCon::Len(ps.len()))
         }
-        Type::Tuple(ts) => MemberFacts::arr(None, ArrCon::Len(ts.len())),
-        Type::Struct(fs) => MemberFacts::arr(None, ArrCon::Len(fs.len())),
-        // A list shapes as an array at runtime, so beside an Array
-        // member the deep walk is forced.
-        Type::Array(_) | Type::List(_) => MemberFacts::arr(None, ArrCon::AnyLen),
+        Type::Tuple(ts) => MemberFacts::arr(Form::Tuple, ArrCon::Len(ts.len())),
+        Type::Struct(fs) => MemberFacts::arr(Form::Struct, ArrCon::Len(fs.len())),
+        Type::Array(_) => MemberFacts::arr(Form::Array, ArrCon::AnyLen),
+        Type::List(_) => MemberFacts::arr(Form::List, ArrCon::AnyLen),
         Type::Map { .. } => MemberFacts { map: true, exact: false, ..MemberFacts::EXACT },
         Type::Error(_) => MemberFacts { error: true, exact: false, ..MemberFacts::EXACT },
         Type::Abstract { .. } | Type::Fn(_) | Type::ByRef(..) | Type::Bottom => {
@@ -1427,22 +1401,12 @@ fn member_facts(t: &Type) -> MemberFacts {
     }
 }
 
-fn arr_overlap(
-    (ptag, pcon): &(Option<ArcStr>, ArrCon),
-    (mtag, mcon): &(Option<ArcStr>, ArrCon),
-) -> bool {
-    match (pcon, mcon) {
-        (ArrCon::AnyLen, _) | (_, ArrCon::AnyLen) => true,
-        (ArrCon::Len(a), ArrCon::Len(b)) => {
-            a == b
-                && match (ptag, mtag) {
-                    (Some(pt), Some(mt)) => pt == mt,
-                    // A tuple/struct of the right length can shape
-                    // like a variant.
-                    _ => true,
-                }
+fn arr_overlap((pf, pcon): &(Form, ArrCon), (mf, mcon): &(Form, ArrCon)) -> bool {
+    pf == mf
+        && match (pcon, mcon) {
+            (ArrCon::AnyLen, _) | (_, ArrCon::AnyLen) => true,
+            (ArrCon::Len(a), ArrCon::Len(b)) => a == b,
         }
-    }
 }
 
 fn shallowify(t: &Type) -> Type {
@@ -1528,13 +1492,13 @@ fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
 }
 
 /// The primitive tags a value of another type may share.
-const SHARED_PRIMS: BitFlags<Typ> =
-    make_bitflags!(Typ::{String | U64 | V64 | Map | Error | Array});
+const SHARED_PRIMS: BitFlags<Typ> = make_bitflags!(Typ::{Map | Error | Array});
 
 /// Whether a value of `t` may also be a value of a type `t` doesn't hold.
 fn shares_form(env: &Env, t: &Type) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         None | Some(Type::Bottom | Type::Abstract { .. }) => false,
+        Some(Type::Variant(_, ps, _)) if ps.is_empty() => false,
         Some(Type::Primitive(p)) => p.intersects(SHARED_PRIMS),
         Some(Type::Set(ts)) => ts.iter().any(|t| shares_form(env, t)),
         Some(_) => true,
@@ -1568,40 +1532,34 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
     collides.then(|| (a.clone(), b.clone()))
 }
 
-/// The primitive tags a value of the (non-primitive) head `t` has.
+/// The primitive tags a value of the (non-primitive) head `t` has; a
+/// tuple, struct, variant or list has none, its marker sets it apart.
 fn rep_prims(t: &Type) -> BitFlags<Typ> {
     match t {
-        Type::Variant(_, a, _) if a.is_empty() => Typ::String.into(),
         Type::Map { .. } => Typ::Map.into(),
         Type::Error(_) => Typ::Error.into(),
-        t if ArrView::of(t).is_some() => Typ::Array.into(),
+        Type::Array(_) => Typ::Array.into(),
         _ => BitFlags::empty(),
     }
 }
 
-/// The array a value of `t` is, when it is one.
-enum ArrView {
-    Exact(LPooled<Vec<Type>>),
-    Of(Type),
-    List(Type),
+/// The array a value of `t` is, when it is one, by its kind.
+enum ArrView<'a> {
+    Array,
+    List,
+    Tuple(&'a [Type]),
+    Struct(&'a [(ArcStr, Type, WrittenAt)]),
+    Variant(&'a ArcStr, &'a [Type]),
 }
 
-impl ArrView {
-    fn of(t: &Type) -> Option<Self> {
-        let name =
-            |n: &ArcStr| Type::Variant(n.clone(), Arc::from_iter([]), WrittenAt::NOWHERE);
+impl<'a> ArrView<'a> {
+    fn of(t: &'a Type) -> Option<Self> {
         Some(match t {
-            Type::Tuple(ts) => ArrView::Exact(ts.iter().cloned().collect()),
-            Type::Struct(fs) => ArrView::Exact(
-                fs.iter()
-                    .map(|(n, t, _)| Type::Tuple(Arc::from_iter([name(n), t.clone()])))
-                    .collect(),
-            ),
-            Type::Variant(tag, args, _) if !args.is_empty() => ArrView::Exact(
-                std::iter::once(name(tag)).chain(args.iter().cloned()).collect(),
-            ),
-            Type::Array(e) => ArrView::Of((**e).clone()),
-            Type::List(e) => ArrView::List((**e).clone()),
+            Type::Tuple(ts) => ArrView::Tuple(ts),
+            Type::Struct(fs) => ArrView::Struct(fs),
+            Type::Variant(tag, args, _) => ArrView::Variant(tag, args),
+            Type::Array(_) => ArrView::Array,
+            Type::List(_) => ArrView::List,
             _ => return None,
         })
     }
@@ -1707,11 +1665,6 @@ fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
                     (Type::Primitive(p), t) | (t, Type::Primitive(p)) => {
                         p.intersects(rep_prims(t))
                     }
-                    (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
-                        if xa.is_empty() && ya.is_empty() =>
-                    {
-                        x == y
-                    }
                     (Type::ByRef(..), Type::ByRef(..))
                     | (Type::Fn(_), Type::Fn(_))
                     | (Type::Map { .. }, Type::Map { .. }) => true,
@@ -1729,24 +1682,32 @@ fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
     })
 }
 
+/// Whether values of the two array kinds can be one value: the same kind,
+/// and for a tuple, struct or variant the same arity (and names, and tag)
+/// with every part overlapping. Two arrays, or two lists, share the empty
+/// one.
 fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
     use ArrView::*;
-    let list = |seen: &mut RepSeen, x: &[Type], e: &Type| {
-        x.is_empty()
-            || (x.len() == 2
-                && rep_overlaps(env, seen, &x[0], e)
-                && rep_overlaps(env, seen, &x[1], &Type::List(Arc::new(e.clone()))))
+    let mut parts = |x: &mut dyn Iterator<Item = (&Type, &Type)>| {
+        for (x, y) in x {
+            if !rep_overlaps(env, seen, x, y) {
+                return false;
+            }
+        }
+        true
     };
     match (a, b) {
-        (Exact(x), Exact(y)) => {
+        (Array, Array) | (List, List) => true,
+        (Tuple(x), Tuple(y)) => x.len() == y.len() && parts(&mut x.iter().zip(y.iter())),
+        (Struct(x), Struct(y)) => {
             x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|(x, y)| rep_overlaps(env, seen, x, y))
+                && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0)
+                && parts(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
         }
-        (Exact(x), Of(e)) | (Of(e), Exact(x)) => {
-            x.iter().all(|t| rep_overlaps(env, seen, t, &e))
+        (Variant(t, x), Variant(u, y)) => {
+            t == u && x.len() == y.len() && parts(&mut x.iter().zip(y.iter()))
         }
-        (Exact(x), List(e)) | (List(e), Exact(x)) => list(seen, &x, &e),
-        (Of(_) | List(_), Of(_) | List(_)) => true,
+        _ => false,
     }
 }
 
@@ -2092,12 +2053,19 @@ fn refusal(e: &Value) -> Cow<'static, str> {
     }
 }
 
-/// Whether `v` is the variant `t` names in its own form: the tag of a
-/// bare variant, or an array of a payload variant's tag and payload.
+/// Whether `v` is the variant `t` names: one held, or a payload
+/// variant's data, its tag and then its payload (a data string is a
+/// string, never a tag here).
 fn carries_tag(env: &Env, t: &Type, v: &Value) -> bool {
     let Some(head) = rep_head(env, t) else { return false };
     let Type::Variant(tag, args, _) = &*head else { return false };
-    rep::read_variant(v).is_some_and(|(t, p)| t == tag && p.elems().len() == args.len())
+    match rep::read_variant(v) {
+        Some((t, rep::Parts::Held(p))) => t == tag && p.len() == args.len(),
+        Some((t, rep::Parts::Data(p))) => {
+            !args.is_empty() && t == tag && p.len() == args.len()
+        }
+        None => false,
+    }
 }
 
 /// The primitives `v` reads as without leaving its runtime class: every
@@ -2112,18 +2080,13 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         None | Some(Type::Bottom) => true,
-        Some(Type::Primitive(s)) => s.intersects(own_class(v)),
+        Some(Type::Primitive(s)) => rep::kind(v).is_none() && s.intersects(own_class(v)),
         Some(Type::Set(ts)) => ts.iter().any(|t| in_own_class(env, t, v)),
-        Some(Type::Variant(_, args, _)) if args.is_empty() => {
-            rep::read_variant(v).is_some_and(|(_, p)| p.elems().is_empty())
-        }
-        Some(
-            Type::Array(_)
-            | Type::List(_)
-            | Type::Tuple(_)
-            | Type::Struct(_)
-            | Type::Variant(..),
-        ) => matches!(v, Value::Array(_)),
+        Some(Type::Array(_)) => rep::array_elems(v).is_some(),
+        Some(Type::List(_)) => list::is_list(v),
+        Some(Type::Tuple(_)) => rep::tuple_elems(v).is_some(),
+        Some(Type::Struct(_)) => rep::struct_fields(v).is_some(),
+        Some(Type::Variant(..)) => rep::variant(v).is_some(),
         Some(Type::Map { .. }) => matches!(v, Value::Map(_)),
         Some(Type::Error(_)) => matches!(v, Value::Error(_)),
         Some(_) => matches!(v, Value::Abstract(_)),

@@ -54,8 +54,8 @@ pub(crate) use self::nodes::{
     emit_checked_arith_node, emit_cmp_node, emit_const_node, emit_construct_node,
     emit_field_ref_node, emit_list_new_node, emit_map_new_node, emit_map_ref_node,
     emit_neg_node, emit_not_node, emit_owned_value_operand_node, emit_ref_node,
-    emit_string_interpolate_node, emit_struct_new_node, emit_struct_with_node,
-    emit_tuple_new_node, emit_variant_new_node, widen_result_to_value,
+    emit_seq_new_node, emit_string_interpolate_node, emit_struct_new_node,
+    emit_struct_with_node, emit_variant_new_node, widen_result_to_value,
 };
 pub(crate) use self::record::{BodyRecord, KernelType};
 pub(crate) use self::{scaffold::slot_state_sites, select::emit_select_node};

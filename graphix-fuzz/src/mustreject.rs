@@ -300,10 +300,11 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     kept
 }
 
-/// Family 10. A select with an arm `string as x` gets its scrutinee
-/// widened by `` `TmSame `` (and a final `_ => never()` arm when it has
-/// none, so the select stays exhaustive): a bare variant and a string have
-/// one runtime form, so no arm may tell them apart. Right site: the select.
+/// Family 10. A select over a concrete scrutinee `s` of type `T` becomes
+/// `select <&s or &u> { &T as r => select *r { arms }, _ => never() }`,
+/// `u` a literal of a type disjoint from `T`: two references have one
+/// runtime form, so no arm may tell them apart. Right site: the outer
+/// select.
 fn same_form(
     root: &Expr,
     pre: &[Expr],
@@ -311,6 +312,7 @@ fn same_form(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
+    const R: &str = "tm_ref";
     let mut taken = 0usize;
     for i in spread(pre.len()) {
         if taken >= cap {
@@ -318,38 +320,42 @@ fn same_form(
         }
         let e = &pre[i];
         let ExprKind::Select(se) = &e.kind else { continue };
-        let tests_string = se.arms.iter().any(|(p, _)| {
-            matches!(&p.type_predicate, Some(Type::Primitive(t)) if t.contains(Typ::String))
-        });
-        // `Any` has no runtime form to collide with
-        let known = types.of(&se.arg).first().is_some_and(|t| concrete(t) && !opaque(t));
-        if !tests_string || !known || binds_outward(&se.arg) {
+        let Some(t) = types.of(&se.arg).first() else { continue };
+        if !concrete(t) || opaque(t) || binds_outward(&se.arg) {
             continue;
         }
-        let tag =
-            ExprKind::Variant { tag: ArcStr::from("TmSame"), args: Arc::from_iter([]) }
+        let Some(u) = disjoint_literal(t) else { continue };
+        let by_ref =
+            |e: Expr| ExprKind::ByRef(Mutability::Shared, Arc::new(e)).to_expr_nopos();
+        let deref = ExprKind::Deref(Arc::new(
+            ExprKind::Ref { name: ModPath::from([R]) }.to_expr_nopos(),
+        ))
+        .to_expr_nopos();
+        let inner =
+            ExprKind::Select(SelectExpr { arg: Arc::new(deref), arms: se.arms.clone() })
                 .to_expr_nopos();
-        let mut arms = se.arms.to_vec();
-        let wild = arms.last().is_some_and(|(p, _)| {
-            p.guard.is_none()
-                && p.type_predicate.is_none()
-                && catches_any(&p.structure_predicate)
-        });
-        if !wild {
-            let ignore = Pattern {
-                type_predicate: None,
-                structure_predicate: StructurePattern::Ignore,
-                guard: None,
-                pos: WrittenAt::NOWHERE,
-                end: WrittenAt::NOWHERE,
-            };
-            let never =
-                ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
-            arms.push((ignore, never));
-        }
+        let test = Pattern {
+            type_predicate: Some(Type::ByRef(
+                Mutability::Shared,
+                Arc::new(t.resolve_tvars()),
+            )),
+            structure_predicate: StructurePattern::Bind(Name::from(R)),
+            guard: None,
+            pos: WrittenAt::NOWHERE,
+            end: WrittenAt::NOWHERE,
+        };
+        let ignore = Pattern {
+            type_predicate: None,
+            structure_predicate: StructurePattern::Ignore,
+            guard: None,
+            pos: WrittenAt::NOWHERE,
+            end: WrittenAt::NOWHERE,
+        };
+        let never =
+            ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
         let sel = ExprKind::Select(SelectExpr {
-            arg: Arc::new(widen(&se.arg, tag)),
-            arms: Arc::from_iter(arms),
+            arg: Arc::new(widen(&by_ref((*se.arg).clone()), by_ref(u))),
+            arms: Arc::from_iter([(test, inner), (ignore, never)]),
         })
         .to_expr(e.pos);
         let cand = mutate::replace(root, i, &sel);

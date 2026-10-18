@@ -2,7 +2,7 @@
 
 Status: cost assessment, 2026-10-18. Decided 2026-10-18 (Eric): the
 representation is the marker design below ("Decided: marker tags"), not
-new netidx variants. Not built.
+new netidx variants. Built: see "As built".
 
 ## The question
 
@@ -210,3 +210,60 @@ For `Result<'a, E>` the proposal is a predicate bound on the typedef,
 `type Result<'r: NoError, 'e> = ['r, Error<'e>]` (open). Any other
 generic union with an open member beside one of these is refused at the
 definition, as `==` refuses it today.
+
+## As built
+
+**Forms** (`graphix-types/src/rep.rs`, `list.rs`). One registered abstract,
+`Marker(Kind)`, `Kind` one of `Tuple`, `Struct`, `Variant`, `List`; a static
+`Value` per kind (`rep::marker`), so pushing one is a refcount bump. A
+marker packs as its kind byte and decodes only under an image session
+(`ids::in_session`). `rep::kind` reads a value's marker; `TUPLE_BASE`,
+`STRUCT_BASE` and `VARIANT_TAG` are 1. A list cell is `[LMARK, h, t]` and
+nil is `[LMARK]`, one static value, so `[]` and `[<>]` differ. The strict
+readers (`tuple_elems`, `struct_fields`, `variant`, `array_elems`) see only
+their own kind; `read_tuple`/`read_struct`/`read_variant` also take data
+and report `Parts::Data`, which a cast rebuilds; `GraphixShape` (the
+derives) builds marked and reads leniently.
+
+**Data.** `rep::strip` writes a value as data: a tuple as an array, a
+struct as its pairs, a bare variant as its tag string, a payload variant
+as `[tag, payload..]`, a list as a flat array. `abstract_value::to_data`
+strips once, then converts abstracts. Every reader casts, so `FLAT_LISTS`
+and `cast_data` are gone, and db reads every stored value back through
+its cast (`data_target`).
+
+**Casts.** A union target tries the members of the value's own class
+first, a marked value's own class being its kind and a data string's
+being `string` (`in_own_class`, `carries_tag` read strictly): data `"A"`
+cast to `` [string, `A] `` stays a string, to `` [`A, `B] `` becomes the
+variant. `cast<string>` of a bare variant is its tag; no other marked
+value has a primitive form, and the primitive `array` holds arrays only
+(`contains`, `is_a`, `setops`). A list casts to an array element by
+element, and an untyped array to a list likewise.
+
+**Types.** `rep_overlaps`/`arr_overlaps` compare kinds first, then arity,
+names, tag and parts; `MemberFacts` keys the shallow discriminant by
+kind. What still shares a form: two references (under a select arm; `==`
+compares them by what they name), two function types, a Rust-backed
+abstract at two instantiations. `Discernible` therefore refuses only
+function unions and the open cells beside them. The must-reject family 10
+mutates a select into a reference test (`design/must_reject.md`).
+
+**Printing.** The naked printer renders a marked value in Graphix syntax
+(`(..)`, `{f: ..}`, `` `A(..) ``, `[<..>]`) and descends into errors, as
+the typed printer does; interpolating a bare variant gives `` `A ``.
+
+**JIT.** Constructors push the marker through
+`graphix_value_buf_push_marker`; tuple and array literals emit apart
+(`emit_seq_new_node`); a bare variant is an array constant; tuple reads,
+HOF destructure leaves and the tuple fold accumulator index from
+`TUPLE_BASE`.
+
+**Seq machines.** A machine's `pc` holds its step labels as bare variants
+(`seq_machine.rs`, `SeqAbort`).
+
+**Tests.** `run!` checks the value against its static type
+(`testing::observed`) and hands the predicate `testing::data`;
+`next_update` returns data, `next_update_raw` and `Fixture::new` the raw
+value for Rust readers (the gui/tui harnesses). Embedders building
+values in Rust use `rep` or a `GraphixShape` derive.

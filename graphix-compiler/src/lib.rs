@@ -1762,6 +1762,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
     pub fn new(rt: R, user: E) -> Result<Self> {
         graphix_types::abstract_value::register();
         reference::register();
+        crate::rep::register();
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
             cx: CompileCtx {

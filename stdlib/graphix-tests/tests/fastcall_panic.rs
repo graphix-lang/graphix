@@ -64,7 +64,7 @@ async fn values_until_death(mode: Mode, code: &'static str) -> Result<(Vec<Value
                     if let GXEvent::Updated(id, v) = e
                         && id == eid
                     {
-                        out.push(v)
+                        out.push(graphix_package_core::testing::data(v))
                     }
                 }
             }

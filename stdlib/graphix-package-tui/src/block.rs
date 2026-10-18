@@ -42,8 +42,9 @@ impl FromValue for BordersV {
             },
             _ => {
                 let mut res = Borders::empty();
-                let borders =
-                    rep::array_elems(&v).ok_or_else(|| anyhow!("invalid borders {v}"))?;
+                let borders = rep::array_elems(&v).ok_or_else(|| {
+                    anyhow!("invalid borders {}", graphix_compiler::typ::Naked(&v))
+                })?;
                 for b in borders.iter() {
                     match rep::bare_tag(b)? {
                         "Top" => res.insert(Borders::TOP),

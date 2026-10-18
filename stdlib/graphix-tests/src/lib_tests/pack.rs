@@ -95,7 +95,7 @@ macro_rules! reader_error {
             |v: Result<&Value>| match v {
                 // the tag in its error position, never inside an InvalidCast
                 Ok(Value::String(s)) => {
-                    s.contains(concat!("[\"error\", [\"", $tag, "\""))
+                    s.contains(concat!("error: `", $tag, "("))
                         && !s.contains("InvalidCast")
                 }
                 _ => false,
@@ -135,7 +135,7 @@ run!(pack_read_oversize_duration_nanos, r#"{
     let d: Result<duration, [`PackErr(string), `InvalidCast(string)]> = pack::read(b);
     select d { error as e => "[e]", d => "[d]" }
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"error:["PackErr", "InvalidFormat"]"#)
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:`PackErr("InvalidFormat")"#)
 }; FuseExpect::Jit);
 
 // A writer writes abstract values nested at most 1024 deep as data and
@@ -182,7 +182,7 @@ async fn pack_abstract_read_checks_the_payload() -> Result<()> {
     .await?;
     assert_eq!(
         read.to_string(),
-        r#""error:[\"InvalidCast\", \"can't cast \\\"hello\\\" to i64: no primitive conversion\"]""#
+        r#""error:`InvalidCast(\"can't cast \\\"hello\\\" to i64: no primitive conversion\")""#
     );
     Ok(())
 }

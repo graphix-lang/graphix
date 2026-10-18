@@ -67,9 +67,5 @@ fn an_abstract_value_reads_before_any_is_minted() {
         select r { error as e => \"refused: [e]\", b => \"accepted: [b.0]\" }\n";
     let cache = tempfile::tempdir().expect("tempdir");
     let (out, err) = run(program, cache.path(), &[]);
-    assert_eq!(
-        out.trim(),
-        r#""refused: error:[\"PackErr\", \"InvalidFormat\"]""#,
-        "{err}"
-    );
+    assert_eq!(out.trim(), r#""refused: error:`PackErr(\"InvalidFormat\")""#, "{err}");
 }

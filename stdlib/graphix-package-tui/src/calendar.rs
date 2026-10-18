@@ -90,7 +90,7 @@ impl<X: GXExt> CalendarW<X> {
                     self.events.add(date.0, style.0);
                 }
             }
-            v => bail!("invalid calendar events {v}"),
+            v => bail!("invalid calendar events {}", graphix_compiler::typ::Naked(&v)),
         }
         Ok(())
     }

@@ -29,7 +29,7 @@ fn suspend_without_display_is_refused() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(
-        stdout.contains(r#"error:["TerminalError", "no terminal display is running"]"#),
+        stdout.contains(r#"error:`TerminalError("no terminal display is running")"#),
         "{stdout}"
     );
 }

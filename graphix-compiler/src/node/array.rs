@@ -9,7 +9,7 @@ use crate::{
         self,
         emit::{
             BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
-            emit_list_new_node, emit_tuple_new_node,
+            emit_list_new_node, emit_seq_new_node,
         },
     },
     image::{
@@ -433,8 +433,7 @@ impl SeqKind for ArrayKind {
         cx: &mut BodyCx,
         n: &[Node<R, E>],
     ) -> Result<CompiledExpr> {
-        // the runtime shape is a tuple literal's
-        emit_tuple_new_node(cx, n)
+        emit_seq_new_node(cx, None, n)
     }
 }
 

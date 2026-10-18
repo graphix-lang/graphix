@@ -4,7 +4,8 @@
 //! arm woken by a state change reads the event that changed it stale.
 
 use anyhow::{Context, Result};
-use graphix_compiler::expr::VfsEntry;
+use arcstr::{ArcStr, literal};
+use graphix_compiler::{expr::VfsEntry, rep};
 use graphix_package_core::testing::{
     Events, Mode, TestCtx, compile_named_callable, compile_result, find_bind_id,
     fixture_runtime,
@@ -68,7 +69,7 @@ impl Fixture {
                 if let GXEvent::Updated(eid, v) = e
                     && eid == id
                 {
-                    self.last = Some(v);
+                    self.last = Some(graphix_package_core::testing::data(v));
                 }
             }
         }
@@ -191,11 +192,10 @@ let result = (screen, fired)
 "#;
 
 fn key_event(code: &'static str) -> Value {
-    let field = |k: &'static str, v: &'static str| {
-        Value::Array(ValArray::from([k.into(), v.into()]))
-    };
-    let key = Value::Array(ValArray::from([field("code", code), field("kind", "Press")]));
-    Value::Array(ValArray::from(["Key".into(), key]))
+    let tag = |t: &'static str| rep::make_variant(ArcStr::from(t), []);
+    let key =
+        rep::structure([(literal!("code"), tag(code)), (literal!("kind"), tag("Press"))]);
+    rep::make_variant(literal!("Key"), [key])
 }
 
 async fn callable_body_flip_reads_standing_key_stale(mode: Mode) -> Result<()> {
@@ -239,19 +239,19 @@ let result = opened
 async fn woken_callee_counts_once(
     src: &'static str,
     mode: Mode,
-    first: &[&'static str],
-    second: &'static str,
+    first: &[Value],
+    second: Value,
 ) -> Result<()> {
     let mut f = Fixture::new(src, mode).await?;
     for k in first {
-        f.call("test::handle", [(*k).into()]).await?;
+        f.call("test::handle", [k.clone()]).await?;
         assert_eq!(
             f.settle().await?,
             Some(Value::I64(0)),
             "counted the key that woke it"
         );
     }
-    f.call("test::handle", [second.into()]).await?;
+    f.call("test::handle", [second]).await?;
     assert_eq!(f.settle().await?, Some(Value::I64(1)));
     Ok(())
 }
@@ -259,7 +259,7 @@ async fn woken_callee_counts_once(
 async fn arm_wake_does_not_redeliver_the_key_to_the_woken_callee(
     mode: Mode,
 ) -> Result<()> {
-    woken_callee_counts_once(DISPATCH, mode, &["enter"], "enter").await
+    woken_callee_counts_once(DISPATCH, mode, &["enter".into()], "enter".into()).await
 }
 
 /// The dispatcher hands one callee the pattern bind `ev` and the other
@@ -288,7 +288,7 @@ let result = opened
 "#;
 
 async fn alias_read_consumes_the_formals_fire(mode: Mode) -> Result<()> {
-    woken_callee_counts_once(ALIAS, mode, &["enter"], "enter").await
+    woken_callee_counts_once(ALIAS, mode, &["enter".into()], "enter".into()).await
 }
 
 /// A bind delivered by a sampled scrutinee aliases the trigger only:
@@ -373,7 +373,9 @@ let result = closed
 // the panels handler sleeps. Esc on the landing moves back: the panels
 // handler wakes to Esc and must not count it.
 async fn arm_wake_switch_binds_the_standing_key_stale(mode: Mode) -> Result<()> {
-    woken_callee_counts_once(WAKE_SWITCH, mode, &["Enter", "Esc"], "Esc").await
+    let tag = |t: &'static str| rep::make_variant(ArcStr::from(t), []);
+    woken_callee_counts_once(WAKE_SWITCH, mode, &[tag("Enter"), tag("Esc")], tag("Esc"))
+        .await
 }
 
 modes!(

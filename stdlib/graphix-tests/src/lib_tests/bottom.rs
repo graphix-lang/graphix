@@ -36,7 +36,7 @@ async fn strict_bottom(mode: Mode) -> Result<()> {
                 .context("input binding")?
                 .1
                 .id;
-            let value = Value::Array(ValArray::from([Value::I64(17), Value::I64(3)]));
+            let value = graphix_compiler::rep::tuple([Value::I64(17), Value::I64(3)]);
             for (code, expected) in [
                 ("input.0", Value::I64(17)),
                 ("({x: input.0}).x", Value::I64(17)),

@@ -142,11 +142,12 @@ impl GxAbstract {
     }
 }
 
-/// `v` with every abstract value in it replaced by the data its `Cast`
-/// implementation writes it as, through the hooks: what a writer
-/// writes. An abstract value with no implementation, a Rust-backed one
-/// included, is refused, and so is an implementation that writes its
-/// own type inside itself without end.
+/// `v` as a writer writes it: every abstract value in it replaced by the
+/// data its `Cast` implementation writes it as, through the hooks, and
+/// every tuple, struct, variant and list in its data form
+/// ([`crate::rep::strip`]). An abstract value with no implementation, a
+/// Rust-backed one included, is refused, and so is an implementation
+/// that writes its own type inside itself without end.
 pub fn to_data(v: &Value) -> Result<Value> {
     Ok(rewrite(v, 0)?.unwrap_or_else(|| v.clone()))
 }
@@ -154,6 +155,14 @@ pub fn to_data(v: &Value) -> Result<Value> {
 /// [`to_data`] of `v`, `None` when nothing in it changed; `depth` counts
 /// the implementations written through so far.
 fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
+    match crate::rep::strip(v) {
+        Some(data) => Ok(Some(rewrite_data(&data, depth)?.unwrap_or(data))),
+        None => rewrite_data(v, depth),
+    }
+}
+
+/// [`rewrite`] of `v`, data already: no marker in it.
+fn rewrite_data(v: &Value, depth: usize) -> Result<Option<Value>> {
     crate::stack::ensure_sufficient(|| match v {
         Value::Abstract(_) => {
             if crate::reference::cell(v).is_some() {
@@ -184,7 +193,7 @@ fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
         Value::Array(a) => {
             let mut out: LPooled<Vec<Value>> = LPooled::take();
             for (i, e) in a.iter().enumerate() {
-                match rewrite(e, depth)? {
+                match rewrite_data(e, depth)? {
                     Some(e) => {
                         if out.is_empty() {
                             out.extend(a[..i].iter().cloned());
@@ -202,7 +211,7 @@ fn rewrite(v: &Value, depth: usize) -> Result<Option<Value>> {
             let mut out: LPooled<Vec<(Value, Value)>> = LPooled::take();
             let mut changed = false;
             for (k, e) in m.into_iter() {
-                let (k1, e1) = (rewrite(k, depth)?, rewrite(e, depth)?);
+                let (k1, e1) = (rewrite_data(k, depth)?, rewrite_data(e, depth)?);
                 changed |= k1.is_some() || e1.is_some();
                 out.push((
                     k1.unwrap_or_else(|| k.clone()),

@@ -32,6 +32,7 @@ async fn await_update(
                 None => bail!("runtime died"),
                 Some(mut batch) => for e in batch.drain(..) {
                     if let GXEvent::Updated(id, v) = e && id == eid {
+                        let v = graphix_package_core::testing::data(v);
                         if done(&v) {
                             return Ok(());
                         }

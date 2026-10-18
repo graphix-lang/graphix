@@ -624,7 +624,7 @@ pub(crate) fn writes_arg(tree: impl KeyTyp, [batch]: [Value; 1]) -> Result<Write
             })?;
             Ok(writes)
         }
-        v => bail!("not a batch: {v}"),
+        v => bail!("not a batch: {}", graphix_compiler::typ::Naked(&v)),
     }
 }
 
@@ -1115,9 +1115,10 @@ pub(crate) mod test {
 
     fn assert_import_error(value: Value) {
         let Value::Error(e) = value else { panic!("expected DbErr, got {value}") };
-        let Value::Array(fields) = &*e else { panic!("expected tagged error") };
-        assert_eq!(fields[0], Value::from("DbErr"));
-        let Value::String(msg) = &fields[1] else { panic!("expected error text") };
+        let Some((tag, [Value::String(msg)])) = graphix_compiler::rep::variant(&e) else {
+            panic!("expected tagged error text")
+        };
+        assert_eq!(tag, "DbErr");
         assert!(!msg.contains("panicked"), "import panicked: {msg}");
     }
 

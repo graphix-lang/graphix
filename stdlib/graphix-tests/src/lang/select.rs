@@ -3048,8 +3048,7 @@ run!(list_element_test_residual_mixed, LIST_ELEMENT_TEST_RESIDUAL_MIXED, |v: Res
     matches!(v, Ok(Value::String(s)) if &**s == "1")
 });
 
-// An empty array and an empty list are one runtime value, so a select
-// can't tell an array member from a list member.
+// An array and a list are told apart, the empty ones included.
 const ARRAY_LIST_LADDERS: &str = r#"
 {
   let v: [Array<i64>, List<i64>] = [<4, 5>];
@@ -3057,12 +3056,13 @@ const ARRAY_LIST_LADDERS: &str = r#"
 }
 "#;
 
-run!(array_list_ladders_refused, ARRAY_LIST_LADDERS, refused("same runtime form"); FuseExpect::None);
+run!(array_list_ladders, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(4)))
+}; FuseExpect::Jit);
 
-// Two members with one runtime form can't be told apart by any test:
-// a tuple, a payload variant or a struct and an array, a bare variant
-// and a string, a reference and a number, two references, and a union
-// trait dispatch over such members.
+// A tuple, a payload variant or a struct is told apart from an array, a
+// bare variant from a string, a reference from a number; two references
+// are not told apart by any test.
 const SAME_FORM_TUPLE_ARRAY: &str = r#"
 {
   let f = |x: [(i64, string), Array<[i64, string]>]| select x {
@@ -3073,7 +3073,9 @@ const SAME_FORM_TUPLE_ARRAY: &str = r#"
 }
 "#;
 
-run!(same_form_tuple_array_refused, SAME_FORM_TUPLE_ARRAY, refused("same runtime form"); FuseExpect::None);
+run!(tuple_told_from_array, SAME_FORM_TUPLE_ARRAY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; FuseExpect::Jit);
 
 const SAME_FORM_VARIANT_ARRAY: &str = r#"
 {
@@ -3085,8 +3087,9 @@ const SAME_FORM_VARIANT_ARRAY: &str = r#"
 }
 "#;
 
-run!(same_form_variant_array_refused, SAME_FORM_VARIANT_ARRAY,
-    refused("same runtime form"); FuseExpect::None);
+run!(variant_told_from_array, SAME_FORM_VARIANT_ARRAY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; FuseExpect::None);
 
 const SAME_FORM_STRUCT_ARRAY: &str = r#"
 {
@@ -3098,8 +3101,9 @@ const SAME_FORM_STRUCT_ARRAY: &str = r#"
 }
 "#;
 
-run!(same_form_struct_array_refused, SAME_FORM_STRUCT_ARRAY,
-    refused("same runtime form"); FuseExpect::None);
+run!(struct_told_from_array, SAME_FORM_STRUCT_ARRAY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; FuseExpect::Jit);
 
 // A reference has a runtime form of its own: a test tells it from a
 // number.
@@ -3125,7 +3129,9 @@ const SAME_FORM_TAG_STRING: &str = r#"
 }
 "#;
 
-run!(same_form_tag_string_refused, SAME_FORM_TAG_STRING, refused("same runtime form"); FuseExpect::None);
+run!(tag_told_from_string, SAME_FORM_TAG_STRING, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+}; FuseExpect::None);
 
 const SAME_FORM_REFERENCES: &str = r#"
 {
@@ -3147,10 +3153,11 @@ const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 }
 "#;
 
-run!(same_form_trait_dispatch_refused, SAME_FORM_TRAIT_DISPATCH, refused("same runtime form"); FuseExpect::None);
+run!(trait_dispatch_tells_tag_from_string, SAME_FORM_TRAIT_DISPATCH, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "string")
+}; FuseExpect::Jit);
 
-// The same dispatch reached through a generic bound: the instance is never
-// checked again, so the bound refuses the union at the call.
+// The same dispatch reached through a generic bound.
 const SAME_FORM_TRAIT_BOUND: &str = r#"
 {
   trait Show { val show: fn(self) -> string };
@@ -3162,10 +3169,11 @@ const SAME_FORM_TRAIT_BOUND: &str = r#"
 }
 "#;
 
-run!(same_form_trait_dispatch_bound_refused, SAME_FORM_TRAIT_BOUND, refused("can't tell string from `A"); FuseExpect::None);
+run!(trait_bound_tells_tag_from_string, SAME_FORM_TRAIT_BOUND, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "string")
+}; FuseExpect::Jit);
 
-// A compared type and a map key type may hold no two members with one
-// runtime form: `"A" == `A` would be true, and they would be one key.
+// `"A"` and `` `A `` are two values: unequal, and two map keys.
 const SAME_FORM_COMPARE: &str = r#"
 {
   let x: [string, `A] = "A";
@@ -3174,7 +3182,9 @@ const SAME_FORM_COMPARE: &str = r#"
 }
 "#;
 
-run!(same_form_compare_refused, SAME_FORM_COMPARE, refused("same runtime form"); FuseExpect::None);
+run!(tag_and_string_compare_unequal, SAME_FORM_COMPARE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(false)))
+}; FuseExpect::Jit);
 
 const SAME_FORM_MAP_KEY: &str = r#"
 {
@@ -3184,7 +3194,9 @@ const SAME_FORM_MAP_KEY: &str = r#"
 }
 "#;
 
-run!(same_form_map_key_refused, SAME_FORM_MAP_KEY, refused("same runtime form"); FuseExpect::None);
+run!(tag_and_string_are_two_keys, SAME_FORM_MAP_KEY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+}; FuseExpect::Jit);
 
 // Members that share a constructor are told apart by their parts, and
 // an empty array of either element type is both.
@@ -3650,9 +3662,9 @@ run!(shared_name_typed_over_every_alternative, "{ let f = |v: [`A(i64, i64), `A(
 run!(or_arm_wildcard_only_through_bare_name, "{ let f = |t: [(i64, i64), (i64, i64, i64)]| select t { (x, 0, _) | (x, _) => x }; f((7, 8, 9)) }",
     refused("missing match cases"); FuseExpect::None);
 
-// an alternative is taken by its structure
+// a tuple alternative and a struct alternative are told apart
 run!(alternative_taken_by_structure, "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
-    refused("can't tell"); FuseExpect::None);
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
 
 // A wake's own fire (a woken arm's constants, through any operator, call,
 // builtin, select, formal or collection loop) never rewrites a `<-`
@@ -3826,9 +3838,9 @@ run!(constructor_over_union_refutable_in_let, "{ let v: [`A(i64), `B] = `B; let 
 run!(written_slice_of_tuples_covers_no_union_length, "{ type U = [(i64, i64), (i64, i64, i64)]; let f = |a: Array<U>| select a { Array<U> as [(x, _)] => x, [] => 0, [_, _, ..] => 9 }; f([(1, 2)]) }",
     refused("missing match cases"); FuseExpect::None);
 
-// a structure test that passes another member's runtime form
-run!(structure_test_passing_another_members_form, "{ let v: [`A(i64), (string, i64)] = (\"A\", 5); select v { [`A(i64), (string, i64)] as `A(x) => x, _ => 0 } }",
-    refused("can't tell"); FuseExpect::None);
+// a variant's structure test fails a tuple of its shape
+run!(variant_test_fails_a_tuple_of_its_shape, "{ let v: [`A(i64), (string, i64)] = (\"A\", 5); select v { [`A(i64), (string, i64)] as `A(x) => x, _ => 0 } }",
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
 
 // An abstract's parameters are invariant: a value built as one
 // instantiation passes a type test only for that instantiation.

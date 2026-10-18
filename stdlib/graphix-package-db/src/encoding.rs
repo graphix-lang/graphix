@@ -44,7 +44,9 @@ pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<
         (Some(Typ::String), Value::String(s)) => buf.extend_from_slice(s.as_bytes()),
         (Some(Typ::Bytes), Value::Bytes(b)) => buf.extend_from_slice(b),
         (Some(t), v) if Typ::get(v) == t => write_payload(v, &mut buf, 0)?,
-        (Some(t), v) => bail!("a key of type {t:?} cannot be {v}"),
+        (Some(t), v) => {
+            bail!("a key of type {t:?} cannot be {}", graphix_compiler::typ::Naked(v))
+        }
         (None, v) => write_tagged(v, &mut buf, 0)?,
     }
     Ok(buf)
@@ -268,7 +270,9 @@ fn write_payload(v: &Value, buf: &mut Vec<u8>, depth: usize) -> Result<()> {
             }
             buf.push(0);
         }
-        Value::Abstract(_) => bail!("{v} cannot be a key"),
+        Value::Abstract(_) => {
+            bail!("{} cannot be a key", graphix_compiler::typ::Naked(v))
+        }
     }
     Ok(())
 }

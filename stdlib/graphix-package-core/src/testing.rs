@@ -6,6 +6,8 @@ use graphix_compiler::{
     BindId, CFlag, ParMode,
     env::Env,
     expr::{ExprId, Load, Origin, ResolverRef, Source, VfsEntry, VfsResolver},
+    rep,
+    typ::Type,
 };
 use graphix_rt::{
     Callable, CompRes, GXConfig, GXConfigBuilder, GXEvent, GXHandle, GXRt, NoExt, Ref,
@@ -232,7 +234,40 @@ pub fn verdicts_agree(
 }
 
 /// The next update of `id`, failing at `deadline`.
+/// `v` as a test reads it: written as data ([`rep::strip`]), so a
+/// tuple, struct or variant is the array a writer writes.
+pub fn data(v: Value) -> Value {
+    rep::strip(&v).unwrap_or(v)
+}
+
+/// What a fixture's predicate sees of its value `v`: [`data`], once `v`
+/// is held to be of its static type `typ` in every form it carries.
+pub async fn observed(ctx: &TestCtx, typ: &Type, v: Value) -> Result<Value> {
+    let env = ctx.rt.get_env().await?;
+    if !typ.is_a(&env, &v) {
+        bail!(
+            "the value {} is not of its type {}",
+            graphix_compiler::typ::Naked(&v),
+            graphix_compiler::format_with_flags(
+                graphix_compiler::PrintFlag::DerefTVars,
+                || typ.to_string()
+            )
+        )
+    }
+    Ok(data(v))
+}
+
+/// The next update of `id`, as [`data`].
 pub async fn next_update(
+    rx: &mut Events,
+    id: ExprId,
+    deadline: Instant,
+) -> Result<Value> {
+    next_update_raw(rx, id, deadline).await.map(data)
+}
+
+/// The next update of `id` as the runtime delivered it.
+pub async fn next_update_raw(
     rx: &mut Events,
     id: ExprId,
     deadline: Instant,
@@ -273,7 +308,7 @@ pub async fn updates_until_quiet(
                     if let GXEvent::Updated(eid, v) = e
                         && eid == id
                     {
-                        values.push(v);
+                        values.push(data(v));
                     }
                 }
             }
@@ -389,7 +424,7 @@ impl Fixture {
             .await
             .context("compile graphix code")?;
         let deadline = Instant::now() + Duration::from_secs(5);
-        let initial = next_update(&mut rx, compiled.exprs[0].id, deadline).await?;
+        let initial = next_update_raw(&mut rx, compiled.exprs[0].id, deadline).await?;
         let f = Self {
             _ctx: ctx,
             gx,
@@ -769,7 +804,8 @@ macro_rules! run {
                         }
                         let deadline = ::tokio::time::Instant::now()
                             + ::std::time::Duration::from_secs($timeout);
-                        let v = $crate::testing::next_update(&mut rx, eid, deadline).await?;
+                        let v = $crate::testing::next_update_raw(&mut rx, eid, deadline).await?;
+                        let v = $crate::testing::observed(&ctx, &res.exprs[0].typ, v).await?;
                         eprintln!("{v}");
                         assert!(pred(Ok(&v)));
                     }
@@ -965,7 +1001,8 @@ macro_rules! run_with_tempdir {
                 let eid = built.exprs[0].id;
                 let deadline =
                     ::tokio::time::Instant::now() + ::std::time::Duration::from_secs(10);
-                let v = $crate::testing::next_update(&mut rx, eid, deadline).await?;
+                let v = $crate::testing::next_update_raw(&mut rx, eid, deadline).await?;
+                let v = $crate::testing::observed(&ctx, &built.exprs[0].typ, v).await?;
                 ($expect_payload)(v)?;
                 $(
                     let $verify_dir = &$temp_dir;

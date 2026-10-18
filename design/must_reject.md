@@ -208,16 +208,16 @@ Rule: `&mut T ⊇ &mut U` only when `T = U` (`contains.rs`). Right site:
 the let. Built (`ref-write`, `ref-widen`); the generator's `&mut`
 writes are the sites (`generate/funcs.rs`).
 
-**10. One runtime form.** Site: a select with an arm `string as x`.
-Mutation: the scrutinee widened by `` `TmSame `` (and a final `_ =>
-never()` arm when the select has none). Rule: no arm may tell apart two
-types with one runtime form, here a bare variant and a string
-(`Type::rep_collision`, checked per arm in `Select::typecheck0_with`).
-Right site: the select. Built (`same-form`). The rule's other site, a
-trait dispatch over a union self (`trait_contains` refuses a union whose
-members collide), has no mutation: the generator's trait unions are of
-abstract types, which never share a form; `lang::select`'s
-`same_form_trait_dispatch*` pins it.
+**10. One runtime form.** Site: a select over a scrutinee `s` the map
+types a concrete `T`. Mutation: `select <&s or &u> { &T as r => select
+*r { arms }, _ => never() }`, `u` a literal of a type disjoint from `T`
+(`disjoint_literal`). Rule: no arm may tell apart two types with one
+runtime form, here two references (`Type::rep_collision`, checked per
+arm in `Select::typecheck0_with`). Right site: the outer select. Built
+(`same-form`). The rule's other site, a trait dispatch over a union self
+(`trait_contains` refuses a union whose members collide), has no
+mutation: the generator's trait unions are of abstract types, which
+never share a form.
 
 **11. Abstract parameters.** Site: a statement `let v = e` the map types
 `B<i64>`, a generated module's parameterized abstract type (the

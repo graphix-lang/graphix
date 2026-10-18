@@ -17,7 +17,7 @@ run!(any_holds_no_reference_number, r#"
   "[id(&x)] [id(u64:7)] [a] [cast<u64>(a)]"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s
-    == r#"0 7 &ref error:["InvalidCast", "can't cast &ref to u64: an abstract value has no primitive form"]"#);
+    == r#"0 7 &ref error:`InvalidCast("can't cast &ref to u64: an abstract value has no primitive form")"#);
     FuseExpect::None);
 
 const BYREF_DEREF: &str = r#"
@@ -481,7 +481,9 @@ async fn place_through_deref_mirror() -> Result<()> {
     let v = loop {
         let batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("runtime gone"))?;
         if let Some(v) = batch.iter().find_map(|e| match e {
-            graphix_rt::GXEvent::Updated(eid, v) if *eid == id => Some(v.clone()),
+            graphix_rt::GXEvent::Updated(eid, v) if *eid == id => {
+                Some(graphix_package_core::testing::data(v.clone()))
+            }
             _ => None,
         }) {
             break v;

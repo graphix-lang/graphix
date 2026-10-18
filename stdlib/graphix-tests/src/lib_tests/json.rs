@@ -59,7 +59,7 @@ run!(json_optional_fields_read_exactly, r#"{
     (w, select r { error as e => "[e]", _ => "read" })
 }"#, |v: Result<&Value>| {
     format!("{}", v.unwrap())
-        == r#"[[["small", i8:7], ["weights", [f64:1., f64:2.]]], "error:[\"InvalidCast\", \"can't cast 300 to [i8, null]: no primitive conversion\"]"]"#
+        == r#"[[["small", i8:7], ["weights", [f64:1., f64:2.]]], "error:`InvalidCast(\"can't cast 300 to [i8, null]: no primitive conversion\")"]"#
 }; FuseExpect::Jit);
 
 run!(json_read_bytes, r#"{
@@ -288,7 +288,7 @@ run!(writers_refuse_references, r#"{
     let h = select hbs::render("{{a}}", v) { error as e => "[e]", s => s };
     "[j]|[t]|[h]"
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"error:["JsonErr", "a reference is not data"]|error:["TomlErr", "a reference is not data"]|error:["HbsErr", "a reference is not data"]"#)
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:`JsonErr("a reference is not data")|error:`TomlErr("a reference is not data")|error:`HbsErr("a reference is not data")"#)
 }; FuseExpect::Jit);
 
 // A composite map key is written as println shows it, naked at every
@@ -310,4 +310,35 @@ run!(flat_list_round_trips, r#"{
     (list::len(ja.xs), list::len(jb.xs), list::len(ta.xs), list::len(tb.xs))
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:2, i64:2, i64:2]")
+}; FuseExpect::Jit);
+
+// An untyped array is never a list's cells: cast to a list it converts
+// element by element, whatever its last element is, and a list written
+// by pack, json or toml reads back whole (t-expr-core-01).
+run!(untyped_arrays_cast_to_lists_whole, r#"{
+    let a: Any = [[1], []];
+    let b: Any = [[1], [2]];
+    let c: Any = [[1], [2], []];
+    let la: List<Array<i64>> = cast<List<Array<i64>>>(a)$;
+    let lb: List<Array<i64>> = cast<List<Array<i64>>>(b)$;
+    let lc: List<Array<i64>> = cast<List<Array<i64>>>(c)$;
+    let l: List<Array<i64>> = [<[1, 2], []>];
+    let j: List<Array<i64>> = json::read(json::write_str(l)$)$;
+    let p: List<Array<i64>> = pack::read(pack::write_bytes(l)$)$;
+    (list::len(la), list::len(lb), list::len(lc), json::write_str(l)$, j, p)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string()
+        == r#"[i64:2, i64:2, i64:3, "[[1,2],[]]", [[i64:1, i64:2], []], [[i64:1, i64:2], []]]"#)
+}; FuseExpect::Jit);
+
+// A bare variant casts to its tag; data reads into each form a union
+// holds by its own class first.
+run!(composite_casts_by_form, r#"{
+    let tag = cast<string>(`Ready)$;
+    let s: [string, `A] = cast<[string, `A]>("A")$;
+    let t: [`A, `B] = cast<[`A, `B]>("A")$;
+    let pair: (i64, string) = pack::read(pack::write_bytes((1, "x"))$)$;
+    (tag, select s { string as _ => "string", `A => "tag" }, t, pair)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["Ready", "string", "A", [i64:1, "x"]]"#)
 }; FuseExpect::Jit);

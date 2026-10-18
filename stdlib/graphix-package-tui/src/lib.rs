@@ -157,9 +157,9 @@ impl FromValue for ColorV {
                     Ok(Self(Color::Rgb(r.0, g.0, b.0)))
                 }
                 "Indexed" => Ok(Self(Color::Indexed(v.clone().cast_to::<Byte>()?.0))),
-                s => bail!("invalid color ({s} {v})"),
+                s => bail!("invalid color ({s} {})", graphix_compiler::typ::Naked(&v)),
             },
-            _ => bail!("invalid color {v}"),
+            _ => bail!("invalid color {}", graphix_compiler::typ::Naked(&v)),
         }
     }
 }
@@ -172,9 +172,9 @@ impl FromValue for ModifierV {
         let mut m = Modifier::empty();
         let modifiers = match &v {
             Value::Null => &[][..],
-            v => {
-                &rep::array_elems(v).ok_or_else(|| anyhow!("invalid modifiers {v}"))?[..]
-            }
+            v => &rep::array_elems(v).ok_or_else(|| {
+                anyhow!("invalid modifiers {}", graphix_compiler::typ::Naked(v))
+            })?[..],
         };
         for s in modifiers {
             match rep::bare_tag(s)? {
@@ -505,7 +505,7 @@ fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompRes {
             "Canvas" => canvas::CanvasW::compile(gx, v).await,
             "Overlay" => overlay::OverlayW::compile(gx, v).await,
             "InputHandler" => InputHandlerW::compile(gx, v).await,
-            s => bail!("invalid widget type `{s}({v})"),
+            s => bail!("invalid widget type `{s}({})", graphix_compiler::typ::Naked(&v)),
         }
     })
 }

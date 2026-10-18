@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-60a092d0.js";
+            window.path_to_searchindex_js = "../searchindex-42f2acf1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -256,23 +256,25 @@ caller may still pass two values of the same type to a two-variable
 function; the promise is about what the body may assume, not about what
 callers may do.</p>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
-apart at run time the way the type tells them apart. At run time a
-variant without arguments is a string, and a tuple, a struct, a list or
-a variant with arguments is an array, so in <code>[string, </code>A]<code>the string</code>“A”<code>and the variant ``</code>A `` are the same value. Comparing such
-values, sorting them, or using them as map keys would mix the two up,
-so <code>==</code> and the other comparisons, map keys, <code>uniq</code>, <code>min</code>, <code>max</code>,
-<code>array::sort</code> and the other functions that compare or hash need
-<code>Discernible</code>. A function whose body compares takes the bound on its
-type variable, as arithmetic adds <code>Singleton</code>, and a call refuses a type
-that isn’t <code>Discernible</code>,</p>
+apart at run time the way the type tells them apart. Nearly every type
+can: a string, an array, a tuple, a struct, a list and each variant are
+different values at run time, whatever they hold, and <code>==</code> compares a
+reference by what it points to. The exception is functions: a function
+value doesn’t say its type, so in <code>[fn(x: i64) -&gt; i64, fn(s: string) -&gt; string]</code> the two can’t be told apart by a test. Comparing such values,
+or hashing them, would mix the two up, so <code>==</code> and the other
+comparisons, map keys, <code>uniq</code>, <code>min</code>, <code>max</code>, <code>array::sort</code> and the
+other functions that compare or hash need <code>Discernible</code>. A function
+whose body compares takes the bound on its type variable, as arithmetic
+adds <code>Singleton</code>, and a call refuses a type that isn’t <code>Discernible</code>,</p>
 <pre><code class="language-graphix">〉let eq = |x, y| x == y
-〉let v: [string, `A] = "A"
+〉let inc = |x: i64| x + 1
+〉let v: [fn(x: i64) -&gt; i64, fn(s: string) -&gt; string] = inc
 〉eq(v, v)
-error: ... [string, `A] must be Discernible here, but it holds string and `A,
-which have the same runtime form; wrap them in distinct variants
+error: ... 'a must be Discernible, but [fn(x: i64) -&gt; i64, fn(s: string) -&gt; string]
+holds fn(x: i64) -&gt; i64 and fn(s: string) -&gt; string, which have the same runtime
+form; wrap them in distinct variants
 </code></pre>
-<p>Wrapping the members in variants of their own, <code>[`S(string), `A]</code>,
-tells them apart.</p>
+<p>Wrapping the members in variants of their own, <code>[`I(fn(x: i64) -&gt; i64), `S(fn(s: string) -&gt; string)]</code>, tells them apart.</p>
 <p>What orders or hashes values (<code>&lt;</code> and the other orderings, map keys,
 <code>min</code>, <code>max</code>, the sorts, <code>array::dedup</code>) needs <code>Ordered</code>, which is
 <code>Discernible</code> and no references: a reference has no order, and <code>==</code>,

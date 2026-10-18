@@ -283,9 +283,10 @@ across a bottom cycle).
   async call clears its output and starts again over its present
   arguments; a net subscription or publication is torn down and an rpc
   call in flight dropped.
-- No arm may tell apart two types that share a runtime form: a tuple,
-  struct, list or payload variant and an array, a bare variant and a
-  string, two function types. Wrap them in distinct variants.
+- No arm may tell apart two types that share a runtime form: two
+  reference types, two function types. Wrap them in distinct variants.
+  Everything else is told apart: a string from a bare variant, an array
+  from a tuple, struct, variant or list, `[]` from `[<>]`.
 - References and functions cannot be ordered, sorted or used as map
   keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 

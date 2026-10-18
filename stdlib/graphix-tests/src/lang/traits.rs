@@ -625,7 +625,7 @@ run!(
 // type.
 run!(
     core_dispatchers_structural,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "true|false|Less|Equal|Greater|(1, 2)|#123"),
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "true|false|`Less|`Equal|`Greater|(1, 2)|#123"),
     "/test.gx" => r##"
         type Color = Abstract<{r: i64, g: i64, b: i64}>;
         impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };

@@ -395,15 +395,16 @@ run!(
     |v: Result<&Value>| format!("{}", v.unwrap()).contains("map key K#1 not found")
 );
 
-// A map type a cast or a type test makes values of takes keys of
-// distinct runtime forms, as a literal's do.
-run!(written_map_key_cast_refused, r#"{
+// A string and a bare variant are two keys, in a map a cast or a type
+// test makes as in a literal.
+run!(written_map_key_cast, r#"{
     let raw: Map<string, i64> = {"A" => 1};
     let m = cast<Map<[string, `A], i64>>(raw)$;
-    m{`A}$
-}"#, refused("string and `A can't share a map key type"); FuseExpect::None);
+    let a = select m{`A} { error as _ => 0, n => n };
+    (m{"A"}$, a)
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0]"); FuseExpect::Jit);
 
-run!(written_map_key_type_test_refused, r#"{
+run!(written_map_key_type_test, r#"{
     let v: Any = {"A" => 1};
-    select v { Map<[string, `A], i64> as m => m{`A}$, _ => 0 }
-}"#, refused("string and `A can't share a map key type"); FuseExpect::None);
+    select v { Map<[string, `A], i64> as m => m{"A"}$, _ => 0 }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);

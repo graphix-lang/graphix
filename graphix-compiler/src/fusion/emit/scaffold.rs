@@ -1046,7 +1046,7 @@ pub(crate) fn elem_leaves(
         .iter()
         .map(|(id, i)| {
             let kind = kernel_abi::abi_kind(ts.get(*i)?).and_then(LocalKind::of)?;
-            Some((*id, *i, kind))
+            Some((*id, crate::rep::TUPLE_BASE + *i, kind))
         })
         .collect()
 }
@@ -1264,7 +1264,7 @@ where
     let init_cv = init(cx)?;
     let read = |cx: &mut BodyCx, k: usize, p: PrimType| {
         let typ = Type::Primitive(p.to_typ().into());
-        let idx = cx.b.ins().iconst(types::I64, k as i64);
+        let idx = cx.b.ins().iconst(types::I64, (crate::rep::TUPLE_BASE + k) as i64);
         super::nodes::emit_taint_guarded_read(cx, init_cv.disc, &typ, |cx| {
             super::scalar::compile_element_read(
                 cx.b,
@@ -1340,8 +1340,9 @@ where
     }
     lp.close(cx)?;
     arr.drop_held(cx)?;
-    let cap = cx.b.ins().iconst(types::I64, prims.len() as i64);
+    let cap = cx.b.ins().iconst(types::I64, prims.len() as i64 + 1);
     let buf = open_value_buf(cx, cap)?;
+    super::nodes::push_marker(cx, buf, crate::rep::Kind::Tuple)?;
     for (p, v) in prims.iter().zip(vars.iter()) {
         let payload = cx.b.use_var(*v);
         let disc = scalar_disc(cx.b, *p);

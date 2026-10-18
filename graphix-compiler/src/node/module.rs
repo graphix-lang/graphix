@@ -1310,9 +1310,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     }
                 }
                 v => {
-                    return self
-                        .resident
-                        .set(TagValue::tagged(errf!(ERR_TAG, "unexpected {v}"), tag));
+                    return self.resident.set(TagValue::tagged(
+                        errf!(ERR_TAG, "unexpected {}", crate::typ::Naked(&v)),
+                        tag,
+                    ));
                 }
             }
             compiled = true;

@@ -108,7 +108,7 @@ macro_rules! watch_test {
                                 eprintln!("Event #{event_count}: {kind}");
                                 {
                                     let $event_count = event_count;
-                                    let $kind: &str = kind.as_str();
+                                    let $kind: &str = kind.trim_start_matches('`');
                                     let $event_dir = &temp_dir;
                                     $(let $state_param = &mut $state_param;)*
                                     $on_event
@@ -508,7 +508,7 @@ async fn test_watch_simultaneous_events_all_delivered() -> Result<()> {
                     if let GXEvent::Updated(id, v) = event
                         && id == eid
                     {
-                        paths.push(v);
+                        paths.push(graphix_package_core::testing::data(v));
                     }
                 }
             }

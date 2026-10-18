@@ -10,6 +10,7 @@ use crate::{
         lowering::{self},
     },
     node::op::{ArithOp, BoolOp, CmpOp},
+    rep,
     typ::Type,
 };
 use anyhow::{Result, anyhow, bail};
@@ -804,13 +805,35 @@ pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
-/// Tuple / array literal: push each field, finalize into an owned
-/// ValArray. Both share this emission; only the static type differs.
-pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
+/// Push the marker of `kind` onto `buf`: a tuple, struct or variant
+/// opens with it.
+pub(super) fn push_marker(
     cx: &mut BodyCx,
+    buf: ClifValue,
+    kind: rep::Kind,
+) -> Result<()> {
+    let kind = cx.b.ins().iconst(types::I64, kind as i64);
+    cx.call_helper("graphix_value_buf_push_marker", &[buf, kind])?;
+    Ok(())
+}
+
+/// Tuple literal (`kind` is the tuple marker) or array literal (none):
+/// push each field, finalize into an owned ValArray.
+pub(crate) fn emit_seq_new_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    kind: Option<rep::Kind>,
     fields: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
-    let (buf, field_discs) = emit_fields_into_buf(cx, fields)?;
+    let cap =
+        cx.b.ins().iconst(types::I64, (fields.len() + kind.is_some() as usize) as i64);
+    let buf = open_value_buf(cx, cap)?;
+    if let Some(kind) = kind {
+        push_marker(cx, buf, kind)?;
+    }
+    let mut field_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
+    for f in fields {
+        field_discs.push(emit_push_field_node(cx, buf, f)?);
+    }
     let payload = finalize_valarray(cx, buf)?;
     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
     let disc = producer_disc(cx, base, &field_discs);
@@ -848,8 +871,9 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     let mut indexed: SmallVec<[(&ArcStr, &Node<R, E>); 8]> =
         names.iter().zip(fields.iter()).collect();
     indexed.sort_by(|a, b| a.0.cmp(b.0));
-    let cap = cx.b.ins().iconst(types::I64, indexed.len() as i64);
+    let cap = cx.b.ins().iconst(types::I64, indexed.len() as i64 + 1);
     let outer = open_value_buf(cx, cap)?;
+    push_marker(cx, outer, rep::Kind::Struct)?;
     let mut field_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
     for (name, field) in indexed {
         // Names are interned constants; only the value discs gate freshness.
@@ -888,8 +912,9 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     // its taint folds into the result. An owned source is held so a
     // bottom-abort before the finalize frees it.
     arr.hold(cx);
-    let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
+    let cap = cx.b.ins().iconst(types::I64, fields.len() as i64 + 1);
     let outer = open_value_buf(cx, cap)?;
+    push_marker(cx, outer, rep::Kind::Struct)?;
     // Fires iff the source or any replacement fired.
     let mut field_discs: SmallVec<[ClifValue; 8]> = smallvec![src_disc];
     for (i, (name, field_typ)) in fields.iter().enumerate() {
@@ -924,36 +949,26 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
-/// Variant constructor. Nullary: `Value::String(tag)`, a clone of the
-/// interned tag. With payloads: `Value::Array([tag, p0, ...])`.
+/// Variant constructor: `[marker, tag, p0, ...]`. With no payload it is
+/// a constant and fires at init only; else iff any payload fired.
 pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     tag: &ArcStr,
     payloads: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
     let tag_ptr = cx.interned_str(tag)?;
-    if payloads.is_empty() {
-        let call = cx.call_helper("graphix_arcstr_clone_from_static", &[tag_ptr])?;
-        let bits = call[0];
-        let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
-        // A nullary variant is a constant: fires at init only.
-        let init = cx.init_flag();
-        let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, base);
-        Ok(CompiledExpr::new(disc, bits))
-    } else {
-        let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
-        let buf = open_value_buf(cx, cap)?;
-        cx.call_helper("graphix_value_buf_push_arcstr", &[buf, tag_ptr])?;
-        let mut payload_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
-        for p in payloads {
-            payload_discs.push(emit_push_field_node(cx, buf, p)?);
-        }
-        let bits = finalize_valarray(cx, buf)?;
-        // Fires iff any payload fired.
-        let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-        let disc = propagate_flags(cx.b, base, &payload_discs);
-        Ok(CompiledExpr::new(disc, bits))
+    let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 2) as i64);
+    let buf = open_value_buf(cx, cap)?;
+    push_marker(cx, buf, rep::Kind::Variant)?;
+    cx.call_helper("graphix_value_buf_push_arcstr", &[buf, tag_ptr])?;
+    let mut payload_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
+    for p in payloads {
+        payload_discs.push(emit_push_field_node(cx, buf, p)?);
     }
+    let bits = finalize_valarray(cx, buf)?;
+    let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = producer_disc(cx, base, &payload_discs);
+    Ok(CompiledExpr::new(disc, bits))
 }
 
 fn emit_accessor_source_node<R: Rt, E: UserEvent>(

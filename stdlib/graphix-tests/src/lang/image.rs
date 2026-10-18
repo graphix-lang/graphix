@@ -129,7 +129,7 @@ async fn eval_on(
                         if let GXEvent::Updated(id, v) = e
                             && id == eid
                         {
-                            return Ok(v);
+                            return Ok(graphix_package_core::testing::data(v));
                         }
                     }
                 }
@@ -225,7 +225,7 @@ async fn first_values(rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>) -> Vec<Val
                 Some(mut batch) => {
                     for e in batch.drain(..) {
                         if let GXEvent::Updated(_, v) = e {
-                            out.push(v);
+                            out.push(graphix_package_core::testing::data(v));
                         }
                     }
                 }

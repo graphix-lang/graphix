@@ -920,7 +920,9 @@ cycle, across workers; the compiler never pins threads.
   is set), and each again with every fork point forked (`par`,
   `jit_par`), asserting its predicate in each; nothing compares the
   modes, so a predicate pins the value exactly and a refusal names its
-  message (`testing::refused`). `interp` also checks the program alone
+  message (`testing::refused`). The value must be of its static type in
+  every form it carries, and the predicate sees it as data
+  (`testing::observed`: markers stripped). `interp` also checks the program alone
   and fails unless the check refuses exactly when the build does
   (`; build_only` exempts a refusal only a build makes: `#[native]`, the
   definition assertions). `FuseExpect::{Jit, None}` asserts
@@ -1001,11 +1003,20 @@ cycle, across workers; the compiler never pins threads.
   written type (a type test, a `let`, an abstract payload) one at a union
   position narrows to its member and is refutable; a written-union atom
   covers each member it covers; the pool reads an abstract's payload.
+- **Composite forms** (`graphix-types/src/rep.rs`,
+  `design/distinct_composite_forms.md`): a tuple, struct, variant (bare
+  included) and list cell is an array whose element 0 is its kind's
+  marker, a Rust-registered abstract that no data carries and only an
+  image decodes; an array is unmarked. Only `rep.rs` and `list.rs` know
+  the layout. Data carries no markers: a writer writes through
+  `abstract_value::to_data` (`rep::strip`: a list as a flat array, a
+  bare variant as its tag), and a reader's cast rebuilds the forms from
+  data (`rep::read_*` report `Parts::Data`). A primitive `array` holds
+  arrays only; `cast<string>` of a bare variant is its tag.
 - **One runtime form** (`Type::rep_collision`): no select arm, and so no
   union trait dispatch, may tell apart two types that share a runtime
-  form: a tuple, struct, list or payload variant and an array (an empty
-  array and an empty list are one value), a bare variant and a string, a
-  reference and another reference, two function types.
+  form: a reference and another reference, two function types, a
+  Rust-backed abstract at two instantiations.
   Checked per arm, after its narrowing, in the definition's check;
   members that share a constructor are told apart by their parts. A
   compared type (`==` and the orderings), a map key type and what the
@@ -1040,8 +1051,7 @@ cycle, across workers; the compiler never pins threads.
 - **Native List** (`design/list_native.md`): `List<'a>` is a compiler
   constructor like `Array`; `[<1, 2>]` literals and `[<h, rest..>]`
   patterns (rest is the O(1) tail; the suffix form is refused); the rep
-  is private to `graphix-types/src/list.rs`; a struct's and a variant's
-  forms are read only through `graphix-types/src/rep.rs`.
+  is private to `graphix-types/src/list.rs`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere. Its

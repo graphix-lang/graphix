@@ -17,7 +17,6 @@ struct Packed;
 impl ReadFormat for Packed {
     const NAME: &str = "pack_read";
     const TAG: ArcStr = literal!("PackErr");
-    const FLAT_LISTS: bool = false;
     type Args = Bytes;
 
     fn prepare_args(cached: &CachedVals) -> Option<Bytes> {
@@ -38,9 +37,9 @@ impl ReadFormat for Packed {
     fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
         match v {
             Value::Array(a) if a.len() == 1 => {
-                target.read_data(env, &Self::TAG, Self::FLAT_LISTS, a[0].clone())
+                target.read_data(env, &Self::TAG, a[0].clone())
             }
-            v => target.read(env, &Self::TAG, Self::FLAT_LISTS, v),
+            v => target.read(env, &Self::TAG, v),
         }
     }
 }

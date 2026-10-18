@@ -8,8 +8,8 @@ use crate::{
         self,
         emit::{
             BodyCx, CompiledExpr, FieldOf, emit_abstract_ref_node, emit_construct_node,
-            emit_field_ref_node, emit_struct_new_node, emit_struct_with_node,
-            emit_tuple_new_node, emit_variant_new_node,
+            emit_field_ref_node, emit_seq_new_node, emit_struct_new_node,
+            emit_struct_with_node, emit_variant_new_node,
         },
     },
     image::{
@@ -561,7 +561,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     super::typed_by_row!();
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_tuple_new_node(cx, &self.n)
+        emit_seq_new_node(cx, Some(rep::Kind::Tuple), &self.n)
     }
 }
 

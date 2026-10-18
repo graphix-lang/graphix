@@ -40,7 +40,9 @@ const MAX_LEAF: usize = 256;
 fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::Result {
     type MapIter<'a> = <&'a netidx_value::Map as IntoIterator>::IntoIter;
     enum Open<'a> {
-        Array(&'a [Value], usize),
+        Seq { elems: &'a [Value], i: usize, close: &'static str },
+        Fields(&'a [Value], usize),
+        List { cur: &'a Value, first: bool },
         Map { pairs: MapIter<'a>, first: bool, value: Option<&'a Value> },
     }
     let capped = cap != usize::MAX;
@@ -53,9 +55,39 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
             }
             cap -= 1;
             match v {
-                Value::Array(a) => {
-                    write!(f, "[")?;
-                    stack.push(Open::Array(&a[..], 0));
+                Value::Array(a) => match rep::kind(v) {
+                    None => {
+                        write!(f, "[")?;
+                        stack.push(Open::Seq { elems: &a[..], i: 0, close: "]" });
+                    }
+                    Some(rep::Kind::Tuple) => {
+                        write!(f, "(")?;
+                        let elems = rep::tuple_elems(v).unwrap_or_default();
+                        stack.push(Open::Seq { elems, i: 0, close: ")" });
+                    }
+                    Some(rep::Kind::Struct) => {
+                        write!(f, "{{")?;
+                        stack.push(Open::Fields(
+                            rep::struct_fields(v).unwrap_or_default(),
+                            0,
+                        ));
+                    }
+                    Some(rep::Kind::Variant) => match rep::variant(v) {
+                        Some((tag, [])) => write!(f, "`{tag}")?,
+                        Some((tag, payload)) => {
+                            write!(f, "`{tag}(")?;
+                            stack.push(Open::Seq { elems: payload, i: 0, close: ")" });
+                        }
+                        None => write!(f, "`?")?,
+                    },
+                    Some(rep::Kind::List) => {
+                        write!(f, "[<")?;
+                        stack.push(Open::List { cur: v, first: true });
+                    }
+                },
+                Value::Error(e) => {
+                    write!(f, "error:")?;
+                    next = Some(e);
                 }
                 Value::Map(m) => {
                     write!(f, "{{")?;
@@ -91,7 +123,7 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
         }
         match stack.last_mut() {
             None => return Ok(()),
-            Some(Open::Array(a, i)) => match a.get(*i) {
+            Some(Open::Seq { elems, i, close }) => match elems.get(*i) {
                 Some(v) => {
                     if *i > 0 {
                         write!(f, ", ")?
@@ -100,7 +132,40 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                     next = Some(v)
                 }
                 None => {
-                    write!(f, "]")?;
+                    write!(f, "{close}")?;
+                    stack.pop();
+                }
+            },
+            Some(Open::Fields(fields, i)) => match fields.get(*i) {
+                Some(fv) => {
+                    if *i > 0 {
+                        write!(f, ", ")?
+                    }
+                    *i += 1;
+                    match rep::field(fv) {
+                        Some((name, v)) => {
+                            write!(f, "{name}: ")?;
+                            next = Some(v)
+                        }
+                        None => next = Some(fv),
+                    }
+                }
+                None => {
+                    write!(f, "}}")?;
+                    stack.pop();
+                }
+            },
+            Some(Open::List { cur, first }) => match list::split(cur) {
+                Some((h, t)) => {
+                    if !*first {
+                        write!(f, ", ")?
+                    }
+                    *first = false;
+                    *cur = t;
+                    next = Some(h)
+                }
+                None => {
+                    write!(f, ">]")?;
                     stack.pop();
                 }
             },
@@ -151,7 +216,7 @@ pub(super) fn has_form(t: &Type, v: &Value) -> bool {
         (Type::Map { .. }, Value::Map(_))
         | (Type::Error(_), Value::Error(_))
         | (Type::Abstract { .. }, Value::Abstract(_)) => true,
-        (Type::Primitive(p), v) => p.contains(Typ::get(v)),
+        (Type::Primitive(p), v) => rep::kind(v).is_none() && p.contains(Typ::get(v)),
         (Type::Map { .. } | Type::Error(_) | Type::Abstract { .. }, _) => false,
         _ => true,
     }
@@ -222,10 +287,14 @@ impl<'a> TVal<'a> {
                 | Type::Discernible
                 | Type::Ordered
                 | Type::Bottom
-                | Type::Any
-                | Type::Error(_),
+                | Type::Any,
                 v,
             ) => fmt_naked(f, v),
+            (Type::Error(et), Value::Error(e)) => {
+                write!(f, "error:")?;
+                TVal { typ: et, env: self.env, v: e }.fmt_int(f, hist)
+            }
+            (Type::Error(_), v) => fmt_naked(f, v),
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => fmt_naked(f, v),
             // `hist` is the path: a definition met again on the same value
@@ -434,11 +503,9 @@ mod test {
         )
         .unwrap();
         let typ = parse_type("L").unwrap().scope_refs(&ModPath::root());
-        let mut v = Value::String("Nil".into());
+        let mut v = rep::make_variant("Nil".into(), []);
         for i in 0..20_000i64 {
-            v = Value::Array(
-                [Value::String("Cons".into()), Value::I64(i), v].into_iter().collect(),
-            );
+            v = rep::make_variant("Cons".into(), [Value::I64(i), v]);
         }
         let started = std::time::Instant::now();
         let s = format_compact!("{}", TVal { env: &env, typ: &typ, v: &v });

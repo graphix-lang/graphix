@@ -39,7 +39,7 @@ let bad: Any = [3, 1];
 let p: Any = {x: 5};
 "[cast<Sorted>(good)] [cast<Sorted>(bad)] [cast<Pt>(p)] [cast<Pt>(Pt({x: 3, y: 4}))]"
 "#), |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"Sorted([1, 2, 3]) error:["InvalidCast", "can't cast [3, 1] to Sorted: not sorted"] Pt({x: 5, y: null}) Pt({x: 3, y: 4})"#)
+    matches!(v, Ok(Value::String(s)) if &**s == r#"Sorted([1, 2, 3]) error:`InvalidCast("can't cast [3, 1] to Sorted: not sorted") Pt({x: 5, y: null}) Pt({x: 3, y: 4})"#)
 }; FuseExpect::Jit);
 
 // json writes `to_value`'s data, and the representation at its own type
@@ -53,7 +53,7 @@ let bad: Result<Doc, [`JsonErr(string), `InvalidCast(string)]> =
     json::read(r#"{"name": "b", "nums": [2, 1], "at": {"x": 3}}"#);
 "[j] [back] [bad]"
 "##), |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"{"at":{"x":1,"y":null},"name":"a","nums":[1,2]} {at: Pt({x: 1, y: null}), name: "a", nums: Sorted([1, 2])} error:["InvalidCast", "can't cast [2, 1] to Sorted: not sorted"]"#)
+    matches!(v, Ok(Value::String(s)) if &**s == r#"{"at":{"x":1,"y":null},"name":"a","nums":[1,2]} {at: Pt({x: 1, y: null}), name: "a", nums: Sorted([1, 2])} error:`InvalidCast("can't cast [2, 1] to Sorted: not sorted")"#)
 }; FuseExpect::Jit);
 
 // pack and toml carry the data too, never the abstract value.
@@ -155,7 +155,7 @@ run!(
 run!(
     cast_declared_in_an_interface,
     |v: Result<&Value>| {
-        matches!(v, Ok(Value::String(s)) if &**s == r#"[3] error:["InvalidCast", "can't cast [-1] to Pos: negative"] Pos([5])"#)
+        matches!(v, Ok(Value::String(s)) if &**s == r#"[3] error:`InvalidCast("can't cast [-1] to Pos: negative") Pos([5])"#)
     },
     "/test.gx" => r#"
         mod inner;

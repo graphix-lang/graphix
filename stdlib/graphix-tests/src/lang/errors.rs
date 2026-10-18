@@ -965,7 +965,7 @@ run!(
 // starts a new chain over both, and its handler reads the payload.
 run!(
     mixed_chain_payload_is_one_error,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "A null"),
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "`A null"),
     "/test.gx" => r#"
         type MyChain = ErrChain<`A>;
         let saved: Error<MyChain> = never();

@@ -114,7 +114,7 @@ async fn value_of(
             if let GXEvent::Updated(eid, v) = e
                 && *eid == id
             {
-                return Some(v.clone());
+                return Some(graphix_package_core::testing::data(v.clone()));
             }
         }
     }

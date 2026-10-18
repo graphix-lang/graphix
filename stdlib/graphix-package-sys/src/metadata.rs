@@ -171,9 +171,10 @@ pub(crate) mod test {
         let Value::Error(error) = value else {
             panic!("expected IOError, got {value:?}")
         };
-        let Value::Array(fields) = &**error else { panic!("expected tagged error") };
-        assert_eq!(fields[0], Value::String(literal!("IOError")));
-        let Value::String(message) = &fields[1] else { panic!("expected error text") };
+        let Some((tag, [Value::String(message)])) = rep::variant(error) else {
+            panic!("expected tagged error text")
+        };
+        assert_eq!(tag, "IOError");
         assert!(message.contains(path), "path missing: {message}");
         assert!(!message.contains("Os {"), "debug error: {message}");
         assert!(!message.contains("Caused by:"), "debug context: {message}");

@@ -2166,7 +2166,7 @@ const LIST_CONS_WIDER_TAIL: &str = r#"
 "#;
 
 run!(list_cons_wider_tail, LIST_CONS_WIDER_TAIL, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[u64:0, [u64:1, [null, []]]]"
+    format!("{}", v.unwrap()) == "[u64:0, u64:1, null]"
 });
 
 // Two arguments neither of which holds the other wait for a later

@@ -49,7 +49,7 @@ const NET_ABSTRACT_THROUGH_CAST: &str = r#"
 "#;
 
 run!(net_abstract_through_cast, NET_ABSTRACT_THROUGH_CAST, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == r#"Sorted([1, 2]) error:["InvalidCast", "can't cast [2, 1] to Sorted: not sorted"]"#)
+    matches!(v, Ok(Value::String(s)) if &**s == r#"Sorted([1, 2]) error:`InvalidCast("can't cast [2, 1] to Sorted: not sorted")"#)
 }; FuseExpect::Jit);
 
 const NET_WRITE0: &str = r#"

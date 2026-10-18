@@ -471,6 +471,13 @@ unsafe fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
     unsafe { buf_give(buf) }
 }
 
+/// Push the marker of the kind `kind` (a `rep::Kind`), which opens a
+/// tuple, struct or variant.
+unsafe fn graphix_value_buf_push_marker(buf: *mut LPooled<Vec<Value>>, kind: u64) {
+    let kind = rep::Kind::from_u8(kind as u8).expect("a kind marker");
+    unsafe { (*buf).push(rep::marker(kind)) }
+}
+
 /// Push a `Value::String` cloned from a kernel strings-table slot.
 unsafe fn graphix_value_buf_push_arcstr(
     buf: *mut LPooled<Vec<Value>>,

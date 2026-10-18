@@ -580,9 +580,9 @@ fn key_names() {
         (Key::Character("a".into()), "a"),
     ] {
         let v = key_event_to_value(&key, Modifiers::empty(), None, false);
-        let key = v.cast_to::<std::collections::HashMap<String, Value>>().unwrap()["key"]
-            .clone();
-        assert_eq!(key, Value::String(name.into()));
+        let fields = graphix_compiler::rep::struct_fields(&v).expect("a struct");
+        let (_, key) = graphix_compiler::rep::field_named(fields, "key").expect("key");
+        assert_eq!(key, &Value::String(name.into()));
     }
 }
 
@@ -1186,7 +1186,8 @@ async fn mouse_button_names_use_static_storage() -> Result<()> {
             expect_call(&msgs);
             for m in &msgs {
                 if let super::Message::Call(_, args) = m {
-                    let Value::String(name) = &args[0] else {
+                    let Some((name, [])) = graphix_compiler::rep::variant(&args[0])
+                    else {
                         panic!("button name missing")
                     };
                     assert!(arcstr::ArcStr::is_static(name), "{name}");

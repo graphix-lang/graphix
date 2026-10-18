@@ -963,7 +963,7 @@ run!(cast_recursive_no_progress, CAST_RECURSIVE_NO_PROGRESS, refused("refers bac
 // A two-element array is not a list: converting it keeps both items.
 const CAST_PAIR_TO_LIST: &str = r#"cast<List<i64>>([1, 2])$"#;
 run!(cast_pair_to_list, CAST_PAIR_TO_LIST, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:1, [i64:2, []]]"
+    format!("{}", v.unwrap()) == "[i64:1, i64:2]"
 }; FuseExpect::Jit);
 
 // A struct cast converts each field; the names decide the match.
@@ -1274,14 +1274,13 @@ run!(
     "#
 ; FuseExpect::None);
 
-// An array whose last element is list-shaped is still an array: the
-// cast's source type, not the value's shape, picks the conversion.
+// An array whose last element is empty converts element by element.
 const CAST_ARRAY_TO_LIST: &str = r#"{
   let a: Array<Array<i64>> = [[1], []];
   cast<List<Array<i64>>>(a)$
 }"#;
 run!(cast_array_to_list, CAST_ARRAY_TO_LIST, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[i64:1], [[], []]]"
+    format!("{}", v.unwrap()) == "[[i64:1], []]"
 }; FuseExpect::Jit);
 
 const CAST_NESTED_ARRAY_TO_LIST: &str = r#"{
@@ -1289,7 +1288,7 @@ const CAST_NESTED_ARRAY_TO_LIST: &str = r#"{
   cast<List<Array<Array<i64>>>>(b)$
 }"#;
 run!(cast_nested_array_to_list, CAST_NESTED_ARRAY_TO_LIST, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[[[i64:1]], [[[i64:2], []], []]]"
+    format!("{}", v.unwrap()) == "[[[i64:1]], [[i64:2], []]]"
 }; FuseExpect::Jit);
 
 // A list statically so converts to an array element by element.
@@ -1820,44 +1819,40 @@ run!(bottom_fed_operands, BOTTOM_FED_OPERANDS, |v: Result<&Value>| {
 // checks it; a member a call leaves open is judged once it binds.
 #[tokio::test(flavor = "current_thread")]
 async fn discernible_refuses_one_runtime_form() -> Result<()> {
+    const FNS: &str = "[fn(x: i64) -> i64, fn(s: string) -> string]";
     for (src, says) in [
         (
-            r#"{ let f = |x, y| x == y; let v: [string, `A] = "A"; f(v, v) }"#,
+            format!("{{ let f = |x, y| x == y; let a = |x: i64| x; let v: {FNS} = a; f(v, v) }}"),
             "same runtime form",
         ),
         (
             r#"{
               let f = |x, y| x == y;
               let x = never();
-              let r = f([x, "a"], [x, "a"]);
-              x <- `A;
+              let r = f([x, |s: string| s], [x, |s: string| s]);
+              x <- |n: i64| n;
               r
-            }"#,
+            }"#
+            .to_string(),
             "same runtime form",
         ),
+        (format!("{{ let a = |x: i64| x; let x: {FNS} = a; uniq(x) }}"), "same runtime form"),
         (
-            r#"{ let s: Array<[string, `A]> = ["b", `A]; array::len(array::sort(s)) }"#,
-            "same runtime form",
-        ),
-        (
-            r#"{ let s: Array<[string, `A]> = ["b", `A]; array::len(array::dedup(s)) }"#,
-            "same runtime form",
-        ),
-        (r#"{ let x: [string, `A] = "a"; uniq(x) }"#, "same runtime form"),
-        (r#"{ let x: [string, `A] = "a"; min(x, x) }"#, "same runtime form"),
-        (
-            r#"{ let f = 'a: Discernible |x: 'a| x; let v: [string, `A] = "A"; f(v) }"#,
+            format!(
+                "{{ let f = 'a: Discernible |x: 'a| x; let a = |x: i64| x; let v: {FNS} = a; f(v) }}"
+            ),
             "must be Discernible",
         ),
         (
             r#"{
-              let g = |c, a| { let v = select c { true => a, false => "s" }; v == v };
-              g(true, "t")
-            }"#,
+              let g = |c, a| { let v = select c { true => a, false => |s: string| s }; v == v };
+              g(true, |s: string| s)
+            }"#
+            .to_string(),
             "annotate it",
         ),
     ] {
-        match eval_modes(src, crate::TEST_REGISTER).await? {
+        match eval_modes(&src, crate::TEST_REGISTER).await? {
             Err(msg) => {
                 assert!(msg.contains(says), "{src}: {msg}")
             }

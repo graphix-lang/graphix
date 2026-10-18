@@ -136,7 +136,9 @@ impl FromValue for ColorV {
             a: f32,
         }
         let Fields { r, g, b, a } = abstract_payload(&v)
-            .ok_or_else(|| anyhow!("expected a Color, got {v}"))?
+            .ok_or_else(|| {
+                anyhow!("expected a Color, got {}", graphix_compiler::typ::Naked(&v))
+            })?
             .clone()
             .cast_to()?;
         if !(0.0..=1.0).contains(&r)
@@ -325,7 +327,7 @@ impl FromValue for ThemeV {
                 }
                 s => bail!("invalid theme {s}"),
             },
-            _ => bail!("invalid theme {v}"),
+            _ => bail!("invalid theme {}", graphix_compiler::typ::Naked(&v)),
         }
     }
 }
@@ -483,7 +485,7 @@ impl FromValue for ImageSourceV {
             Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
             v => {
                 let Some((tag, [val])) = rep::variant(&v) else {
-                    bail!("invalid ImageSource {v}")
+                    bail!("invalid ImageSource {}", graphix_compiler::typ::Naked(&v))
                 };
                 match tag.as_str() {
                     "Bytes" => match val {
@@ -556,7 +558,9 @@ impl FromValue for ShortcutV {
             shift: bool,
         }
         let Fields { alt, ctrl, key, logo, shift } = abstract_payload(&v)
-            .ok_or_else(|| anyhow!("expected a Shortcut, got {v}"))?
+            .ok_or_else(|| {
+                anyhow!("expected a Shortcut, got {}", graphix_compiler::typ::Naked(&v))
+            })?
             .clone()
             .cast_to()?;
         let mut display = String::new();

@@ -258,7 +258,7 @@ async fn multiple_errors(mode: Mode) -> Result<()> {
             // and rethrows it once
             let expected = [1, 3]
                 .into_iter()
-                .map(|v| format!("cleanup {v} First\ncaught First"))
+                .map(|v| format!("cleanup {v} `First\ncaught `First"))
                 .collect::<Vec<_>>()
                 .join("\n");
             assert_eq!(out.trim(), expected, "{form}: {body}");
@@ -291,19 +291,23 @@ async fn nested_multiple_errors(mode: Mode) -> Result<()> {
         );
         let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [2, 3], "{inner}\n{out}");
-        assert_eq!(out.trim(), "inner 1 First\nouter 1 First\ncaught First", "{inner}");
+        assert_eq!(
+            out.trim(),
+            "inner 1 `First\nouter 1 `First\ncaught `First",
+            "{inner}"
+        );
     }
     Ok(())
 }
 
 async fn recursive_multiple_errors(mode: Mode) -> Result<()> {
     for (body, expected) in [
-        ("select request { 1 => bad(1000), _ => request }", "caught Same\ncaught Same"),
+        ("select request { 1 => bad(1000), _ => request }", "caught `Same\ncaught `Same"),
         (
             r#"try {
                     select request { 1 => bad(1000), _ => request }
                 } with(e) { println("cleanup [request]"); e? }"#,
-            "cleanup 1\ncaught Same",
+            "cleanup 1\ncaught `Same",
         ),
     ] {
         let code = format!(
@@ -354,7 +358,7 @@ async fn multiple_errors_after_sleep(mode: Mode) -> Result<()> {
         assert_eq!(as_i64s(&values), [5], "{form}\n{out}");
         assert_eq!(
             out.trim(),
-            "cleanup 1\ncaught First\ncleanup 3\ncaught First",
+            "cleanup 1\ncaught `First\ncleanup 3\ncaught `First",
             "{form}"
         );
     }
@@ -412,7 +416,8 @@ async fn nested_handler_choices(mode: Mode) -> Result<()> {
         let (values, out) = run_delta(&code, mode).await?;
         let expected_values: &[i64] = if rethrow { &[2, 3] } else { &[1, 2, 3] };
         assert_eq!(as_i64s(&values), expected_values, "{handler}\n{out}");
-        let expected = if rethrow { "local First\ncaught First" } else { "local First" };
+        let expected =
+            if rethrow { "local `First\ncaught `First" } else { "local `First" };
         assert_eq!(out.trim(), expected, "{handler}");
     }
     Ok(())

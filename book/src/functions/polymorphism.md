@@ -107,27 +107,30 @@ function; the promise is about what the body may assume, not about what
 callers may do.
 
 A third bound, `Discernible`, says the values of a type can be told
-apart at run time the way the type tells them apart. At run time a
-variant without arguments is a string, and a tuple, a struct, a list or
-a variant with arguments is an array, so in `[string, `A]` the string
-`"A"` and the variant `` `A `` are the same value. Comparing such
-values, sorting them, or using them as map keys would mix the two up,
-so `==` and the other comparisons, map keys, `uniq`, `min`, `max`,
-`array::sort` and the other functions that compare or hash need
-`Discernible`. A function whose body compares takes the bound on its
-type variable, as arithmetic adds `Singleton`, and a call refuses a type
-that isn't `Discernible`,
+apart at run time the way the type tells them apart. Nearly every type
+can: a string, an array, a tuple, a struct, a list and each variant are
+different values at run time, whatever they hold, and `==` compares a
+reference by what it points to. The exception is functions: a function
+value doesn't say its type, so in `[fn(x: i64) -> i64, fn(s: string) ->
+string]` the two can't be told apart by a test. Comparing such values,
+or hashing them, would mix the two up, so `==` and the other
+comparisons, map keys, `uniq`, `min`, `max`, `array::sort` and the
+other functions that compare or hash need `Discernible`. A function
+whose body compares takes the bound on its type variable, as arithmetic
+adds `Singleton`, and a call refuses a type that isn't `Discernible`,
 
 ```graphix
 〉let eq = |x, y| x == y
-〉let v: [string, `A] = "A"
+〉let inc = |x: i64| x + 1
+〉let v: [fn(x: i64) -> i64, fn(s: string) -> string] = inc
 〉eq(v, v)
-error: ... [string, `A] must be Discernible here, but it holds string and `A,
-which have the same runtime form; wrap them in distinct variants
+error: ... 'a must be Discernible, but [fn(x: i64) -> i64, fn(s: string) -> string]
+holds fn(x: i64) -> i64 and fn(s: string) -> string, which have the same runtime
+form; wrap them in distinct variants
 ```
 
-Wrapping the members in variants of their own, `` [`S(string), `A] ``,
-tells them apart.
+Wrapping the members in variants of their own, `` [`I(fn(x: i64) ->
+i64), `S(fn(s: string) -> string)] ``, tells them apart.
 
 What orders or hashes values (`<` and the other orderings, map keys,
 `min`, `max`, the sorts, `array::dedup`) needs `Ordered`, which is

@@ -132,20 +132,17 @@ impl CastTarget {
 
     /// What a reader whose errors are tagged `tag` hands back: its own
     /// error as it is, and data as [`Self::read_data`] does.
-    pub fn read(&self, env: &Env, tag: &ArcStr, flat: bool, v: Value) -> Value {
+    pub fn read(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
         match v {
             v @ Value::Error(_) => v,
-            v => self.read_data(env, tag, flat, v),
+            v => self.read_data(env, tag, v),
         }
     }
 
     /// Data cast to the target (an error in it refused like any value the
-    /// target does not admit), or with no target an error saying so. A
-    /// `flat` format writes a list as a flat array, so its arrays are
-    /// never read as a list's cells.
-    pub fn read_data(&self, env: &Env, tag: &ArcStr, flat: bool, v: Value) -> Value {
+    /// target does not admit), or with no target an error saying so.
+    pub fn read_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
         match &self.0 {
-            Some(t) if flat => t.cast_data(env, v),
             Some(t) => t.cast_value(env, v),
             None => errf!(tag, "no concrete return type found"),
         }
@@ -175,8 +172,6 @@ impl ReadInput {
 pub trait ReadFormat: Debug + Send + Sync + 'static {
     const NAME: &str;
     const TAG: ArcStr;
-    /// The format writes a list as a flat array, and reads it back so.
-    const FLAT_LISTS: bool;
     type Args: Debug + Any + Send + Sync;
 
     fn prepare_args(cached: &CachedVals) -> Option<Self::Args>;
@@ -186,7 +181,7 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
 
     /// What the reader hands back for what `parse` made.
     fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
-        target.read(env, &Self::TAG, Self::FLAT_LISTS, v)
+        target.read(env, &Self::TAG, v)
     }
 }
 
@@ -1662,9 +1657,11 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 }
 
 /// The type a builtin answering with stored data reads it back as: its
-/// success type, where reading it can need a `Cast` implementation.
-pub fn data_target(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
-    extract_cast_type(resolved).filter(|t| t.holds_abstract(env))
+/// success type. Stored data carries no markers and no abstract value,
+/// so the read makes its tuples, structs, variants and lists and casts
+/// its abstract types.
+pub fn data_target(resolved: Option<&FnType>) -> Option<Type> {
+    extract_cast_type(resolved)
 }
 
 /// Stored data `v` read back as `t` ([`data_target`]); data it can't be is
@@ -1681,8 +1678,8 @@ pub fn read_back<R: Rt, E: UserEvent>(
     }
 }
 
-fn data_result<T: EvalCachedAsync>(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
-    T::DATA_RESULT.then(|| data_target(env, resolved)).flatten()
+fn data_result<T: EvalCachedAsync>(resolved: Option<&FnType>) -> Option<Type> {
+    T::DATA_RESULT.then(|| data_target(resolved)).flatten()
 }
 
 impl<T: EvalCachedAsync> CachedArgsAsync<T> {
@@ -1805,7 +1802,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     ) -> Result<Box<dyn Apply<R, E>>> {
         let var = RtVar::new(ctx, top_id);
         let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
-        let data_result = data_result::<T>(&ctx.env, resolved);
+        let data_result = data_result::<T>(resolved);
         let t = CachedArgsAsync::<T> {
             slept: false,
             var,
@@ -1999,7 +1996,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.data_result = data_result::<T>(&ctx.env, Some(resolved));
+        self.data_result = data_result::<T>(Some(resolved));
         self.t.typecheck1(ctx, from, resolved)
     }
 

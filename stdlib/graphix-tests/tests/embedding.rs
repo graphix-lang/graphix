@@ -157,7 +157,7 @@ async fn a_mistyped_call_is_refused() -> Result<()> {
                 if let GXEvent::Updated(id, v) = e
                     && id == c.expr
                 {
-                    out.push(v)
+                    out.push(graphix_package_core::testing::data(v))
                 }
             }
         }
@@ -258,7 +258,7 @@ async fn set_many_lands_in_one_cycle() -> Result<()> {
                 None => break,
                 Some(mut b) => for e in b.drain(..) {
                     if let GXEvent::Updated(id, v) = e && id == wid {
-                        seen.push(format!("{v}"));
+                        seen.push(format!("{}", graphix_package_core::testing::data(v)));
                     }
                 }
             }

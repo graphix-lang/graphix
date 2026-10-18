@@ -447,7 +447,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             abort.manual_mut().into_iter().for_each(|n| n.sleep(ctx));
             abort.pending = None;
             if let AbortRole::Machine { pc, .. } = abort.role {
-                ctx.rt.set_var(pc, Value::String(crate::expr::seq::IDLE.clone()));
+                ctx.rt.set_var(
+                    pc,
+                    crate::rep::make_variant(crate::expr::seq::IDLE.clone(), []),
+                );
             }
         }
     }

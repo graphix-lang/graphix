@@ -2372,7 +2372,7 @@ run!(native_interpolates_every_part_kind, r#"{
         #[native] "x=[x] v=[v] s=[s] xs=[xs] m=[m] d=[d]";
     (f(null, `B("q"), {a: 1, b: "z"}, [1.5, 2.0], Money(7), decimal:1.25), f(4, `A, {a: 2, b: "y"}, [], Money(-1), decimal:0.5))
 }"#, |v: Result<&Value>| format!("{}", v.unwrap())
-    == r#"["x=null v=`B(\"q\") s={a: 1, b: \"z\"} xs=[1.5, 2] m=$7 d=1.25", "x=4 v=A s={a: 2, b: \"y\"} xs=[] m=$-1 d=0.5"]"#;
+    == r#"["x=null v=`B(\"q\") s={a: 1, b: \"z\"} xs=[1.5, 2] m=$7 d=1.25", "x=4 v=`A s={a: 2, b: \"y\"} xs=[] m=$-1 d=0.5"]"#;
     FuseExpect::Jit);
 
 // A literal is no fusion region, its value held by its node, and

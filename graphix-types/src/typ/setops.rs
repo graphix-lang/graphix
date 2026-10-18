@@ -334,8 +334,9 @@ impl Type {
                 s.insert(*s1);
                 Ok(Type::Primitive(s))
             }
-            (Type::Primitive(p), t) | (t, Type::Primitive(p))
-                if t.array_shaped() && p.contains(Typ::Array) =>
+            (Type::Primitive(p), Type::Array(_))
+            | (Type::Array(_), Type::Primitive(p))
+                if p.contains(Typ::Array) =>
             {
                 Ok(Type::Primitive(*p))
             }
@@ -704,7 +705,7 @@ impl Type {
                     Ok(Type::Primitive(*p))
                 }
             }
-            (t, Type::Primitive(p)) if t.array_shaped() => {
+            (Type::Array(_), Type::Primitive(p)) => {
                 if p.contains(Typ::Array) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {

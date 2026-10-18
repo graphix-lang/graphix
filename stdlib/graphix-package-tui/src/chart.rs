@@ -131,7 +131,9 @@ impl<X: GXExt> DatasetW<X> {
     /// The finite points: ratatui paints a NaN at the canvas edge.
     fn set_data(&mut self, v: &Value) -> Result<()> {
         self.data.clear();
-        let points = rep::array_elems(v).ok_or_else(|| anyhow!("invalid dataset {v}"))?;
+        let points = rep::array_elems(v).ok_or_else(|| {
+            anyhow!("invalid dataset {}", graphix_compiler::typ::Naked(v))
+        })?;
         for p in points.iter() {
             let PointV(x, y) = p.clone().cast_to().context("invalid dataset pair")?;
             if x.is_finite() && y.is_finite() {

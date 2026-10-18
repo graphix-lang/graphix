@@ -22,6 +22,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
+    rep,
     typ::Type,
 };
 use anyhow::{Result, bail};
@@ -134,15 +135,16 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
             (tracked, lets)
         });
         let at = pc.update(ctx);
-        let target = match at.is_fired().then(|| at.value_cloned()) {
-            Some(Value::String(l)) if *l == crate::expr::seq::IDLE => Some(None),
+        let at = at.is_fired().then(|| at.value_cloned());
+        let target = match at.as_ref().and_then(|v| rep::bare_tag(v).ok()) {
+            Some(l) if l == crate::expr::seq::IDLE => Some(None),
             // the step after the current one, else a search
-            Some(Value::String(l)) => current
+            Some(l) => current
                 .and_then(|c| steps[c].next)
                 .filter(|n| steps[*n].label == l)
                 .or_else(|| steps.iter().position(|s| s.label == l))
                 .map(Some),
-            _ => None,
+            None => None,
         };
         tracked.observe(ctx);
         let mut entered = false;
@@ -170,10 +172,13 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
             deselect(ctx, tracked, k, &mut steps[k]);
             *current = None;
             let Some(n) = steps[k].next else {
-                ctx.rt.set_var(*pc_id, Value::String(crate::expr::seq::IDLE.clone()));
+                ctx.rt.set_var(
+                    *pc_id,
+                    rep::make_variant(crate::expr::seq::IDLE.clone(), []),
+                );
                 break;
             };
-            let at = Value::String(steps[n].label.clone());
+            let at = rep::make_variant(steps[n].label.clone(), []);
             if !steps[k].same_cycle.load(Relaxed) {
                 ctx.rt.set_var(*pc_id, at);
                 break;

@@ -118,7 +118,7 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
             (Step::Key(k), Value::Map(m)) => {
                 m.get(k).ok_or_else(|| anyhow!("no key {k}"))?
             }
-            (step, v) => bail!("cannot apply {step:?} to {v}"),
+            (step, v) => bail!("cannot apply {step:?} to {}", crate::typ::Naked(v)),
         };
     }
     Ok(cur.clone())
@@ -154,6 +154,6 @@ pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
             };
             Ok(Value::Map(m.insert(k.clone(), inner).0))
         }
-        (step, v) => bail!("cannot apply {step:?} to {v}"),
+        (step, v) => bail!("cannot apply {step:?} to {}", crate::typ::Naked(v)),
     }
 }

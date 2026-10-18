@@ -308,7 +308,7 @@ macro_rules! db_event_accessor {
             const NAME: &str = $builtin_name;
 
             fn init<'a, 'b, 'c, 'd>(
-                ctx: &'a mut CompileCtx<R, E>,
+                _ctx: &'a mut CompileCtx<R, E>,
                 _typ: &'a FnType,
                 resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
@@ -319,7 +319,7 @@ macro_rules! db_event_accessor {
                     top_id,
                     cached: CachedVals::new(from),
                     bind_id: None,
-                    data: data_target(&ctx.env, resolved),
+                    data: data_target(resolved),
                     out: TagValue::phantom(),
                 }))
             }
@@ -356,11 +356,11 @@ macro_rules! db_event_accessor {
 
             fn typecheck1(
                 &mut self,
-                ctx: &mut CompileCtx<R, E>,
+                _ctx: &mut CompileCtx<R, E>,
                 _from: &mut [Node<R, E>],
                 resolved: &FnType,
             ) -> Result<()> {
-                self.data = data_target(&ctx.env, Some(resolved));
+                self.data = data_target(Some(resolved));
                 Ok(())
             }
 
@@ -481,11 +481,12 @@ mod test {
                 let v = scan_db_events(Some(id), &event, convert)
                     .expect("decode error delivered");
                 let Value::Error(e) = v else { panic!("expected DbErr") };
-                let Value::Array(fields) = &*e else { panic!("expected tagged error") };
-                assert_eq!(fields[0], Value::from("DbErr"));
-                let Value::String(msg) = &fields[1] else {
-                    panic!("expected error text")
+                let Some((tag, [Value::String(msg)])) =
+                    graphix_compiler::rep::variant(&e)
+                else {
+                    panic!("expected tagged error text")
                 };
+                assert_eq!(tag, "DbErr");
                 assert!(msg.contains("undecodable"));
             }
         }

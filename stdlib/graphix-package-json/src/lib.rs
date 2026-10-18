@@ -242,7 +242,6 @@ struct Json;
 impl ReadFormat for Json {
     const NAME: &str = "json_read";
     const TAG: ArcStr = literal!("JsonErr");
-    const FLAT_LISTS: bool = true;
     type Args = ReadInput;
 
     fn prepare_args(cached: &CachedVals) -> Option<ReadInput> {

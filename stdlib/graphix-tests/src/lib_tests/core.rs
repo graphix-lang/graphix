@@ -908,9 +908,15 @@ run!(opt_contains_compares_references_by_what_they_name, r#"{
     matches!(v, Ok(v) if v.to_string() == "[true, false]")
 }; FuseExpect::None);
 
-run!(opt_contains_refuses_the_indiscernible, r#"{
+run!(opt_contains_tells_a_tuple_from_an_array, r#"{
     let x: [(i64, i64), Array<i64>, null] = (1, 2);
     opt::contains(x, [1, 2])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(false))); FuseExpect::Jit);
+
+run!(opt_contains_refuses_the_indiscernible, r#"{
+    let a = |x: i64| x;
+    let x: [fn(x: i64) -> i64, fn(s: string) -> string, null] = a;
+    opt::contains(x, a)
 }"#, refused("'a must be Discernible"); FuseExpect::None);
 
 // A release delivering one of a site's args and a new call of the other

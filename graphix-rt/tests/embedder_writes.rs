@@ -2,10 +2,10 @@
 //! and a write through a place reference into it, in one input batch.
 
 use anyhow::{Context, Result};
-use arcstr::{ArcStr, literal};
-use graphix_compiler::{BindId, Scope, expr::ModPath};
+use arcstr::literal;
+use graphix_compiler::{BindId, Scope, expr::ModPath, rep};
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
-use netidx_value::{ValArray, Value};
+use netidx_value::Value;
 use poolshark::global::GPooled;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -13,12 +13,7 @@ use tokio::sync::mpsc;
 type Batch = GPooled<Vec<GXEvent>>;
 
 fn st(a: i64, b: i64) -> Value {
-    let f = |n: &str, v: i64| {
-        Value::Array(ValArray::from_iter_exact(
-            [Value::String(ArcStr::from(n)), Value::I64(v)].into_iter(),
-        ))
-    };
-    Value::Array(ValArray::from_iter_exact([f("a", a), f("b", b)].into_iter()))
+    rep::structure([(literal!("a"), Value::I64(a)), (literal!("b"), Value::I64(b))])
 }
 
 async fn run(set_first: bool) -> Result<Vec<Value>> {

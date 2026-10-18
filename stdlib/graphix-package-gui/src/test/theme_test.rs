@@ -22,7 +22,8 @@ use gui::style::{button_style, rule_style, stylesheet};
   #rule: rule_style(#fill_percent: 3.0)
 ))
 }"#;
-    let (v, _ctx) = testing::eval(code, TEST_REGISTER).await?;
+    let code = format!("let result = {code}");
+    let (_f, v) = testing::Fixture::new(&code, TEST_REGISTER, |_| ()).await?;
     let ThemeV(theme) = ThemeV::from_value(v)?;
     let p = theme.palette();
     assert_eq!((p.background.r, p.background.g, p.background.b), (0.1, 0.2, 0.3));

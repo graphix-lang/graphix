@@ -1,31 +1,32 @@
-//! The native `List` rep: cons = a 2-slot array `[head, tail]`, nil = a
-//! clone of one static empty array (not `Null`: `[List, null]` must not
-//! collapse). The discriminant is the length; only this module knows
-//! the layout.
+//! The native `List` rep: a cell is an array of the list marker, its
+//! head and its tail; nil is the marker alone, one static value (not
+//! `Null`: `[List, null]` must not collapse, and not the empty array: an
+//! empty list is no array). Only this module and `rep.rs` know the
+//! layout; a list's data form is a flat array.
+use crate::rep::{self, Kind};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
 
-static EMPTY: LazyLock<ValArray> =
-    LazyLock::new(|| ValArray::from_iter_exact(std::iter::empty()));
+static NIL: LazyLock<Value> = LazyLock::new(|| rep::build(Kind::List, []));
 
 pub fn nil() -> Value {
-    Value::Array(EMPTY.clone())
+    NIL.clone()
 }
 
 pub fn cons(head: Value, tail: Value) -> Value {
-    Value::Array(ValArray::from_iter_exact([head, tail].into_iter()))
+    rep::build(Kind::List, [head, tail])
 }
 
 pub fn split(v: &Value) -> Option<(&Value, &Value)> {
-    match v {
-        Value::Array(a) if a.len() == 2 => Some((&a[0], &a[1])),
+    match rep::marked(v, Kind::List)? {
+        [head, tail] => Some((head, tail)),
         _ => None,
     }
 }
 
 pub fn is_nil(v: &Value) -> bool {
-    matches!(v, Value::Array(a) if a.is_empty())
+    rep::marked(v, Kind::List).is_some_and(|p| p.is_empty())
 }
 
 /// Walk one cell per item of `items`, handing each item its head:

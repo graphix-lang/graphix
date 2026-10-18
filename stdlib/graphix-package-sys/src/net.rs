@@ -907,7 +907,10 @@ fn parse_spec(spec: &Value) -> Result<Vec<ArgSpec>> {
         Value::Null => return Ok(vec![]),
         v => match rep::read_struct(v).map(rep::Parts::elems) {
             Some(fields) => fields,
-            None => bail!("rpc #spec must be a struct or null, not {v}"),
+            None => bail!(
+                "rpc #spec must be a struct or null, not {}",
+                graphix_compiler::typ::Naked(v)
+            ),
         },
     };
     fields
@@ -1159,7 +1162,9 @@ mod test {
     fn list_error_preserves_remote_message() {
         let message = literal!("context: \"detail\"");
         let error = Value::error(message.clone());
-        let expected = Value::Error(Value::from((literal!("ListError"), message)).into());
+        let expected = Value::Error(
+            rep::make_variant(literal!("ListError"), [Value::String(message)]).into(),
+        );
         assert_eq!(list_response(&error), Some(expected));
         assert_eq!(list_response(&Value::Null), None);
     }

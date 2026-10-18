@@ -95,9 +95,9 @@ async fn cleanup_rethrow(mode: Mode) -> Result<()> {
             let (values, out) = run_delta(&code, mode).await?;
             assert_eq!(as_i64s(&values), [2, 3], "{form}: {cleanup}\n{out}");
             let expected = if cleanup.contains("error") {
-                "cleanup 1 Oops\ncaught Oops"
+                "cleanup 1 `Oops\ncaught `Oops"
             } else {
-                "cleanup 1\ncaught Oops"
+                "cleanup 1\ncaught `Oops"
             };
             assert_eq!(out.trim(), expected, "{form}: {cleanup}");
         }
@@ -151,7 +151,7 @@ async fn multiple_errors(mode: Mode) -> Result<()> {
         );
         let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [-1, 2, 3], "{form}\n{out}");
-        assert_eq!(out.trim(), "with 1 First", "{form}");
+        assert_eq!(out.trim(), "with 1 `First", "{form}");
     }
     Ok(())
 }

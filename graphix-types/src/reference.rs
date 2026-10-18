@@ -62,6 +62,7 @@ pub fn cell(v: &Value) -> Option<BindId> {
 /// A reference read as its cell.
 impl FromValue for BindId {
     fn from_value(v: Value) -> anyhow::Result<Self> {
-        cell(&v).ok_or_else(|| anyhow!("expected a reference, got {v}"))
+        cell(&v)
+            .ok_or_else(|| anyhow!("expected a reference, got {}", crate::typ::Naked(&v)))
     }
 }

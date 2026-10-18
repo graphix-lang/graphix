@@ -776,7 +776,10 @@ pub fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompileFut<X> {
             "QrCode" => qr_code::QrCodeW::compile(gx, v).await,
             "Table" => table::TableW::compile(gx, v).await,
             "DataTable" => data_table::DataTableW::compile(gx, v).await,
-            _ => bail!("invalid gui widget type `{s}({v})"),
+            _ => bail!(
+                "invalid gui widget type `{s}({})",
+                graphix_compiler::typ::Naked(&v)
+            ),
         }
     })
 }
