@@ -380,7 +380,9 @@ union target takes the first member in canonical order, narrowest
 integer first, that holds it), and the JIT inlines
 only the casts that always fit (`lowering::inline_cast`). A struct cast
 reads a field the data omits as null wherever the field's type
-admits null (`typ/cast.rs`), and netidx-value casts an RFC3339
+admits null (`typ/cast.rs`), a cast to a Graphix abstract type casts
+its payload against the representation (a Rust-backed one checks its
+id alone), and netidx-value casts an RFC3339
 string to a datetime and an array of numbers to bytes, so what the
 json and toml writers emit reads back into its type.
 A reference is its own runtime form (`graphix_types::reference`, an

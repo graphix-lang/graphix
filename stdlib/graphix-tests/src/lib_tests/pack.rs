@@ -147,3 +147,52 @@ run!(pack_abstract_too_deep_is_refused_by_the_writer, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.contains("TooBig"))
 }; FuseExpect::Jit);
+
+// A read of a Graphix abstract type casts the payload against the
+// representation: bytes written where `Box` held a string do not read as
+// a `Box` that holds an i64. `Box` is at module level in both programs,
+// so it is one type to the reader's id check.
+#[tokio::test(flavor = "current_thread")]
+async fn pack_abstract_read_checks_the_payload() -> Result<()> {
+    use graphix_package_core::testing::{
+        Mode, compile_result, fixture_runtime, next_update,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
+    async fn result(src: &str) -> Result<Value> {
+        let file = [("/test.gx", arcstr::ArcStr::from(src).into())];
+        let (ctx, mut rx) =
+            fixture_runtime(file, crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+        let res = compile_result(&ctx).await?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        next_update(&mut rx, res.exprs[0].id, deadline).await
+    }
+    let written = result(
+        r#"type Box = Abstract<string>;
+        let result = pack::write_bytes(Box("hello"))$"#,
+    )
+    .await?;
+    let read = result(&format!(
+        r#"type Box = Abstract<i64>;
+        let r: Result<Box, [`InvalidCast(string), `PackErr(string)]> = pack::read({written});
+        let result = select r {{ error as e => "[e]", b => "[b.0 + 1]" }}"#
+    ))
+    .await?;
+    assert_eq!(
+        read.to_string(),
+        r#""error:[\"InvalidCast\", \"can't cast \\\"hello\\\" to i64: no primitive conversion\"]""#
+    );
+    Ok(())
+}
+
+// Data never carries a reference: an abstract whose representation is
+// one reads as an InvalidCast, and the referent is untouched.
+run!(pack_abstract_read_refuses_a_reference, r#"{
+    type R = Abstract<&mut i64>;
+    let secret = 5;
+    let forged: Result<R, [`InvalidCast(string), `PackErr(string)]> =
+        pack::read(pack::write_bytes(R(&mut secret))$);
+    (select forged { error as e => "[e]", _ => "read" }, secret)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["error:[\"InvalidCast\", \"can't cast &ref to &mut i64: a reference can't be read from data\"]", i64:5]"#)
+}; FuseExpect::Jit);

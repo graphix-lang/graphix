@@ -530,26 +530,26 @@ impl Type {
                 Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => Ok(None),
                 _ => Err(self.cast_fail("not a function", v)),
             },
-            // CR claude for eric: [bug/high] A cast to a Graphix abstract type accepts
-            // any decoded GxAbstract whose id and params match (`is_a`), and never
-            // checks the payload against the definition's representation. AbstractIds
-            // are path-derived and stable across processes, so data from pack::read, a
-            // file or netidx can carry a payload of any type. Example: a Box(string)
-            // read as `Box = Abstract<i64>` makes the JIT compute `b.0 + 1` as 1 while
-            // the node-walk logs a parse error and produces nothing. Worse, `holds_ref`
-            // stops at `Type::Abstract`, so `Abstract<&mut i64>` passes the `Concrete`
-            // read bound, and bytes naming any bind id become a writable reference to a
-            // variable the program never shared. Decide the rule: either cast the
-            // payload against the representation (substituted by the params) and refuse
-            // a representation holding a reference or function as data, or refuse
-            // abstract read targets entirely. Pin both cases. probe:
-            // design/review-2026-10-12/repro/tests-types-02.sh (tests-types-02)
-            Type::Abstract { .. } => {
-                if self.is_a(env, v) {
-                    Ok(None)
-                } else {
-                    Err(self.cast_fail("not this abstract type", v))
+            Type::Abstract { id, params } => {
+                if !self.is_a(env, v) {
+                    return Err(self.cast_fail("not this abstract type", v));
                 }
+                // a Rust-backed abstract's payload is Rust's to check
+                let (Some(g), Some(rep)) =
+                    (crate::abstract_value::get(v), env.abstract_reps.get(id))
+                else {
+                    return Ok(None);
+                };
+                Ok(rep.instantiate_with(params).cast_int(env, cx, None, &g.payload)?.map(
+                    |payload| {
+                        crate::abstract_value::wrap(
+                            *id,
+                            g.name.clone(),
+                            g.params.clone(),
+                            payload,
+                        )
+                    },
+                ))
             }
             Type::ByRef(..) => {
                 Err(self.cast_fail("a reference can't be read from data", v))
