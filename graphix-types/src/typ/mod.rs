@@ -23,6 +23,7 @@ use parking_lot::Mutex;
 use poolshark::{IsoPoolable, local::LPooled};
 use smallvec::SmallVec;
 use std::{
+    cell::RefCell,
     cmp::Ordering,
     fmt::Debug,
     hash::{Hash, Hasher},
@@ -2582,9 +2583,10 @@ impl Type {
                 // of a chain is that chain
                 if env.is_core_errchain(&resolved)
                     && let [payload] = &params[..]
-                    && let Some(chain) = payload.chain_type(env)?
+                    && let Some(error) = payload.chain_error_type(env)?
                 {
-                    return Ok(Some(chain));
+                    let known = resolved.bindings(&[error]).expect("arity checked");
+                    return Ok(Some(def_typ.replace_tvars(&known)));
                 }
                 Ok(Some(def_typ.replace_tvars(&known)))
             }
@@ -2592,45 +2594,83 @@ impl Type {
         }
     }
 
-    /// This type's expansion when it is an error chain: the `ErrChain`
-    /// definition, or a struct with exactly its fields.
-    // CR claude for eric: [bug/medium] "Is a chain" is decided by field names alone,
-    // here and in the compiler's is_echain_shape / is_chain_type and the run-time
-    // chain_error; field types are never checked. Example: a program's own `type P =
-    // {cause: i64, error: string, ori: bool, pos: null}`. A `?` keeps Error<P>
-    // (fix_echain_typ), and a generic `?` that throws ErrChain<'e> collapses to P when
-    // 'e = P (lookup_ref). At run time wrap_error nests the value as `cause`, so
-    // `(e.0).cause` is typed i64 but holds the original struct. --check passes, the JIT
-    // panics at the kernel param slot check, and the node-walk delivers an array into
-    // an i64. Fix: define the chain test once, next to this function, as the core
-    // ErrChain or a struct whose field types are ErrChain's, and use it in
-    // fix_echain_typ, is_chain_type and lookup_ref. The run-time side must agree. One
-    // option is for wrap_error to extend only what the site's static type says is a
-    // chain, rather than reading the value's shape; that choice is yours. Same root as
-    // c-error-op-02 / x-engine-seq-errors-03. probe:
-    // design/review-2026-10-12/repro/x-fix-types-10.sh (x-fix-types-10)
-    fn chain_type(&self, env: &Env) -> Result<Option<Type>> {
-        let t = match self {
-            Type::TVar(tv) => match tv.binding() {
-                Some(t) => return t.chain_type(env),
-                None => return Ok(None),
-            },
-            Type::Ref(tr)
-                if tr.resolve_pure(env).is_some_and(|r| env.is_core_errchain(&r)) =>
-            {
-                match self.lookup_ref_peek(env)? {
-                    t @ Type::Struct(_) => t,
-                    _ => return Ok(None),
-                }
+    /// Core's `ErrChain<payload>`.
+    pub fn err_chain(payload: Type) -> Type {
+        static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
+        Type::Ref(Arc::new(TypeRef::synthetic(
+            ModPath::root(),
+            NAME.clone(),
+            Arc::from_iter([payload]),
+        )))
+    }
+
+    /// `E` when every value of this type is a link of an error chain,
+    /// which a raise extends: core's `ErrChain<E>`, a struct of its field
+    /// names that `ErrChain<E>` contains (`E` its `error` field), or a
+    /// union of chains (`E` the union of theirs).
+    pub fn chain_error_type(&self, env: &Env) -> Result<Option<Type>> {
+        thread_local! {
+            static JUDGING: RefCell<Vec<Type>> = const { RefCell::new(Vec::new()) };
+        }
+        struct Judging;
+        impl Drop for Judging {
+            fn drop(&mut self) {
+                JUDGING.with_borrow_mut(|j| j.pop());
             }
-            t @ Type::Struct(_) => t.clone(),
-            _ => return Ok(None),
-        };
-        let Type::Struct(fields) = &t else { return Ok(None) };
-        let names = ["cause", "error", "ori", "pos"];
-        let chain = fields.len() == names.len()
-            && fields.iter().zip(names).all(|((n, _, _), m)| n.as_str() == m);
-        Ok(chain.then_some(t))
+        }
+        if let Type::TVar(tv) = self {
+            return match tv.binding() {
+                Some(t) => t.chain_error_type(env),
+                None => Ok(None),
+            };
+        }
+        // a recursive definition met again inside its own judgment is
+        // no chain there
+        if JUDGING.with_borrow(|j| j.contains(self)) {
+            return Ok(None);
+        }
+        JUDGING.with_borrow_mut(|j| j.push(self.clone()));
+        let _judging = Judging;
+        match self {
+            Type::Ref(tr) => match tr.resolve_pure(env) {
+                Some(r) if env.is_core_errchain(&r) => match &tr.params[..] {
+                    [payload] => Ok(Some(
+                        payload.chain_error_type(env)?.unwrap_or_else(|| payload.clone()),
+                    )),
+                    _ => Ok(None),
+                },
+                _ => match self.lookup_ref_by(env, false, TypeRef::resolve_peek)? {
+                    Some(t) => t.chain_error_type(env),
+                    None => Ok(None),
+                },
+            },
+            Type::Struct(fields) => {
+                const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
+                if fields.len() != NAMES.len()
+                    || !fields.iter().zip(NAMES).all(|((n, _, _), m)| n.as_str() == m)
+                {
+                    return Ok(None);
+                }
+                let error = fields[1].1.clone();
+                let fits = Type::err_chain(error.clone()).contains_with_flags(
+                    BitFlags::empty(),
+                    env,
+                    self,
+                )?;
+                Ok(fits.then_some(error))
+            }
+            Type::Set(ts) if !ts.is_empty() => {
+                let mut errors: LPooled<Vec<Type>> = LPooled::take();
+                for t in ts.iter() {
+                    match t.chain_error_type(env)? {
+                        Some(e) => errors.push(e),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some(Type::Set(Arc::from_iter(errors.drain(..)))))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Push a `TypeRefSite` for every `Type::Ref` beneath that carries

@@ -25,11 +25,23 @@ it.
 What `?` raises is its error wrapped in an `ErrChain` (the error, its
 position and origin, and a `cause`), once: an error that is a chain
 already is extended, the old chain becoming the new link's cause,
-never nested. The types follow the values: `ErrChain<ErrChain<X>>` is
-`ErrChain<X>` (`Type::lookup_ref` collapses it), so `?` over a generic
-`Result<T, 'e>` raises `ErrChain<'e>`, and a call that makes `'e` a
-chain re-raises that chain with its history. Pins:
-`generic_error_raises`, `generic_reraise_keeps_the_chain`.
+never nested. Chain-ness is the TYPE's, one test
+(`Type::chain_error_type`): core's `ErrChain<E>`, a struct of its four
+field names that `ErrChain<E>` contains (`E` its `error` field), or a
+union of chains. A site extends only when everything it may raise is a
+chain, decided once from its raised type (`SiteValues::wrap_error`),
+never from a value's shape: a struct with the names but other types, an
+array of a chain's runtime form, and a union of a chain and anything
+else are wrapped whole. The types follow the values:
+`ErrChain<ErrChain<X>>` is `ErrChain<X>` (`Type::lookup_ref` collapses
+it by the same test), so `?` over a generic `Result<T, 'e>` raises
+`ErrChain<'e>`, and a call that makes `'e` a chain re-raises that chain
+with its history. Pins: `generic_error_raises`,
+`generic_reraise_keeps_the_chain`, `raise_wraps_a_chain_lookalike`,
+`raise_extends_a_struct_that_fits_a_chain`,
+`generic_raise_wraps_a_chain_lookalike`,
+`raise_extends_a_union_of_chains`, `mixed_chain_payload_is_one_error`,
+`raise_wraps_an_array_of_a_chains_form`.
 
 ```graphix
 let error_display: [null, string] = null;

@@ -430,6 +430,7 @@ impl Pack for KernelConst {
                 image::handler_len(&q.handler)
                     + q.own_top.encoded_len()
                     + q.spec.encoded_len()
+                    + q.raised.encoded_len()
             }
             KernelConst::IoSite(s) => {
                 s.builtin.encoded_len() + s.arg.encoded_len() + s.typ().encoded_len()
@@ -462,7 +463,8 @@ impl Pack for KernelConst {
                 buf.put_u8(tag::QOP_SITE);
                 image::handler_encode(&q.handler, buf)?;
                 q.own_top.encode(buf)?;
-                q.spec.encode(buf)
+                q.spec.encode(buf)?;
+                q.raised.encode(buf)
             }
             KernelConst::IoSite(s) => {
                 buf.put_u8(tag::IO_SITE);
@@ -497,10 +499,12 @@ impl Pack for KernelConst {
                 let handler = image::handler_decode(buf)?;
                 let own_top = ExprId::decode(buf)?;
                 let spec = Expr::decode(buf)?;
+                let raised = Type::decode(buf)?;
                 KernelConst::QopSite(Box::new(QopSite {
                     handler,
                     own_top,
                     spec: Arc::new(spec),
+                    raised,
                     values: Default::default(),
                 }))
             }

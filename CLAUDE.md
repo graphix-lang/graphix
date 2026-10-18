@@ -886,7 +886,10 @@ cycle, across workers; the compiler never pins threads.
   block; it is not control flow. `?` wraps its error in an `ErrChain`
   once, extending a chain rather than nesting it, and the types agree:
   `ErrChain<ErrChain<X>>` is `ErrChain<X>`, so a generic `Result<T, 'e>`
-  raises `ErrChain<'e>`.
+  raises `ErrChain<'e>`. Chain-ness is the type's (`Type::
+  chain_error_type`, a struct's field types included), and a site
+  extends only when all it may raise is chains, never by a value's
+  shape.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`
   desugars to a machine node (`node/seq_machine.rs`: busy-drop, calls
   issued once per entry over an argument snapshot); every statement is

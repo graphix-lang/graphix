@@ -726,24 +726,105 @@ run!(two_raises_one_handler, TWO_RAISES_ONE_HANDLER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
-// A `?` chains a payload whose type has a chain's shape, an alias of one
-// included, and the check types it so: the handler reads the chained
-// error.
-const RAISE_CHAINS_BY_SHAPE: &str = r#"
+// A `?` extends a chain only where its type says it raises chains: a
+// struct with a chain's field names and other types is wrapped, as is an
+// array of a chain's runtime form, and a generic raise of either; a
+// struct that fits `ErrChain`, and a union of chains, are extended.
+run!(raise_wraps_a_chain_lookalike, r#"
 {
     let f = |x: i64| x * 2 + 1;
-    let r: i64 = never();
-    let shape = {
-        catch(e) r <- f((e.0).error);
+    let r = never();
+    {
+        catch(e) r <- (f((e.0).error.cause) + f((e.0).error.pos), (e.0).cause);
         error({cause: 1, error: 20, ori: 3, pos: 4})?
     };
     r
 }
-"#;
-
-run!(raise_chains_by_shape, RAISE_CHAINS_BY_SHAPE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(41)))
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:12, null]")
 }; FuseExpect::Jit);
+
+run!(
+    raise_extends_a_struct_that_fits_a_chain,
+    r#"
+{
+    let o = never();
+    let ori = {parent: null, source: `Vfs("x"), text: "t"};
+    let pos = {line: i32:7, column: i32:9};
+    {
+        catch(e) o <- (
+            (e.0).error,
+            select (e.0).cause { null => i32:0, c => c.pos.line },
+            (e.0).pos.line != i32:7
+        );
+        error({cause: null, error: 20, ori, pos})?
+    };
+    o
+}
+"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(v) if v.to_string() == "[i64:20, i32:7, true]")
+    }
+);
+
+run!(
+    generic_raise_wraps_a_chain_lookalike,
+    r#"
+{
+    let h = |r: Result<i64, 'e>| r?;
+    let g = never();
+    let x: Result<i64, {cause: i64, error: string, ori: bool, pos: null}> =
+        error({cause: 5, error: "e", ori: true, pos: null});
+    {
+        catch(e) g <- (e.0).error.cause + 1;
+        h(x)
+    };
+    g
+}
+"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(6)))
+);
+
+run!(
+    raise_extends_a_union_of_chains,
+    r#"
+{
+    let m = never();
+    let a: [ErrChain<`A>, null] = never();
+    let b: [ErrChain<`B>, null] = never();
+    { catch(e) a <- e.0; error(`A)? };
+    { catch(e) b <- e.0; error(`B)? };
+    let n = 0;
+    n <- a ~ 1;
+    {
+        catch(e) m <- select (e.0).error { `A => "a", `B => "b" };
+        error(select n { 1 => a$, 2 => b$, _ => never() })?
+    };
+    m
+}
+"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a")
+);
+
+run!(
+    raise_wraps_an_array_of_a_chains_form,
+    r#"
+{
+    let out = never();
+    {
+        catch(e) out <- select (e.0).error {
+            [] => "empty",
+            [a, ..] => "first [a]"
+        };
+        error([["cause", "w"], ["error", "x"], ["ori", "y"], ["pos", "z"]])?
+    };
+    out
+}
+"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::String(s)) if &**s == r#"first ["cause", "w"]"#)
+    }
+);
 
 // An `error:` literal is an error of its payload's type.
 run!(error_literal_has_its_payload_type, r#"{
@@ -880,11 +961,11 @@ run!(
     "#
 ; FuseExpect::Jit);
 
-// A raise whose payload is a chain or not by value is one Error over
-// both, as two raises join: its handler reads the payload.
+// A raise whose payload may be a chain or a value is not chains: it
+// starts a new chain over both, and its handler reads the payload.
 run!(
     mixed_chain_payload_is_one_error,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "A"),
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "A null"),
     "/test.gx" => r#"
         type MyChain = ErrChain<`A>;
         let saved: Error<MyChain> = never();
@@ -892,7 +973,10 @@ run!(
         let p: [`B, MyChain] = saved.0;
         let out = never();
         let u = { catch(e) out <- e.0; error(p)? };
-        let result = select out { ErrChain<`B> as _ => "B", MyChain as c => c.error }
+        let result = select out.error {
+            `B => "B",
+            MyChain as c => "[c.error] [select out.cause { null => "null", _ => "chain" }]"
+        }
     "#
 ; FuseExpect::Jit);
 

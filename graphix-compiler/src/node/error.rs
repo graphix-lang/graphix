@@ -3,9 +3,9 @@ use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, PrintFlag, Refs,
     Rt, Scope, Tag, TagValue, Update, UserEvent, View,
     compiler::compile,
-    defetyp, deref_typ,
+    defetyp,
     env::Env,
-    expr::{self, CatchRole, Expr, ExprId, ExprKind, ModPath, WrittenAt},
+    expr::{self, CatchRole, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::{
         self,
@@ -16,7 +16,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, opt_node_decode, opt_node_encode, put_tag},
     },
-    typ::{Type, TypeRef},
+    typ::Type,
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
@@ -26,74 +26,10 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{
-    fmt,
-    sync::{LazyLock, OnceLock},
-};
+use std::{fmt, sync::OnceLock};
 use triomphe::Arc;
 
-pub(super) static ECHAIN: LazyLock<ModPath> =
-    LazyLock::new(|| ModPath::from(["ErrChain"]));
-
-fn typ_echain(param: Type) -> Type {
-    Type::Ref(Arc::new(TypeRef::synthetic(
-        ModPath::root(),
-        ECHAIN.clone(),
-        Arc::from_iter([param]),
-    )))
-}
-
-/// The fields of `ErrChain<'a>` in a structurally typed world: a struct
-/// with exactly these names IS the chain.
-// CR claude for eric: [bug/medium] This decides chain-ness by the four field names
-// alone. fix_echain_typ and is_chain_type therefore keep Error<{cause: i64, error: i64,
-// ori: i64, pos: i64}> unwrapped. At run time wrap_error extends the same value as a
-// chain: the old struct moves into `cause`, and `ori`/`pos` become the real Ori and
-// Pos, while the types still say i64. The check passes. Both engines then fail with "no
-// arm matches ...: a coverage hole in the check". The shape test must also require
-// ErrChain's field types (cause: [ErrChain<_>, null], ori: Ori, pos: Pos), or chains
-// need a nominal marker (see c-error-op-01) that both the check and chain_error use.
-// probe: design/review-2026-10-12/repro/c-error-op-02.gx (c-error-op-02)
-// 2026-10-15 claude: same root as tests-lang-rest-a-01 (for eric, just below
-// is_echain_shape), whose fix is a language-rule choice: decide chain-ness by type and
-// value shape together, or make chains nominal. Waiting on that ruling.
-// CR claude for eric: [bug/high] A struct counts as a chain here when its field names
-// are cause, error, ori and pos, whatever their types. `Type::chain_type` and
-// `chain_error` use the same name-only test. When it matches, `fix_echain_typ` keeps
-// the user's field types, but `wrap_error` replaces cause, ori and pos with a new link
-// (the raised struct, an Ori, a {column, line} struct). So a handler that reads
-// `(e.0).pos` or `(e.0).cause` as i64 gets a struct. With fusion on, the kernel panics
-// on the param-kind check in fusion/kernel.rs and the runtime dies. With fusion off, an
-// i64 binding ends up holding an array of errors. A generic `Result<i64, 'e>`
-// instantiated at such a struct does the same. One fix is to decide "is a chain" by
-// type and value shape together: cause fits [ErrChain<_>, null], ori is Ori, pos is
-// Pos, both at check and at delivery, and wrap any other struct as a new chain. The
-// other is to make the chain nominal. This is a language-rule choice. Either way,
-// `raise_chains_by_shape` should also read cause and pos. probe:
-// design/review-2026-10-12/repro/tests-lang-rest-a-01.gx (tests-lang-rest-a-01)
-fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
-    const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
-    fields.len() == NAMES.len()
-        && NAMES.iter().all(|n| fields.iter().any(|(f, _, _)| f.as_str() == *n))
-}
-
-/// A raised value that is a chain already, by its top-level shape alone
-/// (the check decides by the same shape, [`fix_echain_typ`]): its
-/// `error` field.
-// CR claude for eric: [bug/medium] chain_error decides chain-ness from the value's
-// shape, but the check (fix_echain_typ via is_chain_type) decides it from the type, and
-// a struct, a tuple and an array share one runtime form. Any payload whose value is
-// four [name, value] pairs named cause/error/ori/pos, typed Array<Array<string>> or as
-// a tuple of pairs, is typed Error<ErrChain<payload>> but delivered as an extended
-// chain whose `error` is the inner entry. A handler reading `(e.0).error` then gets a
-// value of another type: a select over it hits "no arm matches: a coverage hole in the
-// check" in both engines, and a tuple destructure produces nothing. Fix: make
-// chain-ness a nominal fact rather than a shape, either a runtime marker user data
-// cannot forge (an abstract ErrChain) or a per-`?`-site static decision stored in the
-// Qop, its image and QopSite so wrap_error never inspects the value; union payloads
-// that mix chains and non-chains need the marker. Share one NAMES constant with
-// is_echain_shape. probe: design/review-2026-10-12/repro/c-error-op-01.gx
-// (c-error-op-01)
+/// The `error` field of a raised chain link.
 fn chain_error(e: &Value) -> Option<Value> {
     const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
     let Value::Array(fields) = e else { return None };
@@ -115,13 +51,17 @@ fn chain_error(e: &Value) -> Option<Value> {
 }
 
 /// What every raise at one `?` site writes alike, built at its first
-/// raise: the chain link's `ori` and `pos`, and the site's `NullError`.
+/// raise: the chain link's `ori` and `pos`, the site's `NullError`, and
+/// whether what it raises is a chain the raise extends.
 #[derive(Debug, Default)]
-pub(crate) struct SiteValues(OnceLock<[Value; 3]>);
+pub(crate) struct SiteValues {
+    values: OnceLock<[Value; 3]>,
+    extends: OnceLock<bool>,
+}
 
 impl SiteValues {
     fn get(&self, spec: &Expr) -> &[Value; 3] {
-        self.0.get_or_init(|| {
+        self.values.get_or_init(|| {
             let pos = [
                 (literal!("column"), spec.pos.column),
                 (literal!("line"), spec.pos.line),
@@ -134,10 +74,18 @@ impl SiteValues {
         self.get(spec)[2].clone()
     }
 
-    /// `e` raised at `spec`, as the next link of its chain.
-    fn wrap_error(&self, spec: &Expr, e: Value) -> Value {
+    /// `e`, a value of `raised`, raised at `spec`: the next link of its
+    /// chain when `raised` is chains, else the first link of a new one.
+    fn wrap_error(&self, env: &Env, raised: &Type, spec: &Expr, e: Value) -> Value {
         let [ori, pos, _] = self.get(spec);
-        let (cause, error) = match chain_error(&e) {
+        let extends = *self.extends.get_or_init(|| match raised_chain(env, raised) {
+            Ok(chain) => chain.is_some(),
+            Err(err) => {
+                report_failure!(&format_compact!("{}: {err}", diagnostic_site(spec)));
+                false
+            }
+        });
+        let (cause, error) = match extends.then(|| chain_error(&e)).flatten() {
             Some(error) => (e, error),
             None => (Value::Null, e),
         };
@@ -744,8 +692,8 @@ macro_rules! report_ignored {
 }
 pub(crate) use report_ignored;
 
-/// Deliver a `?`'s raw error payload `e` to `handler` on behalf of the
-/// `?` at `spec` under `own_top`. The one handler path, shared by
+/// Deliver a `?`'s raw error payload `e`, a value of `raised`, to
+/// `handler` on behalf of the `?` at `spec` under `own_top`. The one handler path, shared by
 /// `Qop::update` and the fused kernel's delivery drain: same-top
 /// deliveries land in this cycle's event, cross-top ones go through
 /// `rt.set_var`.
@@ -754,11 +702,12 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     handler: &ErrorHandler,
     own_top: ExprId,
     spec: &Expr,
+    raised: &Type,
     values: &SiteValues,
     e: Value,
 ) {
     let (id, handler_top) = handler.id();
-    let e = values.wrap_error(spec, e);
+    let e = values.wrap_error(&ctx.env, raised, spec, e);
     let v = Value::Error(e.into());
     if handler_top != own_top {
         ctx.rt.set_var(id, v)
@@ -769,134 +718,59 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     }
 }
 
-/// The error type a `?` delivers for `etyp`: the payload wrapped in an
-/// `ErrChain`, once. `wrap_error` chains a caught error rather than
-/// nesting it, so a chain arriving from a callee's throws keeps its type.
-// CR claude for eric: [bug/high] A struct payload with the chain's four field names
-// (cause/error/ori/pos) counts as a chain here, in `is_chain_type` and in
-// `Type::chain_type`, by its names alone. So `?` keeps the user's field types as the
-// thrown type. At run time, `wrap_error` (via `chain_error`) also recognizes it by its
-// names, and the caught value it builds has a real Ori in `ori`, a {column, line}
-// struct in `pos` and the user's whole struct in `cause`. As a result, `error({cause:
-// "c", error: `X, ori: 41, pos: 3})?` checks with `(e.0).ori: i64` and `(e.0).cause:
-// string`. Under the node-walk it computes garbage. Under the JIT it panics in
-// `Kernel::stage` ("runtime Array does not match the compiled Scalar(I64) slot") and
-// aborts the runtime. Fix: treat a payload with those names as a chain only when it
-// fits `ErrChain<E>`, with E its `error` field's type, at all three sites, and refuse
-// at `?` any other struct with those four names, because `chain_error` would rewrite
-// it. The alternative is to make run-time chain recognition nominal. probe:
-// design/review-2026-10-12/repro/t-typ-mod-02.gx (t-typ-mod-02)
-// 2026-10-15 claude: same root as tests-lang-rest-a-01 (for eric, just below
-// is_echain_shape), whose fix is a language-rule choice: decide chain-ness by type and
-// value shape together, or make chains nominal. Waiting on that ruling.
+/// The error type a `?` delivers for `etyp`: what it raises wrapped in
+/// an `ErrChain`, once. A raise of chains extends them rather than
+/// nesting them (`wrap_error`), so a chain arriving from a callee's
+/// throws keeps its type.
 fn fix_echain_typ<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     etyp: &Type,
 ) -> Result<Type> {
-    deref_typ!("error", ctx, etyp,
-        Some(Type::Primitive(p)) => {
-            if !p.contains(Typ::Error) {
-                bail!("expected error not {}", Type::Primitive(*p))
-            }
-            if *p == BitFlags::from(Typ::Error) {
-                Ok(Type::Error(Arc::new(typ_echain(Type::Any))))
-            } else {
-                let mut p = *p;
-                p.remove(Typ::Error);
-                Ok(Type::Set(Arc::from_iter([
-                    Type::Error(Arc::new(typ_echain(Type::Any))),
-                    Type::Primitive(p)
-                ])))
-            }
-        },
-        Some(Type::Error(payload)) => payload.with_deref(|et| match et {
-            // a chain the variable turns out to be collapses into this one, as
-            // `wrap_error` extends it
-            None => Ok(Type::Error(Arc::new(typ_echain((**payload).clone())))),
-            Some(Type::Ref(tr)) if tr.scope == ModPath::root() && tr.name == *ECHAIN =>
-            {
-                Ok(etyp.clone())
-            }
-            // CR claude for eric: [bug/high] The check and the delivery disagree on the
-            // type of the link a chain-shaped raise produces. Both `is_echain_shape`
-            // and `chain_error` decide chain-ness by field names alone. `wrap_error`
-            // then builds a new link: its cause is the whole raised struct, and its ori
-            // and pos are the real Ori and Pos. This arm keeps the raised struct's own
-            // field types, and `Type::chain_type` collapses `ErrChain<S>` to `S` by the
-            // same names. As a result, `error({cause: 1, error: 20, ori: 3, pos: 4})?`
-            // gives a handler whose `(e.0).cause`, `.ori` and `.pos` are typed i64 but
-            // hold a struct and the Ori/Pos records. Under fusion this panics in
-            // `Kernel::stage` (the param does not match its compiled slot), which kills
-            // the runtime. The node-walk computes garbage instead. Possible fixes: (a)
-            // make the chain link something a user value cannot imitate, such as an
-            // Abstract or a reserved tag that `chain_error` tests; or (b) keep shapes,
-            // but have this arm type the extended link as `ErrChain<typeof error>` and
-            // refuse a chain-shaped payload whose cause/ori/pos types are not
-            // ErrChain's. With either fix, extend the pin `raise_chains_by_shape` so it
-            // reads `.cause`, `.ori` and `.pos`. probe:
-            // design/review-2026-10-12/repro/x-engine-seq-errors-03.gx
-            // (x-engine-seq-errors-01)
-            Some(Type::Struct(fields)) if is_echain_shape(fields) => Ok(etyp.clone()),
-            // a payload chains by the shape of each value's own type, as
-            // delivery decides (`chain_error`): the chain members of a
-            // union stay, the others wrap together
-            Some(et) => {
-                let members: LPooled<Vec<Type>> = match expand(&ctx.env, et)? {
-                    Type::Set(ref ms) => ms.iter().cloned().collect(),
-                    t => [t].into_iter().collect(),
-                };
-                let mut chains: LPooled<Vec<Type>> = LPooled::take();
-                let mut wrapped: LPooled<Vec<Type>> = LPooled::take();
-                for m in members.iter() {
-                    match is_chain_type(&ctx.env, m)? {
-                        true => chains.push(m.clone()),
-                        false => wrapped.push(m.clone()),
-                    }
-                }
-                if wrapped.is_empty() {
-                    return Ok(etyp.clone());
-                }
-                let rest = match &wrapped[..] {
-                    [one] => one.clone(),
-                    _ => Type::Set(Arc::from_iter(wrapped.drain(..))),
-                };
-                let wrap = typ_echain(rest);
-                let payload = match chains.is_empty() {
-                    true => wrap,
-                    false => Type::Set(Arc::from_iter(chains.drain(..).chain([wrap]))),
-                };
-                Ok(Type::Error(Arc::new(payload)))
-            }
-        }),
-        Some(Type::Set(elts)) => {
-            let mut res = elts
-                .iter()
-                .map(|et| fix_echain_typ(ctx, et))
-                .collect::<Result<LPooled<Vec<Type>>>>()?;
-            Ok(Type::Set(Arc::from_iter(res.drain(..))))
-        }
-    )
+    let Some(payload) = raised_payload(&ctx.env, etyp)? else {
+        return format_with_flags(PrintFlag::DerefTVars, || {
+            bail!("expected error not {etyp}")
+        });
+    };
+    let chain = match payload.chain_error_type(&ctx.env)? {
+        Some(error) => Type::err_chain(error),
+        None => Type::err_chain(payload),
+    };
+    Ok(Type::Error(Arc::new(chain)))
 }
 
-/// `t` with every alias expanded, through chains of them.
-fn expand(env: &Env, t: &Type) -> Result<Type> {
-    let mut t = t.clone();
-    while let Type::Ref(_) = &t {
-        t = t.lookup_ref(env)?;
+/// What the errors of `t` carry, the union of their payloads, or `None`
+/// when `t` holds no error.
+fn raised_payload(env: &Env, t: &Type) -> Result<Option<Type>> {
+    fn walk(env: &Env, t: &Type, payloads: &mut Vec<Type>) -> Result<()> {
+        t.with_deref(|t| match t {
+            None => Ok(()),
+            Some(t @ Type::Ref(_)) => walk(env, &t.lookup_ref_peek(env)?, payloads),
+            Some(Type::Set(ts)) => ts.iter().try_for_each(|t| walk(env, t, payloads)),
+            Some(Type::Error(payload)) => Ok(payloads.push(
+                payload.with_deref(|t| t.cloned()).unwrap_or_else(|| (**payload).clone()),
+            )),
+            Some(Type::Primitive(p)) if p.contains(Typ::Error) => {
+                Ok(payloads.push(Type::Any))
+            }
+            Some(_) => Ok(()),
+        })
     }
-    Ok(t)
+    let mut payloads: LPooled<Vec<Type>> = LPooled::take();
+    walk(env, t, &mut payloads)?;
+    Ok(match payloads.len() {
+        0 => None,
+        1 => payloads.pop(),
+        _ => Some(Type::Set(Arc::from_iter(payloads.drain(..)))),
+    })
 }
 
-/// Whether values of `t` are chains by their shape: the `ErrChain`
-/// definition, or a struct with exactly its field names.
-fn is_chain_type(env: &Env, t: &Type) -> Result<bool> {
-    if let Type::Ref(tr) = t
-        && tr.scope == ModPath::root()
-        && tr.name == *ECHAIN
-    {
-        return Ok(true);
+/// The error type of the chains `raised` raises when it raises nothing
+/// else.
+fn raised_chain(env: &Env, raised: &Type) -> Result<Option<Type>> {
+    match raised_payload(env, raised)? {
+        Some(payload) => payload.chain_error_type(env),
+        None => Ok(None),
     }
-    Ok(matches!(expand(env, t)?, Type::Struct(ref fields) if is_echain_shape(fields)))
 }
 
 /// A fused handler-ful `?` site: what the kernel's delivery drain needs
@@ -906,6 +780,8 @@ pub struct QopSite {
     pub(crate) handler: ErrorHandler,
     pub own_top: ExprId,
     pub spec: Arc<Expr>,
+    /// What the site raises: the operand's type, or `NullError`'s.
+    pub raised: Type,
     pub(crate) values: SiteValues,
 }
 
@@ -960,6 +836,8 @@ pub struct Qop<R: Rt, E: UserEvent> {
     pub n: Node<R, E>,
     pub(crate) strip: Strip,
     pub(crate) mode: QopMode,
+    /// What a raise carries ([`Self::raised_typ`]).
+    raised: Type,
     resident: TagValue,
 }
 
@@ -973,7 +851,16 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         let n = decode_node(ctx, buf)?;
         let strip = Strip::decode(buf)?;
         let mode = QopMode::decode(buf)?;
-        Ok(Node::new(Self { spec, typ, n, strip, mode, resident: TagValue::phantom() }))
+        let raised = Self::raised_typ(strip, &n);
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            strip,
+            mode,
+            raised,
+            resident: TagValue::phantom(),
+        }))
     }
 
     pub(crate) fn compile(
@@ -996,7 +883,16 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         };
         let typ = Type::empty_tvar();
         let strip = Strip::Error;
-        Ok(Node::new(Self { spec, typ, n, strip, mode, resident: TagValue::phantom() }))
+        let raised = Self::raised_typ(strip, &n);
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            strip,
+            mode,
+            raised,
+            resident: TagValue::phantom(),
+        }))
     }
 
     pub(crate) fn check_unhandled(
@@ -1030,6 +926,14 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }
     }
 
+    /// The type of what a raise here carries.
+    fn raised_typ(strip: Strip, n: &Node<R, E>) -> Type {
+        match strip {
+            Strip::Error => n.typ().clone(),
+            Strip::Null => NULL_ERR.clone(),
+        }
+    }
+
     /// The handler a raise here goes to and the top this node lives under.
     pub(crate) fn raise_site(&self) -> Option<(&ErrorHandler, ExprId)> {
         match &self.mode {
@@ -1059,7 +963,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let tv = self.n.update(ctx);
-        let (spec, mode) = (&self.spec, &self.mode);
+        let (spec, mode, raised) = (&self.spec, &self.mode, &self.raised);
         strip_production(self.strip, tv, &mut self.resident, |v| match mode {
             QopMode::Raise { handler, top_id, values, .. } => {
                 let e = match v {
@@ -1069,7 +973,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 match handler {
                     Some(handler) => {
                         handler.raise();
-                        deliver_error(ctx, handler, *top_id, spec, values, e);
+                        deliver_error(ctx, handler, *top_id, spec, raised, values, e);
                     }
                     None => report_failure!(&unhandled_msg(&diagnostic_site(spec), &e)),
                 }
@@ -1139,6 +1043,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     handler: handler.clone(),
                     own_top: *top_id,
                     spec: self.spec.clone(),
+                    raised: self.raised.clone(),
                     values: SiteValues::default(),
                 })?;
                 match strip {
@@ -1526,6 +1431,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         let op = if self.raises() { '?' } else { '$' };
         let (strip, rtyp) = wrap!(self, strip_typ(ctx, op, self.n.typ(), decided))?;
         self.strip = strip;
+        self.raised = Self::raised_typ(strip, &self.n);
         if check {
             wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         }
