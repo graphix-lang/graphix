@@ -1524,29 +1524,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // carries; a Rust-backed value carries its id alone, and the
         // select refuses a test over two of its instantiations
         match &type_predicate {
-            // CR claude for eric: [bug/high] A select over `Any` can test for a
-            // reference type and for u64, and at runtime a reference is its bind id as
-            // a bare `Value::U64` (`ConnectDeref` resolves any U64 as a `BindId`). So
-            // `u64 as n` reads a reference's raw id, and `&mut Any as r` turns any u64
-            // into a writable reference. `rep_collision` treats `Any` as
-            // `Open::Benign`, so this passes the check, while the same pair inside a
-            // union is refused. A checked program can then write a string into an `i64`
-            // binding, or an i64 into an `Array<i64>`; the fused `sum` over the second
-            // panics the runtime in `fusion/kernel.rs` ("runtime I64 does not match the
-            // compiled Array slot"). Raw ids also print where CLAUDE.md promises
-            // `&ref`, and they differ between engines and between cold and warm images.
-            // Root fix: give a reference its own runtime form, so no numeric test can
-            // match it and no number can match a reference test. Stopgap: refuse a
-            // predicate that `holds_ref` over a scrutinee that is open or can hold an
-            // integer. Either way, the CLAUDE.md line "a reference widened to Any is
-            // the program's own business" needs restating. probe:
-            // design/review-2026-10-12/repro/x-invalid-states-01.gx
-            // (x-invalid-states-01)
-            // 2026-10-15 claude: the reference-test half of the stopgap is in
-            // (x-fix-types-03): a written type test holding a reference is refused
-            // where the scrutinee admits Any at that position (Type::ref_over_any). The
-            // other half stands: `u64 as n` over Any still reads a reference's raw id,
-            // and the root fix (a runtime form of its own) is yours to rule.
             Type::Fn(_) => bail!("can't match on Fn type"),
             t if explicit && t.holds_fn(&ctx.env) => {
                 bail!(

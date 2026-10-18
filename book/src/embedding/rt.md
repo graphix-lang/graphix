@@ -90,8 +90,9 @@ A Rust type that mirrors a Graphix type need not implement `FromValue` by hand:
 `#[derive(FromValue, IntoValue)]` from the `netidx-derive` crate maps a struct's
 named fields onto the Graphix struct's fields by name, and an enum's variants
 onto Graphix variants (`` `Tag ``, `` `Tag(a, b) ``, `` `Tag({ .. }) ``). A field
-passed by reference (`&T`) is a `u64` bind id. The generated code names
-`netidx_value` and `anyhow`, so the crate depends on both.
+passed by reference (`&T`) reads as a `BindId`, a reference's own value
+(`graphix_compiler::reference::cell` reads one from a `Value`). The generated
+code names `netidx_value` and `anyhow`, so the crate depends on both.
 
 ```rust
 // the Graphix type {x: f64, y: f64, label: &string}
@@ -99,7 +100,7 @@ passed by reference (`&T`) is a `u64` bind id. The generated code names
 struct Point {
     x: f64,
     y: f64,
-    label: u64,
+    label: BindId,
 }
 ```
 

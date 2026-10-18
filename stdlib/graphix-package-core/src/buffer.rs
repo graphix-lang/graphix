@@ -164,10 +164,7 @@ fn decode_err(msg: impl std::fmt::Display) -> Value {
 }
 
 fn reference(r: &Value) -> Result<BindId, Value> {
-    match r {
-        Value::U64(id) => Ok(BindId::from(*id)),
-        _ => Err(decode_err("not a reference")),
-    }
+    graphix_compiler::reference::cell(r).ok_or_else(|| decode_err("not a reference"))
 }
 
 impl<'a> Decoder<'a> {

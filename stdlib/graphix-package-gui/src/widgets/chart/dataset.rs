@@ -2,6 +2,7 @@ use super::types::*;
 use ahash::AHashMap;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
+use graphix_compiler::BindId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
@@ -76,17 +77,17 @@ impl<X: GXExt> DatasetEntry<X> {
 /// Dataset metadata parsed from the datasets array value before ref compilation.
 #[derive(FromValue)]
 enum DatasetMeta {
-    Line { data: u64, style: SeriesStyleV },
-    Scatter { data: u64, style: SeriesStyleV },
-    Bar { data: u64, style: BarStyleV },
-    Area { data: u64, style: SeriesStyleV },
-    DashedLine { data: u64, dash: f64, gap: f64, style: SeriesStyleV },
-    Candlestick { data: u64, style: CandlestickStyleV },
-    ErrorBar { data: u64, style: SeriesStyleV },
-    Pie { data: u64, style: PieStyleV },
-    Scatter3D { data: u64, style: SeriesStyleV },
-    Line3D { data: u64, style: SeriesStyleV },
-    Surface { data: u64, style: SurfaceStyleV },
+    Line { data: BindId, style: SeriesStyleV },
+    Scatter { data: BindId, style: SeriesStyleV },
+    Bar { data: BindId, style: BarStyleV },
+    Area { data: BindId, style: SeriesStyleV },
+    DashedLine { data: BindId, dash: f64, gap: f64, style: SeriesStyleV },
+    Candlestick { data: BindId, style: CandlestickStyleV },
+    ErrorBar { data: BindId, style: SeriesStyleV },
+    Pie { data: BindId, style: PieStyleV },
+    Scatter3D { data: BindId, style: SeriesStyleV },
+    Line3D { data: BindId, style: SeriesStyleV },
+    Surface { data: BindId, style: SurfaceStyleV },
 }
 
 /// Compile dataset metadata into live entries with data refs.
@@ -96,7 +97,7 @@ pub async fn compile_datasets<X: GXExt>(
 ) -> Result<LPooled<Vec<DatasetEntry<X>>>> {
     async fn data<X: GXExt, T: FromValue>(
         gx: &GXHandle<X>,
-        id: u64,
+        id: BindId,
         what: &'static str,
     ) -> Result<TRef<X, T>> {
         TRef::new(gx.compile_ref(id).await?).context(what)

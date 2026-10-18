@@ -11,7 +11,7 @@ pub use graphix_types::{
     AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, PrintFlag,
     SourcePosition, abstract_value, block_component, dbg_flag, defetyp, env, err, errf,
     expr, format_with_flags, ide, is_block_component, is_do_block, is_fn_block, list,
-    mod_root, rep, shared_map, tracked, typ, valarray_of,
+    mod_root, reference, rep, shared_map, tracked, typ, valarray_of,
 };
 pub(crate) use graphix_types::{CAST_ERR, CAST_ERR_TAG, Restore, profile, stack};
 
@@ -1761,6 +1761,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
     /// runtimes; most embedders want `graphix-rt`.
     pub fn new(rt: R, user: E) -> Result<Self> {
         graphix_types::abstract_value::register();
+        reference::register();
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
             cx: CompileCtx {

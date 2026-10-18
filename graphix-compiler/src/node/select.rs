@@ -1672,8 +1672,9 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 let t = &pat.type_predicate;
                 return Err(format_with_flags(PrintFlag::DerefTVars, || {
                     anyhow!(
-                        "this pattern can't tell the reference in {t} from a number \
-                         where the scrutinee may hold Any: both have the same runtime form"
+                        "this pattern can't tell what the reference in {t} refers to \
+                         where the scrutinee may hold Any: every reference has one runtime \
+                         form"
                     )
                 }))
                 .at(&site);

@@ -392,10 +392,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // from[1] = #trigger
         // from[2] = f
         if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned()) {
-            let new_ref = match v {
-                Value::U64(b) => Some(BindId::from(b)),
-                _ => None,
-            };
+            let new_ref = graphix_compiler::reference::cell(&v);
             let mut s = self.state.lock();
             if s.count_ref != new_ref {
                 // a reference that arrives or moves is told the depth

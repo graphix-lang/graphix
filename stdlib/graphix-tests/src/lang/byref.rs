@@ -7,6 +7,19 @@ use graphix_package_core::{
 };
 use netidx::publisher::Value;
 
+// A reference is its own runtime form: under `Any` no number test takes
+// it, a cast refuses it, and it prints as `&ref`.
+run!(any_holds_no_reference_number, r#"
+{
+  let id = |p: Any| -> u64 select p { u64 as n => n, _ => u64:0 };
+  let x = 41;
+  let a: Any = &x;
+  "[id(&x)] [id(u64:7)] [a] [cast<u64>(a)]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s
+    == r#"0 7 &ref error:["InvalidCast", "can't cast &ref to u64: an abstract value has no primitive form"]"#);
+    FuseExpect::None);
+
 const BYREF_DEREF: &str = r#"
 {
   let a = 42;
@@ -474,9 +487,8 @@ async fn place_through_deref_mirror() -> Result<()> {
             break v;
         }
     };
-    let id = match v {
-        Value::U64(id) => graphix_compiler::BindId::from(id),
-        v => anyhow::bail!("expected a reference, got {v}"),
+    let Some(id) = graphix_compiler::reference::cell(&v) else {
+        anyhow::bail!("expected a reference, got {v}")
     };
     let mirror = ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id)).await?;
     assert_eq!(mirror, Some(Value::I64(10)));
@@ -582,8 +594,8 @@ async fn place_root_bottom_mirror() -> Result<()> {
             batch = rx.recv() => match batch {
                 None => anyhow::bail!("runtime died"),
                 Some(mut batch) => for e in batch.drain(..) {
-                    if let GXEvent::Updated(id, Value::U64(c)) = e && id == eid {
-                        cell = Some(graphix_compiler::BindId::from(c));
+                    if let GXEvent::Updated(id, v) = e && id == eid {
+                        cell = graphix_compiler::reference::cell(&v);
                     }
                 }
             }

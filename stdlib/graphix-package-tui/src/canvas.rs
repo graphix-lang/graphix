@@ -1,7 +1,7 @@
 use super::{BoundsV, ColorV, LineV, MarkerV, TuiW, TuiWidget, compile_each};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{BindId, expr::ExprId};
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
@@ -175,7 +175,7 @@ impl<X: GXExt> CanvasW<X> {
     async fn set_shapes(&mut self, v: Value) -> Result<()> {
         self.shapes = compile_each(v, |id| {
             let gx = self.gx.clone();
-            async move { TRef::new(gx.compile_ref(id.cast_to::<u64>()?).await?) }
+            async move { TRef::new(gx.compile_ref(id.cast_to::<BindId>()?).await?) }
         })
         .await?;
         Ok(())

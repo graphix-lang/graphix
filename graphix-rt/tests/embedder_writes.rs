@@ -31,14 +31,14 @@ async fn run(set_first: bool) -> Result<Vec<Value>> {
     let env = gx.get_env().await?;
     let s = gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["s"])).await?;
     let r = gx.compile_ref_by_name(&env, &Scope::root(), &ModPath::from(["r"])).await?;
-    let cell: u64 = r.last.clone().context("r has no value")?.cast_to::<u64>()?;
+    let cell = r.last.clone().context("r has no value")?.cast_to::<BindId>()?;
     tokio::time::sleep(Duration::from_millis(300)).await;
     while rx.try_recv().is_ok() {}
     if set_first {
         gx.set(s.bid, st(10, 20))?;
-        gx.set_deref(BindId::from(cell), Value::I64(5))?;
+        gx.set_deref(cell, Value::I64(5))?;
     } else {
-        gx.set_deref(BindId::from(cell), Value::I64(5))?;
+        gx.set_deref(cell, Value::I64(5))?;
         gx.set(s.bid, st(10, 20))?;
     }
     tokio::time::sleep(Duration::from_millis(500)).await;

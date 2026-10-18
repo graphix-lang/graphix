@@ -599,7 +599,7 @@ impl<X: GXExt> SizeReport<X> {
     async fn compile(gx: &GXHandle<X>, v: &Value) -> Result<Self> {
         #[derive(FromValue)]
         struct Fields {
-            size: Option<u64>,
+            size: Option<BindId>,
         }
         let Fields { size } = v.clone().cast_to().context("size output")?;
         let r = match size {

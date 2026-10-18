@@ -7,7 +7,7 @@ use super::{
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{BindId, expr::ExprId};
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
@@ -131,7 +131,7 @@ impl<X: GXExt> TableW<X> {
     async fn set_rows(&mut self, v: Value) -> Result<()> {
         self.rows = compile_each(v, |id| {
             let gx = self.gx.clone();
-            async move { TRef::new(gx.compile_ref(id.cast_to::<u64>()?).await?) }
+            async move { TRef::new(gx.compile_ref(id.cast_to::<BindId>()?).await?) }
         })
         .await
         .context("rows")?;

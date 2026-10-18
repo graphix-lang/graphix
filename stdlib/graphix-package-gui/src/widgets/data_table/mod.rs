@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
 use compact_str::CompactString;
 use futures::channel::mpsc;
-use graphix_compiler::expr::ExprId;
+use graphix_compiler::{BindId, expr::ExprId};
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use indexmap::IndexMap;
 use log::warn;
@@ -159,14 +159,14 @@ impl<X: GXExt> DataTableW<X> {
         // on_update, selection, show_row_name, sort_by, table
         #[derive(FromValue)]
         struct Fields {
-            on_activate: u64,
-            on_header_click: u64,
-            on_select: u64,
-            on_update: u64,
-            selection: u64,
-            show_row_name: u64,
-            sort_by: u64,
-            table: u64,
+            on_activate: BindId,
+            on_header_click: BindId,
+            on_select: BindId,
+            on_update: BindId,
+            selection: BindId,
+            show_row_name: BindId,
+            sort_by: BindId,
+            table: BindId,
         }
         let Fields {
             on_activate: on_activate_id,

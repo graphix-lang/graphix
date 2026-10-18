@@ -114,8 +114,16 @@ stale whole both writers read. `Rt::patch_var` beside `Rt::set_var`;
   cell still mirrors the element, so embedders keep reading it —
   registers the cell's place with the runtime (`Rt::set_ref_path`,
   re-registered when a key moves) and re-fires when it moves. Plain
-  references are unchanged: same cell, same chain, `Value::U64(cell)`
-  on the wire.
+  references are unchanged: same cell, same chain.
+
+A reference's value is its own runtime form, an abstract holding its
+cell (`graphix_types::reference`): no number passes a reference's test
+and no reference a number's, so a select over `Any` cannot read a
+cell's id or forge a reference. The cell relocates through `BindId`'s
+`Pack` in an image, and a reference prints as `&ref`. References to
+different types still share that form, so a reference test where the
+scrutinee admits `Any` is refused (`Type::ref_over_any`). Pin:
+`lang::byref::any_holds_no_reference_number`.
 - `Deref`: a cell with a registered place (`Rt::ref_path`) reads the
   root through the path, with interest on the root.
 - `ConnectDeref`: a cell with a place patches the root.

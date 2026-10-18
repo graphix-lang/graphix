@@ -281,10 +281,8 @@ impl<X: GXExt> GuiHandler<X> {
 
     /// Reconcile the windows with a new root `Array<&Window>` (bind ids).
     fn reconcile(&mut self, event_loop: &ActiveEventLoop, root: Value) -> Result<()> {
-        let arr =
-            root.cast_to::<LPooled<Vec<u64>>>().context("root array of bind ids")?;
         let bids =
-            arr.iter().map(|&id| BindId::from(id)).collect::<LPooled<Vec<BindId>>>();
+            root.cast_to::<LPooled<Vec<BindId>>>().context("root array of references")?;
         let gone = self
             .windows
             .keys()

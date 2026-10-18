@@ -82,6 +82,7 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                     },
                     // Debug consults a user Display impl when the hooks are armed.
                     Some(g) => write!(f, "{g:?}")?,
+                    None if crate::reference::cell(v).is_some() => write!(f, "&ref")?,
                     None => write!(f, "{}", NakedValue(v))?,
                 },
                 v => write!(f, "{}", NakedValue(v))?,

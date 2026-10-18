@@ -1419,10 +1419,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 
 /// The cell a reference value names.
 pub(crate) fn ref_cell(v: &Value) -> Option<BindId> {
-    match v {
-        Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
-        _ => None,
-    }
+    crate::reference::cell(v)
 }
 
 /// What the reference `cell` names: its registered place, else the
@@ -1516,7 +1513,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             }
         };
         if ctx.event.init() || retargeted {
-            self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
+            self.resident.set(TagValue::fired(crate::reference::reference(self.id)))
         } else {
             self.resident.ride()
         }

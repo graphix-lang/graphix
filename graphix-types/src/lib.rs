@@ -20,6 +20,7 @@ pub mod image;
 pub mod list;
 #[doc(hidden)]
 pub mod profile;
+pub mod reference;
 pub mod rep;
 pub mod shared_map;
 #[doc(hidden)]

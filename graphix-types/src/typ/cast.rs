@@ -328,10 +328,6 @@ impl Type {
         self.check_cast_int(env, &mut Verdicts::new())
     }
 
-    /// Whether a value of this type can hold a reference, outside a
-    /// function or an abstract type, which a cast never takes apart. A
-    /// cast refuses such a source: a reference is not a number.
-    #[doc(hidden)]
     /// Whether a map type is written in this type, through the
     /// definitions it names (an abstract's hidden one excepted).
     pub fn holds_map(&self, env: &Env) -> bool {
@@ -342,6 +338,11 @@ impl Type {
         })
     }
 
+    /// Whether a value of this type can hold a reference, outside a
+    /// function or an abstract type, which a cast never takes apart. A
+    /// cast refuses such a source: a reference names a cell, it is no
+    /// data to read.
+    #[doc(hidden)]
     pub fn holds_ref(&self, env: &Env) -> bool {
         self.holds(env, &mut Verdicts::new(), &|t| match t {
             Type::ByRef(..) => Some(true),
@@ -351,7 +352,8 @@ impl Type {
     }
 
     /// Whether a reference this type test holds sits where `reaching`
-    /// admits `Any`: there the test would take any number for a reference.
+    /// admits `Any`: there the test would take a reference to anything
+    /// for one to its type.
     pub fn ref_over_any(&self, env: &Env, reaching: &Type) -> bool {
         fn go(
             env: &Env,
@@ -1144,7 +1146,7 @@ impl Type {
                 Value::Error(v) => e.is_a_int(env, hist, flags, v),
                 _ => false,
             },
-            Type::ByRef(..) => matches!(v, Value::U64(_) | Value::V64(_)),
+            Type::ByRef(..) => crate::reference::cell(v).is_some(),
             Type::Tuple(ts) => match v {
                 Value::Array(elts) => {
                     elts.len() == ts.len()
@@ -1519,7 +1521,6 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
 fn rep_prims(t: &Type) -> BitFlags<Typ> {
     match t {
         Type::Variant(_, a, _) if a.is_empty() => Typ::String.into(),
-        Type::ByRef(..) => Typ::U64 | Typ::V64,
         Type::Map { .. } => Typ::Map.into(),
         Type::Error(_) => Typ::Error.into(),
         t if ArrView::of(t).is_some() => Typ::Array.into(),
@@ -1786,9 +1787,8 @@ impl Type {
     /// Two parts, one of `self` and one of `t`, that are different types
     /// with one runtime form: a value of either passes a runtime test for
     /// the other (a tuple, struct, list or payload variant and an array; a
-    /// bare variant and a string; a reference and a number or another
-    /// reference; two function types). A test that tells them apart can't
-    /// tell such a value's type.
+    /// bare variant and a string; two references; two function types). A
+    /// test that tells them apart can't tell such a value's type.
     pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<(Type, Type)> {
         rep_collision(env, &mut RepSeen::default(), Open::Benign, self, t)
     }

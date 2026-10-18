@@ -3101,19 +3101,22 @@ const SAME_FORM_STRUCT_ARRAY: &str = r#"
 run!(same_form_struct_array_refused, SAME_FORM_STRUCT_ARRAY,
     refused("same runtime form"); FuseExpect::None);
 
-const SAME_FORM_REF_NUMBER: &str = r#"
+// A reference has a runtime form of its own: a test tells it from a
+// number.
+const REF_AND_NUMBER_TOLD_APART: &str = r#"
 {
   let f = |x: [&i64, u64]| select x {
     &i64 as r => *r,
-    u64 as n => 2
+    u64 as n => cast<i64>(n)$
   };
   let v = 1;
-  f(&v)
+  (f(&v), f(u64:2))
 }
 "#;
 
-run!(same_form_ref_number_refused, SAME_FORM_REF_NUMBER,
-    refused("same runtime form"); FuseExpect::None);
+run!(ref_and_number_told_apart, REF_AND_NUMBER_TOLD_APART, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2]")
+}; FuseExpect::Jit);
 
 const SAME_FORM_TAG_STRING: &str = r#"
 {

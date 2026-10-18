@@ -300,9 +300,9 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
         name: ArcStr,
         typ: Value,
         display_name: Option<ArcStr>,
-        source: u64,
-        on_resize: u64,
-        width: u64,
+        source: BindId,
+        on_resize: BindId,
+        width: BindId,
     }
     let Fields { name, typ, display_name, source, on_resize, width } =
         v.cast_to().ok()?;
@@ -311,9 +311,9 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
         name: sanitize_col_name(name)?,
         typ,
         display_name,
-        source_bid: Some(source.into()),
-        width_bid: Some(width.into()),
-        on_resize_bid: Some(on_resize.into()),
+        source_bid: Some(source),
+        width_bid: Some(width),
+        on_resize_bid: Some(on_resize),
         callback_value,
     })
 }
@@ -611,9 +611,12 @@ mod tests {
             (literal!("name"), Value::from("k")),
             (literal!("typ"), Value::Null),
             (literal!("display_name"), Value::Null),
-            (literal!("source"), Value::U64(0)),
-            (literal!("width"), Value::U64(0)),
-            (literal!("on_resize"), Value::U64(0)),
+            (literal!("source"), graphix_compiler::reference::reference(BindId::new())),
+            (literal!("width"), graphix_compiler::reference::reference(BindId::new())),
+            (
+                literal!("on_resize"),
+                graphix_compiler::reference::reference(BindId::new()),
+            ),
         ]))
         .unwrap();
         assert_ne!(bare.source_bid, structured.source_bid);

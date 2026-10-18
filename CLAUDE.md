@@ -383,12 +383,13 @@ reads a field the data omits as null wherever the field's type
 admits null (`typ/cast.rs`), and netidx-value casts an RFC3339
 string to a datetime and an array of numbers to bytes, so what the
 json and toml writers emit reads back into its type.
-A reference is not a number: a cast whose source can hold one is
-refused (`Type::holds_ref`), and where only an instance knows the
-source, the cast yields its `InvalidCast` error; a reference prints as
-`&ref` (its id is the session's: a warm start relocates it); a
-reference widened to `Any` is the program's own business; nothing
-orders references or hashes them by value (`Ordered`).
+A reference is its own runtime form (`graphix_types::reference`, an
+abstract holding its cell), never a number: a cast whose source can
+hold one is refused (`Type::holds_ref`), and where only an instance
+knows the source, the cast yields its `InvalidCast` error; a reference
+prints as `&ref`; under `Any` a reference test is refused, since
+references to different types share the form (`Type::ref_over_any`);
+nothing orders references or hashes them by value (`Ordered`).
 Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`.
 
 **Two-phase typecheck knot.** While an instance body typechecks, its
@@ -803,7 +804,7 @@ cycle, across workers; the compiler never pins threads.
   union trait dispatch, may tell apart two types that share a runtime
   form: a tuple, struct, list or payload variant and an array (an empty
   array and an empty list are one value), a bare variant and a string, a
-  reference and a number or another reference, two function types.
+  reference and another reference, two function types.
   Checked per arm, after its narrowing, in the definition's check;
   members that share a constructor are told apart by their parts. A
   compared type (`==` and the orderings), a map key type and what the
