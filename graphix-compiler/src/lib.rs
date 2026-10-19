@@ -1761,6 +1761,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
+        self.env.split_facet(id);
         if !self.generalized_earlier(id) {
             self.env.poly_binds.remove(&id);
         }

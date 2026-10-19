@@ -356,7 +356,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // but for one something writes, which fires alone, its own facet
         let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
         pattern.ids(&mut |id| siblings.push(id));
-        // CR claude for claude: [bug/high] The facet grouping is decided here from the
+        // XCR claude for claude: [bug/high] The facet grouping is decided here from the
         // targets known when the let compiles. A sibling first written from another
         // module (`m::a <- ..` or `&mut m::a`: the module compiles before the
         // importer's writers) or by a later REPL input stays grouped with its siblings.
@@ -367,6 +367,12 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // needed (record the group's members with the facet). Deciding the facets in
         // typecheck0 instead covers modules but not the REPL. probe:
         // design/review-2026-10-19/repro/c-bind-facet-module/main.gx (c-bind-03)
+        // 2026-10-19 claude: CompileCtx::mark_connect_target calls Env::split_facet: a
+        // sibling written after its let compiled (from another module, a later REPL
+        // input) leaves its Facet::Let group, and a representative leaving passes the
+        // group to the next sibling. The repro prints count(m::b) = 1 throughout. Pin:
+        // lang::modules::sibling_written_from_outside_its_module_fires_alone. Needs a
+        // soak (wake catch-up).
         if siblings.len() > 1 {
             let rep = siblings.iter().find(|id| !ctx.connect_targets.contains(*id));
             let rep = rep.copied();

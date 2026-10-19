@@ -1275,3 +1275,22 @@ run!(
         let x = 1;
         catch(e) println("caught")
     "#; FuseExpect::None);
+
+// A destructuring let's sibling first written from outside its module
+// leaves the siblings' group: each write of `a` fires `a` alone, and an
+// arm reading both never catches `b` up.
+run!(
+    sibling_written_from_outside_its_module_fires_alone,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string().ends_with(", i64:1]")),
+    "/test.gx" => r#"
+        mod m;
+        let n = 0;
+        n <- select n { k if k < 6 => (k ~ n) + 1, _ => never() };
+        m::a <- n ~ m::a + 10;
+        let sel = select n { 2 => false, 3 => false, _ => true };
+        let out = select sel { true => (m::a, count(m::b)), false => (-1, -1) };
+        let result = select n { 6 => out, _ => never() }
+    "#,
+    "/test/m.gx" => r#"
+        let (a, b) = (1, 2)
+    "#; FuseExpect::Jit);

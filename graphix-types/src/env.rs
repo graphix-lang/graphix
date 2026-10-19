@@ -2053,6 +2053,33 @@ impl Env {
         }
     }
 
+    /// Take a destructuring `let`'s sibling that something writes out of
+    /// its group, its own facet: a write fires it alone. A representative
+    /// leaving passes the group to another sibling.
+    pub fn split_facet(&mut self, id: BindId) {
+        let Some(Facet::Let(rep)) = self.by_id.get(&id).and_then(|b| b.facet.clone())
+        else {
+            return;
+        };
+        self.mark_facet(id, id);
+        if rep != id {
+            return;
+        }
+        let mut rest: LPooled<Vec<BindId>> = self
+            .by_id
+            .iter()
+            .filter(|(o, b)| {
+                **o != id && matches!(b.facet, Some(Facet::Let(r)) if r == id)
+            })
+            .map(|(o, _)| *o)
+            .collect();
+        if let Some(&next) = rest.first() {
+            for o in rest.drain(..) {
+                self.mark_facet(o, next)
+            }
+        }
+    }
+
     /// The bind wake catch-up tracks `id` under: its `let`
     /// destructuring group's representative, else itself.
     pub fn facet_of(&self, id: BindId) -> BindId {
