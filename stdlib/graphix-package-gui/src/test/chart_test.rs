@@ -124,17 +124,42 @@ async fn dashed_line_renders() -> Result<()> {
     Ok(())
 }
 
+/// The pixels of a line in a color no other part of the chart uses.
+async fn line_pixels(stroke: &str) -> Result<usize> {
+    let mut h = chart_harness(&format_compact!(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         &[chart::line(#color: color(#r: 1.0, #g: 0.0, #b: 1.0)$, \
+           #stroke_width: {stroke}, &[(0.0, 0.0), (5.0, 5.0)])]"
+    ))
+    .await?;
+    Ok(color_pixels(&screenshot(&mut h).await, [255, 0, 255]))
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn series_style_stroke_width() -> Result<()> {
-    let h = chart_harness(
-        "#width: &`Fill, #height: &`Fixed(200.0), \
-         &[chart::line(#stroke_width: 4.0, #point_size: 5.0, \
-           &[(0.0, 0.0), (5.0, 5.0)])]",
-    )
-    .await?;
-    assert!(draw(&h).await.is_some());
+    let (thin, thick, half) =
+        (line_pixels("1.0").await?, line_pixels("4.0").await?, line_pixels("0.5").await?);
+    assert!(thick > 2 * thin, "stroke 4: {thick}, stroke 1: {thin}");
+    assert!(half > 0, "a half-pixel line draws");
     Ok(())
 }
+
+/// How many pixels are of a hue whose `strong` channels each exceed every
+/// other channel by far: a color nothing in a default chart draws,
+/// through the antialiasing and blending a drawn color goes through.
+fn pixels_of_hue(rgba: &[u8], strong: [bool; 3]) -> usize {
+    rgba.chunks_exact(4)
+        .filter(|px| {
+            (0..3).filter(|&i| strong[i]).all(|i| {
+                (0..3).filter(|&j| !strong[j]).all(|j| px[i] as i16 - px[j] as i16 > 100)
+            })
+        })
+        .count()
+}
+
+const MAGENTA: [bool; 3] = [true, false, true];
+const CYAN: [bool; 3] = [false, true, true];
+const GREEN: [bool; 3] = [false, true, false];
 
 #[tokio::test(flavor = "current_thread")]
 async fn background_color() -> Result<()> {
@@ -188,16 +213,22 @@ async fn dark_background_label_colors() -> Result<()> {
     )
     .await?;
     assert!(draw(&h).await.is_some());
+    let mut h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #title: &\"Dark Chart\", #x_label: &\"X axis\", \
+         #style: &chart_style(\
+           #title_color: color(#r: 1.0, #g: 0.0, #b: 1.0)$, \
+           #mesh: chart::mesh_style(#label_color: color(#r: 0.0, #g: 1.0, #b: 1.0)$)), \
+         &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
+    )
+    .await?;
+    let pixels = screenshot(&mut h).await;
+    assert!(pixels_of_hue(&pixels, MAGENTA) > 10, "title color");
+    assert!(pixels_of_hue(&pixels, CYAN) > 10, "label color");
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] This test, dark_background_label_colors and
-// series_style_stroke_width still assert only that a plot area was recorded. They pass
-// with the legend colors, label/title colors or stroke width ignored. tests-gui-b-05
-// fixed background and mesh only. Use screenshot() and color_pixels as background_color
-// does: a distinctive legend background, label color and line color, and more line
-// pixels at stroke 4 than at stroke 1. Found by reading; not run. (tests-gui-b-05)
 async fn legend_style() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
@@ -210,6 +241,132 @@ async fn legend_style() -> Result<()> {
     )
     .await?;
     assert!(draw(&h).await.is_some());
+    let mut h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #style: &chart_style(#legend: { \
+           background: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, \
+           border: null, label_color: null, label_size: null}), \
+         &[chart::line(#label: \"Test\", &[(0.0, 0.0), (5.0, 5.0)])]",
+    )
+    .await?;
+    let pixels = screenshot(&mut h).await;
+    assert!(pixels_of_hue(&pixels, GREEN) > 200, "legend background");
+    Ok(())
+}
+
+/// A labelled series that draws nothing has no legend: no empty box.
+#[tokio::test(flavor = "current_thread")]
+async fn a_legend_counts_only_drawn_series() -> Result<()> {
+    assert_same_series_pixels(
+        r#"line(&[(1.0, 1.0), (2.0, 2.0)]), line(#label: "nothing yet", &[])"#,
+        "line(&[(1.0, 1.0), (2.0, 2.0)])",
+    )
+    .await
+}
+
+/// A pie chart shows its title, and sits centred below it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_pie_shows_its_title() -> Result<()> {
+    let mut h = chart_harness(
+        r#"#width: &`Fill, #height: &`Fixed(200.0), #title: &"Languages",
+           #style: &chart_style(#title_color: color(#r: 1.0, #g: 0.0, #b: 1.0)$),
+           &[pie(&[("a", 1.0), ("b", 2.0)])]"#,
+    )
+    .await?;
+    let pixels = screenshot(&mut h).await;
+    assert!(pixels_of_hue(&pixels, MAGENTA) > 10, "the title draws");
+    let info = chart(&h).plot_info().expect("drawn");
+    let below = 200.0 - info.rect.y - info.rect.height;
+    assert!(info.rect.y > below, "{info:?}: centred under the title");
+    Ok(())
+}
+
+/// An error bar draws only what is in view: none for a bar outside it,
+/// and no cap at an end the view cuts.
+#[tokio::test(flavor = "current_thread")]
+async fn error_bars_draw_only_what_is_in_view() -> Result<()> {
+    assert_same_series_pixels(
+        "line(&[(1.0, 1.0)]), error_bar(&[{x: 2.0, min: 6.0, avg: 7.0, max: 8.0}])",
+        "line(&[(1.0, 1.0)])",
+    )
+    .await?;
+    let bar_pixels = async |max: &str| -> Result<usize> {
+        let mut h = chart_harness(&format_compact!(
+            "#width: &`Fill, #height: &`Fixed(200.0), \
+             #x_range: &{{min: 0.0, max: 5.0}}, #y_range: &{{min: 0.0, max: 5.0}}, \
+             &[error_bar(#color: color(#r: 1.0, #g: 0.0, #b: 1.0)$, #point_size: 30.0, \
+               &[{{x: 2.0, min: 1.0, avg: 2.0, max: {max}}}])]"
+        ))
+        .await?;
+        Ok(color_pixels(&screenshot(&mut h).await, [255, 0, 255]))
+    };
+    let (cut, capped) = (bar_pixels("9.0").await?, bar_pixels("4.99").await?);
+    assert!(cut + 15 < capped, "a cut end draws no cap: {cut} vs {capped}");
+    Ok(())
+}
+
+/// The tooltip is the point under the cursor in the plot as it is now,
+/// not as it was at the cursor's last move.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tooltip_follows_new_data_under_a_resting_cursor() -> Result<()> {
+    let mut h = GuiTestHarness::new(
+        "use gui::*;\nuse gui::chart::{self, *};\n\
+         let pts = [(5.0, 5.0)];\n\
+         let result = chart(#x_range: &{min: 0.0, max: 10.0}, \
+           #y_range: &{min: 0.0, max: 10.0}, &[line(&pts)])",
+    )
+    .await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let bounds = Rectangle::with_size(size);
+    let p = draw_in(&h, &state, size).await.unwrap().rect.center();
+    let at = mouse::Cursor::Available(p);
+    let moved = iced_core::Event::Mouse(mouse::Event::CursorMoved { position: p });
+    state.handle_event(chart(&h), &moved, bounds, at);
+    assert_eq!(state.tooltip(chart(&h), bounds, at).unwrap().value, "(5.0000, 5.0000)");
+    let pts =
+        graphix_package_core::testing::find_bind_id(&h.f.compiled.env, "test::pts")?;
+    let moved_pts =
+        Value::Array(ValArray::from_iter([Value::Array(ValArray::from_iter([
+            Value::F64(5.0),
+            Value::F64(5.1),
+        ]))]));
+    h.f.gx.compile_ref(pts).await?.set(moved_pts)?;
+    h.drain().await?;
+    draw_in(&h, &state, size).await;
+    assert_eq!(state.tooltip(chart(&h), bounds, at).unwrap().value, "(5.0000, 5.1000)");
+    Ok(())
+}
+
+/// A wheel narrows a view of a second of a time series, and of a second
+/// of an x in Unix seconds.
+#[tokio::test(flavor = "current_thread")]
+async fn a_view_zooms_to_under_a_second() -> Result<()> {
+    use iced_core::{event::Event, mouse::Event as ME};
+    for (data, x0, span) in [
+        ("line(&day1)", 1_704_067_200_000.0, 1100.0),
+        ("line(&[(1790000000.0, 1.0), (1790000002.0, 2.0)])", 1_790_000_000.0, 1.1),
+    ] {
+        let h = chart_harness(&format_compact!("&[{data}]")).await?;
+        let mut state = ChartState::default();
+        let size = Size::new(400.0, 300.0);
+        let bounds = Rectangle::with_size(size);
+        let p = draw_in(&h, &state, size).await.unwrap().rect.center();
+        let at = mouse::Cursor::Available(p);
+        state.handle_event(
+            chart(&h),
+            &Event::Mouse(ME::CursorMoved { position: p }),
+            bounds,
+            at,
+        );
+        state.x_view = Some((x0, x0 + span));
+        draw_in(&h, &state, size).await;
+        let wheel =
+            ME::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 } };
+        state.handle_event(chart(&h), &Event::Mouse(wheel), bounds, at);
+        let (a, b) = state.x_view.unwrap();
+        assert!(b - a < span * 0.95, "{data}: {:?}", (a, b));
+    }
     Ok(())
 }
 
@@ -243,23 +400,6 @@ async fn mesh_style_3d() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [dead/low] Obsolete. The geometry cache and plot_info moved
-// from ChartState onto ChartW, so two harnesses never share a cache, and a default
-// ChartState with no owner draws the default view. This can fail only through
-// compute_ranges (covered by ranges_cover_the_data). The swap it names is pinned by
-// kept_charts_keep_their_own_cache. Delete it. Found by reading; not run.
-// (tests-gui-b-04)
-async fn fresh_chart_redraws_an_inherited_cache() -> Result<()> {
-    let tall = chart_harness(r#"&[line(&[(1.0, 1000.0), (2.0, 2000.0)])]"#).await?;
-    let short = chart_harness(r#"&[line(&[(1.0, 1.0), (2.0, 2.0)])]"#).await?;
-    let state = ChartState::default();
-    let size = Size::new(400.0, 300.0);
-    assert!(draw_in(&tall, &state, size).await.expect("drawn").y_range.1 > 1000.0);
-    assert!(draw_in(&short, &state, size).await.expect("drawn").y_range.1 < 100.0);
-    Ok(())
-}
-
 #[test]
 fn marker_size_rule() {
     use crate::widgets::chart::marker_size;
@@ -267,6 +407,9 @@ fn marker_size_rule() {
     assert_eq!(marker_size(Some(0.0), 1), 0);
     assert_eq!(marker_size(None, 4), 0);
     assert_eq!(marker_size(None, 1), 3);
+    assert_eq!(marker_size(Some(0.5), 4), 1);
+    assert_eq!(marker_size(Some(2.7), 4), 3);
+    assert_eq!(marker_size(Some(f64::NAN), 4), 0);
 }
 
 /// Every marker path draws through the program without erroring on a
@@ -533,8 +676,9 @@ async fn the_bar_tooltip_reads_its_slot() -> Result<()> {
     let p = Point::new(x, info.rect.y + info.rect.height / 2.0);
     let moved = Event::Mouse(ME::CursorMoved { position: p });
     let bounds = Rectangle::new(Point::ORIGIN, size);
-    let _ = state.handle_event(chart(&h), &moved, bounds, mouse::Cursor::Available(p));
-    let snap = state.snap_point.expect("a bar under the cursor");
+    let at = mouse::Cursor::Available(p);
+    let _ = state.handle_event(chart(&h), &moved, bounds, at);
+    let snap = state.tooltip(chart(&h), bounds, at).expect("a bar under the cursor");
     assert_eq!((snap.label.as_str(), snap.value.as_str()), ("B", "b: 2.00"));
     Ok(())
 }
@@ -783,7 +927,9 @@ async fn pie_tooltip_uses_the_drawn_dataset() -> Result<()> {
         Rectangle::with_size(size),
         mouse::Cursor::Available(p),
     );
-    let snap = state.snap_point.unwrap();
+    let snap =
+        state.tooltip(chart(&h), Rectangle::with_size(size), mouse::Cursor::Available(p));
+    let snap = snap.unwrap();
     assert_eq!(snap.label, "first");
     assert_eq!(snap.value, "1.00 (100.0%)");
     Ok(())
@@ -872,15 +1018,16 @@ async fn chart_hover_uses_translated_cursor() -> Result<()> {
     let size = Size::new(400.0, 300.0);
     let p = draw_in(&h, &state, size).await.unwrap().rect.center();
     let bounds = Rectangle::new(Point::new(30.0, 500.0), size);
+    let at = mouse::Cursor::Available(Point::new(p.x + 30.0, p.y + 500.0));
     state.handle_event(
         chart(&h),
         &iced_core::Event::Mouse(mouse::Event::CursorMoved {
             position: Point::new(p.x + 30.0, p.y),
         }),
         bounds,
-        mouse::Cursor::Available(Point::new(p.x + 30.0, p.y + 500.0)),
+        at,
     );
-    assert!(state.snap_point.unwrap().pixel.distance(p) < 1.0);
+    assert!(state.tooltip(chart(&h), bounds, at).unwrap().pixel.distance(p) < 1.0);
     Ok(())
 }
 
@@ -933,7 +1080,10 @@ async fn hover_at_fraction(
         Rectangle::with_size(size),
         mouse::Cursor::Available(p),
     );
-    Ok((info, state.snap_point))
+    Ok((
+        info,
+        state.tooltip(chart(&h), Rectangle::with_size(size), mouse::Cursor::Available(p)),
+    ))
 }
 
 #[tokio::test(flavor = "current_thread")]
