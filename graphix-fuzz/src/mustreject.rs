@@ -77,6 +77,7 @@ impl Family {
             }
             Family::WidenConsumer => &[
                 "does not contain",
+                "missing match cases",
                 "cannot compute",
                 "cannot compare",
                 "expected struct not",
@@ -321,7 +322,9 @@ fn same_form(
         let e = &pre[i];
         let ExprKind::Select(se) = &e.kind else { continue };
         let Some(t) = types.of(&se.arg).first() else { continue };
-        if !concrete(t) || opaque(t) || binds_outward(&se.arg) {
+        // a type test over a function is refused by its own rule first
+        let holds_fn = holds(t, &|d| matches!(d, Type::Fn(_)));
+        if !concrete(t) || opaque(t) || holds_fn || binds_outward(&se.arg) {
             continue;
         }
         let Some(u) = disjoint_literal(t) else { continue };
@@ -552,16 +555,22 @@ fn concrete(t: &Type) -> bool {
 /// Whether `t` holds `Any`, an abstract type or a type name anywhere: a
 /// part whose runtime form the map does not show.
 fn opaque(t: &Type) -> bool {
+    holds(t, &|d| matches!(d, Type::Any | Type::Abstract { .. } | Type::Ref(_)))
+}
+
+/// Whether `t` or a part of it satisfies `p`; a function's parts are not
+/// walked.
+fn holds(t: &Type, p: &impl Fn(&Type) -> bool) -> bool {
     t.with_deref(|d| match d {
         None => false,
-        Some(Type::Any | Type::Abstract { .. } | Type::Ref(_)) => true,
-        Some(Type::Set(ts) | Type::Tuple(ts)) => ts.iter().any(opaque),
-        Some(Type::Struct(fs)) => fs.iter().any(|(_, t, _)| opaque(t)),
-        Some(Type::Variant(_, ts, _)) => ts.iter().any(opaque),
+        Some(d) if p(d) => true,
+        Some(Type::Set(ts) | Type::Tuple(ts)) => ts.iter().any(|t| holds(t, p)),
+        Some(Type::Struct(fs)) => fs.iter().any(|(_, t, _)| holds(t, p)),
+        Some(Type::Variant(_, ts, _)) => ts.iter().any(|t| holds(t, p)),
         Some(Type::Array(t) | Type::List(t) | Type::Error(t) | Type::ByRef(_, t)) => {
-            opaque(t)
+            holds(t, p)
         }
-        Some(Type::Map { key, value }) => opaque(key) || opaque(value),
+        Some(Type::Map { key, value }) => holds(key, p) || holds(value, p),
         Some(_) => false,
     })
 }
@@ -569,8 +578,10 @@ fn opaque(t: &Type) -> bool {
 /// Whether `value`, the initializer of a statement at `si` in `block`, is
 /// over ⊥: its type a cell its uses decide, so a writer or an annotation
 /// decides it rather than being refused. A call's return is decided by
-/// its callee and its arguments, open only through an open argument; an
-/// unannotated let read by name shares its initializer's cell.
+/// its callee and its arguments, open through an open argument or a
+/// callee bound to a lambda with no return type whose body is open (a
+/// generalized return, fresh at each call); an unannotated let read by
+/// name shares its initializer's cell; a block is its last expression.
 fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
     if typemorph::open_value(value) {
         return true;
@@ -578,23 +589,43 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
     match &typemorph::unparen(value).kind {
         ExprKind::Apply(ap) => {
             ap.args.iter().any(|(_, a)| open_init(types, block, si, a))
-        }
-        ExprKind::Ref { name } => {
-            let name = name.to_string();
-            block[..si.min(block.len())]
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(j, s)| match &s.kind {
-                    ExprKind::Bind(d) if matches!(&d.pattern, StructurePattern::Bind(n) if *n.name == name) => {
-                        Some(d.typ.is_none() && open_init(types, block, j, &d.value))
+                || earlier_let(block, si, &ap.function).is_some_and(|(_, d)| {
+                    match &typemorph::unparen(&d.value).kind {
+                        ExprKind::Lambda(l) => {
+                            l.rtype.is_none()
+                                && matches!(&l.body, LambdaBody::Expr(b)
+                                    if open_init(types, &[], 0, b))
+                        }
+                        _ => false,
                     }
-                    _ => None,
                 })
-                .unwrap_or_else(|| types.cell(value))
+        }
+        ExprKind::Ref { .. } => match earlier_let(block, si, value) {
+            Some((j, d)) => d.typ.is_none() && open_init(types, block, j, &d.value),
+            None => types.cell(value),
+        },
+        ExprKind::Block { exprs } => {
+            exprs.last().is_some_and(|l| open_init(types, exprs, exprs.len() - 1, l))
         }
         _ => types.cell(value),
     }
+}
+
+/// The last `let` of the name `r` reads among the statements of `block`
+/// before `si`, with its index.
+fn earlier_let<'a>(
+    block: &'a [Expr],
+    si: usize,
+    r: &Expr,
+) -> Option<(usize, &'a BindExpr)> {
+    let ExprKind::Ref { name } = &typemorph::unparen(r).kind else { return None };
+    let name = name.to_string();
+    block[..si.min(block.len())].iter().enumerate().rev().find_map(|(j, s)| match &s.kind {
+        ExprKind::Bind(d) if matches!(&d.pattern, StructurePattern::Bind(n) if *n.name == name) => {
+            Some((j, &**d))
+        }
+        _ => None,
+    })
 }
 
 /// A structure that matches any value: a bind, `_`, or an or-pattern

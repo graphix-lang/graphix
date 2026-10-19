@@ -2703,29 +2703,75 @@ impl Finding {
     }
 }
 
-/// Minimize a diverging wrapper: schedule reductions first (drop the
-/// schedule, epochs, injections; simplify literals; caps stay fixed),
-/// then the body and each `.gx` section by [`shrink`], keeping any
-/// reduction that still parses and reproduces the same divergence
-/// bucket. The headers are split off before parsing and reattached
-/// around every candidate. Returns the minimized wrapper and the number
-/// of oracle checks spent (capped by `budget`).
+/// How the minimizer judges a candidate: in this process, or each in a
+/// `check-one` child, which a candidate that kills the evaluator kills
+/// alone.
+#[derive(Clone, Copy)]
+pub enum Judge {
+    InProcess(Duration),
+    Isolated(Duration),
+}
+
+impl Judge {
+    /// The judge for minimizing a finding of key `want`: a crash's in
+    /// children, else in this process.
+    pub fn for_key(want: Option<&str>, timeout: Duration) -> Self {
+        match want {
+            Some(k) if k.starts_with(CRASH_CLASS) => Judge::Isolated(timeout),
+            _ => Judge::InProcess(timeout),
+        }
+    }
+
+    /// The key of what `prog` shows, `None` when it agrees: a
+    /// divergence's [`Finding::key`] or a crash's [`crash_class`].
+    async fn key(self, prog: &str) -> Option<String> {
+        match self {
+            Judge::InProcess(t) => check(prog, t).await.map(|d| finding_key(&d)),
+            Judge::Isolated(t) => match check_isolated(prog, t).await.0 {
+                PoolResult::Agree => None,
+                PoolResult::Diverge(f) => Some(f.key),
+                PoolResult::Crash(status) => Some(crash_class(&status)),
+            },
+        }
+    }
+}
+
+const CRASH_CLASS: &str = "CRASH ";
+
+/// A crash's key: the child's status and last words with every number
+/// collapsed, so one panic site reached with other values is one class.
+fn crash_class(status: &str) -> String {
+    let words = status
+        .replace(" (core dumped)", "")
+        .split(" | ")
+        .filter(|w| !w.starts_with("note: "))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    format!("{CRASH_CLASS}{}", collapse_numbers(&words))
+}
+
+/// Minimize a diverging or crashing wrapper: schedule reductions first
+/// (drop the schedule, epochs, injections; simplify literals; caps stay
+/// fixed), then the body and each `.gx` section by [`shrink`], keeping
+/// any reduction that still parses and shows the same key under
+/// `judge` (a divergence's bucket, a crash's class). The headers are
+/// split off before parsing and reattached around every candidate.
+/// Returns the minimized wrapper and the number of oracle checks spent
+/// (capped by `budget`).
 ///
-/// With `want`, a [`Finding::key`], a program whose divergence has
-/// another key comes back unchanged. `progress` sees each smaller
+/// With `want`, a [`Finding::key`] or a crash class, a program whose
+/// finding has another key comes back unchanged. `progress` sees each smaller
 /// program the minimizer settles on.
 pub async fn minimize(
     code: &str,
-    timeout: Duration,
+    judge: Judge,
     budget: usize,
     want: Option<&str>,
     progress: &(dyn Fn(&str) + Sync),
 ) -> (String, usize) {
-    let d0 = match check(code, timeout).await {
-        Some(d) => d,
-        None => return (code.to_string(), 1),
+    let Some(target) = judge.key(code).await else {
+        return (code.to_string(), 1);
     };
-    let target = finding_key(&d0);
     if want.is_some_and(|w| w != target) {
         return (code.to_string(), 1);
     }
@@ -2756,9 +2802,7 @@ pub async fn minimize(
             }
             calls += 1;
             let text = reattach(cand.render(&body_text));
-            if let Some(d) = check(&text, timeout).await
-                && finding_key(&d) == target
-            {
+            if judge.key(&text).await.as_deref() == Some(target.as_str()) {
                 progress(&text);
                 sched = cand;
                 continue 'sched; // restart from the smaller schedule
@@ -2781,9 +2825,7 @@ pub async fn minimize(
                 }
                 calls += 1;
                 let text = reattach(sched.render(&files::render(&body_text, &cand)));
-                if let Some(d) = check(&text, timeout).await
-                    && finding_key(&d) == target
-                {
+                if judge.key(&text).await.as_deref() == Some(target.as_str()) {
                     progress(&text);
                     files = cand;
                     continue 'files; // restart from the smaller file set
@@ -2806,7 +2848,7 @@ pub async fn minimize(
                     Some(reattach(sched.render(&files::render(&body, files))))
                 },
                 &target,
-                timeout,
+                judge,
                 &mut calls,
                 cap,
                 progress,
@@ -2832,7 +2874,7 @@ pub async fn minimize(
                         Some(reattach(sched.render(&files::render(&body, &fs))))
                     },
                     &target,
-                    timeout,
+                    judge,
                     &mut calls,
                     cap,
                     progress,
@@ -2922,7 +2964,7 @@ async fn shrink(
     mut current: Expr,
     build: &impl Fn(&Expr) -> Option<String>,
     target: &str,
-    timeout: Duration,
+    judge: Judge,
     calls: &mut usize,
     budget: usize,
     progress: &(dyn Fn(&str) + Sync),
@@ -2933,7 +2975,7 @@ async fn shrink(
     let hits = async |e: &Expr, cur: usize, calls: &mut usize| match build(e) {
         Some(text) if text.len() < cur => {
             *calls += 1;
-            check(&text, timeout).await.is_some_and(|d| finding_key(&d) == target)
+            judge.key(&text).await.as_deref() == Some(target)
         }
         _ => false,
     };
@@ -3941,12 +3983,17 @@ impl Corpus {
         true
     }
 
-    /// Record a process-killing program. No minimized form (minimizing a
-    /// crasher would crash the minimizer's in-process oracle), so the
-    /// dedup key is the normalized program text. Crash findings must not
-    /// be promoted to `findings/` until fixed: regress runs in-process.
-    pub fn record_crash(&self, prog: &str, status: &str) -> bool {
-        let key = crash_key(prog);
+    /// Record a process-killing program, dedup'd by its minimized form
+    /// when it has one, else by its normalized text. Crash findings must
+    /// not be promoted to `findings/` until fixed: regress runs
+    /// in-process.
+    pub fn record_crash(
+        &self,
+        prog: &str,
+        status: &str,
+        minimized: Option<&str>,
+    ) -> bool {
+        let key = minimized.map_or_else(|| crash_key(prog), |m| m.trim().to_string());
         {
             let mut seen = self.seen.lock().unwrap();
             if !seen.insert(key) {
@@ -3954,10 +4001,16 @@ impl Corpus {
             }
         }
         let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let program = match minimized {
+            Some(m) => {
+                format!("// mutant: {}\n// minimized:\n{m}", prog.replace('\n', "\\n"))
+            }
+            None => format!("// mutant:\n{prog}"),
+        };
         let body = format!(
             "// CRASH: child {status}\n\
              // do not promote to findings/ until fixed (regress runs in-process)\n\
-             // mutant:\n{prog}\n",
+             {program}\n",
         );
         if let Err(e) = std::fs::write(self.dir.join(format!("crash_{n:06}.gx")), body) {
             eprintln!("FATAL fuzz harness: cannot write finding: {e}");
@@ -4023,10 +4076,14 @@ fn extract_minimized(body: &str) -> Option<String> {
 /// one `N`, so literal variants of one crash shape share a slot. Shared
 /// by `record_crash` and `Corpus::load`.
 fn crash_key(prog: &str) -> String {
-    let mut key = String::with_capacity(prog.len() + 6);
-    key.push_str("CRASH:");
+    format!("CRASH:{}", collapse_numbers(prog.trim()))
+}
+
+/// `s` with every digit run collapsed to one `N`.
+fn collapse_numbers(s: &str) -> String {
+    let mut key = String::with_capacity(s.len());
     let mut in_digits = false;
-    let mut chars = prog.trim().chars().peekable();
+    let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c.is_ascii_digit()
             || (c == '-' && chars.peek().is_some_and(|n| n.is_ascii_digit()))
@@ -5166,11 +5223,25 @@ async fn derive_suspect(
         }
         PoolResult::Crash(status) => {
             tally.crashes.fetch_add(1, Relaxed);
-            if corpus.record_crash(prog, &status) {
-                println!("CRASH — child {status}");
-                println!("    program: {}", prog.replace('\n', "\\n"));
+            let class = crash_class(&status);
+            if !corpus.claim(&class) {
+                tally.known.fetch_add(1, Relaxed);
+                return (true, cpu);
             }
-            true
+            // a hang's candidates would each wait out their deadline
+            let (min, min_cpu) = if status.contains("HANG") {
+                (None, Duration::ZERO)
+            } else {
+                minimize_isolated(prog, &class, timeout).await
+            };
+            if corpus.record_crash(prog, &status, min.as_deref()) {
+                println!("CRASH — child {status}");
+                println!(
+                    "    program: {}",
+                    min.as_deref().unwrap_or(prog).replace('\n', "\\n")
+                );
+            }
+            return (true, cpu + min_cpu);
         }
         PoolResult::Diverge(f) => {
             tally.divergences.fetch_add(1, Relaxed);
@@ -5215,7 +5286,7 @@ async fn confirm_typeflip(
         // a confirm that measured nothing confirms nothing
         Err(e) => {
             tally.crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if corpus.record_crash(prog, &e) {
+            if corpus.record_crash(prog, &e, None) {
                 println!("CRASH — typemorph child {e}");
                 println!("    program: {}", prog.replace('\n', "\\n"));
             }
@@ -6545,6 +6616,28 @@ mod trace_probes {
         for s in i.iter().chain(j.iter()) {
             assert!(!s.capped_cycles && !s.capped_events, "no caps: {s:?}");
         }
+    }
+
+    /// One panic site reached with other values, dumped or not, is one
+    /// crash class, and a crash's key minimizes in children.
+    #[test]
+    fn crash_classes_ignore_values() {
+        let a = crash_class(
+            "signal: 6 (SIGABRT) (core dumped) | range start index 1 out of range for \
+             slice of length 0 | note: run with `RUST_BACKTRACE=1` environment variable",
+        );
+        let b = crash_class(
+            "signal: 6 (SIGABRT) | range start index 2 out of range for slice of length 1 \
+             | note: run with `RUST_BACKTRACE=1` environment variable",
+        );
+        assert_eq!(a, b);
+        assert_eq!(
+            a,
+            "CRASH signal: N (SIGABRT) | range start index N out of range for slice of length N"
+        );
+        let t = Duration::from_secs(1);
+        assert!(matches!(Judge::for_key(Some(&a), t), Judge::Isolated(_)));
+        assert!(matches!(Judge::for_key(Some("Engine (..)"), t), Judge::InProcess(_)));
     }
 
     /// A marker names a builtin, not the tail of a longer name, a string's

@@ -853,11 +853,12 @@ async fn main() -> Result<()> {
                     let _ = std::fs::rename(&tmp, &path);
                 }
             };
+            let want = args.get(3).map(String::as_str);
             let (min, _) = minimize(
                 code.trim(),
-                campaign_timeout(),
+                graphix_fuzz::Judge::for_key(want, campaign_timeout()),
                 CAMPAIGN_MINIMIZE_BUDGET,
-                args.get(3).map(String::as_str),
+                want,
                 &progress,
             )
             .await;
@@ -968,17 +969,11 @@ async fn main() -> Result<()> {
             // the budget is oracle checks; interactive, so generous
             let budget = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4000);
             let code = std::fs::read_to_string(path)?;
-            let (min, calls) =
-                minimize(code.trim(), timeout(), budget, None, &|_| ()).await;
-            match check(&min, timeout()).await {
-                None => println!("no divergence to minimize (program agrees)"),
-                Some(d) => {
-                    println!("minimized ({calls} checks) — {}", d.bisect());
-                    println!("{min}");
-                    let (a, b) = d.labels();
-                    println!("  {a}={} {b}={}", render(&d.reference), render(&d.tested));
-                }
-            }
+            // each candidate in a child: a reduction may crash
+            let judge = graphix_fuzz::Judge::Isolated(timeout());
+            let (min, calls) = minimize(code.trim(), judge, budget, None, &|_| ()).await;
+            println!("minimized ({calls} checks):\n{min}");
+            println!("{}", graphix_fuzz::check_isolated_report(&min, timeout()).await);
         }
         Some(cmd @ ("check" | "run")) => {
             let path = match args.get(2) {

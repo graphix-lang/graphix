@@ -211,7 +211,8 @@ writes are the sites (`generate/funcs.rs`).
 **10. One runtime form.** Site: a select over a scrutinee `s` the map
 types a concrete `T`. Mutation: `select <&s or &u> { &T as r => select
 *r { arms }, _ => never() }`, `u` a literal of a type disjoint from `T`
-(`disjoint_literal`). Rule: no arm may tell apart two types with one
+(`disjoint_literal`), `T` holding no function (a type test over one is
+refused by its own rule first). Rule: no arm may tell apart two types with one
 runtime form, here two references (`Type::rep_collision`, checked per
 arm in `Select::typecheck0_with`). Right site: the outer select. Built
 (`same-form`). The rule's other site, a trait dispatch over a union self

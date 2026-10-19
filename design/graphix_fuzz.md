@@ -302,7 +302,12 @@ a crash. `check-isolated <file>` shows how a campaign reads a program.
 Minimization is also isolated (`minimize-one`): a
 reduction of a benign divergence can itself be a crasher (dropping a
 recursive function's base case), and minimizer child death records
-the unminimized mutant instead. The child re-exec path is
+the unminimized mutant instead. A crash is minimized too, under its
+class (`crash_class`: the child's status and last words, numbers
+collapsed) and with each candidate checked in a `check-one` child of
+the minimizer (`Judge::Isolated`); it is claimed and dedup'd by its
+minimized form as a divergence is. `minimize <file>` always checks in
+children. The child re-exec path is
 `/proc/self/exe` (a rebuild under a live soak otherwise ENOENTs every
 spawn); a spawn IO error hard-aborts the campaign rather than recording
 garbage.
@@ -372,7 +377,7 @@ re-testing the head of a large finding. Body and module sections cycle
 with an equal slice of the remaining budget per lap.
 
 Two guards make it trustworthy: re-typecheck every step, and re-run
-both engines requiring the divergence persists WITH THE SAME BUCKET
+both engines requiring the divergence (or crash) persists WITH THE SAME
 KEY — reduction must not "succeed" by turning bug A into bug B (a
 different B becomes its own seed). Budgets are oracle checks:
 `CAMPAIGN_MINIMIZE_BUDGET` (80) buys a legible reproducer per finding;
