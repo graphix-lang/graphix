@@ -882,15 +882,13 @@ impl Expr {
         if !self.holds_unresolved() {
             return Ok(self.clone());
         }
-        // CR claude for claude: [bug/low] The chain starts empty, so the root file
-        // itself is never on it. A script's `mod main;` in main.gx loads main.gx again
-        // as module `main`, and the error is "module main::main could not be found:
-        // main/main.gx ..." instead of an import cycle. Seed the chain with
-        // self.ori.source when it is a file or a netidx path, and add the case to
-        // graphix-shell/tests/import_cycle.rs. probe:
-        // design/review-2026-10-19/repro/t-format-resolver-root-self-import.sh
-        // (t-format-resolver-03)
-        let e = self.resolve_modules_int(scope, &None, &None, resolvers, probes).await?;
+        // the file this came from is the first load, reaching it again a
+        // cycle; a resolved module's body puts its own source on the chain
+        let chain = match self_kind_origin(&self.kind) {
+            None => LoadChain::root(&self.ori.source),
+            Some(_) => None,
+        };
+        let e = self.resolve_modules_int(scope, &None, &chain, resolvers, probes).await?;
         Ok(e.unwrap_or_else(|| self.clone()))
     }
 
@@ -1108,6 +1106,21 @@ fn chain_source(source: &Source) -> Source {
 }
 
 impl LoadChain {
+    /// The chain a load from `source` starts: the source itself, named by
+    /// its file name, when it is one place.
+    fn root(source: &Source) -> Option<Arc<Self>> {
+        let name = match source {
+            Source::File(p) => ArcStr::from(&*p.file_stem()?.to_string_lossy()),
+            Source::Netidx(p) => ArcStr::from(Path::basename(p)?),
+            Source::Vfs(_) | Source::Program | Source::Unspecified => return None,
+        };
+        Some(Arc::new(Self {
+            source: chain_source(source),
+            name: Name::from(name),
+            prev: None,
+        }))
+    }
+
     fn push(
         chain: &Option<Arc<LoadChain>>,
         source: &Source,

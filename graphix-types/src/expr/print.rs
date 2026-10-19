@@ -2306,21 +2306,19 @@ enum StrPart<'a> {
 }
 
 impl<'a> StrPart<'a> {
-    /// The parts of an interpolation. The parser reads the text between
-    /// two splices as one constant, so a string constant after text, or
-    /// alone, was spliced (`"a["b"]"`, `"["a"]"`) and prints as one.
-    // CR claude for claude: [bug/medium] The position guess is wrong whenever a spliced
-    // string constant does not directly follow text. `graphix fmt` rewrites
-    // `"a["b"]["q"]"` as `"a["b"]q"`: the author's splice silently becomes text. It
-    // refuses the legal `"[x][r"q"]"` as a "formatter bug", and LSP formatting errors
-    // on it too. Fix: have the parser mark text runs (e.g. a str_form marker set in
-    // interpolateexp.rs's Intp::Lit::to_expr) and print from that mark instead of from
-    // position. probe: design/review-2026-10-19/repro/tests-expr-splice-as-text.sh
-    // (tests-expr-02)
+    /// The parts of an interpolation. As written, the text is what the
+    /// parser marked so. Canonically, a string constant after text, or
+    /// alone, prints as a splice (`"a["b"]"`, `"["a"]"`) and any other as
+    /// text, which reads back as the same tree.
     fn of_all(args: &'a [Expr]) -> impl Iterator<Item = Self> + Clone {
         let lone = args.len() == 1;
+        let as_written = print_as_written();
         args.iter().scan(false, move |after_text, e| {
             let part = match &e.kind {
+                ExprKind::Constant(Value::String(s)) if as_written => match e.str_form {
+                    StrForm::Text => Self::Text(s),
+                    _ => Self::Splice(e),
+                },
                 ExprKind::Constant(Value::String(s))
                     if !s.is_empty() && !lone && !*after_text =>
                 {
@@ -2442,7 +2440,7 @@ fn str_constant_pieces(
     match form {
         StrForm::Raw => write_raw(f, s),
         StrForm::Template => write_template(f, std::iter::once(StrPart::Text(s))),
-        StrForm::Quoted => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
+        StrForm::Quoted | StrForm::Text => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
     }
 }
 

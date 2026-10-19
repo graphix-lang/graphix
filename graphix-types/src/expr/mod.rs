@@ -1207,6 +1207,9 @@ pub enum StrForm {
     Raw,
     /// `"""text \[splice]"""`
     Template,
+    /// the text between an interpolation's splices, which has no
+    /// delimiters of its own: what tells it from a spliced string
+    Text,
 }
 
 #[derive(Clone)]

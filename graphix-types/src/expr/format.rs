@@ -628,6 +628,15 @@ mod tests {
         ] {
             stable(SourceKind::Program, src);
         }
+        for src in [
+            "\"a[\"b\"][\"q\"]\"\n",
+            "\"[\"b\"][r\"q\"]\"\n",
+            "\"[x][r\"q\"]\"\n",
+            "\"[r\"b\"][r\"q\"]\"\n",
+            "\"\"\"t \\[\"b\"]\\[r\"q\"]\"\"\"\n",
+        ] {
+            formats_to(SourceKind::Program, src, src);
+        }
     }
 
     #[test]

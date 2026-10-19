@@ -9,7 +9,6 @@ use chrono::prelude::*;
 use enumflags2::BitFlags;
 use netidx_value::PBytes;
 use netidx_value::Typ;
-use poolshark::local::LPooled;
 use prop::option;
 use proptest::{collection, prelude::*, sample};
 use rust_decimal::Decimal;
@@ -48,7 +47,11 @@ fn interpolation(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Ex
     let text = || prop_oneof![Just(ArcStr::from("")), arcstr()];
     (collection::vec((text(), inner), 1..4), text(), any::<bool>()).prop_map(
         |(parts, last, template)| {
-            let text = |s: ArcStr| ExprKind::Constant(Value::String(s)).to_expr_nopos();
+            let text = |s: ArcStr| {
+                let mut e = ExprKind::Constant(Value::String(s)).to_expr_nopos();
+                e.str_form = StrForm::Text;
+                e
+            };
             let mut args: Vec<Expr> = Vec::new();
             for (t, e) in parts {
                 if !t.is_empty() {
@@ -367,21 +370,12 @@ fn str_form() -> impl Strategy<Value = StrForm> {
 }
 
 /// The delimiters of every string in `e`, in order: what printing as
-/// written must keep. An interpolation's string arguments are its text,
-/// which has no delimiters of its own.
+/// written must keep, an interpolation's text told from its splices.
 fn str_forms(e: &Expr, out: &mut Vec<StrForm>) {
-    match &e.kind {
-        ExprKind::Constant(Value::String(_)) => out.push(e.str_form),
-        ExprKind::StringInterpolate { args } => {
-            out.push(e.str_form);
-            for a in args.iter() {
-                if !matches!(a.kind, ExprKind::Constant(Value::String(_))) {
-                    str_forms(a, out)
-                }
-            }
-            return;
-        }
-        _ => (),
+    if let ExprKind::Constant(Value::String(_)) | ExprKind::StringInterpolate { .. } =
+        &e.kind
+    {
+        out.push(e.str_form)
     }
     e.for_each_child(&mut |c| str_forms(c, out))
 }
@@ -1662,39 +1656,6 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
     })
 }
 
-// CR claude for claude: [test-gap/medium] This merges a spliced string constant into
-// the neighbouring text, and str_forms skips spliced constants too. So the round trips
-// cannot see the printer turning a splice into text (StrPart::of_all: `"a["b"]["q"]"`
-// formats to `"a["b"]q"`, and a raw splice loses its `r`). Compare interpolation args
-// one by one with check(), drop the (StringInterpolate, Constant) arm, have str_forms
-// keep a spliced constant's form, and add `"a["b"]"` vs `"ab"` to
-// check_sees_a_lost_element. Found by reading; the printer bug it hides is probed in
-// design/review-2026-10-19/repro/tests-expr-splice-as-text.sh. (tests-expr-03)
-fn acc_strings<'a>(args: impl IntoIterator<Item = &'a Expr> + 'a) -> Arc<[Expr]> {
-    let mut v: LPooled<Vec<Expr>> = LPooled::take();
-    for s in args {
-        let s = s.clone();
-        match s.kind {
-            ExprKind::Constant(Value::String(ref c1)) => match v.last_mut() {
-                None => v.push(s),
-                Some(e0) => match &mut e0.kind {
-                    ExprKind::Constant(Value::String(c0))
-                        if c1.len() > 0 && c0.len() > 0 =>
-                    {
-                        let mut st = String::new();
-                        st.push_str(&*c0);
-                        st.push_str(&*c1);
-                        *c0 = ArcStr::from(st);
-                    }
-                    _ => v.push(s),
-                },
-            },
-            _ => v.push(s),
-        }
-    }
-    Arc::from_iter(v.drain(..))
-}
-
 /// Types equal as values and as written: Type's equality calls any two
 /// open cells equal, so the names and bounds are compared by the
 /// canonical text.
@@ -2026,19 +1987,9 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => check(s0, s1) && f0 == f1,
         (
             ExprKind::StringInterpolate { args: a0 },
-            ExprKind::Constant(Value::String(c1)),
-        ) => match &acc_strings(a0.iter())[..] {
-            [Expr { kind: ExprKind::Constant(Value::String(c0)), .. }] => c0 == c1,
-            _ => false,
-        },
-        (
-            ExprKind::StringInterpolate { args: a0 },
             ExprKind::StringInterpolate { args: a1 },
         ) => {
-            let srs0 = acc_strings(a0.iter());
-            let srs1 = acc_strings(a1.iter());
-            srs0.len() == srs1.len()
-                && srs0.iter().zip(srs1.iter()).all(|(s0, s1)| check(s0, s1))
+            a0.len() == a1.len() && a0.iter().zip(a1.iter()).all(|(s0, s1)| check(s0, s1))
         }
         (
             ExprKind::Apply(ApplyExpr { args: srs0, function: f0 }),
@@ -2261,7 +2212,6 @@ proptest! {
         prop_assert!(same_str_forms(&s, &e), "{st}\n{s:?}\n{e:?}")
     }
 
-    #[test]
     /// The printer's own parenthesization: a tree with every written
     /// paren taken out prints with the parens it needs, so it reads back
     /// as itself, parens aside.
@@ -2273,14 +2223,7 @@ proptest! {
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
     }
 
-    // CR claude for claude: [test-gap/medium] This property has no #[test], so it never
-    // runs. The `#[test]` meant for it sits above the doc comment of
-    // printer_parenthesizes_unparenthesized_trees, which now carries two and is
-    // registered twice in the test list. Since then, pretty-layout changes (types laid
-    // out over lines) have landed with no round trip. Move that stray `#[test]` down to
-    // this fn and run the property. probe:
-    // design/review-2026-10-19/repro/tests-expr-pp-round-trip-not-a-test.sh
-    // (tests-expr-01)
+    #[test]
     fn expr_pp_round_trip(s in expr(), width in 0usize..120) {
         // every layout: all broken, the usual width, and anywhere between
         for w in [0, 80, width] {
@@ -2315,12 +2258,6 @@ proptest! {
     /// its positions; a decoded type's same-named variables are the
     /// typechecker's to alias.
     #[test]
-    // CR claude for claude: [test-gap/low] This and sig_pack_round_trip compare
-    // canonical prints, which write no `//` comments. A codec that dropped Decorations
-    // comments, SigItem.comments or TraitMethod.comments would pass both. Assert
-    // check(&e, &unpacked[0]) here (it compares decorations and leaves out str_form,
-    // which the codec does not carry), and check_module_sig in sig_pack_round_trip.
-    // Found by reading; not run. (tests-expr-04)
     fn pack_round_trip(s in expr()) {
         use crate::expr::serialize::{pack_module, unpack_module};
         let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());
@@ -2330,6 +2267,7 @@ proptest! {
         prop_assert_eq!(unpacked.len(), 1);
         let print = |e: &Expr| format_with_flags(BitFlags::empty(), || e.to_string());
         prop_assert_eq!(print(&e), print(&unpacked[0]));
+        prop_assert!(check(&e, &unpacked[0]), "{st}\n{e:?}\n{:?}", unpacked[0]);
         prop_assert!(same_positions(&e, &unpacked[0]), "{st}")
     }
 
@@ -2340,8 +2278,22 @@ proptest! {
         let sig = Sig { items: Arc::from(items), toplevel: true };
         let packed = pack_sig(&sig).unwrap();
         let unpacked = unpack_sig(&packed, Arc::new(Origin::unspecified(""))).unwrap();
-        prop_assert_eq!(sig.to_string(), unpacked.to_string())
+        prop_assert_eq!(sig.to_string(), unpacked.to_string());
+        prop_assert_eq!(sig_comments(&sig), sig_comments(&unpacked))
     }
+}
+
+/// The comments of an interface's items and trait methods, in order: what
+/// a canonical print leaves out.
+fn sig_comments(sig: &Sig) -> Vec<&[ArcStr]> {
+    let mut out = vec![];
+    for si in sig.items.iter() {
+        out.push(si.comments.lines());
+        if let SigKind::Trait(t) = &si.kind {
+            out.extend(t.methods.iter().map(|m| m.comments.lines()))
+        }
+    }
+    out
 }
 
 mod tree_sitter_compat {
@@ -2841,6 +2793,7 @@ fn check_sees_a_lost_element() {
     for (a, b) in [
         ("|x, y| x", "|x| x"),
         ("\"a[x]b[y]\"", "\"a[x]\""),
+        ("\"a[\"b\"][x]\"", "\"ab[x]\""),
         ("'a: Number, 'b: Int |x: 'a, y: 'b| x", "'a: Number |x: 'a, y: 'b| x"),
         ("v32:1", "u32:1"),
         ("i16:1", "1"),
