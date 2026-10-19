@@ -117,11 +117,34 @@ pub(crate) fn method_sig_at(sig: &FnType, target: &Type) -> FnType {
     sig
 }
 
+/// An impl is a global fact: one a function body declares, in a module
+/// or an interface, would be registered by every compile of the body.
+pub(crate) fn impl_outside_functions(
+    lexical: &ModPath,
+    trait_name: &ModPath,
+) -> Result<()> {
+    if netidx_core::path::Path::parts(&**lexical).any(crate::is_fn_block) {
+        bail!(
+            "impl {trait_name} is in a function body; an implementation is global, \
+             declare it outside every function"
+        )
+    }
+    Ok(())
+}
+
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
-/// name). Written annotations are kept.
+/// name), through parentheses. Written annotations are kept.
 fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
-    let ExprKind::Lambda(l) = &value.kind else { return value.clone() };
+    let l = match &value.kind {
+        ExprKind::Lambda(l) => l,
+        ExprKind::ExplicitParens(inner) => {
+            let mut e = value.clone();
+            e.kind = ExprKind::ExplicitParens(Arc::new(annotate_lambda(inner, sig)));
+            return e;
+        }
+        _ => return value.clone(),
+    };
     let positional: LPooled<Vec<&Type>> = sig
         .args
         .iter()
@@ -550,16 +573,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         im: &ImplExpr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        // an impl is a global fact: one a function body declares would be
-        // registered by every compile of the body
-        if netidx_core::path::Path::parts(&*scope.lexical).any(crate::is_fn_block) {
-            bailat!(
-                spec,
-                "impl {} is in a function body; an implementation is global, declare \
-                 it outside every function",
-                im.trait_name
-            )
-        }
+        impl_outside_functions(&scope.lexical, &im.trait_name).at(&spec)?;
         let trait_id =
             match ctx.env.lookup_trait(&scope.lexical, &im.trait_name).at(&spec)? {
                 Some(id) => id,

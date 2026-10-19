@@ -310,6 +310,7 @@ fn bind_sig_item(
             )?;
         }
         SigKind::Impl(im) => {
+            traits::impl_outside_functions(&scope.lexical, &im.trait_name)?;
             // the implementation's own registration of the same
             // (trait, target) replaces these bindings
             let Some(trait_id) = env.lookup_trait(&scope.lexical, &im.trait_name)? else {

@@ -1817,8 +1817,10 @@ impl Env {
 
     /// Fill the resolution cell of every `Type::Ref` reachable from a
     /// registered typedef body, for env-free expansion
-    /// (`TypeRef::expand_cell`). Must run after typecheck, when every
-    /// name's final target is registered.
+    /// (`TypeRef::expand_cell`). Must run after the check, when every
+    /// name's final target is registered: before elaboration, whose
+    /// instances expand their callers' types under their definitions'
+    /// envs, and again before fusion for what elaboration registered.
     pub fn seed_typedef_refs(&self) {
         let _profile = profile::phase(Phase::SeedTypes);
         for (_, defs) in self.typedefs.into_iter() {

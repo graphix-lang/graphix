@@ -3216,3 +3216,11 @@ run!(intrinsic_callback_arity_refused, r#"{
     let g = |a: Array<i64>, f: fn() -> bool| -> Array<i64> 'array_filter;
     g([1], || true)
 }"#, refused("this collection's callback takes 1 argument, but its type fn() -> bool takes 0"); FuseExpect::None);
+
+// A quantified lambda handed to a builtin that calls it back: the
+// formal's quantifier is the argument's own, generic in it, not a
+// variable of its environment.
+run!(quantified_lambda_through_a_builtin_callback, r#"{
+    let gs = array::group('a: Number |x: 'a| -> 'a x, |n, _| n == 1);
+    array::map(gs, |f| f(2))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2)]); FuseExpect::None);

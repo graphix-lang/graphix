@@ -659,7 +659,8 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
 /// The first of the `quantified` cells (name, cell address) that a
 /// variable of `value`'s environment reaches, with that variable: a
 /// cell at the top level or another definition's, never one the
-/// lambdas `value` holds own. Such a value is not general in that cell.
+/// lambdas `value` holds own nor a quantifier a function type in `value`
+/// binds. Such a value is not general in that cell.
 pub(crate) fn carried_out(
     quantified: &[(ArcStr, usize)],
     value: &Type,
@@ -668,6 +669,37 @@ pub(crate) fn carried_out(
         Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
         _ => SmallVec::new(),
     };
+    fn bound_quantifiers(
+        t: &Type,
+        out: &mut AHashSet<usize>,
+        seen: &mut AHashSet<usize>,
+    ) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if seen.insert(tv.cell_addr())
+                    && let Some(b) = tv.binding()
+                {
+                    bound_quantifiers(&b, out, seen)
+                }
+            }
+            Type::Fn(ft) => {
+                if !ft.quantifiers.is_empty() {
+                    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                    ft.collect_tvars(&mut named);
+                    out.extend(
+                        named
+                            .iter()
+                            .filter(|(n, _)| ft.quantifiers.contains(*n))
+                            .map(|(_, tv)| tv.cell_addr()),
+                    );
+                }
+                t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
+            }
+            t => t.for_each_child(&mut |c| bound_quantifiers(c, out, seen)),
+        })
+    }
+    let mut bound = AHashSet::new();
+    bound_quantifiers(value, &mut bound, &mut AHashSet::new());
     fn walk(t: &Type, f: &mut impl FnMut(&TVar), seen: &mut AHashSet<usize>) {
         ensure_sufficient(|| match t {
             Type::TVar(tv) => {
@@ -685,6 +717,7 @@ pub(crate) fn carried_out(
     walk(
         value,
         &mut |tv| match tv.level() {
+            _ if bound.contains(&tv.cell_addr()) => (),
             Level::Top => foreign.push(tv.clone()),
             Level::Def { owner, .. } if !own.contains(&owner) => foreign.push(tv.clone()),
             Level::Def { .. } | Level::Generic => (),

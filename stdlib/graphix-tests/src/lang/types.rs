@@ -3244,3 +3244,12 @@ run!(an_open_cell_prints_short, r#"
     }
     Ok(_) => false,
 }; FuseExpect::None);
+
+// A collection instance elaborates under /array; the caller's recursive
+// typedef reaches it through the callback's signature, and its inner
+// occurrence expands by its seeded cell, not by name there.
+run!(instance_expands_caller_recursive_typedef, r#"{
+    type T = Array<[null, T]>;
+    let a: T = [null];
+    any(array::map([a], never<fn(x: T) -> i64>()), [7])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(7)]); FuseExpect::Jit);

@@ -83,17 +83,22 @@ What remains:
 1. **Opportunistic fill-on-lookup** (`resolve_in`): fills only the
    looked-up ref, at genuine-use time. Tag discrimination and the
    Ref×Ref name fast paths defer nested expansion until a walk needs
-   it, which happens at typecheck time under the full env.
+   it, which happens at check time under the full env. Elaboration is
+   not under it: an instance elaborates under its definition's env,
+   where a type its signature carries in from the caller's scope does
+   not resolve by name.
 2. **`Env::seed_typedef_refs`** walks every typedef body (and abstract
    rep) through `Type::seed_refs` — a query-style walk with a permanent
    visited set over composite addresses and ref/tvar cells, recursing
-   through filled snapshots — right before fusion, after typecheck.
-   That is the one order-correct moment: every name's final target is
-   registered. It exists because a recursive type's INNER occurrence is
-   reached by no typecheck walk (the Ref×Ref fast path answers without
-   expanding) and fusion must expand it env-free. It runs in both
-   modes, so a pass the fusion gate owns never changes what the
-   typechecker sees.
+   through filled snapshots — at the check's end, before elaboration,
+   and again right before fusion. The check's end is the order-correct
+   moment: every name's final target is registered. It exists because a
+   recursive type's INNER occurrence is reached by no check walk (the
+   Ref×Ref fast path answers without expanding), and elaboration (a
+   collection instance's prototype call under `/array`, pin
+   `lang::types::instance_expands_caller_recursive_typedef`) and fusion
+   must expand it env-free. Fusion's pass runs in both modes, so a pass
+   the fusion gate owns never changes what the typechecker sees.
 
 ## Every written name names something
 

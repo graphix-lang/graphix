@@ -1635,6 +1635,11 @@ async fn implementations_are_declared_ones() {
             "{ trait Show { val show: fn(self) -> string }; type T = Abstract<i64>; let f = |x: i64| -> string { impl Show for T { let show = |t| \"t\" }; \"[x]\" }; f(1) }",
             "is in a function body",
         ),
+        // an interface's impl too: the body binds the signature per compile
+        (
+            "{ let f = |x: i64| mod foo dynamic { sandbox whitelist [core]; sig { trait Show { val show: fn(self) -> string }; type Counter; impl Show for Counter }; source \"\" }; f(0) }",
+            "is in a function body",
+        ),
         (
             "{ type Counter = Abstract<i64>; trait Twice { val twice: fn(self, x: 'a) -> 'a }; impl Twice for Counter { let twice = |c, x| x + x }; Twice::twice(Counter(1), 2) }",
             "which the signature does not declare",
@@ -1922,3 +1927,11 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+// Parentheses around a method's lambda do not hide it from the
+// signature's annotations.
+run!(impl_method_in_parens_is_annotated, r#"{
+    type Box = Abstract<(i64, i64)>;
+    impl Eq for Box { let eq = (|a, b| a.0.1 == b.0.1) };
+    (Box((1, 2)) == Box((3, 2)), Box((1, 2)) == Box((1, 3)))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(false)]); FuseExpect::Jit);

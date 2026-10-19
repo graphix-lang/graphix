@@ -383,8 +383,9 @@ weakly and the `TypeDef` owns it (a recursive body reaches its own
 cell), so a type outliving its definition's env entry is refused,
 never re-resolved, and what outlives the entry owns the definitions
 its types name (a definition's check table, a kernel's type constant:
-`DefTable::typedefs`, `record::KernelType`); `Env::seed_typedef_refs` runs right
-before fusion in both modes. A bound's ref resolves the same way, its
+`DefTable::typedefs`, `record::KernelType`); `Env::seed_typedef_refs` runs at the
+check's end (an instance elaborates under its definition's env) and
+again right before fusion in both modes. A bound's ref resolves the same way, its
 cell holding the trait (`Resolution::Trait`), filled by the seed walk at
 a definition's check. A trait method named as a value is its
 eta-expansion (`eta_dispatcher`); a dispatcher is only a call's own

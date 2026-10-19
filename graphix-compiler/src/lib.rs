@@ -2783,6 +2783,9 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     if flags.contains(CFlag::CheckOnly) {
         return Ok(());
     }
+    // an instance elaborates under its definition's env, where a type
+    // its signature carries in from the caller's scope does not resolve
+    ctx.env.seed_typedef_refs();
     let p = profile::phase(Phase::Typecheck1);
     if let Err(e) = node.typecheck1(ctx) {
         ctx.pending_settles.clear();
