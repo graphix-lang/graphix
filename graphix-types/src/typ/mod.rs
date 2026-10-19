@@ -2685,19 +2685,11 @@ impl Type {
     }
 
     /// Core's `ErrChain<payload>`.
-    // CR claude for claude: [bug/high] The synthetic `ErrChain` ref is an Open cell in
-    // the root scope, resolved later by name. A script-level `type ErrChain<'a> = ..`
-    // (or a `use` of another ErrChain) shadows core's, so every `?` raise and catch
-    // binder is typed with the user's type while the runtime builds core's struct.
-    // `e.0.ori + 1` is accepted and computes garbage. chain_error_type's Struct arm
-    // judges chain-ness through this ref too. Fix: pre-fill the cell with core's
-    // definition (take the env), or scope the ref at `/core`, and pin the shadowing
-    // case. probe: design/review-2026-10-19/repro/t-typ-mod-errchain-shadowed.gx
-    // (t-typ-mod-01)
     pub fn err_chain(payload: Type) -> Type {
+        static CORE: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["core"]));
         static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
         Type::Ref(Arc::new(TypeRef::synthetic(
-            ModPath::root(),
+            CORE.clone(),
             NAME.clone(),
             Arc::from_iter([payload]),
         )))
