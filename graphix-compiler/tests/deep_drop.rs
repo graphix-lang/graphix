@@ -44,3 +44,23 @@ fn deep_type_drops_without_overflow() {
         .join()
         .expect("the teardown panicked");
 }
+
+/// A walk-pruning boundary holds its parent, and an instance body's
+/// boundary sits inside its call's, so the chain is as long as a
+/// recursion is deep.
+#[test]
+fn deep_boundary_chain_drops_without_overflow() {
+    use graphix_compiler::prune::BoundaryRef;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            let mut b = BoundaryRef::new(None);
+            for _ in 0..DEPTH {
+                b = BoundaryRef::new(Some(b));
+            }
+            drop(b);
+        })
+        .expect("spawn")
+        .join()
+        .expect("the teardown panicked");
+}

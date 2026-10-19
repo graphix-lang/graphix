@@ -21,6 +21,20 @@ pub struct Boundary {
     sticky: AtomicU32,
 }
 
+/// A chain of parents is as long as a recursion is deep, so the last owner
+/// unlinks it in a loop rather than dropping it recursively.
+impl Drop for Boundary {
+    fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(b) = next {
+            next = match Arc::try_unwrap(b.0) {
+                Ok(mut inner) => inner.parent.take(),
+                Err(_) => None,
+            };
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BoundaryRef(Arc<Boundary>);
 
