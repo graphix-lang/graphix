@@ -4173,3 +4173,11 @@ run!(abstract_pattern_over_two_instantiations, r#"{
   let g = |x: [T<bool>, T<i64>]| select x { T(true) => 1, T(false) => 2, T(n) => cast<i64>(n)$ };
   (f(T(1)), f(T("s")), g(T(3)), g(T(true)), g(T(false)))
 }"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["T 1", "T s", i64:3, i64:1, i64:2]"#); FuseExpect::Jit);
+
+// A null literal is a head the literal pool reads, beside variants and
+// bools: option payload arms cover their position.
+run!(null_literal_pools_beside_variants, r#"{
+  let f = |x: `P([`A, null])| select x { `P(`A) => 1, `P(null) => 0 };
+  let g = |x: ([`A, null], i64)| select x { (`A, n) => n, (null, n) => 0 };
+  [f(`P(`A)), f(`P(null)), g((`A, 5)), g((null, 2))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0, i64:5, i64:0]"); FuseExpect::None);

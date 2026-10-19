@@ -934,6 +934,7 @@ fn bound_by<R: Rt, E: UserEvent>(pat: &PatternNode<R, E>, r: &mut Refs) {
 #[derive(Clone, PartialEq, Eq)]
 enum Head {
     Bool(bool),
+    Null,
     /// A variant's tag and arity; its payload matches anything.
     Tag(ArcStr, usize),
 }
@@ -958,9 +959,9 @@ impl Leaf {
     }
 }
 
-/// The heads `t` admits when it is a finite set of them: `bool`, or a
-/// union of variants.
-// CR claude for claude: [bug/medium] The pool has no null head. heads gives no domain
+/// The heads `t` admits when it is a finite set of them: a union of
+/// `bool`, `null` and variants.
+// XCR claude for claude: [bug/medium] The pool has no null head. heads gives no domain
 // for a position whose type holds null, and head_of ignores a `null` literal. So `P(`A)
 // => 1, `P(null) => 0` over `P([`A, null]) is refused as non-exhaustive, and so are
 // (`A, n) / (null, n) over ([`A, null], i64) and {a: null} beside {a: i64} as s. A
@@ -969,18 +970,33 @@ impl Leaf {
 // admits null members next to bools or variants. probe:
 // design/review-2026-10-19/repro/x-typecheck-patterns-null-head-pool.gx
 // (x-typecheck-patterns-07)
+// 2026-10-19 claude: Head::Null: head_of reads a null literal and heads admits null
+// members beside bools and variants. The `P and tuple cases now pass; the struct case
+// with a type-tested arm is not a pool case and has its own CR (null-pool-typetest-01).
+// Pin: lang::select::null_literal_pools_beside_variants.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;
-    let is_bool = |m: &Type| matches!(m, Type::Primitive(p) if *p == Typ::Bool);
-    if !members.is_empty() && members.iter().all(is_bool) {
-        return Ok(Some(SmallVec::from_iter([Head::Bool(true), Head::Bool(false)])));
+    if members.is_empty() {
+        return Ok(None);
     }
-    let tag = |m: &Type| match m {
-        Type::Variant(tag, ts, _) => Some(Head::Tag(tag.clone(), ts.len())),
-        _ => None,
-    };
-    Ok(if members.is_empty() { None } else { members.iter().map(tag).collect() })
+    let mut out: SmallVec<[Head; 4]> = SmallVec::new();
+    for m in members.iter() {
+        match m {
+            Type::Variant(tag, ts, _) => out.push(Head::Tag(tag.clone(), ts.len())),
+            Type::Primitive(p) => {
+                for typ in p.iter() {
+                    match typ {
+                        Typ::Bool => out.extend([Head::Bool(true), Head::Bool(false)]),
+                        Typ::Null => out.push(Head::Null),
+                        _ => return Ok(None),
+                    }
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(out))
 }
 
 /// The head a pattern tests at one position, when it tests only a head:
@@ -988,6 +1004,7 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
 fn head_of(sp: &StructPatternNode) -> Option<Head> {
     match sp {
         StructPatternNode::Literal(Value::Bool(b)) => Some(Head::Bool(*b)),
+        StructPatternNode::Literal(Value::Null) => Some(Head::Null),
         StructPatternNode::Variant { tag, all: _, binds }
             if binds.iter().all(|p| p.matches_anything()) =>
         {
@@ -1215,6 +1232,14 @@ enum Claim {
     Dead,
 }
 
+// CR claude for claude: [bug/low] A type-tested arm never pools, so a null
+// literal at a position beside it covers nothing: `{a: null} => 0, {a: i64} as s
+// => s.a` over {a: [i64, null]} is refused as non-exhaustive although the two
+// arms cover the struct. Reach could cover the arm's narrowed type ({a: null})
+// for an atom whose only refutable parts are null literals and let set coverage
+// distribute over the product. probe:
+// design/review-2026-10-19/repro/null-pool-typetest.gx, refused "missing
+// match cases: no arm covers { a: [i64, null] }" (null-pool-typetest-01)
 impl LiteralPool {
     /// Pool the unguarded atom `sp`; `explicit`, its arm's written type
     /// test.
