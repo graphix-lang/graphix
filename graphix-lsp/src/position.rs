@@ -76,6 +76,26 @@ pub fn char_col_to_position(
     Position { line, character }
 }
 
+/// A document's lines as LSP numbers them: a line ends at "\r\n", "\r"
+/// or "\n", and what follows the last break, empty or not, is a line.
+pub fn lines(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = Some(text);
+    std::iter::from_fn(move || {
+        let t = rest?;
+        Some(match t.find(['\r', '\n']) {
+            None => {
+                rest = None;
+                t
+            }
+            Some(i) => {
+                let brk = if t[i..].starts_with("\r\n") { 2 } else { 1 };
+                rest = Some(&t[i + brk..]);
+                &t[..i]
+            }
+        })
+    })
+}
+
 /// `position_to_char_col` over the full document text; `None` if the
 /// line index is out of range.
 pub fn position_to_char_col_in_text(
@@ -83,7 +103,7 @@ pub fn position_to_char_col_in_text(
     position: Position,
     encoding: PositionEncoding,
 ) -> Option<usize> {
-    let line = text.lines().nth(position.line as usize)?;
+    let line = lines(text).nth(position.line as usize)?;
     Some(position_to_char_col(line, position, encoding))
 }
 
@@ -95,7 +115,7 @@ pub fn char_col_to_position_in_text(
     char_col: usize,
     encoding: PositionEncoding,
 ) -> Position {
-    let line_text = text.lines().nth(line as usize).unwrap_or("");
+    let line_text = lines(text).nth(line as usize).unwrap_or("");
     char_col_to_position(line_text, line, char_col, encoding)
 }
 
@@ -105,6 +125,17 @@ mod tests {
 
     fn at(line: u32, character: u32) -> Position {
         Position { line, character }
+    }
+
+    #[test]
+    fn lines_break_as_lsp_does() {
+        let got: Vec<&str> = lines("a\r\nb\rc\n\nd\n").collect();
+        assert_eq!(got, ["a", "b", "c", "", "d", ""]);
+        assert_eq!(lines("").collect::<Vec<_>>(), [""]);
+        assert_eq!(
+            position_to_char_col_in_text("x\n", at(1, 0), PositionEncoding::Utf16),
+            Some(0)
+        );
     }
 
     #[test]

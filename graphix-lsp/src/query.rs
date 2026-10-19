@@ -22,7 +22,7 @@ use lsp_types::{
     Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range, Uri,
 };
 use netidx_core::path::Path as NPath;
-use std::path::Path;
+use std::{fmt::Write, path::Path};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +69,23 @@ pub(crate) fn display_type(typ: &Type) -> CompactString {
         t => t.clone(),
     };
     format_compact!("{}", folded.resolve_tvars())
+}
+
+/// A typedef as its declaration reads: `type Pair<'a: Bound> = body`.
+pub(crate) fn typedef_decl(name: &str, td: &TypeDef) -> CompactString {
+    let mut decl = format_compact!("type {name}");
+    for (i, (tv, bound)) in td.params().iter().enumerate() {
+        decl.push_str(if i == 0 { "<" } else { ", " });
+        let _ = write!(decl, "{tv}");
+        if let Some(bound) = bound {
+            let _ = write!(decl, ": {bound}");
+        }
+    }
+    if !td.params().is_empty() {
+        decl.push('>');
+    }
+    let _ = write!(decl, " = {}", td.typ());
+    decl
 }
 
 fn markdown(code: &str, doc: Option<&ArcStr>) -> Hover {
@@ -177,32 +194,15 @@ impl<'a> Query<'a> {
         // The path `name`, written at `pos`, when the cursor is on one of its
         // segments: the written path, and how many segments follow the one
         // under the cursor.
-        // CR claude for claude: [structure/low] This walks the written path's `::`
-        // segments with `at += len + 2`, which is Query::segments' walk again. It also
-        // formats every reference's path before the in_file/line test. Reuse
-        // Self::segments after an in_file and line check: find the covering (at, len),
-        // take the segment by index and derive `after` from it, so target() and
-        // references() share one segment rule. Found by reading; not run. (lsp-05)
         let on = |ori: &Origin, pos: SourcePosition, name: &ModPath| {
-            let written = format_compact!("{name}");
-            let start = zero_based(pos);
-            if !in_file(ori, self.file)
-                || !covers(start, written.chars().count(), self.cursor)
-            {
+            if !in_file(ori, self.file) || zero_based(pos).line != self.cursor.line {
                 return None;
             }
-            let off = (self.cursor.character - start.character) as usize;
-            let segs: Vec<&str> = written.split("::").collect();
-            let mut at = 0;
-            for (i, seg) in segs.iter().enumerate() {
-                let len = seg.chars().count();
-                if (at..=at + len).contains(&off) {
-                    let after = segs.len() - 1 - i;
-                    return (*seg == self.ident).then(|| (written.clone(), after));
-                }
-                at += len + 2;
-            }
-            None
+            let segs = Self::segments(pos, name);
+            let i = segs.iter().position(|(at, len)| covers(*at, *len, self.cursor))?;
+            let written = format_compact!("{name}");
+            let seg = written.split("::").nth(i)?;
+            (seg == self.ident).then(|| (written.clone(), segs.len() - 1 - i))
         };
         // a segment before the last names the module of its prefix: the
         // item's scope less the segments after it
@@ -302,17 +302,7 @@ impl<'a> Query<'a> {
             }
             Target::Type(scope, name) => {
                 let td = self.typedef(&scope, &name)?;
-                markdown(
-                    // CR claude for claude: [readability/low] The parameters are
-                    // dropped: hover on `Pair<i64>`, where `type Pair<'a> = { left: 'a,
-                    // right: 'a }`, shows `type Pair = { left: 'a, right: 'a }` with a
-                    // free 'a, and bounds are lost too. Print `td.params()` with their
-                    // bounds between the name and `=`, and use the same rendering for a
-                    // type's detail in Completer::imports. Found by probing the server
-                    // (hover on a parameterized typedef). (x-lsp-probe-07)
-                    &format_compact!("type {written} = {}", td.typ()),
-                    td.doc.as_ref(),
-                )
+                markdown(&typedef_decl(&written, td), td.doc.as_ref())
             }
             Target::Module(canonical) => match self.trait_at(&canonical) {
                 Some(def) => {
