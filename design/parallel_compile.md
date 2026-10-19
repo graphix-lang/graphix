@@ -193,7 +193,15 @@ first error in order is the body's.
 
 **Ownership.** Each parallel statement is a compile task with a fresh id
 (`tvar::new_task`, entered by `InTask`); a nested fork runs in its
-parent's task. A type cell and a type variable record the task that
+parent's task. The task, the level and the module's foreign-write record
+are thread-locals, and rayon's pools are the process's: a worker blocked
+in a join runs jobs stolen from any compile, another runtime's included.
+So every job a compile puts on a pool enters its spawner's context
+(`tvar::TaskContext::enter`: `branch::Live` carries it to each part,
+`check_in_tasks` and `fusion::fuse_each` capture it) and sets the
+thread's record aside; a fusion part stolen by a module waiting on its
+submodules once ran as the module and refused it for its own runtime's
+type lookups (pin `tvar::tests::a_stolen_job_runs_under_its_spawners_context`). A type cell and a type variable record the task that
 created them, and no task writes a cell an earlier task created: the
 check's cells, or a sibling's, which a concurrent task may be reading.
 What keeps it so:

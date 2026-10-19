@@ -1124,7 +1124,11 @@ cycle, across workers; the compiler never pins threads.
   (`Env::hidden_impls`) and seen after them, and a module's check that
   would write a cell created outside the module is refused and the
   write not made (`tvar::decided`; annotate the binding it would
-  decide; `design/parallel_compile.md`). Every cell of an interface
+  decide; `design/parallel_compile.md`) A job a compile puts on a shared pool runs
+  under its spawner's `tvar::TaskContext` (task, level; the thread's
+  foreign-write record set aside), never the thread's: a worker blocked
+  in a join runs jobs stolen from any compile in the process
+  (`branch::Live`, `check_in_tasks`, `fusion::fuse_each`). Every cell of an interface
   `val`'s function type is generic, a constructor trait's element
   included: a call copies it.
 - **References** (`design/place_references.md`): `&e` is read-only

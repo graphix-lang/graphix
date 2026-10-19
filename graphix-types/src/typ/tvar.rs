@@ -237,6 +237,64 @@ impl Drop for InTask {
     }
 }
 
+/// A compile's context on its thread: the task its cells belong to and
+/// the level they take. A job on a shared pool runs under its spawner's
+/// ([`Self::enter`]), never under the thread's: a worker blocked in a
+/// join runs jobs stolen from any compile in the process, and a job that
+/// ran under the waiting task's context would create cells as that
+/// task's and have its decisions recorded as that task's foreign writes.
+#[derive(Debug, Clone, Copy)]
+#[doc(hidden)]
+pub struct TaskContext {
+    task: TaskId,
+    level: Level,
+}
+
+impl TaskContext {
+    /// The context this thread runs.
+    #[doc(hidden)]
+    pub fn current() -> Self {
+        Self { task: TASK.get(), level: LEVEL.get() }
+    }
+
+    /// This context as compile task `task`'s.
+    #[doc(hidden)]
+    pub fn with_task(self, task: TaskId) -> Self {
+        Self { task, ..self }
+    }
+
+    /// Run as this context until the guard drops. The thread's record of
+    /// foreign writes ([`OwnWrites`]) is its waiting task's and is set
+    /// aside meanwhile: a task's record is kept on the thread it runs
+    /// whole on.
+    #[doc(hidden)]
+    pub fn enter(self) -> InContext {
+        InContext {
+            task: TASK.replace(self.task),
+            level: LEVEL.replace(self.level),
+            own: OWN_WRITES.replace(None),
+        }
+    }
+}
+
+/// The context a thread ran before [`TaskContext::enter`], restored when
+/// this drops.
+#[must_use]
+#[doc(hidden)]
+pub struct InContext {
+    task: TaskId,
+    level: Level,
+    own: Option<(TaskId, bool)>,
+}
+
+impl Drop for InContext {
+    fn drop(&mut self) {
+        TASK.set(self.task);
+        LEVEL.set(self.level);
+        OWN_WRITES.set(self.own);
+    }
+}
+
 /// Whether an earlier compile task created `cell`: what such a task left
 /// open, it decided open, and no settle of this one binds it.
 pub(super) fn earlier_task(cell: &TCell) -> bool {
@@ -2110,6 +2168,35 @@ mod tests {
         tv.alias(&tv);
         tv.alias_cells(&tv);
         assert!(!tv.is_bound());
+    }
+
+    /// A job a worker runs while its module task waits in a join (stolen
+    /// work, possibly another compile's) runs under its spawner's context:
+    /// its cells are its spawner's and its decisions are not the waiting
+    /// module's. Under the waiting task's context the same decision is
+    /// recorded as the module's foreign write and refuses it.
+    #[test]
+    fn a_stolen_job_runs_under_its_spawners_context() {
+        let spawner = TaskContext::current();
+        let old = TVar::empty_named(literal!("a"));
+        let older = TVar::empty_named(literal!("c"));
+        let module = new_task();
+        let _task = InTask::enter(module);
+        let writes = OwnWrites::enter(module);
+        {
+            let _cx = spawner.enter();
+            assert_eq!(current_task(), TaskId::OUTSIDE);
+            old.bind(Type::Bottom);
+            assert!(old.is_bound());
+        }
+        assert_eq!(current_task(), module);
+        assert!(!writes.foreign());
+        let writes = OwnWrites::enter(module);
+        TVar::empty_named(literal!("b")).bind(Type::Bottom);
+        assert!(!writes.foreign(), "a cell of the module's own");
+        let writes = OwnWrites::enter(module);
+        older.bind(Type::Bottom);
+        assert!(writes.foreign(), "an earlier task's cell, decided by the module");
     }
 
     /// A copy knows what the source's checks learned of each cell.

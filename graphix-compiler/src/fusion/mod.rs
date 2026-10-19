@@ -1168,9 +1168,11 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
         })
         .collect();
     drop(emission);
+    let cx = crate::typ::tvar::TaskContext::current();
     let mut results: Vec<(usize, anyhow::Result<()>)> = work
         .par_iter_mut()
         .map(|(i, n, task)| {
+            let _cx = cx.enter();
             (
                 *i,
                 task.run_task(|task| {

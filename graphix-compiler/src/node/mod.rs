@@ -24,7 +24,7 @@ use crate::{
     },
     typ::{
         Mutability, TVal, TVar, Type, TypeMismatch,
-        tvar::{AtLevel, InTask, TaskId, current_level, current_task, new_task},
+        tvar::{InTask, TaskContext, TaskId, current_task, new_task},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1135,12 +1135,11 @@ fn check_in_tasks<R: Rt, E: UserEvent>(
     module: bool,
     check: impl Fn(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()> + Sync,
 ) -> Result<()> {
-    let level = current_level();
+    let cx = TaskContext::current();
     let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
     work.par_iter_mut()
         .map(|(n, task, id)| {
-            let _level = AtLevel::enter(level);
-            let _task = InTask::enter(*id);
+            let _cx = cx.with_task(*id).enter();
             let r = task.run_task(|task| check(n, task));
             statement_result(r, n, module)
         })

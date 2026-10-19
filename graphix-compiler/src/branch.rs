@@ -11,6 +11,7 @@ use crate::{
     expr::Expr,
     node::{callsite::CallNode, place::Path},
     prune::{BoundaryRef, Reader},
+    typ::tvar::TaskContext,
 };
 use futures::channel::mpsc;
 use graphix_types::stack::{Control, ParMode, with_control};
@@ -904,8 +905,9 @@ fn merge_in_order<R: Rt, E: UserEvent>(
 }
 
 /// Run `f`, one part of a fork, on a thread of the pool: under the
-/// runtime's control and the caller's tokio runtime, its share of
-/// `live` given back when it ends, or unwinds.
+/// runtime's control, the caller's tokio runtime and the forking
+/// thread's compile context, its share of `live` given back when it
+/// ends, or unwinds.
 pub(crate) fn as_part<T>(
     control: &Control,
     tokio: Option<&tokio::runtime::Handle>,
@@ -914,6 +916,7 @@ pub(crate) fn as_part<T>(
 ) -> T {
     with_control(control, || {
         let _tokio = tokio.map(|h| h.enter());
+        let _cx = live.cx.enter();
         let _part = live.part();
         f()
     })
@@ -1040,13 +1043,11 @@ pub(crate) fn compile_each<R, E, P, F>(
         parts.into_iter().map(|p| (ctx.cx.fork(), Some(p))).collect();
     let control = ctx.control;
     control.build_forked();
-    let level = crate::typ::tvar::current_level();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(tasks.len());
     on_pool(control, || {
         tasks.par_iter_mut().with_max_len(1).for_each(|(task, p)| {
             as_part(control, tokio.as_ref(), &live, || {
-                let _level = crate::typ::tvar::AtLevel::enter(level);
                 task.run_task(|task| f(task, p.take().expect("a part")));
             })
         })
@@ -1176,13 +1177,18 @@ pub(crate) fn saturated() -> bool {
     LIVE_PARTS.load(Ordering::Relaxed) >= eval_pool().current_num_threads()
 }
 
-/// `n` parts forked: each calls [`Live::done`] when it finishes.
-pub(crate) struct Live(AtomicUsize);
+/// `n` parts forked: each gives its share back when it finishes. Made
+/// on the forking thread, it carries that thread's compile context to
+/// the parts.
+pub(crate) struct Live {
+    n: AtomicUsize,
+    cx: TaskContext,
+}
 
 impl Live {
     pub(crate) fn start(n: usize) -> Self {
         LIVE_PARTS.fetch_add(n, Ordering::Relaxed);
-        Live(AtomicUsize::new(n))
+        Live { n: AtomicUsize::new(n), cx: TaskContext::current() }
     }
 
     /// One part's share, given back when it drops.
@@ -1196,7 +1202,7 @@ pub(crate) struct LivePart<'a>(&'a Live);
 
 impl Drop for LivePart<'_> {
     fn drop(&mut self) {
-        self.0.0.fetch_sub(1, Ordering::Relaxed);
+        self.0.n.fetch_sub(1, Ordering::Relaxed);
         LIVE_PARTS.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -1204,7 +1210,7 @@ impl Drop for LivePart<'_> {
 /// A part that unwound, or never ran, gives its count back here.
 impl Drop for Live {
     fn drop(&mut self) {
-        LIVE_PARTS.fetch_sub(*self.0.get_mut(), Ordering::Relaxed);
+        LIVE_PARTS.fetch_sub(*self.n.get_mut(), Ordering::Relaxed);
     }
 }
 
