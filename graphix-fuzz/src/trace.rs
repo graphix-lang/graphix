@@ -9,11 +9,12 @@
 //! classifies what the JIT did wrong and is part of the bug bucket.
 
 use arcstr::{ArcStr, literal};
+use compact_str::format_compact;
 use graphix_compiler::{
-    NoUserEvent, abstract_value,
-    env::Env,
+    BindId, NoUserEvent, abstract_value,
     expr::ExprId,
     node::lambda::{DefOrigin, LambdaDef},
+    reference,
 };
 use graphix_rt::{GXRt, NoExt, TraceEvent, TraceSegment};
 use netidx::publisher::Value;
@@ -37,11 +38,13 @@ pub struct Epoch {
 
 /// Fn values normalize to the lambda's printed source (`LambdaDef::src`)
 /// so traces of two compiles of one program compare equal; a
-/// `LambdaDef`'s own equality is its minted id. An abstract value's
-/// payload normalizes too. Iterative because value nesting depth is
-/// program-controlled.
-fn normalize(v: &Value) -> Value {
-    if !holds_lambda(v) {
+/// `LambdaDef`'s own equality is its minted id. A reference normalizes to
+/// `&refN`, N its cell's index in `refs` (first sight across the trace):
+/// its cell is a per-run bind id, while which values alias is not. An
+/// abstract value's payload normalizes too. Iterative because value
+/// nesting depth is program-controlled.
+fn normalize(v: &Value, refs: &mut Vec<BindId>) -> Value {
+    if !holds_run_ids(v) {
         return v.clone();
     }
     enum Task<'a> {
@@ -76,6 +79,13 @@ fn normalize(v: &Value) -> Value {
                     work.push(Task::Visit(v));
                     work.push(Task::Visit(k));
                 }
+            }
+            Task::Visit(v) if let Some(c) = reference::cell(v) => {
+                let i = refs.iter().position(|r| *r == c).unwrap_or_else(|| {
+                    refs.push(c);
+                    refs.len() - 1
+                });
+                out.push(Value::String(ArcStr::from(format_compact!("&ref{i}").as_str())))
             }
             Task::Visit(v) => {
                 out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>() {
@@ -114,9 +124,9 @@ fn normalize(v: &Value) -> Value {
     out.pop().expect("normalize: empty result stack")
 }
 
-/// Whether `v` holds a lambda anywhere, the one thing [`normalize`]
+/// Whether `v` holds a lambda or a reference anywhere, what [`normalize`]
 /// rewrites.
-fn holds_lambda(v: &Value) -> bool {
+fn holds_run_ids(v: &Value) -> bool {
     let mut work: Vec<&Value> = vec![v];
     while let Some(v) = work.pop() {
         match v {
@@ -125,7 +135,9 @@ fn holds_lambda(v: &Value) -> bool {
             Value::Map(m) => m.into_iter().for_each(|(k, v)| work.extend([k, v])),
             v if let Some(a) = abstract_value::get(v) => work.push(&a.payload),
             v => {
-                if v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>().is_some() {
+                if reference::cell(v).is_some()
+                    || v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>().is_some()
+                {
                     return true;
                 }
             }
@@ -193,16 +205,16 @@ impl Epoch {
     }
 
     /// Project a runtime segment onto the watched expr: anchor at the
-    /// segment's first event, keep `Updated(eid)` values (fn values
-    /// normalized to their source — see [`normalize`]).
-    pub fn from_segment(seg: &TraceSegment, eid: ExprId) -> Self {
+    /// segment's first event, keep `Updated(eid)` values, normalized
+    /// ([`normalize`], numbering references in `refs`).
+    fn from_segment(seg: &TraceSegment, eid: ExprId, refs: &mut Vec<BindId>) -> Self {
         let anchor = Self::anchor(seg).unwrap_or(0);
         let events = seg
             .events
             .iter()
             .filter_map(|e| match e {
                 TraceEvent::Updated { cycle, id, value } if *id == eid => {
-                    Some(((*cycle - anchor) as u32, normalize(value)))
+                    Some(((*cycle - anchor) as u32, normalize(value, refs)))
                 }
                 TraceEvent::Updated { .. } | TraceEvent::Compiled { .. } => None,
             })
@@ -241,39 +253,12 @@ pub struct Trace {
 impl Trace {
     pub fn from_segments(segs: &[TraceSegment], eid: ExprId) -> Self {
         Trace {
-            epochs: segs.iter().map(|s| Epoch::from_segment(s, eid)).collect(),
+            epochs: {
+                let mut refs = Vec::new();
+                segs.iter().map(|s| Epoch::from_segment(s, eid, &mut refs)).collect()
+            },
             stdout: Vec::new(),
             exit: None,
-        }
-    }
-
-    /// Each reference a value of `typ` holds, as the order the trace
-    /// first shows it in (`&ref0`, `&ref1`, ..): a reference's value is
-    /// its session's bind id, which differs between runs, while which
-    /// values alias does not.
-    // CR claude for claude: [bug/medium] Choosing what to canonicalize from the static
-    // type misses every reference the type does not show. Type::holds_ref answers false
-    // at Type::Abstract and for Any, so `T(&x)` with `type T = Abstract<&i64>`, or `&x`
-    // returned through an Any-typed result, keeps its raw per-run cell. Every
-    // comparison of such a program then drops as NONDETERMINISTIC and is never
-    // compared. Recognize references by value instead: in normalize's walk, which
-    // already descends abstract payloads, replace each value with
-    // `graphix_types::reference::cell(v).is_some()` by `&refN`, numbered by first sight
-    // across the trace. Then delete this function. probe:
-    // design/review-2026-10-19/repro/fuzz-lib-a-abstract-ref-nondet.sh (fuzz-lib-a-02)
-    pub fn canonicalize_refs(&mut self, env: &Env, typ: &graphix_compiler::typ::Type) {
-        if !typ.holds_ref(env) {
-            return;
-        }
-        let mut seen: Vec<Value> = Vec::new();
-        for (_, v) in self.epochs.iter_mut().flat_map(|e| e.events.iter_mut()) {
-            *v = typ.map_refs(env, v, &mut |r| {
-                let i = seen.iter().position(|s| s == r).unwrap_or_else(|| {
-                    seen.push(r.clone());
-                    seen.len() - 1
-                });
-                Value::String(ArcStr::from(format!("&ref{i}")))
-            });
         }
     }
 

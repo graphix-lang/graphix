@@ -88,20 +88,15 @@ impl TmProbe {
 const VAL: &str = "tm__0";
 const TYP: &str = "Tm__0";
 
+/// Whether `body` already holds a name the mutations write (`tm__0`,
+/// `Tm__1`): a mutant's would shadow it or meet it.
+pub(crate) fn holds_synthetic(body: &str) -> bool {
+    ["tm__", "Tm__"].iter().any(|n| body.contains(n))
+}
+
 /// Enumerate up to `cap` candidates PER TRANSFORM over `body`.
 /// Returns the probes and the count of candidates dropped because
 /// their printed form failed to re-parse.
-/// Whether `body` already holds a name the mutations write (`tm__0`,
-/// `Tm__1`, `` `TmSame ``): a mutant's would shadow it or meet it.
-// CR claude for claude: [readability/low] The first doc paragraph above belongs to
-// `probes`, which has no doc. `TmSame` is written by no mutation any more, while
-// `mustreject::same_form` binds `tm_ref`, which this list does not reserve. Move the
-// paragraph to `probes`, drop `TmSame`, and rename `same_form`'s binder to `tm__ref` so
-// the `tm__` marker covers it. Found by reading; not run. (fuzz-mutate-07)
-pub(crate) fn holds_synthetic(body: &str) -> bool {
-    ["tm__", "Tm__", "TmSame"].iter().any(|n| body.contains(n))
-}
-
 pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     let mut out: Vec<TmProbe> = Vec::new();
     let mut noparse = 0usize;
@@ -112,7 +107,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     if holds_synthetic(body) || body.contains("#[") {
         return (out, 0);
     }
-    let Some(root) = mutate::parse(body) else {
+    let Some(root) = mutate::parse_body(body) else {
         return (out, 0);
     };
     let pre = mutate::preorder(&root);
@@ -669,7 +664,7 @@ fn permutable(a: &Expr, b: &Expr, open: &Open) -> bool {
 /// Does this subtree introduce names the enclosing statement list can
 /// read? A declaration does, and a dynamic module wherever it stands; an
 /// interior block or lambda contains its own.
-fn leaks_binds(e: &Expr) -> bool {
+pub(crate) fn leaks_binds(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::TypeDef(_)
         | ExprKind::Use { .. }
@@ -856,6 +851,15 @@ mod test {
         }
         let extract = probes.iter().find(|p| p.kind == TmKind::LetExtract).unwrap();
         assert!(extract.body.contains("tm__0"), "{}", extract.body);
+    }
+
+    /// A body of bare statements is probed as the block it compiles as.
+    #[test]
+    fn probes_a_statement_sequence() {
+        let bare = "let a = [i64:1, i64:2];\nlet s = a[1..];\nprintln(\"[s]\")";
+        let (probes, noparse) = probes(bare, 3);
+        assert_eq!(noparse, 0);
+        assert!(probes.iter().any(|p| p.kind == TmKind::ParensWrap), "no probes");
     }
 
     #[test]

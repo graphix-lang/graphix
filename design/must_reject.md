@@ -105,7 +105,9 @@ is contained by that argument's. Rule: containment for (a); for (b) the
 widest-argument rule refuses when no argument's type contains all the
 others, and a variable a callback or reference holds keeps the first
 argument's type, so both paths refuse (`callsite.rs::Widening`). Skip:
-labeled defaults, variadic positions, a parameter typed `Any`. Built:
+labeled defaults, variadic positions, a parameter typed `Any`, a first
+argument whose type its uses decide (a `let` over `never()`: the call
+decides it, so it meets nothing). Built:
 (b), two positionals of one variable, the first a concrete primitive,
 right site the call; (a) is family 4's argument case.
 
@@ -118,7 +120,9 @@ whose parent is one of:
 - a struct field read (a union with a non-struct member is refused);
 - a call argument with a concrete parameter type, the callee no lambda
   with an unannotated parameter (which may be a cell shared with the
-  environment, `|y| z <- y` over `let z = never()`, that the call widens);
+  environment, `|y| z <- y` over `let z = never()`, that the call widens)
+  and no function of the subject's own modules (whose state is such a
+  cell as well);
 - the value of a writer to a binding typed by its initializer or an
   annotation.
 
@@ -202,7 +206,9 @@ site the call.
 **9. Writable references.** Site: `let r = &mut x` over a binding.
 (a) A later `*r <- ..` and no rebinding of `r` between: the `&mut`
 becomes `&`. Rule: a write needs every reference it may go through to be
-`&mut` (`ConnectDeref::typecheck0_with`). Right site: the write. (b) The
+`&mut` (`ConnectDeref::typecheck0_with`), as does a call passing `r`
+to a `&mut` parameter (`&mut T` does not contain `&T`, `contains.rs`).
+Right site: the write, or a statement between that uses `r`. (b) The
 map shows `x` a concrete primitive: the let is annotated `&mut Any`.
 Rule: `&mut T ⊇ &mut U` only when `T = U` (`contains.rs`). Right site:
 the let. Built (`ref-write`, `ref-widen`); the generator's `&mut`
@@ -286,7 +292,8 @@ select that builds a union, a callback, a reference) ends the chain and
 the site is skipped. Distance is capped (a few hops): the certainty of
 the argument falls with each one, and false findings cost triage time
 (sep25a: 42 of 49 typemorph flips were transform assumptions, not
-checker bugs). Built: one hop for family 4, an unannotated, non-⊥,
+checker bugs). Built: one hop for family 4 (its own id, `widen-hop`, so
+the direct sites never fill its cap), an unannotated, non-⊥,
 concrete top-level `let w = e` whose `w` a reached use puts under an
 arithmetic operator, a comparison opposite a literal, or a field read
 gets `e` widened;

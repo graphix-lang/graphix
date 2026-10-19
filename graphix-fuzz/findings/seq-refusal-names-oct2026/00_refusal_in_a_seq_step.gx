@@ -1,0 +1,12 @@
+// expect: reject
+// A refusal inside a seq step names the lowering's generated bindings
+// (`seqv<id>_..`), whose ids differ between a run and its rerun, so the
+// refusal read as nondeterministic (x-engine-seq-errors-05). The
+// diagnostic comparison now strips their counters.
+{
+  let r = seq {
+    let [h, ..] = [1, 2];
+    h
+  };
+  r
+}
