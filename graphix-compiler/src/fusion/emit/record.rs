@@ -552,6 +552,10 @@ pub(crate) fn record_encode(
     r: &Arc<BodyRecord>,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
+    crate::stack::ensure_sufficient(|| record_encode_inner(r, buf))
+}
+
+fn record_encode_inner(r: &Arc<BodyRecord>, buf: &mut impl BufMut) -> Result<(), PackError> {
     image::object_encode(
         &(Arc::as_ptr(r) as usize),
         |k| (*k, r.clone()),
@@ -594,6 +598,10 @@ pub(crate) fn record_encode(
 }
 
 pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackError> {
+    crate::stack::ensure_sufficient(|| record_decode_inner(buf))
+}
+
+fn record_decode_inner(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackError> {
     image::foreign_decode(
         buf,
         |buf| {

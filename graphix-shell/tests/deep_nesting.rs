@@ -247,6 +247,16 @@ fn program(shape: &str, d: usize) -> String {
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
+        // a static call chain: each kernel calls the one before, so the
+        // link installs (and an image writes) a record tree this deep
+        "calleechain" => {
+            let mut s = String::from("let f0 = |x| x;\n");
+            for i in 1..d {
+                s.push_str(&format!("let f{i} = |x| f{}(x);\n", i - 1));
+            }
+            s.push_str(&format!("let g = |x: i64| f{}(x) + 1;\ng(1)", d - 1));
+            s
+        }
         "flatcast" => {
             let mut s = String::from("type A0 = [`Z];\n");
             for i in 1..=d {
@@ -272,7 +282,7 @@ fn paren_chain(d: usize) -> String {
 
 /// Shapes with no source nesting at all: the parser cannot refuse
 /// them, so each must compile at `FLAT_DEPTH`.
-const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
+const FLAT_SHAPES: &[&str] = &["flattype", "flatcast", "calleechain"];
 const FLAT_DEPTH: usize = 3000;
 
 /// Cells chained by bounds in one signature (`chainbounds`).
