@@ -4103,3 +4103,17 @@ run!(slice_pattern_under_written_union, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2, i64:0]")
 }; FuseExpect::None);
+
+// A guard the chain passed by when the scrutinee fired is given the
+// value fired when a guard flip above it lets the chain reach it: `x > 5`
+// recomputes over 0 rather than riding its answer for 10.
+run!(passed_guard_recomputes_over_the_value_it_missed, r#"{
+  let in0 = 10;
+  let in1 = true;
+  let step = 0;
+  step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
+  in0 <- select step { 1 => step ~ 0, _ => never() };
+  in1 <- select step { 2 => step ~ false, _ => never() };
+  let r = select in0 { 0 if in1 => "zero-g", x if x > 5 => "big", _ => "other" };
+  select step { 3 => r, _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other"); FuseExpect::Jit);

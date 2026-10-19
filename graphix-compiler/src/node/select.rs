@@ -79,6 +79,9 @@ struct LazyArmFacts {
     logged_no_match: bool,
     /// The arms with a guard, in order.
     guarded: SmallVec<[usize; 4]>,
+    /// Per arm: a scrutinee fire the chain passed its guard by; the guard
+    /// is given the value fired when the chain next reaches it.
+    missed: Vec<bool>,
 }
 
 impl LazyArmFacts {
@@ -129,6 +132,7 @@ impl LazyArmFacts {
                 .filter(|(_, (pat, _))| pat.guard.is_some())
                 .map(|(i, _)| i)
                 .collect(),
+            missed: vec![false; arms.len()],
         }
     }
 }
@@ -1359,6 +1363,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             shallow,
             logged_no_match,
             guarded,
+            missed,
         } = arm_facts.as_mut().expect("arm facts built above");
         let woke = slept.take();
         // The guarded arms' production tags. Only guards the chain
@@ -1392,7 +1397,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 open &= reach.is_none();
                 continue;
             }
-            // CR claude for claude: [bug/high] The tentative bind takes the scrutinee's
+            // XCR claude for claude: [bug/high] The tentative bind takes the scrutinee's
             // tag. In a re-match driven by an earlier arm's guard flip that tag is
             // STALE. A guard the chain passed over when the scrutinee last fired then
             // sees a new value with no fire, and dense_gate makes it ride the verdict
@@ -1404,7 +1409,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // over the value it is given. Pin it in lang::select. probe:
             // design/review-2026-10-19/repro/c-select-seq-stale-guard-rebind.gx
             // (c-select-seq-01)
-            let saved = reach.map(|v| pat.bind_tentative(ctx, v, arg_prod));
+            // a guard the chain passed by when the scrutinee fired has not
+            // seen its value: it is given the value fired
+            // 2026-10-19 claude: LazyArmFacts::missed holds a bit per arm, set when the
+            // scrutinee fires and the guard chain passes the arm by and cleared when
+            // the chain reaches it; while set the tentative bind is delivered fired, so
+            // the guard recomputes over the value it missed. The repro now AGREEs
+            // (graphix-fuzz check). Pin:
+            // lang::select::passed_guard_recomputes_over_the_value_it_missed (the old
+            // binary's node-walk says big). Needs a fleet soak (select semantics).
+            let tag = if missed[i] { arg_prod.fresh() } else { arg_prod };
+            match reach {
+                Some(_) => missed[i] = false,
+                None => missed[i] |= arg_prod.triggers(),
+            }
+            let saved = reach.map(|v| pat.bind_tentative(ctx, v, tag));
             if let Some(t) = pat.update(ctx) {
                 guard_tags.push((i, t));
             }
