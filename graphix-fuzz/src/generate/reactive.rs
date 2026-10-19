@@ -40,6 +40,8 @@ pub struct ReactiveStats {
     pub labeled_calls: usize,
     /// `seqq` ceremonies with a `flush(..)` clause.
     pub flushes: usize,
+    /// Ceremonies whose trigger binds a tuple pattern.
+    pub tuple_triggers: usize,
     /// Ceremony steps by kind, in [`STEP_KINDS`] order.
     pub steps: [usize; STEP_KINDS.len()],
 }
@@ -69,9 +71,12 @@ pub enum StepKind {
     Write,
     /// `let d = *ar + e`: a read through a reference to `acc`.
     Deref,
+    /// `let v = seq { let q = e; acc <- q; q + e }`: a triggerless machine
+    /// as a step, run at the step's entry and waited for.
+    Nested,
 }
 
-pub const STEP_KINDS: [StepKind; 10] = [
+pub const STEP_KINDS: [StepKind; 11] = [
     StepKind::Let,
     StepKind::Call,
     StepKind::Connect,
@@ -82,6 +87,7 @@ pub const STEP_KINDS: [StepKind; 10] = [
     StepKind::Print,
     StepKind::Write,
     StepKind::Deref,
+    StepKind::Nested,
 ];
 
 /// Generate one reactive wrapper (schedule header + body) with the
@@ -510,14 +516,9 @@ fn sample_chain(
 
 /// A toggling node-walked select: the scrutinee is an injected input's
 /// parity, so epochs flip which arm is live, and the `once(...)` arm, a
-/// Sync builtin, keeps the select on the node-walk and restarts in its own
-/// sleep. The live arm's builtin variant carries a per-epoch bottoming
-/// arg.
-// CR claude for claude: [doc-drift/low] The doc above says the `once(...)` arm
-// "restarts in its own sleep". A wake is a resume: `once` keeps its latch across the
-// sleep and the re-selected arm re-emits its standing value, in both engines. Reword
-// the doc to describe resume. probe:
-// design/review-2026-10-19/repro/fuzz-gen-b-once-resume.gx (fuzz-gen-b-07)
+/// Sync builtin, keeps the select on the node-walk; at each wake it resumes,
+/// its latch kept, and re-emits its standing value. The live arm's builtin
+/// variant carries a per-epoch bottoming arg.
 fn slept_arm(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -577,17 +578,8 @@ fn slept_arm(
     ctx.push(s, I64);
 }
 
-/// A hot-reloading dynamic module: the source is selected from an array
-/// of raw-string variants by an injected index, so each epoch can swap
-/// the implementation. `srcs[in % n]$` is total for any injected i64.
-/// Not pushed into `fires_per_injection`: two injections can select the same source,
-/// and an unchanged source need not re-fire downstream.
 /// A clock `k` that `input` restarts at 0 and that then counts itself up
 /// to `n`, a cycle a step.
-// CR claude for claude: [readability/low] The doc above this function starts with
-// dyn_reload's description (the hot-reloading dynamic module), so burst_clock carries
-// two unrelated paragraphs and dyn_reload has none. Move that paragraph to `fn
-// dyn_reload`. Found by reading; not run. (fuzz-gen-b-09)
 fn burst_clock(k: &str, input: &str, n: i64) -> [String; 2] {
     [
         format!("let {k} = {input} ~ i64:0"),
@@ -595,6 +587,11 @@ fn burst_clock(k: &str, input: &str, n: i64) -> [String; 2] {
     ]
 }
 
+/// A hot-reloading dynamic module: the source is selected from an array
+/// of raw-string variants by an injected index, so each epoch can swap
+/// the implementation. `srcs[in % n]$` is total for any injected i64.
+/// Not pushed into `fires_per_injection`: two injections can select the same source,
+/// and an unchanged source need not re-fire downstream.
 fn dyn_reload(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -742,10 +739,28 @@ fn ceremony(
     let mut body: Vec<String> = Vec::new();
     let mut reliable = true;
     let mark = ctx.mark();
-    // `seq let tv = trigger`: the steps read the run's own trigger
-    let bound = chance(rng, 0.3).then(|| ctx.fresh());
-    if let Some(tv) = &bound {
-        ctx.push(tv.clone(), trigger_ty.clone());
+    // `seq let tv = trigger` or `seq let (tv, tk) = (trigger, k)`: the
+    // steps read the run's own trigger
+    enum Bound {
+        Bare,
+        One(String),
+        Pair(String, String, usize),
+    }
+    let bound = match rng.below(10) {
+        0..3 => Bound::One(ctx.fresh()),
+        3..5 => {
+            st.tuple_triggers += 1;
+            Bound::Pair(ctx.fresh(), ctx.fresh(), rng.below(10))
+        }
+        _ => Bound::Bare,
+    };
+    match &bound {
+        Bound::Bare => (),
+        Bound::One(tv) => ctx.push(tv.clone(), trigger_ty.clone()),
+        Bound::Pair(tv, tk, _) => {
+            ctx.push(tv.clone(), trigger_ty.clone());
+            ctx.push(tk.clone(), I64);
+        }
     }
     ctx.push(trigger.clone(), trigger_ty.clone());
     ctx.no_catch = true;
@@ -834,6 +849,19 @@ fn ceremony(
                 body.push(format!("let {d} = *{ar} + {e}"));
                 ctx.push(d, I64);
             }
+            StepKind::Nested => {
+                let v = ctx.fresh();
+                let q = ctx.fresh();
+                let m = ctx.mark();
+                let e0 = exprs::gen_typed(ctx, rng, &I64, 1);
+                ctx.push(q.clone(), I64);
+                let e1 = exprs::gen_typed(ctx, rng, &I64, 1);
+                ctx.truncate(m);
+                body.push(format!(
+                    "let {v} = seq {{ let {q} = {e0}; {acc} <- {q}; {q} + ({e1}) }}"
+                ));
+                ctx.push(v, I64);
+            }
         }
     }
     let tail = exprs::gen_typed(ctx, rng, &I64, 2);
@@ -885,16 +913,13 @@ fn ceremony(
     let done = ctx.fresh();
     let kw = if queued { "seqq" } else { "seq" };
     let clauses = &head[trigger.len()..];
-    // CR claude for claude: [test-gap/low] Every generated machine is the flat
-    // triggered form. No ceremony draws a triggerless `seq { .. }`, a seq used as a
-    // step (a nested machine the outer step waits for), or a destructuring trigger
-    // `seqq let (x, y) = (..)`, so those step and plan rules have no generated
-    // coverage. Sometimes nest a triggerless seq as a step's value and sometimes bind
-    // the trigger as a tuple pattern. probe:
-    // design/review-2026-10-19/repro/fuzz-gen-b-seq-shapes.gx agrees. (fuzz-gen-b-04)
     let seq_over = |trig: &str| {
-        let bind = bound.as_ref().map(|tv| format!("let {tv} = ")).unwrap_or_default();
-        format!("{kw} {bind}{trig}{clauses} {{ {} }}", body.join("; "))
+        let head = match &bound {
+            Bound::Bare => trig.to_string(),
+            Bound::One(tv) => format!("let {tv} = {trig}"),
+            Bound::Pair(tv, tk, k) => format!("let ({tv}, {tk}) = ({trig}, i64:{k})"),
+        };
+        format!("{kw} {head}{clauses} {{ {} }}", body.join("; "))
     };
     match rng.below(6) {
         // a machine per instance: the ceremony in a lambda
@@ -976,19 +1001,23 @@ mod test {
         }
     }
 
-    /// Every generated wrapper parses back through the schedule format.
+    /// Every generated wrapper parses back through its headers, and one
+    /// that reads an injected input carries the header that injects it: a
+    /// callable header, else a schedule header (the runaway burst reads
+    /// none).
     #[test]
-    // CR claude for claude: [test-gap/low] Schedule::parse returns a default schedule
-    // for text with no `schedule-v1` header. So this test passes for every
-    // callable-form program (gen_callable_ceremony and the twins' callable half),
-    // whatever their `callable-v1` header says. Parse those with
-    // callable::CallSpec::parse and require Some, and require a schedule header on the
-    // rest. Found by reading; not run. (fuzz-gen-b-06)
     fn wrappers_parse() {
+        use crate::{
+            callable::CallSpec,
+            schedule::{HEADER_PREFIX, split_header},
+        };
         let mut rng = Rng::new(7);
         for _ in 0..200 {
             let w = gen_reactive_program(&mut rng);
-            Schedule::parse(&w).expect("generated wrapper must parse");
+            let (_, body) = Schedule::parse(&w).expect("generated wrapper must parse");
+            let (spec, _) = CallSpec::parse(&body).expect("callable header must parse");
+            let scheduled = split_header(&w, HEADER_PREFIX).is_some();
+            assert!(spec.is_some() || scheduled || !w.contains("in0"), "no header: {w}");
         }
     }
 
@@ -1015,8 +1044,8 @@ mod test {
         assert!(slept * 100 / N >= 8, "slept-arm selects in only {slept}/{N}");
     }
 
-    /// Both ceremony forms, both trigger shapes, both head clauses and
-    /// every step kind appear at the default profile.
+    /// Both ceremony forms, both trigger shapes, a tuple-bound trigger,
+    /// both head clauses and every step kind appear at the default profile.
     #[test]
     fn ceremony_presence() {
         let mut rng = Rng::new(0x5e9);
@@ -1029,6 +1058,7 @@ mod test {
             sum.burst_ceremonies += st.burst_ceremonies;
             sum.aborts += st.aborts;
             sum.flushes += st.flushes;
+            sum.tuple_triggers += st.tuple_triggers;
             sum.labeled_calls += st.labeled_calls;
             for (a, b) in sum.steps.iter_mut().zip(st.steps) {
                 *a += b;
@@ -1043,6 +1073,7 @@ mod test {
         );
         assert!(sum.aborts * 100 / N >= 5, "aborts: {}/{N}", sum.aborts);
         assert!(sum.flushes * 100 / N >= 2, "flushes: {}/{N}", sum.flushes);
+        assert!(sum.tuple_triggers * 100 / N >= 2, "tuples: {}/{N}", sum.tuple_triggers);
         assert!(sum.labeled_calls * 100 / N >= 5, "labeled: {}/{N}", sum.labeled_calls);
         for (kind, n) in STEP_KINDS.iter().zip(sum.steps) {
             assert!(n * 100 / N >= 3, "{kind:?} steps: only {n} over {N} programs");

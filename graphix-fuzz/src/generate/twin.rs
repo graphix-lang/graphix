@@ -142,16 +142,20 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
         agree = agree.join(" && ")
     );
     m.push_str(&format!("let verdict = {verdict}\n"));
-    let nepochs = 1 + rng.below(3);
-    // CR claude for claude: [test-gap/medium] Dispatch values are drawn uniformly from
-    // -5..31, so the quiet arm (`i64:0 => null`) almost never puts the writing arm to
-    // sleep and then selects it again. Only 10 of 600 generated twins do, yet that wake
-    // of a sleeping arm is the bug class the twin oracle exists for
-    // (design/graphix_fuzz.md, Twins). Interleave the quiet value between non-zero
-    // draws (about 50%) and use 2-5 epochs, so most quiet twins sleep and wake. probe:
-    // design/review-2026-10-19/repro/fuzz-gen-b-twin-wake-rate.sh (fuzz-gen-b-02)
-    let epochs =
-        (0..nepochs).map(|_| vec![Lit::I64((rng.below(37) as i64) - 5)]).collect();
+    // with a quiet arm, half the dispatches are its 0, between others: the
+    // writing arm sleeps and is selected again
+    let epochs = (0..2 + rng.below(4))
+        .map(|_| {
+            let v = match quiet && chance(rng, 0.5) {
+                true => 0,
+                false => match rng.below(36) as i64 - 5 {
+                    v if v >= 0 => v + 1,
+                    v => v,
+                },
+            };
+            vec![Lit::I64(v)]
+        })
+        .collect();
     TwinShape { module: m, args: vec![("cx0", "i64")], epochs }
 }
 
@@ -203,5 +207,29 @@ pub fn gen_twin_program(rng: &mut Rng) -> String {
         render_schedule_form(&shape)
     } else {
         render_callable_form(&shape)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Most twins with a quiet arm put the writing arm to sleep and then
+    /// select it again.
+    #[test]
+    fn quiet_twins_wake_the_writing_arm() {
+        let mut rng = Rng::new(21);
+        let (mut quiet, mut wakes) = (0, 0);
+        for _ in 0..400 {
+            let shape = gen_twin_shape(&mut rng);
+            if !shape.module.contains("i64:0 => null") {
+                continue;
+            }
+            quiet += 1;
+            let zero: Vec<bool> =
+                shape.epochs.iter().map(|e| e[0] == Lit::I64(0)).collect();
+            wakes += zero.windows(2).any(|w| w[0] && !w[1]) as usize;
+        }
+        assert!(wakes * 100 >= quiet * 30, "{wakes} of {quiet} quiet twins wake");
     }
 }
