@@ -4117,3 +4117,35 @@ run!(passed_guard_recomputes_over_the_value_it_missed, r#"{
   let r = select in0 { 0 if in1 => "zero-g", x if x > 5 => "big", _ => "other" };
   select step { 3 => r, _ => never() }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other"); FuseExpect::Jit);
+
+// The literal pool pools an arm against the member of its shape it can
+// match: over two same-arity tuple members, the `A/`B arms cover the
+// second, not the first.
+run!(pool_takes_the_member_an_arm_matches, r#"{
+  let f = |x: [(bool, i64), ([`A, `B], string)]| select x {
+    (`A, s) => "a",
+    (`B, s) => "b",
+    (true, n) => "t",
+    (false, n) => "f"
+  };
+  [f((true, 1)), f((false, 1)), f((`A, "s")), f((`B, "s"))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["t", "f", "a", "b"]"#); FuseExpect::None);
+
+// An abstract payload's heads are the scrutinee member's, not the
+// pattern's own: `Box(`A)` alone leaves `B uncovered.
+run!(pool_reads_the_abstract_payload_of_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let f = |x: Box<[`A, `B]>| select x { Box(`A) => 1 };
+  f(Box(`A))
+}"#, refused("missing match cases: no arm covers Box<[`A, `B]>"); FuseExpect::None);
+
+// Bool heads under Box<bool> cover Box<bool>, never Box<i64>.
+run!(pool_covers_only_its_own_abstract_instantiation, r#"{
+  type Box<'a> = Abstract<'a>;
+  let g = |x: [Box<bool>, Box<i64>]| select x {
+    Box(true) => 1,
+    Box(false) => 2,
+    Box<bool> as b => 3
+  };
+  g(Box(true))
+}"#, refused("missing match cases: no arm covers Box<i64>"); FuseExpect::None);

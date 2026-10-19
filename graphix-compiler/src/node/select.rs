@@ -936,6 +936,16 @@ struct Leaf {
     domain: Option<SmallVec<[Head; 4]>>,
 }
 
+impl Leaf {
+    /// The arm admits a head the member admits here.
+    fn reachable(&self) -> bool {
+        match (&self.heads, &self.domain) {
+            (Some(hs), Some(d)) => hs.iter().any(|h| d.contains(h)),
+            _ => true,
+        }
+    }
+}
+
 /// The heads `t` admits when it is a finite set of them: `bool`, or a
 /// union of variants.
 // CR claude for claude: [bug/medium] The pool has no null head. heads gives no domain
@@ -1046,9 +1056,12 @@ fn pooled_leaves(
                 Ok(true)
             }
             (
-                StructPatternNode::Abstract { id, bind, rep, .. },
-                Type::Abstract { id: t, .. },
-            ) if id == t => at(0, bind, rep),
+                StructPatternNode::Abstract { id, bind, .. },
+                Type::Abstract { id: t, params },
+            ) if id == t => match env.abstract_reps.get(id) {
+                Some(r) => at(0, bind, &r.instantiate_with(params)),
+                None => Ok(false),
+            },
             (StructPatternNode::Struct { all: _, width, binds }, Type::Struct(fs)) => {
                 if !width.admits(fs.len()) {
                     return Ok(false);
@@ -1115,10 +1128,9 @@ impl Shape {
         }
     }
 
-    /// The scrutinee's member of this shape: the type a complete pool
-    /// group covers. A struct pattern names some of its fields, so it pools
-    /// only where one member has them all.
-    // CR claude for claude: [bug/high] member returns the FIRST union member of the
+    /// The scrutinee's members of this shape: the types a complete pool
+    /// group may cover.
+    // XCR claude for claude: [bug/high] member returns the FIRST union member of the
     // shape for Tuple, Variant and Abstract, whichever member the atom actually tests.
     // LiteralPool::claim then pools the arm against that member and covers it when the
     // group completes. Over [Box<bool>, Box<i64>], `Box(true) => 1, Box(false) => 2,
@@ -1132,15 +1144,18 @@ impl Shape {
     // several can, as Struct already does. probe:
     // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-pool-member.gx
     // (x-typecheck-patterns-03)
-    fn member(&self, env: &Env, scrut: &Type) -> Result<Option<Type>> {
+    // 2026-10-19 claude: LiteralPool::claim pools an atom against the one scrutinee
+    // member of its shape it can match (under its type test, every position admitting a
+    // head the member admits: Leaf::reachable), unpooled when several can; groups key
+    // by shape and member; an abstract's payload heads come from the member's
+    // parameters (AbstractRep::instantiate_with), not the pattern's rep. Pins:
+    // lang::select::pool_takes_the_member_an_arm_matches,
+    // pool_reads_the_abstract_payload_of_the_scrutinee,
+    // pool_covers_only_its_own_abstract_instantiation.
+    fn members(&self, env: &Env, scrut: &Type) -> Result<SmallVec<[Type; 4]>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, scrut, &mut members)?;
-        let mut fits = members.into_iter().filter(|m| self.fits(m));
-        let m = fits.next();
-        Ok(match self {
-            Shape::Struct(_) if fits.next().is_some() => None,
-            _ => m,
-        })
+        Ok(members.into_iter().filter(|m| self.fits(m)).collect())
     }
 
     /// The shape that keys `m`'s pool group: a struct's by all of its
@@ -1171,6 +1186,7 @@ struct LiteralPool {
 
 struct PoolGroup {
     shape: Shape,
+    member: Type,
     arms: Vec<SmallVec<[Leaf; 8]>>,
     done: bool,
 }
@@ -1198,22 +1214,38 @@ impl LiteralPool {
         explicit: Option<&Type>,
     ) -> Result<Claim> {
         let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
-        let Some(m) = shape.member(env, scrut)? else { return Ok(Claim::Unpooled) };
-        let shape = shape.of_member(&m);
-        // under a type test that does not hold the member, the atom covers
-        // none of it
-        if let Some(t) = explicit
-            && !t.contains_with_flags(BitFlags::empty(), env, &m)?
-        {
-            return Ok(Claim::Unpooled);
+        // the atom pools against the one member of its shape it can match:
+        // under its type test, with a head each position admits
+        let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
+        for m in shape.members(env, scrut)? {
+            if let Some(t) = explicit
+                && !t.contains_with_flags(BitFlags::empty(), env, &m)?
+            {
+                continue;
+            }
+            let Some(leaves) = pooled_leaves(env, sp, &m)? else {
+                return Ok(Claim::Unpooled);
+            };
+            if !leaves.iter().all(Leaf::reachable) {
+                continue;
+            }
+            if reached.is_some() {
+                return Ok(Claim::Unpooled);
+            }
+            reached = Some((m, leaves));
         }
-        let Some(leaves) = pooled_leaves(env, sp, &m)? else {
-            return Ok(Claim::Unpooled);
-        };
-        let i = match self.groups.iter().position(|g| g.shape == shape) {
+        let Some((m, leaves)) = reached else { return Ok(Claim::Unpooled) };
+        let shape = shape.of_member(&m);
+        let i = match self.groups.iter().position(|g| g.shape == shape && g.member == m) {
             Some(i) => i,
             None => {
-                self.groups.push(PoolGroup { shape, arms: Vec::new(), done: false });
+                let member = m.clone();
+                self.groups.push(PoolGroup {
+                    shape,
+                    member,
+                    arms: Vec::new(),
+                    done: false,
+                });
                 self.groups.len() - 1
             }
         };
