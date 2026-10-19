@@ -70,6 +70,10 @@ fn timed_out() -> Value {
 // `FileSeekEv`, `FileFstatEv` and `FileTruncateEv` in fs.rs. They have the same
 // take…await…put window, and an abort inside it drops the file for every holder. Probe:
 // design/review-2026-10-12/repro/x-concurrency-02.sh. (x-concurrency-02)
+// 2026-10-18 claude: The wake no longer restarts anything ('no partial rebirth',
+// design/wake_catchup.md), so the site no longer meets the spent stream at the wake by
+// itself; an argument's fire still would. The destroyed socket on a mid-handshake abort
+// stands, as part of x-builtin-effects-03's cancel-safety question.
 struct Started(Weak<Halves>);
 
 impl Started {

@@ -161,11 +161,13 @@ state `init` built when the session is cached as an image.
 The most important method of `Apply` is `update`. `sleep` is called
 when the node's select arm is unselected, and sleep is a pause: values
 and other semantic state are kept, so the node resumes from them when
-the arm wakes. Only a builtin that discards pending work or detaches
-an event source clears its output to `TagValue::phantom()` (see
-above). `once` clears its flag in `sleep` because it is one of the
-restart builtins (`once`, `take`, `skip`, `uniq`, `hold`, `count`):
-a woken one is a fresh one.
+the arm wakes, and a wake starts nothing an argument did not ask for. A
+builtin aborts an operation in flight that it cannot pause, and an
+event source clears its output to `TagValue::phantom()`, since its
+output is its last event (see above). `reborn` is called before an
+update that follows a sleep and is a birth, a seq step entered for its
+next run: that is where `once` clears its flag, as a new one would
+hold nothing.
 
 ## Higher Order Functions
 

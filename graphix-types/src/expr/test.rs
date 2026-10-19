@@ -2087,10 +2087,11 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 && match (r0, r1) {
                     (CatchRole::User, CatchRole::User) => true,
                     (
-                        CatchRole::Machine { action: a0, manual: m0, pc: p0 },
-                        CatchRole::Machine { action: a1, manual: m1, pc: p1 },
+                        CatchRole::Machine { action: a0, manual: m0, pc: p0, clock: k0 },
+                        CatchRole::Machine { action: a1, manual: m1, pc: p1, clock: k1 },
                     ) => {
                         p0 == p1
+                            && k0 == k1
                             && check(a0, a1)
                             && match (m0, m1) {
                                 (None, None) => true,
@@ -2745,6 +2746,7 @@ fn compiler_kinds_children_agree() {
                 action: arc("act"),
                 manual: Some(arc("m")),
                 pc: literal!("pc"),
+                clock: Some(literal!("clock")),
             }),
             3,
         ),

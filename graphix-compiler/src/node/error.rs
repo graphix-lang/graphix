@@ -137,6 +137,9 @@ enum AbortRole<R: Rt, E: UserEvent> {
         manual: Option<Node<R, E>>,
         /// The step variable, written idle when the machine sleeps.
         pc: BindId,
+        /// A `seqq`'s queue clock, and whether a sleep aborted a run
+        /// whose credit it owes at the wake.
+        clock: Option<(BindId, bool)>,
     },
     /// A `try`'s capture cell (§7.3): receives the first error of each
     /// failure and the union of this handler's inferred throws.
@@ -244,6 +247,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                     AbortRole::Machine {
                         manual: opt_node_decode(ctx, buf)?,
                         pc: BindId::decode(buf)?,
+                        clock: Option::<BindId>::decode(buf)?.map(|c| (c, false)),
                     }
                 } else {
                     AbortRole::Try { capture: BindId::decode(buf)? }
@@ -314,7 +318,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         };
         let action = match &c.role {
             CatchRole::User => None,
-            CatchRole::Machine { action, manual, pc } => Some(CatchAction {
+            CatchRole::Machine { action, manual, pc, clock } => Some(CatchAction {
                 node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
                 role: AbortRole::Machine {
                     manual: manual
@@ -322,6 +326,11 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                         .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
                         .transpose()?,
                     pc: lookup(ctx, pc)?,
+                    clock: clock
+                        .as_ref()
+                        .map(|c| lookup(ctx, c))
+                        .transpose()?
+                        .map(|c| (c, false)),
                 },
                 pending: None,
             }),
@@ -379,10 +388,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         opt_node_encode(self.action.as_ref().map(|a| &a.node), buf)?;
         match self.action.as_ref().map(|a| &a.role) {
             None => (),
-            Some(AbortRole::Machine { manual, pc }) => {
+            Some(AbortRole::Machine { manual, pc, clock }) => {
                 true.encode(buf)?;
                 opt_node_encode(manual.as_ref(), buf)?;
                 pc.encode(buf)?;
+                clock.map(|(c, _)| c).encode(buf)?;
             }
             Some(AbortRole::Try { capture }) => {
                 false.encode(buf)?;
@@ -412,6 +422,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             }
         }
         if let Some(abort) = &mut self.action {
+            if let AbortRole::Machine { clock: Some((clock, owed)), .. } = &mut abort.role
+                && std::mem::take(owed)
+            {
+                ctx.rt.set_var(*clock, Value::Bool(true));
+            }
             if let Some(manual) = abort.manual_mut()
                 && manual.update(ctx).is_fired()
             {
@@ -457,11 +472,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             abort.node.sleep(ctx);
             abort.manual_mut().into_iter().for_each(|n| n.sleep(ctx));
             abort.pending = None;
-            if let AbortRole::Machine { pc, .. } = abort.role {
-                ctx.rt.set_var(
-                    pc,
-                    crate::rep::make_variant(crate::expr::seq::IDLE.clone(), []),
-                );
+            if let AbortRole::Machine { pc, clock, .. } = &mut abort.role {
+                let idle = crate::rep::make_variant(crate::expr::seq::IDLE.clone(), []);
+                let running = ctx
+                    .rt
+                    .store_get(pc)
+                    .is_some_and(|(tv, _)| tv.with_value(|v| *v != idle));
+                if let Some((_, owed)) = clock {
+                    *owed |= running;
+                }
+                ctx.rt.set_var(*pc, idle);
             }
         }
     }
@@ -647,7 +667,7 @@ fn strip_production<'a>(
         return resident.ride();
     }
     tv.with_value(sink);
-    // a wake's own fire stays one: the bottom keeps the input's tag
+    // the bottom keeps the input's tag
     resident.set_bottom_as(tv.tag())
 }
 

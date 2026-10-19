@@ -300,6 +300,7 @@ fn desugar_plain(
                 action: Arc::new(block(pos, abort_body)),
                 manual: manual.then(|| Arc::new(r#ref(pos, &aborted))),
                 pc: ArcStr::from(pc.as_str()),
+                clock: queue.as_ref().map(|q| ArcStr::from(q.clock)),
             },
         }))
         .to_expr(pos)

@@ -374,7 +374,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         let mut slots: LPooled<Vec<u64>> = LPooled::take();
         // slot 0: the context word
         let wake = ctx.event.wake() || woke;
-        slots.push(kernel_abi::ctx_word(ctx.event.init(), wake));
+        slots.push(kernel_abi::ctx_word(ctx.event.born(), wake));
         slots.push(if self.state.is_empty() {
             0
         } else {

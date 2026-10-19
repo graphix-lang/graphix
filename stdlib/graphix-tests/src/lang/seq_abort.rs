@@ -200,7 +200,7 @@ async fn sleep_resets_the_machine(mode: Mode) -> Result<()> {
             step <- select step {{ n if n < 60 => n + 1, _ => never() }};
             let on = uniq(select step {{ s if s < 8 => true, s if s < 20 => false, _ => true }});
             select on {{
-                true => {kw} {{ let a = step; until step > a + 12; a }},
+                true => {kw} on {{ let a = step; until step > a + 12; a }},
                 false => never()
             }}
         }}"#

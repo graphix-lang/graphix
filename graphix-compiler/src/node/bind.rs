@@ -45,6 +45,9 @@ use triomphe::Arc;
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
     slept: WakeBit,
+    /// The cycle of the last sleep: a write landing after it is a fire no
+    /// reader saw, re-raised at the wake.
+    slept_at: u64,
     pub(crate) spec: Arc<Expr>,
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
@@ -100,6 +103,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             partial: None,
             ever_published: false,
             slept: WakeBit::default(),
+            slept_at: 0,
         }));
     }
     let mut body = compile(ctx, flags, body, &scope, top_id)?;
@@ -141,6 +145,26 @@ fn builtin_binding<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
+    /// A write that landed while the binding slept (one queued before the
+    /// sleep, a seq machine's reset) was seen by no reader, all of which
+    /// slept with it: deliver it fired, once, at the wake.
+    fn reraise_writes_while_asleep(&self, ctx: &mut ExecCtx<'_, R, E>) {
+        let slept_at = self.slept_at;
+        let mut late: SmallVec<[(BindId, TagValue); 2]> = SmallVec::new();
+        self.pattern.ids(&mut |id| {
+            if !ctx.event.variables.contains_key(&id)
+                && let Some((tv, stamp)) = ctx.rt.store_get(&id)
+                && *stamp > slept_at
+                && !tv.tag().is_bottom()
+            {
+                late.push((id, TagValue::fired(tv.value_cloned())))
+            }
+        });
+        for (id, tv) in late {
+            ctx.publish(id, tv)
+        }
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -312,6 +336,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             partial,
             ever_published: false,
             slept: WakeBit::default(),
+            slept_at: 0,
         }))
     }
 
@@ -437,6 +462,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             partial: None,
             ever_published: false,
             slept: WakeBit::default(),
+            slept_at: 0,
         }))
     }
 }
@@ -460,13 +486,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
+        if woke {
+            self.reraise_writes_while_asleep(ctx);
+        }
         let tv = self.node.update(ctx);
         let tag = tv.tag();
         // At a wake a `<-` target holding a value keeps it unless the
-        // initializer delivered a real event; otherwise a production
-        // publishes when it fires, first, or quietly after a sleep.
+        // initializer fired; otherwise a production publishes when it
+        // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        if (woke || ctx.event.wake()) && !tag.is_event() {
+        if (woke || ctx.event.wake()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =
                     || ctx.rt.store_get(&id).is_some_and(|(tv, _)| !tv.tag().is_bottom());
@@ -509,7 +538,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                         return;
                     }
                     ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    ctx.rt.store_insert(id, TagValue::tagged(v, tag.fresh_or_wake()));
+                    ctx.rt.store_insert(id, TagValue::fired(v));
                     if !quiet {
                         ctx.rt.notify_set(id);
                     }
@@ -552,6 +581,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
+        self.slept_at = ctx.rt.cycle();
         self.node.sleep(ctx);
     }
 
@@ -1488,7 +1518,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                     if lost {
                         self.bottom_mirror(ctx);
                     }
-                    return self.resident.set_bottom(lost || ctx.event.init());
+                    return self.resident.set_bottom(lost || ctx.event.born());
                 };
                 let same = self
                     .registered
@@ -1523,7 +1553,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 !same
             }
         };
-        if ctx.event.init() || retargeted {
+        if ctx.event.born() || retargeted {
             self.resident.set(TagValue::fired(crate::reference::reference(self.id)))
         } else {
             self.resident.ride()

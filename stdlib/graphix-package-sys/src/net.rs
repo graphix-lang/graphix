@@ -149,7 +149,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (val, val_fired) = seam_arg(ctx, &mut from[1]);
         // the standing value goes to a new path when nothing queued is newer
-        let mut standing = woke || val_fired;
+        let mut standing = val_fired;
         if (woke || path_fired)
             && let Some(path) = &path
             && (woke || !self.same_path(path))
@@ -354,8 +354,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept = true;
         self.out = TagValue::phantom();
+        self.slept = true;
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.var.id);
         }
@@ -365,7 +365,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
 #[derive(Debug)]
 pub(crate) struct RpcCall {
-    slept: bool,
     var: RtVar,
     target: CastTarget,
     out: TagValue,
@@ -386,7 +385,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         let var = RtVar::new(ctx, top_id);
         let _ = from;
         Ok(Box::new(RpcCall {
-            slept: false,
             var,
             target: CastTarget::of(resolved),
             out: TagValue::phantom(),
@@ -398,16 +396,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let slept = bool::decode(buf)?;
         let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
-        Ok(Box::new(RpcCall { slept, var, target, out: TagValue::phantom() }))
+        Ok(Box::new(RpcCall { var, target, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.slept.encode(buf)?;
         self.var.image_encode(buf)?;
         self.target.encode(buf)
     }
@@ -437,10 +433,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             };
             Ok((path, args))
         }
-        let woke = std::mem::take(&mut self.slept);
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (args, args_fired) = seam_arg(ctx, &mut from[1]);
-        if (woke || path_fired || args_fired)
+        if (path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {
             self.remint(ctx);
@@ -497,9 +492,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept = true;
         self.remint(ctx);
-        self.out = TagValue::phantom();
     }
 }
 
@@ -629,9 +622,9 @@ macro_rules! list {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+                self.out = TagValue::phantom();
                 self.slept = true;
                 self.remint(ctx);
-                self.out = TagValue::phantom();
             }
         }
     };
@@ -863,8 +856,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept = true;
         self.out = TagValue::phantom();
+        self.slept = true;
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
@@ -1145,8 +1138,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept = true;
         self.out = TagValue::phantom();
+        self.slept = true;
         self.var.remint(ctx);
         self.inbox = Default::default();
         self.current = None;

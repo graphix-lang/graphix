@@ -538,6 +538,9 @@ pub enum CatchRole {
         manual: Option<Arc<Expr>>,
         /// The machine's step variable, written idle when it sleeps.
         pc: ArcStr,
+        /// A `seqq`'s queue clock: a run a sleep aborted returns its
+        /// queue's credit at the wake.
+        clock: Option<ArcStr>,
     },
     /// A seq `try` body arm's jump to its `with` branch.
     Try {
@@ -1585,11 +1588,14 @@ impl Expr {
                 handler: a(f, &c.handler),
                 role: match &c.role {
                     CatchRole::User => CatchRole::User,
-                    CatchRole::Machine { action, manual, pc } => CatchRole::Machine {
-                        action: a(f, action),
-                        manual: manual.as_ref().map(|e| a(f, e)),
-                        pc: pc.clone(),
-                    },
+                    CatchRole::Machine { action, manual, pc, clock } => {
+                        CatchRole::Machine {
+                            action: a(f, action),
+                            manual: manual.as_ref().map(|e| a(f, e)),
+                            pc: pc.clone(),
+                            clock: clock.clone(),
+                        }
+                    }
                     CatchRole::Try { action, capture } => {
                         CatchRole::Try { action: a(f, action), capture: capture.clone() }
                     }

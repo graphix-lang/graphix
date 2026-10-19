@@ -625,7 +625,9 @@ async fn net_lists_reject_relative_paths() -> Result<()> {
     Ok(())
 }
 
-async fn request_restarts_after_wake(call: &str) -> Result<()> {
+/// `call` in an arm that sleeps and wakes, issued `issues` times: a call
+/// once (a wake does not repeat it), a standing listing again at the wake.
+async fn request_after_wake(call: &str, issues: i64) -> Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let loads = Arc::new(AtomicUsize::new(0));
@@ -660,30 +662,30 @@ async fn request_restarts_after_wake(call: &str) -> Result<()> {
     })
     .await?;
     ctx.shutdown().await;
-    assert_eq!(value, Value::I64(2), "{call}");
-    assert_eq!(loads.load(Ordering::SeqCst), 2, "{call}");
+    assert_eq!(value, Value::I64(issues), "{call}");
+    assert_eq!(loads.load(Ordering::SeqCst) as i64, issues, "{call}");
     Ok(())
 }
 
 #[tokio::test]
-async fn net_call_restarts_after_wake() -> Result<()> {
-    request_restarts_after_wake(
-        "{ let answer: i64 = sys::net::call(path, args)?; answer }",
-    )
-    .await
+async fn net_call_not_repeated_after_wake() -> Result<()> {
+    request_after_wake("{ let answer: i64 = sys::net::call(path, args)?; answer }", 1)
+        .await
 }
 
 #[tokio::test]
 async fn net_list_restarts_after_wake() -> Result<()> {
-    request_restarts_after_wake("sys::net::list(#update:trigger, path)?").await
+    request_after_wake("sys::net::list(#update:trigger, path)?", 2).await
 }
 
 #[tokio::test]
 async fn net_list_table_restarts_after_wake() -> Result<()> {
-    request_restarts_after_wake("sys::net::list_table(#update:trigger, path)?").await
+    request_after_wake("sys::net::list_table(#update:trigger, path)?", 2).await
 }
 
-run!(net_write_standing_after_wake, r#"{
+// A wake re-attaches a write to its path but writes nothing until the
+// value fires: the one write is the arm's first entry's.
+run!(net_write_not_repeated_after_wake, r#"{
     let path = "/local/standing_write";
     let value = 42;
     let writes = 0;
@@ -697,4 +699,4 @@ run!(net_write_standing_after_wake, r#"{
         false => never()
     };
     sys::time::after_idle(duration:400.ms, ready) ~ writes
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);

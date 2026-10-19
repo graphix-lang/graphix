@@ -62,7 +62,7 @@ pub(crate) fn emit_const_node(
     match kernel_abi::abi_kind(typ) {
         Some(AbiKind::Scalar(prim)) => {
             let disc = scalar_disc(cx.b, prim);
-            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, disc);
+            let disc = const_stale_gate(cx.b, init, disc);
             Ok(CompiledExpr::new(disc, compile_const(cx.b, value, prim)?))
         }
         Some(AbiKind::String) => {
@@ -76,19 +76,19 @@ pub(crate) fn emit_const_node(
             let call = cx.call_helper("graphix_arcstr_clone_from_static", &[ptr])?;
             let payload = call[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
-            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, disc);
+            let disc = const_stale_gate(cx.b, init, disc);
             Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Value) => {
             let ptr = cx.interned_value(value)?;
             let call = cx.call_helper("graphix_value_clone_from_static", &[ptr])?;
             let (r0, r1) = (call[0], call[1]);
-            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, r0);
+            let disc = const_stale_gate(cx.b, init, r0);
             Ok(CompiledExpr::new(disc, r1))
         }
         Some(AbiKind::Null) => {
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
-            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, disc);
+            let disc = const_stale_gate(cx.b, init, disc);
             let payload = cx.b.ins().iconst(types::I64, 0);
             Ok(CompiledExpr::new(disc, payload))
         }
@@ -785,7 +785,7 @@ fn producer_disc(
 ) -> ClifValue {
     if field_discs.is_empty() {
         let init = cx.init_flag();
-        const_stale_gate(cx.b, init, cx.ctx.wake_flag, base)
+        const_stale_gate(cx.b, init, base)
     } else {
         propagate_flags(cx.b, base, field_discs)
     }

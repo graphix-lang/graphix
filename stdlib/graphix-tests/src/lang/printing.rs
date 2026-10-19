@@ -210,27 +210,31 @@ async fn dest_alone_neither_prints_nor_fires(mode: Mode) -> Result<()> {
 
 modes!(dest_alone_neither_prints_nor_fires);
 
-/// A constant message fires at every entry to its arm, so it prints at
-/// each, fused or not.
+/// A constant message prints at its arm's birth only, fused or not; one
+/// sampled on the scrutinee's delivery prints at every entry.
 async fn arm_entry_prints_a_constant(mode: Mode) -> Result<()> {
-    let code = r#"{
-        let step = 0;
-        step <- select step { s if s < 8 => s + 1, _ => never() };
-        let c = select step { 1 | 3 | 5 => true, _ => false };
-        let r = select c { true => { println("E"); 1 }, false => 0 };
-        r ~ step
-    }"#;
-    let (_, out) = run_delta(code, mode).await?;
-    assert_eq!(out, "E\nE\nE\n");
+    for (message, expect) in [(r#""E""#, "E\n"), (r#"c ~ "E""#, "E\nE\nE\n")] {
+        let code = format!(
+            r#"{{
+            let step = 0;
+            step <- select step {{ s if s < 8 => s + 1, _ => never() }};
+            let c = select step {{ 1 | 3 | 5 => true, _ => false }};
+            let r = select c {{ true => {{ println({message}); 1 }}, false => 0 }};
+            r ~ step
+        }}"#
+        );
+        let (_, out) = run_delta(&code, mode).await?;
+        assert_eq!(out, expect, "{message}");
+    }
     Ok(())
 }
 
 modes!(arm_entry_prints_a_constant);
 
-// A print under a select arm prints at every entry to the arm, fused or
-// not: its trigger fires there only through the scrutinee or the arm's
-// binds, never through an untaken nested arm, an argument a function
-// ignores, or a callee's own constant.
+// A print under a select arm whose message is a constant prints at the
+// arm's birth only, fused or not: a later entry fires its trigger only
+// through the scrutinee or the arm's binds, never through an untaken
+// nested arm, an argument a function ignores, or a callee's own constant.
 async fn arm_entry_prints_every_time(mode: Mode) -> Result<()> {
     for (code, prints) in [
         (
@@ -243,7 +247,7 @@ async fn arm_entry_prints_every_time(mode: Mode) -> Result<()> {
                 };
                 f(step % 2, 0)
             }"#,
-            5,
+            1,
         ),
         (
             r#"{
@@ -253,7 +257,7 @@ async fn arm_entry_prints_every_time(mode: Mode) -> Result<()> {
                 let f = |s: i64| select s { 0 => p(s), _ => -1 };
                 f(step % 2)
             }"#,
-            5,
+            1,
         ),
     ] {
         let (_, out) = run_delta(code, mode).await?;

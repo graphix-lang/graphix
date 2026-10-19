@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 pub(crate) use super::abi::LocalKind;
 use super::{
     abi::{
-        CompiledExpr, FIRE_TEST, STALE, SlotView, TAINT, ValueVar, WAKE, bind_local,
+        CompiledExpr, FIRE_TEST, STALE, SlotView, TAINT, ValueVar, bind_local,
         bind_scalar_var_with_disc, clean_disc, is_fresh, is_tainted, owned_words,
         prim_to_value_disc, scalar_disc, value_disc,
     },
@@ -503,11 +503,9 @@ impl SlotFlags {
     ) -> CompiledExpr {
         let t = cx.b.use_var(self.accs.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
-        // the slots' fold carries both bits: bit 61 says whether a slot
-        // fired, bit 60 whether every fire was a wake's own
+        // the slots' fold says whether a slot fired
         let slots_acc = cx.b.use_var(self.accs.stale);
         let src_word = cx.b.ins().band_imm(src, FIRE_TEST);
-        let src_wake = cx.b.ins().band_imm(src, WAKE);
         let src_taint = cx.b.ins().band_imm(src, TAINT);
         r.disc = cx.b.ins().bor(r.disc, src_taint);
         let acc = if self.kind == LoopKind::Fold {
@@ -517,10 +515,8 @@ impl SlotFlags {
             slots_acc
         };
         let fired_word = cx.b.ins().band_imm(acc, FIRE_TEST);
-        let slots_wake = cx.b.ins().band_imm(acc, WAKE);
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
-        let (stale, src_counts) =
-            self.exact_stale(cx, self.word, fired_word, src_word, src_taint);
+        let stale = self.exact_stale(cx, self.word, fired_word, src_word, src_taint);
         // A fresh-tainted source is an event none of the firing terms
         // can see (no resize, quiet slots, not empty): fire it here.
         let tainted = cx.b.ins().icmp_imm(IntCC::NotEqual, src_taint, 0);
@@ -529,13 +525,6 @@ impl SlotFlags {
         let zero = cx.b.ins().iconst(types::I64, 0);
         let stale = cx.b.ins().select(fresh_taint, zero, stale);
         r.disc = cx.b.ins().bor(r.disc, stale);
-        // a wake's own fire when every fire that made it was: the slots'
-        // and, where it counts, the source's
-        let src_counts = cx.b.ins().bor(src_counts, fresh_taint);
-        let all = cx.b.ins().iconst(types::I64, WAKE);
-        let src_wake = cx.b.ins().select(src_counts, src_wake, all);
-        let wake = cx.b.ins().band(slots_wake, src_wake);
-        r.disc = cx.b.ins().bor(r.disc, wake);
         r
     }
 
@@ -550,7 +539,7 @@ impl SlotFlags {
         fired_word: ClifValue,
         src_word: ClifValue,
         src_taint: ClifValue,
-    ) -> (ClifValue, ClifValue) {
+    ) -> ClifValue {
         let len = self.len;
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let lenp1 = cx.b.ins().iadd_imm(len, 1);
@@ -576,7 +565,7 @@ impl SlotFlags {
         let fires = cx.b.ins().bor(src_counts, slot_fired);
         let quiet = cx.b.ins().iconst(types::I64, STALE);
         let zero = cx.b.ins().iconst(types::I64, 0);
-        (cx.b.ins().select(fires, zero, quiet), src_counts)
+        cx.b.ins().select(fires, zero, quiet)
     }
 }
 

@@ -67,6 +67,11 @@ pub enum CFlag {
     /// compiles under it, and its definitions carry it into every
     /// later compile of their bodies and defaults.
     NoBuiltins,
+    /// Compiling a seq machine's steps: each is born again at every run,
+    /// so a select's arms there act at every run, not only at a first
+    /// entry, and its definition check does not warn of their constants.
+    /// A lambda's body compiles without it.
+    SeqStep,
 }
 
 /// Sets a thread-local `Cell` for a scope and puts the previous value

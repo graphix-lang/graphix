@@ -1,0 +1,12 @@
+// bisect: fusion/JIT bug (interp != jit)
+// Found by the 10-18 reactive smoke (generate seed 81019) while building
+// "no partial rebirth": a seqq with abort(in1) in an arm that sleeps
+// mid-run. The machine's reset (`pc <- Idle`) landed while the arm slept,
+// a fire no reader saw: the node-walk's pure `Idle` arm was born at its
+// re-entry and fired, the kernel's stood, so `uniq(seqidle)` saw the
+// machine idle in one engine and running in the other, which aborted the
+// next run at once. Fixed by a let re-raising a write that landed while
+// it slept (`Bind::reraise_writes_while_asleep`) and pure arms resuming
+// as sleeping ones do.
+// schedule-v1: cap=192 events=1536; in1=i64:0; in1=i64:1; in0=bool:false in1=i64:2
+{ let v3 = |v1: i64| -> [i64, Error<`Oops>] select (v1 % 2) { 0 => error(`Oops), _ => v1 }; let v4: Error<Any> = never(); catch(e) v4 <- e; let v5 = 0; v5 <- v4 ~ (v5 + 1); let v6 = 0; let v10 = select (in1 % 2) { 0 => seqq in1; abort(in1) { let v9 = v3((in1 % in1))?; cast<i64>(z64:42)$ }, _ => never() }; let v11 = 0; let v12 = 0; let v13 = 0; ((v13 * v5) * v5) }

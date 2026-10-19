@@ -2665,8 +2665,11 @@ impl fmt::Display for Role<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {
             CatchRole::User => Ok(()),
-            CatchRole::Machine { action, manual, pc } => {
+            CatchRole::Machine { action, manual, pc, clock } => {
                 write!(f, " then {action} (machine {pc}")?;
+                if let Some(c) = clock {
+                    write!(f, ", queue clock {c}")?;
+                }
                 match manual {
                     None => write!(f, ")"),
                     Some(m) => write!(f, ", abort on {m})"),

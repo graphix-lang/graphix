@@ -36,11 +36,12 @@ constant argument to `exit` runs at init — always gate it).
   every cycle (the accidental counter, 100% CPU). Write
   `known <- ev ~ upsert(known, x)`. The legitimate counter is
   `x <- clock ~ x + 1`.
-- **A constant right-hand side in a select arm fires once per
-  selection**, not per event: `` `Esc => screen <- `Menu `` fires when the
-  arm becomes selected and not on a same-arm re-match. A handler that
-  must act on every event samples it: `screen <- k ~ `Menu`. Both are
-  tools: the constant form is "on entering this state".
+- **A constant right-hand side in a select arm fires once, at the arm's
+  first entry**, and never again: a later entry resumes the arm, and its
+  constants do not fire. `` `Esc => screen <- `Menu `` writes on the first
+  Esc only (the check warns of it, as of a constant-only effect call or a
+  `seq` with no trigger in an arm). Sample the event that selects the
+  arm: `` k@ `Esc => screen <- k ~ `Menu ``, or use a seq.
 - **An effect with several inputs samples the WHOLE input on the
   trigger**: `spawn(go ~ options(#args: a, prog))`, never
   `spawn(options(#args: a, go ~ prog))` — a call fires when ANY argument
@@ -279,11 +280,13 @@ scrutinee yields a bottom select (put `hold` on the scrutinee to persist
 across a bottom cycle).
 
 - An unselected arm with state, an effect or a raise sleeps. Sleep is a
-  pause for values, but the restart builtins (`count`, `once`, `take`,
-  `skip`, `uniq`, `hold`) and a seq start over when the arm wakes; an
-  async call clears its output and starts again over its present
-  arguments; a net subscription or publication is torn down and an rpc
-  call in flight dropped.
+  pause and a wake a resume: `count`, `once`, `take`, `skip`, `uniq`,
+  `hold` and queues keep their state; an async call in flight is
+  aborted and not made again unless an argument fires (its last result
+  stays); a timer's run resumes; a net subscription or publication is
+  torn down and re-attached at the wake; a seq's run is aborted (a
+  `seqq`'s queued requests stay and run). Only the inputs that fired
+  while the arm slept are delivered at the wake, once each.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   Everything else is told apart: a string from a bare variant, an array

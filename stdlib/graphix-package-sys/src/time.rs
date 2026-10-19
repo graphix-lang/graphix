@@ -25,8 +25,7 @@ pub(crate) struct AfterIdle {
     /// the timer fires, after the arg's delivery is gone.
     last_v: Option<Value>,
     id: Option<BindId>,
-    /// Set by `sleep`, taken by the next update: the wait starts again
-    /// over the present arguments.
+    /// A wait a sleep paused, which the next update resumes.
     slept: bool,
     eid: ExprId,
     out: TagValue,
@@ -89,7 +88,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept);
+        let resume = std::mem::take(&mut self.slept);
         let mut timeout_up = false;
         if let Some(tv) = seam_value(from[0].update(ctx)) {
             timeout_up = tv.is_fired();
@@ -101,7 +100,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
             self.last_v = Some(tv.value_cloned());
         }
         if let Some(secs) = &self.timeout_v
-            && (timeout_up || val_up || (woke && self.last_v.is_some()))
+            && (timeout_up || val_up || resume)
         {
             match secs.clone().cast_to::<Duration>() {
                 Ok(dur) => {
@@ -147,10 +146,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         self.out = TagValue::phantom();
         if let Some(id) = self.id.take() {
             ctx.release_var(id, self.eid);
+            self.slept = true;
         }
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        self.slept = false;
         self.timeout_v = None;
         self.last_v = None;
-        self.slept = true;
+        self.out = TagValue::phantom();
     }
 }
 
@@ -168,14 +172,14 @@ fn fires(repeat: &Value) -> Option<Option<u64>> {
 }
 
 /// `timer(timeout, repeat)`: a run of fires starts whenever either
-/// argument fires, and again at a wake over the present arguments.
+/// argument fires; a sleep pauses it and the wake resumes it.
 #[derive(Debug)]
 pub(crate) struct Timer {
     timeout: Option<Duration>,
     /// Fires left in this run, `None` forever.
     left: Option<u64>,
     id: Option<BindId>,
-    /// Set by `sleep`, taken by the next update.
+    /// A run a sleep paused, which the next update resumes.
     slept: bool,
     eid: ExprId,
     out: TagValue,
@@ -251,10 +255,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept);
+        if std::mem::take(&mut self.slept) {
+            self.arm(ctx);
+        }
         let (timeout, timeout_fired) = seam_arg(ctx, &mut from[0]);
         let (repeat, repeat_fired) = seam_arg(ctx, &mut from[1]);
-        if (woke || timeout_fired || repeat_fired)
+        if (timeout_fired || repeat_fired)
             && let (Some(timeout), Some(repeat)) = (timeout, repeat)
         {
             match (timeout.cast_to::<Duration>(), fires(&repeat)) {
@@ -291,9 +297,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
-        self.timeout = None;
         self.slept = true;
         self.stop(ctx)
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        self.slept = false;
+        self.timeout = None;
+        self.out = TagValue::phantom();
     }
 }
 

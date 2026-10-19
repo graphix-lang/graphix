@@ -192,11 +192,15 @@ async fn block_lets_are_local(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A seqq in an arm runs again when its trigger fires at a later entry;
+// one with no trigger runs at the arm's birth only.
 async fn sleep_restarts(mode: Mode) -> Result<()> {
-    for (trigger, expr) in [
-        ("", "tick"),
-        ("tick", "tick"),
-        ("", "sys::time::after_idle(duration:20.ms, tick)"),
+    let idle = "sys::time::after_idle(duration:20.ms, tick)";
+    for (trigger, expr, expect) in [
+        ("", "tick", &[1][..]),
+        ("tick", "tick", &[1, 3]),
+        ("", idle, &[1]),
+        ("tick", idle, &[1, 3]),
     ] {
         let code = format!(
             r#"{{
@@ -210,7 +214,7 @@ async fn sleep_restarts(mode: Mode) -> Result<()> {
     }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
-        assert_eq!(as_i64s(&values), [1, 3], "seqq {trigger}: {expr}");
+        assert_eq!(as_i64s(&values), expect, "seqq {trigger}: {expr}");
     }
     Ok(())
 }
@@ -283,6 +287,28 @@ async fn unhandled_warnings(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A run a sleep aborts returns its queue's credit at the wake, so the
+// requests after the wake run in order.
+async fn aborted_run_returns_its_credit(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let tick = count(sys::time::timer(duration:100.ms, 6)?);
+        let issued = never<i64>();
+        select tick {
+            2 => never(),
+            _ => seqq tick {
+                let value = sys::time::after_idle(duration:150.ms, tick);
+                issued <- value;
+                value
+            }
+        };
+        issued
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [3, 4, 5, 6]);
+    Ok(())
+}
+
+modes!(aborted_run_returns_its_credit);
 modes!(burst_captures);
 modes!(repeated_outputs);
 modes!(delayed_capture);

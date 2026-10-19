@@ -1059,6 +1059,25 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     held: Option<Box<[BindId]>>,
 }
 
+/// The registered builtin a site calls by name: its function is a
+/// binding the index resolves to a builtin's definition, or one bound to
+/// the builtin directly.
+pub(crate) fn static_builtin<'a, R: Rt, E: UserEvent>(
+    ctx: &'a CompileCtx<R, E>,
+    cs: &CallSite<R, E>,
+) -> Option<&'a ArcStr> {
+    let NodeView::Ref(r) = cs.fnode().view() else { return None };
+    if let Some(d) = ctx
+        .bind_to_lambda
+        .get(&r.id)
+        .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
+    {
+        return d.builtin_name();
+    }
+    let bind = ctx.env.by_id.get(&r.id)?;
+    ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone())).map(|i| &i.name)
+}
+
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// An unbound site over compiled parts; `ftype` is `None` until
     /// `typecheck0` instantiates it.
@@ -2192,6 +2211,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn update_call(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
+        if woke
+            && ctx.event.born()
+            && let Some(f) = self.callee.apply_mut()
+        {
+            f.reborn(ctx)
+        }
         if matches!(self.callee, Callee::Imaged { .. })
             && let Err(e) = self.materialize(ctx)
         {
@@ -3363,7 +3388,7 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
     let bottom = tag.is_bottom();
     let delivered = if born && !bottom { Tag::FIRED } else { tag };
     let (store, overlay) = if tag.triggers() {
-        let store = if bottom { Tag::FRESH_BOTTOM } else { tag.fresh_or_wake() };
+        let store = if bottom { Tag::FRESH_BOTTOM } else { Tag::FIRED };
         (Some((store, false)), Some(tag))
     } else {
         match root {

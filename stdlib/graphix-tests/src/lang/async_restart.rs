@@ -243,7 +243,7 @@ async fn wake_reissues_standing_async(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// take keeps a let-bound #n across the sleep and restarts its count.
+// take keeps its count across the sleep: it took its one value before.
 async fn wake_keeps_a_standing_count(mode: Mode) -> Result<()> {
     let code = r#"{
         let n = 0;
@@ -253,12 +253,12 @@ async fn wake_keeps_a_standing_count(mode: Mode) -> Result<()> {
         select in0 { true => -1, false => take(#n: k, n) }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
-    assert_eq!(as_i64s(&values), [0, 0, 0, -1, -1, 5, 5, 5]);
+    assert_eq!(as_i64s(&values), [0, 0, 0, -1, -1, 0, 0, 0]);
     Ok(())
 }
 
-// A woken count is a fresh one: it does not deliver its pre-sleep total.
-async fn wake_restarts_a_count(mode: Mode) -> Result<()> {
+// A woken count resumes: it counts on from its pre-sleep total.
+async fn wake_resumes_a_count(mode: Mode) -> Result<()> {
     let code = r#"{
         let n = 0;
         n <- select n { k if k < 5 => k + 1, _ => never() };
@@ -266,15 +266,18 @@ async fn wake_restarts_a_count(mode: Mode) -> Result<()> {
         select in0 { 0 => -1, _ => count(n) }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
-    assert_eq!(as_i64s(&values), [1, 2, -1, -1, 1, 2]);
+    assert_eq!(as_i64s(&values), [1, 2, -1, -1, 3, 4]);
     Ok(())
 }
 
-// A timer and an idle wait over a standing argument start again at the wake.
-async fn wake_restarts_standing_timers(mode: Mode) -> Result<()> {
-    for expr in [
-        "count(sys::time::timer(interval, once)?)",
-        "count(sys::time::after_idle(interval, seven))",
+// A sleep pauses a timer's run and the wake resumes it: a one-shot or an
+// idle wait that already fired stays done, and a run of three fires its
+// last two after the wake.
+async fn wake_resumes_standing_timers(mode: Mode) -> Result<()> {
+    for (expr, expect) in [
+        ("count(sys::time::timer(interval, once)?)", &[0, 1][..]),
+        ("count(sys::time::after_idle(interval, seven))", &[0, 1]),
+        ("count(sys::time::timer(interval, 3)?)", &[0, 1, 2, 3]),
     ] {
         let code = format!(
             r#"{{
@@ -296,21 +299,21 @@ async fn wake_restarts_standing_timers(mode: Mode) -> Result<()> {
             }}"#
         );
         let (values, _) = run_delta(&code, mode).await?;
-        assert_eq!(as_i64s(&values), [0, 1, 2], "{expr}");
+        assert_eq!(as_i64s(&values), expect, "{expr}");
     }
     Ok(())
 }
 
-// A restart builtin woken while its input stands shows nothing until the
-// input fires again, as a fresh one would.
-async fn wake_restarts_quietly(mode: Mode) -> Result<()> {
+// A restart builtin keeps its state across a sleep: woken while its input
+// stands it shows what it showed, and goes on when the input fires.
+async fn wake_resumes_quietly(mode: Mode) -> Result<()> {
     for (expr, expect) in [
-        ("count(x)", &[1, 2, -1, -1, 1, 1][..]),
-        ("once(x)", &[5, 5, -1, -1, 7, 7]),
-        ("uniq(x)", &[5, 6, -1, -1, 7, 7]),
-        ("take(#n: 1, x)", &[5, 5, -1, -1, 7, 7]),
-        ("skip(#n: 1, x)", &[6, -1, -1]),
-        ("hold(#clock: x, x)", &[5, 6, -1, -1, 7, 7]),
+        ("count(x)", &[1, 2, -1, -1, 2, 3, 3][..]),
+        ("once(x)", &[5, 5, -1, -1, 5, 5, 5]),
+        ("uniq(x)", &[5, 6, -1, -1, 6, 7, 7]),
+        ("take(#n: 1, x)", &[5, 5, -1, -1, 5, 5, 5]),
+        ("skip(#n: 1, x)", &[6, -1, -1, 6, 7, 7]),
+        ("hold(#clock: x, x)", &[5, 6, -1, -1, 6, 7, 7]),
     ] {
         let code = format!(
             r#"{{
@@ -387,9 +390,9 @@ async fn range_over_a_late_bound(mode: Mode) -> Result<()> {
 modes!(
     wake_reissues_standing_async,
     wake_keeps_a_standing_count,
-    wake_restarts_a_count,
-    wake_restarts_quietly,
-    wake_restarts_standing_timers,
+    wake_resumes_a_count,
+    wake_resumes_quietly,
+    wake_resumes_standing_timers,
     reentry_raises_once,
     reentry_through_a_callee_once,
     range_over_a_late_bound

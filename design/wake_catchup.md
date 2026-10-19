@@ -1,6 +1,6 @@
 # Wake catch-up
 
-Status: built 2026-09-01
+Status: built 2026-09-01; no partial rebirth 2026-10-18 (below)
 Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_wake_delivers_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_sibling_binds_spent`)
 Supersedes: `pure_select.md`, `levels_and_events.md`, `pure_dataflow_plan.md` part A (the sleep-free select proposals, withdrawn — sleep is pause)
 
@@ -193,8 +193,8 @@ newtype; the bits hide in struct padding. Nodes that recompute
 unconditionally need none; `~` rides correctly — it IS edge state;
 `Any` rides too, except that it stands bottom at a wake where the
 child its resident came from is bottom now; `uniq` is bottom while its
-input is, and a value back from bottom is new to it; `Constant` fires
-at wake as at init.
+input is, and a value back from bottom is new to it; a `Constant` fires
+where it is born and stands at a resume.
 
 A woken Select RE-MATCHES against the present scrutinee: a selection
 retained across the sleep was made against a value that may have moved
@@ -209,24 +209,11 @@ quiet wake production (`<-` targets holding a value are still held
 back — sleep is pause — and so is a target born `never()`, whose
 initializer's standing bottom is no write: pins
 `findings/wake-connect-target-sep2026/`). A target is held back from the
-wake's own fire only. The arm's constants fire at the wake under the tag
-bit WAKE (`Tag::WAKE_FIRED`: an event to every reader, but no real one),
-and WAKE ANDs over consumed productions as STALE does (`Tag::join`, every
-kernel fold: disc bit 60 rides with bit 61), so a production is the wake's
-own exactly when every fire that reached it was: a real input fire,
-live or as a catch-up, makes it real, and an input that cannot reach the
-production this cycle (an untaken arm's) does not. A `let` under a wake
-view whose production is no real event leaves its `<-` targets' last
-writes (`Bind::update`); anything that republishes a production keeps the
-bit (a call's formals and result, a pattern bind, a let's overlay and
-store entries, a sample, a stateless builtin outside a genuine init, a
-pending catch-up, which `TrackedFires` keeps with its bit). A collection
-loop's fire is the wake's own when every fire that made it was: each
-slot's, a fold's carry, and the source's where the source counts (a
-resize or a return from bottom, which carry the source's bit, so a stale
-source makes them a wake's fire; a fired empty source; a filter's or a
-find's fired source). The kernel's slot accumulator carries bits 61 and
-60 together, so outlined and forked chunks fold it unchanged. Pins:
+initializer's fire only: a resume fires nothing but the inputs it catches
+up (its constants stand), so a `let` under a wake view whose production
+did not fire leaves its `<-` targets' last writes (`Bind::update`). A
+collection loop's resize or a source's return from bottom is a fire
+whatever the source's tag, on both engines. Pins:
 `lang::select::wake_input_fire_reaches_target`,
 `wake_constant_keeps_target`, `wake_fire_keeps_targets`,
 `wake_unreached_input_keeps_target`, `wake_fire_caught_up_late`. `CallSite` refreshes its arg ids' standing
@@ -258,11 +245,12 @@ fuses, so every edge-consuming arm interior sits under an interpreter
 select whose tracker injects THROUGH the kernel boundary (an
 arm-position kernel's params read the injected fires). Pure arms
 recompute anyway — kernels compute always. What a kernel needs is the
-wake VIEW: wire slot 0 bit 1 = WAKE (the arm's `event.wake_init` or the
-kernel's own `slept` bit); genuine init is `bit0 & !bit1` and is what
-gates the fastcall stale-mask suppression, so a wake delivers standing
-args STALE and the trampoline produces the stateless re-eval's STALE
-result.
+view: wire slot 0 bit 0 = born (`View::born`: constants fire), bit 1 =
+standing values read stale (`View::wake` or the kernel's own `slept`
+bit); genuine init is `bit0 & !bit1` and is what gates the fastcall
+stale-mask suppression. A resume runs the kernel with bit 0 clear,
+exactly as an ordinary cycle; a seq step's entry (`View::Step`) sets
+both.
 
 ### The birth rule
 
@@ -278,7 +266,77 @@ bound dispatch seeds default args FIRED.
 ### What stays
 
 Present-but-stale for untracked standing reads; genuine init upgrades;
-constants fire at init only; the guard rules; `ByRef`'s stale seed;
+constants fire where they are born; the guard rules; `ByRef`'s stale seed;
 residents survive sleep and are REFRESHED at wake rather than surfaced;
 shrink-is-delete for recursion (a fresh activation has phantom
 residents and takes the ordinary first-production path).
+
+## No partial rebirth (2026-10-18)
+
+Eric's ruling: a wake is a resume, never a rebirth. Before it, a wake
+was part rebirth: an arm's constants fired again (under a WAKE tag bit
+that kept them from rewriting `<-` targets), the restart builtins
+(`once`, `take`, `skip`, `uniq`, `hold`, `count`) and `queue` cleared
+in `sleep`, and every async builtin restarted over its standing
+arguments, so a woken arm repeated `sqlite::exec`, `db::pop_min`, an rpc
+call or a `net::write` with no trigger
+(`design/review-2026-10-12/repro/http-sqlite-db1-02.gx`, `db2-02.gx`).
+
+As built:
+
+- **Views** (`View`, joined by `View::join`): `Birth` (standing values
+  read as delivered, constants fire), `Wake` (a resume: standing values
+  read stale, constants stand, `<-` targets keep their values), `Step`
+  (born into a world that stands: constants fire, standing values read
+  stale). A select arm's first entry is a `Step`, every later one a
+  `Wake` (`LazyArmFacts::entered`); a pure arm resumes as the others do, slept at its re-entry (it is not slept when
+  deselected, since nothing in it runs) so its nodes recompute from what
+  stands, as a kernel's do; a seq step entered for a run is a `Step`; a
+  birth nested in a resume is a `Step`. The WAKE bit is deleted, from the
+  tag and the JIT.
+- **A write that landed while asleep is a missed fire.** An arm local
+  is no tracked input, yet a write can land on it while the arm sleeps
+  (a write queued in its last awake cycle, a seq machine's reset of
+  `pc`): its `let` re-raises it, fired, at its wake
+  (`Bind::reraise_writes_while_asleep`). The reactive fuzzer found the
+  gap (`findings/wake-resume-seq-abort-oct2026/`): the constants that
+  used to fire at a wake had papered over it.
+- **Rebirth is a birth's.** `Apply::reborn` (no-op by default) holds
+  what `sleep` used to clear; a call site calls it before an update that
+  follows its sleep under a born view (`CallSite::update_call`), so a seq
+  step's next run starts its builtins fresh while a resumed arm's keep
+  their state. `BuiltInLambda` forwards it.
+- **Restart builtins and queues keep their state** across a sleep.
+  `queue` and `iterq` take back what they sent but had not received
+  (`InFlight`) and send it again from the wake. `filter` keeps its
+  pending value.
+- **Async**: sleep aborts the call in flight and the wake restarts
+  nothing; a call's result survives the sleep (`CachedArgsAsync`, rpc
+  `call`). `net::write` re-attaches to its path at the wake but writes
+  only on a value fire. Event sources (timers, idle waits, line readers,
+  subscriptions, watches, servers) pause: a timer's run and a pending
+  idle wait resume at the wake, a standing interest re-attaches; their
+  output, the last event, does not survive, since a select re-emits its
+  arm's value at a re-entry (`design/async_sleep_outputs.md`).
+- **Seq**: a run is aborted by its arm's sleep (`pc` to idle); a `seqq`'s
+  queue keeps its requests, and its machine handler owes the aborted
+  run's credit, paid at the wake (`CatchRole::Machine::clock`).
+- **The warning**: the select's definition check warns where an arm
+  acts on constants alone (a `<-` or an effectful builtin call reading
+  no variable) or holds a `seq` with no trigger: those act at the arm's
+  first entry only (`select.rs::warn_birth_only`,
+  `warn_triggerless_seq`); not in a seq step, which is born at every
+  run (`CFlag::SeqStep`, set on a machine's steps and dropped at a
+  lambda), and not in a seq machine's generated handler action.
+
+Pins: `lang::async_restart::{wake_keeps_a_standing_count,
+wake_resumes_a_count, wake_resumes_quietly, wake_resumes_standing_timers}`,
+`lang::select::arm_const_writes_at_its_birth`,
+`lang::printing::{arm_entry_prints_a_constant,
+arm_entry_prints_every_time}`, `lang::dense_deltas::no_arm_window_pauses`,
+`lang::seqq::{sleep_restarts, aborted_run_returns_its_credit}`,
+`lang::seq_abort::sleep_resets_the_machine`,
+`lib_tests::db::db_op_not_repeated_at_wake`,
+`lib_tests::net::{net_call_not_repeated_after_wake,
+net_write_not_repeated_after_wake}`, and the LSP's
+`birth_only_arm_actions_are_warnings`.

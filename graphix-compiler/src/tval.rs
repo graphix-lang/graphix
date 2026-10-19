@@ -2,13 +2,11 @@
 //! both engines. Bit-identical to `Value` except that the upper 8 bits
 //! of the discriminant word carry a tag of two orthogonal bits, STALE
 //! (not an event this cycle) and TAINT (no usable value), giving the
-//! four states of [`TagView`], and a third, WAKE (not a real event: a
-//! stale production, or a fire only a woken arm's constants caused).
-//! Over consumed inputs TAINT joins by OR and STALE and WAKE by AND: a
-//! bottom anywhere bottoms, a fire anywhere fires, a real fire anywhere
-//! is real ([`Tag::join`]). Consume through [`TagValue::view`]; the
-//! only ways to recover a `Value` mask the tag first, so a tagged disc
-//! is never read as a `Value` discriminant.
+//! four states of [`TagView`]. Over consumed inputs TAINT joins by OR
+//! and STALE by AND: a bottom anywhere bottoms, a fire anywhere fires
+//! ([`Tag::join`]). Consume through [`TagValue::view`]; the only ways to
+//! recover a `Value` mask the tag first, so a tagged disc is never read
+//! as a `Value` discriminant.
 
 use netidx_value::Value;
 use std::{fmt, marker::PhantomData, mem::ManuallyDrop, sync::LazyLock};
@@ -27,27 +25,19 @@ impl Tag {
     /// "no usable value" (kernel disc bit 62). The payload under this
     /// bit is a placeholder, never usable.
     pub const TAINT_BIT: u8 = 0x40;
-    /// "not a real event" (kernel disc bit 60): set on every stale tag,
-    /// and on a fire only a wake's constants caused, which a `<-`
-    /// target's `let` does not republish over the target's last write.
-    pub const WAKE_BIT: u8 = 0x10;
     /// Fired this cycle, not a bottom — the ordinary production.
     pub const FIRED: Tag = Tag(0);
-    /// Fired only because a woken arm's constants fired.
-    pub const WAKE_FIRED: Tag = Tag(Self::WAKE_BIT);
     /// A value-channel refresh: present, valid, did not fire.
-    pub const STALE: Tag = Tag(Self::STALE_BIT | Self::WAKE_BIT);
+    pub const STALE: Tag = Tag(Self::STALE_BIT);
     /// A bottom that is an event.
     pub const FRESH_BOTTOM: Tag = Tag(Self::TAINT_BIT);
     /// A standing bottom, and the phantom initial state of a slot that
     /// has never produced.
-    pub const STALE_BOTTOM: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT | Self::WAKE_BIT);
+    pub const STALE_BOTTOM: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT);
 
-    /// Wrap a raw tag byte; other bits are dropped, and a stale tag is
-    /// not a real event.
+    /// Wrap a raw tag byte; other bits are dropped.
     pub fn from_raw(bits: u8) -> Self {
-        let t = bits & (Self::STALE_BIT | Self::TAINT_BIT | Self::WAKE_BIT);
-        if t & Self::STALE_BIT != 0 { Tag(t | Self::WAKE_BIT) } else { Tag(t) }
+        Tag(bits & (Self::STALE_BIT | Self::TAINT_BIT))
     }
 
     pub fn bits(self) -> u8 {
@@ -70,54 +60,24 @@ impl Tag {
         self.0 & Self::STALE_BIT == 0
     }
 
-    /// A fire that only a wake's constants caused: an event to its
-    /// readers, but not one that rewrites a `<-` target.
-    pub fn is_wake(self) -> bool {
-        self.0 & (Self::STALE_BIT | Self::WAKE_BIT) == Self::WAKE_BIT
-    }
-
-    /// A real event: a fire, a fresh bottom included, that is not a
-    /// wake's own.
-    pub fn is_event(self) -> bool {
-        self.0 & (Self::STALE_BIT | Self::WAKE_BIT) == 0
-    }
-
-    /// Bottom ORs, fired ORs (so the STALE bit ANDs), a real fire ORs
-    /// (so the WAKE bit ANDs). `FIRED` is the identity for bottom and
-    /// absorbing for firing.
+    /// Bottom ORs, fired ORs (so the STALE bit ANDs). `FIRED` is the
+    /// identity for bottom and absorbing for firing.
     pub fn join(self, other: Tag) -> Tag {
         let taint = (self.0 | other.0) & Self::TAINT_BIT;
-        let quiet = (self.0 & other.0) & (Self::STALE_BIT | Self::WAKE_BIT);
-        Self::from_raw(taint | quiet)
+        let quiet = (self.0 & other.0) & Self::STALE_BIT;
+        Tag(taint | quiet)
     }
 
     /// Set the STALE bit, keeping bottomness: the tag a resident
     /// re-surfaces under when nothing triggered this cycle.
     pub fn quiet(self) -> Tag {
-        Tag(self.0 | Self::STALE_BIT | Self::WAKE_BIT)
+        Tag(self.0 | Self::STALE_BIT)
     }
 
     /// Clear the STALE bit, keeping bottomness: a fresh reader sees a
     /// standing value as new.
     pub fn fresh(self) -> Tag {
-        Tag(self.0 & !(Self::STALE_BIT | Self::WAKE_BIT))
-    }
-
-    /// This production counted as a fire: STALE cleared, so a stale one
-    /// becomes a wake's own fire and a real one stays real.
-    pub fn as_fire(self) -> Tag {
         Tag(self.0 & !Self::STALE_BIT)
-    }
-
-    /// A fire made a real event; a stale tag is unchanged.
-    pub fn real(self) -> Tag {
-        if self.triggers() { Tag(self.0 & !Self::WAKE_BIT) } else { self }
-    }
-
-    /// A fire's tag: `FIRED`, or `WAKE_FIRED` when this is not a real
-    /// event.
-    pub fn fresh_or_wake(self) -> Tag {
-        Tag(self.0 & Self::WAKE_BIT)
     }
 }
 

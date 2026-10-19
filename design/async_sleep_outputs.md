@@ -1,50 +1,55 @@
 # Async outputs across sleep
 
-Status: built 2026-09-05
+Status: built 2026-09-05; rewritten for "no partial rebirth" 2026-10-18
 Pins: `stdlib/graphix-tests/src/lang/async_restart.rs`; `stdlib/graphix-tests/src/lib_tests/bottom.rs`
 
-An operation restarted on wake has no completion until that activation
-produces one. A builtin that discards pending work or detaches an event
-source in `sleep` therefore clears its output to `TagValue::phantom()`
-there; otherwise a reselected arm would surface the previous
-activation's result as if the restarted operation had already
-completed. Ordinary updates still retain the latest completed value
-while waiting for the next result. The restart is the builtin's own: each one keeps a
-`slept` bit its `sleep` sets, and its first update after the wake starts
-the operation again over the arguments as they stand, read stale
-(`CachedArgsAsync`, `timer`, `after_idle`, and the net and http builtins
-that re-publish or re-serve). Neither `seq` lowering nor select
-history needs to know: a direct call to a restarted builtin reads as
-"nothing yet" until it produces.
+A wake is a resume, never a rebirth (`design/wake_catchup.md`, "No
+partial rebirth"). What a builtin does across a sleep follows from what
+its output is.
 
-`Effect::Async` alone does not imply a reset: it is also the
-conservative classification for some synchronous constructors, and
-those keep their value.
+- **A call** (`CachedArgsAsync`: file, stream, process, http, db, sqlite
+  operations; rpc `call`): sleep aborts the call in flight (it cannot be
+  paused) and the wake restarts nothing, since a restart would perform
+  an action no trigger asked for; only an argument's fire, a caught-up
+  one included, starts a call. The result is a level and survives the
+  sleep.
+- **An event source** (timers, `after_idle`, `throttle`'s pending
+  emission, line readers, net and db subscriptions, watches, servers,
+  `iter`/`range` deliveries): it pauses. A timer's run and a pending
+  idle wait resume at the wake; a standing interest (a subscription, a
+  publication, a listing, a watch, a served path) is detached at sleep
+  and re-attached at the wake over the arguments as they stand; a
+  `net::write` re-attaches to its path but writes only on a value fire;
+  a delivery stream in flight is aborted. Its output is the last event,
+  which does not survive the sleep: a select emits its arm's value at a
+  re-entry, so a kept event would be re-raised as if it were new.
+- **State** (the restart builtins, `queue`, `iterq`, `filter`, `hold`):
+  kept. A queue takes back what it sent through its reply variable and
+  had not received (`InFlight`), and sends it again from the wake.
+
+A builtin starts afresh only where it is born again: `Apply::reborn`,
+which a call site runs before an update that follows its sleep under a
+born view, a seq step entered for its next run.
 
 ## Audit
 
-| Family | Sleep action that requires an output reset |
-| --- | --- |
-| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, other packages on the wrapper) | aborts the call in flight, discards queued work and remints the reply ID |
-| `after_idle`, `timer`, `throttle` | cancels timers and clears timing/input state |
-| `range`, `queue`, array/map/list `iter` and `iterq` | discards the old delivery ID and buffered work |
-| net subscribe, RPC call, list/list_table | detaches the subscription or reply channel |
-| net write, publish, publish_rpc | tears down the target/publication; old errors are no longer current |
-| filesystem watch application and event/path accessors | rebuilds the watch or detaches listeners |
-| database subscription and event accessors | aborts the subscription or detaches listeners |
-| HTTP server | aborts the server the previous output handle represented |
-| I/O line readers | clears the last line, preserving the reader and its delivery ID |
-| netidx-admin ceremony events | detaches from the ceremony event stream |
-
-A builtin that remints its delivery ID on sleep must register the new
-ID (array and list `iterq` alongside map's); otherwise the cleared
-output exposes a permanent wait rather than a fresh completion.
-
-Preserved across sleep: synchronous value/history builtins, grouping
-accumulators, constant-like args/directory sources, the retained
-`queuefn` callable, the filesystem watcher constructor, and the
-netidx-admin ceremony handle constructors. These keep their semantic
-value or refresh it without starting a new asynchronous wait.
+| Family | Sleep | Wake |
+| --- | --- | --- |
+| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, db, sqlite, other packages on the wrapper) | aborts the call in flight, remints the reply ID; keeps args and result | starts a call only on an argument fire |
+| rpc `call` | remints the reply ID; keeps the result | as above |
+| `timer` | cancels the armed fire; keeps the run; clears its output | re-arms the run if fires remain |
+| `after_idle` | cancels a pending wait; clears its output | resumes a pending wait |
+| `throttle` | cancels the pending emission; keeps the held value | — |
+| `range`, `iter` | remints the delivery ID (the stream in flight is aborted); keeps the output | — |
+| `queue`, `iterq` | takes back sent-undelivered values; keeps contents and credits | sends again |
+| `once`, `take`, `skip`, `uniq`, `hold`, `count`, `filter` | nothing | — |
+| net subscribe, list/list_table, publish, publish_rpc, `write` | detaches; clears the output | re-attaches over standing args (`write` writes only on a value fire) |
+| filesystem watch application and event/path accessors | rebuilds the watch or detaches listeners; clears the output | rebuilds over standing args |
+| database subscription and event accessors | aborts the subscription or detaches listeners; clears the output | re-attaches |
+| HTTP server | stops serving, aborts its connections and handler instances; clears the output | serves again |
+| I/O line readers | clears the last line, preserving the reader and its delivery ID | reads on |
+| netidx-admin ceremony events | detaches from the ceremony event stream (`paused`) | re-attaches |
+| `sys::args`, `sys::dirs::*` | nothing | — (produce at birth only) |
 
 ## Line reader identity
 

@@ -555,12 +555,6 @@ fn untyped_shape(v: &Value) -> Shape {
     }
 }
 
-/// What a builtin emits for `v` because of the production tagged
-/// `cause`: a fire, and a wake's own when only a wake caused it.
-pub fn caused(v: Value, cause: Tag) -> TagValue {
-    TagValue::tagged(v, cause.fresh_or_wake())
-}
-
 /// The production of a raw builtin whose consumed values are `tags`
 /// (a trigger's fire is not a value), when any of them is bottom: a
 /// bottom (a fresh one if any bottom fired), which the builtin returns
@@ -823,7 +817,55 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
+    }
+}
+
+/// What a builtin sent through its own reply variable and has not yet
+/// received. A sleep takes it back, so a pause loses no delivery: the
+/// reply id is reminted and the items are sent again from the wake.
+#[derive(Debug)]
+struct InFlight<T>(VecDeque<T>);
+
+impl<T> Default for InFlight<T> {
+    fn default() -> Self {
+        Self(VecDeque::new())
+    }
+}
+
+impl<T> InFlight<T> {
+    fn send<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        var: &RtVar,
+        item: T,
+        v: Value,
+    ) {
+        ctx.rt.set_var(var.id, v);
+        self.0.push_back(item);
+    }
+
+    /// The delivery this cycle, if one arrived.
+    fn receive<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        var: &RtVar,
+    ) -> Option<Value> {
+        let v = ctx.event.variables.get(&var.id).map(|tv| tv.value_cloned())?;
+        self.0.pop_front();
+        Some(v)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The items not yet received, oldest first, for a remint.
+    fn take_back(&mut self) -> std::collections::vec_deque::Drain<'_, T> {
+        self.0.drain(..)
     }
 }
 
@@ -833,6 +875,9 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
 pub struct IterQ<C: Elements> {
     triggered: usize,
     queue: VecDeque<C::Cursor>,
+    /// Elements a sleep took back, sent again before the cursors.
+    returned: VecDeque<Value>,
+    sent: InFlight<Value>,
     var: RtVar,
     out: TagValue,
 }
@@ -849,8 +894,14 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let var = RtVar::new(ctx, top_id);
-        let queue = VecDeque::new();
-        Ok(Box::new(Self { triggered: 0, queue, var, out: TagValue::phantom() }))
+        Ok(Box::new(Self {
+            triggered: 0,
+            queue: VecDeque::new(),
+            returned: VecDeque::new(),
+            sent: InFlight::default(),
+            var,
+            out: TagValue::phantom(),
+        }))
     }
 
     fn image_decode(
@@ -859,15 +910,25 @@ impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let var = RtVar::image_decode(ctx, buf)?;
-        let queue = VecDeque::new();
-        Ok(Box::new(Self { triggered: 0, queue, var, out: TagValue::phantom() }))
+        Ok(Box::new(Self {
+            triggered: 0,
+            queue: VecDeque::new(),
+            returned: VecDeque::new(),
+            sent: InFlight::default(),
+            var,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
     /// The queue and the banked fires exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if self.triggered > 0 || !self.queue.is_empty() {
+        if self.triggered > 0
+            || !self.queue.is_empty()
+            || !self.returned.is_empty()
+            || !self.sent.is_empty()
+        {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.var.image_encode(buf)
@@ -891,6 +952,12 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
         }
         let bottom = bottom_of([x_tag]);
         while self.triggered > 0
+            && let Some(e) = self.returned.pop_front()
+        {
+            self.sent.send(ctx, &self.var, e.clone(), e);
+            self.triggered -= 1;
+        }
+        while self.triggered > 0
             && let Some(c) = self.queue.front_mut()
         {
             if ctx.interrupted() {
@@ -898,7 +965,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
             }
             match C::next(c) {
                 Some(e) => {
-                    ctx.rt.set_var(self.var.id, e);
+                    self.sent.send(ctx, &self.var, e.clone(), e);
                     self.triggered -= 1;
                 }
                 None => {
@@ -906,7 +973,7 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
                 }
             }
         }
-        match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
+        match self.sent.receive(ctx, &self.var) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => match bottom {
                 Some(bottom) => bottom,
@@ -921,7 +988,16 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
+        let back: SmallVec<[Value; 4]> = self.sent.take_back().collect();
+        self.triggered += back.len();
+        for e in back.into_iter().rev() {
+            self.returned.push_front(e)
+        }
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.queue.clear();
+        self.returned.clear();
         self.triggered = 0;
         self.out = TagValue::phantom();
     }
@@ -1557,11 +1633,7 @@ impl<T> CachedArgs<T> {
     where
         T: EvalCached<R, E>,
     {
-        // a wake's own fire when every fired arg was, as a kernel's fast
-        // call folds it; under a genuine init every arg is born
-        let genuine = ctx.event.init() && !ctx.event.wake();
-        let prod =
-            cached.update_full(ctx, from).map(|t| if genuine { t.real() } else { t });
+        let prod = cached.update_full(ctx, from);
         match prod {
             None => last_result.ride(),
             // a bottom arg bottoms the invocation without calling eval
@@ -1634,9 +1706,6 @@ impl Abort {
 
 #[derive(Debug)]
 pub struct CachedArgsAsync<T: EvalCachedAsync> {
-    /// Set by `sleep()`, taken by the next update: the operation starts
-    /// again over its present arguments.
-    slept: bool,
     cached: CachedVals,
     var: RtVar,
     queued: VecDeque<T::Args>,
@@ -1804,7 +1873,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         let panic_tag = panic_tag(&ctx.env, &resolved.unwrap_or(typ).rtype);
         let data_result = data_result::<T>(resolved);
         let t = CachedArgsAsync::<T> {
-            slept: false,
             var,
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
@@ -1824,14 +1892,12 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let slept = bool::decode(buf)?;
         let cached = CachedVals::image_decode(buf)?;
         let var = RtVar::image_decode(ctx, buf)?;
         let panic_tag = Pack::decode(buf)?;
         let data_result = Pack::decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
         Ok(Box::new(Self {
-            slept,
             cached,
             var,
             queued: VecDeque::new(),
@@ -1853,7 +1919,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         if !self.queued.is_empty() || self.inflight > 0 || !self.replaced.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.slept.encode(buf)?;
         self.cached.image_encode(buf)?;
         self.var.image_encode(buf)?;
         self.panic_tag.encode(buf)?;
@@ -1867,46 +1932,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         self.t.attach(ctx);
-        let woke = std::mem::take(&mut self.slept);
         let invocation = self.cached.update(ctx, from);
-        let start = match invocation {
-            Invocation::Fired => true,
-            // CR claude for eric: [bug/high] A wake restarts every async builtin over
-            // its standing arguments, including the ones that act on the world. A woken
-            // arm therefore performs the effect again even though its trigger never
-            // fired: sqlite::exec/exec_batch/begin/commit/rollback, non-GET http
-            // requests, the db writers, the cursor reads that advance a shared
-            // iterator, and sys::fs::write_all. In the probe, one trigger fire plus two
-            // wakes inserts three rows, while a sync println under the same trigger
-            // prints once. This follows design/async_sleep_outputs.md, but it
-            // contradicts the wake catch-up rule (a wake re-raises only fires no
-            // selected reader saw) and the sync Io rule (EvalCached::quiet computes
-            // without the effect). Proposed fix: give EvalCachedAsync an effect
-            // classification parallel to Effect::Io (for example an `ACTS` constant).
-            // An acting builtin would restart at a wake only when an argument fired
-            // during the sleep, never on `woke` alone; queries would keep restarting.
-            // Then mark the acting builtins, update async_sleep_outputs.md and
-            // CLAUDE.md, and add a pin per family. probe:
-            // design/review-2026-10-12/repro/http-sqlite-db1-02.gx (http-sqlite-db1-02)
-            // CR claude for eric: [bug/high] A wake reissues the call over its standing
-            // arguments even when the last call already completed before the arm slept.
-            // For a builtin that acts on the world, that repeats the action with no new
-            // trigger. Probe: design/review-2026-10-12/repro/db2-02.gx. There, one fire
-            // of the trigger pops two entries: db::pop_min runs again at the wake. The
-            // same holds for every effectful user of this wrapper: db
-            // insert/remove/batch/compare_and_swap/generate_id/cursor read/txn commit,
-            // sqlite exec, http requests, and stream writes. The rule is the documented
-            // one (CLAUDE.md's async-sleep sentence, design/async_sleep_outputs.md, pin
-            // wake_reissues_standing_async). It conflicts with wake catch-up, where a
-            // wake re-raises only fires no reader saw, and with the Io rule. Options:
-            // restart at the wake only a call that was in flight or queued when the arm
-            // slept, recorded in sleep(), with a completed call staying completed and
-            // its output phantom. Or add an EvalCachedAsync flag so only idempotent
-            // builtins restart. Either way, update the doc and the pin to match.
-            // (db2-02)
-            Invocation::Quiet => woke,
-            Invocation::Bottom { .. } => false,
-        };
+        let start = invocation == Invocation::Fired;
         let mut reply = ctx.event.variables.remove(&self.var.id).map(|tv| {
             self.inflight -= 1;
             tv.value()
@@ -2022,10 +2049,13 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         // buffer that an aborted read refills, while writes stay non-abortable. Either
         // way, write the rule into design/async_sleep_outputs.md. Probe:
         // design/review-2026-10-12/repro/x-builtin-effects-03.sh (x-builtin-effects-03)
+        // 2026-10-18 claude: Eric ruled 'no partial rebirth' (design/wake_catchup.md):
+        // a wake no longer re-issues an aborted call, so write_all no longer sends its
+        // buffer twice. What stands: an aborted read_exact/read_all drops the bytes it
+        // read, an aborted write_all leaves a partial write, and the cursor reads lose
+        // the entries their blocking task advanced past. Cancel safety is still this
+        // CR's question.
         self.renew(ctx);
-        self.cached.clear();
-        self.slept = true;
-        self.out = TagValue::phantom();
     }
 }
 
@@ -2084,7 +2114,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
             return bottom;
         }
         match seam_tick(x).and_then(|tv| match tv.value_cloned() {
-            v @ Value::Error(_) => Some(caused(v, tv.tag())),
+            v @ Value::Error(_) => Some(TagValue::fired(v)),
             _ => None,
         }) {
             Some(tv) => self.out.set(tv),
@@ -2153,7 +2183,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
                         None
                     } else {
                         self.val = true;
-                        Some(caused(tv.value_cloned(), tv.tag()))
+                        Some(TagValue::fired(tv.value_cloned()))
                     }
                 })
             }
@@ -2165,7 +2195,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.val = false;
         self.out = TagValue::phantom();
     }
@@ -2246,7 +2278,7 @@ impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
             }
             // take passes while its count runs; skip once it has run out,
             // or when it has none
-            (counting == TAKE).then(|| caused(tv.value_cloned(), tv.tag()))
+            (counting == TAKE).then(|| TagValue::fired(tv.value_cloned()))
         });
         match res {
             Some(tv) => self.out.set(tv),
@@ -2254,7 +2286,9 @@ impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.n = None;
         self.out = TagValue::phantom();
     }
@@ -2564,7 +2598,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
             return bottom;
         }
         let res = seam_tick(pred).and_then(|b| match b.value_cloned() {
-            Value::Bool(true) => self.pending.clone().map(|v| caused(v, b.tag())),
+            Value::Bool(true) => self.pending.clone().map(|v| TagValue::fired(v)),
             _ => None,
         });
         match res {
@@ -2590,8 +2624,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.pending = None;
         self.pred.sleep(ctx);
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        self.pending = None;
     }
 }
 
@@ -2602,6 +2639,7 @@ struct Queue {
     queue: VecDeque<(u64, Value)>,
     /// How many values have arrived.
     pushed: u64,
+    sent: InFlight<(u64, Value)>,
     var: RtVar,
     out: TagValue,
 }
@@ -2616,7 +2654,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         let queue = Vec::<(u64, Value)>::decode(buf)?.into();
         let pushed = decode_varint(buf)?;
         let var = RtVar::image_decode(ctx, buf)?;
-        Ok(Box::new(Self { triggered, queue, pushed, var, out: TagValue::phantom() }))
+        Ok(Box::new(Self {
+            triggered,
+            queue,
+            pushed,
+            sent: InFlight::default(),
+            var,
+            out: TagValue::phantom(),
+        }))
     }
 
     const NAME: &str = "core_queue";
@@ -2636,6 +2681,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
                     triggered: 0,
                     queue: VecDeque::new(),
                     pushed: 0,
+                    sent: InFlight::default(),
                     var,
                     out: TagValue::phantom(),
                 }))
@@ -2649,6 +2695,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.sent.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         encode_varint(self.triggered as u64, buf);
         encode_varint(self.queue.len() as u64, buf);
         for v in &self.queue {
@@ -2686,11 +2735,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
             self.pushed += 1;
         }
         let bottom = bottom_of([x_tag]);
-        while self.triggered > 0 && self.queue.len() > 0 {
+        while self.triggered > 0
+            && let Some((i, v)) = self.queue.pop_front()
+        {
             self.triggered -= 1;
-            ctx.rt.set_var(self.var.id, self.queue.pop_front().unwrap().1);
+            self.sent.send(ctx, &self.var, (i, v.clone()), v);
         }
-        match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
+        match self.sent.receive(ctx, &self.var) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => match bottom {
                 Some(bottom) => bottom,
@@ -2705,17 +2756,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
-        self.triggered = 0;
-        // CR claude for eric: [doc-drift/low] Queue::sleep discards every queued value.
-        // A seqq whose select arm sleeps therefore loses not only the run in progress
-        // (the reset seq_blocks.md §6.5 documents) but every request queued behind it,
-        // silently. Probe: design/review-2026-10-12/repro/x-engine-seq-errors-06.gx,
-        // where request 3 is never run after the wake and both engines agree. Needs a
-        // rule. If dropping is intended, add queue to CLAUDE.md's restart-builtin list
-        // and say in §6.5 and in core::queue's interface doc that a sleeping seqq
-        // discards its queue. If sleep should be a pause, keep the queue here, re-arm
-        // one credit at the wake, and pin it. (x-engine-seq-errors-06)
+        let back: SmallVec<[(u64, Value); 4]> = self.sent.take_back().collect();
+        self.triggered += back.len();
+        for item in back.into_iter().rev() {
+            self.queue.push_front(item)
+        }
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.queue.clear();
+        self.triggered = 0;
         self.out = TagValue::phantom();
     }
 }
@@ -2772,21 +2822,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let mut cause = None::<Tag>;
-        if let Some(tv) = seam_tick(from[0].update(ctx)) {
+        let mut ticked = false;
+        if seam_tick(from[0].update(ctx)).is_some() {
             self.triggered += 1;
-            cause = Some(tv.tag());
+            ticked = true;
         }
         if let Some(tv) = seam_tick(from[1].update(ctx)) {
             self.current = Some(tv.value_cloned());
-            cause = Some(cause.map_or(tv.tag(), |c| c.join(tv.tag())));
+            ticked = true;
         }
         if self.triggered > 0
-            && let Some(cause) = cause
+            && ticked
             && let Some(v) = self.current.take()
         {
             self.triggered -= 1;
-            self.out.set(caused(v, cause))
+            self.out.set(TagValue::fired(v))
         } else {
             self.out.ride()
         }
@@ -2794,7 +2844,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
 
     fn delete(&mut self, _: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _: &mut ExecCtx<'_, R, E>) {}
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.triggered = 0;
         self.current = None;
         self.out = TagValue::phantom();
@@ -2895,6 +2947,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
     }
 }
@@ -2984,16 +3039,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         let new_wait = seam_value(rate)
             .and_then(|tv| {
                 tv.with_value(|v| match v {
-                    Value::Duration(d) => Some((**d, tv.tag())),
+                    Value::Duration(d) => Some(**d),
                     _ => None,
                 })
             })
-            .filter(|(d, _)| *d != self.wait);
+            .filter(|d| *d != self.wait);
         let x = from[1].update(ctx);
         let x_tag = x.tag();
-        let mut up1 = None;
+        let mut up1 = false;
         if let Some(tv) = seam_value(x) {
-            up1 = tv.is_fired().then(|| tv.tag());
+            up1 = tv.is_fired();
             self.last_v = Some(tv.value_cloned());
         }
         // a value held for a timer delivers; a bottom stands in place of
@@ -3008,9 +3063,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             };
         }
         macro_rules! emit {
-            ($cause:expr) => {{
+            () => {{
                 match self.last_v.clone() {
-                    Some(v) => return self.out.set(caused(v, $cause)),
+                    Some(v) => return self.out.set(TagValue::fired(v)),
                     None => ride!(),
                 }
             }};
@@ -3018,11 +3073,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         // emit now if the wait since `last` has passed, else hold the
         // value for a timer
         macro_rules! maybe_schedule {
-            ($last:expr, $cause:expr) => {{
+            ($last:expr) => {{
                 let (last, now) = ($last, Instant::now());
                 if now - last >= self.wait {
                     self.run = Run::Open { last: now };
-                    emit!($cause)
+                    emit!()
                 } else {
                     let tid = BindId::new();
                     ctx.ref_var(tid, self.top_id);
@@ -3032,20 +3087,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 }
             }};
         }
-        if let Some((d, cause)) = new_wait {
+        if let Some(d) = new_wait {
             self.wait = d;
             if let Run::Pending { last, tid } = self.run {
                 ctx.release_var(tid, self.top_id);
-                maybe_schedule!(last, cause)
+                maybe_schedule!(last)
             }
         }
-        if let Some(cause) = up1 {
+        if up1 {
             match self.run {
                 Run::Idle => {
                     self.run = Run::Open { last: Instant::now() };
-                    emit!(cause)
+                    emit!()
                 }
-                Run::Open { last } => maybe_schedule!(last, cause),
+                Run::Open { last } => maybe_schedule!(last),
                 Run::Pending { .. } => (),
             }
         }
@@ -3054,7 +3109,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         {
             ctx.release_var(tid, self.top_id);
             self.run = Run::Open { last: Instant::now() };
-            emit!(Tag::FIRED)
+            emit!()
         }
         ride!()
     }
@@ -3068,6 +3123,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         self.run = Run::Idle;
+    }
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.last_v = None;
         self.out = TagValue::phantom();
     }
@@ -3119,15 +3177,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
             return bottom;
         }
         match seam_tick(x) {
-            Some(tv) => {
+            Some(_) => {
                 self.count += 1;
-                self.out.set(caused(Value::I64(self.count), tv.tag()))
+                self.out.set(TagValue::fired(Value::I64(self.count)))
             }
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.count = 0;
         self.out = TagValue::phantom();
     }
@@ -3212,7 +3272,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
             *last = None;
             return out.set_bottom(tv.tag().triggers());
         }
-        let Some((v, tag)) = seam_tick(tv).map(|tv| (tv.value_cloned(), tv.tag())) else {
+        let Some(v) = seam_tick(tv).map(|tv| tv.value_cloned()) else {
             return out.ride();
         };
         let cmp = match &self.2 {
@@ -3222,13 +3282,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         let changed = coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref());
         if changed {
             *last = Some(cmp);
-            out.set(caused(v, tag))
+            out.set(TagValue::fired(v))
         } else {
             out.ride()
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.0 = None;
         self.1 = TagValue::phantom();
     }

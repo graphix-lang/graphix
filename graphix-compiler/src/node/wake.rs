@@ -4,7 +4,7 @@
 
 use super::{VarRead, read_var};
 use crate::{
-    BindId, Event, ExecCtx, Refs, Rt, Tag, TagValue, UserEvent, branch::Prior, env::Env,
+    BindId, Event, ExecCtx, Refs, Rt, TagValue, UserEvent, branch::Prior, env::Env,
 };
 use nohash::{IntMap, IntSet};
 use smallvec::SmallVec;
@@ -29,12 +29,11 @@ pub(crate) struct TrackedFires {
     consumes: Vec<IntSet<BindId>>,
     /// The union of `per_arm`'s keys, each with how many arms read it.
     all: IntMap<BindId, u32>,
-    /// Sound fires no arm evaluation has consumed yet, each with its
-    /// tag: a real event, or a wake's own fire.
-    pending: IntMap<BindId, Tag>,
+    /// Sound fires no arm evaluation has consumed yet.
+    pending: IntSet<BindId>,
     /// A seq step's `let` fires, the entry of the first later step to
     /// read them: only an entered step takes them.
-    carried: IntMap<BindId, Tag>,
+    carried: IntSet<BindId>,
     /// Per arm: its refs were collected again after its first
     /// evaluation, which names what a node knows only once it ran (a
     /// `Deref`'s target).
@@ -44,14 +43,6 @@ pub(crate) struct TrackedFires {
 /// The catch-up deliveries made for one evaluation, with what each
 /// overwrote, for [`TrackedFires::restore`].
 pub(crate) type Injected = SmallVec<[(BindId, Prior<TagValue>); 4]>;
-
-/// Record a fire of `id` in `bits`: a real one outranks a wake's own.
-fn join_bit(bits: &mut IntMap<BindId, Tag>, id: BindId, tag: Tag) {
-    let t = bits.entry(id).or_insert(tag);
-    if !tag.is_wake() {
-        *t = Tag::FIRED
-    }
-}
 
 impl TrackedFires {
     /// An arm's tracked inputs into `inputs` and the pattern-bind inputs
@@ -100,8 +91,8 @@ impl TrackedFires {
             per_arm: (0..n).map(|_| IntMap::default()).collect(),
             consumes: (0..n).map(|_| IntSet::default()).collect(),
             all: IntMap::default(),
-            pending: IntMap::default(),
-            carried: IntMap::default(),
+            pending: IntSet::default(),
+            carried: IntSet::default(),
             ran: vec![false; n],
         };
         for i in 0..n {
@@ -245,9 +236,8 @@ impl TrackedFires {
                 && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
                 && tv.tag().is_fired()
             {
-                let tag = tv.tag().fresh_or_wake();
                 let bits = if carry { &mut *carried_bits } else { &mut *pending };
-                join_bit(bits, *id, tag);
+                bits.insert(*id);
             }
         }
     }
@@ -256,10 +246,10 @@ impl TrackedFires {
     pub(crate) fn enter(&mut self, i: usize) {
         let Some(set) = self.per_arm.get(i) else { return };
         let Self { carried, pending, .. } = self;
-        carried.retain(|id, tag| {
+        carried.retain(|id| {
             let read = set.contains_key(id);
             if read {
-                join_bit(pending, *id, *tag)
+                pending.insert(*id);
             }
             !read
         });
@@ -285,24 +275,14 @@ impl TrackedFires {
             }
         }
         let Some(set) = self.per_arm.get(i) else { return injected };
-        let keys: SmallVec<[(BindId, Tag); 8]> = self
-            .pending
-            .iter()
-            .filter(|(id, _)| set.contains_key(id))
-            .map(|(id, t)| (*id, *t))
-            .collect();
-        for (key, tag) in keys {
+        let keys: SmallVec<[BindId; 8]> =
+            self.pending.iter().filter(|id| set.contains_key(id)).copied().collect();
+        for key in keys {
             self.pending.remove(&key);
             for id in set[&key].iter().copied() {
                 let standing = match read_var(ctx, &id) {
-                    // a live fire as strong as the pending one delivers it; a
-                    // wake's own over a real fire is caught up as real
-                    Some(VarRead::Delivered(tv))
-                        if tv.tag().triggers()
-                            && (!tv.tag().is_wake() || tag.is_wake()) =>
-                    {
-                        None
-                    }
+                    // a live fire delivers itself
+                    Some(VarRead::Delivered(tv)) if tv.tag().triggers() => None,
                     Some(VarRead::Delivered(tv) | VarRead::Standing(tv))
                         if !tv.tag().is_bottom() =>
                     {
@@ -311,7 +291,7 @@ impl TrackedFires {
                     _ => None,
                 };
                 if let Some(v) = standing {
-                    let prior = ctx.event.variables.put(id, TagValue::tagged(v, tag));
+                    let prior = ctx.event.variables.put(id, TagValue::fired(v));
                     injected.push((id, prior));
                 }
             }

@@ -308,7 +308,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
 
     fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.once.reset();
     }
 }

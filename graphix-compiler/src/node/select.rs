@@ -58,6 +58,8 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// scrutinee, which may have moved while no reader was awake.
     slept: WakeBit,
     arm_facts: Option<LazyArmFacts>,
+    /// The compile's flags, for the definition check's warnings.
+    flags: BitFlags<CFlag>,
 }
 
 /// Facts about the arms that need the sealed scrutinee type or the
@@ -68,6 +70,9 @@ struct LazyArmFacts {
     /// Per arm: sleep on deselect? False only for a pure non-recursive
     /// body, which is neither slept nor updated while untaken.
     sleep_on_deselect: Vec<bool>,
+    /// Per arm: entered before. A first entry is the arm's birth, every
+    /// later one a resume.
+    entered: Vec<bool>,
     /// Per arm: the shallow discriminator of an inferred predicate.
     shallow: Vec<Option<Type>>,
     /// A value no arm matched was logged: once per select.
@@ -112,6 +117,7 @@ impl LazyArmFacts {
                 .iter()
                 .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
                 .collect(),
+            entered: vec![false; arms.len()],
             shallow: arms
                 .iter()
                 .map(|(pat, _)| pat.shallow_discriminant(&ctx.env, scrut))
@@ -153,8 +159,6 @@ struct EmissionPlanes {
     guard_fire: bool,
     /// A non-bottom fire was consumed.
     sound: bool,
-    /// A sound fire was a real event, not only a wake's constants.
-    real: bool,
     /// Any consumed input fired, bottom or not.
     anyfire: bool,
     /// A consulted guard's current channel is bottom.
@@ -167,7 +171,6 @@ impl EmissionPlanes {
         let mut planes = EmissionPlanes {
             guard_fire: false,
             sound: arg_prod.triggers(),
-            real: arg_prod.triggers() && !arg_prod.is_wake(),
             anyfire: arg_prod.triggers(),
             consulted_bottom: false,
         };
@@ -177,7 +180,6 @@ impl EmissionPlanes {
                 planes.guard_fire = true;
                 planes.anyfire = true;
                 planes.sound |= !t.is_bottom();
-                planes.real |= !t.is_bottom() && !t.is_wake();
             }
             planes.consulted_bottom |= t.is_bottom();
         }
@@ -185,20 +187,14 @@ impl EmissionPlanes {
     }
 
     /// The taken arm's production `(t, v)` as the select's: a value
-    /// fires when the arm or a sound consumed input fired, a real event
-    /// when one of those was; a bottom arm sets the select bottom, fresh
-    /// on the same condition.
+    /// fires when the arm or a sound consumed input fired; a bottom arm
+    /// sets the select bottom, fresh on the same condition.
     fn emit(&self, t: Tag, v: Option<Value>) -> TagValue {
         match v {
-            Some(v) if t.is_fired() || self.sound => {
-                let real = self.real || (t.is_fired() && !t.is_wake());
-                TagValue::tagged(v, if real { Tag::FIRED } else { Tag::WAKE_FIRED })
-            }
+            Some(v) if t.is_fired() || self.sound => TagValue::fired(v),
             Some(v) => TagValue::stale(v),
             None if t.triggers() || self.sound => {
-                let real = self.real || (t.triggers() && !t.is_wake());
-                let wake = Tag::from_raw(Tag::TAINT_BIT | Tag::WAKE_BIT);
-                TagValue::tagged(Value::Null, if real { Tag::FRESH_BOTTOM } else { wake })
+                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
             }
             None => TagValue::tagged(Value::Null, Tag::STALE_BOTTOM),
         }
@@ -228,6 +224,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
         typ: Type,
         spec: Arc<Expr>,
+        flags: BitFlags<CFlag>,
     ) -> Node<R, E> {
         Node::new(Self {
             selected: None,
@@ -239,6 +236,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
             arm_facts: None,
+            flags,
         })
     }
 
@@ -256,7 +254,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         }
         let typ = Type::decode(buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
-        Ok(Self::new(arg, arms, typ, spec))
+        Ok(Self::new(arg, arms, typ, spec, BitFlags::empty()))
     }
 
     pub(crate) fn compile(
@@ -293,8 +291,96 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             })
             .collect::<Result<Vec<_>>>()
             .at(&spec)?;
-        Ok(Self::new(arg, arms, Type::empty_tvar(), spec))
+        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, flags))
     }
+}
+
+/// Warn where an arm acts on constants alone: a `<-` whose right side
+/// reads no variable, or an effectful builtin call whose arguments read
+/// none. Constants fire at an arm's birth, its first entry, and stand at
+/// every later entry, which resumes the arm, so these act once. Nested
+/// lambdas, selects and seq machines are left to their own checks.
+fn warn_birth_only<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    n: &Node<R, E>,
+) -> Result<()> {
+    let reads_nothing = |n: &Node<R, E>| {
+        let mut refs = Refs::default();
+        n.refs(&mut refs);
+        let mut any = false;
+        refs.with_refs(|_| any = true);
+        !any
+    };
+    let warn = |spec: &Expr, what: &str| {
+        ctx.env.warn(
+            flags,
+            spec,
+            spec.pos,
+            spec.end.0,
+            format_args!(
+                "{what} reads no variable, so it acts only at this arm's first entry: \
+                 a later entry resumes the arm and its constants do not fire again. \
+                 Sample the event that selects the arm (`k ~ v`), or use a seq"
+            ),
+        )
+    };
+    crate::stack::ensure_sufficient(|| match n.view() {
+        NodeView::Lambda(_) | NodeView::Select(_) | NodeView::SeqMachine(_) => Ok(()),
+        // a handler's action runs on its errors, not at an entry
+        NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
+        NodeView::Connect(c) if reads_nothing(&c.node) => warn(&c.spec, "this write"),
+        NodeView::CallSite(cs)
+            if cs.arg_nodes().all(|a| reads_nothing(a))
+                && super::callsite::static_builtin(ctx, cs).is_some_and(|b| {
+                    matches!(
+                        ctx.builtin_effect(b),
+                        crate::Effect::Async | crate::Effect::Io(_)
+                    )
+                }) =>
+        {
+            warn(n.spec(), "this call")
+        }
+        _ => {
+            let mut r = Ok(());
+            n.for_each_child(&mut |c| {
+                if r.is_ok() {
+                    r = warn_birth_only(ctx, flags, c)
+                }
+            });
+            r
+        }
+    })
+}
+
+/// Warn where an arm holds a `seq` or `seqq` with no trigger: it runs at
+/// its birth, the arm's first entry, and not at a later one.
+fn warn_triggerless_seq<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    e: &Expr,
+) -> Result<()> {
+    crate::stack::ensure_sufficient(|| match &e.kind {
+        ExprKind::Lambda(_) | ExprKind::Select(_) => Ok(()),
+        ExprKind::Seq(s) if s.trigger.is_none() => ctx.env.warn(
+            flags,
+            e,
+            e.pos,
+            e.end.0,
+            "this seq has no trigger, so it runs only at this arm's first entry: a \
+             later entry resumes the arm. Trigger it on the event that selects the arm",
+        ),
+        ExprKind::Seq(_) => Ok(()),
+        _ => {
+            let mut r = Ok(());
+            e.for_each_child(&mut |c| {
+                if r.is_ok() {
+                    r = warn_triggerless_seq(ctx, flags, c)
+                }
+            });
+            r
+        }
+    })
 }
 
 /// Do two atoms test the same thing: equal literals and heads at every
@@ -1172,10 +1258,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident,
             slept,
             arm_facts,
+            flags: _,
         } = self;
         let LazyArmFacts {
             tracked,
             sleep_on_deselect,
+            entered,
             shallow,
             logged_no_match,
             guarded,
@@ -1327,11 +1415,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     Tag::STALE
                 };
                 arms[i].0.bind_event(ctx, v, bind_tag);
-                // An arm that sleeps on deselect enters under the wake
-                // view, its first selection included; a pure
-                // non-recursive arm, with nothing to pause, enters under
-                // `init` alone.
-                let view = if sleep_on_deselect[i] { View::Wake } else { View::Birth };
+                // An arm is born at its first entry, into a world it reads
+                // stale, and resumes at every later one, a pure arm too: its
+                // constants stand, as a kernel's do. A pure arm, not slept
+                // when deselected since nothing in it runs, is slept now so
+                // its nodes recompute from what stands, as a slept arm's do.
+                let view = match std::mem::replace(&mut entered[i], true) {
+                    true => {
+                        if !sleep_on_deselect[i] {
+                            arms[i].1.sleep(ctx);
+                        }
+                        View::Wake
+                    }
+                    false => View::Step,
+                };
                 // CR claude for eric: [bug/medium] An arm's tracked inputs come from
                 // `TrackedFires::new` at the select's first update and are refreshed
                 // only in `deselect`. `Deref::refs` names its target only after the
@@ -1390,6 +1487,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident: _,
             slept: _,
             arm_facts: _,
+            flags: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -1409,6 +1507,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident: _,
             slept,
             arm_facts: _,
+            flags: _,
         } = self;
         slept.set();
         arg.sleep(ctx);
@@ -1431,6 +1530,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident: _,
             slept: _,
             arm_facts: _,
+            flags: _,
         } = self;
         arg.node.refs(refs);
         for arm in arms {
@@ -1442,7 +1542,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?;
+        if self.flags.contains(CFlag::SeqStep) {
+            return Ok(());
+        }
+        for (_, n) in &self.arms {
+            warn_birth_only(ctx, self.flags, n)?;
+        }
+        if let ExprKind::Select(se) = &self.spec.kind {
+            for (_, body) in se.arms.iter() {
+                warn_triggerless_seq(ctx, self.flags, body)?;
+            }
+        }
+        Ok(())
     }
 
     fn typecheck0_instance(

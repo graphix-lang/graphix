@@ -628,11 +628,10 @@ pub(crate) fn produce_constant<'a, E: UserEvent>(
     resident: &'a mut TagValue,
     value: impl FnOnce() -> Value,
 ) -> &'a TagValue {
-    // a constant's resident is bottom only before it produced: it
-    // stands stale with its value off an init view, as a kernel's does
-    if event.init() {
-        let tag = if event.wake() { Tag::WAKE_FIRED } else { Tag::FIRED };
-        resident.set(TagValue::tagged(value(), tag))
+    // a constant fires where it is born; off a birth, a resume included,
+    // it stands stale with its value, as a kernel's does
+    if event.born() {
+        resident.set(TagValue::fired(value()))
     } else if resident.is_bottom() {
         resident.set(TagValue::stale(value()))
     } else {
@@ -1704,20 +1703,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // only a fired RHS writes
         let tv = self.node.update(ctx);
-        // CR claude for eric: [risk/low] A connect writes on a WAKE-only fire. An arm's
-        // constants fire WAKE at its wake, and Tag::join carries WAKE through every
-        // operator, so `x <- a * 2` re-writes its target at every re-entry of the arm
-        // while `y <- a` does not. A `?` behaves the same way: `(a /? 0)?` re-raises
-        // per entry, `(a /? b)?` with b=0 standing does not. That breaks
-        // design/wake_catchup.md rule 4: edge consumers tick only for events no
-        // selected reader saw. It also makes `a` -> `a + 0` a change in behaviour. Only
-        // Bind::update reads Tag::is_event. Decide the rule. Option one: a connect and
-        // a raise treat a WAKE-only fire as no event, and the "on entering this state"
-        // write stays only for a right-hand side made only of constants. Option two:
-        // book/src/core/select.md and wake_catchup.md say that any constant reaching
-        // the right-hand side makes entry a write, with the `x <- a` vs `x <- a + 0`
-        // example. probe: design/review-2026-10-12/repro/x-engine-firing-03.gx
-        // (x-engine-firing-04)
         if tv.is_fired() {
             ctx.rt.set_var(self.id, tv.value_cloned())
         }
@@ -2492,13 +2477,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx);
         let fired = t.tag().is_fired();
-        let fire = t.tag().fresh_or_wake();
         self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
             Banking::Strict => {
                 return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
                     (true, Some(v), false) => {
-                        self.resident.set(TagValue::tagged(v.clone(), fire))
+                        self.resident.set(TagValue::fired(v.clone()))
                     }
                     (true, _, _) => self.resident.set_bottom(true),
                     (false, _, _) => self.resident.ride(),
@@ -2542,10 +2526,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             (Some(_), _) if self.arg.tag.is_bottom() => self.resident.set_bottom(true),
             // paid in a cycle the trigger did not fire: the argument's
             // arrival is the event
-            (Some(v), _) => {
-                let tag = if fired { fire } else { self.arg.tag.fresh_or_wake() };
-                self.resident.set(TagValue::tagged(v.clone(), tag))
-            }
+            (Some(v), _) => self.resident.set(TagValue::fired(v.clone())),
             (None, Some(tv)) => self.resident.set(tv),
             (None, None) => self.resident.ride(),
         }

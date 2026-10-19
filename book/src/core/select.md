@@ -34,6 +34,11 @@ The code on the right side of the selected arm is the only code that is
 evaluated by select, all other code is "asleep", it will not be evaluated
 until it is selected (and if it has netidx subscriptions or published values
 they will be unsubscribed and unpublished until it is selected again).
+Sleep is a pause: when the arm is selected again it resumes where it
+stood. Its counters, `once`s and queues keep their state, a call it made
+is not made again, and the only events it sees are the ones that fired
+while it slept, each once, at its current value. The first time an arm
+is selected is its birth: its constants fire then, and only then.
 
 Like every other expression, a select updates whenever any of its inputs
 update: a new value of the argument, a new value read by a guard, or a new
@@ -508,14 +513,16 @@ how we would do something with every element of an array (see `array::map` and
 
 A connect inside an arm is an ordinary node of that arm: it fires
 when its right-hand side fires. Sample the event when the write
-should run on every delivery into the arm; a constant right-hand
-side fires when the constant does (init, or the arm's wake).
+should run on every delivery into the arm. A constant right-hand side
+fires when the constant does, at the arm's first entry and never
+again, so the check warns of it; the same goes for a call with an
+effect whose arguments are all constants, and a `seq` with no trigger.
 
 ```graphix
 select k.code {
   kk@ `Up => sel <- kk ~ (sel - 1),
   kk@ `Down => sel <- kk ~ (sel + 1),
-  `Enter => screen <- `Pick,
+  kk@ `Enter => screen <- kk ~ `Pick,
   _ => never()
 }
 ```

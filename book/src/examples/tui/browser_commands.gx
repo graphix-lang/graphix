@@ -50,10 +50,10 @@ let handle_normal_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
             `Stop
         }
     },
-    `Char(":") => {
-        command <- "";
-        command_error <- "";
-        command_mode <- true;
+    k@ `Char(":") => {
+        command <- k ~ "";
+        command_error <- k ~ "";
+        command_mode <- k ~ true;
         `Stop
     },
     _ => `Continue
@@ -65,7 +65,7 @@ let handle_command_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
         `Stop
     },
     x@ `Enter => {
-        command_mode <- false;
+        command_mode <- x ~ false;
         run_command(x ~! command, (x ~! selected_path)$);
         `Stop
     },
@@ -74,8 +74,8 @@ let handle_command_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
         command <- e ~ str::sub(#start:0, #len, command)$;
         `Stop
     },
-    `Esc => {
-        command_mode <- false;
+    k@ `Esc => {
+        command_mode <- k ~ false;
         `Stop
     },
     _ => `Continue

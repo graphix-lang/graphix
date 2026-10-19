@@ -923,3 +923,25 @@ fn a_lone_module_is_checked_against_its_interface() {
     c.edit("api.gx", "let x = \"s\"\n");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
 }
+
+/// An arm acts on constants only at its birth, its first entry, so a write
+/// or an effect that reads no variable, and a seq with no trigger, are
+/// warnings; what samples the arm's event, the seq machine's own writes,
+/// and a select in a seq step, which is born at every run, are not.
+#[test]
+fn birth_only_arm_actions_are_warnings() {
+    let src = "let k = 0;\nlet x = 0;\nselect k {\n    \
+               0 => { x <- 1; println(\"entered\"); seq { 1 } },\n    \
+               _ => { x <- k ~ 2; println(k ~ \"again\"); seq k { k } }\n};\n\
+               seq k { select k { 0 => x <- 3, _ => x <- 4 } }\n";
+    let mut c = Client::start(&[("a.gx", src)]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let mut w = c.warnings("a.gx");
+    w.sort();
+    let texts: Vec<&str> = w.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(texts, ["println(\"entered\")", "seq { 1 }", "x <- 1"], "{w:?}");
+    for (text, message) in &w {
+        assert!(message.contains("first entry"), "{text}: {message}");
+    }
+}

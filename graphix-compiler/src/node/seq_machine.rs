@@ -219,8 +219,14 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         let mut steps = Vec::with_capacity(m.steps.len());
         for s in m.steps.iter() {
             let scope = &scopes[s.scope as usize];
-            let (nodes, catches) =
-                compile_block_children(ctx, flags, scope, top_id, false, s.items.iter())?;
+            let (nodes, catches) = compile_block_children(
+                ctx,
+                flags | CFlag::SeqStep,
+                scope,
+                top_id,
+                false,
+                s.items.iter(),
+            )?;
             let next = s.next.map(|n| n as usize);
             // the value's let, by the name the lowering gave it
             let value = s.items.iter().position(|e| match &e.kind {
@@ -317,8 +323,8 @@ fn deselect<R: Rt, E: UserEvent>(
     tracked.refresh(&ctx.env, j, |r| step.refs(r));
 }
 
-/// Update step `k`, under the wake view when it is being `entered`, with
-/// its catch-up deliveries; its completion writes run only in the cycle
+/// Update step `k`, under the step view when it is being `entered` (a
+/// run's entry is its constants' birth), with its catch-up deliveries; its completion writes run only in the cycle
 /// it completes. Whether it completed.
 fn evaluate<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
@@ -327,7 +333,7 @@ fn evaluate<R: Rt, E: UserEvent>(
     step: &mut Step<R, E>,
     entered: bool,
 ) -> bool {
-    let view = if entered { View::Wake } else { View::Cycle };
+    let view = if entered { View::Step } else { View::Cycle };
     ctx.under(view, |ctx| {
         if entered {
             tracked.enter(k)

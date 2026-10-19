@@ -154,28 +154,48 @@ impl UserEvent for NoUserEvent {
 pub static CBATCH_POOL: LazyLock<Pool<Vec<(BindId, Box<dyn CustomBuiltinType>)>>> =
     LazyLock::new(|| Pool::new(10000, 1000));
 
-/// How an update reads what stands: in order, a stronger view includes
-/// the weaker.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+/// How an update reads what stands. Nested views join ([`View::join`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum View {
     /// An ordinary cycle: only what was delivered fired.
     #[default]
     Cycle,
-    /// A birth: standing values read as delivered.
+    /// A birth: standing values read as delivered and constants fire.
     Birth,
-    /// A select arm's or a seq step's wake: a birth, except that a `<-`
-    /// target that already holds a value keeps it.
+    /// A select arm's resume: a pause ends, so standing values read
+    /// stale, constants stand, and a `<-` target keeps its value; only
+    /// the fires the arm missed are delivered.
     Wake,
+    /// Nodes born into a world that stands: constants fire, standing
+    /// values read stale. An arm's first entry, a seq step entered for a
+    /// run, a birth inside a resume.
+    Step,
 }
 
 impl View {
-    /// A birth or a wake.
+    /// Anything but an ordinary cycle: standing values are re-read.
     pub fn init(self) -> bool {
         self != View::Cycle
     }
 
+    /// Standing values read stale, and a `<-` target keeps its value.
     pub fn wake(self) -> bool {
-        self == View::Wake
+        matches!(self, View::Wake | View::Step)
+    }
+
+    /// Constants fire: something here is born.
+    pub fn born(self) -> bool {
+        matches!(self, View::Birth | View::Step)
+    }
+
+    /// `inner` nested in `self`: each fact holds if either holds it.
+    pub fn join(self, inner: View) -> View {
+        match (self.born() || inner.born(), self.wake() || inner.wake()) {
+            (false, false) => View::Cycle,
+            (true, false) => View::Birth,
+            (false, true) => View::Wake,
+            (true, true) => View::Step,
+        }
     }
 }
 
@@ -211,6 +231,11 @@ impl<E: UserEvent> Event<E> {
 
     pub fn wake(&self) -> bool {
         self.view.wake()
+    }
+
+    /// Constants fire: something here is born.
+    pub fn born(&self) -> bool {
+        self.view.born()
     }
 
     /// Take the cycle's custom delivery for `id`.
@@ -558,11 +583,15 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// by builtins that create nodes.
     fn refs<'a>(&self, _refs: &mut Refs) {}
 
-    /// Pause the builtin (an unselected arm). Values and semantic state
-    /// are retained; a builtin that discards pending work or detaches an
-    /// event source must clear its output to phantom, and the restart
-    /// builtins clear their latches.
+    /// Pause the builtin (an unselected arm): it keeps its state and its
+    /// output, and aborts any operation in flight, which it does not
+    /// restart unless an argument fires.
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>);
+
+    /// Start afresh: the update after a sleep is a birth (a seq step
+    /// entered for its next run), so the builtin forgets what its last
+    /// run left, as a new one would hold nothing.
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     /// Emit this call site into the open JIT kernel as CLIF.
     /// `Ok(Some(cv))`: emitted. `Ok(None)`: shape not handled, and no
@@ -1894,7 +1923,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     #[inline]
     pub fn under<T>(&mut self, view: View, f: impl FnOnce(&mut Self) -> T) -> T {
         let prev = self.event.view;
-        self.event.view = prev.max(view);
+        self.event.view = prev.join(view);
         let r = f(self);
         self.event.view = prev;
         r

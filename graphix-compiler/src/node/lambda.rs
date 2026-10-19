@@ -602,7 +602,15 @@ impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
 
     /// Whether the definition is a Rust builtin's.
     pub(crate) fn is_builtin(&self) -> bool {
-        matches!(&self.origin, DefOrigin::Source { body: DefBody::BuiltIn(_), .. })
+        self.builtin_name().is_some()
+    }
+
+    /// The Rust builtin the definition is, by its registered name.
+    pub(crate) fn builtin_name(&self) -> Option<&ArcStr> {
+        match &self.origin {
+            DefOrigin::Source { body: DefBody::BuiltIn(name), .. } => Some(name),
+            _ => None,
+        }
     }
 }
 
@@ -1300,6 +1308,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.apply.sleep(ctx);
     }
+
+    fn reborn(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.apply.reborn(ctx);
+    }
 }
 
 #[derive(Debug)]
@@ -1464,6 +1476,8 @@ impl Lambda {
         l: &expr::LambdaExpr,
         _top_id: ExprId,
     ) -> Result<Node<R, E>> {
+        let mut flags = flags;
+        flags.remove(CFlag::SeqStep);
         let mut s: LPooled<Vec<&ArcStr>> = LPooled::take();
         for a in l.args.iter() {
             a.pattern.with_names(&mut |n| s.push(n));

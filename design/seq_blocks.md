@@ -394,7 +394,8 @@ enters the next cycle. A machine not yet planned, or planned
 conservatively, uses the next cycle everywhere. The last step writes
 `pc` idle. A block (`lower_block`) hoists each statement into a `let`
 under the step, connects `once(value)` (an answer on every run, a level
-as it stands at entry; `once` restarts when the step sleeps), and joins
+as it stands at entry; the step's entry for a run is a birth
+(`View::Step`), which rebirths its `once`), and joins
 the statements with a
 select over the tuple of their values, present once every statement
 has produced. `until` is refused where its value would be used: the
@@ -407,9 +408,10 @@ A passed step sleeps, and sleep is pause: a timer step's pending timer
 is cancelled (`Timer::sleep` unrefs it), a `sys::net` level effect
 inside it tears down, a process spawn is not cancelled (`kill_on_drop`
 is on drop). That is all the cancellation `abort` (§9) needs: every
-async builtin discards its in-flight work when it sleeps
+async builtin aborts its in-flight call when it sleeps
 (`async_sleep_outputs.md`), so an abandoned step cannot deliver into a
-later run. A retrigger does not stop an in-flight step — busy-drop is
+later run; the step's next entry is a birth (`View::Step`), whose
+`Apply::reborn` drops what a paused timer or wait kept. A retrigger does not stop an in-flight step — busy-drop is
 the default — and a step that never completes stalls the run until it
 is aborted.
 
@@ -418,10 +420,14 @@ lambda instance or an outer seq's step sleeps with its arm, and its
 interior cannot resume: the step it was waiting on has dropped its
 work, and on wake the machine would be busy, so it would drop the
 trigger that woke it (a `seqq` would lose its one credit for good).
-The machine's handler writes `pc` idle in its `sleep()`, as the
-restart builtins clear themselves in theirs; the write lands before the
+The machine's handler writes `pc` idle in its `sleep()` (the run is an
+operation in flight, which a sleep aborts); the write lands before the
 arm can wake. The steps' `let`s keep their values and are rebound by
-the next run.
+the next run. A `seqq`'s queue is kept (`queue` is pause, like every
+builtin's state), and the run the sleep aborted had taken its credit:
+the handler, given the queue's clock (`CatchRole::Machine::clock`),
+owes it and writes the clock at its first update after the wake, so the
+next request runs.
 
 ## 7. Errors
 

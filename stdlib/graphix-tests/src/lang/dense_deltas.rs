@@ -295,7 +295,8 @@ modes!(uniq_across_bottom);
 
 // A window with no arm (here a bottom scrutinee) pauses the selected
 // arm, which resumes with its state: presses goes on from where it
-// stood and entries counts the re-entry.
+// stood and entries, sampled on the scrutinee's delivery, counts the
+// re-entry.
 const NO_ARM_WINDOW_PAUSES: &str = r#"{
   let ev = 0;
   ev <- select ev { k if k < 8 => k + 1, _ => never() };
@@ -309,7 +310,7 @@ const NO_ARM_WINDOW_PAUSES: &str = r#"{
       i => {
         let presses = 0;
         presses <- ev ~ presses + 1;
-        entries <- (1 ~ entries) + 1;
+        entries <- (i ~ entries) + 1;
         (i, entries, presses)
       }
     },

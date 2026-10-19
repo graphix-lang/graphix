@@ -6,7 +6,8 @@ Pins: `stdlib/graphix-tests/src/lang/organic_deltas.rs` (one fixture per ruled d
 ## The rule
 
 **A node fires iff a consumed input fires.** Sources fire when they
-produce. Constants fire once, at init. Cadence is shaped explicitly —
+produce. Constants fire once, where they are born (a resume is no
+birth, `design/wake_catchup.md`). Cadence is shaped explicitly —
 `uniq`, `filter`, `~`, `once`/`take`/`skip` — and the compiler never
 stores a previous value or a previous selection to decide a tag.
 

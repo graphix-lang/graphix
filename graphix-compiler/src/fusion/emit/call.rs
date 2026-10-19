@@ -26,9 +26,8 @@ use smallvec::SmallVec;
 
 use super::{
     abi::{
-        CompiledExpr, FIRE_TEST, JitEnv, LocalKind, STALE, TAINT, ValueVar, WAKE,
-        clean_disc, emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc,
-        value_disc,
+        CompiledExpr, FIRE_TEST, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
+        emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom},
     lower::{CtxWord, LowerCtx, SiteLayout, TruncLeaf, TruncRec},
@@ -166,20 +165,6 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             None => stale_mask,
         }
     };
-    // the result is a wake's own fire when every arg's is, outside a
-    // genuine init, as the node-walk's CachedArgs joins it
-    let wake_fold = {
-        let mut all = cx.b.ins().iconst(types::I64, WAKE);
-        for (i, d) in arg_discs.iter().enumerate() {
-            if trigger.is_some_and(|t| t != i) {
-                continue;
-            }
-            let w = cx.b.ins().band_imm(*d, WAKE);
-            all = cx.b.ins().band(all, w);
-        }
-        let zero = cx.b.ins().iconst(types::I64, 0);
-        cx.b.ins().select(genuine, zero, all)
-    };
     let base = cx.b.ins().stack_addr(types::I64, slot, 0);
     let n = cx.b.ins().iconst(types::I64, args.len() as i64);
     let call = match &info.dispatch {
@@ -227,7 +212,6 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     cx.b.append_block_param(dmerge, pay_ty);
     // The returned disc's TAINT/STALE bits are the production's tag.
     let tagbits = cx.b.ins().band_imm(raw0, TAINT | STALE);
-    let tagbits = cx.b.ins().bor(tagbits, wake_fold);
     match ret_abi {
         Some(AbiKind::Scalar(p)) => {
             // A bottom's placeholder payload is harmless garbage, guarded
@@ -306,9 +290,8 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
                     (cx.b.ins().bor(base, tagbits), raw1)
                 }
-                // `raw0` is the real Value disc with the tag already in-band,
-                // but for the wake's own fire, which only the args know
-                _ => (cx.b.ins().bor(raw0, wake_fold), raw1),
+                // `raw0` is the real Value disc with the tag already in-band
+                _ => (raw0, raw1),
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
         }

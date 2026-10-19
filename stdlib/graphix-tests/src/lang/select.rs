@@ -1256,9 +1256,9 @@ run!(
     FuseExpect::Jit
 );
 
-// An arm that slept through a let's real fire catches it up as real even
-// when, in the cycle it wakes, the enclosing arm's wake republished that
-// let as a wake's own: its `<-` target takes the value.
+// An arm that slept through a let's fire catches it up even when, in the
+// cycle it wakes, the enclosing arm's wake republished that let stale: its
+// `<-` target takes the value.
 async fn wake_over_a_republished_let_catches_up(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
@@ -1353,9 +1353,9 @@ run!(
     FuseExpect::Jit
 );
 
-// A bottom initializer that only an arm's wake fired, through `$`, a cast
-// or a select arm, is the wake's own fire: the `<-` target keeps its
-// written value, as with `never()`.
+// A bottom initializer that an arm's wake only re-reads, through `$`, a
+// cast or a select arm, does not fire: the `<-` target keeps its written
+// value, as with `never()`.
 async fn wake_bottom_initializers_keep_the_written_value(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let run = |init: &str| {
@@ -2341,8 +2341,9 @@ run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, |v: Result<&V
     _ => false,
 }; FuseExpect::Jit);
 
-// Each entry writes the constant once more: init and two entries.
-const ARM_CONST_WRITES_AT_EACH_ENTRY: &str = r#"
+// A constant write fires at the arm's birth, its first entry, and not at
+// a later one, which resumes the arm: init and the first entry.
+const ARM_CONST_WRITES_AT_ITS_BIRTH: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 9 => s + 1, _ => never() };
@@ -2357,8 +2358,8 @@ const ARM_CONST_WRITES_AT_EACH_ENTRY: &str = r#"
 }
 "#;
 
-run!(arm_const_writes_at_each_entry, ARM_CONST_WRITES_AT_EACH_ENTRY, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(3)))
+run!(arm_const_writes_at_its_birth, ARM_CONST_WRITES_AT_ITS_BIRTH, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
 }; FuseExpect::Jit);
 
 const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
@@ -2746,8 +2747,8 @@ run!(select_arm_stale_bottom_at_wake, SELECT_ARM_STALE_BOTTOM_AT_WAKE, |v: Resul
 });
 
 // At a wake a connect target's initializer republishes when one of its
-// inputs fired, as it would had the arm never slept; the wake's own
-// constants, directly or through a `let`, leave the last write standing.
+// inputs fired, as it would had the arm never slept; the arm's constants
+// stand, directly or through a `let`, and leave the last write standing.
 const WAKE_INPUT_FIRE_REACHES_TARGET: &str = r#"
 {
   let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
@@ -2818,9 +2819,9 @@ async fn wake_keeps_target_of_unpublished_let(mode: Mode) -> Result<()> {
 
 modes!(wake_keeps_target_of_unpublished_let);
 
-// A restart builtin passing a wake's own constant emits a wake's fire, so
-// a `<-` target it initialises resumes after the wake as one a constant
-// initialises does (`base`).
+// A restart builtin over a constant passes nothing at a wake, where the
+// constant stands, so a `<-` target it initialises keeps its value after
+// the wake as one a constant initialises does (`base`).
 const WAKE_RESTART_BUILTINS_KEEP_TARGET: &str = r#"
 {
   let ep = 0;
@@ -3708,8 +3709,8 @@ run!(or_arm_wildcard_only_through_bare_name, "{ let f = |t: [(i64, i64), (i64, i
 run!(alternative_taken_by_structure, "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
 
-// A wake's own fire (a woken arm's constants, through any operator, call,
-// builtin, select, formal or collection loop) never rewrites a `<-`
+// A woken arm's constants stand (through any operator, call, builtin,
+// select, formal or collection loop), so they never rewrite a `<-`
 // target: each column is a target written twice, then slept (n = 3) and
 // woken (n = 4).
 const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
@@ -3781,8 +3782,8 @@ run!(
     |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:50, i64:50, i64:50]"
 );
 
-// A wake's fire that an inner arm catches up a cycle later is still the
-// wake's own.
+// An inner arm that wakes a cycle after its enclosing arm still finds the
+// enclosing arm's constants standing.
 const WAKE_FIRE_CAUGHT_UP_LATE: &str = r#"
 {
     let n = array::iter([0, 1, 2, 3, 4, 5, 6]);

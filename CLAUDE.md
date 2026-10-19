@@ -538,19 +538,16 @@ node graph IS the IR — there is no parallel typed IR
   every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the
   orthogonal fired×bottom algebra. A standing bottom re-delivers
   `StaleBottom` and never re-fires consumers; bottomness ORs over
-  consumed productions. A third bit, WAKE, marks a fire only a woken
-  arm's constants caused (and every stale tag): it ANDs as STALE does,
-  and only a `<-` target's `let` reads it (`design/wake_catchup.md`). In
-  the JIT the bits ride each param's disc (`STALE` masks bits 61 and 60,
-  `FIRE_TEST` bit 61 alone).
+  consumed productions. In the JIT the bits ride each param's disc
+  (`STALE` bit 61, `TAINT` bit 62).
 - **Organic firing** (`design/organic_firing.md`): a node fires iff a
   consumed input fires; nothing stores a previous value or selection to
   decide a tag; `uniq`/`filter`/`~` are the cadence tools. A select emits
   per fired input — scrutinee delivery, a CONSULTED guard, or the taken
   arm's own production; same-arm re-matches emit the arm's current
-  value. Constants fire at init (and at an arm's wake); every
-  argument-less literal (`` `Tag ``, `[]`, `{}`) is a constant
-  (`node::produce_constant`). Kernel outputs
+  value. A constant fires where it is born (`View::born`) and stands
+  stale everywhere else; every argument-less literal (`` `Tag ``, `[]`,
+  `{}`) is a constant (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
   resize, a fired slot, a fired empty source, a fired fold carry, or a
   source back from bottom. A bottom source forgets the length and runs
@@ -565,11 +562,21 @@ node graph IS the IR — there is no parallel typed IR
   guard is unknown, not false; a guard ticks every cycle but sees the
   scrutinee's value only where the chain reaches its arm (never one an
   earlier arm claimed). `&&`/`||` are strict (`false && ⊥ = ⊥`).
-- **Sleep is pause, not reset.** Value-channel state survives an arm's
-  sleep (`Held` residents at the select scrutinee, pattern guard and
-  `~`'s arg; `CachedVals` staging; collection slots; a `<-` target's
-  value, which a wake's constants never overwrite and a fired input of
-  its initializer does). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
+- **Sleep is pause, not reset; a wake is a resume, never a rebirth.**
+  The views (`View`): `Birth` (standing values read as delivered,
+  constants fire), `Wake` (a resume: standing values read stale,
+  constants stand, a `<-` target keeps its value), `Step` (born into a
+  world that stands: constants fire, standing values read stale), and
+  nested views join (`View::join`). An arm's first entry is a `Step`,
+  every later one a `Wake`; a seq step entered for a run is a `Step`. A
+  `let` re-raises, fired, a write to it that landed while it slept (a
+  fire no reader saw: `Bind::reraise_writes_while_asleep`). State
+  survives an arm's sleep (`Held` residents at the select scrutinee,
+  pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
+  a `<-` target's value, which only a fired input of its initializer
+  overwrites; the restart builtins' latches and counts; a `queue`'s
+  contents and credits, a delivery it sent but had not received taken
+  back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
   once, at their current value (one fire bit per arm-body input per
@@ -582,15 +589,23 @@ node graph IS the IR — there is no parallel typed IR
   every wake refresh stands a stale bottom like a value. Sleep state is
   LOCAL: every skip-owning node owns a `slept` bit its `sleep()` sets and
   its next update takes — no ExecCtx globals (parallel compile and a
-  parallel evaluator stay possible). The restart builtins
-  (`once`/`take`/`skip`/`uniq`/`hold`/`count`) and a seq machine's `pc`
-  clear in their own `sleep()`, a restart builtin's output included: a
-  woken one is a fresh one; configuration (`#n`, `#rate`) survives. A labeled DEFAULT is born with the binding and delivers
-  FIRED at a fresh callee's first dispatch. Async builtins clear their
-  output on sleep and start again over their present arguments at the
-  wake (`design/async_sleep_outputs.md`). An arm with no state, no
+  parallel evaluator stay possible). A builtin's state starts afresh
+  only where it is born again: a call site whose update after a sleep
+  is a birth calls `Apply::reborn` (a seq step's next run). A labeled
+  DEFAULT is born with the binding and delivers
+  FIRED at a fresh callee's first dispatch. Sleep aborts an async call
+  in flight and the wake restarts nothing: only an argument's fire
+  starts a call, and a call's result survives the sleep; an event
+  source (a timer, an idle wait, a subscription, a line reader, a
+  server) pauses (a timer's run resumes at the wake, a pending idle
+  wait too, a standing interest re-attaches) and its output, the last
+  event, does not survive (`design/async_sleep_outputs.md`). A seq
+  machine's run is aborted by its arm's sleep (`pc` to idle); a
+  `seqq`'s queue keeps its requests and the aborted run's credit is
+  returned at the wake. An arm with no state, no
   effect (an `Io` call included), no raise to a handler (an event, as a write is) and no recursive call
-  skips `sleep` and is not updated while untaken; a fused arm is judged
+  skips `sleep` and is not updated while untaken, and is slept at its
+  re-entry so it recomputes from what stands; a fused arm is judged
   by the region its kernel replaced (`analysis::RegionFacts`), so fusion
   decides nothing here.
 - **Activation state** (`design/activation_state.md`,
@@ -805,9 +820,12 @@ cycle, across workers; the compiler never pins threads.
 
 - **Sampling**: `e ~ v` is `v` at each fire of `e`, banking a trigger
   that finds `v` absent; `e ~! v` is strict (bottom, no bank). A connect
-  writes when its RHS fires; a constant RHS in an arm fires once when the
-  arm becomes selected (the "on entering this state" write); a handler
-  that must act on every event samples it. Both are tools, not lints.
+  writes when its RHS fires; a constant RHS in an arm fires only at the
+  arm's first entry, and the definition's check warns of it (and of an
+  effect call reading no variable, or a `seq` with no trigger, there:
+  `select.rs::warn_birth_only`; not in a seq step, born at every run,
+  `CFlag::SeqStep`); an action at every entry samples the
+  event that selects the arm (`k@ .. => x <- k ~ v`), or is a seq.
 - **`never<T>()` is syntax** (`ExprKind::Never`): typed bottom or `T`;
   args stay live and are consumed. An unannotated `let` over a ⊥
   initializer takes its type from its first use, a writer or a reader;
@@ -955,7 +973,9 @@ cycle, across workers; the compiler never pins threads.
   `analysis::plan_machines`, per instance): a callee's writes count, a
   read or write through a reference or a call with no static target
   counts as every variable; `until` and `try` follow the same rule.
-  Entering a step wakes it with `Select`'s catch-up (`node/wake.rs`).
+  Entering a step is its birth for the run (`View::Step`: constants fire,
+  the builtins in it are reborn) with `Select`'s catch-up
+  (`node/wake.rs`).
   A `{ .. }` statement issues its statements together with local lets. `until`,
   `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
   in a seq body outside lambda literals). A step completes on a FIRED
@@ -968,7 +988,9 @@ cycle, across workers; the compiler never pins threads.
   the machine updates); `e` is an initial step, asleep between runs, and
   only its fires after the entry cycle count. `flush(e)` (`seqq` only)
   also empties the queue. A machine resets to idle in its handler's
-  `sleep()`: a run does not survive its arm's sleep. `--expand` prints the
+  `sleep()`: a run does not survive its arm's sleep, and a `seqq`'s
+  handler owes its queue the aborted run's credit, paid at the wake
+  (`CatchRole::Machine::clock`). `--expand` prints the
   machine and each instance's step boundaries. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
 - **Comments** are legal only above an expression, a select arm, an impl

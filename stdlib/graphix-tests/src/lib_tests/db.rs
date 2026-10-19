@@ -1471,6 +1471,28 @@ run_with_tempdir!(
     }
 );
 
+// An async op in an arm runs on its trigger's fire, never again at the
+// arm's wake: one fire of `b` pops one entry, though the arm sleeps and
+// wakes before the count.
+run_with_tempdir!(
+    name: db_op_not_repeated_at_wake,
+    code: r#"{{
+        let d = db::open("{}")?;
+        let t: db::Tree<i64, i64> = db::tree(d, null)?;
+        let b = db::batch(t, [`Insert(1, 1), `Insert(2, 2), `Insert(3, 3)])?;
+        let on = true;
+        on <- sys::time::after_idle(duration:100.ms, b) ~ false;
+        on <- sys::time::after_idle(duration:200.ms, b) ~ true;
+        let popped = select on {{ true => db::pop_min(b ~ t)?, false => never() }};
+        db::len(sys::time::after_idle(duration:400.ms, popped) ~ t)?
+    }}"#,
+    setup: |td| { td.path().join("pop_wake.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::U64(2));
+        Ok(())
+    }
+);
+
 run_with_tempdir!(
     name: db_subscription_accessors_do_not_replay_on_wake,
     code: r#"{{

@@ -1185,9 +1185,8 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         self.current = source;
         {
             // a resize or a return is a new result whatever the source's
-            // tag, a wake's own when the source's is; so are moved
-            // elements under a result that reads them
-            let tag = if resized || back { tag.as_fire() } else { tag };
+            // tag; so are moved elements under a result that reads them
+            let tag = if resized || back { tag.fresh() } else { tag };
             if resized || back || (self.base.op.reads_elements() && moved) {
                 production = merge_tag(production, tag);
             }
@@ -1555,9 +1554,8 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
             pass_acc(ctx, slot.acc_id, init.clone(), old_len == 0);
         }
         if self.slots.is_empty() {
-            // a resize or a return is a new result whatever the source's
-            // tag, a wake's own when the source's is
-            let tag = if resized || back { tag.as_fire() } else { tag };
+            // a resize or a return is a new result whatever the source's tag
+            let tag = if resized || back { tag.fresh() } else { tag };
             return match init.tag() {
                 t if t.is_bottom() => self.resident.set_bottom(tag.join(t).triggers()),
                 t => {
@@ -1571,7 +1569,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // counts, for the bottom arm.
         let mut prod: Option<Tag> = None;
         if resized || back {
-            prod = merge_tag(prod, tag.as_fire());
+            prod = merge_tag(prod, tag.fresh());
         }
         let slots = &mut self.slots;
         let prod = woken_slots(ctx, old_len, paused, |ctx, views| {
@@ -1614,9 +1612,9 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         match self.slots.last().map(|s| &s.state) {
             Some(SlotState::Bottom) => self.resident.set_bottom_as(prod),
             // A fold fires iff it resized, a slot fired, or the source came
-            // back from bottom: a wake's own fire when each of those was.
+            // back from bottom.
             Some(SlotState::Value(v)) => {
-                let tag = if prod.triggers() { prod.fresh_or_wake() } else { Tag::STALE };
+                let tag = if prod.triggers() { Tag::FIRED } else { Tag::STALE };
                 let v = v.clone();
                 self.resident.set(TagValue::tagged(v, tag))
             }

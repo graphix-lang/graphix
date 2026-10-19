@@ -538,6 +538,8 @@ reject	wake-catchup-sep2026/07_fold_hof_qop_missed_emission.gx
 trace	wake-connect-target-sep2026/00_seq.gx
 trace	wake-connect-target-sep2026/01_never_let.gx
 trace	wake-connect-target-sep2026/02_arm_value.gx
+trace	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
+trace	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
 trace	wake-stale-bottom-sep2026/00_plain_select.gx
 trace	wake-stale-bottom-sep2026/01_seq_step.gx
 trace	wake-stale-bottom-sep2026/02_let.gx
