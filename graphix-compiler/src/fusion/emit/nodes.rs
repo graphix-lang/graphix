@@ -692,6 +692,37 @@ pub(crate) fn widen_result_to_value(
     }
 }
 
+/// An owned value-shaped production bound where its type is a composite
+/// (a select over arrays of different element types, under an array
+/// annotation): a present value's payload, which the types make the
+/// composite's bits, and an owned empty placeholder for a tainted one,
+/// whose payload need not be an array.
+pub(crate) fn narrow_value_to_composite(
+    cx: &mut BodyCx,
+    cv: CompiledExpr,
+) -> Result<CompiledExpr> {
+    let tainted = is_tainted(cx.b, cv.disc);
+    let keep_bl = cx.b.create_block();
+    let skip_bl = cx.b.create_block();
+    let merge = cx.b.create_block();
+    cx.b.append_block_param(merge, types::I64);
+    cx.b.ins().brif(tainted, skip_bl, &[], keep_bl, &[]);
+    cx.b.switch_to_block(keep_bl);
+    cx.b.seal_block(keep_bl);
+    cx.b.ins().jump(merge, &[BlockArg::Value(cv.payload)]);
+    cx.b.switch_to_block(skip_bl);
+    cx.b.seal_block(skip_bl);
+    emit_owned_drop(cx.b, cx.ctx, LocalKind::Value, cv)?;
+    let empty = cx.call_helper("graphix_valarray_empty", &[])?[0];
+    cx.b.ins().jump(merge, &[BlockArg::Value(empty)]);
+    cx.b.switch_to_block(merge);
+    cx.b.seal_block(merge);
+    let payload = cx.b.block_params(merge)[0];
+    let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = propagate_flags(cx.b, base, &[cv.disc]);
+    Ok(CompiledExpr::new(disc, payload))
+}
+
 /// True iff a callsite whose node type is `node_typ` needs
 /// [`widen_result_to_value`] on a result produced in the callee's `ret`
 /// shape. `Null` is exempt: its pair is already a valid Value.

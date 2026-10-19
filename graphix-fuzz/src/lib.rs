@@ -984,34 +984,91 @@ fn code_only(code: &str) -> String {
     without_strings(&stripped)
 }
 
-/// `code` with every string literal's contents blanked, so a marker in
-/// text is not a call.
+/// `code` with every string literal's text blanked, so a marker in text
+/// is not a call; what a string interpolates is code and stays. The
+/// contexts are the parser's (`grow.rs::unclosed_at_end`).
 fn without_strings(code: &str) -> String {
+    enum Ctx {
+        Str,
+        Raw(usize),
+        Template,
+        Interp,
+        Bracket,
+    }
     let b = code.as_bytes();
     let mut out = b.to_vec();
+    let mut stack: Vec<Ctx> = Vec::new();
     let mut i = 0;
     while i < b.len() {
-        // a raw string r#"..."#, closed by a quote and as many hashes
-        let hashes = b[i..].iter().skip(1).take_while(|&&c| c == b'#').count();
-        let raw = b[i] == b'r' && hashes > 0 && b.get(i + 1 + hashes) == Some(&b'"');
-        if raw || b[i] == b'"' {
-            let close: Vec<u8> = std::iter::once(b'"')
-                .chain(std::iter::repeat_n(b'#', if raw { hashes } else { 0 }))
-                .collect();
-            let mut j = if raw { i + hashes + 2 } else { i + 1 };
-            while j < b.len() && !b[j..].starts_with(&close) {
-                let esc = !raw && b[j] == b'\\';
-                out[j] = b' ';
-                if esc && j + 1 < b.len() {
-                    out[j + 1] = b' ';
-                    j += 1;
+        let ahead = |k: usize| b.get(i + k).copied();
+        let mut advance = 1;
+        let text = match stack.last() {
+            Some(Ctx::Str) => match b[i] {
+                b'\\' => {
+                    advance = 2;
+                    true
                 }
-                j += 1;
+                b'[' => {
+                    stack.push(Ctx::Interp);
+                    false
+                }
+                b'"' => {
+                    stack.pop();
+                    false
+                }
+                _ => true,
+            },
+            Some(Ctx::Raw(n)) => {
+                let n = *n;
+                if b[i] == b'"' && (1..=n).all(|k| ahead(k) == Some(b'#')) {
+                    stack.pop();
+                    advance = 1 + n;
+                    false
+                } else {
+                    true
+                }
             }
-            i = j + close.len();
-        } else {
-            i += 1;
+            Some(Ctx::Template) => match b[i] {
+                b'\\' if ahead(1) == Some(b'[') => {
+                    stack.push(Ctx::Interp);
+                    advance = 2;
+                    false
+                }
+                b'"' if ahead(1) == Some(b'"') && ahead(2) == Some(b'"') => {
+                    stack.pop();
+                    advance = 3;
+                    false
+                }
+                _ => true,
+            },
+            Some(Ctx::Interp | Ctx::Bracket) | None => {
+                match b[i] {
+                    b'"' if ahead(1) == Some(b'"') && ahead(2) == Some(b'"') => {
+                        stack.push(Ctx::Template);
+                        advance = 3;
+                    }
+                    b'"' => stack.push(Ctx::Str),
+                    b'r' if matches!(ahead(1), Some(b'"' | b'#')) => {
+                        let n = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                        if ahead(1 + n) == Some(b'"') {
+                            stack.push(Ctx::Raw(n));
+                            advance = 2 + n;
+                        }
+                    }
+                    b'[' => stack.push(Ctx::Bracket),
+                    b']' => {
+                        stack.pop();
+                    }
+                    _ => (),
+                }
+                false
+            }
+        };
+        let end = (i + advance).min(b.len());
+        if text {
+            out[i..end].fill(b' ');
         }
+        i = end;
     }
     String::from_utf8(out).expect("ASCII replaced ASCII and whole UTF-8 runs")
 }
@@ -6491,7 +6548,7 @@ mod trace_probes {
     }
 
     /// A marker names a builtin, not the tail of a longer name, a string's
-    /// text or a binding's name.
+    /// text or a binding's name; what a string interpolates is code.
     #[test]
     fn oracle_markers_are_whole_names() {
         assert_eq!(oracle_tier("{ let s = \"throttle\"; s }"), OracleTier::Exact);
@@ -6499,6 +6556,12 @@ mod trace_probes {
         assert_eq!(oracle_tier("{ let local_addr = 1; local_addr }"), OracleTier::Exact);
         assert_eq!(oracle_tier("{ let s = \"\\\"rand::\"; s }"), OracleTier::Exact);
         assert_eq!(oracle_tier("rand::rand()"), OracleTier::Excluded);
+        let interp = "\"[a[0]]-[json::read(\"1\")$]\"";
+        assert_eq!(oracle_tier(interp), OracleTier::FinalValues);
+        let template = "\"\"\"[x] \\[pack::read(b)$]\"\"\"";
+        assert_eq!(oracle_tier(template), OracleTier::FinalValues);
+        assert_eq!(oracle_tier("\"\\[json::read(b)]\""), OracleTier::Exact);
+        assert_eq!(oracle_tier("r\"[json::read(b)]\""), OracleTier::Exact);
         let read = "sys::fs::read_all(\"/x\")";
         assert_eq!(oracle_tier(read), OracleTier::FinalValues);
         let err = "{ let e = error(`X); sys::fs::read_all(\"/x\") }";

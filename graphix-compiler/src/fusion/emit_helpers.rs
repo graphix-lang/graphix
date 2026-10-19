@@ -1545,10 +1545,10 @@ unsafe fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     }
 }
 
-/// The value of struct field `sorted_idx`; `None` past the end or
-/// where no field is.
+/// The value of struct field `sorted_idx`; `None` past the end, where no
+/// field is, or in a tainted position's empty placeholder.
 fn struct_field(p: &ValArray, sorted_idx: usize) -> Option<&Value> {
-    rep::field_at(&p[rep::STRUCT_BASE..], sorted_idx).map(|(_, v)| v)
+    rep::field_at(p.get(rep::STRUCT_BASE..)?, sorted_idx).map(|(_, v)| v)
 }
 
 /// The returned words borrow the slot; no consumer may drop them or outlive it.

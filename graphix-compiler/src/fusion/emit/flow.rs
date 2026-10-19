@@ -35,7 +35,8 @@ use super::{
     },
     call::{CompositeSource, emit_drop_local, emit_owned_drop, owned_drop_kind},
     nodes::{
-        emit_bottom_placeholder, emit_bottom_placeholder_of_kind, widen_result_to_value,
+        emit_bottom_placeholder, emit_bottom_placeholder_of_kind,
+        narrow_value_to_composite, widen_result_to_value,
     },
     scalar::{cast_u64_to_prim, scalar_to_payload_i64},
     select::{classify_select_scrutinee, emit_let_binds, emit_select_arms},
@@ -394,10 +395,28 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             );
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let cv = value.emit_clif(cx)?;
-            let owned =
-                ensure_owned_composite_src(cx, node_composite_source(value), cv.payload)?;
-            bind_local(cx, name.clone(), cv.disc, owned, LocalKind::Composite, bind_id);
+            let source = node_composite_source(value);
+            let cv = match cx.node_kind(value.typ()) {
+                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                    let cv = value.emit_clif(cx)?;
+                    let (disc, payload) =
+                        ensure_owned_value_src(cx, source, cv.disc, cv.payload)?;
+                    narrow_value_to_composite(cx, CompiledExpr::new(disc, payload))?
+                }
+                _ => {
+                    let cv = value.emit_clif(cx)?;
+                    let owned = ensure_owned_composite_src(cx, source, cv.payload)?;
+                    CompiledExpr::new(cv.disc, owned)
+                }
+            };
+            bind_local(
+                cx,
+                name.clone(),
+                cv.disc,
+                cv.payload,
+                LocalKind::Composite,
+                bind_id,
+            );
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let cv = value.emit_clif(cx)?;

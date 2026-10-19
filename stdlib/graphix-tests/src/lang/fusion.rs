@@ -2409,3 +2409,39 @@ run!(native_destructuring_let, r#"{
     (f(3), g([1, 2]))
 }"#, |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["3 4 6 s4 4", ["1v1", "2v2"]]"#;
     FuseExpect::Jit);
+
+// A let typed as an array over a select whose arms are arrays of
+// different element types: the select merges as a value, and its bottom
+// (the failed cast) must bind as an empty array placeholder, not as the
+// value's null payload.
+run!(composite_let_over_value_select, r#"{
+    let b = v64:1000000;
+    b <- v64:3;
+    {
+        let x: Array<[i64, null]> = select (u8:255, cast<u8>(b)$) {
+            (u8:0, v) => [null, i64:7, null],
+            (v, w) => [null]
+        };
+        x
+    }
+}"#, |v: Result<&Value>| format!("{}", v.unwrap()) == "[null]"; FuseExpect::Jit);
+
+// A struct pattern reads the fields of a tainted scrutinee's empty
+// placeholder, which has no struct marker.
+run!(struct_pattern_over_placeholder, r#"{
+    let v6 = {
+        let v1 = queuefn(#trigger: cast<i64>(i8:127)$, |v2: i64| -> i64 v2);
+        let v3 = (v1(i64:1 * i64:-9223372036854775808), v1(i64:100 - i64:-9223372036854775808), v1(3));
+        let v4: {n: Map<string, f64>, y: [i64, null]} = select v3 {
+            (v4, i64:7 | i64:-100, i64:7 | i64:100) => { n: {"k1" => f64:2.5}, y: i64:-100 },
+            (v1, _, v4) => { n: {"k1" => f64:-1.0}, y: null }
+        };
+        let v5 = select v4 {
+            {n: v5, y: _} if ({ let l: bytes = bytes:aGVsbG8=; l } <= { let r: bytes = bytes:/+8=; r }) => i64:100,
+            {n: _, y: v1} if (true || false) => v3.1,
+            {n: v3, y: v5} => 3
+        };
+        ({ y: v5 }, v5)
+    };
+    null
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
