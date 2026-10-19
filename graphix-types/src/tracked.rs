@@ -218,12 +218,17 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             // release (one comparison per written key) or key Env::impls by
             // implementation so that independent registrations never share a key. Found
             // by reading; not run. (t-env-02)
+            let same = |a: Option<&V>, b: Option<&V>| match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.same_value(b),
+                _ => false,
+            };
+            // a write since the fork is replaced only by a different one
             debug_assert!(
-                base.as_ref().is_none_or(|base| match (self.map.get(&k), base.get(&k)) {
-                    (None, None) => true,
-                    (Some(now), Some(then)) => now.same_value(then),
-                    _ => false,
-                }),
+                same(map.get(&k), self.map.get(&k))
+                    || base
+                        .as_ref()
+                        .is_none_or(|base| same(self.map.get(&k), base.get(&k))),
                 "a fork's write to {k:?} would replace a write made since the fork"
             );
             match map.get(&k) {

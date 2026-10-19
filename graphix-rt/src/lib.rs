@@ -972,6 +972,13 @@ impl<X: GXExt> GXHandle<X> {
         }
     }
 
+    // CR claude for claude: [risk/medium] Writing a variable through a Ref compiled, set
+    // and dropped on each call made two GUI data_table tests time out about one
+    // full-suite run in fifteen; writing with GXHandle::set on the bind id ran 20 runs
+    // clean, so the tests now do that. Find whether a write through a Ref can be lost
+    // when the Ref drops before the write lands (the drop's unref racing the queued
+    // set), and pin it with a loop of compile_ref/set/drop under load. Reported by the
+    // 10-19 GUI/TUI CR-fix agent; not reproduced in isolation. (ref-drop-race-01)
     /// Compile a ref to a bind id
     ///
     /// This will NOT return an error if the id isn't in the environment.
