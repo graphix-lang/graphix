@@ -2359,7 +2359,7 @@ let result = table(&[table_column(&text(&"t"))], &[[dt]])
     let wait = |want: [&'static str; 2]| {
         move |h: &mut GuiTestHarness| {
             h.before_view();
-            order(&h.widget).is_some_and(|o| o == want)
+            order(&h.root.w).is_some_and(|o| o == want)
         }
     };
     h.wait_until(wait(["r1", "r0"]), std::time::Duration::from_secs(5), "first sort")

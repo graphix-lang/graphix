@@ -15,18 +15,18 @@ async fn canvas_harness(
          let result = canvas(#width: &`Fill, #height: &`Fixed(200.0), &[{shapes_expr}])"
     );
     let h = GuiTestHarness::new(&code).await?;
-    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().expect("a canvas");
+    let canvas = h.root.w.as_any().downcast_ref::<CanvasW<NoExt>>().expect("a canvas");
     assert_eq!(canvas.shape_count(), Some(expected_count));
     Ok(h)
 }
 
 fn invalid_geometry(h: &GuiTestHarness) -> bool {
-    h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap().has_invalid_geometry()
+    h.root.w.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap().has_invalid_geometry()
 }
 
 /// Render, every shape drawn: none skipped as invalid geometry.
 async fn render_all(h: &mut GuiTestHarness) -> Result<()> {
-    h.render().await?;
+    h.render()?;
     assert!(!invalid_geometry(h), "a shape was skipped");
     Ok(())
 }
@@ -207,7 +207,7 @@ async fn canvas_overflowing_circle_is_skipped() -> Result<()> {
         "`Circle({center: {x: 300000000000000000000000000000000000000.0, y: 50.0}, \
          radius: 300000000000000000000000000000000000000.0, fill: color(#g: 1.0)$, stroke: null})",
     ).await?;
-    h.render().await?;
+    h.render()?;
     assert!(invalid_geometry(&h));
     Ok(())
 }
@@ -233,7 +233,7 @@ async fn canvas_overflowing_filled_rectangle_is_skipped() -> Result<()> {
          fill: color(#g: 1.0)$, stroke: null})",
     )
     .await?;
-    h.render().await?;
+    h.render()?;
     assert!(invalid_geometry(&h));
     Ok(())
 }

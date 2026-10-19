@@ -73,3 +73,32 @@ async fn a_single_child_survives_a_failed_recompile_and_retry() -> Result<()> {
     assert_eq!(child.r.last, Some(proposed));
     Ok(())
 }
+
+/// A result that changes rebuilds the harness's root, as a window's
+/// content is rebuilt.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_result_rebuilds_the_root() -> Result<()> {
+    use crate::widgets::canvas::CanvasW;
+    let mut h = GuiTestHarness::new(
+        r#"
+        use gui::{color, canvas::canvas};
+        let n = 0;
+        let line = `Line({from: {x: 0.0, y: 0.0}, to: {x: 1.0, y: 1.0}, color: color(#r: 1.0)$, width: 1.0});
+        let result = select n { 0 => canvas(&[]), _ => canvas(&[line]) }
+    "#,
+    )
+    .await?;
+    let shapes = |h: &GuiTestHarness| {
+        h.root
+            .w
+            .as_any()
+            .downcast_ref::<CanvasW<NoExt>>()
+            .expect("a canvas")
+            .shape_count()
+    };
+    assert_eq!(shapes(&h), Some(0));
+    named_ref(&h, "test::n").await?.set(Value::I64(1))?;
+    h.drain().await?;
+    assert_eq!(shapes(&h), Some(1));
+    Ok(())
+}

@@ -7,26 +7,24 @@ use crate::{
     widgets::chart::{ChartMode, ChartState, ChartW, PlotInfo},
 };
 use graphix_rt::NoExt;
-use iced_core::{Color, Point, Rectangle, Size, clipboard, mouse};
-use iced_runtime::user_interface::Cache;
-use iced_wgpu::graphics::Viewport;
+use iced_core::{Point, Rectangle, Size, mouse};
 use iced_widget::canvas::Program;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 
 fn chart(h: &GuiTestHarness) -> &ChartW<NoExt> {
-    h.widget.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart")
+    h.root.w.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart")
 }
 
 /// Draw the chart through its program into `state` at `size`, returning
 /// the plot area the draw recorded.
 async fn draw_in(h: &GuiTestHarness, state: &ChartState, size: Size) -> Option<PlotInfo> {
-    let renderer = h.renderer().await.borrow();
+    let frame = h.frame_state();
     let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
     let bounds = Rectangle::new(Point::ORIGIN, size);
     let _ = Program::draw(
         chart(h),
         state,
-        &renderer,
+        &frame.renderer,
         &theme,
         bounds,
         mouse::Cursor::Unavailable,
@@ -36,25 +34,6 @@ async fn draw_in(h: &GuiTestHarness, state: &ChartState, size: Size) -> Option<P
 
 async fn draw(h: &GuiTestHarness) -> Option<PlotInfo> {
     draw_in(h, &ChartState::default(), Size::new(400.0, 300.0)).await
-}
-
-async fn screenshot(h: &mut GuiTestHarness) -> Vec<u8> {
-    h.renderer().await;
-    let mut renderer = h.renderer.get().unwrap().borrow_mut();
-    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
-    crate::frame::frame(
-        &mut h.widget,
-        Size::new(400.0, 200.0),
-        &mut Cache::default(),
-        &mut renderer,
-        &[],
-        mouse::Cursor::Unavailable,
-        &mut clipboard::Null,
-        &mut Vec::new(),
-        &theme,
-    );
-    renderer
-        .screenshot(&Viewport::with_physical_size(Size::new(400, 200), 1.0), Color::BLACK)
 }
 
 fn color_pixels(rgba: &[u8], color: [u8; 3]) -> usize {
@@ -165,7 +144,7 @@ async fn background_color() -> Result<()> {
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    assert!(color_pixels(&screenshot(&mut h).await, [255, 0, 255]) > 40_000);
+    assert!(color_pixels(&h.screenshot(400, 200), [255, 0, 255]) > 40_000);
     assert!(draw(&h).await.is_some());
     Ok(())
 }
@@ -184,7 +163,7 @@ async fn mesh_style() -> Result<()> {
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    assert!(color_pixels(&screenshot(&mut h).await, [0, 255, 0]) > 100);
+    assert!(color_pixels(&h.screenshot(400, 200), [0, 255, 0]) > 100);
     assert!(draw(&h).await.is_some());
     Ok(())
 }
@@ -243,7 +222,7 @@ async fn shared_style_with_update() -> Result<()> {
            chart(#title: &\"a\", #style: &deck, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])]),\
            chart(#title: &\"b\", #style: &big, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])])])";
     let mut h = GuiTestHarness::new(code).await?;
-    h.render().await?;
+    h.render()?;
     Ok(())
 }
 
@@ -648,7 +627,7 @@ async fn assert_same_series_pixels(actual: &str, expected: &str) -> Result<()> {
     };
     let mut actual = chart_harness(&args(actual)).await?;
     let mut expected = chart_harness(&args(expected)).await?;
-    assert!(screenshot(&mut actual).await == screenshot(&mut expected).await);
+    assert!(actual.screenshot(400, 200) == expected.screenshot(400, 200));
     Ok(())
 }
 
@@ -677,7 +656,7 @@ async fn clipped_candles_keep_their_gain_color() -> Result<()> {
            &[{x: 2.0, open: 6.0, high: 8.0, low: 2.0, close: 7.0}])]",
     )
     .await?;
-    let pixels = screenshot(&mut h).await;
+    let pixels = h.screenshot(400, 200);
     assert!(color_pixels(&pixels, [0, 255, 0]) > 10);
     assert_eq!(color_pixels(&pixels, [255, 0, 255]), 0);
     Ok(())
@@ -762,7 +741,7 @@ async fn a_single_bar_label_is_centered_in_the_plot() -> Result<()> {
     .await?;
     let info =
         draw_in(&h, &ChartState::default(), Size::new(400.0, 200.0)).await.unwrap();
-    let pixels = screenshot(&mut h).await;
+    let pixels = h.screenshot(400, 200);
     let mut xs = pixels.chunks_exact(4).enumerate().filter_map(|(i, px)| {
         (i / 400 > info.rect.y as usize + info.rect.height as usize
             && px[..3] == [255, 0, 255])
@@ -1014,7 +993,8 @@ async fn equal_dataset_events_keep_the_compiled_data() -> Result<()> {
     };
     let before = data_id(&h);
     assert!(!super::update_widget(
-        &mut h.widget,
+        &mut h.root,
+        &h.f.gx,
         &tokio::runtime::Handle::current(),
         id,
         &value
@@ -1030,7 +1010,8 @@ async fn a_failed_dataset_recompile_is_retryable() -> Result<()> {
     for _ in 0..2 {
         assert!(
             super::update_widget(
-                &mut h.widget,
+                &mut h.root,
+                &h.f.gx,
                 &tokio::runtime::Handle::current(),
                 id,
                 &Value::Null
@@ -1061,7 +1042,7 @@ async fn chart_text_sizes_are_validated_before_drawing() -> Result<()> {
             match result {
                 Ok(mut h) => {
                     if size == "0.0" || size == "16.0" {
-                        screenshot(&mut h).await;
+                        h.screenshot(400, 200);
                     }
                     assert_eq!(size, "16.0", "accepted {field} size {size}");
                 }

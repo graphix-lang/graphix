@@ -697,7 +697,7 @@ async fn stack_children_follow_rotation() -> Result<()> {
             n
         };
         let (mut i, mut out) = (0, Vec::new());
-        h.inner.widget.for_each_child(&mut |c| {
+        h.inner.root.w.for_each_child(&mut |c| {
             if i == 1 {
                 c.for_each_child(&mut |slide| out.push(count(slide)));
             }
@@ -721,7 +721,7 @@ async fn text_input_ctrl_v_pastes() -> Result<()> {
          let result = text_input(#on_input: |s| null, &\"\")"
     );
     let mut h = InteractionHarness::new(&code).await?;
-    h.clipboard.0 = Some("pasted".into());
+    h.inner.frame_state().clipboard.0 = Some("pasted".into());
     h.click(WIDGET_HIT);
     let msgs = h.press_ctrl("v");
     expect_call_with_args(
@@ -957,7 +957,7 @@ async fn sliders_are_f64_and_continuous() -> Result<()> {
             .await?;
     assert!(free > 0.05 && free < 0.95, "{free}");
     let mut h = harness("progress_bar(#min: &1.0, #max: &0.0, &0.5)").await?;
-    h.inner.render().await
+    h.inner.render()
 }
 
 /// A context menu opens at a right-click, chooses an item at a click,
@@ -1256,7 +1256,7 @@ async fn invalid_slider_ranges_are_inert() -> Result<()> {
                 !msgs.iter().any(|m| matches!(m, super::Message::Call(..))),
                 "{kind} {min}..{max}: {msgs:?}"
             );
-            h.inner.render().await?;
+            h.inner.render()?;
         }
     }
     Ok(())
