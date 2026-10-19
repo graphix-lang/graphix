@@ -46,7 +46,7 @@ const SELECTSTRUCT: &str = r#"
 {
   type T = { foo: string, bar: f64, baz: f64 };
   let x = { foo: "bar", bar: 42.0, baz: 84.0 };
-  select x {
+  #[native] select x {
     T as { foo: "foo", bar: 8.0, baz } => baz,
     T as { bar, baz, .. } => bar + baz
   }
@@ -131,7 +131,7 @@ const NESTEDMATCH1: &str = r#"
 {
   type T = { foo: {x: string, y: f64, z: f64}, bar: i64, baz: f64 };
   let x = { foo: { x: "bar", y: 42.0, z: 5.0 }, bar: 42, baz: 84.0 };
-  select x {
+  #[native] select x {
     T as { foo: { y, z, .. }, .. } => y + z
   }
 }
@@ -436,7 +436,7 @@ run!(select_slice_cover_ladder, SELECT_SLICE_COVER_LADDER, |v: Result<&Value>| {
 // The pool covers the array member; the null member needs its own arm.
 const SELECT_SLICE_COVER_UNION: &str = r#"
 {
-  let f = |xs: [Array<i64>, null]| -> i64 select xs {
+  let f = |xs: [Array<i64>, null]| -> i64 #[native] select xs {
     null as _ => -1,
     [] => 0,
     [init.., last] => last
@@ -447,7 +447,7 @@ const SELECT_SLICE_COVER_UNION: &str = r#"
 
 run!(select_slice_cover_union, SELECT_SLICE_COVER_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A hole in the length ladder refuses and the message names it.
 const SELECT_SLICE_HOLE: &str = r#"
@@ -1847,7 +1847,7 @@ run!(or_first_match, OR_FIRST_MATCH, |v: Result<&Value>| {
 });
 
 const OR_NESTED: &str = r#"
-select `A(2) { `A(1 | 2) => "y", _ => "n" }
+#[native] select `A(2) { `A(1 | 2) => "y", _ => "n" }
 "#;
 
 run!(or_nested, OR_NESTED, |v: Result<&Value>| {
@@ -2050,8 +2050,8 @@ const SELECT_TUPLE_UNION_MEMBER_NATIVE: &str = r#"
 }
 "#;
 
-run!(select_tuple_union_member_node_walks, SELECT_TUPLE_UNION_MEMBER_NATIVE,
-    refused("did not fully fuse to native code"); FuseExpect::None; jit_only);
+run!(select_tuple_union_member_native, SELECT_TUPLE_UNION_MEMBER_NATIVE,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(9))); FuseExpect::Jit);
 
 // An @-capture in an or-arm types as the union of its per-alternative
 // narrowed types.
@@ -2265,7 +2265,7 @@ const NEVER_ARMS_ABSORB: &str = r#"
     1 => select m { null as _ => never(), at => at },
     _ => never()
   };
-  select u { string as s => str::len(s) }
+  #[native] select u { string as s => str::len(s) }
 }
 "#;
 
@@ -3547,8 +3547,8 @@ run!(coverage_head_grid, r#"{
 // A nested or-pattern names a set of heads at its position.
 run!(coverage_nested_or, r#"{
     let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A | `B) => 1, (false, _) => 2 };
-    f((true, `B))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+    #[native] f((true, `B))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
 
 // A later bind does not hold what an earlier `null` arm took.
 run!(
@@ -3603,8 +3603,8 @@ run!(
     r#"{
     let a: Array<[i64, null]> = [null, 2];
     let b: Array<[`A, `B]> = [`B];
-    let x = select a { [x, 1 | 2] => select x { null => 10, i64 as n => n }, _ => 9 };
-    let y = select b { [`B | `A] => 1, _ => 0 };
+    let x = #[native] select a { [x, 1 | 2] => select x { null => 10, i64 as n => n }, _ => 9 };
+    let y = #[native] select b { [`B | `A] => 1, _ => 0 };
     x + y
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(11)))

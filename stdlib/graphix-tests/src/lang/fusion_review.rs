@@ -285,3 +285,42 @@ run!(fed_arg_raising_through_a_dynamic_call, r#"
     sys::time::after_idle(duration:10.ms, log)
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["fused", "fed"]"#); FuseExpect::Jit);
+
+// Select shapes that fuse: a literal of any type or a bind-free
+// or-pattern at an element or payload position (t*), a composite pattern
+// over an option of a composite (o*), an or-arm whose shared name binds
+// at different kinds (w*), a type test of the scrutinee's own type (y*).
+run!(select_leaves_options_or_kinds_and_own_type_tests, r#"
+{
+  let t0 = |a: (string, i64)| -> i64 #[native] select a { ("a", n) => n, _ => 0 };
+  let t1 = |a: Array<string>| -> i64 #[native] select a { ["a", ..] => 1, _ => 0 };
+  let t2 = |a: Array<[i64, null]>| -> i64 #[native] select a { [1, ..] => 5, [null, ..] => 6, _ => 0 };
+  let t3 = |v: (bool, [`A, `B])| -> i64 #[native] select v { (true, `A | `B) => 1, (false, _) => 2 };
+  let t4 = |a: Array<i64>| #[native] select a { [x, 1 | 2] => x, _ => 0 };
+  let t5 = |v: [`A(i64), `B]| #[native] select v { `A(1 | 2) => "y", _ => "n" };
+  let t6 = |s: [string, null], n: i64| #[native] select (s, n) { (null, _) => 0, (_, m) => m };
+  let t7 = |s: [i64, null], n: i64| #[native] select (s, n) { (0, _) => 0, (_, m) => m };
+  let t8 = |v: [`A([i64, null]), `B]| #[native] select v { `A(null) => "null", `A(_) => "some", `B => "b" };
+  let o0 = |a: [Array<string>, null]| #[native] select a {
+      null as _ => -1,
+      [s, rest..] => str::len(s) + array::len(rest),
+      [] => 0
+  };
+  let o1 = |t: [(i64, i64), null]| #[native] select t { null as _ => 0, (x, y) => x + y };
+  let o2 = |v: [{x: i64, y: i64}, null]| #[native] select v { null as _ => -1, {x, y} => x + y };
+  let o3 = |v: [(i64, i64), null]| #[native] select v { (i64, i64) as (x, y) => x * y, null as _ => -2 };
+  let w0 = |v: [`A(i64), `B(f64), `C]| #[native] select v { `A(x) | `B(x) => "[x]", `C => "c" };
+  let w1 = |v: [`A(i64), `B(string), `C]| #[native] select v { `A(x) | `B(x) => "[x]", `C => "c" };
+  let y0 = |a: Array<i64>| #[native] select a { Array<i64> as [h, ..] => h, _ => 0 };
+  let y1 = |t: (i64, string)| #[native] select t { (i64, string) as (n, _) => n };
+  let y2 = |s: string| #[native] select s { string as x => str::len(x) };
+  (
+    (t0(("a", 2)), t0(("b", 2)), t1(["a"]), t1(["b"]), t2([1]), t2([null]), t2([2])),
+    (t3((true, `B)), t3((false, `A)), t4([3, 2]), t4([3, 4]), t5(`A(2)), t5(`A(3)), t5(`B)),
+    (t6(null, 2), t6("x", 3), t7(0, 4), t7(null, 4), t7(5, 6), t8(`A(null)), t8(`A(1)), t8(`B)),
+    (o0(null), o0(["ab", "c"]), o0([]), o1(null), o1((1, 2)), o2({x: 3, y: 4}), o2(null), o3((2, 5)), o3(null)),
+    (w0(`A(1)), w0(`B(2.5)), w1(`B("s")), w1(`A(4)), w0(`C)),
+    (y0([7]), y0([]), y1((2, "x")), y2("abc"))
+  )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[[i64:2, i64:0, i64:1, i64:0, i64:5, i64:6, i64:0], [i64:1, i64:2, i64:3, i64:0, "y", "n", "n"], [i64:0, i64:3, i64:0, i64:4, i64:6, "null", "some", "b"], [i64:-1, i64:3, i64:0, i64:0, i64:3, i64:7, i64:-1, i64:10, i64:-2], ["1", "2.5", "s", "4", "c"], [i64:7, i64:0, i64:2, i64:3]]"#); FuseExpect::Jit);
