@@ -513,13 +513,13 @@ fn call_hook_over<R: Rt, E: UserEvent>(
     Hooked::Ran(r)
 }
 
-// CR claude for claude: [structure/low] HookState only wraps the ExecCtx pointer, and
-// each of the six dispatch_* functions repeats the same two unsafe casts with copied
-// SAFETY comments. Store the ExecCtx pointer itself in ValueHookDispatch::state and add
-// one `unsafe fn` that turns `state` into `&mut ExecCtx`, so the loan's invariant is
-// written and checked in one place. Found by reading; not run. (c-module-traits-08)
-struct HookState<'a, R: Rt, E: UserEvent> {
-    ctx: *mut ExecCtx<'a, R, E>,
+/// The context a `with_hooks` frame lent as a hook's `state`.
+///
+/// # Safety
+/// `state` is that frame's context, the frame is live, and nothing else
+/// uses the context while the dispatch runs.
+unsafe fn lent<'s, R: Rt, E: UserEvent>(state: *mut u8) -> &'s mut ExecCtx<'s, R, E> {
+    unsafe { &mut *(state as *mut ExecCtx<'s, R, E>) }
 }
 
 /// Re-wrap a `GxAbstract` (received by reference inside the vtable
@@ -564,9 +564,8 @@ fn key_bottoms<R: Rt, E: UserEvent>(
 }
 
 fn dispatch_eq_applies<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> bool {
-    // SAFETY: `state` points into the live `with_hooks` frame.
-    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
-    let ctx = unsafe { &mut *s.ctx };
+    // SAFETY: with_hooks lent its context for this dispatch.
+    let ctx = unsafe { lent::<R, E>(state) };
     impls_on(&ctx.env, CoreTrait::Eq, a.id).next().is_some()
 }
 
@@ -575,9 +574,8 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
     a: &GxAbstract,
     b: &GxAbstract,
 ) -> Option<bool> {
-    // SAFETY: `state` points into the live `with_hooks` frame.
-    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
-    let ctx = unsafe { &mut *s.ctx };
+    // SAFETY: with_hooks lent its context for this dispatch.
+    let ctx = unsafe { lent::<R, E>(state) };
     match pair(ctx, Method::Eq, a, b)? {
         Some(Value::Bool(x)) => Some(x),
         Some(v) => {
@@ -614,9 +612,8 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
     a: &GxAbstract,
     b: &GxAbstract,
 ) -> Option<Ordering> {
-    // SAFETY: as in `dispatch_eq`.
-    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
-    let ctx = unsafe { &mut *s.ctx };
+    // SAFETY: with_hooks lent its context for this dispatch.
+    let ctx = unsafe { lent::<R, E>(state) };
     match pair(ctx, Method::Cmp, a, b)? {
         Some(v) => match ordering_of(&v) {
             Some(o) => Some(o),
@@ -645,9 +642,8 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
 }
 
 fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<ArcStr> {
-    // SAFETY: as in `dispatch_eq`.
-    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
-    let ctx = unsafe { &mut *s.ctx };
+    // SAFETY: with_hooks lent its context for this dispatch.
+    let ctx = unsafe { lent::<R, E>(state) };
     match call_hook(ctx, Method::Fmt, &a.typ(), &[as_value(a)]).ran()? {
         Some(Value::String(s)) => Some(s),
         Some(v) => {
@@ -668,9 +664,8 @@ fn dispatch_to_value<R: Rt, E: UserEvent>(
     state: *mut u8,
     a: &GxAbstract,
 ) -> Option<CastHook> {
-    // SAFETY: as in `dispatch_eq`.
-    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
-    let ctx = unsafe { &mut *s.ctx };
+    // SAFETY: with_hooks lent its context for this dispatch.
+    let ctx = unsafe { lent::<R, E>(state) };
     call_hook(ctx, Method::ToValue, &a.typ(), &[as_value(a)]).cast()
 }
 
@@ -679,9 +674,8 @@ fn dispatch_from_value<R: Rt, E: UserEvent>(
     target: &Type,
     v: &Value,
 ) -> Option<CastHook> {
-    // SAFETY: as in `dispatch_eq`.
-    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
-    let ctx = unsafe { &mut *s.ctx };
+    // SAFETY: with_hooks lent its context for this dispatch.
+    let ctx = unsafe { lent::<R, E>(state) };
     call_hook(ctx, Method::FromValue, target, std::slice::from_ref(v)).cast()
 }
 
@@ -701,18 +695,22 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce() -> T,
 ) -> T {
-    // CR claude for claude: [perf/low] The node-walk comparison operators reach this
+    // XCR claude for claude: [perf/low] The node-walk comparison operators reach this
     // probe on every `==`/`<` evaluation, whatever the operand type: four `env.impls`
     // lookups before comparing two i64s. Kernels arm the loan only when
     // `jit.meets_abstract`. Do the same in compare_op!: decide once per node whether
     // the operand type can hold an abstract value, and skip with_hooks when it cannot.
     // Found by reading; not run. (c-module-traits-07)
+    // 2026-10-19 claude: compare_op! decides at its first update (Equality::of, now
+    // for the orderings too) whether an operand type can hold an abstract value
+    // (holds_abstract, or an unbound cell) and calls the core-trait hooks only then.
+    // Pins: the lang::traits core Eq/Ord/Display fixtures (all pass); a type that
+    // loses its hooks wrongly compares structurally there.
     if !hooks_live(&ctx.env) {
         return f();
     }
-    let mut state = HookState { ctx: ctx as *mut ExecCtx<'_, R, E> };
     let handle = ValueHookDispatch {
-        state: &mut state as *mut HookState<'_, R, E> as *mut u8,
+        state: ctx as *mut ExecCtx<'_, R, E> as *mut u8,
         eq: dispatch_eq::<R, E>,
         eq_applies: dispatch_eq_applies::<R, E>,
         cmp: dispatch_cmp::<R, E>,

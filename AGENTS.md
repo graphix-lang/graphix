@@ -340,8 +340,8 @@ region it replaces is discarded) and `BuiltIn::init` take a
 compiling would ask of the runtime it defers: a reference is recorded
 (`CompileCtx::record_ref`), an abandoned node, application or stored
 value is discarded (`discard`, `discard_apply`, `discard_stored`), and
-`ExecCtx::apply_deferred` deletes the discards and then registers the
-references: at the end of `check_and_fuse`, a registration read, a
+`ExecCtx::apply_deferred` registers the references and then deletes the
+discards: at the end of `check_and_fuse`, a registration read, a
 runtime bind, a lazily decoded body, a dynamic module's recompile and a
 core-trait hook site's build (`drop_deferred` on a failed compile);
 every cycle asserts (debug) that nothing is left. `ExecCtx::unref_var`

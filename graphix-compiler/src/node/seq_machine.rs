@@ -138,20 +138,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         let at = at.is_fired().then(|| at.value_cloned());
         let target = match at.as_ref().and_then(|v| rep::bare_tag(v).ok()) {
             Some(l) if l == crate::expr::seq::IDLE => Some(None),
-            // the step after the current one, else a search
-            // CR claude for claude: [dead/low] This fast path never matches. At a
-            // next-cycle boundary the completion loop sets `current` to None before
-            // writing pc, so when the label fires the next cycle `current` is None. A
-            // same-cycle boundary never looks the label up. Every transition therefore
-            // takes the linear label search. Fix: record the step a next-cycle boundary
-            // expects (e.g. an `awaiting: Option<usize>` set where pc is written) and
-            // check it first, or drop the branch. Found by reading; not run.
-            // (c-select-seq-03)
-            Some(l) => current
-                .and_then(|c| steps[c].next)
-                .filter(|n| steps[*n].label == l)
-                .or_else(|| steps.iter().position(|s| s.label == l))
-                .map(Some),
+            Some(l) => steps.iter().position(|s| s.label == l).map(Some),
             None => None,
         };
         tracked.observe(ctx);

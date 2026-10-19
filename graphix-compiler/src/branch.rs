@@ -433,14 +433,7 @@ impl<'a, R: Rt> RtView<'a, R> {
 /// A layer's capacity worth keeping whatever a cycle used.
 const SHRINK_FLOOR: usize = 1024;
 
-/// A map a branch writes over its parent's: the parent's entries show
-/// through unless the branch wrote them or removed them (`removed`). A
-/// root map has no parent and no removals.
 /// What a layer held for an id before a [`Layered::put`].
-// CR claude for claude: [readability/low] The doc lines above ("A map a branch writes
-// over its parent's ...") describe `Layered`, but they sit on `Prior`, so rustdoc shows
-// them here and `Layered` has no doc at all. Move them down above `pub struct
-// Layered<V>`. Found by reading; not run. (c-analysis-branch-06)
 pub(crate) enum Prior<V> {
     /// Its own entry.
     Own(V),
@@ -450,6 +443,9 @@ pub(crate) enum Prior<V> {
     Absent,
 }
 
+/// A map a branch writes over its parent's: the parent's entries show
+/// through unless the branch wrote them or removed them (`removed`). A
+/// root map has no parent and no removals.
 pub struct Layered<V> {
     map: IntMap<BindId, V>,
     removed: IntSet<BindId>,

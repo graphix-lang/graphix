@@ -4080,3 +4080,15 @@ run!(struct_pattern_width_or, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"["s!", "zz!"]"#)
 }; FuseExpect::Jit);
+
+// A slice pattern's element cells are the arm's own to narrow: over an
+// unannotated parameter the open-member rule does not read them as types
+// the arm must tell apart.
+run!(generic_slice_arms_check, r#"{
+  let is_empty = |a| select a { [] => true, [_, ..] => false };
+  let first = |a| select a { [h, ..] => h, [] => never() };
+  let head = |l| select l { [<h, t..>] => h, [<>] => 0 };
+  (is_empty([1, 2]), first([1, 2]), head([<1>]))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[false, i64:1, i64:1]")
+}; FuseExpect::None);

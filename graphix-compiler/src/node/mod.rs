@@ -72,7 +72,7 @@ pub(crate) enum VarRead<'a> {
     /// store-stamped THIS cycle: the entry's own tag applies.
     Delivered(&'a TagValue),
     /// A standing store entry from an earlier cycle: the value
-    /// channel. Readers view it Stale, or Fired under an init view.
+    /// channel. Readers view it Stale, or Fired at a birth.
     Standing(&'a TagValue),
 }
 
@@ -95,12 +95,15 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
     }
 }
 
-/// A standing entry as a reader sees it: fresh under a genuine init
-/// view only. A wake-forced view reads it stale, its value is a past
-/// event the graph already consumed.
+/// A standing entry as a reader sees it: fresh at a birth only. A wake
+/// or a step reads it stale: its value is a past event the graph
+/// already consumed.
 pub(crate) fn standing_view<E: UserEvent>(event: &Event<E>, tv: &TagValue) -> TagValue {
-    let tag =
-        if event.init() && !event.wake() { tv.tag().fresh() } else { tv.tag().quiet() };
+    let tag = if event.view == crate::View::Birth {
+        tv.tag().fresh()
+    } else {
+        tv.tag().quiet()
+    };
     let mut tv = tv.clone();
     tv.retag(tag);
     tv
@@ -633,8 +636,8 @@ impl Constant {
         typ: Type,
         spec: Arc<Expr>,
     ) -> Node<R, E> {
-        // the resident starts Stale so an instance bound without an init
-        // view still computes; firing stays init-gated
+        // the resident starts Stale so an instance bound outside a birth
+        // still computes; it fires only where it is born
         let resident = TagValue::stale(value.clone());
         Node::new(Self { spec, value, typ, resident })
     }
@@ -652,16 +655,8 @@ impl Constant {
     }
 }
 
-/// A constant's production: fired at an init view, standing otherwise.
+/// A constant's production: fired where it is born, standing otherwise.
 /// Every argument-less literal is a constant.
-// CR claude for claude: [doc-drift/low] Four docs still describe the old init-view
-// rule. This doc says "fired at an init view" and Constant::new's comment says "firing
-// stays init-gated", but the code fires only where `event.born()`, and a Wake is an
-// init view where constants stand. Event::init's doc ("a birth or a wake" reads
-// standing values as delivered) and VarRead::Standing ("Fired under an init view")
-// contradict standing_view, which reads fresh at a Birth only. Reword the four to the
-// born/Birth rule; standing_view can test `event.view == View::Birth`. Found by
-// reading; not run. (c-node-mod-06)
 pub(crate) fn produce_constant<'a, E: UserEvent>(
     event: &Event<E>,
     resident: &'a mut TagValue,

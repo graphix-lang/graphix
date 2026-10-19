@@ -1047,67 +1047,14 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.ids_inner(f))
     }
 
-    // CR claude for claude: [structure/low] This repeats, arm by arm, the walk that
-    // whole_binds() and children() already give (fresh_ids is written over them), so a
-    // new pattern shape has to be taught to three walks that must agree. Write it as
-    // `Bind(id) => f(id)`, `Or { alts } => alts[0].ids(f)`, else whole_binds() then
-    // each child's ids. aux_types and typecheck0_rows both use this order, so changing
-    // it is safe. Found by reading; not run. (c-pattern-07)
     fn ids_inner<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
-        match &self {
-            Self::Abstract { all, bind, .. } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                bind.ids(f)
-            }
-            Self::Or { alts } => alts[0].ids(f),
-            Self::Ignore | Self::Literal(_) => (),
+        match self {
             Self::Bind(id) => f(*id),
-            Self::Slice { kind: _, all, binds } => {
-                if let Some(id) = all {
-                    f(*id);
-                }
-                for n in binds.iter() {
-                    n.ids(f)
-                }
-            }
-            Self::Variant { tag: _, all, binds } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for n in binds.iter() {
-                    n.ids(f)
-                }
-            }
-            Self::SlicePrefix { list: _, all, prefix, tail } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for n in prefix.iter() {
-                    n.ids(f)
-                }
-                if let Some(id) = tail {
-                    f(*id)
-                }
-            }
-            Self::SliceSuffix { all, head, suffix } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                if let Some(id) = head {
-                    f(*id)
-                }
-                for n in suffix.iter() {
-                    n.ids(f)
-                }
-            }
-            Self::Struct { all, width: _, binds } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for (_, _, n) in binds.iter() {
-                    n.ids(f)
+            Self::Or { alts } => alts[0].ids(f),
+            _ => {
+                self.whole_binds().for_each(&mut *f);
+                for c in self.children() {
+                    c.ids(f)
                 }
             }
         }

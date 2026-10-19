@@ -150,8 +150,12 @@ impl FusionStats {
         self.fused += 1;
     }
 
-    pub(crate) fn failure_for_source(&self, spec: &Expr) -> Option<&FusionFailure> {
-        self.failed.iter().rev().find(|failure| failure.matches(spec))
+    /// Every failure recorded for `spec`'s source, each attempt's.
+    pub(crate) fn failures_for_source<'a, 'b>(
+        &'a self,
+        spec: &'b Expr,
+    ) -> impl Iterator<Item = &'a FusionFailure> + use<'a, 'b> {
+        self.failed.iter().filter(move |failure| failure.matches(spec))
     }
 }
 

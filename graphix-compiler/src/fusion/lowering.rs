@@ -662,10 +662,7 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
             let fields = st.names.iter().cloned().zip(vals.drain(..));
             Some(crate::rep::structure(fields))
         }
-        NodeView::Map(m) => {
-            let (keys, values) = m.entries();
-            const_map(keys, values)
-        }
+        NodeView::Map(m) => const_map(&m.n),
         _ => None,
     }
 }
@@ -688,15 +685,12 @@ fn const_values<R: Rt, E: UserEvent>(
     Some(vals)
 }
 
-/// Fold parallel key/value node slices into a constant `Value::Map`,
-/// or `None` if any entry isn't constant.
-pub(crate) fn const_map<R: Rt, E: UserEvent>(
-    keys: &[Node<R, E>],
-    values: &[Node<R, E>],
-) -> Option<Value> {
+/// Fold a map literal's entries (each key, then its value) into a
+/// constant `Value::Map`, or `None` if any entry isn't constant.
+pub(crate) fn const_map<R: Rt, E: UserEvent>(entries: &[Node<R, E>]) -> Option<Value> {
     let mut map = netidx_value::Map::new();
-    for (k, v) in keys.iter().zip(values.iter()) {
-        map.insert_cow(node_const_value(k)?, node_const_value(v)?);
+    for kv in entries.chunks_exact(2) {
+        map.insert_cow(node_const_value(&kv[0])?, node_const_value(&kv[1])?);
     }
     Some(Value::Map(map))
 }

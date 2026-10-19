@@ -202,8 +202,6 @@ impl ArgStage {
     }
 }
 
-/// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
-/// `Fn` arms of a `[fn(...), null]` / Set union.
 /// A labeled default of `f` compiled and checked in `f`'s environment,
 /// where its names are, against the site's view of the label, which the
 /// default narrows and the instance runs with; where the site hides the
@@ -409,6 +407,8 @@ fn hidden_defaults_at<R: Rt, E: UserEvent>(
     })
 }
 
+/// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
+/// `Fn` arms of a `[fn(...), null]` / Set union.
 fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     match t {
         Type::Fn(ft) => out.push(ft.clone()),
@@ -427,16 +427,6 @@ fn printed_deref(t: &Type) -> String {
     crate::format_with_flags(crate::PrintFlag::DerefTVars, || t.to_string())
 }
 
-/// Re-run a builtin definition's check `Apply` at this site's resolved
-/// type; a user definition has no check. The check is shared by every
-/// site, the last one's type wins. A definition restored from an image
-/// has none until its first site rebuilds it.
-
-// CR claude for claude: [readability/low] The doc block above this function describes a
-// builtin re-check that no longer exists, so compile_apply_args reads as something it
-// is not; delete it. Similarly, the first sentence of the free checked_default's doc
-// ("Collect every `Type::Fn` arm reachable in `t`") belongs to collect_fn_arms, which
-// has no doc; move it there. Found by reading; not run. (c-callsite-06)
 fn compile_apply_args<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -1392,10 +1382,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         expr: &Expr,
         defaults: &mut Refs,
     ) -> Result<Node<R, E>> {
-        self.checked_default_at(
+        checked_default(
             ctx,
             flags,
             scope,
+            self.top_id,
             f,
             name,
             expr,
@@ -1433,26 +1424,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             )?;
         }
         Ok(())
-    }
-
-    // CR claude for claude: [structure/low] checked_default_at has one caller,
-    // CallSite::checked_default, and both only forward: two layers over the free
-    // checked_default. Delete this method and call the free function from
-    // CallSite::checked_default with self.top_id and self.ftype. Found by reading; not
-    // run. (c-callsite-07)
-    #[allow(clippy::too_many_arguments)]
-    fn checked_default_at(
-        &self,
-        ctx: &mut CompileCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        scope: &Scope,
-        f: &LambdaDef<R, E>,
-        name: &ArcStr,
-        expr: &Expr,
-        defaults: &mut Refs,
-        site: Option<&FnType>,
-    ) -> Result<Node<R, E>> {
-        checked_default(ctx, flags, scope, self.top_id, f, name, expr, defaults, site)
     }
 
     /// What the call raises joins the enclosing catch's type; with no
@@ -2358,8 +2329,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // a first bind reads every quiet production; a bound site's rebind
         // finds its arguments' standing values in the store, which its
-        // first bind stood them in, but not its defaults'; a constant
-        // function never rebinds
+        // first bind stood them in, and compiles its defaults afresh; a
+        // constant function never rebinds
         let keep = match &self.callee {
             Callee::Static { first_update: true, .. } => Keep::Every,
             Callee::Static { .. } => Keep::Nothing,
@@ -2368,15 +2339,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             {
                 Keep::Nothing
             }
-            // CR claude for claude: [dead/low] Keep::Defaults makes update_args clone
-            // every quiet default production into `prods` each cycle, and nothing can
-            // read them. A bound dynamic site is only fresh again through bind, whose
-            // clear_prepared_bind drops the default arguments and recompiles them under
-            // fresh BindIds, so the kept ids never match in the replay. The only live
-            // part of this variant is the replay's store read for given arguments. Fix:
-            // rename it to say that (read given arguments from the store), and keep no
-            // productions for it. Found by reading; not run. (c-callsite-05)
-            Callee::DynamicBound { .. } => Keep::Defaults,
+            Callee::DynamicBound { .. } => Keep::Stored,
             _ => Keep::Every,
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
@@ -2424,7 +2387,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
                 let tv = match prods.iter().find(|(id, _)| *id == arg.id) {
                     Some((_, tv)) => tv.clone(),
-                    None if keep == Keep::Defaults && !arg.stage.is_default() => {
+                    None if keep == Keep::Stored && !arg.stage.is_default() => {
                         let Some((tv, _)) = ctx.rt.store_get(&arg.id) else { continue };
                         TagValue::tagged(tv.value_cloned(), tv.tag().quiet())
                     }
@@ -3470,8 +3433,9 @@ impl Absent {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Keep {
     Every,
-    /// The defaults': the store holds the other arguments' values.
-    Defaults,
+    /// None: a rebind reads the given arguments from the store, and its
+    /// defaults compile afresh.
+    Stored,
     Nothing,
 }
 
@@ -3530,8 +3494,7 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
         out.fired |= fired;
         let kept = match keep {
             Keep::Every => true,
-            Keep::Defaults => arg.stage.is_default(),
-            Keep::Nothing => false,
+            Keep::Stored | Keep::Nothing => false,
         };
         if kept && !fired {
             out.prods.push((arg.id, tv.clone()));

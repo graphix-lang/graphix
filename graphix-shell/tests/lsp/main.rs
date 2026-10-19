@@ -964,3 +964,17 @@ fn birth_only_arm_actions_are_warnings() {
         assert!(message.contains("first entry"), "{text}: {message}");
     }
 }
+
+/// A call to a function whose body performs Io, over constants, acts only
+/// at the arm's first entry as an Io builtin's call does.
+#[test]
+fn birth_only_io_through_a_function_is_a_warning() {
+    let src = "let k = 0;\nlet say = |m: string| println(\"note: [m]\");\nselect k {\n    \
+               0 => say(\"saved\"),\n    _ => say(k ~ \"again\")\n};\n";
+    let mut c = Client::start(&[("a.gx", src)]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let w = c.warnings("a.gx");
+    let texts: Vec<&str> = w.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(texts, ["say(\"saved\")"], "{w:?}");
+}

@@ -341,23 +341,8 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         // does not carry it. probe:
         // design/review-2026-10-19/repro/sys-net-birth-only-warning-subscribe.gx
         // (sys-net-04)
-        // CR claude for claude: [bug/medium] Only a static builtin is classified here.
-        // A call to a user function that wraps an effect, with constant arguments, acts
-        // only at the arm's first entry exactly as `println("x")` does, but the check
-        // says nothing. CLAUDE.md promises a warning for an effect call reading no
-        // variable. Fix: when ctx.bind_to_lambda resolves the site's function to a
-        // non-builtin LambdaDef, warn when its definition's facts (LambdaDef::facts)
-        // are io or async. Add a warning pin. probe:
-        // design/review-2026-10-19/repro/c-select-seq-birth-warn-misses-lambda.gx
-        // (c-select-seq-02)
         NodeView::CallSite(cs)
-            if cs.arg_nodes().all(|a| reads_nothing(a))
-                && super::callsite::static_builtin(ctx, cs).is_some_and(|b| {
-                    matches!(
-                        ctx.builtin_effect(b),
-                        crate::Effect::Async | crate::Effect::Io(_)
-                    )
-                }) =>
+            if cs.arg_nodes().all(|a| reads_nothing(a)) && acts_on_the_world(ctx, cs) =>
         {
             warn(n.spec(), "this call")
         }
@@ -371,6 +356,39 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
             r
         }
     })
+}
+
+// XCR claude for claude: [bug/medium] Only a static builtin is classified here.
+// A call to a user function that wraps an effect, with constant arguments, acts
+// only at the arm's first entry exactly as `println("x")` does, but the check
+// says nothing. CLAUDE.md promises a warning for an effect call reading no
+// variable. Fix: when ctx.bind_to_lambda resolves the site's function to a
+// non-builtin LambdaDef, warn when its definition's facts (LambdaDef::facts)
+// are io or async. Add a warning pin. probe:
+// design/review-2026-10-19/repro/c-select-seq-birth-warn-misses-lambda.gx
+// (c-select-seq-02)
+// 2026-10-19 claude: warn_birth_only asks acts_on_the_world: an Async or Io
+// builtin as before, or a statically bound user function whose definition's
+// facts are io. Async user functions are left out while Eric rules on
+// sys-net-04 (resuming async calls warn falsely). Pin: graphix-shell/tests/lsp
+// birth_only_io_through_a_function_is_a_warning.
+/// Whether the call acts on the world: an async or Io builtin, or a
+/// function whose body performs Io.
+fn acts_on_the_world<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    cs: &super::callsite::CallSite<R, E>,
+) -> bool {
+    if let Some(b) = super::callsite::static_builtin(ctx, cs) {
+        return matches!(
+            ctx.builtin_effect(b),
+            crate::Effect::Async | crate::Effect::Io(_)
+        );
+    }
+    let NodeView::Ref(r) = cs.fnode().view() else { return false };
+    ctx.bind_to_lambda
+        .get(&r.id)
+        .and_then(|v| v.downcast_ref::<super::lambda::LambdaDef<R, E>>())
+        .is_some_and(|d| d.facts.lock().io)
 }
 
 /// Warn where an arm holds a `seq` or `seqq` with no trigger: it runs at
@@ -524,7 +542,7 @@ impl Reach {
         };
         let informative = itype != Type::Primitive(BitFlags::empty());
         if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
-            // CR claude for claude: [bug/high] This settle copies a slice pattern's
+            // XCR claude for claude: [bug/high] This settle copies a slice pattern's
             // per-element Set of open cells into the scrutinee (Array<['a, 'b, 'b,
             // ..]>), and PendingSettle::Told then reads those cells as foreign open
             // members and refuses: "may share '_a's runtime form: annotate it". So `let
@@ -536,6 +554,12 @@ impl Reach {
             // narrowing only), or have `told` skip cells the arm's own predicate holds.
             // probe: design/review-2026-10-19/repro/c-pattern-generic-slice-refused.gx
             // (c-pattern-03)
+            // 2026-10-19 claude: told (lib.rs, PendingSettle::Told) skips a collision
+            // whose open cell the arm's own predicate holds: a slice pattern's element
+            // cells are the arm's to narrow, not a type it tests (the colliding pair
+            // was a cell against its own copy). Pin:
+            // lang::select::generic_slice_arms_check (the three functions of the
+            // repro). Check typemorph's one-runtime-form family at the next fuzz run.
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();

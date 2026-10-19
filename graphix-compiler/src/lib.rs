@@ -224,7 +224,8 @@ impl<E: UserEvent> Event<E> {
         }
     }
 
-    /// Whether standing values read as delivered: a birth or a wake.
+    /// Anything but an ordinary cycle: standing values are re-read,
+    /// as delivered at a birth and stale at a wake or a step.
     pub fn init(&self) -> bool {
         self.view.init()
     }
@@ -690,8 +691,8 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Gte(&'a node::op::Gte<R, E>),
     And(&'a node::op::And<R, E>),
     Or(&'a node::op::Or<R, E>),
-    Not(&'a node::op::Not<R, E>),
-    Neg(&'a node::op::Neg<R, E>),
+    Not(&'a node::op::Unary<R, E>),
+    Neg(&'a node::op::Unary<R, E>),
     Constant(&'a node::Constant),
     TypeDef(&'a node::TypeDef),
     Impl(&'a node::traits::Impl<R, E>),
@@ -1070,9 +1071,17 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
         // arm_input_raise_node_walks match the blocker's text. probe:
         // design/review-2026-10-19/repro/x-rerun-4-native-misreports-arm-raise.gx
         // (x-rerun-4-02)
-        let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
+        // 2026-10-19 claude: native_residue now reports every distinct failure
+        // recorded for a source (FusionStats::failures_for_source), so the repro's
+        // #[native] names the arm-raise blocker and the open-type failure both. Still
+        // open: why the select is tried a second time at an open type, and why
+        // lang::errors::arm_input_raise_node_walks records only the open-type failure
+        // (its region's type is an unbound cell there, so the blocker attempt never
+        // runs); its refusal text stays generic until that is understood.
+        let mut failures = ctx.fusion.stats.failures_for_source(n.spec()).peekable();
+        if failures.peek().is_none() {
             return;
-        };
+        }
         let mut has_failed_desc = false;
         let mut root = true;
         fusion::for_each_node(n, &mut |desc| {
@@ -1080,10 +1089,16 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
                 root = false;
                 return;
             }
-            has_failed_desc |= ctx.fusion.stats.failure_for_source(desc.spec()).is_some();
+            has_failed_desc |=
+                ctx.fusion.stats.failures_for_source(desc.spec()).next().is_some();
         });
-        if !has_failed_desc && !report.iter().any(|prior| prior.id == failure.id) {
-            report.push(failure);
+        if has_failed_desc {
+            return;
+        }
+        for failure in failures {
+            if !report.iter().any(|p| p.id == failure.id && p.reason == failure.reason) {
+                report.push(failure);
+            }
         }
     });
     *walked |= report.len() == before;
@@ -1466,13 +1481,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     discarded: Vec<(Discarded<R, E>, Option<prune::BoundaryRef>)>,
     /// The boundary the compile is inside (`design/walk_pruning.md`).
     pub(crate) boundary: Option<prune::BoundaryRef>,
-    /// The id of the concurrent compile task this one runs in
-    /// ([`typ::tvar::InTask`]); 0 at the root.
     /// This task's share of the compile's profile ([`profile::Task`]).
-    // CR claude for claude: [readability/low] The first two doc lines above ("The id of
-    // the concurrent compile task this one runs in ...; 0 at the root") describe a
-    // field that is gone, not this profile share. Delete them. Found by reading; not
-    // run. (c-lib-05)
     profile: profile::Task,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
@@ -1989,15 +1998,9 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
 }
 
 impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
-    /// `f` under `view`, or under the stronger view already in force: a
-    /// birth inside a wake stays a wake.
+    /// `f` under `view` joined with the view already in force
+    /// ([`View::join`]): a birth inside a wake is a step.
     #[inline]
-    // CR claude for claude: [doc-drift/low] The doc says a birth inside a wake "stays a
-    // wake". View::join makes it a Step, in which constants fire, as View::Step's own
-    // doc says. Event::init's doc ("standing values read as delivered: a birth or a
-    // wake") likewise contradicts View::Wake, where standing values read stale. Callers
-    // rely on `init() && !wake()`. Fix both docs to describe the join and the init/wake
-    // split. Found by reading; not run. (c-lib-04)
     pub fn under<T>(&mut self, view: View, f: impl FnOnce(&mut Self) -> T) -> T {
         let prev = self.event.view;
         self.event.view = prev.join(view);
@@ -2173,14 +2176,9 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         Ok(())
     }
 
-    /// Apply to the runtime what compiling deferred: delete what it
-    /// discarded, whose unreplayed references cancel, then register
-    /// every reference it recorded.
-    // CR claude for claude: [doc-drift/low] The doc above says this deletes the
-    // discards first, "whose unreplayed references cancel", and registers afterwards.
-    // The body registers every pending reference first and then deletes the discards,
-    // so their unrefs reach the runtime. Reword the doc to state the order the code
-    // relies on. Found by reading; not run. (c-lib-03)
+    /// Apply to the runtime what compiling deferred: register every
+    /// reference it recorded, then delete what it discarded, so each
+    /// discard's unrefs reach the runtime.
     pub fn apply_deferred(&mut self) {
         // through `Deref`: a branch view forks no compile for nothing
         if !self.deferred_pending() {
@@ -2444,6 +2442,26 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     let Some((a, b)) = test.rep_collision_open(env, rest) else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+    // a cell the arm's own predicate holds (a slice pattern's element) is
+    // the arm's to narrow, not a type it must tell apart
+    fn cells(t: &Type, own: &mut AHashSet<usize>) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if own.insert(tv.cell_addr())
+                    && let Some(b) = tv.binding()
+                {
+                    cells(&b, own)
+                }
+            }
+            t => t.for_each_child(&mut |c| cells(c, own)),
+        })
+    }
+    let mut own: LPooled<AHashSet<usize>> = LPooled::take();
+    cells(test, &mut own);
+    let owned = |t: &Type| matches!(t, Type::TVar(tv) if own.contains(&tv.cell_addr()));
+    if (open(&a) && owned(&a)) || (open(&b) && owned(&b)) {
+        return Ok(());
+    }
     format_with_flags(PrintFlag::DerefTVars, || {
         let (test, rest) = (test.resolve_tvars(), rest.resolve_tvars());
         if open(&a) || open(&b) {

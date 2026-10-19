@@ -86,6 +86,15 @@ fn write_count<R: Rt, E: UserEvent>(
 
 type StateRef = Arc<Mutex<QueueState>>;
 
+// CR claude for claude: [bug/medium] A callback that accumulates into an outer
+// variable, `|x| { got <- x ~ array::push(got, x); x }`, loses its first write when
+// the wrapper releases one call per tick: `got` reads [1], then [2], then [2, 3],
+// where each release should see the write the previous one made. Found while pinning
+// c-data-map-02; it reproduces at 9445a1d21, pruned or not, so it is no regression of
+// the 10-19 fixes. Find whether the second release's `~` samples `got` before the
+// first write lands or the instance reads it stale, and pin it in lang::queuefn.
+// probe: design/review-2026-10-19/repro/queuefn-stale-accumulator.gx
+// (queuefn-stale-read-01)
 /// Per-call-site Apply impl for the wrapper lambda. Each invocation of the
 /// wrapper at a user call site goes through this. Push/pop coordination is
 /// done via `state` shared with the owning `QueueFn` node.

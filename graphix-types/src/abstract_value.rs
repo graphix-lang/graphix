@@ -30,8 +30,8 @@ use triomphe::Arc;
 #[repr(C)]
 #[doc(hidden)]
 pub struct ValueHookDispatch {
-    /// Type-erased pointer to the monomorphized dispatch state
-    /// (`node::coretraits::HookState<R, E>`).
+    /// Type-erased pointer to the context the dispatch borrows
+    /// (`ExecCtx<R, E>`).
     #[doc(hidden)]
     pub state: *mut u8,
     /// `None` means no implementation: take the structural case.
