@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, eval, refused},
+    testing::{FuseExpect, Mode, as_i64s, eval, refused},
 };
 use netidx::publisher::Value;
 
@@ -2119,7 +2119,7 @@ const TAIL_QUIET_BOTTOM_INLINE: &str = r#"{
 
 async fn tail_quiet_bottom(code: &str, mode: Mode) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
-    assert_eq!(graphix_package_core::testing::as_i64s(&values), vec![6, 6]);
+    assert_eq!(as_i64s(&values), vec![6, 6]);
     Ok(())
 }
 
@@ -3283,3 +3283,73 @@ run!(quantified_lambda_through_a_builtin_callback, r#"{
     let gs = array::group('a: Number |x: 'a| -> 'a x, |n, _| n == 1);
     array::map(gs, |f| f(2))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2)]); FuseExpect::None);
+
+// A compile job stolen while a statement waits in a join runs under its
+// own context: the defaults in check are the compile's, not the
+// thread's, so every `f(i)` omitting `#k` resolves statically and fuses.
+run!(omitted_defaults_resolve_under_stolen_jobs, r#"{
+  let f = |#k = 1, x: i64| -> i64 { let a = x + k; let c = a * 3; let b = c * 2; b };
+  let r0 = #[native] f(0);
+  let r1 = #[native] f(1);
+  let r2 = #[native] f(2);
+  let r3 = #[native] f(3);
+  let r4 = #[native] f(4);
+  let r5 = #[native] f(5);
+  let r6 = #[native] f(6);
+  let r7 = #[native] f(7);
+  let r8 = #[native] f(8);
+  let r9 = #[native] f(9);
+  let r10 = #[native] f(10);
+  let r11 = #[native] f(11);
+  let r12 = #[native] f(12);
+  let r13 = #[native] f(13);
+  let r14 = #[native] f(14);
+  let r15 = #[native] f(15);
+  let r16 = #[native] f(16);
+  let r17 = #[native] f(17);
+  let r18 = #[native] f(18);
+  let r19 = #[native] f(19);
+  let r20 = #[native] f(20);
+  let r21 = #[native] f(21);
+  let r22 = #[native] f(22);
+  let r23 = #[native] f(23);
+  let r24 = #[native] f(24);
+  let r25 = #[native] f(25);
+  let r26 = #[native] f(26);
+  let r27 = #[native] f(27);
+  let r28 = #[native] f(28);
+  let r29 = #[native] f(29);
+  let r30 = #[native] f(30);
+  let r31 = #[native] f(31);
+  let r32 = #[native] f(32);
+  let r33 = #[native] f(33);
+  let r34 = #[native] f(34);
+  let r35 = #[native] f(35);
+  let r36 = #[native] f(36);
+  let r37 = #[native] f(37);
+  let r38 = #[native] f(38);
+  let r39 = #[native] f(39);
+  let r40 = #[native] f(40);
+  let r41 = #[native] f(41);
+  let r42 = #[native] f(42);
+  let r43 = #[native] f(43);
+  let r44 = #[native] f(44);
+  let r45 = #[native] f(45);
+  let r46 = #[native] f(46);
+  let r47 = #[native] f(47);
+  let r48 = #[native] f(48);
+  let r49 = #[native] f(49);
+  let r50 = #[native] f(50);
+  let r51 = #[native] f(51);
+  let r52 = #[native] f(52);
+  let r53 = #[native] f(53);
+  let r54 = #[native] f(54);
+  let r55 = #[native] f(55);
+  let r56 = #[native] f(56);
+  let r57 = #[native] f(57);
+  let r58 = #[native] f(58);
+  let r59 = #[native] f(59);
+  [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52, r53, r54, r55, r56, r57, r58, r59]
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == (1..=60).map(|i| i * 6).collect::<Vec<i64>>())
+}; FuseExpect::Jit);

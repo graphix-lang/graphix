@@ -1514,6 +1514,16 @@ const NESTED_QUANTIFIER_ENV_CELL: &str = r#"{
     a * 2
 }"#;
 
+/// The same, through a lambda nested in the callback: the variable is
+/// reached through a binding the callback reaches, not its own type.
+const NESTED_QUANTIFIER_ENV_CELL_NESTED: &str = r#"{
+    let st = never();
+    let g = |x| { let k = |y| { st <- y; y }; k(x) };
+    let h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let (a, b) = h(g);
+    a * 2
+}"#;
+
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
   type G = F;
@@ -1586,6 +1596,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),
+        (NESTED_QUANTIFIER_ENV_CELL_NESTED, "not polymorphic"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),

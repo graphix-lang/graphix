@@ -1288,6 +1288,43 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         stack.iter().find(|f| f.def == def).map(|f| f.r.clone())
     }
 
+    // XCR claude for claude: [bug/high] DEFAULTS_IN_CHECK is thread state, but
+    // resolve_static holds its guards across bind_instance, whose statement elaboration
+    // blocks in a rayon join (check_in_tasks). A job stolen there, often a sibling
+    // statement calling the same definition with the same omitted label, sees the pair 'in
+    // progress' and leaves its site dynamic. So `#[native] f(i)` over a multi-statement `f`
+    // with a defaulted label fails at random (about 5 builds in 12), and without
+    // `#[native]` fusion and fork plans vary from run to run. a8b168951 set the other
+    // compile thread-locals aside for stolen jobs, but not this one. Keep the stack in the
+    // CompileCtx beside resolving_lambdas (forked with it), or set it aside wherever
+    // TaskContext is entered. probe:
+    // design/review-2026-10-19/repro/x-parallel-default-in-check-tls.gx (x-parallel-02)
+    // 2026-10-19 claude: The stack is CompileCtx::defaults_in_check
+    // (enter_default/leave_default), cloned by fork beside resolving_lambdas, so a stolen
+    // job checks under its own compile's stack; the thread-local is gone. resolve_static
+    // enters its omitted labels and leaves them around resolve_static_entered. The repro's
+    // --expand built 16/16 (old binary 12/16). Pin (probabilistic, as the race was):
+    // lang::functions::omitted_defaults_resolve_under_stolen_jobs, 60 #[native] calls
+    // omitting #k. c-callsite-02 (the guards' extent) is untouched.
+    /// Enter the check of `id`'s default for `label`; false when it is
+    /// already in progress.
+    pub(crate) fn enter_default(&mut self, id: LambdaId, label: &ArcStr) -> bool {
+        if self.defaults_in_check.iter().any(|(i, l)| *i == id && l == label) {
+            return false;
+        }
+        self.defaults_in_check.push((id, label.clone()));
+        true
+    }
+
+    /// Leave the check [`Self::enter_default`] entered.
+    pub(crate) fn leave_default(&mut self, id: LambdaId, label: &ArcStr) {
+        if let Some(i) =
+            self.defaults_in_check.iter().rposition(|(i, l)| *i == id && l == label)
+        {
+            self.defaults_in_check.remove(i);
+        }
+    }
+
     pub(crate) fn push_resolving(&self, def: LambdaId, r: ResolvingLambda) {
         self.resolving_lambdas.lock().push(def, r)
     }
@@ -1386,6 +1423,10 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
     pub(crate) resolving_lambdas: Mutex<Resolving>,
+    /// The (definition, label) defaults being checked or elaborated,
+    /// innermost last: a site its own omitted default's elaboration
+    /// reaches stays dynamic.
+    pub(crate) defaults_in_check: SmallVec<[(LambdaId, ArcStr); 4]>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
@@ -1572,6 +1613,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_params: self.def_gate_params.clone(),
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
+            defaults_in_check: self.defaults_in_check.clone(),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
             pending_settles: vec![Vec::new()],
@@ -1616,6 +1658,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_params: _,
             def_gate_depth: _,
             resolving_lambdas: _,
+            defaults_in_check: _,
             fn_forward_resolutions,
             body: _,
             pending_settles,
@@ -1673,10 +1716,10 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// `f` compiling inside `boundary`.
     pub fn in_boundary<T>(
         &mut self,
-        boundary: &Option<prune::BoundaryRef>,
+        boundary: Option<&prune::BoundaryRef>,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let outer = mem::replace(&mut self.boundary, boundary.clone());
+        let outer = mem::replace(&mut self.boundary, boundary.cloned());
         let r = f(self);
         self.boundary = outer;
         r
@@ -1895,6 +1938,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 def_gate_params: nohash::IntSet::default(),
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(Resolving::default()),
+                defaults_in_check: SmallVec::new(),
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
                 pending_settles: vec![Vec::new()],
@@ -2105,10 +2149,10 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// `f` walking inside `boundary`.
     pub fn in_boundary<T>(
         &mut self,
-        boundary: &Option<prune::BoundaryRef>,
+        boundary: Option<&prune::BoundaryRef>,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let outer = mem::replace(&mut self.boundary, boundary.clone());
+        let outer = mem::replace(&mut self.boundary, boundary.cloned());
         let r = f(self);
         self.boundary = outer;
         r
@@ -2216,7 +2260,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 
     fn delete_discarded(&mut self) {
         for (d, boundary) in mem::take(&mut self.cx.discarded) {
-            self.in_boundary(&boundary, |ctx| match d {
+            self.in_boundary(boundary.as_ref(), |ctx| match d {
                 Discarded::Node(mut n) => n.delete(ctx),
                 Discarded::Apply(mut a) => a.delete(ctx),
                 Discarded::Stored(id) => ctx.rt.store_release(&id),
@@ -3087,6 +3131,7 @@ impl Saved {
             def_gate_params: _,
             def_gate_depth: _,
             resolving_lambdas: _,
+            defaults_in_check: _,
             fn_forward_resolutions,
             body: _,
             pending_settles: _,

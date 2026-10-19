@@ -190,7 +190,11 @@ macro_rules! gated_operands {
         let woke = $self.slept.take();
         let (lhs, rhs) = (&mut $self.lhs, &mut $self.rhs);
         $self.fork.decide_siblings($ctx, 2, || {
-            $crate::analysis::independent([&*lhs, &*rhs].into_iter(), $ctx)
+            $crate::analysis::independent(
+                [&*lhs, &*rhs].into_iter(),
+                $ctx,
+                $crate::analysis::Sites::Statements,
+            )
         });
         let (l, r) = $crate::branch::join2(
             &mut $self.fork,

@@ -45,8 +45,8 @@ use triomphe::Arc;
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
     slept: WakeBit,
-    /// The cycle of the last sleep: a write landing after it is a fire no
-    /// reader saw, re-raised at the wake.
+    /// The last cycle its readers were walked before it slept: a write
+    /// landing after it is a fire no reader saw, re-raised at the wake.
     slept_at: u64,
     pub(crate) spec: Arc<Expr>,
     pub(crate) typ: Type,
@@ -163,7 +163,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         self.pattern.ids(&mut |id| {
             if !ctx.event.variables.contains_key(&id)
                 && let Some((tv, stamp)) = ctx.rt.store_get(&id)
-                // CR claude for claude: [bug/high] A write queued in the arm's last
+                // XCR claude for claude: [bug/high] A write queued in the arm's last
                 // awake cycle lands in the cycle the arm is deselected, so its stamp
                 // equals `slept_at` (both are `rt.cycle()` then) and it is never
                 // re-raised. That is the case this function's doc names. The value
@@ -178,6 +178,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 // design/review-2026-10-19/repro/tests-select-reraise-last-awake-write.gx
                 // Also reported as (c-node-mod-01), (c-prune-wake-02).
                 // (tests-select-01)
+                // 2026-10-19 claude: Fixed with c-bind-01 (same mechanism); pin
+                // lang::prune::write_landing_at_the_deselect_is_reraised reads the
+                // re-raised write through count, a fire-sensitive reader.
                 && *stamp > slept_at
                 && !tv.tag().is_bottom()
             {
@@ -642,8 +645,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept.set();
-        // CR claude for claude: [bug/high] slept_at is the wrong reference point for
+        // XCR claude for claude: [bug/high] slept_at is the wrong reference point for
         // the re-raise. (a) A `<-` write queued in the arm's last awake cycle lands in
         // the cycle the select deselects the arm. The select does not walk the arm in
         // that cycle, but the write's stamp equals slept_at, so `stamp > slept_at`
@@ -656,7 +658,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // for a seq step that ran), and set it only on the first sleep (when `slept` is
         // clear). probe: design/review-2026-10-19/repro/c-bind-reraise-same-cycle.gx
         // and design/review-2026-10-19/repro/c-bind-reraise-resleep.gx (c-bind-01)
-        self.slept_at = ctx.rt.cycle();
+        // 2026-10-19 claude: Bind::sleep takes slept_at only at its first sleep (a
+        // re-sleep keeps it), and takes the cycle its readers were last walked: the
+        // sleep cycle when the let's innermost boundary was visited in it (a seq step
+        // that ran), else the cycle before (a deselect). prune::Boundary records each
+        // visit (BoundaryRef::visit, set by every Prune::update, skipped or not). Pins:
+        // lang::prune::write_landing_at_the_deselect_is_reraised,
+        // second_sleep_keeps_the_first_sleeps_cycle (both fail on the review binary).
+        if !self.slept.is_set() {
+            let cycle = ctx.rt.cycle();
+            let walked = ctx.boundary.as_ref().is_some_and(|b| b.visited(cycle));
+            self.slept_at = if walked { cycle } else { cycle.saturating_sub(1) };
+        }
+        self.slept.set();
         self.node.sleep(ctx);
     }
 

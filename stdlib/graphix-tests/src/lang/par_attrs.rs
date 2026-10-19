@@ -376,3 +376,60 @@ async fn a_reference_and_its_reader_stay_ordered() -> Result<()> {
     assert!(err.contains("#[parallel] has nothing to run in parallel"), "{err}");
     Ok(())
 }
+
+// A block's runs fork: here nothing but the block's statements can.
+#[tokio::test(flavor = "current_thread")]
+async fn block_runs_fork() -> Result<()> {
+    let ran = run_par("{ let a = 1; let b = 2; b }", ParMode::Force).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2)));
+    assert!(ran.forks > 0, "the block's run ran in order");
+    Ok(())
+}
+
+// A reference made in a callee's body publishes its cell in the cycle it
+// fires, so a later sibling that reads through a reference to it is not
+// independent of the call.
+const CALLEE_REF: &str = r#"{
+    let n = 0;
+    n <- select n { k if k < 4 => k + 1, _ => never() };
+    let mk = || -> &i64 &(n * 10);
+    let saved: [&i64, null] = null;
+    let pair = (mk(), select saved { null as _ => -1, r => *r });
+    saved <- once(pair.0);
+    pair.1
+}"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn callee_reference_is_a_publication() -> Result<()> {
+    let serial = run_par(CALLEE_REF, ParMode::Off).await?;
+    let forked = run_par(CALLEE_REF, ParMode::Force).await?;
+    assert_eq!(forked.values, serial.values);
+    let parallel = CALLEE_REF.replace("let pair = (", "let pair = #[parallel] (");
+    let err = refusal(&parallel).await;
+    assert!(err.contains("#[parallel] has nothing to run in parallel"), "{err}");
+    Ok(())
+}
+
+// A call with no static target may call something else at its next bind,
+// so siblings that make one are not independent: once `h` calls the
+// queuefn wrapper the queue still sees the fields' calls in order.
+#[tokio::test(flavor = "current_thread")]
+async fn rebound_dynamic_calls_stay_ordered() -> Result<()> {
+    let code = r#"{
+        let n = 0;
+        n <- select n { k if k < 8 => k + 1, _ => never() };
+        let got: Array<i64> = [];
+        let q = queuefn(#trigger: n, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+        let g1 = |x: i64| -> i64 x;
+        let g2 = |x: i64| -> i64 q(x);
+        let h = select n { k if k < 3 => g1, _ => g2 };
+        let t = (h(n * 10 + 1), h(n * 10 + 2), h(n * 10 + 3), h(n * 10 + 4));
+        select n { 8 => got, _ => never() }
+    }"#;
+    let serial = run_par(code, ParMode::Off).await?;
+    for _ in 0..4 {
+        let forked = run_par(code, ParMode::Force).await?;
+        assert_eq!(forked.values, serial.values);
+    }
+    Ok(())
+}

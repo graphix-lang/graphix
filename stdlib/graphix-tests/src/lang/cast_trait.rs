@@ -182,3 +182,56 @@ run!(
         };
         let mk = |x: i64| -> Pos Pos([x])
     "#; FuseExpect::Jit);
+
+// Sibling modules each declaring `impl Cast for T;` and leaving methods
+// to the representation check side by side: each declaration is narrowed
+// where its implementation registers, not in the parallel checks.
+run!(
+    sibling_cast_declarations_narrow_apart,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "[3] [4] 5"),
+    "/test.gx" => r#"
+        mod a;
+        mod b;
+        mod c;
+        let result = "[json::write_str(a::mk(3))$] [json::write_str(b::mk(4))$] [json::write_str(c::mk(5))$]"
+    "#,
+    "/test/a.gxi" => r#"
+        type Pos;
+        impl Cast for Pos;
+        val mk: fn(x: i64) -> Pos
+    "#,
+    "/test/a.gx" => r#"
+        type Pos = Abstract<Array<i64>>;
+        impl Cast for Pos {
+            let from_value = |v| select cast<Array<i64>>(v) {
+                error as e => e,
+                a => Pos(a)
+            }
+        };
+        let mk = |x: i64| -> Pos Pos([x])
+    "#,
+    "/test/b.gxi" => r#"
+        type Pos;
+        impl Cast for Pos;
+        val mk: fn(x: i64) -> Pos
+    "#,
+    "/test/b.gx" => r#"
+        type Pos = Abstract<Array<i64>>;
+        impl Cast for Pos {
+            let from_value = |v| select cast<Array<i64>>(v) {
+                error as e => e,
+                a => Pos(a)
+            }
+        };
+        let mk = |x: i64| -> Pos Pos([x])
+    "#,
+    "/test/c.gxi" => r#"
+        type T;
+        impl Cast for T;
+        val mk: fn(x: i64) -> T
+    "#,
+    "/test/c.gx" => r#"
+        type T = Abstract<i64>;
+        impl Cast for T {};
+        let mk = |x: i64| -> T T(x)
+    "#; FuseExpect::Jit);

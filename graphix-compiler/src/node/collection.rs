@@ -963,7 +963,11 @@ fn update_slots<R: Rt, E: UserEvent>(
         return update_slots_in_order(ctx, slots, 0, views);
     }
     site.decide_siblings(ctx, slots.len(), || {
-        crate::analysis::independent(slots.iter().take(2).map(|s| &s.call), ctx)
+        crate::analysis::independent(
+            slots.iter().take(2).map(|s| &s.call),
+            ctx,
+            crate::analysis::Sites::Slots,
+        )
     });
     if site.in_order() {
         return update_slots_in_order(ctx, slots, 0, views);

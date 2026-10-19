@@ -18,7 +18,7 @@ use crate::{
     node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
     typ::{
-        CoreTrait, FnArgKind, FnArgType, FnType, TVar, Type,
+        FnArgKind, FnArgType, FnType, TVar, Type,
         tvar::{AtLevel, InTask, Level, OwnWrites, TaskId, new_task},
     },
     wrap,
@@ -713,15 +713,9 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                                 )
                                 .at(i.spec())
                             })?;
-                        let mut representation: Map<CompactString, BindId> =
-                            declared.methods.clone();
                         for (name, outer) in declared.methods.into_iter() {
                             let (inner, private_inner) = match i.def.methods.get(name) {
                                 Some(id) => (*id, true),
-                                None if CoreTrait::representation_default(trait_id) => {
-                                    representation.remove_cow(name);
-                                    continue;
-                                }
                                 None => {
                                     let default = trait_def
                                         .methods
@@ -738,44 +732,6 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                                 }
                             };
                             proxy.push(Proxy { inner, outer: *outer, private_inner });
-                        }
-                        // a method the implementation leaves out is the
-                        // representation, which the declared impl must say
-                        // CR claude for claude: [bug/high] This re-registration runs in
-                        // check_sig, inside Module::typecheck0, so for a run of sibling
-                        // modules it runs in parallel compile tasks. Env::impls is
-                        // keyed by TraitId with the whole list as the value, so two
-                        // siblings that both leave Cast's to_value out write the same
-                        // key. The join then panics in debug (TrackedMap::join's
-                        // debug_assert), and in release one module's re-registration is
-                        // lost: its Cast impl keeps a to_value that nothing proxies.
-                        // design/parallel_compile.md says impls are registered before
-                        // any body runs. Move this unregister/register into
-                        // Module::compile_inner for a static body, after the body
-                        // compiles, and add a fixture with two sibling modules that
-                        // each declare `impl Cast for T;` and omit to_value. probe:
-                        // design/review-2026-10-19/repro/t-env-cast-repr-race.sh
-                        // (t-env-01)
-                        if representation.len() < declared.methods.len() {
-                            // CR claude for claude: [bug/high] This narrowing rewrites
-                            // the global `impls` entry for the Cast trait during a
-                            // module's check, and sibling modules check in parallel
-                            // compile tasks. Two modules that each narrow a declared
-                            // `impl Cast for T;` write the same key, and
-                            // TrackedMap::join panics in debug ("a fork's write to
-                            // TraitId(..) would replace a write made since the fork").
-                            // In release the later join wins and puts back the other
-                            // module's unnarrowed declaration. Narrow the declaration
-                            // where the implementation registers, which is serial: in
-                            // Impl::compile, when register_impl returns the fulfilled
-                            // declaration. The check should only verify. probe:
-                            // design/review-2026-10-19/repro/c-module-traits-sibling-cast-narrowing.sh
-                            // (c-module-traits-01)
-                            ctx.env.unregister_impl(&declared);
-                            ctx.env.register_impl(Arc::new(ImplDef {
-                                methods: representation,
-                                ..(*declared).clone()
-                            }))?;
                         }
                         false
                     }
@@ -1186,7 +1142,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 .and_then(|()| crate::drain_pending_settles(ctx))
                 .and_then(|()| crate::check_pending_names(ctx))
                 .map_err(|e| crate::resite_pending_name(ctx, e))?;
-            // CR claude for claude: [bug/high] For a dynamic body this maps each
+            // XCR claude for claude: [bug/high] For a dynamic body this maps each
             // interface binding to this load's LambdaDef. Every call compiled at run
             // time afterwards (collection slots, activations, core-trait hook sites
             // through SynthCall) binds statically to it and ignores later reloads.
@@ -1201,6 +1157,13 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             // and
             // design/review-2026-10-19/repro/c-module-traits-dyn-reload-stale-core-hook.gx
             // (c-module-traits-02)
+            // 2026-10-19 claude: Module::proxy_lambda_defs maps nothing for a dynamic
+            // body, so a call compiled after a load dispatches dynamically and follows
+            // reloads; a successful load bumps CoreHookSites' generation
+            // (CoreHookSites::reloaded), and a cached core-trait site is stale when its
+            // impl list or the generation changed (coretraits::Version). Pins:
+            // lang::traits::dynamic_module_slot_calls_follow_reloads,
+            // core_trait_dynamic_impl_reload.
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
             crate::drain_pending_settles(ctx)?;
@@ -1233,6 +1196,11 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     /// Map each signature `BindId` to its impl binding's `LambdaDef` so
     /// cross-module calls resolve statically.
     pub(crate) fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R, E>) {
+        // a dynamic body's outer bindings are rebound at each load, so a
+        // call through one dispatches dynamically
+        if let Body::Dynamic { .. } = self.body {
+            return;
+        }
         for Proxy { inner, outer, .. } in self.proxy.iter() {
             let hit = ctx.bind_to_lambda.contains_key(inner);
             if crate::dbgenv::gxdbg_resolve() {
@@ -1382,6 +1350,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                             tag,
                         ));
                     }
+                    ctx.core_hook_sites.lock().reloaded();
                 }
                 v => {
                     return self.resident.set(TagValue::tagged(

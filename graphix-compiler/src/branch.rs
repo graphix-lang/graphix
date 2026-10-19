@@ -292,7 +292,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         self.mark_readers(id)
     }
 
-    // CR claude for claude: [bug/high] A standing insert changes what read_var reports
+    // XCR claude for claude: [bug/high] A standing insert changes what read_var reports
     // as Standing, which a Cycle-view Ref or Deref takes as its value, but it marks no
     // reader. A pruned walk skips such a reader and rides the old value. ByRef::publish
     // refreshes a reference cell standing at an arm's wake, and publish_production
@@ -305,6 +305,11 @@ impl<'a, R: Rt> RtView<'a, R> {
     // both repros in lang::prune. probe:
     // design/review-2026-10-19/repro/x-prune-byref-standing-unmarked.gx,
     // design/review-2026-10-19/repro/x-prune-formal-standing-unmarked.gx (x-prune-01)
+    // 2026-10-19 claude: RtView::store_insert_standing marks the id's readers as
+    // store_insert does; CLAUDE.md's walk-pruning rule names it. Pins:
+    // lang::prune::standing_reference_refresh_marks_its_readers,
+    // standing_formal_refresh_marks_its_readers (pruned and JIT traces equal the
+    // unpruned one).
     pub fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
         match self {
             Self::Root(r) => r.store_insert_standing(id, tv),
@@ -312,6 +317,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                 f.store.insert(id, Some((tv, f.cycle.wrapping_sub(1))));
             }
         }
+        self.mark_readers(id)
     }
 
     /// See [`Rt::store_put`].
@@ -1041,7 +1047,11 @@ where
     if items.len() >= 2 && ctx.fork_mode() != ParMode::Off && independent.is_none() {
         let calls: LPooled<Vec<&Node<R, E>>> =
             items.iter_mut().map(|i| &*call(i)).collect();
-        *independent = crate::analysis::independent(calls.iter().copied(), ctx);
+        *independent = crate::analysis::independent(
+            calls.iter().copied(),
+            ctx,
+            crate::analysis::Sites::Slots,
+        );
     }
     let fork =
         items.len() >= 2 && ctx.fork_mode() != ParMode::Off && *independent == Some(true);

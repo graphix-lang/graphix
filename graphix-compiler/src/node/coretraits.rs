@@ -121,8 +121,23 @@ fn hook_of(
 
 /// The trait's implementation list, whose identity is the version an
 /// entry was resolved against: a registration or removal replaces it.
-fn impls_version(env: &Env, t: CoreTrait) -> Option<Arc<Vec<Arc<ImplDef>>>> {
-    env.impls.get(&t.id()).cloned()
+/// What a cached site was built against: the trait's impl list and the
+/// registry's reload generation.
+#[derive(Clone)]
+struct Version {
+    impls: Option<Arc<Vec<Arc<ImplDef>>>>,
+    generation: u64,
+}
+
+impl Version {
+    fn same(&self, other: &Self) -> bool {
+        self.generation == other.generation
+            && match (&self.impls, &other.impls) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 /// The implementation of `t` that applies to a value of the abstract
@@ -217,7 +232,7 @@ struct Candidate<R: Rt, E: UserEvent> {
 /// per concrete instantiation met, the implementation that applies
 /// (`None` = structural).
 struct SiteEntry<R: Rt, E: UserEvent> {
-    version: Option<Arc<Vec<Arc<ImplDef>>>>,
+    version: Version,
     by_type: SmallVec<[(Type, Option<Candidate<R, E>>); 1]>,
 }
 
@@ -252,17 +267,25 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
 
 /// The per-context registry, keyed `(method, tag)`. An entry resolves on
 /// first use and is rebuilt when the trait's implementation list
-/// changes (`impls_version`). The seam runs its sites over events of
+/// changes or a dynamic module loads ([`Version`]). The seam runs its sites over events of
 /// its own (`spare`, the ones not in a dispatch), never the caller's,
 /// so a loan lends the context to nothing but the dispatch.
 pub struct CoreHookSites<R: Rt, E: UserEvent> {
     sites: AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
     spare: Vec<Event<E>>,
+    /// Bumped at each dynamic module load: a site built before it may
+    /// call a method binding the load rebound.
+    generation: u64,
 }
 
 impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
     pub(crate) fn is_empty(&self) -> bool {
         self.sites.is_empty()
+    }
+
+    /// Retire every site: a dynamic module loaded.
+    pub(crate) fn reloaded(&mut self) {
+        self.generation += 1
     }
 
     fn take_event(&mut self, user: &E) -> Event<E> {
@@ -277,7 +300,7 @@ impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
 
 impl<R: Rt, E: UserEvent> Default for CoreHookSites<R, E> {
     fn default() -> Self {
-        Self { sites: AHashMap::new(), spare: Vec::new() }
+        Self { sites: AHashMap::new(), spare: Vec::new(), generation: 0 }
     }
 }
 
@@ -352,21 +375,10 @@ fn call_hook<R: Rt, E: UserEvent>(
 /// was rebuilt meanwhile.
 struct Loan<R: Rt, E: UserEvent> {
     key: (u8, AbstractId),
-    version: Option<Arc<Vec<Arc<ImplDef>>>>,
+    version: Version,
     slot: usize,
     typ: Type,
     site: HookSite<R, E>,
-}
-
-fn same_version(
-    a: &Option<Arc<Vec<Arc<ImplDef>>>>,
-    b: &Option<Arc<Vec<Arc<ImplDef>>>>,
-) -> bool {
-    match (a, b) {
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-        (None, None) => true,
-        _ => false,
-    }
 }
 
 enum Taken<R: Rt, E: UserEvent> {
@@ -387,7 +399,7 @@ fn take_site<R: Rt, E: UserEvent>(
 ) -> Taken<R, E> {
     let Type::Abstract { id, .. } = typ else { return Taken::None };
     let key = (m as u8, *id);
-    // CR claude for claude: [bug/high] A Display impl declared by a dynamic module's
+    // XCR claude for claude: [bug/high] A Display impl declared by a dynamic module's
     // sig is never replaced on reload: after the module reloads with a new `fmt`,
     // interpolation keeps calling the first one ((2, "one1") where (2, "two1") is
     // owed). The user-trait path follows reloads. The entry is versioned only by the
@@ -399,11 +411,16 @@ fn take_site<R: Rt, E: UserEvent>(
     // traits::trait_dynamic_impl_reload. probe:
     // design/review-2026-10-19/repro/tests-fusion-traits-dynamic-core-impl-reload.gx
     // (tests-fusion-traits-02)
-    let version = impls_version(&ctx.env, m.of());
-    let (stale, found) = {
+    // 2026-10-19 claude: Fixed with c-module-traits-02: CoreHookSites::reloaded bumps a
+    // generation at each dynamic load and coretraits::Version carries it. Pin:
+    // lang::traits::core_trait_dynamic_impl_reload (the core-trait twin of
+    // trait_dynamic_impl_reload).
+    let impls = ctx.env.impls.get(&m.of().id()).cloned();
+    let (version, stale, found) = {
         let mut reg = ctx.core_hook_sites.lock();
+        let version = Version { impls, generation: reg.generation };
         let stale = match reg.sites.get(&key) {
-            Some(e) if !same_version(&e.version, &version) => reg.sites.remove(&key),
+            Some(e) if !e.version.same(&version) => reg.sites.remove(&key),
             _ => None,
         };
         let entry = reg.sites.entry(key).or_insert_with(|| SiteEntry {
@@ -415,7 +432,7 @@ fn take_site<R: Rt, E: UserEvent>(
             None => None,
             Some(hook) => Some((slot, c.pool.pop().ok_or_else(|| hook.clone()))),
         });
-        (stale, found)
+        (version, stale, found)
     };
     for (_, c) in stale.into_iter().flat_map(|e| e.by_type) {
         for mut s in c.into_iter().flat_map(|c| c.pool) {
@@ -436,7 +453,7 @@ fn take_site<R: Rt, E: UserEvent>(
                 // the registry was unlocked while the site was built: clear
                 // the slot only if it is still this version's and this type's
                 if let Some(e) = ctx.core_hook_sites.lock().sites.get_mut(&key)
-                    && same_version(&e.version, &version)
+                    && e.version.same(&version)
                     && let Some((seen, c)) = e.by_type.get_mut(slot)
                     && seen == typ
                 {
@@ -455,7 +472,7 @@ fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, loan: Loan<R, E
         let pool = reg
             .sites
             .get_mut(&loan.key)
-            .filter(|e| same_version(&e.version, &loan.version))
+            .filter(|e| e.version.same(&loan.version))
             .and_then(|e| e.candidate(loan.slot, &loan.typ));
         match pool {
             Some(c) => {

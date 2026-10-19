@@ -187,6 +187,10 @@ impl WakeBit {
     pub(crate) fn take(&mut self) -> bool {
         std::mem::take(&mut self.0)
     }
+
+    pub(crate) fn is_set(&self) -> bool {
+        self.0
+    }
 }
 
 thread_local! {
@@ -399,7 +403,13 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
-    site.decide_siblings(ctx, n, || crate::analysis::independent(nodes.iter(), ctx));
+    site.decide_siblings(ctx, n, || {
+        crate::analysis::independent(
+            nodes.iter(),
+            ctx,
+            crate::analysis::Sites::Statements,
+        )
+    });
     fork_point(ctx, nodes, site, gather_in_order, |(t0, mut p0), (t1, p1)| {
         p0.extend(p1);
         (t0.join(t1), p0)
@@ -735,7 +745,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             planned
                 .get_or_init(|| crate::analysis::plan_block(children, catches, ctx))
                 .iter()
-                // CR claude for claude: [bug/high] A planned run's site is built
+                // XCR claude for claude: [bug/high] A planned run's site is built
                 // Undecided, and nothing ever decides it: update_run and fork_point
                 // never call decide_siblings. ForkSite::plan forks only an Independent
                 // site, so no block run has forked under any mode since that rule
@@ -747,7 +757,11 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
                 // its `a + b` operand fork and cannot catch this. probe:
                 // design/review-2026-10-19/repro/x-parallel-block-runs-never-fork.gx
                 // (x-parallel-01)
-                .map(|&(a, b)| (a, b, ForkSite::default()))
+                // 2026-10-19 claude: A planned run's site is ForkSite::planned()
+                // (Independent): plan_block already decided it. Pin:
+                // lang::par_attrs::block_runs_fork (a block where only its statements
+                // can fork, under Force: forks > 0).
+                .map(|&(a, b)| (a, b, ForkSite::planned()))
                 .collect()
         });
         let last = self.children.len();
@@ -850,7 +864,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         // (c-node-mod-04)
         let at = StmtAt::Block { value: !module && i + 1 == n };
         let boundary = prune::Prune::boundary(ctx);
-        let (node, next) = ctx.in_boundary(&boundary, |ctx| {
+        let (node, next) = ctx.in_boundary(Some(&boundary), |ctx| {
             compile_statement(ctx, flags, e, &scope, top_id, at)
         })?;
         scope = next;

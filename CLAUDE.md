@@ -187,7 +187,8 @@ root and the boundary around the reader (`prune::Reader`), taken from the
 traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
 copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a
 pending reference keep theirs). Every this-cycle write marks its readers'
-boundaries and their ancestors: a stamped `store_insert`, `notify_set`,
+boundaries and their ancestors: a stamped `store_insert` or a standing
+`store_insert_standing`, `notify_set`,
 `ExecCtx::publish`/`try_publish` (never `event.variables.insert` from a
 node), the cycle's deliveries; state a node polls without a variable
 marks its pollers (error handlers: `ErrorHandler::polled_by`). `Prune`

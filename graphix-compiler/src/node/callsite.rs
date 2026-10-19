@@ -65,53 +65,6 @@ use std::{
 };
 use triomphe::Arc as TArc;
 
-// CR claude for claude: [bug/high] DEFAULTS_IN_CHECK is thread state, but
-// resolve_static holds its guards across bind_instance, whose statement elaboration
-// blocks in a rayon join (check_in_tasks). A job stolen there, often a sibling
-// statement calling the same definition with the same omitted label, sees the pair 'in
-// progress' and leaves its site dynamic. So `#[native] f(i)` over a multi-statement `f`
-// with a defaulted label fails at random (about 5 builds in 12), and without
-// `#[native]` fusion and fork plans vary from run to run. a8b168951 set the other
-// compile thread-locals aside for stolen jobs, but not this one. Keep the stack in the
-// CompileCtx beside resolving_lambdas (forked with it), or set it aside wherever
-// TaskContext is entered. probe:
-// design/review-2026-10-19/repro/x-parallel-default-in-check-tls.gx (x-parallel-02)
-thread_local! {
-    /// The (definition, label) defaults this thread is checking, innermost
-    /// last.
-    static DEFAULTS_IN_CHECK: std::cell::RefCell<SmallVec<[(LambdaId, ArcStr); 4]>> =
-        const { std::cell::RefCell::new(SmallVec::new_const()) };
-}
-
-/// A default of a definition's label being checked or elaborated: the
-/// guard takes it off.
-struct DefaultInCheck(LambdaId, ArcStr);
-
-impl DefaultInCheck {
-    /// `None` when the pair's check is already in progress.
-    fn enter(id: LambdaId, label: &ArcStr) -> Option<Self> {
-        DEFAULTS_IN_CHECK.with(|s| {
-            let mut s = s.borrow_mut();
-            if s.iter().any(|(i, l)| *i == id && l == label) {
-                return None;
-            }
-            s.push((id, label.clone()));
-            Some(Self(id, label.clone()))
-        })
-    }
-}
-
-impl Drop for DefaultInCheck {
-    fn drop(&mut self) {
-        DEFAULTS_IN_CHECK.with(|s| {
-            let mut s = s.borrow_mut();
-            if let Some(i) = s.iter().rposition(|(i, l)| *i == self.0 && *l == self.1) {
-                s.remove(i);
-            }
-        })
-    }
-}
-
 /// Reject a direct call to a sync variadic builtin with no positional
 /// arguments (`str::concat()`, `sum()`): the node has no data inputs and
 /// can never fire. Only a direct `Ref` to the builtin is checkable.
@@ -630,6 +583,17 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
             wrap!(n, polymorphic_in(&formal, n.typ()))?;
+            let mut refs = Refs::default();
+            n.refs(&mut refs);
+            let mut free: SmallVec<[Type; 4]> = SmallVec::new();
+            refs.with_external_refs(|id| {
+                if let Some(b) = ctx.env.by_id.get(&id) {
+                    free.push(b.typ.clone())
+                }
+            });
+            for t in free.iter() {
+                wrap!(n, escapes_through(&formal, t))?;
+            }
             Ok(true)
         }
     }
@@ -697,6 +661,80 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
     Ok(())
 }
 
+/// The cells of the quantifiers a function type under `t` binds.
+fn bound_quantifiers(t: &Type, out: &mut AHashSet<usize>, seen: &mut AHashSet<usize>) {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if seen.insert(tv.cell_addr())
+                && let Some(b) = tv.binding()
+            {
+                bound_quantifiers(&b, out, seen)
+            }
+        }
+        Type::Fn(ft) => {
+            if !ft.quantifiers.is_empty() {
+                let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                ft.collect_tvars(&mut named);
+                out.extend(
+                    named
+                        .iter()
+                        .filter(|(n, _)| ft.quantifiers.contains(*n))
+                        .map(|(_, tv)| tv.cell_addr()),
+                );
+            }
+            t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
+        }
+        t => t.for_each_child(&mut |c| bound_quantifiers(c, out, seen)),
+    })
+}
+/// A binding the argument reads or writes holds none of the formal's
+/// quantifiers: its cell would carry the quantifier out.
+fn escapes_through(formal: &Type, env: &Type) -> Result<()> {
+    let Type::Fn(ft) = formal else { return Ok(()) };
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.collect_tvars(&mut named);
+    let quantified: SmallVec<[(ArcStr, usize); 2]> = named
+        .iter()
+        .filter(|(name, _)| ft.quantifiers.contains(*name))
+        .map(|(name, tv)| (name.clone(), tv.cell_addr()))
+        .collect();
+    let mut own = AHashSet::new();
+    bound_quantifiers(env, &mut own, &mut AHashSet::new());
+    let mut reached = None;
+    let mut seen = AHashSet::new();
+    reaches_cell(env, &mut seen, &mut |c| {
+        if own.contains(&c.cell_addr()) {
+            return;
+        }
+        if let Some((q, _)) = quantified.iter().find(|(_, a)| *a == c.cell_addr()) {
+            reached = Some(q.clone())
+        }
+    });
+    match reached {
+        None => Ok(()),
+        Some(q) => bail!(
+            "the argument is not polymorphic in '{q}: a binding it reaches, of type \
+             {}, would carry '{q} out",
+            printed_deref(env)
+        ),
+    }
+}
+
+/// Every cell under `t`, following bindings.
+fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar)) {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if seen.insert(tv.cell_addr()) {
+                f(tv);
+                if let Some(b) = tv.binding() {
+                    reaches_cell(&b, seen, f)
+                }
+            }
+        }
+        t => t.for_each_child(&mut |c| reaches_cell(c, seen, f)),
+    })
+}
+
 /// The first of the `quantified` cells (name, cell address) that a
 /// variable of `value`'s environment reaches, with that variable: a
 /// cell at the top level or another definition's, never one the
@@ -722,35 +760,6 @@ pub(crate) fn carried_out(
         Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
         _ => SmallVec::new(),
     };
-    fn bound_quantifiers(
-        t: &Type,
-        out: &mut AHashSet<usize>,
-        seen: &mut AHashSet<usize>,
-    ) {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr())
-                    && let Some(b) = tv.binding()
-                {
-                    bound_quantifiers(&b, out, seen)
-                }
-            }
-            Type::Fn(ft) => {
-                if !ft.quantifiers.is_empty() {
-                    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                    ft.collect_tvars(&mut named);
-                    out.extend(
-                        named
-                            .iter()
-                            .filter(|(n, _)| ft.quantifiers.contains(*n))
-                            .map(|(_, tv)| tv.cell_addr()),
-                    );
-                }
-                t.for_each_child(&mut |c| bound_quantifiers(c, out, seen))
-            }
-            t => t.for_each_child(&mut |c| bound_quantifiers(c, out, seen)),
-        })
-    }
     let mut bound = AHashSet::new();
     bound_quantifiers(value, &mut bound, &mut AHashSet::new());
     fn walk(t: &Type, f: &mut impl FnMut(&TVar), seen: &mut AHashSet<usize>) {
@@ -1520,10 +1529,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 // a default that reaches its own label's check again (`let
                 // rec f = |#a = f(1), b| b`) is not known here: the run-time
                 // bind narrows it
-                let Some(_checking) = DefaultInCheck::enter(f.id, name) else {
+                if !ctx.enter_default(f.id, name) {
                     known = false;
                     continue;
-                };
+                }
                 let node = self.checked_default(
                     ctx,
                     flags,
@@ -1532,8 +1541,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     name,
                     expr,
                     &mut Refs::default(),
-                )?;
-                ctx.discard(node);
+                );
+                ctx.leave_default(f.id, name);
+                ctx.discard(node?);
             }
         }
         Ok(known)
@@ -1931,13 +1941,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // None sources out of the identity. probe:
         // design/review-2026-10-19/repro/c-callsite-omitted-default-selfcall-defuses.gx
         // (c-callsite-02)
-        let mut elaborating: SmallVec<[DefaultInCheck; 2]> = SmallVec::new();
-        for label in self.omitted_labels(def) {
-            match DefaultInCheck::enter(def.id, &label) {
-                Some(g) => elaborating.push(g),
-                None => return Ok(()),
-            }
+        let labels = self.omitted_labels(def);
+        let entered = labels.iter().take_while(|l| ctx.enter_default(def.id, l)).count();
+        let res = match entered == labels.len() {
+            true => self.resolve_static_entered(ctx, def),
+            false => Ok(()),
+        };
+        for label in &labels[..entered] {
+            ctx.leave_default(def.id, label)
         }
+        res
+    }
+
+    /// [`Self::resolve_static`] with the checks of its omitted defaults
+    /// entered.
+    fn resolve_static_entered(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        def: &LambdaDef<R, E>,
+    ) -> Result<()> {
         // A site reached while an instantiation with the same fn-arg
         // identity is resolving is a self-call and shares that instance;
         // a different identity is a fresh instantiation.
@@ -3468,7 +3490,11 @@ fn update_args<R: Rt, E: UserEvent>(
 ) -> ArgsOut {
     let n = args.len();
     site.decide_siblings(ctx, n, || {
-        crate::analysis::independent(args.values().filter_map(|a| a.node.as_ref()), ctx)
+        crate::analysis::independent(
+            args.values().filter_map(|a| a.node.as_ref()),
+            ctx,
+            crate::analysis::Sites::Statements,
+        )
     });
     let in_order = |c: &mut ExecCtx<'_, R, E>, p, m: Option<&mut Meter<'_>>| {
         update_args_in_order(c, p, m, pass)
