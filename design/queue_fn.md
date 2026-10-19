@@ -1,6 +1,6 @@
 # `queuefn` — queued function invocation
 
-Status: built; the sleep rule is open (core-aux-01).
+Status: built; whether a sleeping wrapper site keeps its calls is open (core-aux-02).
 Pins: `stdlib/graphix-tests/src/lib_tests/core.rs` `queuefn_delta_per_cycle`, `queuefn_trigger_arg`,
 `queuefn_trigger_before_fn`
 
@@ -129,11 +129,12 @@ by reading; not run. (core-aux-04) -->
 write_target, the same-cycle release rule, ORDERED) and the Status dates dropped. The
 sleep bullet now describes the reset as built and names it open; rewrite it once
 core-aux-01/core-aux-02 are ruled, then delete this CR. -->
-- Sleep, as built: the node's `sleep` clears the queue and resets
-  `pop_count` to 1, and a wrapper site's `sleep` and `delete` drop the
-  site's queued entries, writing `#count`; the node's `delete` releases
-  `fid`. Whether a sleep should pause the queue instead, as `queue` and
-  `iterq` do, is open (core-aux-01, core-aux-02).
+- Sleep: the node's `sleep` is a pause, keeping the queue and
+  `pop_count`; its `reborn` (a seq step's next run) clears the queue,
+  resets `pop_count` to 1 and writes `#count`. A wrapper site's `sleep`
+  and `delete` drop the site's queued entries, writing `#count`; whether
+  a sleeping site should keep them is open (core-aux-02). The node's
+  `delete` releases `fid`.
 - A bottom argument at a wrapper site bottoms that invocation: it is
   neither queued nor dispatched.
 - Containers: `QueueEntry.updates` and the per-cycle delta are

@@ -66,6 +66,19 @@ pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
         // keep `jit > 0` as a secondary check. Found by reading; graphix-fuzz run on
         // design/review-2026-10-19/repro/core-aux-fuseexpect-counts-runs.gx shows
         // fused=1 with a first value from before the region runs. (core-aux-03)
+        // 2026-10-19 claude: Tried as written (None iff FusionStats::fused == 0, Jit
+        // iff fused > 0 and jit > 0, fused read after the first value) over
+        // graphix-tests: 8 jit fixtures flip, in two kinds. (1) A build the check
+        // accepts but a #[native] refuses still counts the regions it fused before the
+        // refusal (labeled_callback_map/fold_node_walks,
+        // select_tuple_union_member_node_walks,
+        // native_names_the_blocker_over_a_fused_argument): fused must be judged only
+        // for a build that succeeded. (2) Regions that fuse but whose kernel first runs
+        // after the first value (dynamic_module2/3/6/8, cps_wrapper_recursion): the
+        // CR's own case, but the jit > 0 secondary check then fails them too. Reverted;
+        // the fix needs both decided: skip the fused count on a refused build, and
+        // either read jit at the end of the run or drop the jit > 0 check for regions
+        // that run late.
         FuseExpect::None => {
             assert!(
                 fusion == 0,
@@ -180,8 +193,8 @@ impl Mode {
         matches!(self, Mode::Interp | Mode::Par | Mode::Unpruned)
     }
 
-    /// Whether the runtime skips clean boundaries.
-    // CR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
+    /// Whether the runtime skips clean boundaries, and audits the skips.
+    // XCR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
     // audit off, and Mode::Unpruned is not in Mode::ALL. So the gate never checks that
     // pruning changes nothing; only lang::prune's walk count touches it. A missed mark
     // that alters an intermediate cycle passes every fixture: the standing-write hole
@@ -190,10 +203,16 @@ impl Mode {
     // GRAPHIX_PRUNE is unset (it walks everything, so it costs what Off does), and
     // correct design/walk_pruning.md "Verifying it", which says the gate already
     // audits. Found by reading; not run. (x-prune-03)
+    // 2026-10-19 claude: Mode::prune now gives Interp and Par PruneMode::Audit when
+    // GRAPHIX_PRUNE is unset (Jit modes stay On, Unpruned Off). Measured first:
+    // graphix-tests under GRAPHIX_PRUNE=audit passed whole (9348, 188 s against 211 s
+    // pruned), so the gate turns no fixture red. A missed mark now fails any node-walk
+    // fixture whose skip it would change. design/walk_pruning.md's 'Verifying it' is
+    // left to Eric's x-doc-drift-02, which covers the section's other unbuilt names.
     pub fn prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
-            // CR claude for claude: [test-gap/low] No run! fixture ever runs the prune
+            // XCR claude for claude: [test-gap/low] No run! fixture ever runs the prune
             // audit. design/walk_pruning.md says the plain gate runs it for the lang
             // and lib_tests fixtures, but this returns On unless GRAPHIX_PRUNE is set.
             // The only pruning pin is a walk count,
@@ -203,6 +222,13 @@ impl Mode {
             // for Mode::Interp when GRAPHIX_PRUNE is unset, so every node-walk fixture
             // checks marks, or correct the design doc. Found by reading; not run.
             // (c-prune-wake-03)
+            // the node-walk modes audit every skip they would make: a missed
+            // mark fails the fixture
+            // 2026-10-19 claude: Fixed with x-prune-03: Interp (and Par) audit by
+            // default.
+            Mode::Interp | Mode::Par if std::env::var_os("GRAPHIX_PRUNE").is_none() => {
+                PruneMode::Audit
+            }
             _ => PruneMode::from_env(),
         }
     }
@@ -284,12 +310,8 @@ pub fn verdicts_agree(
     }
 }
 
-/// The next update of `id`, failing at `deadline`.
 /// `v` as a test reads it: written as data ([`rep::strip`]), so a
 /// tuple, struct or variant is the array a writer writes.
-// CR claude for claude: [readability/low] The first line of this doc ('The next update
-// of `id`, failing at `deadline`.') is left over from next_update and describes nothing
-// here; delete it. Found by reading; not run. (core-aux-05)
 pub fn data(v: Value) -> Value {
     rep::strip(&v).unwrap_or(v)
 }

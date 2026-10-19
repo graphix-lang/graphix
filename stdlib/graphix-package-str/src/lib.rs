@@ -4,9 +4,16 @@
 )]
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
+use compact_str::format_compact;
 use escaping::Escape;
-use graphix_compiler::{env::Env, err, errf, expr::split_escaped, rep, typ::FnType};
-use graphix_package_core::{FastMemo, cast_target};
+use graphix_compiler::{
+    env::Env,
+    err, errf,
+    expr::split_escaped,
+    rep,
+    typ::{FnType, TVal, Type},
+};
+use graphix_package_core::{ErrorText, FastMemo, cast_target};
 use netidx::{path::Path, subscriber::Value};
 use netidx_derive::FromValue;
 use netidx_value::ValArray;
@@ -14,116 +21,96 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 
-// CR claude for claude: [structure/low] starts_with/ends_with/contains,
-// strip_prefix/strip_suffix, trim x3, to_lower/to_upper, split_once/rsplit_once and
-// split_escaped/splitn_escaped are copies differing only in the str method called, and
-// fc_join/fc_concat repeat the same parts walk. Fold them into macros like
-// string_split! (one for str -> bool predicates, one for str -> str maps, one for the
-// split_once pair) and one parts walker for join/concat. Found by reading; not run.
-// (collections-str-10)
-fn fc_starts_with(args: &[Value]) -> Option<Value> {
-    match (&args[0], &args[1]) {
-        (Value::String(pfx), Value::String(val)) => {
-            Some(Value::Bool(val.starts_with(&**pfx)))
+/// A fast builtin over one string argument `$s`, its value `$e`.
+macro_rules! str_fn {
+    ($name:ident, $ev:ident, $builtin:literal, $fc:ident, |$s:ident| $e:expr) => {
+        fn $fc(args: &[Value]) -> Option<Value> {
+            match args {
+                [Value::String($s)] => Some($e),
+                _ => None,
+            }
         }
-        _ => None,
-    }
+
+        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
+    };
 }
 
-graphix_package_core::fast_builtin!(
-    StartsWith,
-    StartsWithEv,
-    "str_starts_with",
-    fc_starts_with
-);
-
-fn fc_ends_with(args: &[Value]) -> Option<Value> {
-    match (&args[0], &args[1]) {
-        (Value::String(sfx), Value::String(val)) => {
-            Some(Value::Bool(val.ends_with(&**sfx)))
+/// A fast builtin over a pattern `$p` and then a string `$s`, its value
+/// `$e`.
+macro_rules! str_pat_fn {
+    ($name:ident, $ev:ident, $builtin:literal, $fc:ident, |$p:ident, $s:ident| $e:expr) => {
+        fn $fc(args: &[Value]) -> Option<Value> {
+            match args {
+                [Value::String($p), Value::String($s)] => Some($e),
+                _ => None,
+            }
         }
-        _ => None,
+
+        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
+    };
+}
+
+/// A string, or null for none.
+fn some_str(s: Option<&str>) -> Value {
+    s.map_or(Value::Null, |s| Value::String(s.into()))
+}
+
+/// The pair of strings as a tuple, or null for none.
+fn some_pair(p: Option<(&str, &str)>) -> Value {
+    match p {
+        None => Value::Null,
+        Some((a, b)) => rep::tuple([Value::String(a.into()), Value::String(b.into())]),
     }
 }
 
-graphix_package_core::fast_builtin!(EndsWith, EndsWithEv, "str_ends_with", fc_ends_with);
-
-fn fc_contains(args: &[Value]) -> Option<Value> {
-    match (&args[0], &args[1]) {
-        (Value::String(chs), Value::String(val)) => {
-            Some(Value::Bool(val.contains(&**chs)))
-        }
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(Contains, ContainsEv, "str_contains", fc_contains);
-
-fn fc_strip_prefix(args: &[Value]) -> Option<Value> {
-    match (&args[0], &args[1]) {
-        (Value::String(pfx), Value::String(val)) => val
-            .strip_prefix(&**pfx)
-            .map(|s| Value::String(s.into()))
-            .or(Some(Value::Null)),
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(
-    StripPrefix,
-    StripPrefixEv,
-    "str_strip_prefix",
-    fc_strip_prefix
+str_pat_fn!(StartsWith, StartsWithEv, "str_starts_with", fc_starts_with, |p, s| {
+    Value::Bool(s.starts_with(&**p))
+});
+str_pat_fn!(EndsWith, EndsWithEv, "str_ends_with", fc_ends_with, |p, s| {
+    Value::Bool(s.ends_with(&**p))
+});
+str_pat_fn!(Contains, ContainsEv, "str_contains", fc_contains, |p, s| {
+    Value::Bool(s.contains(&**p))
+});
+str_pat_fn!(StripPrefix, StripPrefixEv, "str_strip_prefix", fc_strip_prefix, |p, s| {
+    some_str(s.strip_prefix(&**p))
+});
+str_pat_fn!(StripSuffix, StripSuffixEv, "str_strip_suffix", fc_strip_suffix, |p, s| {
+    some_str(s.strip_suffix(&**p))
+});
+str_pat_fn!(
+    StringSplitOnce,
+    StringSplitOnceEv,
+    "str_split_once",
+    fc_split_once,
+    |p, s| some_pair(s.split_once(&**p))
 );
-
-fn fc_strip_suffix(args: &[Value]) -> Option<Value> {
-    match (&args[0], &args[1]) {
-        (Value::String(sfx), Value::String(val)) => val
-            .strip_suffix(&**sfx)
-            .map(|s| Value::String(s.into()))
-            .or(Some(Value::Null)),
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(
-    StripSuffix,
-    StripSuffixEv,
-    "str_strip_suffix",
-    fc_strip_suffix
+str_pat_fn!(
+    StringRSplitOnce,
+    StringRSplitOnceEv,
+    "str_rsplit_once",
+    fc_rsplit_once,
+    |p, s| some_pair(s.rsplit_once(&**p))
 );
-
-fn fc_trim(args: &[Value]) -> Option<Value> {
-    match &args[0] {
-        Value::String(val) => Some(Value::String(val.trim().into())),
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(Trim, TrimEv, "str_trim", fc_trim);
-
-fn fc_trim_start(args: &[Value]) -> Option<Value> {
-    match &args[0] {
-        Value::String(val) => Some(Value::String(val.trim_start().into())),
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(
-    TrimStart,
-    TrimStartEv,
-    "str_trim_start",
-    fc_trim_start
-);
-
-fn fc_trim_end(args: &[Value]) -> Option<Value> {
-    match &args[0] {
-        Value::String(val) => Some(Value::String(val.trim_end().into())),
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(TrimEnd, TrimEndEv, "str_trim_end", fc_trim_end);
+str_pat_fn!(StringSplit, StringSplitEv, "str_split", fc_split, |p, s| strings(
+    s.split(&**p)
+));
+str_pat_fn!(StringRSplit, StringRSplitEv, "str_rsplit", fc_rsplit, |p, s| {
+    strings(s.rsplit(&**p))
+});
+str_fn!(Trim, TrimEv, "str_trim", fc_trim, |s| Value::String(s.trim().into()));
+str_fn!(TrimStart, TrimStartEv, "str_trim_start", fc_trim_start, |s| {
+    Value::String(s.trim_start().into())
+});
+str_fn!(TrimEnd, TrimEndEv, "str_trim_end", fc_trim_end, |s| {
+    Value::String(s.trim_end().into())
+});
+str_fn!(StringToLower, StringToLowerEv, "str_to_lower", fc_to_lower, |s| {
+    Value::String(s.to_lowercase().into())
+});
+str_fn!(StringToUpper, StringToUpperEv, "str_to_upper", fc_to_upper, |s| {
+    Value::String(s.to_uppercase().into())
+});
 
 fn fc_replace(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
@@ -187,6 +174,23 @@ fn fc_row_col(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(RowCol, RowColEv, "str_row_col", fc_row_col);
 
+/// `f` over each string of `parts`, an array's strings in order; `None`
+/// when a part is neither a string nor an array.
+fn each_part(parts: &[Value], mut f: impl FnMut(&str)) -> Option<()> {
+    for p in parts {
+        match p {
+            Value::String(c) => f(c),
+            Value::Array(a) => a.iter().for_each(|v| {
+                if let Value::String(c) = v {
+                    f(c)
+                }
+            }),
+            _ => return None,
+        }
+    }
+    Some(())
+}
+
 fn fc_join(args: &[Value]) -> Option<Value> {
     let [Value::String(sep), parts @ ..] = args else { return None };
     if parts.is_empty() {
@@ -194,26 +198,13 @@ fn fc_join(args: &[Value]) -> Option<Value> {
     }
     let mut buf: LPooled<String> = LPooled::take();
     let mut first = true;
-    let mut push = |c: &str| {
+    each_part(parts, |c| {
         if !first {
-            buf.push_str(&sep);
+            buf.push_str(sep);
         }
         first = false;
         buf.push_str(c);
-    };
-    for p in parts {
-        match p {
-            Value::String(c) => push(c),
-            Value::Array(a) => {
-                for v in a.iter() {
-                    if let Value::String(c) = v {
-                        push(c)
-                    }
-                }
-            }
-            _ => return None,
-        }
-    }
+    })?;
     Some(Value::String(ArcStr::from(buf.as_str())))
 }
 
@@ -221,19 +212,7 @@ graphix_package_core::fast_builtin!(StringJoin, StringJoinEv, "str_join", fc_joi
 
 fn fc_concat(args: &[Value]) -> Option<Value> {
     let mut buf: LPooled<String> = LPooled::take();
-    for p in args {
-        match p {
-            Value::String(c) => buf.push_str(c),
-            Value::Array(a) => {
-                for v in a.iter() {
-                    if let Value::String(c) = v {
-                        buf.push_str(c)
-                    }
-                }
-            }
-            _ => return None,
-        }
-    }
+    each_part(args, |c| buf.push_str(c))?;
     Some(Value::String(ArcStr::from(buf.as_str())))
 }
 
@@ -310,22 +289,6 @@ fn strings<'a>(it: impl Iterator<Item = &'a str>) -> Value {
     Value::Array(ValArray::from_iter(it.map(|s| Value::String(ArcStr::from(s)))))
 }
 
-macro_rules! string_split {
-    ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $fn:ident) => {
-        fn $fc(args: &[Value]) -> Option<Value> {
-            match args {
-                [Value::String(pat), Value::String(s)] => Some(strings(s.$fn(&**pat))),
-                _ => None,
-            }
-        }
-
-        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
-    };
-}
-
-string_split!(StringSplitEv, StringSplit, "str_split", fc_split, split);
-string_split!(StringRSplitEv, StringRSplit, "str_rsplit", fc_rsplit, rsplit);
-
 macro_rules! string_splitn {
     ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $fn:ident) => {
         fn $fc(args: &[Value]) -> Option<Value> {
@@ -334,7 +297,7 @@ macro_rules! string_splitn {
                 [Value::String(pat), Value::I64(n), Value::String(s)] if *n > 0 => {
                     Some(strings(s.$fn(*n as usize, &**pat)))
                 }
-                [_, n, _] => Some(errf!(TAG, "splitn: {n} must be a number > 0")),
+                [_, Value::I64(n), _] => Some(errf!(TAG, "#n must be > 0, got {n}")),
                 _ => None,
             }
         }
@@ -367,17 +330,29 @@ fn esc_sep(tag: &ArcStr, esc: &Value, sep: &Value) -> Result<(char, char), Value
     }
 }
 
-fn fc_split_escaped(args: &[Value]) -> Option<Value> {
-    static TAG: ArcStr = literal!("SplitEscError");
-    let (esc, sep) = match esc_sep(&TAG, &args[0], &args[1]) {
+/// `s` split into at most `n` parts at `sep` where `esc` does not escape
+/// it, or the error `tag` names a bad `esc` or `sep` by.
+fn split_esc(
+    tag: &ArcStr,
+    n: usize,
+    esc: &Value,
+    sep: &Value,
+    s: &Value,
+) -> Option<Value> {
+    let (esc, sep) = match esc_sep(tag, esc, sep) {
         Ok(es) => es,
         Err(e) => return Some(e),
     };
-    match &args[2] {
-        Value::String(s) => Some(Value::Array(ValArray::from_iter(
-            split_escaped(s, esc, sep, usize::MAX)
-                .map(|s| Value::String(ArcStr::from(s))),
-        ))),
+    match s {
+        Value::String(s) => Some(strings(split_escaped(s, esc, sep, n))),
+        _ => None,
+    }
+}
+
+fn fc_split_escaped(args: &[Value]) -> Option<Value> {
+    static TAG: ArcStr = literal!("SplitEscError");
+    match args {
+        [esc, sep, s] => split_esc(&TAG, usize::MAX, esc, sep, s),
         _ => None,
     }
 }
@@ -391,18 +366,11 @@ graphix_package_core::fast_builtin!(
 
 fn fc_splitn_escaped(args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("SplitNEscError");
-    let n = match &args[0] {
-        Value::I64(n) if *n > 0 => *n as usize,
-        v => return Some(errf!(TAG, "splitn_escaped: invalid n {v}")),
-    };
-    let (esc, sep) = match esc_sep(&TAG, &args[1], &args[2]) {
-        Ok(es) => es,
-        Err(e) => return Some(e),
-    };
-    match &args[3] {
-        Value::String(s) => Some(Value::Array(ValArray::from_iter(
-            split_escaped(s, esc, sep, n).map(|s| Value::String(ArcStr::from(s))),
-        ))),
+    match args {
+        [Value::I64(n), esc, sep, s] if *n > 0 => {
+            split_esc(&TAG, *n as usize, esc, sep, s)
+        }
+        [Value::I64(n), ..] => Some(errf!(TAG, "#n must be > 0, got {n}")),
         _ => None,
     }
 }
@@ -414,88 +382,19 @@ graphix_package_core::fast_builtin!(
     fc_splitn_escaped
 );
 
-fn fc_split_once(args: &[Value]) -> Option<Value> {
-    let pat = match &args[0] {
-        Value::String(s) => s,
-        _ => return None,
-    };
-    match &args[1] {
-        Value::String(s) => match s.split_once(&**pat) {
-            None => Some(Value::Null),
-            Some((s0, s1)) => {
-                Some(rep::tuple([Value::String(s0.into()), Value::String(s1.into())]))
-            }
-        },
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(
-    StringSplitOnce,
-    StringSplitOnceEv,
-    "str_split_once",
-    fc_split_once
-);
-
-fn fc_rsplit_once(args: &[Value]) -> Option<Value> {
-    let pat = match &args[0] {
-        Value::String(s) => s,
-        _ => return None,
-    };
-    match &args[1] {
-        Value::String(s) => match s.rsplit_once(&**pat) {
-            None => Some(Value::Null),
-            Some((s0, s1)) => {
-                Some(rep::tuple([Value::String(s0.into()), Value::String(s1.into())]))
-            }
-        },
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(
-    StringRSplitOnce,
-    StringRSplitOnceEv,
-    "str_rsplit_once",
-    fc_rsplit_once
-);
-
-fn fc_to_lower(args: &[Value]) -> Option<Value> {
-    match &args[0] {
-        Value::String(s) => Some(Value::String(s.to_lowercase().into())),
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(
-    StringToLower,
-    StringToLowerEv,
-    "str_to_lower",
-    fc_to_lower
-);
-
-fn fc_to_upper(args: &[Value]) -> Option<Value> {
-    match &args[0] {
-        Value::String(s) => Some(Value::String(s.to_uppercase().into())),
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(
-    StringToUpper,
-    StringToUpperEv,
-    "str_to_upper",
-    fc_to_upper
-);
-
-// CR claude for claude: [bug/medium] printf pads to any width and precision, so a `*`
+/// The most text sprintf writes, as much as `buffer::encode` pads: a
+/// width or precision from data allocates no further.
+// XCR claude for claude: [bug/medium] printf pads to any width and precision, so a `*`
 // width from data or a large width in a format string allocates without bound.
 // `str::sprintf("<%*d>", 100000000000, 1)` OOM-kills the runtime, and `%.999999999f`
 // builds a 1 GB string. buffer::encode caps Pad at 64 MiB; give sprintf the same cap.
 // Write through a bounded fmt::Write that errors past the cap (fish-printf pads
 // incrementally, so that stops it), and answer FormatError. probe:
 // design/review-2026-10-19/repro/x-panics-sprintf-width-oom.gx (x-panics-04)
-// CR claude for claude: [bug/medium] sprintf formats its `@args: Any` with Value's raw
+// 2026-10-19 claude: sprintf writes through Capped, which refuses past MAX_SPRINTF
+// (64 MiB, buffer::encode's Pad cap) and answers FormatError. Pin:
+// lib_tests::str_tests::sprintf_prints_composites_and_caps_padding (before: OOM).
+// XCR claude for claude: [bug/medium] sprintf formats its `@args: Any` with Value's raw
 // Display, so a tuple, struct, variant or list argument prints its kind-marker
 // abstract: `str::sprintf("%s", (1, 2))` is `[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1,
 // i64:2]`, where interpolation prints `(1, 2)`. Both engines agree on the wrong text.
@@ -504,7 +403,11 @@ graphix_package_core::fast_builtin!(
 // to printf as a string. probe:
 // design/review-2026-10-19/repro/x-builtin-effects-sprintf-markers.gx Also reported as
 // (x-engine-collections-02). (x-builtin-effects-01)
-// CR claude for claude: [bug/medium] sprintf hands its `Any` args to netidx printf,
+// 2026-10-19 claude: sprintf is a typed_fast_builtin now (FastCall Plain -> Typed, its
+// image state the resolved type) running under the display hooks; each
+// Array/Map/Abstract/Error argument is rendered with TVal under Any before printf. Pin:
+// lib_tests::str_tests::sprintf_prints_composites_and_caps_padding.
+// XCR claude for claude: [bug/medium] sprintf hands its `Any` args to netidx printf,
 // which formats every array, map and abstract with netidx's own Display. So a tuple,
 // struct, variant or list prints its kind markers (`[abstract:EnwukQtE2EoTn2Uo4FoXw40A,
 // i64:1, i64:2]` for `(1, 2)`), and a user abstract type prints as base64 bytes with
@@ -513,31 +416,78 @@ graphix_package_core::fast_builtin!(
 // argument with TVal under Type::Any (what interpolation prints) before calling printf.
 // probe: design/review-2026-10-19/repro/collections-str-sprintf-markers.gx
 // (collections-str-01)
-fn fc_sprintf(args: &[Value]) -> Option<Value> {
-    match args {
-        [Value::String(fmt), rest @ ..] => {
-            let mut buf: LPooled<String> = LPooled::take();
-            // CR claude for claude: [bug/medium] netidx's printf formats a composite
-            // argument with netidx's Display, which prints a tuple/struct/variant's
-            // kind marker as `abstract:<base64>`. `str::sprintf("%s", (1, `A(2), {x:
-            // 3}))` returns "[abstract:EnwukQ…A, i64:1, [abstract:…C, \"A\", i64:2],
-            // …]". Render each Array/Map/Error/Abstract argument with typ::Naked into a
-            // string before calling printf. fc_parse's two `errf!(TAG, "{e}")` arms and
-            // core's read_back print a cast error the same way
-            // (ParseError("[abstract:…, \"InvalidCast\", …]")); take the message out of
-            // the InvalidCast variant there. probe:
-            // design/review-2026-10-19/repro/x-panics-marker-leaks-into-text.gx
-            // (x-panics-05)
-            match netidx_value::printf(&mut *buf, fmt, rest) {
-                Ok(_) => Some(Value::String(ArcStr::from(buf.as_str()))),
-                Err(e) => Some(errf!(literal!("FormatError"), "{e}")),
-            }
+// 2026-10-19 claude: Fixed with x-builtin-effects-01 (typed fast fn under
+// with_display_hooks, composites rendered with TVal under Any). Pin:
+// lib_tests::str_tests::sprintf_prints_composites_and_caps_padding.
+const MAX_SPRINTF: usize = 64 * 1024 * 1024;
+
+/// A writer that refuses to grow past [`MAX_SPRINTF`].
+struct Capped<'a> {
+    buf: &'a mut String,
+    over: bool,
+}
+
+impl std::fmt::Write for Capped<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        if self.buf.len() + s.len() > MAX_SPRINTF {
+            self.over = true;
+            return Err(std::fmt::Error);
         }
-        _ => None,
+        self.buf.push_str(s);
+        Ok(())
     }
 }
 
-graphix_package_core::fast_builtin!(Sprintf, SprintfEv, "str_sprintf", fc_sprintf);
+fn fc_sprintf(env: &Env, _ft: &FnType, args: &[Value]) -> Option<Value> {
+    static TAG: ArcStr = literal!("FormatError");
+    let [Value::String(fmt), rest @ ..] = args else { return None };
+    // XCR claude for claude: [bug/medium] netidx's printf formats a composite
+    // argument with netidx's Display, which prints a tuple/struct/variant's
+    // kind marker as `abstract:<base64>`. `str::sprintf("%s", (1, `A(2), {x:
+    // 3}))` returns "[abstract:EnwukQ…A, i64:1, [abstract:…C, \"A\", i64:2],
+    // …]". Render each Array/Map/Error/Abstract argument with typ::Naked into a
+    // string before calling printf. fc_parse's two `errf!(TAG, "{e}")` arms and
+    // core's read_back print a cast error the same way
+    // (ParseError("[abstract:…, \"InvalidCast\", …]")); take the message out of
+    // the InvalidCast variant there. probe:
+    // design/review-2026-10-19/repro/x-panics-marker-leaks-into-text.gx
+    // (x-panics-05)
+    // a composite prints as interpolation prints it, never in netidx's form
+    // 2026-10-19 claude: sprintf renders composites with TVal
+    // (x-builtin-effects-01), and fc_parse and core's read_back print a cast
+    // error through graphix_package_core::ErrorText (a variant's one string,
+    // else Naked). Pins:
+    // lib_tests::str_tests::sprintf_prints_composites_and_caps_padding,
+    // parse_reads_numbers_by_the_cast.
+    let composite = |v: &Value| {
+        matches!(
+            v,
+            Value::Array(_) | Value::Map(_) | Value::Abstract(_) | Value::Error(_)
+        )
+    };
+    let mut printed: LPooled<Vec<Value>> = LPooled::take();
+    if rest.iter().any(composite) {
+        printed.extend(rest.iter().map(|v| match v {
+            v if composite(v) => {
+                let v = TVal { env, typ: &Type::Any, v };
+                Value::String(format_compact!("{v}").as_str().into())
+            }
+            v => v.clone(),
+        }));
+    }
+    let rest = if printed.is_empty() { rest } else { &printed[..] };
+    let mut buf: LPooled<String> = LPooled::take();
+    let mut out = Capped { buf: &mut buf, over: false };
+    match netidx_value::printf(&mut out, fmt, rest) {
+        Ok(_) => Some(Value::String(ArcStr::from(buf.as_str()))),
+        Err(_) if out.over => {
+            Some(errf!(TAG, "the result exceeds the {MAX_SPRINTF} byte limit"))
+        }
+        Err(e) => Some(errf!(TAG, "{e}")),
+    }
+}
+
+graphix_package_core::typed_fast_builtin!(Sprintf, SprintfEv, "str_sprintf", fc_sprintf);
 
 graphix_package_core::fast_builtin!(Len, LenEv, "str_len", str_len);
 
@@ -571,14 +521,9 @@ fn fc_sub(args: &[Value]) -> Option<Value> {
                 (a, b) => ArcStr::from(&s[a..b]),
             }))
         }
-        v @ [_, _, _] => {
-            // CR claude for claude: [readability/low] This message dumps the Rust Debug
-            // of the argument slice, e.g. `[I64(-1), I64(2), String("héllo")]`. splitn
-            // and splitn_escaped print `n` with netidx's typed Display ("i64:0"). Name
-            // the argument and its plain value instead, e.g. "#start must be non
-            // negative, got -1". probe: str::sub(#start: -1, #len: 2, "héllo") run by
-            // hand. (collections-str-09)
-            Some(errf!(literal!("SubError"), "sub args must be non negative {v:?}"))
+        [Value::I64(start), Value::I64(len), _] => {
+            let (arg, n) = if *start < 0 { ("#start", start) } else { ("#len", len) };
+            Some(errf!(literal!("SubError"), "{arg} must be non negative, got {n}"))
         }
         _ => None,
     }
@@ -586,7 +531,7 @@ fn fc_sub(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Sub, SubEv, "str_sub", fc_sub);
 
-// CR claude for claude: [bug/low] When the cast fails, the `Value::Error(e) =>
+// XCR claude for claude: [bug/low] When the cast fails, the `Value::Error(e) =>
 // errf!(TAG, "{e}")` arms format the InvalidCast variant with Value's raw Display, so
 // the ParseError the program sees carries the kind marker:
 // `[abstract:EnwukQtE2EoTn2Uo4FoXw40C, "InvalidCast", "can't cast 1.5 to (i64, string):
@@ -596,6 +541,10 @@ graphix_package_core::fast_builtin!(Sub, SubEv, "str_sub", fc_sub);
 // here and in read_back. probe:
 // design/review-2026-10-19/repro/x-builtin-effects-parse-error-markers.gx
 // (x-builtin-effects-06)
+// 2026-10-19 claude: One helper, graphix_package_core::ErrorText, prints an error
+// payload's message (a one-string variant's string, else the naked form); fc_parse and
+// read_back use it, and so does PublishRpc's spec check. Pin:
+// lib_tests::str_tests::parse_reads_numbers_by_the_cast (the (i64, string) case).
 fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("ParseError");
     let [Value::String(s)] = args else { return None };
@@ -603,15 +552,6 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     let Some(typ) = cast_target(&ft.rtype) else {
         return Some(errf!(TAG, "parse requires a concrete type annotation"));
     };
-    // CR claude for claude: [bug/medium] The value-literal parser takes a bare integer
-    // only as i64. str::parse<u64> therefore refuses every u64 above i64::MAX,
-    // including the string cast<string> writes for u64:18446744073709551615, while
-    // cast<u64> of the same string reads it (typ/cast.rs `parse` goes through i128).
-    // str::parse<f64>("9223372036854775808") fails too. For a scalar target, read the
-    // string with the cast (cast_value of Value::String(s)), so there is one string
-    // reader, and pin the u64::MAX round trip. probe:
-    // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
-    // (x-engine-collections-03)
     // CR claude for eric: [bug/medium] parse reads the text as a netidx literal before
     // casting, so text that is not a literal fails even where the cast would succeed.
     // parse<string>("abc") is a ParseError, parse<string>("007") is "7" and
@@ -621,21 +561,48 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     // and keep the literal parse for collection syntax. probe:
     // design/review-2026-10-19/repro/collections-str-parse-not-cast.gx
     // (collections-str-06)
+    // XCR claude for claude: [bug/medium] The value-literal parser takes a bare integer
+    // only as i64. str::parse<u64> therefore refuses every u64 above i64::MAX,
+    // including the string cast<string> writes for u64:18446744073709551615, while
+    // cast<u64> of the same string reads it (typ/cast.rs `parse` goes through i128).
+    // str::parse<f64>("9223372036854775808") fails too. For a scalar target, read the
+    // string with the cast (cast_value of Value::String(s)), so there is one string
+    // reader, and pin the u64::MAX round trip. probe:
+    // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
+    // (x-engine-collections-03)
+    // a number is read by the cast, the one reader of numbers in text
+    // 2026-10-19 claude: A number target (a primitive of number types only) reads the
+    // text with the cast, the one reader of numbers in text; its refusal is 'cannot
+    // parse ".." as T'. Pin: lib_tests::str_tests::parse_reads_numbers_by_the_cast
+    // (u64::MAX round trip). str::parse<f64>("9223372036854775808") still fails: that
+    // is the cast's float parse (x-engine-collections-04, graphix-types).
+    if let Type::Primitive(p) = &typ
+        && !p.is_empty()
+        && p.iter().all(|t| t.is_number())
+    {
+        return Some(match typ.cast_value(env, Value::String(s.clone())) {
+            Value::Error(_) => errf!(TAG, "cannot parse {s:?} as {typ}"),
+            v => v,
+        });
+    }
+    // XCR claude for claude: [bug/medium] A failed cast is rewrapped by printing its
+    // error payload with {e}. Since kind markers, that payload is the marked
+    // `InvalidCast(msg) variant, so the ParseError a program sees reads
+    // "[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast 300 to u8:
+    // ...\"]" for an ordinary `str::parse("300")` into u8. core's read_back rewraps
+    // the same way for typed async reads and db::subscribe. Fix: let Type return
+    // the cast failure's message (cast_value_int has it before errf!) through a
+    // Result-returning entry, and wrap that message here and in read_back, so the
+    // error never round-trips through a Value. probe:
+    // design/review-2026-10-19/repro/x-rerun-5-parse-error-prints-marker.gx
+    // (x-rerun-5-03)
+    // 2026-10-19 claude: Taken the helper route (ErrorText over the error payload)
+    // rather than a Result-returning cast entry in graphix-types. Pin:
+    // lib_tests::str_tests::parse_reads_numbers_by_the_cast.
     Some(match s.parse::<Value>() {
-        Ok(Value::Error(e)) => errf!(TAG, "{e}"),
-        // CR claude for claude: [bug/medium] A failed cast is rewrapped by printing its
-        // error payload with {e}. Since kind markers, that payload is the marked
-        // `InvalidCast(msg) variant, so the ParseError a program sees reads
-        // "[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast 300 to u8:
-        // ...\"]" for an ordinary `str::parse("300")` into u8. core's read_back rewraps
-        // the same way for typed async reads and db::subscribe. Fix: let Type return
-        // the cast failure's message (cast_value_int has it before errf!) through a
-        // Result-returning entry, and wrap that message here and in read_back, so the
-        // error never round-trips through a Value. probe:
-        // design/review-2026-10-19/repro/x-rerun-5-parse-error-prints-marker.gx
-        // (x-rerun-5-03)
+        Ok(Value::Error(e)) => errf!(TAG, "{}", ErrorText(&e)),
         Ok(v) => match typ.cast_value(env, v) {
-            // CR claude for claude: [bug/medium] `e` is the marked variant
+            // XCR claude for claude: [bug/medium] `e` is the marked variant
             // `InvalidCast(msg)`, and `{e}` is netidx's raw Value Display. The
             // ParseError text therefore carries the kind marker: str::parse<u8>("256")
             // gives ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\",
@@ -644,7 +611,10 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
             // text in a fixture. probe:
             // design/review-2026-10-19/repro/x-engine-collections-parse-marker-leak.gx
             // (x-engine-collections-01)
-            // CR claude for claude: [bug/medium] `e` here is the cast's marked
+            // 2026-10-19 claude: The message comes out of the variant through
+            // ErrorText; a number target names the text and target. Pin:
+            // lib_tests::str_tests::parse_reads_numbers_by_the_cast.
+            // XCR claude for claude: [bug/medium] `e` here is the cast's marked
             // `InvalidCast(msg)` variant, and `{e}` is netidx's Display. So
             // `str::parse` to u8 of "300" reports
             // ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't
@@ -653,7 +623,9 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
             // the same way. probe:
             // design/review-2026-10-19/repro/collections-str-parse-error-marker.gx Also
             // reported as (gx-stdlib-02). (collections-str-02)
-            Value::Error(e) => errf!(TAG, "{e}"),
+            // 2026-10-19 claude: Fixed with x-engine-collections-01 (ErrorText). Pin:
+            // lib_tests::str_tests::parse_reads_numbers_by_the_cast.
+            Value::Error(e) => errf!(TAG, "{}", ErrorText(&e)),
             v => v,
         },
         Err(_) => errf!(TAG, "cannot parse {s:?} as {typ}"),

@@ -23,14 +23,7 @@ use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::{collections::VecDeque, fmt::Debug};
 
-/// An iterator that knows its length, so a result fills its array in
-/// place.
-/// The array of `len` values `it` yields.
-// CR claude for claude: [readability/low] The doc above has a leftover first sentence
-// ('An iterator that knows its length, so a result fills its array in place.') that
-// describes no item here. Keep the one line that describes array_of, and note that `it`
-// must yield exactly `len` values (valarray_of's contract). Found by reading; not run.
-// (collections-str-12)
+/// The array of the `len` values `it` yields; `it` yields exactly `len`.
 fn array_of(len: usize, it: impl Iterator<Item = Value>) -> Value {
     Value::Array(graphix_compiler::valarray_of(len, it))
 }
@@ -297,20 +290,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 break None;
             }
             match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
+                // only an element waiting is answered: f re-fired by what
+                // else it reads answers nothing
                 None => break None,
+                // XCR claude for claude: [bug/medium] Any production of `f`
+                // counts as an answer, including one made while nothing is
+                // waiting (`ready` true). An `f` that reads outer state
+                // re-fires with its last args when that state changes, so
+                // `group(x, |n, x| n >= limit)` delivers [1, 2, 3] and then,
+                // after `limit <- .. ~ 1`, delivers []. Take an answer only
+                // while an element waits (`!self.ready`), and never deliver an
+                // empty buffer. probe:
+                // design/review-2026-10-19/repro/collections-str-group-empty.gx
+                // Also reported as (x-rerun-1-01). (collections-str-04)
+                // 2026-10-19 claude: Group takes an answer only while an
+                // element waits (a production with ready true breaks the loop).
+                // Pin: lib_tests::array::group_answers_only_a_waiting_element
+                // (before [[1, 2, 3], []]).
+                Some(_) if self.ready => break None,
                 Some(v) => {
                     self.ready = true;
                     match v {
-                        // CR claude for claude: [bug/medium] Any production of `f`
-                        // counts as an answer, including one made while nothing is
-                        // waiting (`ready` true). An `f` that reads outer state
-                        // re-fires with its last args when that state changes, so
-                        // `group(x, |n, x| n >= limit)` delivers [1, 2, 3] and then,
-                        // after `limit <- .. ~ 1`, delivers []. Take an answer only
-                        // while an element waits (`!self.ready`), and never deliver an
-                        // empty buffer. probe:
-                        // design/review-2026-10-19/repro/collections-str-group-empty.gx
-                        // Also reported as (x-rerun-1-01). (collections-str-04)
                         Value::Bool(true) => {
                             let group = Value::Array(ValArray::from_iter_exact(
                                 self.buf.drain(..),
@@ -360,15 +360,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.delete(ctx);
     }
 
-    // CR claude for claude: [bug/medium] Group has no `reborn`, so its queue, buffer
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.pred.sleep(ctx);
+    }
+
+    // XCR claude for claude: [bug/medium] Group has no `reborn`, so its queue, buffer
     // and `ready` survive into a seq step's next run. With `seq t; abort(..) { let g =
     // array::group(k, |n, v| n == 2); g }`, run 1 buffers [1] and is aborted, and run 2
     // delivers [1, 2]. Add a reborn that clears queue and buf, sets ready = true and
     // resets out to phantom, as core's Filter does. probe:
     // design/review-2026-10-19/repro/collections-str-group-no-reborn.gx Also reported
     // as (x-node-contract-03). (collections-str-05)
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.pred.sleep(ctx);
+    // 2026-10-19 claude: Group::reborn clears queue and buf, sets ready and resets out.
+    // Pin: lib_tests::array::group_is_reborn_with_a_seq_run (before [[1, 2]], after
+    // []).
+    fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        self.queue.clear();
+        self.buf.clear();
+        self.ready = true;
+        self.out = TagValue::phantom();
     }
 }
 

@@ -990,3 +990,70 @@ run!(opt_hofs_answer_every_input, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[i64:100, true, false, i64:4, i64:100]")
 }; FuseExpect::Jit);
+
+// A queuefn whose arm sleeps keeps its queue and its credit: the calls
+// made after the first wait for a trigger that never fires, before the
+// sleep and after the wake (core-aux-01, x-builtin-effects-03).
+run!(queuefn_sleep_is_a_pause, r#"{
+    let c = 0;
+    c <- select c { n if n < 8 => n + 1, _ => never() };
+    let sel = select c { 3 => 1, _ => 0 };
+    let qf = never();
+    let r = select sel {
+        0 => qf <- queuefn(#trigger: never(), |x: i64| -> i64 x * 10),
+        _ => null
+    };
+    let x = select c { 1 => 10, 2 => 20, 5 => 50, _ => never() };
+    let out = qf(x);
+    let log: Array<i64> = [];
+    log <- out ~ array::push(log, out);
+    select c { 8 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:100]")
+}; FuseExpect::Jit);
+
+// A throttle whose arm sleeps keeps the window its last emission opened:
+// the first fire after the wake waits out the rest of it (core-lib-02).
+run!(throttle_sleep_keeps_the_window, r#"{
+    let c = 0;
+    c <- select c { n if n < 6 => n + 1, _ => never() };
+    let log: Array<i64> = [];
+    let on = select c { 2 => false, 3 => false, _ => true };
+    select uniq(on) {
+        true => {
+            let t = throttle(#rate: duration:10.s, c);
+            log <- t ~ array::push(log, t);
+            t
+        },
+        false => never()
+    };
+    select c { 6 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:0]")
+}; FuseExpect::Jit);
+
+// The elements a range owes deliver though its arguments go bottom
+// (core-lib-01).
+run!(range_delivers_past_a_bottom_argument, r#"{
+    let go = 0;
+    let j = select go { 0 => 5, _ => never() };
+    let v = range(0, j)$;
+    go <- v ~ 1;
+    let log: Array<i64> = [];
+    log <- v ~ array::push(log, v);
+    select array::len(log) { 5 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:2, i64:3, i64:4]")
+}; FuseExpect::Jit);
+
+// all over a type holding a reference still compares an abstract part by
+// its core Eq (core-lib-03).
+run!(all_with_a_reference_uses_eq, r#"{
+    type Key = Abstract<string>;
+    impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+    let x = 0;
+    let with_ref = all((&x, Key("Foo")), (&x, Key("FOO")));
+    with_ref ~ "fired"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "fired")
+}; FuseExpect::None);

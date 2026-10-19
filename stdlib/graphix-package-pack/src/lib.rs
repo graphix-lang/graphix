@@ -27,15 +27,11 @@ impl ReadFormat for Packed {
     /// error value decoded from the bytes is data, never the reader's own.
     fn parse(b: Bytes) -> impl Future<Output = Value> + Send {
         async move {
-            // CR claude for claude: [bug/low] The decode never checks that it used the
-            // whole buffer, so a value followed by more bytes (two messages from
-            // Read::read_all, or garbage) reads as the first value: [6, 0x00 x7, 42,
-            // 99, 99, 99] read as i64 is 42. json::read and toml::read refuse trailing
-            // input. Keep the slice, and answer PackErr when anything remains after the
-            // value. Pin it. probe:
-            // design/review-2026-10-19/repro/small-pkgs-pack-trailing-bytes.gx
-            // (small-pkgs-05)
-            match Value::decode(&mut b.as_ref()) {
+            let mut rest = b.as_ref();
+            match Value::decode(&mut rest) {
+                Ok(_) if !rest.is_empty() => {
+                    errf!(Self::TAG, "{} bytes follow the value", rest.len())
+                }
                 Ok(v) => Value::Array(ValArray::from_iter([v])),
                 Err(e) => errf!(Self::TAG, "{e}"),
             }

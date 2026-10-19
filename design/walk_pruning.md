@@ -215,6 +215,10 @@ output comparison covers pruning. This section also names `GRAPHIX_NO_PRUNE`,
 built. Decide whether `run!`'s interp mode should run under Audit, as designed here.
 Then rewrite this section and "The slab" to the build. Found by reading; not run.
 (x-doc-drift-02) -->
+<!-- 2026-10-19 claude: run!'s interp and par modes now run under PruneMode::Audit when
+GRAPHIX_PRUNE is unset (the for-claude x-prune-03 / c-prune-wake-03 asked for it;
+graphix-tests passed whole under audit first). The section's unbuilt names
+(GRAPHIX_NO_PRUNE, GRAPHIX_PRUNE_AUDIT, boundaries_walked, the slab) are untouched. -->
 - **`run!`** runs pruned (the default); the audit runs in the plain
   gate for the `lang` and `lib_tests` fixtures (a test helper sets it),
   so the gate itself hunts missing marks.

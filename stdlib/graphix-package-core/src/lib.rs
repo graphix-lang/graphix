@@ -5,6 +5,7 @@
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
+use compact_str::format_compact;
 use futures::{
     channel::oneshot,
     future::{self, FutureExt, Shared},
@@ -23,18 +24,16 @@ use graphix_compiler::{
 };
 use graphix_rt::GXRt;
 use netidx::{path::Path, publisher::Typ, subscriber::Value};
-use netidx_core::{
-    pack::{Pack, PackError, decode_varint, encode_varint},
-    utils::Either,
-};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::FromValue;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
     any::Any,
+    borrow::Cow,
+    cmp::Ordering,
     collections::VecDeque,
     fmt::{Debug, Write},
-    iter,
     marker::PhantomData,
     time::Duration,
 };
@@ -403,13 +402,10 @@ pub use handler::{Handler, Inbox, Reply};
 pub use memo::FastMemo;
 
 /// A map key as a text format (JSON, TOML, a template's data) writes it:
-/// a string bare, any other value in its naked form.
-// CR claude for claude: [perf/low] A string key is copied into a String here and then
-// copied again by ArcStr::from at both callers in shape() and untyped_shape(). That is
-// two allocations per map entry where cloning the key's ArcStr costs none. Return
-// ArcStr: clone a string key, format the naked form of any other, and drop the
-// ArcStr::from wrappers. Found by reading; not run. (core-lib-08)
-// CR claude for claude: [bug/medium] A datetime key is written in its Naked display
+/// the text a reader's cast of the key reads back, a string bare, a
+/// datetime in RFC3339, a duration in seconds, any other value as the
+/// naked form of its data.
+// XCR claude for claude: [bug/medium] A datetime key is written in its Naked display
 // ("2020-01-01 00:00:00 UTC") and a duration key as "1.5s". The casts that json::read
 // and toml::read apply to keys refuse both, so a Map<datetime, _> or Map<duration, _>
 // that json::write_str or toml::write_str writes does not read back. Values of those
@@ -418,11 +414,22 @@ pub use memo::FastMemo;
 // duplicate-key checks compare what the reader will see. probe:
 // design/review-2026-10-19/repro/x-rerun-3-json-datetime-key-roundtrip.gx
 // (x-rerun-3-01)
-pub fn map_key(k: &Value) -> String {
-    match k {
-        Value::String(s) => s.to_string(),
-        k => graphix_compiler::typ::Naked(k).to_string(),
-    }
+// 2026-10-19 claude: map_key writes a datetime key in RFC3339 and a duration key in
+// seconds (as serialize_leaf writes the values), returns ArcStr (core-lib-08), and a
+// composite key is the naked form of its data. Pin:
+// lib_tests::json::time_map_keys_read_back. Note the duration key text is the f64
+// Display of its seconds ("1.5"), which the reader's cast takes.
+pub fn map_key(k: &Value) -> Result<ArcStr> {
+    Ok(match k {
+        Value::String(s) => s.clone(),
+        Value::DateTime(dt) => dt.to_rfc3339().into(),
+        Value::Duration(d) => format_compact!("{}", d.as_secs_f64()).as_str().into(),
+        Value::Array(_) | Value::Map(_) | Value::Abstract(_) => {
+            let k = graphix_compiler::abstract_value::to_data(k)?;
+            format_compact!("{}", graphix_compiler::typ::Naked(&k)).as_str().into()
+        }
+        k => format_compact!("{}", graphix_compiler::typ::Naked(k)).as_str().into(),
+    })
 }
 
 /// How a writer serializes a value: an object's entries or a sequence's
@@ -430,7 +437,7 @@ pub fn map_key(k: &Value) -> String {
 pub enum Shape {
     Object(LPooled<Vec<(ArcStr, Value, Option<Type>)>>, Keys),
     Seq(LPooled<Vec<(Value, Option<Type>)>>),
-    Leaf,
+    Leaf(Value),
 }
 
 /// Whose keys an object's are: a struct's fields, which a cast reads
@@ -444,17 +451,66 @@ pub enum Keys {
 /// The f64 a text writer gives an f32: the one its shortest decimal
 /// names, which is the number the program wrote and reads back to it.
 pub fn f32_as_written(n: f32) -> f64 {
-    compact_str::format_compact!("{n}").parse().unwrap_or(n as f64)
+    format_compact!("{n}").parse().unwrap_or(n as f64)
+}
+
+/// How many abstract values one value may be written through before the
+/// data, as `abstract_value::to_data` bounds it.
+const MAX_ABSTRACT_CHAIN: usize = 1024;
+
+/// `v` as a writer writes it, with the type that directs it: an abstract
+/// value is the data its `Cast` implementation makes of it, under its
+/// representation's type when that is the data, else under none. A
+/// reference, a value of a type backed by Rust, or one with no `Cast`
+/// implementation is refused, as `abstract_value::to_data` refuses them.
+fn written<'a>(
+    env: &Env,
+    mut t: Option<Type>,
+    v: &'a Value,
+) -> Result<(Option<Type>, Cow<'a, Value>)> {
+    use graphix_compiler::abstract_value::{CastHook, get};
+    let mut v = Cow::Borrowed(v);
+    for _ in 0..MAX_ABSTRACT_CHAIN {
+        if !matches!(&*v, Value::Abstract(_)) {
+            return Ok((t, v));
+        }
+        if graphix_compiler::reference::cell(&v).is_some() {
+            bail!("a reference is not data")
+        }
+        let Some(g) = get(&v) else {
+            bail!("a value of a type backed by Rust is not data")
+        };
+        let data = match g.to_value() {
+            None => bail!("{} has no Cast implementation", g.name),
+            Some(CastHook::Representation) => {
+                t = env.abstract_reps.get(&g.id).map(|r| r.instantiate_with(&g.params));
+                g.payload.clone()
+            }
+            Some(CastHook::Ran(Some(d))) => {
+                t = None;
+                d
+            }
+            Some(CastHook::Ran(None)) => {
+                bail!("the Cast implementation of {} produced nothing", g.name)
+            }
+        };
+        v = Cow::Owned(data);
+    }
+    bail!(
+        "a value is written as data through more than {MAX_ABSTRACT_CHAIN} abstract values"
+    )
 }
 
 /// `v`'s shape under `t`, the type its call site gave it: a struct or a
 /// map is an object; an array, a list, a tuple or a variant's tag and
-/// payload a sequence; a union reads as the first member `v` inhabits.
-/// `v` is what `abstract_value::to_data` made of a value: it holds no
-/// abstract value.
-/// Where the type says nothing (`None`, `Any`, an open variable), a
-/// non-empty array of `(string, _)` pairs in key order reads as an object.
-// CR claude for claude: [bug/high] `shape` reads the value after to_data has stripped
+/// payload a sequence; a bare variant its tag; a union reads as the
+/// member `v` inhabits. `v` is the program's value: its kind markers
+/// decide members, lists and composites, and an abstract value in it is
+/// the data its `Cast` implementation writes ([`written`]).
+/// Where the type says nothing (`None`, `Any`, an open variable), an
+/// unmarked non-empty array of `(string, _)` pairs in key order (data a
+/// read left untyped) reads as an object.
+// XCR claude for claude: [bug/high] `shape` reads the value after to_data has stripped
 // its markers. So the Set arm's member_of picks a union member by data form, and the
 // List arm (list::is_list on a flat array) never matches. json/toml/hbs then write `{a:
 // 1}` typed [{a: i64}, Array<(string, i64)>] as [["a",1]], which reads back as the
@@ -464,10 +520,19 @@ pub fn f32_as_written(n: f32) -> f64 {
 // markers decide members and lists exactly. probe:
 // design/review-2026-10-19/repro/x-kind-markers-json-union-member.gx
 // (x-kind-markers-01)
-pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
-    let typed = t.and_then(|t| constructor(env, t));
-    match (typed.as_ref(), v) {
-        // CR claude for claude: [bug/medium] shape runs on to_data's output, which has
+// 2026-10-19 claude: shape now reads the program's value, markers and all: the writers
+// (json, toml, hbs) no longer call to_data first; shape converts an abstract value
+// through its Cast impl where it meets one (written, bounded like to_data) and decides
+// members, lists, tuples, structs and variants by marker, an unmarked pair array under
+// Any still reading as an object. Pin: lib_tests::json::writers_choose_members_by_kind
+// (json and toml). The read side of the probe ({"a":1} read into [{a: i64},
+// Array<(string, i64)>] gives the array member) is the cast's member choice in
+// graphix-types, not this writer.
+pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Result<Shape> {
+    let (t, v) = written(env, t.and_then(|t| constructor(env, t)), v)?;
+    let v = &*v;
+    match (t.as_ref(), v) {
+        // XCR claude for claude: [bug/medium] shape runs on to_data's output, which has
         // no kind markers, but typ::member_of's has_form reads tuples, structs and
         // variants by their marker. So a union member written inline ([{a:
         // Array<(string, i64)>, b: i64}, null]) admits nothing, and untyped_shape's
@@ -478,6 +543,9 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
         // (rep::read_struct/read_tuple/read_variant), or choose it on the value before
         // stripping, and pin an inline-struct union in a writer test. probe:
         // design/review-2026-10-19/repro/t-rep-json-union-member-shape.gx (t-rep-03)
+        // 2026-10-19 claude: Fixed with x-kind-markers-01: member_of now sees the
+        // marked value. Pin: lib_tests::json::writers_choose_members_by_kind (the [{a:
+        // Array<(string, i64)>, b: i64}, null] case writes {"a":[["k",1]],"b":7}).
         (Some(Type::Set(ts)), v) => {
             shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
         }
@@ -489,44 +557,33 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
                         entries.push((k.clone(), v.clone(), Some(t.clone())));
                     }
                 }
-                Shape::Object(entries, Keys::Fields)
+                Ok(Shape::Object(entries, Keys::Fields))
             }
             _ => untyped_shape(v),
         },
-        (Some(Type::Map { value, .. }), Value::Map(m)) => Shape::Object(
+        (Some(Type::Map { value, .. }), Value::Map(m)) => Ok(Shape::Object(
             m.into_iter()
-                .map(|(k, v)| {
-                    (ArcStr::from(map_key(k)), v.clone(), Some(Type::clone(value)))
-                })
-                .collect(),
+                .map(|(k, v)| Ok((map_key(k)?, v.clone(), Some(Type::clone(value)))))
+                .collect::<Result<_>>()?,
             Keys::Data,
-        ),
-        (Some(Type::Array(e)), Value::Array(a)) => {
-            Shape::Seq(a.iter().map(|x| (x.clone(), Some(Type::clone(e)))).collect())
+        )),
+        (Some(Type::Array(e)), v) if let Some(a) = rep::array_elems(v) => {
+            Ok(Shape::Seq(a.iter().map(|x| (x.clone(), Some(Type::clone(e)))).collect()))
         }
-        (Some(Type::List(e)), v) if graphix_compiler::list::is_list(v) => Shape::Seq(
+        (Some(Type::List(e)), v) if graphix_compiler::list::is_list(v) => Ok(Shape::Seq(
             graphix_compiler::list::Iter::new(v.clone())
                 .map(|x| (x, Some(Type::clone(e))))
                 .collect(),
-        ),
+        )),
         (Some(Type::Tuple(ts)), v) => match rep::read_tuple(v).map(rep::Parts::elems) {
-            Some(a) if ts.len() == a.len() => Shape::Seq(
+            Some(a) if ts.len() == a.len() => Ok(Shape::Seq(
                 a.iter()
                     .zip(ts.iter())
                     .map(|(x, t)| (x.clone(), Some(t.clone())))
                     .collect(),
-            ),
+            )),
             _ => untyped_shape(v),
         },
-        // what `abstract_value::to_data` wrote the value as: its
-        // representation where the `Cast` implementation leaves it
-        (Some(Type::Abstract { id, params }), v) => {
-            match env.abstract_reps.get(id).filter(|_| env.written_as_representation(*id))
-            {
-                Some(rep) => shape(env, Some(&rep.instantiate_with(params)), v),
-                None => untyped_shape(v),
-            }
-        }
         (Some(Type::Variant(_, ps, _)), v) => match rep::read_variant(v) {
             Some((tag, p)) if !ps.is_empty() && p.elems().len() == ps.len() => {
                 let payload = p
@@ -535,7 +592,7 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
                     .zip(ps.iter())
                     .map(|(x, t)| (x.clone(), Some(t.clone())));
                 let tag = (Value::String(tag.clone()), None);
-                Shape::Seq(std::iter::once(tag).chain(payload).collect())
+                Ok(Shape::Seq(std::iter::once(tag).chain(payload).collect()))
             }
             _ => untyped_shape(v),
         },
@@ -543,10 +600,10 @@ pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
     }
 }
 
-/// `v` as a writer writes it: every abstract value in it replaced by the
-/// data its `Cast` implementation makes of it
-/// (`abstract_value::to_data`), under the hooks the implementation runs
-/// through.
+/// `v` written as data: every tuple, struct, variant and list in it in
+/// its data form, markers gone, and every abstract value in it the data
+/// its `Cast` implementation writes it as (`abstract_value::to_data`),
+/// under the hooks the implementation runs through.
 pub fn write_data<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     v: &Value,
@@ -567,27 +624,44 @@ fn constructor(env: &Env, t: &Type) -> Option<Type> {
     }
 }
 
-fn untyped_shape(v: &Value) -> Shape {
-    if let Some(fs) = rep::read_struct(v).map(rep::Parts::elems)
-        && rep::is_struct(fs)
-    {
-        return Shape::Object(
+/// `v`'s shape by its kind marker, or as data where it has none.
+fn untyped_shape(v: &Value) -> Result<Shape> {
+    let seq = |vs: &[Value]| Shape::Seq(vs.iter().map(|x| (x.clone(), None)).collect());
+    let object = |fs: &[Value]| {
+        Shape::Object(
             fs.iter()
                 .filter_map(|f| rep::field(f).map(|(k, v)| (k.clone(), v.clone(), None)))
                 .collect(),
             Keys::Fields,
-        );
-    }
-    match v {
-        Value::Array(a) => Shape::Seq(a.iter().map(|x| (x.clone(), None)).collect()),
-        Value::Map(m) => Shape::Object(
-            m.into_iter()
-                .map(|(k, v)| (ArcStr::from(map_key(k)), v.clone(), None))
-                .collect(),
-            Keys::Data,
+        )
+    };
+    Ok(match rep::kind(v) {
+        Some(rep::Kind::Struct) => object(rep::struct_fields(v).unwrap_or(&[])),
+        Some(rep::Kind::Tuple) => seq(rep::tuple_elems(v).unwrap_or(&[])),
+        Some(rep::Kind::Variant) => match rep::variant(v) {
+            Some((tag, [])) => Shape::Leaf(Value::String(tag.clone())),
+            Some((tag, payload)) => Shape::Seq(
+                std::iter::once((Value::String(tag.clone()), None))
+                    .chain(payload.iter().map(|x| (x.clone(), None)))
+                    .collect(),
+            ),
+            None => seq(&[]),
+        },
+        Some(rep::Kind::List) => Shape::Seq(
+            graphix_compiler::list::Iter::new(v.clone()).map(|x| (x, None)).collect(),
         ),
-        _ => Shape::Leaf,
-    }
+        None => match v {
+            Value::Array(a) if rep::is_struct(a) => object(a),
+            Value::Array(a) => seq(a),
+            Value::Map(m) => Shape::Object(
+                m.into_iter()
+                    .map(|(k, v)| Ok((map_key(k)?, v.clone(), None)))
+                    .collect::<Result<_>>()?,
+                Keys::Data,
+            ),
+            v => Shape::Leaf(v.clone()),
+        },
+    })
 }
 
 /// The production of a raw builtin whose consumed values are `tags`
@@ -1267,16 +1341,6 @@ impl CachedVals {
         self.evaluated = Evaluated(false);
     }
 
-    /// True if any arg slot holds a taint no clean production has
-    /// overwritten since.
-    // CR claude for claude: [dead/low] No caller anywhere, in the workspace or in
-    // netidx-admin, and neither has CachedVals::flat_iter. any_tainted also overlaps
-    // any_bottom, the one the wrapper uses. Delete both. Found by reading; not run.
-    // (core-lib-07)
-    pub fn any_tainted(&self) -> bool {
-        self.slots.iter().any(|(_, t)| t.is_bottom())
-    }
-
     /// True if any arg slot is bottom — tainted or never delivered. The
     /// wrapper bottoms the invocation on this instead of calling `eval`,
     /// so builtin authors never see a bottomed or missing arg.
@@ -1339,13 +1403,6 @@ impl CachedVals {
             });
         }
         prod
-    }
-
-    pub fn flat_iter<'a>(&'a self) -> impl Iterator<Item = Option<Value>> + 'a {
-        self.slots.iter().flat_map(|(v, _)| match v {
-            None => Either::Left(iter::once(None)),
-            Some(v) => Either::Right(v.clone().flatten().map(Some)),
-        })
     }
 
     /// Argument `i` as the abstract type `T` it holds.
@@ -1429,9 +1486,73 @@ pub fn fast_eval_typed<R: Rt, E: UserEvent>(
     coretraits::with_display_hooks(ctx, |env| f(env, typ, &args))
 }
 
+/// A value as `#numeric` compares it: an integer, or a string holding
+/// one, exactly; any other value cast to f64 where it casts.
+// XCR claude for claude: [bug/medium] Every numeric key goes through
+// f64, so integers above 2^53 (and numeric strings holding them)
+// become equal keys, and the stable sort keeps their input order.
+// `array::sort(#numeric: true, [9007199254740993,
+// 9007199254740992])` returns them unsorted, though the plain sort
+// orders them, and list::sort shares this code. Key a number as
+// itself and a string as its parsed i64/u64 (else f64), and compare
+// integer pairs exactly (as i128), using f64 only when one side is
+// a float. probe:
+// design/review-2026-10-19/repro/collections-str-numeric-sort-precision.gx
+// (collections-str-03)
+// 2026-10-19 claude: sort_values keys #numeric by NumKey: integers (and strings
+// holding one) as i128, compared exactly; an integer against a float exactly
+// (int_cmp); anything else cast to f64 as before. Pin:
+// lib_tests::array::numeric_sort_is_exact (array and list).
+enum NumKey {
+    Int(i128),
+    Other(Value),
+}
+
+impl NumKey {
+    fn of(v: &Value) -> Self {
+        match v {
+            Value::I8(n) => Self::Int(*n as i128),
+            Value::I16(n) => Self::Int(*n as i128),
+            Value::I32(n) | Value::Z32(n) => Self::Int(*n as i128),
+            Value::I64(n) | Value::Z64(n) => Self::Int(*n as i128),
+            Value::U8(n) => Self::Int(*n as i128),
+            Value::U16(n) => Self::Int(*n as i128),
+            Value::U32(n) | Value::V32(n) => Self::Int(*n as i128),
+            Value::U64(n) | Value::V64(n) => Self::Int(*n as i128),
+            Value::String(s) if let Ok(n) = s.trim().parse::<i128>() => Self::Int(n),
+            v => Self::Other(v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())),
+        }
+    }
+
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.cmp(b),
+            (Self::Int(a), Self::Other(b)) => int_cmp(*a, b),
+            (Self::Other(a), Self::Int(b)) => int_cmp(*b, a).reverse(),
+            (Self::Other(a), Self::Other(b)) => a.cmp(b),
+        }
+    }
+}
+
+/// The integer `i` against `v` in the order `Value` keeps, `v` a float
+/// compared exactly.
+fn int_cmp(i: i128, v: &Value) -> Ordering {
+    match v {
+        // NaN orders below every number
+        Value::F64(f) if f.is_nan() => Ordering::Greater,
+        Value::F64(f) if *f >= i128::MAX as f64 => Ordering::Less,
+        Value::F64(f) if *f < i128::MIN as f64 => Ordering::Greater,
+        Value::F64(f) => {
+            let whole = f.trunc();
+            i.cmp(&(whole as i128)).then_with(|| 0f64.total_cmp(&(f - whole)))
+        }
+        v => Value::F64(i as f64).cmp(v),
+    }
+}
+
 /// The sort every collection's `sort(#dir, #numeric, c)` runs: `dir`
 /// is the `Direction` tag (`Ascending`/`Descending`, anything else is
-/// no value), `numeric` compares values cast to f64.
+/// no value), `numeric` compares values as numbers ([`NumKey`]).
 pub fn sort_values(
     dir: &Value,
     numeric: bool,
@@ -1449,24 +1570,9 @@ pub fn sort_values(
     // the runtime goes on
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if numeric {
-            // each element cast once, beside it
-            let mut keyed: LPooled<Vec<(Value, Value)>> = buf
-                .iter()
-                .map(|v| {
-                    // CR claude for claude: [bug/medium] Every numeric key goes through
-                    // f64, so integers above 2^53 (and numeric strings holding them)
-                    // become equal keys, and the stable sort keeps their input order.
-                    // `array::sort(#numeric: true, [9007199254740993,
-                    // 9007199254740992])` returns them unsorted, though the plain sort
-                    // orders them, and list::sort shares this code. Key a number as
-                    // itself and a string as its parsed i64/u64 (else f64), and compare
-                    // integer pairs exactly (as i128), using f64 only when one side is
-                    // a float. probe:
-                    // design/review-2026-10-19/repro/collections-str-numeric-sort-precision.gx
-                    // (collections-str-03)
-                    (v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone()), v.clone())
-                })
-                .collect();
+            // each element keyed once, beside it
+            let mut keyed: LPooled<Vec<(NumKey, Value)>> =
+                buf.iter().map(|v| (NumKey::of(v), v.clone())).collect();
             if descending {
                 keyed.sort_by(|a, b| b.0.cmp(&a.0))
             } else {
@@ -1804,8 +1910,21 @@ pub fn read_back<R: Rt, E: UserEvent>(
     v: Value,
 ) -> Value {
     match coretraits::with_display_hooks(ctx, |env| t.cast_value(env, v)) {
-        Value::Error(e) => errf!(tag.clone(), "{e}"),
+        Value::Error(e) => errf!(tag.clone(), "{}", ErrorText(&e)),
         v => v,
+    }
+}
+
+/// The message an error's payload carries: a variant's one string
+/// (`InvalidCast(msg)`), else the payload's naked form.
+pub struct ErrorText<'a>(pub &'a Value);
+
+impl std::fmt::Display for ErrorText<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match rep::variant(self.0) {
+            Some((_, [Value::String(m)])) => f.write_str(m),
+            _ => write!(f, "{}", graphix_compiler::typ::Naked(self.0)),
+        }
     }
 }
 
@@ -2274,13 +2393,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 }
 
 /// Set the count `#n` gives take and skip: a fired `#n` restarts it, and
-/// a standing one seeds a count not running (after a sleep, or at a birth
-/// whose fire a sibling consumed), so a level `#n` survives a sleep.
-// CR claude for claude: [readability/low] The comment above is stale. Sleep no longer
-// clears the count (Counted::sleep does nothing; only Counted::reborn sets it to None),
-// so a standing #n seeds nothing after a sleep and 'survives a sleep' describes the old
-// reset. Name the cases that remain: a rebirth (a seq step's next run) and a birth
-// whose fire a sibling consumed. Found by reading; not run. (core-lib-06)
+/// a standing one seeds a count not running (after a rebirth, or at a
+/// birth whose fire a sibling consumed).
 fn seed_count(n: &TagValue, left: &mut Option<usize>) {
     if let Some(tv) = seam_value(n)
         && (tv.is_fired() || left.is_none())
@@ -2424,16 +2538,20 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
         let Some(t) = &self.refs else { return fast_eval(ctx, fc_all, from) };
         let mut vs = from.values();
         let hd = vs.next()??;
-        // CR claude for claude: [bug/low] These comparisons run outside
+        // XCR claude for claude: [bug/low] These comparisons run outside
         // coretraits::with_hooks, so an abstract type's core Eq implementation is
         // ignored whenever the argument type also holds a reference. all((&x,
         // Key("Foo")), (&x, Key("FOO"))) never fires, while == on the same tuples is
         // true and all() without the reference fires. Rewrite the arguments first, then
         // compare under with_hooks, as Uniq::update does. probe:
         // design/review-2026-10-19/repro/core-lib-all-ref-skips-eq.gx (core-lib-03)
+        // 2026-10-19 claude: AllEv::eval compares each rewritten argument under
+        // coretraits::with_hooks. Pin: lib_tests::core::all_with_a_reference_uses_eq
+        // (before: never fires).
         let named = ctx.ref_targets(t, hd);
         for v in vs {
-            if ctx.ref_targets(t, v?) != named {
+            let v = ctx.ref_targets(t, v?);
+            if !coretraits::with_hooks(ctx, || v == named) {
                 return None;
             }
         }
@@ -2650,21 +2768,28 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let pred = genn::Callback::image_decode(ctx, buf)?;
-        let pending = Pack::decode(buf)?;
-        Ok(Box::new(Self { pred, pending, out: TagValue::phantom() }))
+        Ok(Box::new(Self { pred, pending: None, out: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.pred.image_encode(buf)?;
-        // CR claude for claude: [structure/low] [structure] `pending` exists only after
+        // XCR claude for claude: [structure/low] [structure] `pending` exists only after
         // a cycle, and CLAUDE.md says such state refuses the write with NOT_QUIESCENT,
         // as Group and IterQ do. Here, in Queue (triggered/queue/pushed) and in sys net
         // Write (its queued values), it is written and decoded instead. Refuse when it
         // is set, write nothing, start it empty on decode, and bump
         // REGISTRATION_FORMAT. Found by reading; not run. (x-dup-04)
-        self.pending.encode(buf)
+        // the value waiting for the predicate exists only once a cycle ran
+        // 2026-10-19 claude: Filter (pending), Queue (triggered, pushed, queue) and
+        // sys::net Write (its queued values) refuse the image write with NOT_QUIESCENT
+        // when they hold post-cycle state and decode empty; REGISTRATION_FORMAT 70 ->
+        // 71. No pin: an image is taken before any cycle, so the refused branches are
+        // unreachable in a session; the change is the codec's shape.
+        if self.pending.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.pred.image_encode(buf)
     }
 
     fn update(
@@ -2738,14 +2863,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let triggered = decode_varint(buf)? as usize;
-        let queue = Vec::<(u64, Value)>::decode(buf)?.into();
-        let pushed = decode_varint(buf)?;
         let var = RtVar::image_decode(ctx, buf)?;
         Ok(Box::new(Self {
-            triggered,
-            queue,
-            pushed,
+            triggered: 0,
+            queue: VecDeque::new(),
+            pushed: 0,
             sent: InFlight::default(),
             var,
             out: TagValue::phantom(),
@@ -2783,15 +2905,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if !self.sent.is_empty() {
+        // banked fires and arrivals exist only once a cycle ran
+        if self.triggered > 0 || self.pushed > 0 || !self.sent.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        encode_varint(self.triggered as u64, buf);
-        encode_varint(self.queue.len() as u64, buf);
-        for v in &self.queue {
-            v.encode(buf)?;
-        }
-        encode_varint(self.pushed, buf);
         self.var.image_encode(buf)
     }
 
@@ -2993,18 +3110,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         let invocation = self.args.update(ctx, from);
-        // a bottomed argument bottoms the invocation and issues nothing
-        // CR claude for claude: [bug/medium] A bottom argument returns here before this
-        // cycle's element is read from ctx.event.variables. Every element of an earlier
-        // range that arrives while an argument is bottom is lost. range(0, j)$ where j
-        // goes bottom after the first element delivers only 0, while array::iter over
-        // the same source delivers all five. bottom_of states the rule: an emission
-        // owed to an earlier input still delivers. Read the delivery first and set the
-        // bottom only when none arrived, as Iter::update does. probe:
-        // design/review-2026-10-19/repro/core-lib-range-bottom-drops.gx (core-lib-01)
-        if let Invocation::Bottom { fresh } = invocation {
-            return self.out.set_bottom(fresh);
-        }
         if invocation == Invocation::Fired {
             let err = match (self.args.value(0), self.args.value(1)) {
                 (Some(Value::I64(i)), Some(Value::I64(j))) if i <= j => {
@@ -3031,9 +3136,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                 return self.out.set(TagValue::fired(e));
             }
         }
+        // XCR claude for claude: [bug/medium] A bottom argument returns here before this
+        // cycle's element is read from ctx.event.variables. Every element of an earlier
+        // range that arrives while an argument is bottom is lost. range(0, j)$ where j
+        // goes bottom after the first element delivers only 0, while array::iter over
+        // the same source delivers all five. bottom_of states the rule: an emission
+        // owed to an earlier input still delivers. Read the delivery first and set the
+        // bottom only when none arrived, as Iter::update does. probe:
+        // design/review-2026-10-19/repro/core-lib-range-bottom-drops.gx (core-lib-01)
+        // an element owed to an earlier range delivers; a bottomed
+        // argument issues nothing and stands in place of a ride
+        // 2026-10-19 claude: Seq::update reads this cycle's delivery before the bottom:
+        // an owed element delivers, a bottomed argument issues nothing and stands in
+        // for a ride. Pin: lib_tests::core::range_delivers_past_a_bottom_argument
+        // (before: never completes).
         match ctx.event.variables.get(&self.var.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
+            None => match invocation {
+                Invocation::Bottom { fresh } => self.out.set_bottom(fresh),
+                _ => self.out.ride(),
+            },
         }
     }
 
@@ -3053,7 +3175,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
 /// Where a throttle stands between emissions.
 #[derive(Debug, Clone, Copy)]
 enum Run {
-    /// nothing emitted since it started or slept
+    /// nothing emitted since it started or was reborn
     Idle,
     /// emitted at `last`, nothing held
     Open { last: Instant },
@@ -3243,7 +3365,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     // (x-builtin-effects-04)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
-        // CR claude for claude: [bug/medium] Going to Idle at sleep forgets `last`, the
+        // XCR claude for claude: [bug/medium] Going to Idle at sleep forgets `last`, the
         // time of the last emission, so the first fire after a wake emits at once. A
         // throttle whose arm toggles therefore exceeds its #rate: with #rate 10 s and
         // two sleeps, it emits three times in about 200 ms. Sleep is a pause: keep the
@@ -3251,10 +3373,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         // after releasing the timer, and the next fire waits out the rest of `wait`.
         // probe: design/review-2026-10-19/repro/core-lib-throttle-sleep-resets-rate.gx
         // (core-lib-02)
-        self.run = Run::Idle;
+        // a pause keeps the window the last emission opened
+        // 2026-10-19 claude: Throttle::sleep turns Pending { last, .. } into Open {
+        // last } after releasing the timer and keeps Open; reborn goes to Idle. Pin:
+        // lib_tests::core::throttle_sleep_keeps_the_window (before [0, 4], after [0]).
+        // The pending value's loss at sleep stays Eric's
+        // x-engine-firing-01/x-builtin-effects-04.
+        if let Run::Pending { last, .. } = self.run {
+            self.run = Run::Open { last };
+        }
     }
 
     fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        self.run = Run::Idle;
         self.last_v = None;
         self.out = TagValue::phantom();
     }

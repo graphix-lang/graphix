@@ -1352,3 +1352,46 @@ async fn group_takes_what_queued_while_it_waited() -> Result<()> {
     }
     Ok(())
 }
+
+// A predicate re-fired by what else it reads, with no element waiting,
+// answers nothing: no empty group (collections-str-04).
+run!(group_answers_only_a_waiting_element, r#"{
+    let c = 0;
+    c <- select c { n if n < 6 => n + 1, _ => never() };
+    let limit = 3;
+    let x = array::iter([1, 2, 3]);
+    let g = array::group(x, |n, x| n >= limit);
+    limit <- select c { 5 => 1, _ => never() };
+    let log: Array<Array<i64>> = [];
+    log <- g ~ array::push(log, g);
+    select c { 6 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[i64:1, i64:2, i64:3]]")
+}; FuseExpect::Jit);
+
+// A seq step's next run is a rebirth: group forgets what an aborted run
+// buffered (collections-str-05).
+run!(group_is_reborn_with_a_seq_run, r#"{
+    let t = sys::time::timer(duration: 60.ms, 3);
+    let k = count(t);
+    let r = seq t; abort(sys::time::after_idle(duration: 20.ms, t)) {
+        let g = array::group(k, |n, v| n == 2);
+        g
+    };
+    let log: Array<Array<i64>> = [];
+    log <- r ~ array::push(log, r);
+    sys::time::after_idle(duration: 300.ms, t) ~ log
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[]")
+}; FuseExpect::Jit);
+
+// A numeric sort orders integers exactly, past f64's 2^53, and an
+// integer against a float by value (collections-str-03).
+run!(numeric_sort_is_exact, r#"{
+    let a = [9007199254740993, 9007199254740992];
+    let s = ["9007199254740993", "9007199254740992", "1.5", "1", "2"];
+    let l = list::from_array(a);
+    (array::sort(#numeric: true, a), array::sort(#numeric: true, s), list::to_array(list::sort(#numeric: true, l)))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"[[i64:9007199254740992, i64:9007199254740993], ["1", "1.5", "2", "9007199254740992", "9007199254740993"], [i64:9007199254740992, i64:9007199254740993]]"#)
+}; FuseExpect::Jit);

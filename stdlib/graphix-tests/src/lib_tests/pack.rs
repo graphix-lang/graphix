@@ -11,6 +11,17 @@ run!(pack_i64, r#"{let v: i64 = pack::read(pack::write_bytes(42)$)?; v}"#, |v: R
     matches!(v, Ok(Value::I64(42)))
 }; FuseExpect::None);
 
+// Bytes left after the value are refused, as json and toml refuse
+// trailing input (small-pkgs-05).
+run!(pack_refuses_trailing_bytes, r#"{
+    let a: Result<i64, [`PackErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array(
+        [u8:6, u8:0, u8:0, u8:0, u8:0, u8:0, u8:0, u8:0, u8:42, u8:99, u8:99, u8:99]
+    ));
+    select a { error as e => "[e]", v => "[v]" }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == r#"error:`PackErr("3 bytes follow the value")"#)
+}; FuseExpect::Jit);
+
 run!(pack_f64, r#"{let v: f64 = pack::read(pack::write_bytes(3.14)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
 }; FuseExpect::None);

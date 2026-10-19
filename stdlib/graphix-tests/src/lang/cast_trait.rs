@@ -118,13 +118,20 @@ run!(cast_impl_over_a_reference_refused, r#"{
 }"#, refused("its representation holds a function or a reference, which no data carries"); FuseExpect::None);
 
 // A `to_value` that writes its own type inside its result is refused,
-// not followed forever.
+// not followed forever: inside a container the writer's depth bound
+// refuses it, and with none between, the bound on abstract values
+// written through.
 run!(cast_write_nesting_without_end_refused, r#"{
     type Loop = Abstract<i64>;
     impl Cast for Loop { let to_value = |s: Loop| [s] };
-    select json::write_str(Loop(1)) { error as e => "[e]", s => s }
+    type Same = Abstract<i64>;
+    impl Cast for Same { let to_value = |s: Same| s };
+    let nested = select json::write_str(Loop(1)) { error as e => "[e]", s => s };
+    let bare = select json::write_str(Same(1)) { error as e => "[e]", s => s };
+    "[nested] [bare]"
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if s.contains("Loop is written as data more than 1024 abstract values deep"))
+    matches!(v, Ok(Value::String(s)) if s.contains("the value nests 128 containers deep or more")
+        && s.contains("through more than 1024 abstract values"))
 }; FuseExpect::Jit);
 
 // Only the module that defines the type implements Cast for it: a

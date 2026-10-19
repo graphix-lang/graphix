@@ -160,3 +160,30 @@ run!(omitted_required_field_refused, r##"{
 }"##, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"[true, true, true, [["a", i64:1], ["b", null]]]"#)
 }; FuseExpect::None);
+
+/// What toml::write_str writes, toml::read reads back: a table holding
+/// the deepest arrays the reader takes round-trips, and one array
+/// deeper is refused on write (small-pkgs-06).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_deepest_written_table_reads_back() -> Result<()> {
+    use graphix_package_core::testing::eval_modes;
+    let program = |n: usize| {
+        let typ = format!("{{a: {}i64{}}}", "Array<".repeat(n), ">".repeat(n));
+        let v = format!("{{a: {}1{}}}", "[".repeat(n), "]".repeat(n));
+        format!(
+            "{{ let v: {typ} = {v}; \
+             select toml::write_str(v) {{ \
+               error as e => \"WRITE [e]\", \
+               s => {{ let r: Result<{typ}, [`TomlErr(string), `InvalidCast(string)]> = toml::read(s); \
+                 select r {{ error as e => \"READ [e]\", _ => \"ok\" }} }} \
+             }} }}"
+        )
+    };
+    let deepest = eval_modes(&program(80), crate::TEST_REGISTER).await?;
+    assert_eq!(deepest, Ok(Value::String(literal!("ok"))));
+    match eval_modes(&program(81), crate::TEST_REGISTER).await? {
+        Ok(Value::String(s)) if s.starts_with("WRITE") => (),
+        r => panic!("{r:?}"),
+    }
+    Ok(())
+}

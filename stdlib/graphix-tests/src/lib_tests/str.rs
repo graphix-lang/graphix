@@ -525,6 +525,59 @@ run!(
     )
 );
 
+// A number is read by the cast, so every u64 parses, and the cast's
+// refusal is its message, never the variant it travels in
+// (x-engine-collections-03, x-engine-collections-01, collections-str-02,
+// x-rerun-5-03, x-builtin-effects-06).
+run!(
+    parse_reads_numbers_by_the_cast,
+    r#"{
+  type E = `ParseError(string);
+  let big: Result<u64, E> = str::parse(cast<string>(u64:18446744073709551615)$);
+  let byte: Result<u8, E> = str::parse("300");
+  let pair: Result<(i64, string), E> = str::parse("1.5");
+  let msg = |r: Any| select r { error as e => "[e]", v => "[v]" };
+  "[big$] [msg(byte)] [msg(pair)]"
+}"#,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if &**s == r#"18446744073709551615 error:`ParseError("cannot parse \"300\" as u8") error:`ParseError("can't cast 1.5 to (i64, string): not a tuple")"#
+    )
+);
+
+// sprintf prints a composite as interpolation does, never its kind
+// marker, and refuses to pad past its cap rather than allocate without
+// bound (x-builtin-effects-01, collections-str-01, x-panics-05,
+// x-panics-04).
+run!(
+    sprintf_prints_composites_and_caps_padding,
+    r#"{
+  let c = str::sprintf("%s|%s|%s|%s", (1, 2), {x: 1}, `Foo, [<1, 2>])$;
+  let wide = select str::sprintf("<%*d>", 100000000000, 1) { error as e => "[e]", s => s };
+  "[c] [wide]"
+}"#,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if &**s == r#"(1, 2)|{x: 1}|`Foo|[<1, 2>] error:`FormatError("the result exceeds the 67108864 byte limit")"#
+    );
+    FuseExpect::Jit
+);
+
+// A bad argument names itself and its plain value (collections-str-09).
+run!(
+    sub_names_the_bad_argument,
+    r#"{
+  let r = str::sub(#start: -1, #len: 2, "héllo");
+  let n = str::splitn(#pat: ",", #n: 0, "a,b");
+  "[r] [n]"
+}"#,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if &**s == r##"error:`SubError("#start must be non negative, got -1") error:`StringSplitError("#n must be > 0, got 0")"##
+    );
+    FuseExpect::Jit
+);
+
 // `str::parse` is a typed fast fn: the kernel casts the parsed value to
 // the site's resolved return type, here a struct under `#[native]`.
 const STR_PARSE_STRUCT_NATIVE: &str = r#"{
