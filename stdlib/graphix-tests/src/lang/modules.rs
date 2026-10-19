@@ -1261,3 +1261,17 @@ run!(
     refused("nosuch_a could not be found"),
     "/test.gx" => "mod nosuch_a; mod nosuch_b; mod nosuch_c; let result = 0"
 ; FuseExpect::None);
+
+// A module body's last statement is no value, but a catch there still
+// covers nothing.
+run!(
+    module_ending_in_catch_refused,
+    refused("it would cover nothing"),
+    "/test.gx" => r#"
+        mod m;
+        m::x
+    "#,
+    "/test/m.gx" => r#"
+        let x = 1;
+        catch(e) println("caught")
+    "#; FuseExpect::None);

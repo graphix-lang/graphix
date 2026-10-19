@@ -849,3 +849,12 @@ async fn place_reference_fires_on_a_move(mode: Mode) -> Result<()> {
 }
 
 modes!(place_reference_fires_on_a_move);
+
+// A typedef naming a reference is that reference as a union member too.
+run!(write_through_aliased_reference_union, r#"{
+  type Cell = &mut i64;
+  let a = 1;
+  let r: [Cell, &mut i64] = &mut a;
+  *r <- 10;
+  a
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1 | 10))); FuseExpect::None);

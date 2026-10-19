@@ -849,15 +849,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
         }
-        // CR claude for claude: [bug/low] A trailing catch is refused only where
-        // `value` holds, and `value` is false for every statement of a module body. So
-        // a module file that ends in `catch(e) ..` is accepted although the catch
-        // covers nothing, while the same lines as a script or block are refused. Pass
-        // whether the statement is last separately from whether it is the block's
-        // value, and refuse a trailing catch on `last`. probe:
-        // design/review-2026-10-19/repro/c-node-mod-module-trailing-catch.sh
-        // (c-node-mod-04)
-        let at = StmtAt::Block { value: !module && i + 1 == n };
+        let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
         let boundary = prune::Prune::boundary(ctx);
         let (node, next) = ctx.in_boundary(Some(&boundary), |ctx| {
             compile_statement(ctx, flags, e, &scope, top_id, at)
@@ -1046,7 +1038,12 @@ pub(crate) fn defer_typedef_names<R: Rt, E: UserEvent>(
 #[derive(Clone, Copy)]
 pub(crate) enum StmtAt {
     TopLevel,
-    Block { value: bool },
+    /// `value`: the statement is the block's value, its last statement
+    /// unless the block is a module's body.
+    Block {
+        value: bool,
+        last: bool,
+    },
 }
 
 /// Compile one statement of a block or a top level: a declaration
@@ -1082,7 +1079,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         )
     }
     let node = match &e.kind {
-        ExprKind::Catch(_) if matches!(at, StmtAt::Block { value: true }) => {
+        ExprKind::Catch(_) if matches!(at, StmtAt::Block { last: true, .. }) => {
             bailat!(
                 e,
                 "a catch covers the statements after it, and the last statement of a \
@@ -1112,7 +1109,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         ExprKind::Bind(_) => {
             compiler::compile_statement_expr(ctx, flags, e.clone(), scope, top_id)
         }
-        _ if matches!(at, StmtAt::Block { value: true }) => {
+        _ if matches!(at, StmtAt::Block { value: true, .. }) => {
             compile(ctx, flags, e.clone(), scope, top_id)
         }
         ExprKind::Use { reexport, names } => {
@@ -1813,17 +1810,20 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     };
     let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
     // a type variable is declared, and no declaration widens it; nor does
-    // one widen a function, as two function types share a runtime form
-    // CR claude for claude: [readability/low] This skips the union proposal only for a
-    // bare variable or function. For an array or struct that holds a function, the
-    // refusal proposes `[Array<fn(x: i64) -> i64>, Array<fn(x: '_7728) -> '_7729 throws
-    // '_7730>]`: raw inference variables, two types of one runtime form, and once
-    // filled in it is refused. The declaration that works is the written type, which
-    // contains the held one. Propose `written` when it contains `held`, and skip the
-    // union whenever either type holds a function anywhere. probe:
-    // design/review-2026-10-19/repro/x-typecheck-generics-write-mismatch-fn-union.gx
-    // (x-typecheck-generics-06)
-    if matches!(held, Type::TVar(_) | Type::Fn(_)) {
+    // one widen what holds a function, as two function types share a
+    // runtime form
+    fn holds_fn(t: &Type) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::Fn(_) => true,
+            Type::TVar(tv) => tv.binding().is_some_and(|b| holds_fn(&b)),
+            t => {
+                let mut any = false;
+                t.for_each_child(&mut |c| any |= holds_fn(c));
+                any
+            }
+        })
+    }
+    if matches!(held, Type::TVar(_)) || holds_fn(&held) || holds_fn(&written) {
         return format_with_flags(
             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
             || anyhow!("{name} is {held} and cannot hold {written}"),
@@ -2816,24 +2816,23 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
         };
-        // CR claude for claude: [bug/low] The write's targets are read with
-        // `with_deref` alone, so a union member that is a typedef naming a reference
-        // (`type Cell = &mut i64; [Cell, &mut i64]`) is not expanded. It is refused as
-        // "not a reference", while the same typedef alone as the binding's type is
-        // accepted. Expand Type::Ref through lookup_ref at the top and for each Set
-        // member before matching ByRef, as deref_typ! does. probe:
-        // design/review-2026-10-19/repro/c-node-mod-write-through-aliased-ref-union.gx
-        // (c-node-mod-05)
-        let targets = btyp.with_deref(|t| match t {
+        // a typedef naming a reference, alone or as a union member, is that
+        // reference
+        let expand = |t: &Type| -> Result<Option<Type>> {
+            let mut t = t.with_deref(|t| t.cloned());
+            while let Some(r @ Type::Ref(_)) = &t {
+                t = Some(r.lookup_ref(&ctx.env)?);
+            }
+            Ok(t)
+        };
+        let targets = expand(&btyp).and_then(|t| match &t {
             None => Ok(None),
             Some(Type::ByRef(m, t)) => Ok(Some(vec![(*m, (**t).clone())])),
             Some(Type::Set(ts)) => ts
                 .iter()
-                .map(|t| {
-                    t.with_deref(|t| match t {
-                        Some(Type::ByRef(m, t)) => Ok((*m, (**t).clone())),
-                        _ => bail!("can't write through {btyp}: not a reference"),
-                    })
+                .map(|t| match &expand(t)? {
+                    Some(Type::ByRef(m, t)) => Ok((*m, (**t).clone())),
+                    _ => bail!("can't write through {btyp}: not a reference"),
                 })
                 .collect::<Result<Vec<_>>>()
                 .map(Some),

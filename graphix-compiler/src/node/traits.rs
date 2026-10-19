@@ -325,17 +325,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         TagValue::phantom_ref()
     }
 
-    // CR claude for claude: [bug/low] A trait's method signatures never have their type
-    // names checked. `trait Q { val q: fn(self) -> Nope }` passes --check and runs
-    // until an impl or a call expands the signature. Every other written type (typedef
-    // bodies, annotations, casts, type tests) is deferred through
-    // defer_unresolved_names and refused at the check's end. Defer each method's
-    // signature here, as lambda.rs does for a definition's. probe:
-    // design/review-2026-10-19/repro/x-typecheck-patterns-trait-sig-undefined-type.gx
-    // (x-typecheck-patterns-09)
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
+        // every written name in a method's signature must name something by
+        // the check's end
+        for m in record.methods.iter() {
+            crate::defer_unresolved_names(ctx, &Type::Fn(m.typ.clone()), &self.spec);
+        }
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };

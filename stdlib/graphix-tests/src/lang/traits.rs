@@ -2024,3 +2024,9 @@ run!(
         let result = select xs { [200, ..] => xs, _ => never() }
     "#; FuseExpect::Jit
 );
+
+// Every name a trait method's signature writes must name a type.
+run!(trait_signature_undefined_type_refused, r#"{
+  trait Q { val q: fn(self) -> Nope };
+  0
+}"#, refused("undefined type Nope"); FuseExpect::None);

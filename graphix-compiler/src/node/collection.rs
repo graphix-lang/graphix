@@ -315,13 +315,8 @@ pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
 /// The diagnostic of a collection init count past the element limit,
 /// from both engines.
 pub(crate) fn log_init_oversize(n: i64) {
-    // CR claude for claude: [bug/low] This diagnostic goes to the default log target,
-    // which the shell filters out unless --log-dir is given. An oversize array::init /
-    // list::init therefore just bottoms without a word, although the doc above says it
-    // is logged. Log it under crate::FAILURE_TARGET like the other hot-operator
-    // failures (buffer::encode's Pad does). probe:
-    // design/review-2026-10-19/repro/x-panics-init-oversize-silent.gx (x-panics-08)
     log::error!(
+        target: crate::FAILURE_TARGET,
         "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
     );
 }
@@ -482,6 +477,12 @@ impl Callback {
         // parameter binding that Callback::spec already looks up. probe:
         // design/review-2026-10-19/repro/x-rerun-6-builtin-callback-position.gx
         // (x-rerun-6-03)
+        // 2026-10-19 claude: Tried positioning the slot argument at the callback
+        // formal's binding (env.by_id(self.id)): for array::map that is the stdlib
+        // formal, which has no position either (it printed line 0, column 0). The
+        // user's argument spec at the call is what is needed, and Callback does not
+        // reach it; threading the call site's argument spec into the instance (or into
+        // Callback at its build) is the remaining work.
         let spec =
             genn::name_spec(name, SourcePosition::default(), genn::SYNTHETIC.clone());
         (id, Ref::new(ctx, id, typ.clone(), self.top_id, spec))

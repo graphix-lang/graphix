@@ -4092,3 +4092,14 @@ run!(generic_slice_arms_check, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[false, i64:1, i64:1]")
 }; FuseExpect::None);
+
+// Under a written union a slice pattern narrows to the member it can
+// match, as a tuple or variant pattern does.
+run!(slice_pattern_under_written_union, r#"{
+  type T = Abstract<[Array<i64>, null]>;
+  let f = |t: T| select t { T([x, ..]) => x, _ => 0 };
+  let g = |a: [Array<i64>, null]| select a { [Array<i64>, null] as [x, ..] => x, _ => 0 };
+  (f(T([1])), g([2]), g(null))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2, i64:0]")
+}; FuseExpect::None);

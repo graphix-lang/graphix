@@ -688,7 +688,7 @@ impl StructPatternNode {
         // under a written type, a constructor pattern at a union narrows to
         // the members it can match, as an arm narrows over its scrutinee;
         // its own test then decides them (`covers`)
-        // CR claude for claude: [bug/low] Slice and list patterns are missing from this
+        // XCR claude for claude: [bug/low] Slice and list patterns are missing from this
         // list, so under a written union they never narrow to their member.
         // compile_slice then refuses them: `T([x, ..])` over `type T =
         // Abstract<[Array<i64>, null]>` fails with "slice patterns can't match [null,
@@ -697,11 +697,18 @@ impl StructPatternNode {
         // StructurePattern::Slice, SlicePrefix and SliceSuffix here. probe:
         // design/review-2026-10-19/repro/c-pattern-slice-under-written-union.gx
         // (c-pattern-05)
+        // 2026-10-19 claude: Slice, SlicePrefix and SliceSuffix narrow under a written
+        // union with the constructor patterns. Pin:
+        // lang::select::slice_pattern_under_written_union (T([x, ..]) over
+        // Abstract<[Array<i64>, null]>, and [Array<i64>, null] as [x, ..]).
         let constructor = matches!(
             spec,
             StructurePattern::Tuple { .. }
                 | StructurePattern::Variant { .. }
                 | StructurePattern::Struct { .. }
+                | StructurePattern::Slice { .. }
+                | StructurePattern::SlicePrefix { .. }
+                | StructurePattern::SliceSuffix { .. }
         );
         if constructor
             && !cx.inferred
