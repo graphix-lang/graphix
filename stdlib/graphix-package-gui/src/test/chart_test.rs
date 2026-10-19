@@ -326,11 +326,10 @@ async fn the_tooltip_follows_new_data_under_a_resting_cursor() -> Result<()> {
     assert_eq!(state.tooltip(chart(&h), bounds, at).unwrap().value, "(5.0000, 5.0000)");
     let pts =
         graphix_package_core::testing::find_bind_id(&h.f.compiled.env, "test::pts")?;
-    let moved_pts =
-        Value::Array(ValArray::from_iter([Value::Array(ValArray::from_iter([
-            Value::F64(5.0),
-            Value::F64(5.1),
-        ]))]));
+    let moved_pts = Value::Array(ValArray::from_iter([graphix_compiler::rep::tuple([
+        Value::F64(5.0),
+        Value::F64(5.1),
+    ])]));
     h.f.gx.compile_ref(pts).await?.set(moved_pts)?;
     h.drain().await?;
     draw_in(&h, &state, size).await;

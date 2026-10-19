@@ -3308,3 +3308,12 @@ run!(singleton_names_the_declared_variable, r#"{
   let f = 'a: Number |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
   f(1, true)
 }"#, refused("the declared variable 'a may differ from its other members"); FuseExpect::None);
+
+// A reference test under Any is refused at every place it meets one, the
+// second pair of one definition included.
+run!(ref_test_over_any_in_a_second_pair, r#"{
+  type Box<'a> = {v: 'a};
+  let s = "hi";
+  let x: (Box<Any>, Box<Any>) = ({v: 1}, {v: &s});
+  select x { (Box<i64>, Box<&i64>) as y => *(y.1.v) + 1, _ => 0 }
+}"#, refused("can't tell what the reference"); FuseExpect::None);

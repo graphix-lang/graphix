@@ -363,7 +363,7 @@ impl Type {
     pub fn ref_over_any(&self, env: &Env, reaching: &Type) -> bool {
         fn go(
             env: &Env,
-            seen: &mut LPooled<Vec<(usize, usize)>>,
+            seen: &mut LPooled<Vec<(Type, Type)>>,
             p: &Type,
             r: &Type,
         ) -> bool {
@@ -371,56 +371,85 @@ impl Type {
                 let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
                     return false;
                 };
-                if let (Type::Ref(pt), Type::Ref(rt)) = (&p, &r) {
-                    // CR claude for claude: [bug/high] `seen` keys on the two
-                    // definitions alone, ignores their params, and is never popped. So
-                    // the second meeting of a (definition, definition) pair answers
-                    // false, whether it comes in a sibling branch or at other params.
-                    // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
-                    // is accepted (the first Box pair consumed the key), and it then
-                    // reads a &string as &i64. The same arm with the components swapped
-                    // is refused. Fix: make `seen` a path (pop after the recursive
-                    // call) keyed on each side's full RefKey (definition plus params).
-                    // probe:
-                    // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
-                    // (t-cast-setops-01)
-                    let key = (pt.def_key().unwrap_or(0), rt.def_key().unwrap_or(0));
-                    if seen.contains(&key) {
-                        return false;
-                    }
-                    seen.push(key);
+                // XCR claude for claude: [bug/high] `seen` keys on the two
+                // definitions alone, ignores their params, and is never popped. So
+                // the second meeting of a (definition, definition) pair answers
+                // false, whether it comes in a sibling branch or at other params.
+                // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
+                // is accepted (the first Box pair consumed the key), and it then
+                // reads a &string as &i64. The same arm with the components swapped
+                // is refused. Fix: make `seen` a path (pop after the recursive
+                // call) keyed on each side's full RefKey (definition plus params).
+                // probe:
+                // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
+                // (t-cast-setops-01)
+                // a pair of references met again on the path is a cycle;
+                // met in a sibling branch, or at other params, it is not
+                // 2026-10-19 claude: ref_over_any's seen is a path (popped after
+                // the recursive call) of the whole reference types, params
+                // included; a definition pair met a third time at growing params
+                // answers true (may hold the reference), so a growing typedef still
+                // terminates. Pin: lang::types::ref_test_over_any_in_a_second_pair.
+                if !matches!((&p, &r), (Type::Ref(_), Type::Ref(_))) {
+                    return step(env, seen, p, r);
                 }
-                let expand = |t: &Type| match t {
-                    Type::Ref(_) => t.lookup_ref(env).ok(),
-                    t => Some(t.clone()),
+                if seen.iter().any(|(sp, sr)| *sp == p && *sr == r) {
+                    return false;
+                }
+                // the pair of definitions met again at growing params: what it
+                // may hold cannot be told, so it may hold the reference
+                let defs = |t: &Type| match t {
+                    Type::Ref(r) => r.def_key(),
+                    _ => None,
                 };
-                let (Some(p), Some(r)) = (expand(&p), expand(&r)) else { return false };
-                match (&p, &r) {
-                    (_, Type::Any) => p.holds_ref(env),
-                    (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
-                    (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
-                    (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
-                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                    }
-                    (Type::Array(p), Type::Array(r))
-                    | (Type::List(p), Type::List(r))
-                    | (Type::Error(p), Type::Error(r))
-                    | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
-                    (Type::Struct(ps), Type::Struct(rs)) => ps.iter().any(|(n, p, _)| {
-                        rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
-                    }),
-                    (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
-                        if pt == rt && ps.len() == rs.len() =>
-                    {
-                        ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                    }
-                    (
-                        Type::Map { key: pk, value: pv },
-                        Type::Map { key: rk, value: rv },
-                    ) => go(env, seen, pk, rk) || go(env, seen, pv, rv),
-                    _ => false,
+                let again = seen
+                    .iter()
+                    .filter(|(sp, sr)| defs(sp) == defs(&p) && defs(sr) == defs(&r))
+                    .count();
+                if again >= 2 {
+                    return true;
                 }
+                seen.push((p.clone(), r.clone()));
+                let found = step(env, seen, p, r);
+                seen.pop();
+                found
             })
+        }
+        fn step(
+            env: &Env,
+            seen: &mut LPooled<Vec<(Type, Type)>>,
+            p: Type,
+            r: Type,
+        ) -> bool {
+            let expand = |t: &Type| match t {
+                Type::Ref(_) => t.lookup_ref(env).ok(),
+                t => Some(t.clone()),
+            };
+            let (Some(p), Some(r)) = (expand(&p), expand(&r)) else { return false };
+            match (&p, &r) {
+                (_, Type::Any) => p.holds_ref(env),
+                (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
+                (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
+                (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
+                    ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                }
+                (Type::Array(p), Type::Array(r))
+                | (Type::List(p), Type::List(r))
+                | (Type::Error(p), Type::Error(r))
+                | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
+                (Type::Struct(ps), Type::Struct(rs)) => ps.iter().any(|(n, p, _)| {
+                    rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
+                }),
+                (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
+                    if pt == rt && ps.len() == rs.len() =>
+                {
+                    ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                }
+                (Type::Map { key: pk, value: pv }, Type::Map { key: rk, value: rv }) => {
+                    go(env, seen, pk, rk) || go(env, seen, pv, rv)
+                }
+                _ => false,
+            }
         }
         self.holds_ref(env) && go(env, &mut LPooled::take(), self, reaching)
     }
