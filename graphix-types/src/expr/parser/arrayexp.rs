@@ -94,7 +94,7 @@ where
         sptoken(']'),
         (
             spaces().with(optional(expr())),
-            optional(spstring("..").with(optional(expr()))),
+            optional(attempt(spstring("..")).with(spaces()).with(optional(expr()))),
         ),
     )
     .and_then(|(start, range)| match (start, range) {

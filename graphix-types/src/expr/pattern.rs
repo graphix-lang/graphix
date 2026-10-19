@@ -470,6 +470,25 @@ pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Resu
     })
 }
 
+/// A struct pattern's fields in the order they print (as written when
+/// printing as written), each with its pattern, or `None` for a pun.
+pub(super) fn printed_fields(
+    binds: &[(ArcStr, StructurePattern, WrittenAt)],
+) -> SmallVec<[(&ArcStr, Option<&StructurePattern>); 16]> {
+    let mut fields: SmallVec<[_; 16]> = binds
+        .iter()
+        .map(|(name, pat, at)| {
+            let pun = matches!(pat, StructurePattern::Bind(n) if n.name == *name)
+                && !parser::is_reserved_binding(name);
+            (at, (name, (!pun).then_some(pat)))
+        })
+        .collect();
+    if print_as_written() {
+        fields.sort_by_key(|(at, _)| at.order());
+    }
+    fields.into_iter().map(|(_, f)| f).collect()
+}
+
 impl fmt::Display for StructurePattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))
@@ -551,19 +570,11 @@ impl StructurePattern {
                 Ok(())
             }
             StructurePattern::Struct { exhaustive, all: _, binds } => {
-                let mut written: SmallVec<[_; 16]> = binds.iter().collect();
-                if print_as_written() {
-                    written.sort_by_key(|(_, _, at)| at.order());
-                }
                 write!(f, "{{ ")?;
-                for (i, (name, pat, _)) in written.iter().enumerate() {
+                for (i, (name, pat)) in printed_fields(binds).into_iter().enumerate() {
                     match pat {
-                        StructurePattern::Bind(n)
-                            if n.name == *name && !parser::is_reserved_binding(name) =>
-                        {
-                            write!(f, "{name}")?
-                        }
-                        pat => write!(f, "{name}: {pat}")?,
+                        None => write!(f, "{name}")?,
+                        Some(pat) => write!(f, "{name}: {pat}")?,
                     }
                     if !exhaustive || i < binds.len() - 1 {
                         write!(f, ", ")?

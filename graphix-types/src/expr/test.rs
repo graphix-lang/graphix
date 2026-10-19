@@ -2267,7 +2267,7 @@ proptest! {
         prop_assert_eq!(unpacked.len(), 1);
         let print = |e: &Expr| format_with_flags(BitFlags::empty(), || e.to_string());
         prop_assert_eq!(print(&e), print(&unpacked[0]));
-        prop_assert!(check(&e, &unpacked[0]), "{st}\n{e:?}\n{:?}", unpacked[0]);
+        prop_assert_eq!(decorations_of(&e), decorations_of(&unpacked[0]), "{}", st);
         prop_assert!(same_positions(&e, &unpacked[0]), "{st}")
     }
 
@@ -2281,6 +2281,19 @@ proptest! {
         prop_assert_eq!(sig.to_string(), unpacked.to_string());
         prop_assert_eq!(sig_comments(&sig), sig_comments(&unpacked))
     }
+}
+
+/// Each node's decorations in preorder, with its trait methods' comments:
+/// what a canonical print leaves out.
+fn decorations_of(e: &Expr) -> Vec<String> {
+    let mut out = vec![];
+    e.fold((), &mut |(), e| {
+        out.push(format!("{:?}", e.dec));
+        if let ExprKind::Trait(t) = &e.kind {
+            out.extend(t.methods.iter().map(|m| format!("{:?}", m.comments.lines())))
+        }
+    });
+    out
 }
 
 /// The comments of an interface's items and trait methods, in order: what

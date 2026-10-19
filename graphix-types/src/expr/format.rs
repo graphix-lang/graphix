@@ -944,6 +944,25 @@ mod tests {
         }
     }
 
+    // a comment, which prints only as written, decides no canonical layout
+    #[test]
+    fn a_comment_leaves_canonical_printing_alone() {
+        use crate::expr::parser::parse_one;
+        for (src, want) in [
+            ("(\n// c\ns\n).a?", "s.a?"),
+            ("{ (\n// c\ns\n) with a: 1 }", "{ s with a: 1 }"),
+            (
+                "select x { y if\n// c\ny > 1 => 1, _ => 2 }",
+                "select x { y if y > 1 => 1, _ => 2 }",
+            ),
+        ] {
+            assert_eq!(parse_one(src).unwrap().to_string(), want, "{src}")
+        }
+        let src = "trait T {\n// c\n/// d\nval m: fn(self) -> i64 }";
+        let canonical = parse_sig(Origin::unspecified(src)).unwrap().to_string();
+        assert!(canonical.contains("\n/// d\n"), "{canonical}");
+    }
+
     #[test]
     fn the_config_sets_width_and_indent() {
         let cfg: FormatConfig = serde_json::from_str(r#"{ "indent": 2 }"#).unwrap();
@@ -1320,6 +1339,97 @@ mod tests {
         let cfg = FormatConfig { width: 12, ..FormatConfig::default() };
         let out = format_source(Program, "let f = { alpha; beta; }", &cfg).unwrap();
         assert_eq!(&*out, "let f = {\n    alpha;\n    beta;\n}\n");
+    }
+
+    // a value opening with a bracket follows its head, whatever postfix
+    // ends it; a cast hugs its lone bracketed argument as a call does
+    #[test]
+    fn bracketed_values_follow_their_heads() {
+        use SourceKind::Program;
+        let cfg = FormatConfig { width: 40, ..FormatConfig::default() };
+        let fmt = |src: &str| format_source(Program, src, &cfg).unwrap().to_string();
+        let call = "some_function(aaaaaaaaaaaa, bbbbbbbbbbbbbbb, cccccccccc)";
+        let laid =
+            "some_function(\n    aaaaaaaaaaaa,\n    bbbbbbbbbbbbbbb,\n    cccccccccc\n)";
+        for suffix in ["?", ".field", "[0]", ".0"] {
+            let src = format!("let z = {call}{suffix};\nz");
+            assert_eq!(fmt(&src), format!("let z = {laid}{suffix};\n\nz\n"));
+            stable(Program, &src);
+        }
+        let src = "let x = cast<Array<i64>>([1111111111, 2222222222, 3333333333, 44444444444]);\nx";
+        assert_eq!(
+            fmt(src),
+            "let x = cast<Array<i64>>([\n    1111111111,\n    2222222222,\n    3333333333,\n    44444444444\n]);\n\nx\n"
+        );
+        stable(Program, src);
+    }
+
+    // a hugged layout leaves the column of the separator after it, and a
+    // lone argument hugs only where its head fits
+    #[test]
+    fn hugs_fit_the_width() {
+        use SourceKind::Program;
+        let a = "a".repeat(70);
+        let src = format!("let zz = ffff([{a}, 1]);\nzz");
+        let cfg = FormatConfig::default();
+        fits(&format_source(Program, &src, &cfg).unwrap(), DEFAULT_WIDTH);
+        stable(Program, &src);
+        let src = format!("let x = {}1{};\nx", "ffffffffff(".repeat(12), ")".repeat(12));
+        fits(&format_source(Program, &src, &cfg).unwrap(), DEFAULT_WIDTH);
+        stable(Program, &src);
+    }
+
+    // an index, a key, a slice's bounds and an update's source are laid
+    // out where they do not fit flat or hold a comment
+    #[test]
+    fn indices_and_keys_are_laid_out() {
+        use SourceKind::Program;
+        let srcs = [
+            "let f = |a: Array<i64>, i: i64| {\n    let v = a[select i {\n        // first\n        0 => 0,\n        _ => i - 1\n    }];\n    v$\n};\nf",
+            "let m = {\"k\" => 1};\nlet w = m{select 1 {\n    // key\n    1 => \"k\",\n    _ => \"j\"\n}};\nw",
+            "let long = [1, 2, 3][array::len([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]) - 19..];\nlong",
+            "let v = a[{\n    // c\n    let i = 0;\n    i\n}];\nv",
+            "let w = m{{\n    #[sync]\n    let k = \"k\";\n    k\n}};\nw",
+            "let n = {\n    {\n        // c\n        let k = 1;\n        k\n    } => 2\n};\nn",
+            "let t = { ({\n    // c\n    let z = s;\n    z\n}) with a: 2 };\nt",
+            "let v = structure.columns[slot_item(aaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbb, ccccccccccccccc)]$;\nv",
+        ];
+        let cfg = FormatConfig::default();
+        for src in srcs {
+            let out = format_source(Program, src, &cfg).unwrap();
+            fits(&out, DEFAULT_WIDTH);
+            for l in out.lines() {
+                assert!(!l.ends_with(' '), "trailing space: {l:?}\n{}", *out);
+                let t = l.trim_start();
+                assert!(
+                    !(t.starts_with("//") || t.starts_with("#[")) || l.starts_with(' '),
+                    "a decoration at column 0: {l:?}\n{}",
+                    *out
+                );
+            }
+            stable(Program, src);
+        }
+    }
+
+    // a select's scrutinee is measured, not laid out, to place its head:
+    // nested scrutinees format in time linear in their depth
+    #[test]
+    fn nested_scrutinees_format_once() {
+        let mut src = String::from("0");
+        for i in 0..24 {
+            src = format!("select f(|v{i}| {src}) {{ _ => 1 }}");
+        }
+        let src = format!("let f = |g| g(1);\nlet r = {src};\nr");
+        let start = std::time::Instant::now();
+        format_source(SourceKind::Program, &src, &FormatConfig::default()).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        let mut src = String::from("0");
+        for i in 0..20 {
+            src = format!("select {{ let x{i} = {src}; x{i} }} {{ _ => 1 }}");
+        }
+        let start = std::time::Instant::now();
+        format_source(SourceKind::Program, &src, &FormatConfig::default()).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]

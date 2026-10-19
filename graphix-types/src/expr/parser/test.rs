@@ -2485,6 +2485,20 @@ fn a_literal_word_is_noted_only_where_used_as_a_name() {
 }
 
 #[test]
+fn whitespace_may_close_an_index() {
+    assert!(matches!(parse_one("a[\n  1\n]").unwrap().kind, ExprKind::ArrayRef { .. }));
+    assert!(matches!(
+        parse_one("a[1 ..\n 2\n]").unwrap().kind,
+        ExprKind::ArraySlice { .. }
+    ));
+    assert!(matches!(
+        parse_one("a[\n  1..\n]").unwrap().kind,
+        ExprKind::ArraySlice { .. }
+    ));
+    assert!(matches!(parse_one("m{\n  k\n}").unwrap().kind, ExprKind::MapRef { .. }));
+}
+
+#[test]
 fn a_byte_order_mark_is_skipped() {
     let exprs = parse(Origin::unspecified("\u{feff}let x = 1;\nx")).unwrap();
     assert_eq!(exprs.len(), 2);

@@ -5,7 +5,7 @@ use crate::{
         Doc, Expr, ExprKind, ImplExpr, LambdaBody, LambdaExpr, ModuleKind, Sandbox,
         SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem, SigKind, StrForm, StructExpr,
         StructWithExpr, StructurePattern, TraitExpr, TraitMethod, TypeDefBody,
-        TypeDefExpr, UseItem, format::FormatConfig, parser,
+        TypeDefExpr, UseItem, format::FormatConfig, parser, pattern::printed_fields,
     },
     print_as_written,
     stack::ensure_sufficient,
@@ -63,6 +63,19 @@ fn write_seq_head<W: Write>(
         write!(w, " ")?;
     }
     Ok(())
+}
+
+/// `write_seq_head` on one line.
+fn write_flat_seq_head(f: &mut impl Write, s: &SeqExpr) -> fmt::Result {
+    write_seq_head(
+        f,
+        s,
+        |f, t, parens| match parens {
+            true => write!(f, "({t})"),
+            false => write!(f, "{t}"),
+        },
+        |f, e| write!(f, "({e})"),
+    )
 }
 
 /// `write_seq_head` laid out, the trigger's continuation lines nested.
@@ -218,12 +231,9 @@ fn pretty_print_exprs(
         return writeln!(buf, "{open}{close}");
     }
     if let ([e], true) = (exprs, hug)
-        && hugs_parens(e)
+        && hug_parens(buf, open, e, close)?
     {
-        write!(buf, "{open}")?;
-        e.fmt_pretty(buf)?;
-        buf.kill_newline();
-        return writeln!(buf, "{close}");
+        return Ok(());
     }
     writeln!(buf, "{open}")?;
     buf.nested(|buf| pretty_items(buf, exprs, sep))?;
@@ -296,13 +306,13 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | ExplicitParens(_) => true,
         Module { value, .. } => matches!(&**value, ModuleKind::Dynamic { .. }),
         Variant { args, .. } => !args.is_empty(),
-        // CR claude for claude: [bug/low] The postfix accessors (StructRef, TupleRef,
-        // ArrayRef, ArraySlice, MapRef) have no arm here. So `let z = f(..).field` and
-        // `f(..)[0]` move under the head, while `let y = f(..)?` follows it.
-        // CLAUDE.md's layout rule (a value opening with a bracket whose first line fits
-        // follows its head) covers both. Recurse through bare_postfix_source here, and
-        // in head_min. probe: design/review-2026-10-19/repro/t-print-postfix-head.sh
-        // (t-print-05)
+        StructRef { .. }
+        | TupleRef { .. }
+        | ArrayRef { .. }
+        | ArraySlice { .. }
+        | MapRef { .. } => {
+            bare_postfix_source(e).is_some_and(|s| opens_with_bracket(&s.kind))
+        }
         Qop { arg: e, .. }
         | OrNever(e)
         | Rethrow(e)
@@ -328,51 +338,76 @@ fn flat_width(x: &impl fmt::Display) -> usize {
     n.0
 }
 
-/// Whether the first line of `e`'s head fits on the current line: laid
-/// out alone where its width depends on a subexpression (a scrutinee, a
-/// source, a callee), else by its fixed width.
-fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
-    use ExprKind::*;
-    let col = buf.col();
-    let start = buf.mark();
-    match e {
-        // CR claude for claude: [perf/medium] head_fits lays the scrutinee out in full
-        // here, then rolls it back. The real layout lays it out again, so a scrutinee
-        // that holds another select in a tail position (a lambda body, a let in a
-        // block) doubles the work at every level. The Seq arm (full trigger layout) and
-        // the non-Ref Apply arm (full callee layout) do the same. An 18-level `select
-        // f(|v| select ..) {..}` takes 1.1 s to format (debug build), and a
-        // block-scrutinee chain of 20 takes 6.7 s. Measure without laying out: the
-        // subexpression's flat form when it fits the room, else head_fits/head_min of
-        // its kind. probe: design/review-2026-10-19/repro/t-print-exp-scrutinee.gx
-        // (t-print-03)
-        Select(se) => {
-            pretty_scrutinee(buf, &se.arg)?;
-            write!(buf, " {{")?;
-        }
-        StructWith(sw) => sw.write_head(buf)?,
-        Apply(a) if !matches!(a.function.kind, Ref { .. }) => {
-            if prints_as_bare_postfix(&a.function) {
-                a.function.fmt_pretty(buf)?
-            } else {
-                pretty_parens(buf, &a.function)?
+/// Whether `x` prints flat in `room` columns, written no further than that.
+fn fits_flat(x: &impl fmt::Display, room: usize) -> bool {
+    struct Room(usize);
+    impl Write for Room {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            let n = s.chars().count();
+            if n > self.0 {
+                return Err(fmt::Error);
             }
-            buf.kill_newline();
-            write!(buf, "(")?;
+            self.0 -= n;
+            Ok(())
         }
-        Lambda(l) => {
-            l.write_constraints(buf)?;
-            write!(buf, "|")?;
-        }
-        Seq(s) => {
-            pretty_seq_head(buf, s)?;
-            write!(buf, "{{")?;
-        }
-        k => return Ok(col + head_min(k) <= buf.limit),
     }
-    let fits = col + buf.first_line_width(start) <= buf.limit;
-    buf.rollback(start);
-    Ok(fits)
+    write!(Room(room), "{x}").is_ok()
+}
+
+/// What `f` writes, as a `Display`.
+struct Writes<F>(F);
+
+impl<F: Fn(&mut Formatter<'_>) -> fmt::Result> fmt::Display for Writes<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        (self.0)(f)
+    }
+}
+
+fn writes<F: Fn(&mut Formatter<'_>) -> fmt::Result>(f: F) -> Writes<F> {
+    Writes(f)
+}
+
+/// Whether the first line of `e`'s multi-line layout fits from `col`. A
+/// subexpression its head holds (a scrutinee, a source, a callee, a
+/// trigger) counts flat where it fits flat, else by its own head: nothing
+/// is laid out to measure.
+fn head_fits(col: usize, limit: usize, e: &ExprKind) -> bool {
+    use ExprKind::*;
+    // `x` from `col`, `after` more columns following it on its line
+    let sub = |col: usize, x: &Expr, after: usize| {
+        shows(&x.dec)
+            || (!decorated(x) && fits_flat(x, limit.saturating_sub(col + after)))
+            || (opens_with_bracket(&x.kind) && head_fits(col, limit, &x.kind))
+    };
+    ensure_sufficient(|| match e {
+        Select(se) => sub(col + "select ".len(), &se.arg, " {".len()),
+        StructWith(sw) => sub(col + "{ (".len(), &sw.source, ") with".len()),
+        Apply(a) if !matches!(a.function.kind, Ref { .. }) => {
+            match prints_as_bare_postfix(&a.function) {
+                true => sub(col, &a.function, "(".len()),
+                false => sub(col + "(".len(), &a.function, ")(".len()),
+            }
+        }
+        Lambda(l) => col + flat_width(&writes(|f| l.write_constraints(f))) < limit,
+        Seq(s) => {
+            let head = writes(|f| write_flat_seq_head(f, s));
+            fits_flat(&head, limit.saturating_sub(col + "{".len()))
+                || match &s.trigger {
+                    None => true,
+                    Some(t) => {
+                        let kw = if s.kind.queued() { "seqq " } else { "seq " };
+                        let bind = match t {
+                            SeqTrigger::Bind(b) => {
+                                flat_width(&writes(|f| write_seq_let(f, b)))
+                            }
+                            SeqTrigger::Expr(_) => 0,
+                        };
+                        sub(col + kw.len() + bind, t.expr(), 0)
+                    }
+                }
+        }
+        k => col + head_min(k) <= limit,
+    })
 }
 
 /// The least the first line of `e`'s multi-line layout can take: the text
@@ -397,7 +432,14 @@ fn head_min(e: &ExprKind) -> usize {
             _ => 1,
         },
         Module { name, .. } => "mod  dynamic {".len() + name.chars().count(),
-        Qop { arg: e, .. } | OrNever(e) | Rethrow(e) => head_min(&e.kind),
+        Qop { arg: e, .. }
+        | OrNever(e)
+        | Rethrow(e)
+        | StructRef { source: e, .. }
+        | TupleRef { source: e, .. }
+        | ArrayRef { source: e, .. }
+        | ArraySlice { source: e, .. }
+        | MapRef { source: e, .. } => head_min(&e.kind),
         ByRef(m, e) => m.prefix().len() + head_min(&e.kind),
         Deref(e) | Neg(e) | Not { expr: e } => 1 + head_min(&e.kind),
         _ => 1,
@@ -407,7 +449,30 @@ fn head_min(e: &ExprKind) -> usize {
 /// Whether `e`, the only argument between parentheses, opens on their
 /// line and closes with them: `f({`, `` `Tag([ ``.
 fn hugs_parens(e: &Expr) -> bool {
-    e.dec.is_none() && opens_with_bracket(&e.kind)
+    !shows(&e.dec) && opens_with_bracket(&e.kind)
+}
+
+/// `e` between `open` and `close`, hugging them, where it may and its
+/// head fits on the line; false, with nothing written, otherwise.
+fn hug_parens(
+    buf: &mut PrettyBuf,
+    open: &str,
+    e: &Expr,
+    close: &str,
+) -> Result<bool, fmt::Error> {
+    if !hugs_parens(e) {
+        return Ok(false);
+    }
+    let start = buf.mark();
+    write!(buf, "{open}")?;
+    if !head_fits(buf.col(), buf.limit, &e.kind) {
+        buf.rollback(start);
+        return Ok(false);
+    }
+    e.fmt_pretty(buf)?;
+    buf.kill_newline();
+    writeln!(buf, "{close}")?;
+    Ok(true)
 }
 
 /// The expression a head introduces (`let x =`, `x <-`, `name:`, `=>`);
@@ -415,7 +480,7 @@ fn hugs_parens(e: &Expr) -> bool {
 /// the head's line when it fits there or opens with a bracket, else it
 /// moves to its own line, indented.
 fn pretty_tail(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
-    if e.dec.is_none() {
+    if !shows(&e.dec) {
         return pretty_tail_bare(buf, e);
     }
     writeln!(buf)?;
@@ -431,21 +496,12 @@ fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     }
     // the first line is measured by laying it out, so a head that cannot
     // fit is not tried: that would lay out the body twice at every level
-    if opens_with_bracket(&e.kind) && head_fits(buf, &e.kind)? {
+    if opens_with_bracket(&e.kind) && head_fits(buf.col(), buf.limit, &e.kind) {
         let start = buf.mark();
         let col = buf.col();
         Bare(e).fmt_pretty_inner(buf)?;
-        // CR claude for claude: [bug/low] This fit check does not count the column of
-        // the `;` or `,` that follows, which fmt_flat does reserve. A hugged lone
-        // argument (`ffff([..])`, `` `Scatter3D({..}) ``) can therefore end exactly at
-        // the width and then take the separator one column past it: chart.gx's
-        // scatter3d formats to a 91-column line. Separately, the hug in
-        // ApplyExpr::fmt_pretty_inner never checks fit, so a chain of lone calls stays
-        // on one line at any width (136 columns at width 90). Fix: reserve the
-        // separator here (`<`), and hug only when the argument's head fits on the line.
-        // probe: design/review-2026-10-19/repro/x-formatter-hug-width-off-by-one.sh
-        // (x-formatter-03)
-        if col + buf.first_line_width(start) <= buf.limit {
+        // the column after the first line is the `;` or `,` that follows
+        if col + buf.first_line_width(start) < buf.limit {
             return Ok(());
         }
         buf.rollback(start);
@@ -488,9 +544,7 @@ pub(crate) fn write_leading_flat(
     f: &mut impl fmt::Write,
     dec: &Option<Arc<Decorations>>,
 ) -> fmt::Result {
-    if dec.as_ref().is_some_and(|d| {
-        (!d.comments.is_empty() && print_as_written()) || !d.attrs.is_empty()
-    }) {
+    if shows(dec) {
         writeln!(f)?;
     }
     write_leading(f, dec)
@@ -503,7 +557,7 @@ fn write_doc_flat(
     comments: &Comments,
     doc: &Doc,
 ) -> fmt::Result {
-    if comments.lines().is_empty() && doc.0.is_some() {
+    if doc.0.is_some() && !shows_comments(comments.lines()) {
         writeln!(f)?;
     }
     write!(f, "{doc}")
@@ -511,17 +565,29 @@ fn write_doc_flat(
 
 /// `write_comments` in a flat form.
 fn write_comments_flat(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
-    if !lines.is_empty() && print_as_written() {
+    if shows_comments(lines) {
         writeln!(f)?;
     }
     write_comments(f, lines)
+}
+
+/// Whether `lines` of comments print: only as written, since printed
+/// text reaches values a program sees.
+fn shows_comments(lines: &[ArcStr]) -> bool {
+    print_as_written() && !lines.is_empty()
+}
+
+/// Whether `dec` prints anything: its attributes, and its comments as
+/// written. Only what prints decides a layout.
+fn shows(dec: &Option<Arc<Decorations>>) -> bool {
+    dec.as_ref().is_some_and(|d| !d.attrs.is_empty() || shows_comments(&d.comments))
 }
 
 /// Whether anything in `e`, `e` included, prints on lines of its own
 /// above what it decorates: a comment, an attribute, a doc. Such a tree
 /// has no single-line form.
 pub(crate) fn decorated(e: &Expr) -> bool {
-    e.dec.is_some() || kind_decorated(&e.kind)
+    shows(&e.dec) || kind_decorated(&e.kind)
 }
 
 fn kind_decorated(k: &ExprKind) -> bool {
@@ -542,7 +608,7 @@ fn kind_decorated(k: &ExprKind) -> bool {
 
 fn sig_item_decorated(si: &SigItem) -> bool {
     si.doc.0.is_some()
-        || !si.comments.lines().is_empty()
+        || shows_comments(si.comments.lines())
         || matches!(&si.kind, SigKind::Trait(t) if t.decorated())
 }
 
@@ -874,7 +940,7 @@ impl PrettyDisplay for TraitExpr {
     fn decorated(&self) -> bool {
         self.methods.iter().any(|m| {
             m.doc.0.is_some()
-                || !m.comments.lines().is_empty()
+                || shows_comments(m.comments.lines())
                 || m.default.as_ref().is_some_and(decorated)
         })
     }
@@ -1246,27 +1312,12 @@ impl PrettyDisplay for StructurePattern {
                 }
                 Ok(())
             }
-            // CR claude for claude: [structure/low] This repeats StructurePattern's
-            // flat Display in pattern.rs: the written-order sort under
-            // print_as_written() and the pun test (`P::Bind(n) if n.name == *name &&
-            // !is_reserved_binding`). A change to one copy makes the flat and laid-out
-            // forms of a pattern disagree. Move both into one pattern.rs helper that
-            // returns the fields in print order, with the pun decided, and call it from
-            // both impls. Found by reading; not run. (t-print-07)
             P::Struct { exhaustive, all: _, binds } => {
-                let mut written: SmallVec<[_; 16]> = binds.iter().collect();
-                if print_as_written() {
-                    written.sort_by_key(|(_, _, at)| at.order());
-                }
-                let mut elts: SmallVec<[PatElt<'_>; 8]> = written
-                    .iter()
-                    .map(|(name, pat, _)| match pat {
-                        P::Bind(n)
-                            if n.name == *name && !parser::is_reserved_binding(name) =>
-                        {
-                            PatElt::Text(name.as_str().into())
-                        }
-                        pat => PatElt::Field(name.as_str(), pat),
+                let mut elts: SmallVec<[PatElt<'_>; 8]> = printed_fields(binds)
+                    .into_iter()
+                    .map(|(name, pat)| match pat {
+                        None => PatElt::Text(name.as_str().into()),
+                        Some(pat) => PatElt::Field(name.as_str(), pat),
                     })
                     .collect();
                 if !exhaustive {
@@ -1325,9 +1376,9 @@ impl StructWithExpr {
     fn write_head(&self, f: &mut impl Write) -> fmt::Result {
         fn chain_on_name(e: &Expr) -> bool {
             match &e.kind {
-                ExprKind::Ref { .. } => e.dec.is_none(),
+                ExprKind::Ref { .. } => !shows(&e.dec),
                 ExprKind::Qop { arg: s, .. } | ExprKind::OrNever(s) => {
-                    e.dec.is_none() && chain_on_name(s)
+                    !shows(&e.dec) && chain_on_name(s)
                 }
                 _ => false,
             }
@@ -1350,7 +1401,15 @@ impl fmt::Display for StructWithExpr {
 
 impl PrettyDisplay for StructWithExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        self.write_head(buf)?;
+        match decorated(&self.source) {
+            false => self.write_head(buf)?,
+            true => {
+                write!(buf, "{{ ")?;
+                pretty_parens(buf, &self.source)?;
+                buf.kill_newline();
+                write!(buf, " with")?
+            }
+        }
         writeln!(buf)?;
         pretty_fields(buf, &self.replace)?;
         writeln!(buf, "}}")
@@ -1392,19 +1451,7 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 /// decorations would otherwise stand above the whole chain.
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     use ExprKind::*;
-    // CR claude for claude: [bug/medium] A comment-only decoration is not printed
-    // outside the formatter, but this test still parenthesizes the source it decorates.
-    // So canonical, program-visible text depends on a comment: `(\n// c\ns\n).a?`
-    // raises NullError("(s).a"), while the same tree without the comment raises
-    // NullError("s.a"). The same `dec.is_some()` test sits in
-    // StructWithExpr::write_head's chain_on_name, the Neg arm,
-    // decorated/kind_decorated, pretty_tail, pretty_after and hugs_parens, and in
-    // write_doc_flat's comment check, which under canonical printing puts a `///` doc
-    // mid-line. In --expand, a commented seq step loses every flat form above it. Use
-    // one predicate everywhere: attrs non-empty, or comments non-empty under
-    // print_as_written(). probe:
-    // design/review-2026-10-19/repro/t-print-comment-in-nullerror.gx (t-print-02)
-    e.dec.is_none()
+    !shows(&e.dec)
         && !std::ptr::eq(e, PAREN_SOURCE.get())
         && matches!(
             &e.kind,
@@ -1455,12 +1502,9 @@ impl PrettyDisplay for ApplyExpr {
         }
         buf.kill_newline();
         if let [(None, arg)] = &args[..]
-            && hugs_parens(arg)
+            && hug_parens(buf, "(", arg, ")")?
         {
-            write!(buf, "(")?;
-            arg.fmt_pretty(buf)?;
-            buf.kill_newline();
-            return writeln!(buf, ")");
+            return Ok(());
         }
         if args.is_empty() {
             return writeln!(buf, "()");
@@ -1729,7 +1773,7 @@ impl PrettyDisplay for SelectExpr {
                 }
                 // the pattern stays flat only if its guard fits beside it too
                 let follows = match &pat.guard {
-                    Some(g) if g.dec.is_none() => format_compact!(" if {g} =>"),
+                    Some(g) if !shows(&g.dec) => format_compact!(" if {g} =>"),
                     _ => CompactString::const_new(" =>"),
                 };
                 pretty_pattern_then(buf, &pat.structure_predicate, &follows)?;
@@ -1754,6 +1798,16 @@ impl PrettyDisplay for SelectExpr {
 
 /// `e`, then `suffix` on the line `e` ends on: flat when both fit, else
 /// `e` laid out over lines.
+// CR claude for claude: [bug/low] The text that follows a layout on its last line is
+// not reserved when the inner part is measured. fmt_flat keeps one column (the `;` or
+// `,`), but a hug's closer, this suffix and the separator after them add up:
+// browser.gx's `let col = structure.columns[slot_item(viewport.x, col_slots, c)]$;`
+// lays the call flat at column 89, then `]`, `$` and `;` end the line at 92. Carry the
+// width that will follow on the current line in PrettyBuf (a `tail` that pretty_then,
+// hug_parens, pretty_lookup and pretty_postfix add their suffix to, and that a line
+// break resets to the separator's one column) and have fmt_flat and the hug fit checks
+// subtract it. Found while fixing (x-formatter-02); probe: gxfmt
+// stdlib/graphix-package-tui/src/graphix/browser.gx, line 140. (wt-parse-01)
 fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
     if decorated(e) {
         e.fmt_pretty(buf)?
@@ -1801,9 +1855,9 @@ fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
 /// `head e`, `e` continuing the line and nested under `head`; a
 /// decorated `e` starts on a line of its own, its comments above it.
 fn pretty_after(buf: &mut PrettyBuf, head: &str, e: &Expr) -> fmt::Result {
-    match e.dec {
-        None => write!(buf, "{head} ")?,
-        Some(_) => writeln!(buf, "{head}")?,
+    match shows(&e.dec) {
+        false => write!(buf, "{head} ")?,
+        true => writeln!(buf, "{head}")?,
     }
     buf.nested(|buf| e.fmt_pretty(buf))
 }
@@ -1822,6 +1876,29 @@ fn pretty_parens(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
         buf.kill_newline();
         writeln!(buf, ")")
     }
+}
+
+/// `source[i]` or `source{key}` that does not fit flat: the source laid
+/// out, then the index flat on its last line where it fits there, else
+/// laid out like a lone argument between the brackets.
+fn pretty_lookup(
+    buf: &mut PrettyBuf,
+    source: &Expr,
+    open: &str,
+    i: &Expr,
+    close: &str,
+) -> fmt::Result {
+    pretty_postfix(buf, source, "")?;
+    buf.kill_newline();
+    if !decorated(i) {
+        let start = buf.mark();
+        write!(buf, "{open}{i}{close}")?;
+        if buf.col() < buf.limit {
+            return writeln!(buf);
+        }
+        buf.rollback(start)
+    }
+    pretty_print_exprs(buf, std::slice::from_ref(i), open, close, ",", true)
 }
 
 /// A postfix form: its source, parenthesized unless it reads bare, and
@@ -1870,16 +1947,7 @@ impl PrettyDisplay for ExprKind {
             TupleRef { source, field } => {
                 pretty_postfix(buf, source, &format_compact!(".{field}"))
             }
-            // CR claude for claude: [bug/low] The index (and a slice's bounds, a MapRef
-            // key, a Map literal's key in the Map arm, and the source
-            // StructWithExpr::write_head parenthesizes) goes through the flat Display
-            // even when it holds a comment or an attribute. `graphix fmt` then writes
-            // `a[{ \n// c\nlet i = 0; i }]`: the comment at column 0 and the block on
-            // one line. When the subexpression is decorated, lay it out (open bracket,
-            // nested fmt_pretty, close bracket) instead of formatting it into the
-            // suffix string. probe:
-            // design/review-2026-10-19/repro/t-print-decorated-suffix.sh (t-print-04)
-            // CR claude for claude: [bug/medium] The index (and a map key, slice
+            // CR claude for eric: [bug/medium] The index (and a map key, slice
             // bounds, map-literal keys, string splices) is printed by its flat Display,
             // not laid out. A long index never breaks: browser.gx formats to a
             // 92-column `structure.columns[slot_item(..)]$;` line. A decorated index
@@ -1891,14 +1959,45 @@ impl PrettyDisplay for ExprKind {
             // or print them without comments. probe:
             // design/review-2026-10-19/repro/x-formatter-index-flat-display.gx
             // (x-formatter-02)
-            ArrayRef { source, i } => {
-                pretty_postfix(buf, source, &format_compact!("[{i}]"))
-            }
-            MapRef { source, key } => {
-                pretty_postfix(buf, source, &format_compact!("{{{key}}}"))
-            }
+            // 2026-10-19 claude: Done for the index, the map key, the slice bounds, the
+            // map literal's keys and a decorated update source (t-print-04's sites):
+            // pretty_lookup lays the source out, then the index flat on its last line
+            // where it fits, else like a lone argument (hugging a bracketed one); the
+            // slice puts its bounds on lines of their own. The index parser now takes
+            // whitespace before the closing bracket of a slice with no end
+            // (array_index_suffix). Test: format.rs indices_and_keys_are_laid_out.
+            // Left: a comment inside a string splice still prints through the flat
+            // Display (inside the literal, at column 0): refusing comments in a splice
+            // is a grammar rule, and printing without them loses them, so this needs a
+            // ruling.
+            ArrayRef { source, i } => pretty_lookup(buf, source, "[", i, "]"),
+            MapRef { source, key } => pretty_lookup(buf, source, "{", key, "}"),
             ArraySlice { source, start, end } => {
-                pretty_postfix(buf, source, &format_compact!("{}", Slice(start, end)))
+                pretty_postfix(buf, source, "")?;
+                buf.kill_newline();
+                let bounds = [start, end];
+                if bounds.iter().all(|b| b.as_ref().is_none_or(|b| !decorated(b))) {
+                    let start = buf.mark();
+                    write!(buf, "{}", Slice(&bounds[0], &bounds[1]))?;
+                    if buf.col() < buf.limit {
+                        return writeln!(buf);
+                    }
+                    buf.rollback(start)
+                }
+                writeln!(buf, "[")?;
+                buf.nested(|buf| {
+                    for (i, b) in bounds.iter().enumerate() {
+                        if i > 0 {
+                            write!(buf, "..")?
+                        }
+                        if let Some(b) = b {
+                            b.fmt_pretty(buf)?;
+                            buf.kill_newline()
+                        }
+                    }
+                    writeln!(buf)
+                })?;
+                writeln!(buf, "]")
             }
             ExplicitParens(e) => {
                 writeln!(buf, "(")?;
@@ -1955,19 +2054,18 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "{deref}{name} <-")?;
                 pretty_tail(buf, value)
             }
-            // CR claude for claude: [bug/low] A cast always breaks before its argument,
-            // so `cast<Array<i64>>([..])` prints `cast<..>(\n [\n ...\n ]\n)`. Every
-            // other lone-argument form (f([, T({, `Tag([, never(, any(, rethrow() hugs
-            // it, as CLAUDE.md's layout rule says. Write the argument as the Construct
-            // arm does: pretty_print_exprs(buf, std::slice::from_ref(&**expr), "(",
-            // ")", ",", true). probe:
-            // design/review-2026-10-19/repro/t-print-cast-hug.sh (t-print-06)
             TypeCast { expr, typ } => {
                 write!(buf, "cast<")?;
                 pretty_type(buf, typ)?;
-                writeln!(buf, ">(")?;
-                buf.nested(|buf| expr.fmt_pretty(buf))?;
-                writeln!(buf, ")")
+                write!(buf, ">")?;
+                pretty_print_exprs(
+                    buf,
+                    std::slice::from_ref(&**expr),
+                    "(",
+                    ")",
+                    ",",
+                    true,
+                )
             }
             Map { args } => {
                 writeln!(buf, "{{")?;
@@ -1978,7 +2076,9 @@ impl PrettyDisplay for ExprKind {
                             writeln!(buf, ",")?
                         }
                         write_leading(buf, &k.dec)?;
-                        write!(buf, "{} =>", Bare(k))?;
+                        Bare(k).fmt_pretty(buf)?;
+                        buf.kill_newline();
+                        write!(buf, " =>")?;
                         pretty_tail(buf, v)?
                     }
                     Ok(())
@@ -2411,14 +2511,8 @@ fn in_one_piece(
     f: &mut Formatter<'_>,
     w: impl Fn(&mut Formatter<'_>) -> fmt::Result,
 ) -> fmt::Result {
-    struct Pieces<W>(W);
-    impl<W: Fn(&mut Formatter<'_>) -> fmt::Result> fmt::Display for Pieces<W> {
-        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            (self.0)(f)
-        }
-    }
     let mut s: LPooled<String> = LPooled::take();
-    write!(s, "{}", Pieces(w))?;
+    write!(s, "{}", writes(w))?;
     f.write_str(&s)
 }
 
@@ -2587,15 +2681,7 @@ impl ExprKind {
             ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Block { exprs } => print_exprs(f, &**exprs, "{ ", " }", "; "),
             ExprKind::Seq(s) => {
-                write_seq_head(
-                    f,
-                    s,
-                    |f, t, parens| match parens {
-                        true => write!(f, "({t})"),
-                        false => write!(f, "{t}"),
-                    },
-                    |f, e| write!(f, "({e})"),
-                )?;
+                write_flat_seq_head(f, s)?;
                 print_exprs(f, &s.body, "{ ", " }", "; ")
             }
             ExprKind::Until(e) => write!(f, "until {e}"),
@@ -2683,7 +2769,7 @@ impl ExprKind {
             ExprKind::Deref(e) => write!(f, "*{}", Operand(e, prefixed(e))),
             // `-1` reads back as the literal: a negated one keeps the space
             ExprKind::Neg(e) => match &e.kind {
-                ExprKind::Constant(_) if e.dec.is_none() => write!(f, "- {}", Bare(e)),
+                ExprKind::Constant(_) if !shows(&e.dec) => write!(f, "- {}", Bare(e)),
                 _ => write!(f, "-{}", Operand(e, prefixed(e))),
             },
             ExprKind::Not { expr } => write!(f, "!{}", Operand(expr, prefixed(expr))),
