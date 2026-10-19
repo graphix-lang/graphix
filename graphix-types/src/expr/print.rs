@@ -1,4 +1,5 @@
 use crate::{
+    Restore,
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comments, Decorations,
         Doc, Expr, ExprKind, ImplExpr, LambdaBody, LambdaExpr, ModuleKind, Sandbox,
@@ -20,6 +21,7 @@ use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
+    cell::Cell,
     cmp::Ordering,
     fmt::{self, Formatter, Write},
 };
@@ -40,7 +42,14 @@ fn write_seq_head<W: Write>(
         if let SeqTrigger::Bind(b) = t {
             write_seq_let(w, b)?;
         }
-        trigger(w, t.expr(), trigger_needs_parens(t.expr(), bound))?;
+        match trigger_parens(t.expr(), bound) {
+            TriggerParens::None => trigger(w, t.expr(), false)?,
+            TriggerParens::Whole => trigger(w, t.expr(), true)?,
+            TriggerParens::Source(source) => {
+                let _paren = Restore::replace(&PAREN_SOURCE, std::ptr::from_ref(source));
+                trigger(w, t.expr(), false)?
+            }
+        }
     }
     let mut first = s.trigger.is_none();
     for (name, e) in [("abort", s.abort.as_ref()), ("flush", s.kind.flush())] {
@@ -106,19 +115,37 @@ fn bare_postfix_source(e: &ExprKind) -> Option<&Expr> {
     prints_as_bare_postfix(source).then_some(&**source)
 }
 
+/// Where a seq trigger is parenthesized so the head parser reads it back.
+enum TriggerParens<'a> {
+    None,
+    Whole,
+    /// the source the trigger's postfix chain starts from, which reads
+    /// back bare where the whole trigger in parentheses would not
+    Source(&'a Expr),
+}
+
+thread_local! {
+    /// The postfix source a seq head prints in parentheses, null when
+    /// there is none.
+    static PAREN_SOURCE: Cell<*const Expr> = const { Cell::new(std::ptr::null()) };
+}
+
 /// A seq trigger is parenthesized exactly where the head parser would
 /// not read it back bare: a leading `{` is the body and a call of `flush`
 /// the clause (not after `let p =`), a map access is refused outside
 /// brackets, and the head admits operator expressions only.
-fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
+fn trigger_parens(t: &Expr, bound: bool) -> TriggerParens<'_> {
     use ExprKind::*;
     // the expression whose first token the head parser meets first, and
-    // whether an argument list follows it directly
-    fn leftmost(e: &Expr, called: bool) -> (&Expr, bool) {
+    // the postfix form it is the source of
+    fn leftmost<'a>(
+        e: &'a Expr,
+        postfix: Option<&'a ExprKind>,
+    ) -> (&'a Expr, Option<&'a ExprKind>) {
         match (&e.kind, bare_postfix_source(&e.kind)) {
-            (ExprKind::BinOp { lhs, .. }, _) => leftmost(lhs, false),
-            (_, Some(source)) => leftmost(source, matches!(&e.kind, Apply(_))),
-            (_, None) => (e, called),
+            (ExprKind::BinOp { lhs, .. }, _) => leftmost(lhs, None),
+            (k, Some(source)) => leftmost(source, Some(k)),
+            (_, None) => (e, postfix),
         }
     }
     fn reads_bare(e: &Expr) -> bool {
@@ -162,24 +189,19 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
             },
         }
     }
-    // CR claude for claude: [bug/medium] When the leftmost source is a struct literal,
-    // a functional update or a call of `flush`, this wraps the WHOLE trigger in parens.
-    // The parser keeps parens only when no postfix (or only `?`/`$`) follows them. So
-    // `seq ({a: 1}).a { .. }`, `seqq (flush)(1) { .. }` and `seq ({s with a: 2}).a + 1
-    // { .. }` all pass the check, but print as `seq ({ a: 1 }.a)` etc., reparse to an
-    // extra ExplicitParens, and `graphix fmt` refuses them ("the formatted text says
-    // something else"). Parenthesize the leftmost postfix source that leftmost() finds
-    // (`({ a: 1 }).a`, `(flush)(1)`), which reparses to the same tree, and wrap the
-    // whole trigger only when !reads_bare. probe:
-    // design/review-2026-10-19/repro/t-print-seq-trigger-parens.sh (t-print-01)
-    let reads_as_body_or_clause = match leftmost(t, false) {
+    let (first, postfix) = leftmost(t, None);
+    let reads_as_body_or_clause = match first {
         _ if bound => false,
-        (Expr { kind: Ref { name }, .. }, true) => &*name.0 == "/flush",
-        (e, _) => {
-            matches!(&e.kind, Block { .. } | Struct(_) | StructWith(_) | Map { .. })
+        Expr { kind: Ref { name }, .. } if matches!(postfix, Some(Apply(_))) => {
+            &*name.0 == "/flush"
         }
+        e => matches!(&e.kind, Block { .. } | Struct(_) | StructWith(_) | Map { .. }),
     };
-    reads_as_body_or_clause || !reads_bare(t)
+    match (reads_bare(t), reads_as_body_or_clause, postfix) {
+        (false, _, _) | (true, true, None) => TriggerParens::Whole,
+        (true, true, Some(_)) => TriggerParens::Source(first),
+        (true, false, _) => TriggerParens::None,
+    }
 }
 
 /// `exprs` between `open` and `close`, one to a line; a lone expression
@@ -1364,7 +1386,7 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 
 /// Whether `e` can be the bare source of a postfix operator without parens:
 /// a name, a postfix chain (`?`/`$` included) or a bracketed primary, which
-/// the parser reads as a source bare. Anything else must be parenthesized
+/// the parser reads as a source bare, unless a seq head parenthesizes it. Anything else must be parenthesized
 /// (`(a+b).c`; `(42).0` would lex as a float; the editor grammar reads no
 /// select, block or cast as a source), and so is a decorated source, whose
 /// decorations would otherwise stand above the whole chain.
@@ -1383,6 +1405,7 @@ pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     // print_as_written(). probe:
     // design/review-2026-10-19/repro/t-print-comment-in-nullerror.gx (t-print-02)
     e.dec.is_none()
+        && !std::ptr::eq(e, PAREN_SOURCE.get())
         && matches!(
             &e.kind,
             Ref { .. }

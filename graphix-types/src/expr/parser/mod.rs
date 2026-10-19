@@ -205,17 +205,39 @@ where
     EP: Parser<I, Output = O>,
     TP: Parser<I>,
 {
+    sep_by1_tok_trailing(p, sep, term).map(|(items, _)| items)
+}
+
+/// [`sep_by1_tok`], and whether the list ended in its separator.
+pub(super) fn sep_by1_tok_trailing<I, O, OC, EP, SP, TP>(
+    p: EP,
+    sep: SP,
+    term: TP,
+) -> impl Parser<I, Output = (OC, bool)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    OC: Extend<O> + Default,
+    SP: Parser<I>,
+    EP: Parser<I, Output = O>,
+    TP: Parser<I>,
+{
     sep_by1(choice((ahead(term).map(|_| None::<O>), p.map(Some))), sep).and_then(
         |mut items: LPooled<Vec<Option<O>>>| match items.first() {
             Some(Some(_)) => {
+                let trailing = matches!(items.last(), Some(None));
                 let mut res = OC::default();
                 res.extend(items.drain(..).flatten());
-                Ok(res)
+                Ok((res, trailing))
             }
             _ => Err(<StreamErrorFor<I>>::message_static_message("expected an item")),
         },
     )
 }
+
+/// Graphix has no 1-tuple: `(x,)` is refused, not read as `(x)`.
+pub(super) const ONE_TUPLE: &str = "tuples must have at least 2 elements";
 
 /// `sep_by1` of statements, an empty one standing for what `f` makes of
 /// its position: a list may end with its separator, and be empty.
@@ -419,13 +441,6 @@ where
     space().with(spaces())
 }
 
-// CR claude for claude: [bug/medium] A `///` line is taken as a doc wherever it stands,
-// so in a .gxi `val x: i64; /// trailing doc` (or the same after a trait method) is
-// accepted, and the doc becomes the NEXT item's: fmt prints it above `val y` and the
-// LSP shows it on y. A trailing `//` is refused by comment_line's grow::starts_line
-// check. Fix: record position() before each `///` here and refuse one that does not
-// start its line, with the same note comment_line gives. probe:
-// design/review-2026-10-19/repro/t-parser-b-trailing-doc.sh (t-parser-b-01)
 fn doc_comment<I>() -> impl Parser<I, Output = Doc>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -448,10 +463,21 @@ where
             }
         }
     }
-    spaces()
-        .with(many(attempt(string("///")).with(line_text()).skip(spaces())))
-        .and(position())
-        .then(|(Lines(doc), pos)| match doc {
+    let line = attempt((position(), look_ahead(string("///")))).then(|(pos, _)| {
+        if grow::starts_line(pos) {
+            return string("///").with(line_text()).left();
+        }
+        grow::note_reason(
+            pos,
+            None,
+            CompactString::const_new(
+                "a doc comment stands on a line of its own, above what it describes",
+            ),
+        );
+        unexpected_any("trailing doc comment").right()
+    });
+    spaces().with(many(line.skip(spaces()))).and(position()).then(|(Lines(doc), pos)| {
+        match doc {
             None => value(Doc(None)).left(),
             Some(doc) => optional(attempt(string("//")))
                 .then(move |c| match c {
@@ -468,7 +494,8 @@ where
                     }
                 })
                 .right(),
-        })
+        }
+    })
 }
 
 fn spstring<'a, I>(s: &'static str) -> impl Parser<I, Output = &'a str>
@@ -577,27 +604,28 @@ where
 }
 
 /// A path's optional keyword root: `self::`, `package::`, or a chain of
-/// `super::`s. Yields the keyword segments consumed. Each alternative is
-/// attempted with its `::` so an identifier like `packaged` backtracks.
-fn path_root<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+/// `super::`s. Yields the keyword segments consumed, each where it was
+/// written. Each alternative is attempted with its `::` so an identifier
+/// like `packaged` backtracks.
+fn path_root<I>() -> impl Parser<I, Output = LPooled<Vec<Name>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    let one = |pos, name| {
+        let mut v: LPooled<Vec<Name>> = LPooled::take();
+        v.push(Name::written(name, pos));
+        v
+    };
     choice((
-        attempt(string("package").with(string("::"))).map(|_| {
-            let mut v: LPooled<Vec<ArcStr>> = LPooled::take();
-            v.push(literal!("package"));
-            v
-        }),
-        attempt(string("self").with(string("::"))).map(|_| {
-            let mut v: LPooled<Vec<ArcStr>> = LPooled::take();
-            v.push(literal!("self"));
-            v
-        }),
+        attempt((position(), string("package").with(string("::"))))
+            .map(move |(pos, _)| one(pos, literal!("package"))),
+        attempt((position(), string("self").with(string("::"))))
+            .map(move |(pos, _)| one(pos, literal!("self"))),
         many1::<LPooled<Vec<_>>, _, _>(
-            attempt(string("super").with(string("::"))).map(|_| literal!("super")),
+            attempt((position(), string("super").with(string("::"))))
+                .map(|(pos, _)| Name::written(literal!("super"), pos)),
         ),
         produce(|| LPooled::take()),
     ))
@@ -610,20 +638,10 @@ where
     I::Range: Range,
 {
     (path_root(), sep_by1(fname(), string("::"))).map(
-        |(mut root, mut v): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
-            root.extend(v.drain(..));
-            ModPath(Path::from_iter(root.drain(..)))
+        |(mut root, mut v): (LPooled<Vec<Name>>, LPooled<Vec<ArcStr>>)| {
+            ModPath(Path::from_iter(root.drain(..).map(|n| n.name).chain(v.drain(..))))
         },
     )
-}
-
-fn spmodpath<I>() -> impl Parser<I, Output = ModPath>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(modpath())
 }
 
 fn csep<I>() -> impl Parser<I, Output = char>
@@ -664,6 +682,7 @@ where
                 .then(move |(pos, c)| {
                     let why = reason(c).expect("satisfied");
                     grow::note_reason(pos, Some(1), CompactString::const_new(why));
+                    grow::note_furthest(pos);
                     satisfy(|_| false)
                 }),
         ),
@@ -777,7 +796,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    // CR claude for claude: [bug/low] Every expression that starts with `true`, `false`
+    // XCR claude for claude: [bug/low] Every expression that starts with `true`, `false`
     // or `null` is first probed here as a connect target. spmodpath's `fname()` then
     // notes "`false` is a reserved word and cannot be used as a name", and
     // `Reason::explains` applies that note to a failure just past the word. So `let a =
@@ -786,12 +805,62 @@ where
     // noted by `reference()` in the arith alternative. probe:
     // design/review-2026-10-19/repro/t-parser-a-literal-reserved-note.gx
     // (t-parser-a-05)
-    (position(), optional(token('*')), spmodpath().skip(spstring("<-")), expr()).map(
+    // 2026-10-19 claude: The connect target is read by connect_target, which notes a
+    // reserved word as a misused name only once its <- has parsed (span up to the
+    // arrow); modpath keeps fname's noting. Test: parser/test.rs
+    // a_literal_word_is_noted_only_where_used_as_a_name ((1, false] has no note; false
+    // <- 2 keeps it).
+    (position(), optional(token('*')), connect_target(), expr()).map(
         |(pos, deref, name, e)| {
             ExprKind::Connect { name, value: Arc::new(e), deref: deref.is_some() }
                 .to_expr(pos)
         },
     )
+}
+
+/// A connect's target and its `<-`. Every expression is probed as a
+/// connect first, so a reserved word is noted as a misused name only
+/// once the `<-` shows it is one: `(1, false]` is no misuse.
+fn connect_target<I>() -> impl Parser<I, Output = ModPath>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        spaces().with(path_root()),
+        sep_by1((position(), ident(false)), string("::")),
+        spstring("<-").with(position()),
+    )
+        .then(
+            |(mut root, mut segs, arrow): (
+                LPooled<Vec<Name>>,
+                LPooled<Vec<(SourcePosition, ArcStr)>>,
+                SourcePosition,
+            )| {
+                if let Some((pos, s)) = segs.iter().find(|(_, s)| is_reserved_binding(s))
+                {
+                    // explains a failure up to the arrow, where the
+                    // expression parse of the word stops
+                    let span = (arrow.line == pos.line)
+                        .then(|| usize::try_from(arrow.column - pos.column).unwrap_or(0));
+                    grow::note_reason(
+                        *pos,
+                        span,
+                        format_compact!(
+                            "`{s}` is a reserved word and cannot be used as a name"
+                        ),
+                    );
+                    return grow::because(
+                        "can't use keyword as a function or variable name",
+                    )
+                    .left();
+                }
+                let path =
+                    root.drain(..).map(|n| n.name).chain(segs.drain(..).map(|(_, s)| s));
+                value(ModPath(Path::from_iter(path))).right()
+            },
+        )
 }
 
 fn literal<I>() -> impl Parser<I, Output = Expr>
@@ -819,15 +888,50 @@ where
                 finite::<I>(pos, v).map(|v| ExprKind::Constant(v).to_expr(pos))
             }),
         ))
-        // CR claude for claude: [bug/low] An integer literal out of its type's range
-        // gets no reason. `u8:256` reports "could not continue past this point" with no
-        // note, and `99999999999999999999` reports "Unexpected invalid signed integer"
-        // with a list of ~35 expected tokens. A float out of range is told why
-        // (`finite`). Add a note arm beside duration_unit_note that recognizes
-        // `[type:]-?digits` and says which type the value does not fit. probe:
-        // design/review-2026-10-19/repro/t-parser-a-int-overflow-diag.gx
-        // (t-parser-a-06)
+        .or(attempt(int_range_note()))
         .or(grow(duration_unit_note()))
+}
+
+/// A diagnostic arm behind the literal parser: an integer literal out of
+/// its type's range names the type, since the value parser fails without
+/// a reason.
+fn int_range_note<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    let typ = many1::<CompactString, _, _>(satisfy(|c: char| c.is_ascii_alphanumeric()))
+        .skip(token(':'));
+    let int = recognize::<CompactString, _, _>((
+        optional(token('-')),
+        many1::<CompactString, _, _>(satisfy(|c: char| c.is_ascii_digit())),
+    ));
+    (position(), optional(attempt(typ)), int, not_followed_by(token('.'))).then(
+        |(pos, typ, int, _): (_, Option<CompactString>, CompactString, ())| {
+            let name = typ.as_deref().unwrap_or("i64");
+            let fits = match name {
+                "i8" => int.parse::<i8>().is_ok(),
+                "i16" => int.parse::<i16>().is_ok(),
+                "i32" | "z32" => int.parse::<i32>().is_ok(),
+                "i64" | "z64" => int.parse::<i64>().is_ok(),
+                "u8" => int.parse::<u8>().is_ok(),
+                "u16" => int.parse::<u16>().is_ok(),
+                "u32" | "v32" => int.parse::<u32>().is_ok(),
+                "u64" | "v64" => int.parse::<u64>().is_ok(),
+                _ => true,
+            };
+            if !fits {
+                let len = typ.as_ref().map_or(0, |t| t.len() + 1) + int.len();
+                grow::note_reason(
+                    pos,
+                    Some(len),
+                    format_compact!("`{int}` is out of the range of {name}"),
+                );
+            }
+            unexpected_any("integer literal").map(|_: ()| unreachable!())
+        },
+    )
 }
 
 /// `v`, unless it is a float literal out of its type's range, which
@@ -898,14 +1002,14 @@ where
         attempt(string("self").skip(not_prefix()).skip(not_followed_by(string("::"))))
             .map(|_| ModPath::from([literal!("self")])),
         (path_root(), sep_by1(choice((fname(), typname())), string("::"))).then(
-            |(mut root, mut v): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
+            |(mut root, mut v): (LPooled<Vec<Name>>, LPooled<Vec<ArcStr>>)| {
                 let terminal_is_value =
                     v.last().and_then(|s| s.chars().next()).is_some_and(is_value_initial);
                 if !terminal_is_value {
                     return grow::because("expected a value name").left();
                 }
-                root.extend(v.drain(..));
-                value(ModPath(Path::from_iter(root.drain(..)))).right()
+                let path = root.drain(..).map(|n| n.name).chain(v.drain(..));
+                value(ModPath(Path::from_iter(path))).right()
             },
         ),
     ))
@@ -968,22 +1072,6 @@ where
 }
 
 /// A seq statement: an expression, or `until e`, with what stands above it.
-// CR claude for claude: [structure/low] This duplicates expr(): expr() already reads
-// the leading decorations, has until_expr among its choices, and decorates and ends the
-// result. Use `expr()` directly in seq_stmts and delete this function. Also drop
-// graphix-compiler/tests/expr_spans.rs's `Until` special case, whose comment ("no
-// expression parse reads" until) is false: `[until x, 2]` parses. Found by reading; the
-// expression form of `until` was checked with graphix fmt. (t-parser-a-07)
-fn seq_body_item<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (leading_decorations(), choice((until_expr(), expr())), position())
-        .map(|(dec, e, end): (Leading, Expr, _)| decorate(e.ending(end), dec))
-}
-
 /// A brace-delimited seq statement list (the body of `seq`, `try`
 /// and `with`). Empty positions come back as `NoOp`.
 fn seq_stmts<I>() -> impl Parser<I, Output = LPooled<Vec<Expr>>>
@@ -995,7 +1083,7 @@ where
     between(
         sptoken('{'),
         sptoken('}'),
-        sep_by1_tok_exp(seq_body_item(), semisep(), token('}'), |pos| {
+        sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
             ExprKind::NoOp.to_expr(pos).ending(pos)
         }),
     )
@@ -1207,10 +1295,12 @@ where
                 Some(v) => v,
                 // routine: a block's first statement may begin with a keyword
                 None if is_reserved_binding(&name) => {
-                    return grow::because(
-                        "a reserved word field needs the explicit `name: value` form",
-                    )
-                    .left();
+                    const WHY: &str =
+                        "a reserved word field needs the explicit `name: value` form";
+                    let span = Some(name.chars().count());
+                    grow::note_reason(pos, span, CompactString::const_new(WHY));
+                    grow::note_furthest(pos);
+                    return grow::because(WHY).left();
                 }
                 None => {
                     let name = ModPath::from([name.clone()]);
@@ -1306,7 +1396,7 @@ where
         }
     }
     choice((
-        // CR claude for claude: [bug/low] When this attempt fails after the struct's
+        // XCR claude for claude: [bug/low] When this attempt fails after the struct's
         // first field, the error is reported at the end of the previous field value, as
         // "the parser could not continue past this point" with no note: `{ a: 2, b c }`
         // and `{ a: 2, type }` both point at the `,` before the bad field. The furthest
@@ -1317,6 +1407,14 @@ where
         // cases to parser/test.rs separator_notes_only_where_an_item_follows. probe:
         // design/review-2026-10-19/repro/tests-parser-struct-literal-diagnostics.sh
         // (tests-parser-02)
+        // 2026-10-19 claude: separator() now also records the furthest point where it
+        // notes a missing separator, and struct_fields notes the reserved shorthand
+        // with a span over the word (not grow::refuse, whose spanless note would
+        // explain any later failure on the line of a block whose first statement starts
+        // with a keyword) and records the furthest point there. Test: parser/test.rs
+        // separator_notes_only_where_an_item_follows ({ a: 2, b c } at column 19 with
+        // the separator note, { a: 2, type } at 17 with the field note; a block failing
+        // later on the line gets no reserved-word note).
         attempt(structure()),
         (
             position(),
@@ -1404,7 +1502,7 @@ where
         expr(),
         sptoken(')'),
     )
-        .map(|(pos, name, arg, _)| {
+        .map(|(pos, (name, _), arg, _)| {
             ExprKind::Construct { name, arg: Arc::new(arg) }.to_expr(pos)
         })
 }
@@ -1462,23 +1560,8 @@ where
             sptoken(')'),
             (
                 spaces().with(choice((
-                    attempt(
-                        (position(), token('_'))
-                            // CR claude for claude: [bug/medium] `with(_ : T)` is
-                            // refused: when a space follows `_`, `sptoken(')')`
-                            // consumes it and then fails at `:`. That is a committed
-                            // error, so `sptoken(':')` is never tried, and `name()`
-                            // cannot read `_`. `with(e : T)` and `with(_: T)` parse.
-                            // Fix: `attempt((position(),
-                            // token('_').skip(not_prefix())))` and let the following
-                            // parsers read `:`/`)`. Note too that `catch(_)` is refused
-                            // (catch_stmt's `spname()`). If it should be legal, give
-                            // both handler binders this one parser. probe:
-                            // design/review-2026-10-19/repro/t-parser-a-try-with-underscore-space.gx
-                            // (t-parser-a-02)
-                            .skip(look_ahead(choice((sptoken(')'), sptoken(':'))))),
-                    )
-                    .map(|(pos, _)| Name::written(literal!("_"), pos)),
+                    attempt((position(), token('_').skip(not_prefix())))
+                        .map(|(pos, _)| Name::written(literal!("_"), pos)),
                     name(),
                 ))),
                 spaces().with(optional(token(':').with(typ()))),
@@ -1541,6 +1624,7 @@ parser! {
 macro_rules! parse_all {
     ($text:expr, $ori:expr, $p:expr) => {{
         let text: &str = $text;
+        let text = text.strip_prefix(BOM).unwrap_or(text);
         let _profile = profile::phase(Phase::Parse);
         let quick = grow::parsing(text, || {
             ($p).skip(spaces())
@@ -1589,24 +1673,20 @@ where
     })
 }
 
-/// The length of the `#!` line a program text may start with, its
-/// newline excluded; 0 when there is none. Every reader of a program
-/// skips it.
-// CR claude for claude: [bug/medium] A UTF-8 byte-order mark (U+FEFF) at the start of a
-// .gx or .gxi file is a parse error at 1:1 that prints the invisible character
-// ("Unexpected `﻿`"). Every reader skips the `#!` line through this function, but
-// nothing skips a BOM, and Windows editors write one. Fix: count a leading U+FEFF here
-// too, so every reader skips it; or refuse it with a note that names it. probe:
-// design/review-2026-10-19/repro/t-parser-a-bom.sh Also reported as (x-formatter-05).
-// (t-parser-a-03)
+/// The byte-order mark every parse skips.
+const BOM: char = '\u{feff}';
+
+/// The length of the byte-order mark and then the `#!` line a program
+/// text may start with, the line's newline excluded; 0 when there is
+/// neither. Every reader of a program skips them.
 pub fn shebang_len(text: &str) -> usize {
-    match text.starts_with("#!") {
-        true => text.find('\n').unwrap_or(text.len()),
-        false => 0,
-    }
+    let bom = if text.starts_with(BOM) { BOM.len_utf8() } else { 0 };
+    let rest = &text[bom..];
+    bom + if rest.starts_with("#!") { rest.find('\n').unwrap_or(rest.len()) } else { 0 }
 }
 
-/// `text` without its `#!` line, its newline kept so lines number alike.
+/// `text` without its byte-order mark and `#!` line, the newline kept so
+/// lines number alike.
 pub fn without_shebang(text: &ArcStr) -> ArcStr {
     match shebang_len(text) {
         0 => text.clone(),

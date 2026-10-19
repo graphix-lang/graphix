@@ -139,7 +139,7 @@ impl SourceKind {
 /// `items` with each run of adjacent use statements rewritten as one
 /// statement per path root and visibility, statements and names sorted.
 /// `as_use` is `None` for anything else, a decorated use included.
-// CR claude for claude: [bug/medium] merge_uses is not a fixpoint. When a use that
+// XCR claude for claude: [bug/medium] merge_uses is not a fixpoint. When a use that
 // depends on the run ends it, the next run starts with that use, and sorting can move a
 // later independent use ahead of it. In the output that use sits next to the previous
 // run, so the reparse merges and sorts the two, and the guard refuses the file as a
@@ -148,6 +148,13 @@ impl SourceKind {
 // order. Fix: iterate the merge to a fixpoint, or offer each independent use after a
 // break to the previous run first. Pin both programs with `stable`. probe:
 // design/review-2026-10-19/repro/x-formatter-use-merge-not-fixpoint.sh (x-formatter-01)
+// 2026-10-19 claude: merge_uses now puts each use in the group after the last group it
+// depends on (one flat run vector tagged by group, sorted by group then root), so every
+// group depends on the one before it and a reparse breaks where the merge did. This
+// moves an independent later use into an earlier group: use z::x as a; use a::v; use
+// b::c now formats b::c first. Tests: format.rs uses_merge_at_every_level (use x::p;
+// use p::q; use a::b and use m::v; use n::v; use a::w through formats_to, which checks
+// stable).
 fn merge_uses<T: Clone>(
     items: &[T],
     as_use: impl Fn(&T) -> Option<(bool, &Arc<[UseItem]>)>,
@@ -169,32 +176,32 @@ fn merge_uses<T: Clone>(
             r => r,
         }
     }
-    /// Would `names`, merged after `run`, read or shadow what `run` binds,
-    /// or bind what `run` reads? The sort could reorder them. A glob binds
-    /// names unknown here, so it merges with nothing.
-    fn depends(run: &[(bool, UseItem)], names: &[UseItem]) -> bool {
-        names.iter().any(|n| {
-            run.iter().any(|(_, m)| {
-                if m.is_glob() || n.is_glob() {
-                    return true;
-                }
-                let same = m.path == n.path && m.rename == n.rename;
-                binds(m) == reads(n)
-                    || binds(n) == reads(m)
-                    || (binds(m) == binds(n) && !same)
-            })
-        })
+    /// Would `m` and `n` sorted into one statement read or shadow what
+    /// the other binds? A glob binds names unknown here, so it merges
+    /// with nothing.
+    fn depends(m: &UseItem, n: &UseItem) -> bool {
+        if m.is_glob() || n.is_glob() {
+            return true;
+        }
+        let same = m.path == n.path && m.rename == n.rename;
+        binds(m) == reads(n) || binds(n) == reads(m) || (binds(m) == binds(n) && !same)
     }
     let mut merged: LPooled<Vec<T>> = LPooled::take();
-    let mut run: LPooled<Vec<(bool, UseItem)>> = LPooled::take();
+    // (group, reexport, name) of each name in the run of adjacent uses
+    let mut run: LPooled<Vec<(usize, bool, UseItem)>> = LPooled::take();
     let mut i = 0;
     while i < items.len() {
         let first = &items[i];
         while let Some((reexport, names)) = items.get(i).and_then(&as_use) {
-            if !run.is_empty() && depends(&run, names) {
-                break;
-            }
-            run.extend(names.iter().map(|n| (reexport, n.clone())));
+            // the group after the last one it depends on: every group
+            // depends on the one before it, so a reparse groups alike
+            let group = run
+                .iter()
+                .filter(|(_, _, m)| names.iter().any(|n| depends(m, n)))
+                .map(|(g, _, _)| g + 1)
+                .max()
+                .unwrap_or(0);
+            run.extend(names.iter().map(|n| (group, reexport, n.clone())));
             i += 1;
         }
         if run.is_empty() {
@@ -202,12 +209,19 @@ fn merge_uses<T: Clone>(
             i += 1;
             continue;
         }
-        run.sort_by(|(ra, a), (rb, b)| {
-            root(a).cmp(&root(b)).then(ra.cmp(rb)).then_with(|| cmp_use_items(a, b))
+        run.sort_by(|(ga, ra, a), (gb, rb, b)| {
+            ga.cmp(gb)
+                .then_with(|| root(a).cmp(&root(b)))
+                .then(ra.cmp(rb))
+                .then_with(|| cmp_use_items(a, b))
         });
-        for stmt in run.chunk_by(|(ra, a), (rb, b)| ra == rb && root(a) == root(b)) {
-            let names = UseItem::sorted(stmt.iter().map(|(_, n)| n.clone()));
-            merged.push(mk(first, stmt[0].0, names))
+        let same_stmt = |(ga, ra, a): &(usize, bool, UseItem),
+                         (gb, rb, b): &(usize, bool, UseItem)| {
+            ga == gb && ra == rb && root(a) == root(b)
+        };
+        for stmt in run.chunk_by(same_stmt) {
+            let names = UseItem::sorted(stmt.iter().map(|(_, _, n)| n.clone()));
+            merged.push(mk(first, stmt[0].1, names))
         }
         run.clear()
     }
@@ -250,11 +264,15 @@ fn merge_trait_uses(t: &TraitExpr) -> Arc<TraitExpr> {
     })
 }
 
-fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
+/// `exprs` with their use runs merged; `value`, a block's last statement,
+/// stays out of them, since a block holds two statements or more.
+fn merge_expr_uses(exprs: &[Expr], value: Option<&Expr>) -> Arc<[Expr]> {
     merge_uses(
         exprs,
         |e| match &e.kind {
-            ExprKind::Use { reexport, names } if e.dec.is_none() => {
+            ExprKind::Use { reexport, names }
+                if e.dec.is_none() && !value.is_some_and(|v| std::ptr::eq(v, e)) =>
+            {
                 Some((*reexport, names))
             }
             _ => None,
@@ -268,21 +286,14 @@ fn merge_uses_within(e: &Expr) -> Expr {
     use ExprKind::*;
     let e = ensure_sufficient(|| e.map_children(&mut merge_uses_within));
     let kind = match &e.kind {
-        // CR claude for claude: [bug/low] Merging a block whose statements are all uses
-        // leaves one statement: `{ use array::len; use array::map }` prints as `{ use
-        // array::{len, map} }`, which does not parse, so guard refuses with "formatter
-        // bug" on text that parses (the LSP returns it as an error response). Keep a
-        // block's last statement, its value slot, out of the merge so a block never
-        // drops below two statements, and pin it with formats_to. probe:
-        // design/review-2026-10-19/repro/t-format-resolver-merge-empties-block.gx
-        // (t-format-resolver-02)
-        Block { exprs } => Block { exprs: merge_expr_uses(exprs) },
-        Seq(s) => {
-            Seq(Arc::new(SeqExpr { body: merge_expr_uses(&s.body), ..(**s).clone() }))
-        }
+        Block { exprs } => Block { exprs: merge_expr_uses(exprs, exprs.last()) },
+        Seq(s) => Seq(Arc::new(SeqExpr {
+            body: merge_expr_uses(&s.body, None),
+            ..(**s).clone()
+        })),
         TryWith(t) => TryWith(Arc::new(TryWithExpr {
-            body: merge_expr_uses(&t.body),
-            handler: merge_expr_uses(&t.handler),
+            body: merge_expr_uses(&t.body, None),
+            handler: merge_expr_uses(&t.handler, None),
             ..(**t).clone()
         })),
         Module { name, value }
@@ -315,7 +326,7 @@ impl Parsed {
                 let exprs = parse(ori)?;
                 let exprs: LPooled<Vec<Expr>> =
                     exprs.iter().map(merge_uses_within).collect();
-                Self::Program(merge_expr_uses(&exprs))
+                Self::Program(merge_expr_uses(&exprs, None))
             }
             SourceKind::Interface => Self::Interface(merge_sig_uses(&parse_sig(ori)?)),
         })
@@ -541,12 +552,6 @@ pub fn format_source(
 
 /// Refused unless `out` reads back as what `parsed` said, comments,
 /// attributes and string delimiters included.
-// CR claude for claude: [test-gap/low] No test expects this to refuse. The only direct
-// call expects Ok, and `stable` passes a consistent loss. A body of `Ok(())`, or
-// Ornaments::expr losing its Select or Trait arm, would pass the whole suite. Add tests
-// that hand this a Parsed and an edited `out` for each branch (a comment moved to a
-// neighbour, a raw string pattern printed quoted, a changed constant, unparseable text)
-// and assert the error is Refused. Found by reading; not run. (t-format-resolver-04)
 fn guard(kind: SourceKind, parsed: &Parsed, out: &str) -> Result<()> {
     let reparsed = match Parsed::new(kind, out) {
         Ok(p) => p,
@@ -641,6 +646,22 @@ mod tests {
         stable(SourceKind::Program, "seq let v = *r { v + 1 }");
         stable(SourceKind::Program, "seq let c = { a: go, b: 2 } { c.a }");
         stable(SourceKind::Program, "seqq let v = flush(go) { v }");
+        // the source a postfix chain starts from takes the parentheses
+        formats_to(
+            SourceKind::Program,
+            "seqq (flush)(1) { 1; 2 }",
+            "seqq (flush)(1) { 1; 2 }\n",
+        );
+        formats_to(
+            SourceKind::Program,
+            "seq ({a: 1}).a { 1; 2 }",
+            "seq ({ a: 1 }).a { 1; 2 }\n",
+        );
+        formats_to(
+            SourceKind::Program,
+            "seq ({s with a: 2}).a + 1 { 1; 2 }",
+            "seq ({ s with a: 2 }).a + 1 { 1; 2 }\n",
+        );
     }
 
     #[test]
@@ -669,6 +690,41 @@ mod tests {
     fn formats_to(kind: SourceKind, src: &str, want: &str) {
         assert_eq!(&**format_source(kind, src, &FormatConfig::default()).unwrap(), want);
         stable(kind, src)
+    }
+
+    /// The guard refuses `out` as the formatting of `src`, saying `why`.
+    fn refused(kind: SourceKind, src: &str, out: &str, why: &str) {
+        let e = guard(kind, &Parsed::new(kind, src).unwrap(), out).unwrap_err();
+        assert!(e.downcast_ref::<Refused>().is_some(), "{e:#}");
+        assert!(e.to_string().contains(why), "{e}");
+    }
+
+    #[test]
+    fn the_guard_refuses_text_that_says_something_else() {
+        use SourceKind::*;
+        refused(Program, "let x = 1; x", "let x = 1; x +", "does not parse");
+        refused(Program, "let x = 1; x", "let x = 2; x", "says something else");
+        refused(Interface, "val x: i64", "val x: string", "says something else");
+        refused(Program, "// c\nlet x = 1;\nx", "let x = 1;\n// c\nx", "comment");
+        refused(
+            Interface,
+            "// c\nval x: i64;\nval y: i64",
+            "val x: i64;\n// c\nval y: i64",
+            "comment",
+        );
+        refused(
+            Program,
+            "trait T {\n// c\nval m: fn(self) -> i64;\nval n: fn(self) -> i64 }",
+            "trait T {\nval m: fn(self) -> i64;\n// c\nval n: fn(self) -> i64 }",
+            "comment",
+        );
+        refused(
+            Program,
+            "select s { r\"a\" => 1, _ => 0 }",
+            "select s { \"a\" => 1, _ => 0 }",
+            "delimiters",
+        );
+        refused(Program, "f(r\"a\")", "f(\"a\")", "delimiters");
     }
 
     #[test]
@@ -717,17 +773,34 @@ mod tests {
             "use b::x;\n\n// why\nuse a::x\n",
         );
         formats_to(Program, "{ use b::x; use a::y; y }", "{ use a::y; use b::x; y }\n");
+        // a block's value is never merged away
+        formats_to(
+            Program,
+            "{ use array::len; use array::map }",
+            "{ use array::len; use array::map }\n",
+        );
+        // a use that depends on no earlier group joins the first one
+        formats_to(
+            Program,
+            "use x::p; use p::q; use a::b; q + b",
+            "use a::b;\nuse x::p;\nuse p::q;\nq + b\n",
+        );
+        formats_to(
+            Program,
+            "use m::v; use n::v; use a::w; v",
+            "use a::w;\nuse m::v;\nuse n::v;\nv\n",
+        );
         // a statement reading or shadowing what an earlier one bound
         // closes the run: those stay in order
         formats_to(
             Program,
             "use z::x as a; use a::v; use b::c; use q::*; use r::s; use r::t; v",
-            "use z::x as a;\nuse a::v;\nuse b::c;\nuse q::*;\nuse r::{s, t};\nv\n",
+            "use b::c;\nuse z::x as a;\nuse a::v;\nuse q::*;\nuse r::{s, t};\nv\n",
         );
         formats_to(
             Program,
             "use b::v; use a::v; use c::w; v",
-            "use b::v;\nuse a::v;\nuse c::w;\nv\n",
+            "use b::v;\nuse c::w;\nuse a::v;\nv\n",
         );
         formats_to(
             Interface,
@@ -749,7 +822,7 @@ mod tests {
         formats_to(SourceKind::Program, src, want);
         formats_to(
             SourceKind::Interface,
-            "type T = i64; /// the v\nval v: T; val w: T",
+            "type T = i64;\n/// the v\nval v: T; val w: T",
             "type T = i64;\n\n/// the v\nval v: T;\n\nval w: T\n",
         );
     }
@@ -1061,6 +1134,13 @@ mod tests {
             Program,
             "#!/usr/bin/env graphix\r\nlet x =   1;\r\nx\r\n",
             "#!/usr/bin/env graphix\r\nlet x = 1;\r\nx\r\n",
+        );
+        formats_to(Program, "\u{feff}let x =   1;\nx\n", "\u{feff}let x = 1;\nx\n");
+        formats_to(Interface, "\u{feff}val x:  i64", "\u{feff}val x: i64\n");
+        formats_to(
+            Program,
+            "\u{feff}#!/usr/bin/env graphix\nlet x =   1;\nx\n",
+            "\u{feff}#!/usr/bin/env graphix\nlet x = 1;\nx\n",
         );
         let e = format_source(
             Program,

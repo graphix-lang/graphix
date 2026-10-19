@@ -135,10 +135,9 @@ impl Pack for Expr {
 /// unit's.
 impl Pack for SigItem {
     fn encoded_len(&self) -> usize {
-        let ori = match (image::is_encoding(), &self.ori) {
-            (false, _) => 0,
-            (true, None) => 1,
-            (true, Some(ori)) => 1 + image::origin_len(ori),
+        let ori = match image::is_encoding() {
+            false => 0,
+            true => image::origin_len(&self.ori),
         };
         self.comments.encoded_len()
             + self.doc.encoded_len()
@@ -155,13 +154,7 @@ impl Pack for SigItem {
         <i32 as Pack>::encode(&self.pos.line, buf)?;
         <i32 as Pack>::encode(&self.pos.column, buf)?;
         if image::is_encoding() {
-            match &self.ori {
-                None => buf.put_u8(0),
-                Some(ori) => {
-                    buf.put_u8(1);
-                    image::origin_encode(ori, buf)?
-                }
-            }
+            image::origin_encode(&self.ori, buf)?
         }
         Ok(())
     }
@@ -173,17 +166,8 @@ impl Pack for SigItem {
         let line = <i32 as Pack>::decode(buf)?;
         let column = <i32 as Pack>::decode(buf)?;
         let ori = match image::is_decoding() {
-            false => Some(get_origin()),
-            true => {
-                if !buf.has_remaining() {
-                    return Err(PackError::BufferShort);
-                }
-                match buf.get_u8() {
-                    0 => None,
-                    1 => Some(image::origin_decode(buf)?),
-                    _ => return Err(PackError::UnknownTag),
-                }
-            }
+            false => get_origin(),
+            true => image::origin_decode(buf)?,
         };
         Ok(SigItem { comments, doc, kind, pos: SourcePosition { line, column }, ori })
     }

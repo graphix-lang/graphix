@@ -1782,6 +1782,25 @@ impl Type {
     /// A `'static` ⊥ for a node whose type is bottom: with drop glue,
     /// `&Type::Bottom` is not promoted.
     pub const BOTTOM: &'static Type = &Type::Bottom;
+
+    /// The type of a literal value, in an expression or a pattern: its
+    /// primitive, or for `error:<v>` the error of its payload's type. A
+    /// literal no type names (`abstract:..`, a collection) is refused.
+    pub fn of_literal(v: &netidx_value::Value) -> Result<Type> {
+        use netidx_value::Value;
+        ensure_sufficient(|| match v {
+            Value::Error(p) => Ok(Type::Error(Arc::new(Type::of_literal(p)?))),
+            Value::Abstract(_) => {
+                bail!(
+                    "an abstract value literal has no type: build it with its constructor"
+                )
+            }
+            Value::Array(_) | Value::Map(_) => {
+                bail!("a collection value literal has no type: write it as an expression")
+            }
+            v => Ok(Type::Primitive(Typ::get(v).into())),
+        })
+    }
 }
 
 /// Field drop glue runs after `drop` returns and cannot be guarded, so

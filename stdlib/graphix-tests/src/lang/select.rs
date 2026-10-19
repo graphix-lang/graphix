@@ -4181,3 +4181,13 @@ run!(null_literal_pools_beside_variants, r#"{
   let g = |x: ([`A, null], i64)| select x { (`A, n) => n, (null, n) => 0 };
   [f(`P(`A)), f(`P(null)), g((`A, 5)), g((null, 2))]
 }"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0, i64:5, i64:0]"); FuseExpect::None);
+// A literal pattern is typed as the same literal in an expression is.
+run!(an_error_literal_pattern_is_typed_by_its_payload, r#"{
+  let r: [i64, Error<string>] = error("x");
+  select r { error:1 => 1, _ => 2 }
+}"#, refused("will never match"); FuseExpect::None);
+
+run!(an_abstract_literal_pattern_is_refused, r#"{
+  let x: Any = 1;
+  select x { abstract:EgABAgMEBQYHCAkKCwwNDg8BAg== => 1, _ => 2 }
+}"#, refused("an abstract value literal has no type"); FuseExpect::None);

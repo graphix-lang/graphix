@@ -50,7 +50,7 @@ parser! {
                 doc,
                 kind,
                 pos,
-                ori: Some(get_origin()),
+                ori: get_origin(),
             }))
     }
 }
@@ -79,15 +79,15 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((
-        spstring("unrestricted").map(|_| Sandbox::Unrestricted),
-        spstring("blacklist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
+    spaces().with(choice((
+        string("unrestricted").map(|_| Sandbox::Unrestricted),
+        string("blacklist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
             Sandbox::Blacklist(Arc::from_iter(l.drain(..)))
         }),
-        spstring("whitelist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
+        string("whitelist").with(paths()).map(|mut l: LPooled<Vec<ModPath>>| {
             Sandbox::Whitelist(Arc::from_iter(l.drain(..)))
         }),
-    ))
+    )))
 }
 
 /// `[a::b, c]`: a sandbox's module paths.
@@ -211,18 +211,9 @@ parser! {
             paths.push((path, rename));
             paths
         };
-        // CR claude for claude: [bug/medium] Every arm of this choice starts with
-        // spaces(), and use_intro consumes only one space(). After `use` followed by
-        // two spaces, or by a newline and an indent, the first arm's sptoken('{')
-        // consumes the whitespace and fails committed, so the path arm is never tried:
-        // `use\n array::map;` fails with "Expected whitespace or `{`". sandbox() has
-        // the same shape (`sandbox whitelist [core]` fails). Fix: hoist spaces() in
-        // front of the choice in both places, with plain token/string arms. probe:
-        // design/review-2026-10-19/repro/t-parser-b-use-leading-space.sh
-        // (t-parser-b-02)
-        grow(choice((
+        grow(spaces().with(choice((
             between(
-                sptoken('{'),
+                token('{'),
                 sptoken('}'),
                 spaces().with(sep_by1_tok(use_tree(), csep(), token('}'))),
             )
@@ -233,11 +224,10 @@ parser! {
                 }
                 paths
             }),
-            spaces()
-                .with((position(), token('*')))
+            (position(), token('*'))
                 .map(move |(pos, _)| one(Some(Name::written(arcstr::literal!("*"), pos)), None)),
             (
-                spaces().with(use_segment()),
+                use_segment(),
                 optional(attempt(spstring("::").with(use_tree()))),
                 optional(attempt(
                     spaces1()
@@ -264,7 +254,7 @@ parser! {
                         }
                     }
                 }),
-        )))
+        ))))
     }
 }
 

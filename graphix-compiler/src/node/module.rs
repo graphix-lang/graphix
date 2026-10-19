@@ -204,7 +204,7 @@ fn bind_sig(
         }
     }
     for (i, si) in sig.items.iter().enumerate() {
-        let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+        let ori = si.ori.clone();
         bind_sig_item(env, pending, scope, i, si, &ori)
             .map_err(|e| e.context(ParserContext { ori, pos: si.pos }))?;
     }
@@ -511,7 +511,7 @@ fn check_trait_decl<R: Rt, E: UserEvent>(
     t: &crate::expr::TraitExpr,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
-    let ori = si.ori.clone().unwrap_or_default();
+    let ori = si.ori.clone();
     let tref = traits::trait_ref(scope, &t.name, si.pos, &ori);
     let method =
         |m: &crate::expr::TraitMethod| traits::method_sig(&ctx.env, &m.typ, &tref, scope);
@@ -671,7 +671,7 @@ fn check_sig_items<R: Rt, E: UserEvent>(
     }
     for si in sig.items.iter() {
         let at = |e: anyhow::Error| {
-            let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+            let ori = si.ori.clone();
             e.context(ParserContext { ori, pos: si.pos })
         };
         let missing = (|| -> Result<bool> { Ok(match &si.kind {
@@ -778,7 +778,7 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     for si in sig.items.iter() {
         let at = |e: anyhow::Error| {
-            let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+            let ori = si.ori.clone();
             e.context(ParserContext { ori, pos: si.pos })
         };
         let missing = || at(anyhow!("sig item {si} is missing an implementation"));
@@ -817,7 +817,7 @@ pub fn check_script_sig<R: Rt, E: UserEvent>(
                         scope: scope.clone(),
                         name: name.name.as_str().into(),
                         pos: name.pos_or(si.pos),
-                        ori: si.ori.clone().unwrap_or_default(),
+                        ori: si.ori.clone(),
                         facet: None,
                     };
                     let link = SigImplLink {
@@ -1073,8 +1073,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         text: ArcStr,
     ) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
-        let exprs =
-            add_interface_modules(parser::parse((*ori).clone())?, &self.sig, &ori);
+        let exprs = add_interface_modules(parser::parse((*ori).clone())?, &self.sig);
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);

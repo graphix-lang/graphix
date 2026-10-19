@@ -601,14 +601,8 @@ fn needs_no_value(kind: &SigKind) -> bool {
 }
 
 /// `exprs` with the modules, types, traits and uses only `sig` declares
-/// spliced in, keeping their relative location and order; a declaration
-/// without an origin of its own (a packed interface's) takes `ori`, the
-/// interface's.
-pub fn add_interface_modules(
-    exprs: Arc<[Expr]>,
-    sig: &Sig,
-    ori: &Arc<Origin>,
-) -> Arc<[Expr]> {
+/// spliced in, keeping their relative location and order.
+pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let synth = |si: &SigItem| {
         let kind = match &si.kind {
             SigKind::Module(name) => ExprKind::Module {
@@ -624,7 +618,7 @@ pub fn add_interface_modules(
         };
         Some(Expr {
             id: ExprId::new(),
-            ori: si.ori.as_ref().unwrap_or(ori).clone(),
+            ori: si.ori.clone(),
             pos: si.pos,
             kind,
             dec: None,
@@ -723,8 +717,7 @@ async fn parse_module(
     let sig = match interface {
         None => None,
         Some(unit) => {
-            let ori = Arc::new(unit.ori.clone());
-            let sig_ori = ori.clone();
+            let sig_ori = Arc::new(unit.ori.clone());
             let sig = match unit.packed.clone().filter(|_| !packed_ast_disabled()) {
                 Some(bytes) => {
                     task::spawn_blocking(move || serialize::unpack_sig(&bytes, sig_ori))
@@ -735,15 +728,15 @@ async fn parse_module(
             }
             .await?
             .with_context(|| naming(&unit.ori))?;
-            Some((sig, ori))
+            Some(sig)
         }
     };
     let exprs = exprs.await?.with_context(|| naming(&implementation.ori))?;
     let exprs = match &sig {
-        Some((sig, ori)) => add_interface_modules(exprs, sig, ori),
+        Some(sig) => add_interface_modules(exprs, sig),
         None => exprs,
     };
-    Ok((exprs, sig.map(|(sig, _)| sig)))
+    Ok((exprs, sig))
 }
 
 /// A root source file: a program, or a package's `mod.gx`.

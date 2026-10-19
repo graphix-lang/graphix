@@ -14,8 +14,8 @@ use std::{
 };
 
 /// Default [`max_nesting`]. Counted in parser recursion knots and the
-/// levels an operator fold adds, not source constructs: one level of
-/// `(1 + …)` costs four.
+/// levels an iterative fold adds under them, not source constructs: one
+/// level of `(1 + …)` costs four, three knots and its operator's fold.
 pub const DEFAULT_MAX_NESTING: usize = 1000;
 
 static MAX_NESTING: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_NESTING);
@@ -165,7 +165,8 @@ pub(super) fn note_error_pos(pos: SourcePosition) {
     ERROR_POS.with(|p| p.set(Some(pos)))
 }
 
-fn note_furthest(pos: SourcePosition) {
+/// Record that the parse reached `pos`, for the report of a failure.
+pub(super) fn note_furthest(pos: SourcePosition) {
     FURTHEST.with(|f| {
         if f.get().is_none_or(|p| key(p) < key(pos)) {
             f.set(Some(pos))

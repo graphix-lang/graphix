@@ -506,6 +506,14 @@ fn typexp() -> impl Strategy<Value = Type> {
             )
                 .prop_map(|(mut args, vargs, rtype, constraints, throws)| {
                     args.sort_by(|(k0, _, _, _), (k1, _, _, _)| k1.cmp(k0));
+                    // a fn type names each argument once
+                    let mut names: Vec<ArcStr> = vec![];
+                    args.retain(|(label, pos_name, _, _)| {
+                        let n = label.as_ref().unwrap_or(pos_name);
+                        let fresh = !names.contains(n);
+                        names.push(n.clone());
+                        fresh
+                    });
                     let args =
                         args.into_iter().map(|(label, pos_name, optional, typ)| {
                             let kind = match label {
@@ -743,7 +751,9 @@ fn typedef() -> impl Strategy<Value = Expr> {
 /// A trait method signature: `fn(self, x: T, ..) -> R`.
 fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
     (collection::vec((random_fname(), typexp()), 0..3), typexp()).prop_map(
-        |(args, rtype)| {
+        |(mut args, rtype)| {
+            args.sort_by(|(a, _), (b, _)| a.cmp(b));
+            args.dedup_by(|(a, _), (b, _)| a == b);
             let recv = FnArgType {
                 kind: FnArgKind::Positional { name: Some(ArcStr::from("self")) },
                 typ: Type::TVar(TVar::empty_named(ArcStr::from("self"))),
@@ -1279,7 +1289,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                     comments: Comments::default(),
                     doc: Doc(doc),
                     pos: Default::default(),
-                    ori: None,
+                    ori: Arc::new(Origin::default()),
                 }
             }
         ),
@@ -1290,7 +1300,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                     comments: Comments::default(),
                     doc: Doc(doc),
                     pos: Default::default(),
-                    ori: None,
+                    ori: Arc::new(Origin::default()),
                 },
                 _ => unreachable!(),
             }
@@ -1301,7 +1311,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                 comments: Comments::default(),
                 doc: Doc(doc),
                 pos: Default::default(),
-                ori: None,
+                ori: Arc::new(Origin::default()),
             }
         ),
         (random_fname(), option::of(doc_text())).prop_map(|(name, doc)| SigItem {
@@ -1309,7 +1319,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
             comments: Comments::default(),
             doc: Doc(doc),
             pos: Default::default(),
-            ori: None,
+            ori: Arc::new(Origin::default()),
         }),
         (trait_decl!(constant(), option::of(doc_text())), option::of(doc_text()))
             .prop_map(|(mut t, doc)| {
@@ -1319,7 +1329,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                         comments: Comments::default(),
                         doc: Doc(doc),
                         pos: Default::default(),
-                        ori: None,
+                        ori: Arc::new(Origin::default()),
                     },
                     _ => unreachable!(),
                 }
@@ -1334,7 +1344,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                     comments: Comments::default(),
                     doc: Doc(doc),
                     pos: Default::default(),
-                    ori: None,
+                    ori: Arc::new(Origin::default()),
                 },
                 _ => unreachable!(),
             }
@@ -2705,7 +2715,7 @@ fn an_interface_module_has_the_interface_origin() {
     let ori = Arc::new(intf("mod sub"));
     let sig =
         serialize::unpack_sig(&serialize::pack_sig(&sig).unwrap(), ori.clone()).unwrap();
-    let exprs = resolver::add_interface_modules(Arc::from_iter([]), &sig, &ori);
+    let exprs = resolver::add_interface_modules(Arc::from_iter([]), &sig);
     assert!(matches!(exprs[0].kind, ExprKind::Module { .. }), "{exprs:?}");
     assert!(Arc::ptr_eq(&exprs[0].ori, &ori));
 }

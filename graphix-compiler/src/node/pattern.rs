@@ -845,8 +845,7 @@ impl StructPatternNode {
             }
             StructurePattern::Ignore => Self::Ignore,
             StructurePattern::Literal(v, _) => {
-                type_predicate
-                    .check_contains(&ctx.env, &Type::Primitive(Typ::get(v).into()))?;
+                type_predicate.check_contains(&ctx.env, &Type::of_literal(v)?)?;
                 Self::Literal(v.clone())
             }
             StructurePattern::Bind(name) => {

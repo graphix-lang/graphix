@@ -31,10 +31,10 @@ use crate::{
     typ::{TVar, Type},
 };
 use ahash::AHashMap;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx_value::{Typ, Value};
+use netidx_value::Value;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
@@ -374,22 +374,6 @@ fn not_an_expression<R: Rt, E: UserEvent>(spec: &Expr, what: &str) -> Result<Nod
     )
 }
 
-/// The type of a literal value: its primitive, or for `error:<v>` the
-/// error of its payload's type. A literal no type names (`abstract:..`)
-/// is refused.
-fn constant_type(v: &Value) -> Result<Type> {
-    ensure_sufficient(|| match v {
-        Value::Error(p) => Ok(Type::Error(Arc::new(constant_type(p)?))),
-        Value::Abstract(_) => {
-            bail!("an abstract value literal has no type: build it with its constructor")
-        }
-        Value::Array(_) | Value::Map(_) => {
-            bail!("a collection value literal has no type: write it as an expression")
-        }
-        v => Ok(Type::Primitive(Typ::get(v).into())),
-    })
-}
-
 fn compile_kind<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -414,7 +398,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             top_id,
         ),
         ExprKind::Constant(v) => {
-            let typ = constant_type(v).at(spec)?;
+            let typ = Type::of_literal(v).at(spec)?;
             Ok(Constant::new(v.clone(), typ, spec.clone()))
         }
         ExprKind::Block { exprs } => {
