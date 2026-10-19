@@ -25,16 +25,9 @@ use std::{
 };
 use triomphe::Arc;
 
-/// The `let pattern[: type] = ` of a bound seq trigger; the value
-/// follows under the trigger's own parenthesization.
 /// A seq's head up to its body: keyword, `let`, trigger and clauses, the
 /// trigger written by `trigger` (told whether it needs parentheses) and
 /// each clause's expression, between parentheses, by `clause`.
-// CR claude for claude: [readability/low] The first two doc lines above this function
-// describe write_seq_let (`let pattern[: type] = ` of a bound trigger), not
-// write_seq_head. Rustdoc merges them into this function's doc, and write_seq_let has
-// none. Move them above write_seq_let. pretty_scrutinee's doc is likewise two stacked
-// docs: merge them. Found by reading; not run. (t-print-08)
 fn write_seq_head<W: Write>(
     w: &mut W,
     s: &SeqExpr,
@@ -87,6 +80,8 @@ fn pretty_seq_head(buf: &mut PrettyBuf, s: &SeqExpr) -> fmt::Result {
     )
 }
 
+/// The `let pattern[: type] = ` of a bound seq trigger; the value
+/// follows under the trigger's own parenthesization.
 fn write_seq_let(f: &mut impl Write, b: &BindExpr) -> fmt::Result {
     let rec = if b.rec { " rec" } else { "" };
     match &b.typ {
@@ -1768,9 +1763,9 @@ fn ends_bodyless(e: &Expr) -> bool {
     }
 }
 
-/// A select's scrutinee; one ending in a bodyless impl gets the impl's
-/// empty body, which the arms' `{` would otherwise be read as.
-/// `select` and its scrutinee, continuation lines nested under it.
+/// `select` and its scrutinee, continuation lines nested under it; a
+/// scrutinee ending in a bodyless impl gets the impl's empty body, which
+/// the arms' `{` would otherwise be read as.
 fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
     pretty_after(buf, "select", arg)?;
     buf.kill_newline();

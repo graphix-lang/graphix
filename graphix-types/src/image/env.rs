@@ -305,8 +305,8 @@ impl Pack for Env {
             + SharedMap((**trait_defs).clone()).encoded_len()
             + RelocatedMap((**trait_methods).clone()).encoded_len()
             + SharedMap((**impls).clone()).encoded_len()
-            + RelocatedSet((**poly_binds).clone()).encoded_len()
-            + SharedSet((**package_roots).clone()).encoded_len()
+            + RelocatedSet(poly_binds.to_set()).encoded_len()
+            + SharedSet(package_roots.to_set()).encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -335,8 +335,8 @@ impl Pack for Env {
         SharedMap((**trait_defs).clone()).encode(buf)?;
         RelocatedMap((**trait_methods).clone()).encode(buf)?;
         SharedMap((**impls).clone()).encode(buf)?;
-        RelocatedSet((**poly_binds).clone()).encode(buf)?;
-        SharedSet((**package_roots).clone()).encode(buf)
+        RelocatedSet(poly_binds.to_set()).encode(buf)?;
+        SharedSet(package_roots.to_set()).encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {

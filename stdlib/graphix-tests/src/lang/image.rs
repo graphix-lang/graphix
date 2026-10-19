@@ -56,7 +56,7 @@ async fn environment_round_trips() -> Result<()> {
     assert_eq!(env.by_id.len(), restored.by_id.len());
     assert_eq!(env.modules.len(), restored.modules.len());
     assert!(env.modules.into_iter().eq(restored.modules.into_iter()));
-    assert!(env.package_roots.into_iter().eq(restored.package_roots.into_iter()));
+    assert!(env.package_roots.iter().eq(restored.package_roots.iter()));
     assert_eq!(env.poly_binds.len(), restored.poly_binds.len());
     assert_eq!(env.trait_defs.len(), restored.trait_defs.len());
     assert_eq!(env.impls.len(), restored.impls.len());

@@ -106,14 +106,8 @@ pub struct ExprTypeSite {
     /// `None` for an expression the parser did not write.
     pub end: Option<SourcePosition>,
     pub typ: Type,
-    /// The node's own type is a cell its uses decided (a `let` over ⊥),
-    /// `typ` what the cell resolved to.
-    // CR claude for claude: [doc-drift/low] The doc says a let over ⊥, but
-    // `record_expr_types` sets this for any node whose type is a TVar, every call
-    // result included, and mustreject depends on that (`abstract_widen` exempts `Apply`
-    // for it). Reword it: the node's type is an inference cell (a let over ⊥, a call's
-    // result, ...), and `typ` is what it resolved to. Found by reading; not run.
-    // (fuzz-mutate-09)
+    /// The node's own type is an inference cell (a `let` over ⊥, a
+    /// call's result, ...), `typ` what it resolved to.
     pub cell: bool,
 }
 

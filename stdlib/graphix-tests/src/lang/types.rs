@@ -3301,3 +3301,10 @@ run!(instance_expands_caller_recursive_typedef, r#"{
     let a: T = [null];
     any(array::map([a], never<fn(x: T) -> i64>()), [7])
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(7)]); FuseExpect::Jit);
+
+// A declared variable beside a known member is named as the one that may
+// differ.
+run!(singleton_names_the_declared_variable, r#"{
+  let f = 'a: Number |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
+  f(1, true)
+}"#, refused("the declared variable 'a may differ from its other members"); FuseExpect::None);

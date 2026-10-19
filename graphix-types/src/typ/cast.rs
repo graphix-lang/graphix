@@ -3,7 +3,7 @@ use crate::{
     abstract_value::{self, CastHook},
     env::Env,
     errf,
-    expr::{ModPath, WrittenAt},
+    expr::ModPath,
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
@@ -1654,28 +1654,6 @@ fn rep_prims(t: &Type) -> BitFlags<Typ> {
     }
 }
 
-/// The array a value of `t` is, when it is one, by its kind.
-enum ArrView<'a> {
-    Array,
-    List,
-    Tuple(&'a [Type]),
-    Struct(&'a [(ArcStr, Type, WrittenAt)]),
-    Variant(&'a ArcStr, &'a [Type]),
-}
-
-impl<'a> ArrView<'a> {
-    fn of(t: &'a Type) -> Option<Self> {
-        Some(match t {
-            Type::Tuple(ts) => ArrView::Tuple(ts),
-            Type::Struct(fs) => ArrView::Struct(fs),
-            Type::Variant(tag, args, _) => ArrView::Variant(tag, args),
-            Type::Array(_) => ArrView::Array,
-            Type::List(_) => ArrView::List,
-            _ => return None,
-        })
-    }
-}
-
 /// The applications a walk has expanded, each once, and the path of
 /// applications it is inside, each with its parameters' size.
 struct Expanded<K: std::hash::Hash + Eq + 'static> {
@@ -1752,79 +1730,13 @@ fn ref_at(t: &Type) -> Option<At<Type>> {
     matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
 }
 
-// CR claude for claude: [dead/low] Only rep_collision's fallback calls this, with two
-// non-Ref heads its own arms did not take. So the walk never keys anything, the Set and
-// Error/Error branches are unreachable, and every ArrView pair that gets here fails its
-// length, name or tag test before `parts` recurses. What it decides is a primitive
-// against a head, two references, and two functions. Fix: make it a leaf match on those
-// three cases, delete arr_overlaps and ArrView, and drop the RepSeen argument. Found by
-// reading; not run. (t-cast-setops-10)
-fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
-    ensure_sufficient(|| {
-        walk(
-            seen,
-            pair_at(a, b),
-            false,
-            || true,
-            |seen| {
-                let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
-                    return true;
-                };
-                let (a, b) = (&*a, &*b);
-                match (a, b) {
-                    (Type::Bottom, _) | (_, Type::Bottom) => false,
-                    (Type::Set(ts), _) => {
-                        ts.iter().any(|t| rep_overlaps(env, seen, t, &b))
-                    }
-                    (_, Type::Set(ts)) => {
-                        ts.iter().any(|t| rep_overlaps(env, seen, &a, t))
-                    }
-                    (Type::Primitive(p), Type::Primitive(q)) => p.intersects(*q),
-                    (Type::Primitive(p), t) | (t, Type::Primitive(p)) => {
-                        p.intersects(rep_prims(t))
-                    }
-                    (Type::ByRef(..), Type::ByRef(..))
-                    | (Type::Fn(_), Type::Fn(_))
-                    | (Type::Map { .. }, Type::Map { .. }) => true,
-                    (Type::Error(x), Type::Error(y)) => rep_overlaps(env, seen, x, y),
-                    (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) => {
-                        x == y
-                    }
-                    (a, b) => match (ArrView::of(a), ArrView::of(b)) {
-                        (Some(x), Some(y)) => arr_overlaps(env, seen, x, y),
-                        _ => false,
-                    },
-                }
-            },
-        )
-    })
-}
-
-/// Whether values of the two array kinds can be one value: the same kind,
-/// and for a tuple, struct or variant the same arity (and names, and tag)
-/// with every part overlapping. Two arrays, or two lists, share the empty
-/// one.
-fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
-    use ArrView::*;
-    let mut parts = |x: &mut dyn Iterator<Item = (&Type, &Type)>| {
-        for (x, y) in x {
-            if !rep_overlaps(env, seen, x, y) {
-                return false;
-            }
-        }
-        true
-    };
+/// Whether two heads [`rep_collision`]'s own arms did not decide share a
+/// runtime form: a primitive and a head whose form holds it, two
+/// references, or two function types.
+fn rep_overlaps(a: &Type, b: &Type) -> bool {
     match (a, b) {
-        (Array, Array) | (List, List) => true,
-        (Tuple(x), Tuple(y)) => x.len() == y.len() && parts(&mut x.iter().zip(y.iter())),
-        (Struct(x), Struct(y)) => {
-            x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0)
-                && parts(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
-        }
-        (Variant(t, x), Variant(u, y)) => {
-            t == u && x.len() == y.len() && parts(&mut x.iter().zip(y.iter()))
-        }
+        (Type::Primitive(p), t) | (t, Type::Primitive(p)) => p.intersects(rep_prims(t)),
+        (Type::ByRef(..), Type::ByRef(..)) | (Type::Fn(_), Type::Fn(_)) => true,
         _ => false,
     }
 }
@@ -1925,8 +1837,7 @@ fn rep_collision(
                         None
                     }
                     (Type::Fn(x), Type::Fn(y)) if x == y => None,
-                    (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
-                        .then(|| (a.clone(), b.clone())),
+                    (a, b) => rep_overlaps(a, b).then(|| (a.clone(), b.clone())),
                 }
             },
         )

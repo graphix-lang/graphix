@@ -259,7 +259,7 @@ impl<'a> Completer<'a> {
                 let part = typed_path(&at.partial);
                 let modules = self.env.lookup_matching_modules(&self.scope, &part);
                 let modules = modules.iter().map(|m| m.to_string());
-                let roots = self.env.package_roots.into_iter().map(|r| r.to_string());
+                let roots = self.env.package_roots.iter().map(|r| r.to_string());
                 let mut names: Vec<String> = modules.chain(roots).collect();
                 names.sort();
                 names.dedup();

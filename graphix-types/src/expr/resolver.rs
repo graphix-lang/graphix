@@ -365,15 +365,8 @@ pub fn choose_layout<P: fmt::Display, T>(
     }
 }
 
-/// Where the submodules of the module at `path` (its implementation or
-/// its interface) live: `{stem}/` beside `{stem}.gx`, its own directory
-/// for `mod.gx`.
 /// [`submodule_base`] of a file, by path operations: any encoding, the
 /// platform's separators.
-// CR claude for claude: [readability/low] The first paragraph of this doc states the
-// rule and belongs on submodule_base below, which is public, used by the netidx loader,
-// and has no doc. Move it there and keep only the "of a file, by path operations"
-// sentence here. Found by reading; not run. (t-format-resolver-05)
 pub fn file_submodule_base(path: &std::path::Path) -> PathBuf {
     match path.file_stem() {
         Some(stem) if stem == "mod" => {
@@ -383,6 +376,9 @@ pub fn file_submodule_base(path: &std::path::Path) -> PathBuf {
     }
 }
 
+/// Where the submodules of the module at `path` (its implementation or
+/// its interface) live: `{stem}/` beside `{stem}.gx`, its own directory
+/// for `mod.gx`.
 pub fn submodule_base(path: &str) -> &str {
     let stem =
         path.strip_suffix(".gxi").or_else(|| path.strip_suffix(".gx")).unwrap_or(path);
