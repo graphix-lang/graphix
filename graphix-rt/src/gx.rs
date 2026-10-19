@@ -823,6 +823,12 @@ impl<X: GXExt> GX<X> {
                 // graphix-rt/tests/runtime_api.rs
                 // a_wrong_typed_set_is_refused_{jit,interp} and
                 // a_wrong_typed_set_deref_is_refused.
+                // 2026-10-19 claude: Consequence: an embedder that writes a value in
+                // its data form (a bare variant as its tag string, as
+                // stdlib/graphix-package-gui's data_table test did) is now refused,
+                // since the binding's runtime form is a marked variant; that test now
+                // writes rep::make_variant. Embedders outside this repo
+                // (netidx-admin's Rust layer) should be checked for such writes.
                 ToGX::Set { id, v } => {
                     if self.admits(id, &v) {
                         let mut one = SETS.take();
