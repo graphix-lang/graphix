@@ -3,7 +3,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use enumflags2::BitFlags;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, Stream, StreamExt, stream::SelectAll};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
     View, diagnostic_site,
@@ -30,11 +30,13 @@ use poolshark::{
 };
 use smallvec::{SmallVec, smallvec};
 use std::{
-    collections::VecDeque, future, mem, panic::AssertUnwindSafe, result, time::Duration,
+    collections::VecDeque, future, mem, panic::AssertUnwindSafe, result, task::Poll,
+    time::Duration,
 };
 use tokio::{
     select,
     sync::{
+        Notify,
         mpsc::{self as tmpsc, UnboundedReceiver},
         oneshot,
     },
@@ -51,12 +53,9 @@ use crate::{
 static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
     std::sync::LazyLock::new(|| Pool::new(4, 8192));
 
-// CR claude for claude: [style/low] This duplicates GXHandle::set_many's function-local
-// SETS pool: same shape, different caps (64/64 here, 16/8192 there), both feeding
-// EmbedderWrite::Set. Keep one crate-level pool with one cap. Found by reading; not
-// run. (rt-08)
-static SETS: std::sync::LazyLock<Pool<Vec<(BindId, Value)>>> =
-    std::sync::LazyLock::new(|| Pool::new(64, 64));
+/// The sets an embedder's writes and a callable's arguments travel in.
+pub(crate) static SETS: std::sync::LazyLock<Pool<Vec<(BindId, Value)>>> =
+    std::sync::LazyLock::new(|| Pool::new(64, 1024));
 
 /// An embedder's write, landed in arrival order with the others of its
 /// cycle: a set of variables, or a patch through a place reference.
@@ -162,10 +161,6 @@ impl TraceState {
     }
 }
 
-fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
-    is_output_kind(&n.spec().kind)
-}
-
 fn is_output_kind(kind: &ExprKind) -> bool {
     match kind {
         ExprKind::Bind { .. }
@@ -223,6 +218,21 @@ async fn join_or_wait<T: 'static>(
         None => future::pending().await,
         Some(r) => r,
     }
+}
+
+/// The next item of `s`, or `None` when a stream of it ended: `SelectAll`
+/// drops an ended stream inside its poll and stays pending, and the end
+/// of a watch may be the end of what was outstanding.
+fn next_or_ended<S: Stream + Unpin>(
+    s: &mut SelectAll<S>,
+) -> impl Future<Output = Option<S::Item>> + '_ {
+    future::poll_fn(move |cx| {
+        let len = s.len();
+        match s.poll_next_unpin(cx) {
+            Poll::Pending if s.len() < len => Poll::Ready(None),
+            p => p,
+        }
+    })
 }
 
 /// The most input messages the runtime takes at once.
@@ -298,6 +308,14 @@ impl<X: GXExt> GX<X> {
     fn prune_static_resolution(&mut self) {
         for id in self.ctx.cx.batch_connect_targets.iter() {
             self.ctx.cx.bind_to_lambda.remove(id);
+        }
+    }
+
+    /// The construction-time program's compile error, if it had one.
+    pub(super) fn program_compiled(&self) -> Result<()> {
+        match &self.program {
+            Some(Err(e)) => Err(anyhow!("{e}")),
+            Some(Ok(_)) | None => Ok(()),
         }
     }
 
@@ -460,6 +478,7 @@ impl<X: GXExt> GX<X> {
         custom_tasks: &mut Vec<(BindId, Box<dyn CustomBuiltinType>)>,
         to_rt: &mut UnboundedReceiver<ToGX<X>>,
         input: &mut Vec<ToGX<X>>,
+        aborted: &Notify,
         mut batch: GPooled<Vec<GXEvent>>,
     ) {
         debug_assert!(
@@ -561,6 +580,13 @@ impl<X: GXExt> GX<X> {
         let sub = self.sub.clone();
         let mut open = true;
         loop {
+            // an aborted runtime sends what has room and waits for nothing
+            if self.ctx.control.aborted() {
+                if let Ok(permit) = sub.try_reserve() {
+                    permit.send(batch)
+                }
+                break;
+            }
             select! {
                 biased;
                 permit = sub.reserve() => {
@@ -576,30 +602,53 @@ impl<X: GXExt> GX<X> {
                     0 => open = false,
                     _ => self.process_input_batch(sets, input, &mut batch).await,
                 },
-                _ = time::sleep(Duration::from_millis(100)) => (),
-            }
-            if self.ctx.control.aborted() {
-                break;
+                _ = aborted.notified() => (),
             }
         }
     }
 
+    /// Whether an embedder's write of `v` to `id` fits its binding's type,
+    /// logging one that does not: the nodes and kernels that read `id` were
+    /// compiled for that type.
+    fn admits(&self, id: BindId, v: &Value) -> bool {
+        match self.ctx.env.by_id.get(&id) {
+            Some(b) if !b.typ.is_a(&self.ctx.env, v) => {
+                error!("a write of {v} to {} was refused: it is not a {}", b.name, b.typ);
+                false
+            }
+            _ => true,
+        }
+    }
+
     /// A write through the reference `cell` (`ExecCtx::ref_target`): a
-    /// place patches its root, else the referent or the cell is set.
+    /// place patches its root, else the referent or the cell is set. A
+    /// patch is checked by the root it would make now.
     fn set_deref(&mut self, cell: BindId, v: Value, sets: &mut Vec<EmbedderWrite>) {
         let (id, path) = {
             let ctx = self.ctx.view();
             let (id, path) = ctx.ref_target(cell);
             (id, (!path.is_empty()).then(|| place::Path::from(path)))
         };
-        sets.push(match path {
-            Some(path) => EmbedderWrite::Patch(id, path, v),
-            None => {
-                let mut one = SETS.take();
-                one.push((id, v));
-                EmbedderWrite::Set(one)
+        match path {
+            Some(path) => {
+                let patched = self.ctx.rt.store_value(&id).and_then(|cur| {
+                    coretraits::with_hooks(&mut self.ctx.view(), || {
+                        place::write_path(&cur, &path, v.clone())
+                    })
+                    .ok()
+                });
+                if patched.is_none_or(|root| self.admits(id, &root)) {
+                    sets.push(EmbedderWrite::Patch(id, path, v))
+                }
             }
-        })
+            None => {
+                if self.admits(id, &v) {
+                    let mut one = SETS.take();
+                    one.push((id, v));
+                    sets.push(EmbedderWrite::Set(one))
+                }
+            }
+        }
     }
 
     /// Readers of `id` update this cycle.
@@ -617,7 +666,7 @@ impl<X: GXExt> GX<X> {
     fn wake_readers(&mut self, id: &BindId) {
         let cycle = self.ctx.rt.cycle;
         if let Some(readers) = self.ctx.rt.by_ref.get(id) {
-            for (r, _) in readers {
+            for (r, _) in readers.iter() {
                 self.ctx.rt.updated.entry(r.root).or_insert(false);
                 r.mark(cycle);
             }
@@ -753,7 +802,7 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
-                // CR claude for claude: [bug/high] An embedder write is never checked
+                // XCR claude for claude: [bug/high] An embedder write is never checked
                 // against its binding's type, though Callable::call checks its
                 // arguments. A string set into an `i64` binding that feeds a fused
                 // kernel makes FusedKernel::stage panic, and the runtime dies. The
@@ -765,13 +814,28 @@ impl<X: GXExt> GX<X> {
                 // logging, a write that fails, as call_callable does. probe:
                 // design/review-2026-10-19/repro/rt-runtime-api.rs
                 // (a_wrong_typed_set_jit) (rt-01)
+                // 2026-10-19 claude: GX::admits checks a Set, every member of a
+                // SetMany (one bad member refuses the set) and a SetDeref against the
+                // binding's type in env.by_id, logging a refusal; a patch through a
+                // place is checked by the root it would make now (write_path over the
+                // stored root). An id with no binding (a callable's argument, already
+                // checked) is admitted. Fails if undone:
+                // graphix-rt/tests/runtime_api.rs
+                // a_wrong_typed_set_is_refused_{jit,interp} and
+                // a_wrong_typed_set_deref_is_refused.
                 ToGX::Set { id, v } => {
-                    let mut one = SETS.take();
-                    one.push((id, v));
-                    sets.push(EmbedderWrite::Set(one))
+                    if self.admits(id, &v) {
+                        let mut one = SETS.take();
+                        one.push((id, v));
+                        sets.push(EmbedderWrite::Set(one))
+                    }
                 }
                 // one message, one set, one cycle (GXHandle::set_many)
-                ToGX::SetMany { sets: set } => sets.push(EmbedderWrite::Set(set)),
+                ToGX::SetMany { sets: set } => {
+                    if set.iter().all(|(id, v)| self.admits(*id, v)) {
+                        sets.push(EmbedderWrite::Set(set))
+                    }
+                }
                 ToGX::DeleteCallable { id } => self.delete_callable(id, sets),
                 ToGX::Call { id, args, answered } => {
                     if let Err(e) = self.call_callable(id, args, answered, sets) {
@@ -816,7 +880,7 @@ impl<X: GXExt> GX<X> {
                         .rt
                         .by_ref
                         .values()
-                        .map(|m| m.iter().map(|(_, n)| *n as usize).sum::<usize>())
+                        .map(|m| m.iter().map(|(_, n)| n as usize).sum::<usize>())
                         .sum();
                     let _ = res.send(crate::EnvStats {
                         by_id_len,
@@ -949,7 +1013,7 @@ impl<X: GXExt> GX<X> {
             .iter()
             .zip(nodes.drain(..))
             .map(|(e, n)| {
-                // CR claude for claude: [bug/medium] `is_output` reads the compiled
+                // XCR claude for claude: [bug/medium] `is_output` reads the compiled
                 // node's spec, and a `use` compiles to a `Nop` whose spec is the shared
                 // `NOP` expression, so a REPL `use` line counts as output. The shell
                 // prints `-: _` and waits on it, and every line typed after it is
@@ -959,7 +1023,11 @@ impl<X: GXExt> GX<X> {
                 // `is_output`. probe:
                 // design/review-2026-10-19/repro/book-core-repl-use-is-output.sh
                 // (book-core-01)
-                let output = is_output(&n);
+                // 2026-10-19 claude: CompRes's output flag is decided from the source
+                // expression (is_output_kind(&e.kind)) as load does; is_output is
+                // deleted. Fails if undone: graphix-rt/tests/runtime_api.rs
+                // a_use_is_not_an_output.
+                let output = is_output_kind(&e.kind);
                 let typ = n.typ().clone();
                 self.ctx.rt.updated.insert(e.id, true);
                 self.nodes.insert(e.id, n);
@@ -1012,23 +1080,6 @@ impl<X: GXExt> GX<X> {
         initial_scope: Option<ArcStr>,
         expr_types: bool,
     ) -> Result<crate::CheckResult> {
-        self.check_inner(source, resolver_override, initial_scope, expr_types)
-            .await
-            .map(|(_, r)| r)
-    }
-
-    /// Like `check`, but also returns the (post-resolve) Expr tree.
-    // CR claude for claude: [dead/low] check is the only caller and discards the Expr
-    // tree this builds, so `Arc::from_iter(exprs)` copies the statements for nothing.
-    // Fold this into check and return CheckResult directly. Found by reading; not run.
-    // (rt-09)
-    async fn check_inner(
-        &mut self,
-        source: &Load,
-        resolver_override: Option<Vec<ResolverRef>>,
-        initial_scope: Option<ArcStr>,
-        expr_types: bool,
-    ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
         let env = self.ctx.env.clone();
         // a check runs nothing: everything it compiled is rolled back
         let saved = Saved::take(&self.ctx.cx);
@@ -1150,7 +1201,7 @@ impl<X: GXExt> GX<X> {
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx.view());
             }
-            Ok((Arc::from_iter(exprs), crate::CheckResult { env, ide }))
+            Ok(crate::CheckResult { env, ide })
         };
         // a checker bug in one buffer must not end the runtime: the check
         // answers the panic and the session is put back
@@ -1348,6 +1399,7 @@ impl<X: GXExt> GX<X> {
     pub(super) async fn run(
         mut self,
         mut to_rt: tmpsc::UnboundedReceiver<ToGX<X>>,
+        aborted: &Notify,
     ) -> Result<()> {
         let mut tasks: Vec<(BindId, Value)> = vec![];
         let mut sets: Vec<EmbedderWrite> = vec![];
@@ -1454,7 +1506,7 @@ impl<X: GXExt> GX<X> {
                     custom_tasks.extend(joined(up));
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
-                // CR claude for claude: [bug/medium] When a watch's sender drops while
+                // XCR claude for claude: [bug/medium] When a watch's sender drops while
                 // the loop waits here, SelectAll removes the finished stream inside its
                 // poll and returns Pending, because the keepalive stream is still
                 // there. This branch never completes, so `settled` (GXRt::outstanding,
@@ -1464,7 +1516,11 @@ impl<X: GXExt> GX<X> {
                 // returns Ready(None) when its len dropped during the poll, so the loop
                 // comes round. probe: design/review-2026-10-19/repro/rt-runtime-api.rs
                 // (settles_when_a_watch_ends) (rt-02)
-                up = self.ctx.rt.watches.next() => {
+                // 2026-10-19 claude: next_or_ended polls each watch SelectAll and
+                // answers None when a stream of it ended, so the loop comes round and
+                // recomputes outstanding(); var_watches too. Fails if undone:
+                // graphix-rt/tests/runtime_api.rs settles_when_a_watch_ends.
+                up = next_or_ended(&mut self.ctx.rt.watches) => {
                     if let Some(mut up) = up {
                         for v in up.drain(..) {
                             custom_tasks.push(v);
@@ -1472,7 +1528,7 @@ impl<X: GXExt> GX<X> {
                     }
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
-                up = self.ctx.rt.var_watches.next() => {
+                up = next_or_ended(&mut self.ctx.rt.var_watches) => {
                     if let Some(mut up) = up {
                         for v in up.drain(..) {
                             tasks.push(v);
@@ -1483,6 +1539,7 @@ impl<X: GXExt> GX<X> {
                 _ = or_never(ready) => {
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
+                _ = aborted.notified() => (),
                 n = to_rt.recv_many(&mut input, INPUT_BATCH) => {
                     if n == 0 {
                         break 'main Ok(())
@@ -1514,6 +1571,7 @@ impl<X: GXExt> GX<X> {
                 &mut custom_tasks,
                 &mut to_rt,
                 &mut input,
+                aborted,
                 batch,
             )
             .await;
