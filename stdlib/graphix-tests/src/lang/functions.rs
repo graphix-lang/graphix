@@ -2717,8 +2717,9 @@ run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:1, f64:2.], [i64:3, i64:1]]"
 }; FuseExpect::Jit);
 
-// A default omitted through a fn type reaches the callee's own
-// parameter: a wider one holds it, though the fn type names a narrower.
+// A default omitted through a fn type that names the label is judged by
+// that type: the call runs the instance with the fn type's parameter, so
+// a callee's wider parameter does not hold it there.
 const DEFAULT_THROUGH_A_NARROWER_FN_TYPE: &str = r#"
 {
     let g = |#n: [i64, string] = "hello", x: i64| -> i64 x + 1;
@@ -2727,9 +2728,16 @@ const DEFAULT_THROUGH_A_NARROWER_FN_TYPE: &str = r#"
 }
 "#;
 
-run!(default_through_a_narrower_fn_type, DEFAULT_THROUGH_A_NARROWER_FN_TYPE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(2)))
-}; FuseExpect::Jit);
+run!(default_through_a_narrower_fn_type, DEFAULT_THROUGH_A_NARROWER_FN_TYPE,
+    refused("does not contain string"); FuseExpect::None);
+
+// The same with the callee's parameter open: its default does not decide
+// it past a fn type that names the label.
+run!(open_default_through_a_fn_type, r#"{
+    let g = |#n = "hello", x: i64| -> i64 x + 1;
+    let h = |f: fn(?#n: i64, x: i64) -> i64| f(1);
+    h(g)
+}"#, refused("does not contain string"); FuseExpect::None);
 
 // A function value's default is judged where the value meets a fn type
 // that hides the label, at the parameter the fn type fixes.

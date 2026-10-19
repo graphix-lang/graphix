@@ -175,8 +175,11 @@ An image carries each cell's level and each definition's depth.
 - The terminal settle (`FnType::settle_terminal`, the check's drain)
   walks the LIVE ftype in dependency order, the cells its bindings hold
   as positions included, and settles whatever remains. A cell still
-  unbound and unconstrained after the whole tc0 phase binds ⊥
-  (`TVar::settle_or_bottom`): nothing ever produced or constrained it.
+  unbound after the whole tc0 phase binds ⊥ (`TVar::settle_or_bottom`):
+  nothing ever produced into it, and what bounds it (a trait, a
+  predicate) has no witness, so a trait dispatch on it is a standing
+  bottom; a cell bound `Concrete` or `Function` is refused instead
+  (Eric 10-19; pin `lang::traits::dispatch_on_a_never_produced_self_is_bottom`).
 - A site's settle leaves what an enclosing definition's signature
   reaches when the settle runs, not when the gate closed: an impl
   head's `'k` reaches a method's scheme only once the impl relates

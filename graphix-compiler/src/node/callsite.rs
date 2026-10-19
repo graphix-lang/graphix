@@ -241,9 +241,9 @@ impl ArgStage {
 /// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
 /// `Fn` arms of a `[fn(...), null]` / Set union.
 /// A labeled default of `f` compiled and checked in `f`'s environment,
-/// where its names are: the site's view of the label first, which the
-/// default narrows; where the site hides or re-types the label, `f`'s own
-/// parameter.
+/// where its names are, against the site's view of the label, which the
+/// default narrows and the instance runs with; where the site hides the
+/// label, against `f`'s own parameter.
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
@@ -263,16 +263,11 @@ fn checked_default<R: Rt, E: UserEvent>(
         let mut node = compile(ctx, flags, expr.clone(), &local_scope, top_id)?;
 
         let res = node.typecheck0(ctx).and_then(|()| {
-            // the site's view first, which a default narrows; where it
-            // hides or re-types the label, the callee's own parameter
-            let site_view = site
-                .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)))
-                .map(|a| a.typ.check_contains(&ctx.env, node.typ()));
-            match site_view {
-                Some(Ok(())) => Ok(()),
-                site_view => match callee_param(ctx, f, name, site, &mut gates) {
+            match site.and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name))) {
+                Some(a) => a.typ.check_contains(&ctx.env, node.typ()),
+                None => match callee_param(ctx, f, name, site, &mut gates) {
                     Some(t) => t.check_contains(&ctx.env, node.typ()),
-                    None => site_view.unwrap_or(Ok(())),
+                    None => Ok(()),
                 },
             }
         });
@@ -1312,9 +1307,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// `f`'s default for the labeled argument `name` as this site sees
     /// it: compiled in `f`'s environment under the site's handlers, and
-    /// checked against the site's view of the parameter, else `f`'s own
-    /// parameter as the site's fn type instantiates it (a fn type may
-    /// hide or re-type the label).
+    /// checked against the site's view of the parameter, else, where the
+    /// site's fn type hides the label, `f`'s own parameter as that type
+    /// instantiates it.
     fn checked_default(
         &self,
         ctx: &mut CompileCtx<R, E>,

@@ -1935,3 +1935,13 @@ run!(impl_method_in_parens_is_annotated, r#"{
     impl Eq for Box { let eq = (|a, b| a.0.1 == b.0.1) };
     (Box((1, 2)) == Box((3, 2)), Box((1, 2)) == Box((1, 3)))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(false)]); FuseExpect::Jit);
+
+// A dispatch whose self nothing produced into (an empty literal's
+// element) settles that self to ⊥: the call is a standing bottom, not a
+// refusal at the build.
+run!(dispatch_on_a_never_produced_self_is_bottom, r#"{
+    trait Show { val show: fn(self) -> string };
+    impl Show for i64 { let show = |x| "int [x]" };
+    let a = [];
+    any(Show::show(a[0]$), "none")
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "none"); FuseExpect::Jit);

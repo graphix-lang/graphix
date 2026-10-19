@@ -830,7 +830,9 @@ node graph IS the IR — there is no parallel typed IR
   against its parameter's type, or a declared tvar's constraints, a
   variable nested in the type taking any instance (`check_defaults`),
   and again at each omitting site by the check, where it may narrow
-  that site's cells; a call's type variable that only data positions hold (never a
+  that site's cells: against the site's own view of the parameter, the
+  type the instance runs with, and only where a fn type hides the
+  label against the callee's parameter; a call's type variable that only data positions hold (never a
   function or a reference) settles to the widest argument whatever
   the order, one a callback or a reference holds to the first
   (`callsite.rs::Widening`); a formal with its own quantifiers (`f: fn<'b: C>(..)`) is

@@ -847,8 +847,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// Resolve a trait method call to an implementation by the self
-    /// argument's type. An open self type is an error outside a
-    /// definition gate; a union self type lowers to a select.
+    /// argument's type. A self type nothing produced into settles to ⊥
+    /// and the call is a standing bottom; a union self type lowers to a
+    /// select.
     pub(super) fn resolve_trait_call(
         &mut self,
         ctx: &mut CompileCtx<R, E>,

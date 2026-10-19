@@ -108,23 +108,17 @@ impl TVar {
         }
     }
 
-    /// [`Self::settle`], but an unconstrained unbound cell binds to ⊥:
-    /// nothing produced or bounded it. Only the terminal walk uses this
-    /// (an earlier call would foreclose writers not yet typechecked).
+    /// [`Self::settle`], but a cell still unbound binds to ⊥: nothing was
+    /// produced into it, and what bounds it (a trait a dispatch on it
+    /// needs, a predicate) has no witness, so a dispatch on it is a
+    /// standing bottom. A cell a type-directed operation reads or calls is
+    /// refused instead. Only the terminal walk uses this (an earlier call
+    /// would foreclose writers not yet typechecked).
     pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
-        match self.cell_constraints().is_empty() {
-            true => self.settle_bottom(),
-            false => {
-                self.settle(env)?;
-                if !self.is_bound() && self.requires_concrete() {
-                    return Err(self.not_concrete());
-                }
-                if !self.is_bound() && self.requires_function() {
-                    return Err(self.not_function());
-                }
-                Ok(())
-            }
+        if !self.cell_constraints().is_empty() {
+            self.settle(env)?;
         }
+        self.settle_bottom()
     }
 
     fn not_concrete(&self) -> anyhow::Error {
