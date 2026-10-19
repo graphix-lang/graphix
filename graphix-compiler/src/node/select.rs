@@ -726,7 +726,19 @@ impl Reach {
                 Claim::Completes(m) => self.cover(env, m)?,
                 Claim::Dead | Claim::Open | Claim::Unpooled => (),
             }
-            if sp.covers(env, at, !pat.explicit_type_predicate) {
+            if let StructPatternNode::Abstract { .. } = sp
+                && !pat.explicit_type_predicate
+            {
+                // an inferred abstract predicate tests the tag at run time: the
+                // atom covers each member its payload covers
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                union_members(env, scrut, &mut members)?;
+                for m in members {
+                    if sp.covers(env, &m, false) {
+                        self.cover(env, m)?
+                    }
+                }
+            } else if sp.covers(env, at, !pat.explicit_type_predicate) {
                 match wild {
                     true => self.atype = self.atype.diff(env, at)?,
                     false => self.cover(env, at.clone())?,

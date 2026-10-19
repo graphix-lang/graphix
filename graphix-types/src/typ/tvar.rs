@@ -1910,7 +1910,7 @@ impl Type {
     /// each alternative of self that matches it, where containment against
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
-    // CR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
+    // XCR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
     // cell under an abstract type's parameters, which are invariant and compared
     // exactly by the run-time nominal test. An inferred `T(x)` arm over [T<i64>,
     // T<string>] narrows its predicate to T<[i64, string]>, a type no value carries, so
@@ -1921,6 +1921,11 @@ impl Type {
     // of unioning the cells, or make the inferred abstract predicate test the tag
     // alone. probe: design/review-2026-10-19/repro/c-pattern-abstract-union-params.gx
     // (c-pattern-02)
+    // 2026-10-19 claude: Fixed by its second option: an inferred abstract predicate
+    // tests the tag alone at run time (IsAFlags::MatchAbstract), and Reach covers each
+    // scrutinee member the atom's payload covers. Pin:
+    // lang::select::abstract_pattern_over_two_instantiations (T(x) over [T<i64>,
+    // T<string>] matches both and is exhaustive).
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
@@ -1984,6 +1989,12 @@ impl Type {
                 // the same way. probe:
                 // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-bind-two-insts.gx
                 // (x-typecheck-patterns-02)
+                // 2026-10-19 claude: c-pattern-02's fix resolves the reported behaviour: the
+                // inferred Box(b) arm tests the tag at run time, so it matches Box(true) and
+                // Box(3) (the probe prints ["box true", "box 3", "other"]), and b is [bool,
+                // i64]. The predicate still reads Box<[bool, i64]>; the remaining question is
+                // only whether to spell it as the Set of instantiations instead. Pin:
+                // lang::select::abstract_pattern_over_two_instantiations.
                 Type::union_exact(env, &p)?.contains(env, &Type::TVar(c.clone()))?;
             }
         }

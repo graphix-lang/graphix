@@ -339,7 +339,16 @@ impl StructPatternNode {
                         .collect(),
                 )
             }
-            Self::Abstract { rep, .. } => Some(smallvec![Some((rep.clone(), 0))]),
+            Self::Abstract { id, rep, .. } => {
+                let rep = match typ.deref_cloned() {
+                    Some(Type::Abstract { id: t, ref params }) if t == *id => env
+                        .abstract_reps
+                        .get(id)
+                        .map_or_else(|| rep.clone(), |r| r.instantiate_with(params)),
+                    _ => rep.clone(),
+                };
+                Some(smallvec![Some((rep, 0))])
+            }
         }
     }
 
@@ -365,6 +374,28 @@ impl StructPatternNode {
             | Self::Abstract { all, .. } => (*all, None),
         };
         all.into_iter().chain(rest)
+    }
+
+    /// Narrow each abstract payload's own representation, which its binds
+    /// and captures are typed by, against the representation of the
+    /// scrutinee's part `typ`: an inferred abstract predicate takes its
+    /// parameters from the scrutinee, never from its payload.
+    fn narrow_payloads(&self, env: &Env, typ: &Type) -> Result<()> {
+        crate::stack::ensure_sufficient(|| {
+            let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
+            if let Self::Abstract { rep, .. } = self {
+                if let Some(Some((member_rep, _))) = ts.first() {
+                    member_rep.narrow_pattern(env, rep)?;
+                }
+                return Ok(());
+            }
+            for (c, t) in self.children().into_iter().zip(ts) {
+                if let Some((t, _)) = t {
+                    c.narrow_payloads(env, &t)?
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Every leaf name with the part of `typ` it stands over, `typ`
@@ -413,7 +444,8 @@ impl StructPatternNode {
         for id in self.whole_binds() {
             out.push(Leaf { id, typ: typ.normalize(), fresh: true })
         }
-        // an abstract's payload took its types from its written rep
+        // an abstract's payload took its types from its own rep
+        // (`narrow_payloads`)
         if let Self::Abstract { .. } = self {
             return Ok(());
         }
@@ -936,7 +968,7 @@ impl StructPatternNode {
                          cannot be destructured"
                     )
                 };
-                // CR claude for claude: [bug/high] An inferred abstract pattern takes
+                // XCR claude for claude: [bug/high] An inferred abstract pattern takes
                 // its type parameters from its payload. For `type Box<'a> =
                 // Abstract<'a>` the payload compiles against the parameter cell itself,
                 // so `Box(null)` gets the predicate Box<null> and `Box(`A)` gets
@@ -952,7 +984,19 @@ impl StructPatternNode {
                 // variant is the CR in TVar::narrow_per_member. probe:
                 // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-payload-params.gx
                 // (x-typecheck-patterns-01)
+                // 2026-10-19 claude: An inferred abstract pattern compiles its payload at
+                // parameters of its own (AbstractRep::instantiate), so the payload never binds
+                // the predicate's; bind_narrowed narrows each payload's own rep against the
+                // scrutinee member's (StructPatternNode::narrow_payloads), typing its binds and
+                // captures; the run-time test of an inferred abstract predicate is the tag
+                // (IsAFlags::MatchAbstract), the payload pattern testing the rest; Reach covers
+                // per scrutinee member for an inferred abstract atom; child_types reads the
+                // payload type from the type judged. Pins:
+                // lang::select::abstract_pattern_params_from_the_scrutinee,
+                // abstract_capture_typed_from_the_scrutinee,
+                // abstract_pattern_over_two_instantiations.
                 let (atyp, rep) = r.instantiate(id);
+                let own = cx.inferred.then(|| r.instantiate(id).1);
                 type_predicate.check_contains(&ctx.env, &atyp)?;
                 // the predicate is this abstract type, as a variant pattern's is
                 // its variant: a union around it would make the arm refutable by
@@ -966,7 +1010,10 @@ impl StructPatternNode {
                     });
                 }
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
-                // the payload checks against the declared representation
+                // the payload checks against the declared representation; under
+                // an inferred predicate, at parameters of its own, the
+                // predicate's being the scrutinee's (`leaves` types its binds)
+                let rep = own.unwrap_or(rep);
                 let rep_cx = PatCx { inferred: false, ..cx };
                 let bind = Box::new(Self::compile_int(ctx, rep_cx, &rep, bind, mode)?);
                 Self::Abstract { id, all, rep, bind }
@@ -1574,6 +1621,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         let tests_error = self.explicit_type_predicate && self.tests_error();
         if self.explicit_type_predicate && !tests_error {
             return Ok(());
+        }
+        if !self.explicit_type_predicate {
+            self.structure_predicate.narrow_payloads(env, narrowed)?;
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;

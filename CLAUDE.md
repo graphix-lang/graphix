@@ -916,7 +916,9 @@ cycle, across workers; the compiler never pins threads.
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere. Its
   parameters, and an unknown constructor's (`'c<a>`), are invariant; a
-  `let` annotation decides a constructed value's.
+  `let` annotation decides a constructed value's. A pattern `T(p)` with no
+  type test tests the tag and takes its parameters from the scrutinee,
+  never from `p` (`StructPatternNode::narrow_payloads`).
 - **Traits v1** (`design/traits.md`): static dispatch on the self
   argument's type; a union self lowers to a select; impls are global
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,

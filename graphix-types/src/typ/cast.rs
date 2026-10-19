@@ -30,8 +30,9 @@ use triomphe::Arc;
 pub enum IsAFlags {
     /// A `Type::Abstract` test also accepts a Rust-backed abstract
     /// value whose wrapper UUID is not the type's path-derived one
-    /// (packages registering ad-hoc UUIDs). A Graphix-minted box
-    /// always answers by its tag. An explicit `T as t` is strict.
+    /// (packages registering ad-hoc UUIDs), and a Graphix-minted box
+    /// answers by its tag alone, its payload pattern testing the rest.
+    /// An explicit `T as t` is strict.
     MatchAbstract,
     /// The type-blind leaves (`Any`, `⊥`, an unbound tvar) match
     /// nothing instead of everything: "does this type describe v"
@@ -1203,15 +1204,16 @@ impl Type {
                     match a.downcast_ref::<crate::abstract_value::GxAbstract>() {
                         Some(g) => {
                             g.id == *id
-                                && g.params.len() == params.len()
-                                // parameters are invariant: each one equal
-                                && params.iter().zip(g.params.iter()).all(|(p, gp)| {
+                                && (flags.contains(IsAFlags::MatchAbstract)
+                                    || g.params.len() == params.len()
+                                    // parameters are invariant: each one equal
+                                    && params.iter().zip(g.params.iter()).all(|(p, gp)| {
                                     let holds = |a: &Type, b: &Type| {
                                         a.contains_with_flags(BitFlags::empty(), env, b)
                                             .unwrap_or(false)
                                     };
                                     holds(p, gp) && holds(gp, p)
-                                })
+                                }))
                         }
                         None => {
                             a.id().as_u64_pair().1 == id.inner()

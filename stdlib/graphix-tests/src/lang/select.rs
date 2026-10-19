@@ -4149,3 +4149,27 @@ run!(pool_covers_only_its_own_abstract_instantiation, r#"{
   };
   g(Box(true))
 }"#, refused("missing match cases: no arm covers Box<i64>"); FuseExpect::None);
+
+// An inferred abstract constructor pattern tests the tag at run time and
+// takes its parameters from the scrutinee, never from its payload.
+run!(abstract_pattern_params_from_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let f = |x: Box<[i64, null]>| select x { Box(null) => 0, Box(n) => 1 };
+  let g = |x: Box<[`A, `B]>| select x { Box(`A) => 1, Box(`B) => 2 };
+  [f(Box(null)), f(Box(5)), g(Box(`A)), g(Box(`B))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:1, i64:2]"); FuseExpect::None);
+
+run!(abstract_capture_typed_from_the_scrutinee, r#"{
+  type Box<'a> = Abstract<'a>;
+  let g = |b: Box<[i64, null]>| select b { Box(v) => v };
+  let f = |x: Box<[i64, null]>| select x { all@ Box(null) => g(all), Box(n) => n };
+  [f(Box(null)), f(Box(4))]
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[null, i64:4]"); FuseExpect::None);
+
+// Over two instantiations an irrefutable payload matches and covers both.
+run!(abstract_pattern_over_two_instantiations, r#"{
+  type T<'a> = Abstract<'a>;
+  let f = |v: [T<i64>, T<string>]| select v { T(x) => "T [x]" };
+  let g = |x: [T<bool>, T<i64>]| select x { T(true) => 1, T(false) => 2, T(n) => cast<i64>(n)$ };
+  (f(T(1)), f(T("s")), g(T(3)), g(T(true)), g(T(false)))
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["T 1", "T s", i64:3, i64:1, i64:2]"#); FuseExpect::Jit);
