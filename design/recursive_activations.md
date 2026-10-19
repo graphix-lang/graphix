@@ -231,8 +231,9 @@ stack, so it needed the JIT twin of `ensure_sufficient`:
   default; a thread-local counts live grown segments, and a grow that
   would exceed the running runtime's budget aborts it through
   `stack::budget_abort` —
-  the ONE exit for both engines, setting `CtlFlag::Budget` beside
-  `Abort` on the runtime's `Control` (the node-walk still gets that one
+  the ONE exit for both engines, setting `CtlFlag::StackBudget` beside
+  `Abort` on the runtime's `Control` (`Control::abort_budget`, read
+  back by `Control::aborted_by`) (the node-walk still gets that one
   segment so it unwinds at its next poll). `GXHandle::budget_aborted()`
   reads it and the fuzz runner maps a budget-aborted runtime to
   `Outcome::Timeout`: one outcome for a runaway whichever limit stops

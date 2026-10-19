@@ -298,14 +298,14 @@ right site the `let` and every statement `w`'s new type meets (family
 Every mutant is checked like a typemorph probe (`typemorph-one`: a
 warm runtime, `--check` semantics, a fresh process to confirm).
 
-<!-- CR claude for claude: [doc-drift/low] The code passes a right-site refusal only
-when its head is one `Family::refuses_with` lists for the family. Otherwise it reports
-`FLIP <id> WRONG REFUSAL: <head>` (lib.rs `must_reject`). Add that verdict here and to
-the report-line list below. Found by reading; not run. (fuzz-mutate-08) -->
-- **Rejected at the right site: pass.** The refusal's `ErrorSite` (the
-  innermost expression an error is attached to) lies inside the mutated
-  node or the rigid consumer. The mutated node's span is found in the
-  printed mutant by its preorder index, like every typemorph site.
+- **Rejected at the right site, for the family's reason: pass.** The
+  refusal's `ErrorSite` (the innermost expression an error is attached
+  to) lies inside the mutated node or the rigid consumer, and its head
+  is one the family's rule produces (`Family::refuses_with`). The
+  mutated node's span is found in the printed mutant by its preorder
+  index, like every typemorph site.
+- **Rejected at the right site for another reason: a finding.** The
+  checker refused the mutant, but not by the rule the family cites.
 - **Rejected elsewhere: a finding of its own class.** Either the
   mutation broke something the argument did not account for, or the
   checker attaches the error to the wrong place; both need a look, and
@@ -317,7 +317,8 @@ the report-line list below. Found by reading; not run. (fuzz-mutate-08) -->
   catalog is corrected.
 
 A mutant's line in a typemorph report is `REJECT <family>#<site> ok`,
-or `FLIP <id> LEAK: accepted` / `FLIP <id> MISPLACED: <head>`; a FLIP is
+or `FLIP <id> LEAK: accepted at <site>` / `FLIP <id> MISPLACED: <head>` /
+`FLIP <id> WRONG REFUSAL: <head>`; a FLIP is
 confirmed in a fresh process and recorded like any typemorph flip, as
 `typeflip_N.gx` once per class (the id without its site + the
 normalized head), so both lanes share confirmation and dedup. Open: the

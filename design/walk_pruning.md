@@ -4,6 +4,8 @@ Status: design 2026-10-18 (Eric: boundary granularity, all boundaries
 at once, atomics vs layered merges to be measured); built, see "As built",
 which supersedes the sections above it where they differ. Resolves
 x-perf-runtime-01 and x-alloc-01.
+Pins: `stdlib/graphix-tests/src/lang/prune.rs` (boundaries walked per
+cycle, `Control::boundaries()`); the fuzzer's `Pair::Prune`.
 
 ## The problem
 
@@ -216,11 +218,8 @@ Then rewrite this section and "The slab" to the build. Found by reading; not run
 - **`run!`** runs pruned (the default); the audit runs in the plain
   gate for the `lang` and `lib_tests` fixtures (a test helper sets it),
   so the gate itself hunts missing marks.
-<!-- CR claude for claude: [doc-drift/low] `Control::boundaries_walked` does not exist.
-The counter is `Control::boundaries()` (walked, skipped), as this doc says further down.
-Rename it here. Found by reading; not run. (t-misc-05) -->
-- **Pins.** A runtime counter of boundaries walked
-  (`Control::boundaries_walked`) pins the CR probes: an idle
+- **Pins.** A runtime counter of boundaries walked and skipped
+  (`Control::boundaries()`) pins the CR probes: an idle
   `array::map` of 2000 slots beside a ticking counter walks a constant
   number of boundaries per tick, not 2000; the recursion and queued
   write probes likewise.

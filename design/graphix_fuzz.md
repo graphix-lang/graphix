@@ -180,18 +180,12 @@ alone is 3.6KB under LTO) where a native kernel's is words, so a depth
 only the kernel reaches says nothing about either engine's answer. A
 pin that must run in both engines picks a depth both finish.
 
-<!-- CR claude for claude: [doc-drift/low] comparisons() also owes Pair::Prune
-(Mode::Unpruned vs the pruned node-walk, made with the engines in group 0), and Pair has
-an Accepted finding. Neither this paragraph's order nor section 6's Pair list mentions
-them, and the doc nowhere describes the walk-pruning axis. Add the prune pair after the
-forked runs with one sentence and a pointer to design/walk_pruning.md, and add Prune and
-Accepted to section 6's list. Found by reading; not run. (fuzz-lib-a-06) -->
 **One list of comparisons** (`comparisons`): each is a `Pair` naming
 its reference and tested runs, held at one `Strength` (`Strength::of`:
 `Exact`, `Final` where a dispatch route's cycle offsets enter or the
 tier is `FinalValues`, `Kind` for an `Excluded` program). In order: the
 engines; a callable's dispatch engines and route pair; each engine's
-sessions; the forked runs. The runs are made as the list reaches them,
+sessions; the forked runs; the pruned node-walk. The runs are made as the list reaches them,
 a group at a time, and shared. A batch child's first pass agrees only
 when every comparison agrees at once and no run timed out or failed;
 anything else is a suspect. The individual check takes each comparison
@@ -257,9 +251,6 @@ the dispatch route compared at final-values strength like its engine
 pair. `GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every
 Nth batched subject; the individual path always runs them.
 
-<!-- CR claude for claude: [doc-drift/low] The prune axis is missing from this doc:
-`Pair::Prune` compares the pruned node-walk with `Mode::Unpruned` (PruneMode::Off). Add
-a paragraph next to this one. Found by reading; not run. (x-doc-drift-15) -->
 **Forked runs** (`Pair::Par`): each engine runs again forked and is
 compared with the serial node-walk: the node-walk with every fork point
 forked (`ParMode::Force`), the JIT in the default mode (`ParMode::Auto`)
@@ -269,6 +260,12 @@ over a threshold the fuzzer fixes tiny (`cost::fix_calibration`,
 `GRAPHIX_FUZZ_FORK=0` disables them. `GRAPHIX_FUZZ_PAR` is a different
 knob, the number of checks in flight (default 8 per core; `soak.sh` sets
 it to the memory-sized worker count).
+
+**Pruned runs** (`Pair::Prune`): the node-walk walking every boundary
+(`Mode::Unpruned`, `PruneMode::Off`) is the reference for the pruned
+node-walk (the default), made with the engines; a skipped boundary that
+changed the trace is a divergence (`design/walk_pruning.md`). Every
+other run prunes as `GRAPHIX_PRUNE` says, on by default.
 
 **`selfcheck` is the oracle-soundness gate**: interp-vs-interp and
 jit-vs-jit trace equality over generated + corpus programs, 100%
@@ -408,8 +405,9 @@ epoch, with gap compiles first — the embedder timeline has cycles
 between building a handler and the first event). `check` runs the 2×2
 matrix: engine pairs per route (the dispatch pair at finals strength),
 then the route pair. `Divergence` carries which pair (`Pair`: the
-comparisons `Engine`, `EngineDispatch`, `Route`, `Cold`, `Warm` and
-`Par`, and the findings `Twin`, `Check` and `Rejected`). Callable
+comparisons `Engine`, `EngineDispatch`, `Route`, `Cold`, `Warm`, `Par`
+and `Prune`, and the findings `Twin`, `Check`, `Rejected` and
+`Accepted`). Callable
 programs batch like any other and never enter the mutation ring.
 
 **Twins (the symmetric-bug oracle).** The route matrix could not catch

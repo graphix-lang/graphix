@@ -11,14 +11,7 @@ use gui::{
   text_input::text_input
 };
 use core::math;
-// CR claude for claude: [style/low] This file imports sys::time but writes
-// sys::net::publish, sys::net::write and sys::net::list_table in full six times.
-// data_table_calculated, data_table_sparkline, data_table_basic, data_table_editable
-// and data_table_filter_sort do the same. data_table_scrolling and data_table_virtual
-// import `sys::{net, time}` and write `net::publish`. Use that form in all of the
-// data_table examples, since data_table.md shows all of them on one page. Found by
-// reading; not run. (examples-gui-03)
-use sys::time;
+use sys::{net, time};
 mod icon;
 
 // Kitchen-sink example combining the main data_table features:
@@ -36,25 +29,20 @@ type State = [`Healthy, `Degraded, `Down];
 
 // Publish a tiny fleet of services. state is writable (Combo).
 let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
-    sys::net::publish(
+    net::publish(
         #on_write: |v: State| state <- v,
         "/local/graphix/data_table_dashboard/[name]/state",
         state
     );
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+    net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
 };
 
 // single random number
 let rn = |start, end| rand::rand(#start, #end, #clock:1);
 
-// CR claude for claude: [readability/low] Nothing reads `published`. The init runs only
-// for its publishes, so write it as a bare statement. In the same file, the `rows`
-// select in `tbl` tests `n if n == 0` where data_table_filter_sort writes the literal
-// arm `0 => ..`; use the literal here too. Both edits pass --expand. Found by reading;
-// the edited copy was checked with graphix --expand. (examples-gui-05)
-let published = array::init(1024, |i| svc(
+array::init(1024, |i| svc(
     #name:"svc-[i]",
     #state:select rand::rand(#clock:1) {
         n if n <= 0.8 => `Healthy,
@@ -79,13 +67,13 @@ let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
             { id: "Down", label: "Down" }
         ],
         #on_edit: |#path: string, #value: string|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "State",
         #width: &110.
     ),
     "cpu" => sparkline_column(
         #name: "cpu",
-        #history_seconds: f64:30.0,
+        #history_seconds: 30.0,
         #display_name: "CPU",
         #width: &220.0,
         #min:0.,
@@ -109,9 +97,9 @@ let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
 // rewrap with the column specs.
 let pattern = "";
 let tbl: Table = {
-    let raw = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    let raw = net::list_table("/local/graphix/data_table_dashboard")$;
     let rows = select str::len(pattern) {
-        n if n == 0 => raw.rows,
+        0 => raw.rows,
         _ => array::filter(raw.rows, |r| {
             let row = opt::or_default(str::basename(r), r);
             select re::is_match(#pat: pattern, row) {

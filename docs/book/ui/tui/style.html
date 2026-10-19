@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -264,13 +264,18 @@ and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
 (MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
 and `{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
 reading; not run. (book-ui-b-05) -->
+<!-- 2026-10-19 claude: The two drifted names are fixed by hand (span's content, line's
+spans), and every type line on this page and in input.md now matches its gxi line for
+line. Still owed: ANCHOR markers in stdlib/graphix-package-tui/src/graphix/mod.gxi and
+input_handler.gxi (outside the docs pass) so these blocks become includes; input.md's
+copy still lacks KeyEventState, MediaKeyCode and ModifierKeyCode until then. -->
 <p>A <code>Span</code> is a piece of text with a single style:</p>
 <pre><code class="language-graphix">type Span = {
   style: Style,
   content: string
 };
 
-val span: fn(?#style: Style, s: string) -&gt; Span;
+val span: fn(?#style: Style, content: string) -&gt; Span;
 </code></pre>
 <p>Example:</p>
 <pre><code class="language-graphix">// Create a red "Error:" span
@@ -293,7 +298,7 @@ type Line = {
   spans: [Array&lt;Span&gt;, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array&lt;Span&gt;, string]) -&gt; Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], spans: [Array&lt;Span&gt;, string]) -&gt; Line;
 </code></pre>
 <p>The <code>spans</code> field can be either an array of spans (for mixed styling) or a
 simple string (which will use the line’s style).</p>

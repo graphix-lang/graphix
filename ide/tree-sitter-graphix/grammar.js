@@ -31,16 +31,19 @@ module.exports = grammar({
   // src/scanner.c's scan function. The CR sits in grammar.js because
   // zed_grammar_rev_is_current pins scanner.c byte for byte to the rev in
   // ide/editors/zed/extension.toml, so a comment there fails the gate.
+  // 2026-10-19 claude: grammar.js part done: the _list_close, use_path and number
+  // comments state their invariants, the dates and the f64:inf example are gone. The
+  // three scanner.c comments remain: cutting them changes src/scanner.c, which needs
+  // the zed rev bump and so a commit.
   externals: $ => [
     $._string_content,
     $._value_extension,  // greedy value chars after a literal in type ascription
     $._bare_value,       // bare values like base64 (external to beat line_comment on //)
     $._raw_string,       // r"..." / r#"..."# / r##"..."## — counted hashes, verbatim
     $._triple_content,   // triple-string content: bare quotes legal, stops at \ [ ] or """
-    $._list_close,       // the `>]` list closer as ONE terminal — distinct from the
-                         // comparison `>`, so `[<1 != 2>]` needs no shift/reduce
-                         // choice on `>` (static precedence resolved it toward the
-                         // comparison and equality-tailed last elements errored)
+    $._list_close,       // the `>]` list closer as ONE terminal, distinct from the
+                         // comparison `>`, so a list's last element may end in any
+                         // binary operator (`[<1 != 2>]`)
     $.unit_extension,    // a unit after a literal in a non-bytes ascription (`500.ms`)
     $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
@@ -344,14 +347,10 @@ module.exports = grammar({
 
     use_glob: $ => '*',
 
-    // The `::` iteration is INLINE rather than $.module_path: reusing
-    // module_path would force a reduce-vs-extend decision at every
-    // `::` (does the path continue, or end here with `:: use_group`
-    // next?), forking a GLR version per segment. Enough segments
-    // overflow tree-sitter's version cap and condense culls the REAL
-    // reading — `{a: error:"[", b: use a::b::c::d::e::f::g::h}` parsed
-    // as one ERROR. Inlined, both continuations shift the `::` first
-    // and the next token (name vs `{` vs `*`) decides deterministically.
+    // The `::` iteration is INLINE rather than $.module_path, so no
+    // segment forks a GLR version: both continuations shift the `::`
+    // and the next token (name vs `{` vs `*`) decides. A fork per
+    // segment would overflow tree-sitter's version cap on a long path.
     use_path: $ => seq(
       $._use_segment,
       repeat(seq('::', $._use_segment)),
@@ -796,7 +795,6 @@ module.exports = grammar({
       // the external scanner refuses when no unit is adjacent, which lets
       // the parser skip the optional.
       seq($.literal, optional($.unit_extension)),
-      // Values that look like names (`f64:inf`, `f64:NaN`)
       $._binding_name,
       $.type_identifier,
     ),
@@ -1029,12 +1027,9 @@ module.exports = grammar({
 
     number: $ => token(prec(1, choice(
       // Duration literals (must come before floats/integers to match
-      // correctly). The fractional part requires ≥1 digit: with `\.\d*`
-      // (zero digits allowed) a chained tuple-index→field access whose
-      // field starts with s/m/h/d — `x.5.summary`, `x.<n>.duration_ms` —
-      // lexed `5.s` / `<n>.d` as a "duration", stealing the identifier's
-      // first letter and erroring on the rest. `\d+.\d+[smhd]` can't span
-      // two dots, so postfix chains lex cleanly.
+      // correctly). The fractional part requires at least one digit, so
+      // a tuple index followed by a field starting with s/m/h/d
+      // (`x.5.summary`) never lexes as a duration.
       /\d+(\.\d+)?[smhd]/,
       // Scientific notation
       /-?\d+(\.\d+)?[eE][+-]?\d+/,
@@ -1277,7 +1272,7 @@ module.exports = grammar({
     identifier: $ =>
       /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3][\p{L}\p{N}_\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3]*/,
 
-    // Type-name keywords are legal BINDING names (2026-08-18): let,
+    // Type-name keywords are legal BINDING names: let,
     // params, labeled args, pattern binds, tvar names, module path
     // segments. Control keywords and literals stay reserved. Aliased so
     // the node stays an `identifier` for highlighting and queries.
@@ -1293,7 +1288,7 @@ module.exports = grammar({
       ), $.identifier),
     ),
 
-    // Reserved words are legal as struct FIELD names (2026-08-18), the
+    // Reserved words are legal as struct FIELD names, the
     // same relaxation as the reference parser: reserved-ness protects
     // bindings and type names, and a field is neither. Aliased so the
     // node stays an `identifier` for highlighting and queries.

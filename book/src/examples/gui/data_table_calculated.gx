@@ -4,7 +4,7 @@ use gui::{
   data_table::{ColumnSpec, Table, data_table, text_column},
   text::text
 };
-use sys::{time, net::publish};
+use sys::{net, time};
 mod icon;
 
 // Two published columns A and B. A virtual "sum" column has its
@@ -17,14 +17,14 @@ let rv = {
     || any(1, rand::rand(#start:0, #end:10, #clock))
 };
 
-publish("/local/graphix/data_table_calculated/r0/A", rv());
-publish("/local/graphix/data_table_calculated/r1/A", rv());
-publish("/local/graphix/data_table_calculated/r2/A", rv());
-publish("/local/graphix/data_table_calculated/r0/B", rv());
-publish("/local/graphix/data_table_calculated/r1/B", rv());
-publish("/local/graphix/data_table_calculated/r2/B", rv());
+net::publish("/local/graphix/data_table_calculated/r0/A", rv());
+net::publish("/local/graphix/data_table_calculated/r1/A", rv());
+net::publish("/local/graphix/data_table_calculated/r2/A", rv());
+net::publish("/local/graphix/data_table_calculated/r0/B", rv());
+net::publish("/local/graphix/data_table_calculated/r1/B", rv());
+net::publish("/local/graphix/data_table_calculated/r2/B", rv());
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_calculated")$;
 
 let data: Map<string, Map<string, i64>> = {};
 

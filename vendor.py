@@ -10,14 +10,19 @@ Vendor all dependencies for graphix, including workspace members.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 
 import tomllib
 
 ROOT = Path(__file__).resolve().parent
+
+# Emacs `.#foo` lockfiles are dangling symlinks while a file is being edited
+JUNK = ("target", ".#*", "#*#", "*~", ".DS_Store")
 
 
 def read_workspace():
@@ -199,26 +204,31 @@ def vendor_workspace_member(member_path, ws_deps, vendor_dir):
 
 
 def copy_crate(src, dest):
-    """Copy a crate's source to `dest`, skipping target/ and editor/VCS junk
-    (Emacs `.#foo` lockfiles are dangling symlinks while a file is being
-    edited, and copytree raises on them by default)."""
-    shutil.copytree(
-        src,
-        dest,
-        # CR claude for claude: [perf/low] copy_crate copies everything in the crate
-        # directory that is not one of these patterns, git-ignored files included.
-        # ide/tree-sitter-graphix is a workspace member, so its 28 MB node_modules (the
-        # tree-sitter CLI's native binary, with symlinks followed) ends up in
-        # vendor/tree-sitter-graphix-0.9.0: 35 MB for a crate of about 6 MB. Copy only
-        # the files `git -C <crate> ls-files` lists, which honors .gitignore for members
-        # and external crates alike, or at least add "node_modules" here. probe:
-        # design/review-2026-10-19/repro/ide-tooling-vendor-node-modules.py
-        # (ide-tooling-06)
-        ignore=shutil.ignore_patterns(
-            "target", ".#*", "#*#", "*~", ".DS_Store",
-        ),
-        ignore_dangling_symlinks=True,
+    """Copy a crate's source to `dest`: the files git tracks or would track
+    in it (so nothing .gitignore excludes), else, outside a git checkout,
+    everything but target/ and editor/VCS junk."""
+    listed = subprocess.run(
+        ["git", "-C", str(src), "ls-files", "-z", "--cached", "--others",
+         "--exclude-standard"],
+        capture_output=True,
     )
+    if listed.returncode != 0:
+        shutil.copytree(
+            src,
+            dest,
+            ignore=shutil.ignore_patterns(*JUNK),
+            ignore_dangling_symlinks=True,
+        )
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    for rel in filter(None, listed.stdout.split(b"\0")):
+        rel = Path(os.fsdecode(rel))
+        path = src / rel
+        # a deleted tracked file, a dangling Emacs lockfile or a submodule
+        if not path.is_file() or any(fnmatch(rel.name, p) for p in JUNK):
+            continue
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest / rel)
 
 
 def find_workspace_root(crate_path):

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -182,13 +182,13 @@ to connect one part of the graph to another by name, causing the output of the
 right side to flow to the name on the left side. Consider,</p>
 <pre><code class="language-graphix">let x = "off";
 x &lt;- sys::time::timer(duration:1.0s, false) ~ "on";
-print(x)
+x
 </code></pre>
 <p>This program will first print <code>off</code>, and after 1 second it will print <code>on</code>. Note
 the <code>~</code> operator means, when the expression on the left updates return the
 current value of the expression on the right (called the sample operator). The
 graph we created looks like,</p>
-<pre><code>const("off") ────────────────&gt; "x" ──────&gt; print
+<pre><code>const("off") ────────────────&gt; "x" ──────&gt; output
                                  ▲
                                  │
                                  │
@@ -202,12 +202,12 @@ graph we created looks like,</p>
 and it won’t stop other parts of the program from being evaluated,</p>
 <pre><code class="language-graphix">let x = 0;
 x &lt;- x + 1;
-print(x)
+x
 </code></pre>
 <p>This program will print all the i64s from 0 to MAX and then will wrap around. It
 will print numbers forever. You might notice, and you might wonder, why does it
-start from zero, shouldn’t it start from 1? After all we increment x BEFORE the
-print right? Well, no, not actually, it will start at 0, for the same reason
+start from zero, shouldn’t it start from 1? After all we increment x BEFORE it
+is printed, right? Well, no, not actually, it will start at 0, for the same reason
 this infinite loop won’t lock up the program or cause other expressions not to
 be evaluated. Graphix programs are evaluated in cycles, a batch of updates from
 the network, timers, and other IO is processed into a set of all events that
@@ -218,16 +218,13 @@ current cycle proceeds as normal to it’s conclusion as if the connect didn’t
 happen yet, because it didn’t. In the above case the event loop would never
 wait, because there is always work to do adding 1 to <code>x</code>, however it will still
 check for other events every cycle.</p>
-<!-- CR claude for claude: [doc-drift/low] Connect is the only way to make a cycle in
-the graph, not the only way to loop. recursion.md presents recursion as the way to write
-a traversal (a stateless tail recursion is a native loop), and `array::map`/`fold`
-iterate in one cycle. A connect loop takes a cycle per step and breaks when its input
-moves (semantics.md's `len`). Reword this and overview.md's "only looping construct"
-sentence, and point to the collection functions and recursion. Found by reading; not
-run. (book-core-13) -->
 <p>When combined with other operations, specifically select, connect becomes a
-powerful general looping construct, and is the only way to write a loop in
-Graphix. A quick example,</p>
+looping construct that runs one step per cycle: connect is the only way to
+make a cycle in the graph. To iterate over a collection, use the collection
+functions (<code>array::map</code>, <code>array::fold</code>, …) or recursion
+(<a href="../functions/recursion.html">Recursion</a>), which compute the whole result in one
+cycle; a connect loop takes a cycle per step and starts over when its input
+moves mid-loop. A quick example,</p>
 <pre><code class="language-graphix">let count = {
   let x = 0;
   select x {

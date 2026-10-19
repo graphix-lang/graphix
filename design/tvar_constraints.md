@@ -322,7 +322,7 @@ instance's own re-check refused it, at elaboration.
   within it, so `[i64, 'x]` cannot become `[i64, f64]`; with none, they
   merge into one cell, which takes the conjunct (`UnionParts::
   merge_open`). Two rigid cells can't merge, so a union of two declared
-  variables is not a `Singleton` (`UnionParts::rigid_pair`).
+  variables is not a `Singleton` (`UnionParts::rigid_apart`).
 - Like `Concrete`, it is never a witness and travels as a conjunct. It
   refuses no open or ⊥ cell at the terminal settle: an operand cell
   left open there has `Number` for its only witness, which the

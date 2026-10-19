@@ -96,8 +96,16 @@ reads the elements (MapOp::reads_elements; the JIT agrees). Add that case here a
 CLAUDE.md's list of what collection loops fire on. probe:
 design/review-2026-10-19/repro/c-collection-filter-fires-on-moved-source.gx
 (c-collection-04) -->
-(`kernel_instance_state.md`) — a loop fires iff resized ∨ a slot fired;
-a same-length refresh with a quiet body does not fire. In a fold each
+<!-- 2026-10-19 claude: collection_intrinsics.md now states the filter/find case. Still
+owed: CLAUDE.md's 'collection loops fire on' list (The semantics both engines
+implement, Organic firing) needs the same clause; CLAUDE.md is outside the docs
+pass. -->
+<!-- 2026-10-19 claude: Back to CR: a partial fix (the design doc only) stays a CR until
+CLAUDE.md carries the clause. -->
+(`kernel_instance_state.md`) — a loop fires iff resized ∨ a slot fired,
+or, for `filter` and `find`, whose result reads the source's elements,
+the source fired (`MapOp::reads_elements`; the JIT agrees); for the
+others a same-length refresh with a quiet body does not fire. In a fold each
 body evaluation's STALE folds into the slots word and the accumulator
 carry is one more firing source (it alone covers the empty-source
 chain); taint rides the carry only, so an acc-ignoring callback

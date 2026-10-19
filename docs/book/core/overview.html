@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -191,7 +191,7 @@
 <pre><code class="language-graphix">let count = 0;
 count &lt;- timer ~ (count + 1)
 </code></pre>
-<p>You’re telling Graphix: “When <code>timer</code> updates, increment <code>count</code> for the next cycle.” Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. It’s also the only looping construct in Graphix—there’s no <code>for</code> or <code>while</code>, just connect and select working together.</p>
+<p>You’re telling Graphix: “When <code>timer</code> updates, increment <code>count</code> for the next cycle.” Connect schedules updates for the future, which is how you build everything from simple counters to complex state machines. There’s no <code>for</code> or <code>while</code>: a loop over time is connect and select working together, and iteration over a collection is the collection functions (<code>array::map</code>, <code>array::fold</code>, …) or recursion.</p>
 <h2 id="select-powerful-pattern-matching"><a class="header" href="#select-powerful-pattern-matching">Select: Powerful Pattern Matching</a></h2>
 <p>The <code>select</code> expression is Graphix’s answer to <code>switch</code>, <code>match</code>, and <code>if/else</code>. It lets you match on types, destructure complex data, and ensure at compile time that you’ve handled every case.</p>
 <p><strong><a href="./select.html">Select</a></strong> shows you how to:</p>

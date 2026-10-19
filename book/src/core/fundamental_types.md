@@ -27,8 +27,9 @@ without a cast.
 | Mod       |     %     |   %?    |
 
 Unchecked integer `+`, `-` and `*` wrap on overflow (`i64:9223372036854775807
-+ 1` is the smallest `i64`). Unchecked `/` and `%` log an error and
-return bottom (no value) on a zero divisor, and `/` also on the one
++ 1` is the smallest `i64`). Unchecked `/` and `%` return bottom (no
+value) on a zero divisor (the interpreter also logs it; compiled code does
+not, so run with `--no-fusion` to see the log), and `/` also on the one
 quotient that overflows, the smallest signed value divided by `-1`; `x %
 -1` is `0`. A bottomed expression simply stops updating until its inputs
 change to values that produce a valid result.
@@ -51,7 +52,7 @@ Caused by:
 2
 ```
 
-With unchecked operators, a division by zero logs an error and returns bottom -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.
+With unchecked operators, a division by zero returns bottom (logged by the interpreter only) -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.
 
 ```graphix
 〉0 / 0
@@ -62,17 +63,10 @@ No value is printed because the division by zero produces bottom. If the divisor
 
 With checked operators, you get an explicit error value you can handle:
 
-<!-- CR claude for claude: [doc-drift/low] These transcripts print errors in the
-pre-kind-marker array form. The REPL now prints `error:`ArithError("attempt to divide by
-zero")`, `error:`ArithError("attempt to subtract with overflow")` and
-`error:`MapKeyError(..)`. Re-capture them. The "Numbers" text also says unchecked `/`
-and `%` log on a zero divisor. Only the node-walk logs (see reading_types.md), so say
-so. probe: design/review-2026-10-19/repro/book-core-fundamental-printed-forms.sh
-(book-core-09) -->
 ```graphix
 〉0 /? 0
 -: [i64, Error<`ArithError(string)>]
-error:["ArithError", "attempt to divide by zero"]
+error:`ArithError("attempt to divide by zero")
 ```
 
 You can use `?` to propagate, `$` to swallow, or `select` to match on the result:
@@ -88,7 +82,7 @@ You can use `?` to propagate, `$` to swallow, or `select` to match on the result
 
 〉u32:0 -? u32:1
 -: [u32, Error<`ArithError(string)>]
-error:["ArithError", "attempt to subtract with overflow"]
+error:`ArithError("attempt to subtract with overflow")
 ```
 
 #### v32, z32, v64, z64
@@ -409,34 +403,21 @@ cells are pooled like arrays, so building a list does not usually
 allocate. Indexed access (`list::nth`) walks the spine and is O(n);
 if you need random access, convert to an array.
 
-<!-- CR claude for claude: [doc-drift/low] This section predates kind markers. Data
-carries no markers now: pack writes `[<1, 2, 3>]` as the same bytes as `[1, 2, 3]`, not
-as a chain of cells. A cast into `List<T>` builds the list from any array, so
-`cast<List<Array<i64>>>` of an `Any` holding `[[1, 2], [3, 4]]` reads `[<[1, 2], [3,
-4]>]` directly and the two-step cast below is unnecessary. Rewrite the section to say
-every writer flattens a list and a typed read rebuilds it. probe:
-design/review-2026-10-19/repro/book-core-list-data-flat.sh (book-core-06) -->
 ### Lists as Data
 
-At run time a list is its chain of cells, each a pair of the head and
-the rest. `pack` and netidx carry that chain, and it reads back into a
-`List` as itself. `json` and `toml` write a list as a flat array, and
-their typed reads take every array as an array, so a `List` read from
-them is built from the flat array again: what they write reads back
-into its type.
-
-A cast whose source type is unknown, such as `cast<List<T>>` of an
-`Any`, has only the value's shape to go on, and takes an array that is
-a well-formed chain for one. When the value is really an array, say so
-first, then convert:
+Data carries no list cells: every writer (`json`, `toml`, `pack`, netidx)
+writes a list as a flat array, so `pack::write_bytes([<1, 2, 3>])` is the
+same bytes as `pack::write_bytes([1, 2, 3])`. A typed read or a cast to a
+`List` builds the list from the array again, so what a writer emits reads
+back into its type, and a cast of an `Any` holding an array of rows reads
+the list directly:
 
 ```graphix
-let rows: Array<Array<i64>> = cast<Array<Array<i64>>>(v)?;
-let l = cast<List<Array<i64>>>(rows)?
+let v: Any = [[1, 2], [3, 4]];
+cast<List<Array<i64>>>(v)
 ```
 
-The second cast's source type, `Array<Array<i64>>`, decides that the
-value is an array of rows.
+is `[<[1, 2], [3, 4]>]`.
 
 ## Tuples
 
@@ -494,7 +475,7 @@ If a key is not present in the map, indexing returns a `MapKeyError`:
 ```graphix
 〉m{"missing"}
 -: ['_1907: i64, Error<`MapKeyError(string)>]
-error:["MapKeyError", "map key \"missing\" not found"]
+error:`MapKeyError("map key \"missing\" not found")
 ```
 
 ### Mutability and Implementation

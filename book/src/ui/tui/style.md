@@ -113,6 +113,11 @@ and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
 (MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
 and `\{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
 reading; not run. (book-ui-b-05) -->
+<!-- 2026-10-19 claude: The two drifted names are fixed by hand (span's content, line's
+spans), and every type line on this page and in input.md now matches its gxi line for
+line. Still owed: ANCHOR markers in stdlib/graphix-package-tui/src/graphix/mod.gxi and
+input_handler.gxi (outside the docs pass) so these blocks become includes; input.md's
+copy still lacks KeyEventState, MediaKeyCode and ModifierKeyCode until then. -->
 A `Span` is a piece of text with a single style:
 
 ```graphix
@@ -121,7 +126,7 @@ type Span = {
   content: string
 };
 
-val span: fn(?#style: Style, s: string) -> Span;
+val span: fn(?#style: Style, content: string) -> Span;
 ```
 
 Example:
@@ -151,7 +156,7 @@ type Line = {
   spans: [Array<Span>, string]
 };
 
-val line: fn(?#style: Style, ?#alignment: [Alignment, null], v: [Array<Span>, string]) -> Line;
+val line: fn(?#style: Style, ?#alignment: [Alignment, null], spans: [Array<Span>, string]) -> Line;
 ```
 
 The `spans` field can be either an array of spans (for mixed styling) or a

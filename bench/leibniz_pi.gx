@@ -15,7 +15,7 @@ let rec leib = |n: i64, acc: f64, sign: f64| -> f64
 let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<f64>(t0)$;
-let result = leib(n, seed, 1.0);
+let result = #[native] leib(n, seed, 1.0);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("leibniz_pi n=[n] result=[result] elapsed_s=[elapsed]");

@@ -9,6 +9,6 @@ let flat_map_go = |a: Array<'a>, f: fn(x: 'a) -> Array<'b>| -> Array<'b> {
     list::to_array_rev(l)
 };
 
-let r = flat_map_go([1, 2, 3], |x| [x, x * 10]);
+let r = #[native] flat_map_go([1, 2, 3], |x| [x, x * 10]);
 println("[r]");
 sys::exit(r ~ 0)

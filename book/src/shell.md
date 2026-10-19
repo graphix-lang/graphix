@@ -415,12 +415,6 @@ The shell loads this as the module `init`, so in any REPL session the
 utilities are available as `init::debug`, `init::twice`, etc. — or
 bare after a `use init::*`.
 
-<!-- CR claude for claude: [doc-drift/low] The book never mentions the session image
-cache (`$XDG_CACHE_HOME/graphix/registration/..`), or the `--no-cache`, `--warm`,
-`--no-fusion` and `--fusion-stats` flags. A warm start also prints different warnings
-(open CR shell-04), and nothing here would tell a user why. Add a short subsection: what
-is cached and where, what invalidates it, and the flags that bypass or prepare it. Found
-by reading; not run. (book-core-14) -->
 ## Command-Line Options
 
 The `graphix` command supports several options for controlling its behavior.
@@ -481,6 +475,45 @@ graphix -W unhandled -W error myprogram
 ```
 
 If you specify both a flag and its negation (e.g., `unhandled` and `no-unhandled`), the `no-` variant always wins.
+
+### Startup Cache
+
+The shell caches compiled work so a later start is fast. After compiling
+it writes an image of the session (the packages compiled in, and for a
+script the program itself, fusion's native code included) under
+`$XDG_CACHE_HOME/graphix/registration/<build-id>/`, and a later start of
+the same executable restores it instead of compiling. An entry records
+every source file the compile read, and the compile flags and
+`GRAPHIX_MODPATH` are part of its key: a changed file, flag or search
+path is a miss, and the program compiles again. A new build of
+`graphix` gets entries of its own.
+
+```bash
+# neither read nor write the cache
+graphix --no-cache ./myprogram.gx
+
+# compile, write the cache and exit (prepare a deployment's first start)
+graphix --warm ./myprogram.gx
+```
+
+A restored program compiles nothing, so diagnostics printed while
+compiling (some warnings, `--fusion-stats`) appear only on a cold
+start: pass `--no-cache` to see them.
+
+### Debugging Native Code
+
+```bash
+# run every expression in the interpreter (no native code)
+graphix --no-fusion ./myprogram.gx
+
+# print the fusion profile (regions attempted and fused, and why
+# the rest were not) to stderr after compiling
+graphix --no-cache --fusion-stats ./myprogram.gx
+```
+
+`--no-fusion` is also how to see the interpreter's diagnostics for
+unchecked arithmetic (a division by zero), which native code does not
+log.
 
 ### Logging
 

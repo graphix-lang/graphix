@@ -7,13 +7,7 @@ type Mode = [`Normal, `Insert];
 let mode: Mode = `Normal;
 let text = "";
 
-// CR claude for claude: [readability/low] `mode` is read unsampled. When a key writes
-// it, the write lands next cycle, the scrutinee fires again with the previous key, and
-// a second arm runs (Esc answers `Stop` and then `Continue`). Nothing breaks today only
-// because every arm samples `k`, but this is the book's showcase of the pattern. Write
-// `select (k ~ mode, k.code)`, as browser_commands does with `k ~ command_mode`. probe:
-// design/review-2026-10-19/repro/examples-tui-vim-unsampled-mode.gx (examples-tui-07)
-let handle = |e: Event| on_press(e, |k| select (mode, k.code) {
+let handle = |e: Event| on_press(e, |k| select (k ~ mode, k.code) {
   (`Normal, `Char("i")) => {
     mode <- k ~ `Insert;
     `Stop

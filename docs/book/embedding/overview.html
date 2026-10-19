@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -184,50 +184,11 @@ functions and Graphix modules into a crate that can be installed with <code>grap
 same tools available to third-party developers.</p>
 <p>See <a href="../packages/overview.html">Packages</a> for details.</p>
 <h2 id="writing-built-in-functions-in-rust"><a class="header" href="#writing-built-in-functions-in-rust">Writing Built-in Functions in Rust</a></h2>
-<p>For a simple pure function you can use the <code>CachedArgs</code> interface which takes
-care of most of the details for you. You only need to implement one method to
-evaluate changes to your arguments. For example, a function that finds the
-minimum value of all its arguments:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
-use netidx_value::Value;
-
-#[derive(Debug, Default)]
-struct MinEv;
-
-impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MinEv {
-    const NAME: &amp;str = "core_min";
-    const EFFECT: Effect = Effect::Stateless(None);
-
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
-        let mut res = None;
-        for v in from.flat_iter() {
-            match (res, v) {
-                (None, None) | (Some(_), None) =&gt; return None,
-                (None, Some(v)) =&gt; res = Some(v),
-                (Some(v0), Some(v)) =&gt; {
-                    res = if v &lt; v0 { Some(v) } else { Some(v0) };
-                }
-            }
-        }
-        res
-    }
-}
-
-unit_image_state!(MinEv);
-
-type Min = CachedArgs&lt;MinEv&gt;;
-<span class="boring">}</span></code></pre>
-<p>Then register this built-in by listing it in your package’s <code>defpackage!</code> macro,
-and bind it in your Graphix module:</p>
-<pre><code class="language-graphix">let min = |a: 'a, @args: 'a| -&gt; 'a 'core_min
-</code></pre>
-<p>The special form function body <code>'core_min</code> references a built-in Rust
-function. Builtin lambdas must have full type annotations on all
-arguments and the return type — this is how the compiler knows the
-function’s signature.</p>
+<p>A pure function of its arguments is a plain Rust function over their values,
+which <code>graphix_package_core::fast_builtin!</code> turns into a builtin that runs in
+the interpreter and in native code alike; see <a href="../packages/creating.html#the-simple-path-fast_builtin">The Simple
+Path</a> for an example
+(<code>mylib_min</code>) and how to register and bind it.</p>
 <p>See <a href="./builtins.html">Writing Built in Functions</a> for the full API details.</p>
 <h2 id="custom-embedded-applications"><a class="header" href="#custom-embedded-applications">Custom Embedded Applications</a></h2>
 <p>For most standalone binaries, the simplest approach is <code>graphix package build-standalone</code> — see <a href="../packages/standalone.html">Standalone Binaries</a>.</p>

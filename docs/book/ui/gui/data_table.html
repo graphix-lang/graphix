@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -566,6 +566,9 @@ On other column types, <code>Space</code> does nothing. Clicking another cell ca
 an open Text editor.
 Other keys go on to an enclosing <code>keyboard_area</code>, so application
 shortcuts keep working while the table has focus.</p>
+<p>With multiple selected cells, keyboard navigation starts at the first valid
+cell in the program’s selection array. If none of the selected cells is fully
+visible, the table scrolls to that first cell.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
 <p>Minimal usage: publish three hosts and hand the
@@ -573,12 +576,13 @@ shortcuts keep working while the table has focus.</p>
 configuration. Bare-string columns become default Text columns with
 <code>`Netidx</code> source.</p>
 <pre><code class="language-graphix">use gui::{window, column::column, data_table::data_table, text::text};
+use sys::net;
 mod icon;
 
 let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
-    sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
-    sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
-    sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
+    net::publish("/local/graphix/data_table_basic/[name]/status", status);
+    net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
+    net::publish("/local/graphix/data_table_basic/[name]/memory", mem);
 };
 
 publish_host(#name: "host-01", #status: `Up, #cpu: 12.4, #mem: 37.1);
@@ -586,7 +590,7 @@ publish_host(#name: "host-02", #status: `Up, #cpu: 88.2, #mem: 62.0);
 publish_host(#name: "host-03", #status: `Degraded, #cpu: 4.1, #mem: 19.8);
 
 // list_table inspects the resolver to discover children of this path.
-let tbl = sys::net::list_table("/local/graphix/data_table_basic")$;
+let tbl = net::list_table("/local/graphix/data_table_basic")$;
 
 let layout = column(
     #spacing: &amp;12.0,
@@ -620,25 +624,26 @@ caller owns the data pipeline end to end.</p>
   text::text,
   text_input::text_input
 };
+use sys::net;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
 // let the user pick a row filter mode. Sorting is driven entirely
 // from the table itself — click a header to cycle its sort order.
-sys::net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
-sys::net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
-sys::net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
-sys::net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
-sys::net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
-sys::net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
-sys::net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
-sys::net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
-sys::net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
-sys::net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
+net::publish("/local/graphix/data_table_filter/sensor-01/name", "auth-requests");
+net::publish("/local/graphix/data_table_filter/sensor-01/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-02/name", "auth-errors");
+net::publish("/local/graphix/data_table_filter/sensor-02/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-03/name", "db-latency");
+net::publish("/local/graphix/data_table_filter/sensor-03/env", "prod");
+net::publish("/local/graphix/data_table_filter/sensor-04/name", "cache-hits");
+net::publish("/local/graphix/data_table_filter/sensor-04/env", "stage");
+net::publish("/local/graphix/data_table_filter/sensor-05/name", "cache-misses");
+net::publish("/local/graphix/data_table_filter/sensor-05/env", "stage");
+net::publish("/local/graphix/data_table_filter/sensor-06/name", "api-latency");
+net::publish("/local/graphix/data_table_filter/sensor-06/env", "dev");
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_filter")$;
 
 // Filter controls: a regex pattern and whether it includes or excludes.
 // The caller reshapes the Table in graphix before passing it in.
@@ -745,6 +750,7 @@ as bare-string Netidx-sourced columns.</p>
   data_table::{combo_column, data_table, spin_column, text_column, toggle_column},
   text::text
 };
+use sys::net;
 mod icon;
 
 // Four editable columns demonstrating every ColumnType that takes
@@ -755,10 +761,10 @@ mod icon;
 // #on_write writes it, and the publish republishes the new value.
 let publish_host = |#name: string, #enabled: bool, #zone: string, #cpu: f64, host: string| {
     let base = "/local/graphix/data_table_editable/[host]";
-    sys::net::publish(#on_write: |v: string| name &lt;- v, "[base]/name", name);
-    sys::net::publish(#on_write: |v: bool| enabled &lt;- v, "[base]/enabled", enabled);
-    sys::net::publish(#on_write: |v: string| zone &lt;- v, "[base]/zone", zone);
-    sys::net::publish(#on_write: |v: f64| cpu &lt;- v, "[base]/cpu", cpu)
+    net::publish(#on_write: |v: string| name &lt;- v, "[base]/name", name);
+    net::publish(#on_write: |v: bool| enabled &lt;- v, "[base]/enabled", enabled);
+    net::publish(#on_write: |v: string| zone &lt;- v, "[base]/zone", zone);
+    net::publish(#on_write: |v: f64| cpu &lt;- v, "[base]/cpu", cpu)
 };
 publish_host(#name: "alpha", #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01");
 publish_host(#name: "bravo", #enabled: false, #zone: "eu-west-1", #cpu: 8.0, "host-02");
@@ -770,13 +776,13 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
     "name" =&gt; text_column(
         #name: "name",
         #on_edit: |#path: string, #value: Any|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Name"
     ),
     "enabled" =&gt; toggle_column(
         #name: "enabled",
         #on_edit: |#path: string, #value: bool|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Enabled"
     ),
     "zone" =&gt; combo_column(
@@ -788,22 +794,22 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
             { id: "ap-south-1", label: "Asia Pacific" }
         ],
         #on_edit: |#path: string, #value: string|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "Zone"
     ),
     "cpu" =&gt; spin_column(
         #name: "cpu",
-        #min: f64:1.0,
-        #max: f64:64.0,
-        #increment: f64:1.0,
+        #min: 1.0,
+        #max: 64.0,
+        #increment: 1.0,
         #on_edit: |#path: string, #value: f64|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "CPU cores"
     ),
     other =&gt; other
 });
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_editable")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_editable")$;
 let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let selection: Array&lt;string&gt; = [];
@@ -842,7 +848,7 @@ per-row aggregates (here, sums) without touching netidx.</p>
   data_table::{ColumnSpec, Table, data_table, text_column},
   text::text
 };
-use sys::{time, net::publish};
+use sys::{net, time};
 mod icon;
 
 // Two published columns A and B. A virtual "sum" column has its
@@ -855,14 +861,14 @@ let rv = {
     || any(1, rand::rand(#start:0, #end:10, #clock))
 };
 
-publish("/local/graphix/data_table_calculated/r0/A", rv());
-publish("/local/graphix/data_table_calculated/r1/A", rv());
-publish("/local/graphix/data_table_calculated/r2/A", rv());
-publish("/local/graphix/data_table_calculated/r0/B", rv());
-publish("/local/graphix/data_table_calculated/r1/B", rv());
-publish("/local/graphix/data_table_calculated/r2/B", rv());
+net::publish("/local/graphix/data_table_calculated/r0/A", rv());
+net::publish("/local/graphix/data_table_calculated/r1/A", rv());
+net::publish("/local/graphix/data_table_calculated/r2/A", rv());
+net::publish("/local/graphix/data_table_calculated/r0/B", rv());
+net::publish("/local/graphix/data_table_calculated/r1/B", rv());
+net::publish("/local/graphix/data_table_calculated/r2/B", rv());
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_calculated")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_calculated")$;
 
 let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
 
@@ -925,7 +931,7 @@ bounds.</p>
   text::text
 };
 use core::math;
-use sys::time;
+use sys::{net, time};
 mod icon;
 
 // Four rows, each publishing a cpu value that updates once a second
@@ -939,10 +945,10 @@ let cpu_2 = 50.0 + 30.0 * math::sin((t + 10.) / 5.0);
 let cpu_3 = 40.0 + 20.0 * math::sin((t + 20.) / 6.0);
 let cpu_4 = 70.0 + 10.0 * math::sin((t + 30.) / 3.0);
 
-sys::net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
-sys::net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
-sys::net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
-sys::net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
+net::publish("/local/graphix/data_table_sparkline/web-01/cpu", cpu_1);
+net::publish("/local/graphix/data_table_sparkline/web-02/cpu", cpu_2);
+net::publish("/local/graphix/data_table_sparkline/db-01/cpu", cpu_3);
+net::publish("/local/graphix/data_table_sparkline/db-02/cpu", cpu_4);
 
 let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
     "cpu" =&gt; sparkline_column(
@@ -954,7 +960,7 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
     other =&gt; other
 });
 
-let raw_tbl = sys::net::list_table("/local/graphix/data_table_sparkline")$;
+let raw_tbl = net::list_table("/local/graphix/data_table_sparkline")$;
 let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
 
 let layout = column(
@@ -1009,7 +1015,7 @@ let tbl = {
             #name: "score",
             #display_name: "Score",
             #source: &amp;`Netidx(score),
-            #width: &amp;f64:180.0
+            #width: &amp;180.0
         ),
         n =&gt; n
     });
@@ -1035,17 +1041,17 @@ let layout = column(
         text(&amp;"Move the sliders to change the score in the three virtual rows."),
         slider(
             #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr0", v),
-            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr0", 0.)
         ),
         slider(
             #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr1", v),
-            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr1", 0.)
         ),
         slider(
             #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr2", v),
-            #min: &amp;f64:0.0, #max: &amp;f64:1.0, #step: &amp;f64:0.01,
+            #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr2", 0.)
         ),
         data_table(#table: &amp;tbl)
@@ -1078,14 +1084,7 @@ selection echoed in the footer.</p>
   text_input::text_input
 };
 use core::math;
-// CR claude for claude: [style/low] This file imports sys::time but writes
-// sys::net::publish, sys::net::write and sys::net::list_table in full six times.
-// data_table_calculated, data_table_sparkline, data_table_basic, data_table_editable
-// and data_table_filter_sort do the same. data_table_scrolling and data_table_virtual
-// import `sys::{net, time}` and write `net::publish`. Use that form in all of the
-// data_table examples, since data_table.md shows all of them on one page. Found by
-// reading; not run. (examples-gui-03)
-use sys::time;
+use sys::{net, time};
 mod icon;
 
 // Kitchen-sink example combining the main data_table features:
@@ -1103,25 +1102,20 @@ type State = [`Healthy, `Degraded, `Down];
 
 // Publish a tiny fleet of services. state is writable (Combo).
 let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
-    sys::net::publish(
+    net::publish(
         #on_write: |v: State| state &lt;- v,
         "/local/graphix/data_table_dashboard/[name]/state",
         state
     );
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
-    sys::net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
+    net::publish("/local/graphix/data_table_dashboard/[name]/cpu", cpu);
+    net::publish("/local/graphix/data_table_dashboard/[name]/uptime", uptime);
+    net::publish("/local/graphix/data_table_dashboard/[name]/action", "Restart");
 };
 
 // single random number
 let rn = |start, end| rand::rand(#start, #end, #clock:1);
 
-// CR claude for claude: [readability/low] Nothing reads `published`. The init runs only
-// for its publishes, so write it as a bare statement. In the same file, the `rows`
-// select in `tbl` tests `n if n == 0` where data_table_filter_sort writes the literal
-// arm `0 =&gt; ..`; use the literal here too. Both edits pass --expand. Found by reading;
-// the edited copy was checked with graphix --expand. (examples-gui-05)
-let published = array::init(1024, |i| svc(
+array::init(1024, |i| svc(
     #name:"svc-[i]",
     #state:select rand::rand(#clock:1) {
         n if n &lt;= 0.8 =&gt; `Healthy,
@@ -1146,13 +1140,13 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
             { id: "Down", label: "Down" }
         ],
         #on_edit: |#path: string, #value: string|
-            sys::net::write(path, value)$,
+            net::write(path, value)$,
         #display_name: "State",
         #width: &amp;110.
     ),
     "cpu" =&gt; sparkline_column(
         #name: "cpu",
-        #history_seconds: f64:30.0,
+        #history_seconds: 30.0,
         #display_name: "CPU",
         #width: &amp;220.0,
         #min:0.,
@@ -1176,9 +1170,9 @@ let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name
 // rewrap with the column specs.
 let pattern = "";
 let tbl: Table = {
-    let raw = sys::net::list_table("/local/graphix/data_table_dashboard")$;
+    let raw = net::list_table("/local/graphix/data_table_dashboard")$;
     let rows = select str::len(pattern) {
-        n if n == 0 =&gt; raw.rows,
+        0 =&gt; raw.rows,
         _ =&gt; array::filter(raw.rows, |r| {
             let row = opt::or_default(str::basename(r), r);
             select re::is_match(#pat: pattern, row) {
@@ -1285,15 +1279,9 @@ let base = "/local/graphix/data_table_scrolling";
 // Drive every metric off one clock so all rows update in lockstep.
 let tick = time::timer(duration:2.s, true);
 
-// CR claude for claude: [readability/low] The `f64:` prefix is redundant on a float
-// literal (`0.` is already f64). It appears 14 times in this file and also in
-// data_table_virtual, data_table_editable and data_table_dashboard, while
-// data_table_sparkline writes plain `30.0`. Remove them all; with the prefixes
-// stripped, all four files still pass --expand. Found by reading; the stripped files
-// were checked with graphix --expand. (examples-gui-04)
-let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
-let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
-let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
+let rand01 = || rand::rand(#start: 0., #end: 1., #clock: tick);
+let rand100 = || rand::rand(#start: 0., #end: 100., #clock: tick);
+let rand_mbps = || rand::rand(#start: 0., #end: 1000., #clock: tick);
 
 let publish_host = |name: string| {
     net::publish("[base]/host-[name]/cpu_pct", rand100());
@@ -1311,16 +1299,16 @@ let publish_host = |name: string| {
 array::map(host_ids, publish_host);
 
 let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
-    "cpu_pct"       =&gt; progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &amp;f64:90.),
-    "mem_pct"       =&gt; progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &amp;f64:90.),
-    "disk_pct"      =&gt; progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &amp;f64:90.),
-    "net_in_mbps"   =&gt; text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &amp;f64:110.),
-    "net_out_mbps"  =&gt; text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &amp;f64:110.),
-    "load_1m"       =&gt; sparkline_column(#name: "load_1m",    #history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &amp;f64:120.),
-    "load_5m"       =&gt; sparkline_column(#name: "load_5m",    #history_seconds: f64:300., #display_name: "Load 5m",  #width: &amp;f64:120.),
-    "load_15m"      =&gt; sparkline_column(#name: "load_15m",   #history_seconds: f64:900., #display_name: "Load 15m", #width: &amp;f64:120.),
-    "error_count"   =&gt; text_column(    #name: "error_count", #display_name: "Errors",   #width: &amp;f64:100.),
-    "request_count" =&gt; text_column(    #name: "request_count",#display_name: "Requests",#width: &amp;f64:110.),
+    "cpu_pct"       =&gt; progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &amp;90.),
+    "mem_pct"       =&gt; progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &amp;90.),
+    "disk_pct"      =&gt; progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &amp;90.),
+    "net_in_mbps"   =&gt; text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &amp;110.),
+    "net_out_mbps"  =&gt; text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &amp;110.),
+    "load_1m"       =&gt; sparkline_column(#name: "load_1m",    #history_seconds: 60.,  #display_name: "Load 1m",  #width: &amp;120.),
+    "load_5m"       =&gt; sparkline_column(#name: "load_5m",    #history_seconds: 300., #display_name: "Load 5m",  #width: &amp;120.),
+    "load_15m"      =&gt; sparkline_column(#name: "load_15m",   #history_seconds: 900., #display_name: "Load 15m", #width: &amp;120.),
+    "error_count"   =&gt; text_column(    #name: "error_count", #display_name: "Errors",   #width: &amp;100.),
+    "request_count" =&gt; text_column(    #name: "request_count",#display_name: "Requests",#width: &amp;110.),
     other =&gt; other
 });
 
@@ -1343,7 +1331,7 @@ let layout = column(
     #icon: &amp;icon::icon,
     #title: &amp;"Data Table — Scrolling",
     #theme: &amp;`CatppuccinMocha,
-    #size: &amp;mut {width: f64:900., height: f64:400.},
+    #size: &amp;mut {width: 900., height: 400.},
     &amp;layout
 )]
 </code></pre>
@@ -1355,12 +1343,6 @@ widgets, no netidx subscriptions.</li>
 <li><a href="../../stdlib/sys/net.html"><code>sys::net</code></a> – the <code>Table</code> record and
 <code>list_table</code> helper consumed by <code>#table</code>.</li>
 </ul>
-<!-- CR claude for claude: [readability/low] This paragraph is about keyboard navigation
-but sits after See Also, at the end of the page. Move it into the Keyboard Navigation
-section. Found by reading; not run. (book-ui-b-10) -->
-<p>With multiple selected cells, keyboard navigation starts at the first valid
-cell in the program’s selection array. If none of the selected cells is fully
-visible, the table scrolls to that first cell.</p>
 
                     </main>
 

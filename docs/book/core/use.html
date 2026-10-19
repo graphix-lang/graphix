@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -252,13 +252,8 @@ bindings at the top of the file.</li>
 the primitive type names are implicitly imported into every module.
 They can be shadowed by explicit declarations and imports.</p>
 <h2 id="scoping"><a class="header" href="#scoping">Scoping</a></h2>
-<!-- CR claude for claude: [doc-drift/low] `use` is a statement, not an expression. The
-compiler refuses it outside a block or module body ("a use declaration is not an
-expression"), as CLAUDE.md says of every declaration. Say "valid as a statement in any
-block or module body". probe:
-design/review-2026-10-19/repro/book-core-use-statement-only.sh (book-core-12) -->
-<p><code>use</code> is valid anywhere expressions are valid, and imports into the
-enclosing lexical scope only:</p>
+<p><code>use</code> is a statement, valid in any block or module body (not in
+expression position), and imports into the enclosing lexical scope only:</p>
 <pre><code class="language-graphix">let list = {
   use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
@@ -266,7 +261,7 @@ enclosing lexical scope only:</p>
 list
 </code></pre>
 <p>will print <code>[2, 4, 6, 8, 10]</code></p>
-<pre><code class="language-graphix">let list = {
+<pre><code class="language-graphix refused">let list = {
   use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };

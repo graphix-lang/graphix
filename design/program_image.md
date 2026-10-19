@@ -118,53 +118,12 @@ the cold run produced, keyed within the image by the in-process kernel
 key, so the program image needs no CLIF determinism and no second
 cache. A content-keyed kernel cache would only speed up the cold run
 after an edit and share kernels across programs; if that matters
-later it is additive, and the determinism pin becomes its
-prerequisite then. The original design follows for the record.
-
-### Step 2 as designed: cache kernels at the Cranelift boundary
-
-| fusion phase | ms |
-|---|---:|
-| discovery, return types, inputs, callees | ~35 |
-| CLIF construction | 45 |
-| Cranelift bodies, wrappers, stubs | ~120 |
-
-The cut is at the backend. Key: the CLIF function's text plus ISA
-flags and the Cranelift version, under the build id. Value: the
-compiled bytes and their relocations, installed into the same
-`JITModule` through `define_function_bytes`. Relocations name helpers
-by symbol, as they already do. The front half still runs because it
-decides the region shape and produces the key. Keyed on CLIF content
-the cache is per region, not per program: every program shares entries
-for the same stdlib regions, and an emitter change invalidates exactly
-the kernels it touches.
-
-**Prerequisite: deterministic CLIF.** The emitter bakes process
-addresses and per-process counters as immediates:
-
-- fast-call function pointers, which move every run under PIE
-  (`fusion/emit/call.rs:183`, `:188`);
-- interned strings, values, types and `QopSite` pointers
-  (`fusion/emit/body.rs:855` through `:910`);
-- slot state-table `Arc` pointers (`fusion/emit/call.rs:553`);
-- `AbstractId`, a per-registration counter (`fusion/emit/nodes.rs:989`).
-
-Each becomes an imported symbol resolved by name at load (fast fns,
-like helpers) or a load from a per-kernel constants block whose entries
-carry a recipe the loader recomputes in the running process: this
-interned string, this serialized type, this abstract type by name,
-this qop site by key. About eight emit sites and one constants block.
-The same table relocates kernels stored in the image (step 3).
-
-Pins: emit the admin workload in two processes and compare CLIF byte
-for byte; a warm run against a cold run under the fuzzer's `detcheck`.
-
-Expected: about 120 ms off the app request. Steps 1 and 2 together
-take the fast-machine startup from about 480 ms to about 300 ms.
+later it is additive, and deterministic CLIF (two processes emitting
+one region byte for byte) becomes its prerequisite then.
 
 ## Built: the registration image
 
-The first slice of step 3, keyed and stored as the cache rule above
+The first slice of step 3 (the compiled program), keyed and stored as the cache rule above
 says. The image is the session after the package root modules compiled
 and before any cycle: the environment (`image/env.rs`), every lambda
 definition as data (`image/defs.rs`: body, lexical snapshot, scope,
@@ -449,67 +408,7 @@ Measured on the admin TUI with fusion on, LTO, bench mode (P cores at
 to 49 ms (restore 13, first cycle 27); the difference is the 526
 regions' installation and the kernels' own first frame.
 
-<!-- CR claude for claude: [doc-drift/low] This section and "Experiments, in order" are
-the pre-build plan and contradict the built slices above. Kernels are `BodyRecord`s, not
-"step 2 entries" (step 2 was dropped). Decode is lazy, not eager first.
-`Shell::init`/`GXConfig` "gains" and the `lambda.rs`/`lib.rs` citations are stale. Keep
-only the as-built facts (ID regions, env packing) and drop the rest with "Step 2 as
-designed"; git log holds them. Found by reading; not run. (x-doc-drift-12) -->
-## Step 3: cache the compiled program
-
-Built in slices, each landing green: (a) every node kind that a
-fusion-off program produces gets a codec, call sites carry their
-statically bound instance, builtin occurrences rebuild through the
-registered factory, and the shell images a program compiled with
-fusion off (a fusion-on program fails the write and runs cold, as
-any un-imaged kind does); (b) instances materialize on first
-dispatch; (c) the program cache key and `--warm`, measured on the
-admin TUI; (d) kernels as stored bytes; (e) the fuzzer's warm route
-and the growth study.
-
-What remains after steps 1 and 2 is instantiation and typechecking
-(~190 ms), CLIF construction (~45 ms) and analysis (~17 ms): the work
-that produces the keys, uncacheable by content. The program image
-caches it by program.
-
-### The image is the compiled program, not the package definitions
-
-A package-definition image cannot remove this cost. The gate deletes
-the bodies it compiles, and every call site builds its instance from
-the source `Expr` through `GXLambda::new` (`lambda.rs:992`). Compiled
-package bodies would be bodies no runtime path consumes, and deriving
-instances from a compiled template is the deleted `clone_rebind`
-machinery.
-
-The image is the state of one compiler session after the root has
-been compiled, every static call site instantiated, analysis run and
-fusion emitted: the environment, the definitions, every instance's node
-graph, the analysis facts and the kernels. One session, one shared
-`Env`, one ID space. Its key is the root's depfile under the build id.
-
-### Format: an indexed object graph with offsets
-
-The codec is an object graph, not a tree. Object numbers come from
-allocation identity at encode time; every shared object is written
-once; decode registers an object before filling its recursive contents
-so cycles resolve. The tables span the whole image: cell constraints
-refer back to cells, abandoned cells forward to other `TVar`s, nodes
-share specs, types share subtrees. These edges are decoded as edges,
-never reconstructed by re-running aliasing, constraint merging or
-typechecking.
-
-Every object has an offset, and an instance's graph is locatable
-without decoding its neighbours. Eager whole-image decode is the first
-implementation; lazy decode is then a decoder change, not a format
-change. Immutable data (`Expr` specs, types, kernels) and mutable data
-(node state, staging, activation words) are laid out separately, so a
-later zero-copy decoder can leave the immutable part in the mapped
-file.
-
-The syntax codec (`expr/serialize.rs`) deliberately does less: fresh
-`TVar` cells, skipped `TypeRef` resolutions, fresh IDs. Those choices
-suit syntax that will be compiled. The image codec never recovers
-correctness by recompiling.
+## IDs and the environment
 
 ### IDs: two regions, block relocation
 
@@ -561,7 +460,7 @@ a definition's IDs. A later call still allocates fresh locals and state
 owners above the block, while captures keep the identities of the
 bindings actually captured.
 
-### Env: maps packed with their sharing (built)
+### Env: maps packed with their sharing
 
 Only four `Env` fields are lexical: `binds`, `modules`, `typedefs`,
 `traits`. Everything else is global and is written once, as the final
@@ -586,109 +485,3 @@ instance decoded later resolves into nodes decoded earlier — installed
 for a call by a session guard. `encoded_len` is exact: `tree_len` goes
 through `image::object_len`, so every occurrence costs its reference,
 and a derived `Pack` may frame a shared map.
-
-### TVars: two levels of sharing
-
-`TVar` is an `Arc<TVarInner>` holding wrapper metadata and an `Arc` of
-a separately mutable `TCell` (`typ/tvar.rs:136`). A clone shares the
-wrapper; distinct wrappers can share a cell. Both relationships are
-object references in the image. Neither names, structural equality nor
-`TVarId` can stand in: `alias_cells` redirects the cell without
-updating the wrapper's id (`typ/tvar.rs:444`).
-
-The image retains the wrapper's id and frozen flag and the cell's
-bound type, constraints and `cycle_refused` state. The snapshot is
-taken outside any definition check: `rigid_gates` is verified zero,
-never discarded. Stored schemes are immutable; instantiation for a
-later call still mints its own cells as `resolve_tvars` does today.
-
-Round-trip tests mutate after decoding: bind through an alias, redirect
-a shared wrapper, add a constraint visible through another alias, keep
-equal-named independent variables independent, and cover forwarding
-cells and recursive constraints. Comparing printed types would miss
-every one of these.
-
-### Nodes, builtins and lambdas
-
-Every node kind has a codec (48 `Update`/`Apply` impls; a node tag
-plus the concrete node's codec rebuilds the `Node` wrapper). State is
-pristine: the image is taken before any cycle, so no timer has
-started and no subscription has opened. Process-local fields have
-explicit attachment rules.
-
-Builtin occurrences store a symbol plus immutable prepared data and
-reconnect to the linked Rust factory at decode; closures, vtable
-addresses and handles are never image data. `BuiltIn::init` takes a
-full context, scope and argument nodes
-(`graphix-compiler/src/lib.rs:844`) and does not separate preparation
-from runtime construction; that audit is part of the work, per builtin
-(57 impls).
-
-`LambdaDef::init` is a closure over source and environment
-(`lambda.rs:992`). In the image it is data: the source body, the
-lexical snapshot marker, argspec, scheme and flags, driven by ordinary
-runtime code.
-
-### Instances materialize on first dispatch
-
-The runtime already creates instances at first dispatch: a new
-recursion depth, a new collection slot, a dynamic call. Decoding an
-instance's graph from the image when its site first dispatches is that
-same path, not new semantics; a labeled default still delivers FIRED
-at the fresh callee's first dispatch. Typing and analysis remain
-whole-program, done on the cold run, and are not repeated.
-
-Instances that do not exist in the image (a slot the array grew into,
-a depth not reached on the cold run, a dynamic callee) compile from
-source against the definition's lexical snapshot as they do today. The
-compiler stays linked into the executable.
-
-Restoring an instance from the image and creating a fresh one at
-runtime need not share an ID policy. Unpacking a second copy of an
-instance with the same local IDs does not create independent state;
-the fresh-instance path keeps its binding rules.
-
-### Kernels and analysis facts
-
-Kernels are stored as the step 2 entries they already are, referenced
-from the instance that owns them and attached when it materializes.
-Reusable facts (effects, statelessness, recursion kinds, local binding
-sets, blockers) are stored with their definitions and instances; facts
-that depend on callbacks store the dependency summary. Cycles that
-only runtime-created instances introduce are analysed then, as today.
-Nothing rescans stored bodies to rediscover established facts.
-
-### Shell and runtime API
-
-`Shell::init` (`graphix-shell/src/lib.rs:210`) consults the cache
-between registration and root compilation, and `GXConfig`
-(`graphix-rt/src/gx.rs:260`) gains an alternative to `compile_root`
-that installs a restored root without re-entering the compiler.
-`setup_context` still runs before any restored node constructs a
-resource, and after the ID blocks are reserved. The LSP registers once
-per session and is untouched.
-
-## Experiments, in order
-
-1. Count first dispatches in the admin init cycle against its 2,513
-   instances. If the first frame reaches most of them, per-instance
-   decode cost governs the first frame and laziness governs growth; if
-   it reaches a few hundred, laziness governs both.
-2. Step 1, with its warm/cold scheme comparison. Measure registration.
-3. The CLIF determinism pin, then step 2 with the `detcheck` warm/cold
-   route. Measure the app request.
-4. The image codec on a small representative set: a generic
-   higher-order function, closures with the same source and different
-   captures, independent mutable locals, an async producer,
-   caller-owned error handling, nominal and trait identity across an
-   import. The TVar mutation tests above.
-5. Eager restore of the admin image. Record decoded bytes, allocations,
-   time per phase (decode, ID relocation, env replay, builtin
-   attachment, kernel attachment) against the cold compile. Then the
-   lazy decoder, same measurements.
-6. Differential: warm against cold reactive traces, fusion on and off,
-   through sleep/wake, recursion, deletion and reactivation; the fuzzer
-   gains a warm route.
-7. Growth: unused bodies at 10x and 100x with the reached set constant;
-   then vary reached instances, declaration count and activation count
-   separately. This distinguishes removing work from postponing it.

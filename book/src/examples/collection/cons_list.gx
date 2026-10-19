@@ -42,7 +42,7 @@ impl Collection for L<'_> {
 use Collection::*;
 let l: L<i64> = `C(1, `C(2, `C(3, `N)));
 let doubled = map(l, |x| x * 2);
-let s = fold(doubled, 0, |a, x| a + x);
+let s = #[native] fold(doubled, 0, |a, x| a + x);
 let n = len(filter(l, |x| x > 1));
 println("sum=[s] kept=[n]");
 sys::exit(s ~ 0)

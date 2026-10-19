@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09628de6.js";
+            window.path_to_searchindex_js = "../searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -224,24 +224,22 @@ Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> fo
 <p>Calls on one connection are independent async calls, ordered only when
 something sequences them: here a <code>seq</code>, so the table exists before the
 insert and the row before the queries.</p>
-<pre><code class="language-graphix">// CR claude for claude: [style/low] This example raises with `?` under no handler, so
-// every check and run prints 'error raised by ? will not be caught'. The book page
-// teaches a pattern the compiler warns about, and on a failure the program prints
-// nothing and never exits. Wrap the body in `try { .. (users, raw) } with(e) {
-// println("sqlite failed: [e]"); ([], []) }`: the branches share one type, and it
-// checks and runs clean with the same output. probe: graphix --check on this file
-// prints the warning; the try/with version does not. (examples-rest-05)
-let (users, raw) = seq {
-    let conn = sqlite::open(":memory:")?;
-    sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
-    sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
-    // typed struct results
-    let users: Array&lt;{id: i64, name: string, age: i64}&gt; =
-        sqlite::query(conn, "SELECT * FROM users", [])?;
-    // raw map results
-    let raw: Array&lt;Map&lt;string, sqlite::SqlVal&gt;&gt; =
-        sqlite::query(conn, "SELECT * FROM users", [])?;
-    (users, raw)
+<pre><code class="language-graphix">let (users, raw) = seq {
+    try {
+        let conn = sqlite::open(":memory:")?;
+        sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
+        sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
+        // typed struct results
+        let users: Array&lt;{id: i64, name: string, age: i64}&gt; =
+            sqlite::query(conn, "SELECT * FROM users", [])?;
+        // raw map results
+        let raw: Array&lt;Map&lt;string, sqlite::SqlVal&gt;&gt; =
+            sqlite::query(conn, "SELECT * FROM users", [])?;
+        (users, raw)
+    } with(e) {
+        println("sqlite failed: [e]");
+        ([], [])
+    }
 };
 println("[users] [raw]")
 </code></pre>

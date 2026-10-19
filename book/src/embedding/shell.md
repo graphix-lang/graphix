@@ -16,12 +16,6 @@ dependencies, or replace the set with `packages(..)`.
 
 ## Basic Application
 
-<!-- CR claude for claude: [doc-drift/medium] Every example on this page writes
-`Mode::Script(Source::File(..))` and imports `graphix_compiler::expr::Source`, but
-`graphix_shell::Mode::Script` takes a `graphix_compiler::expr::Load` (`Load::File`,
-`Load::Netidx`, `Load::Text`), so none of these snippets compiles. Fix: import `Load`
-and write `Mode::Script(Load::File(PathBuf::from("main.gx")))` everywhere on the page.
-Found by reading; not run. (book-modules-udt-03) -->
 The shell needs a `MainThreadHandle` so widgets that must run on the
 main thread (notably the GUI backend) can dispatch work back from the
 tokio runtime. The standard pattern is to spawn tokio on its own thread
@@ -29,7 +23,7 @@ and pump the main-thread queue from `main`:
 
 ```rust
 use anyhow::Result;
-use graphix_compiler::expr::Source;
+use graphix_compiler::expr::Load;
 use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
@@ -38,7 +32,7 @@ use std::path::PathBuf;
 // the exit code a script asked for with `sys::exit`, if any
 async fn tokio_main(run_on_main: MainThreadHandle) -> Result<Option<i32>> {
     ShellBuilder::<NoExt>::default()
-        .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
+        .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
         .no_init(true)
         .build()?
         .run(run_on_main)
@@ -89,7 +83,7 @@ use netidx::publisher::DesiredAuth;
 
 let config = netidx::config::Config::load_default()?;
 ShellBuilder::<NoExt>::default()
-    .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
+    .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
     .setup_context(Box::new(move |ctx| {
         ctx.libstate.set(NetConfig::Config {
             config,
@@ -128,7 +122,7 @@ fn my_modules() -> ResolverRef {
 
 ShellBuilder::<NoExt>::default()
     .module_resolvers(vec![my_modules()])
-    .mode(Mode::Script(Source::File(PathBuf::from("main.gx"))))
+    .mode(Mode::Script(Load::File(PathBuf::from("main.gx"))))
     .build()?
     .run(run_on_main)
     .await

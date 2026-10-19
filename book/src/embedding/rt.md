@@ -86,26 +86,26 @@ common, because
 will appear in any data structure that has a value passed by ref (e.g. `&v`),
 which should be common for large structures that don't change often.
 
-<!-- CR claude for claude: [doc-drift/medium] The derive example below has no
-`#[value(shape = "graphix_compiler::rep::GraphixShape")]`, so it uses
-`netidx_value::NetidxShape`. A Graphix struct value carries its kind marker at element 0
-(graphix-types rep.rs), and `GXEvent::Updated` hands it over unconverted, so
-`derive_struct_field` bails with "expected a struct field" on every struct, tuple or
-variant the embedder receives. An `IntoValue` built the same way writes data that
-Graphix code does not read as a struct. Every derive in the tree carries the attribute.
-Fix: add it to the example and say every derive over Graphix values needs it, in both
-directions. Found by reading; not run. (book-modules-udt-02) -->
 A Rust type that mirrors a Graphix type need not implement `FromValue` by hand:
 `#[derive(FromValue, IntoValue)]` from the `netidx-derive` crate maps a struct's
 named fields onto the Graphix struct's fields by name, and an enum's variants
 onto Graphix variants (`` `Tag ``, `` `Tag(a, b) ``, `` `Tag({ .. }) ``). A field
 passed by reference (`&T`) reads as a `BindId`, a reference's own value
-(`graphix_compiler::reference::cell` reads one from a `Value`). The generated
-code names `netidx_value` and `anyhow`, so the crate depends on both.
+(`graphix_compiler::reference::cell` reads one from a `Value`).
+
+Every derive over a Graphix value, in either direction, carries
+`#[value(shape = "graphix_compiler::rep::GraphixShape")]`. A Graphix
+tuple, struct or variant value carries a kind marker the default
+(netidx) shape does not know: without the attribute, `FromValue`
+refuses every struct, tuple and variant the program sends, and
+`IntoValue` builds values the program does not read as one. The
+generated code names `netidx_value`, `anyhow` and `graphix_compiler`, so
+the crate depends on all three.
 
 ```rust
 // the Graphix type {x: f64, y: f64, label: &string}
 #[derive(FromValue)]
+#[value(shape = "graphix_compiler::rep::GraphixShape")]
 struct Point {
     x: f64,
     y: f64,

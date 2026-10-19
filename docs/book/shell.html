@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-09628de6.js";
+            window.path_to_searchindex_js = "searchindex-e36ee513.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -485,12 +485,6 @@ let twice = |f: fn(x: 'a) -&gt; 'a, x: 'a| f(f(x));
 <p>The shell loads this as the module <code>init</code>, so in any REPL session the
 utilities are available as <code>init::debug</code>, <code>init::twice</code>, etc. — or
 bare after a <code>use init::*</code>.</p>
-<!-- CR claude for claude: [doc-drift/low] The book never mentions the session image
-cache (`$XDG_CACHE_HOME/graphix/registration/..`), or the `--no-cache`, `--warm`,
-`--no-fusion` and `--fusion-stats` flags. A warm start also prints different warnings
-(open CR shell-04), and nothing here would tell a user why. Add a short subsection: what
-is cached and where, what invalidates it, and the flags that bypass or prepare it. Found
-by reading; not run. (book-core-14) -->
 <h2 id="command-line-options"><a class="header" href="#command-line-options">Command-Line Options</a></h2>
 <p>The <code>graphix</code> command supports several options for controlling its behavior.</p>
 <h3 id="netidx-configuration"><a class="header" href="#netidx-configuration">Netidx Configuration</a></h3>
@@ -533,6 +527,36 @@ graphix -W error ./myapp
 <pre><code class="language-bash">graphix -W unhandled -W error myprogram
 </code></pre>
 <p>If you specify both a flag and its negation (e.g., <code>unhandled</code> and <code>no-unhandled</code>), the <code>no-</code> variant always wins.</p>
+<h3 id="startup-cache"><a class="header" href="#startup-cache">Startup Cache</a></h3>
+<p>The shell caches compiled work so a later start is fast. After compiling
+it writes an image of the session (the packages compiled in, and for a
+script the program itself, fusion’s native code included) under
+<code>$XDG_CACHE_HOME/graphix/registration/&lt;build-id&gt;/</code>, and a later start of
+the same executable restores it instead of compiling. An entry records
+every source file the compile read, and the compile flags and
+<code>GRAPHIX_MODPATH</code> are part of its key: a changed file, flag or search
+path is a miss, and the program compiles again. A new build of
+<code>graphix</code> gets entries of its own.</p>
+<pre><code class="language-bash"># neither read nor write the cache
+graphix --no-cache ./myprogram.gx
+
+# compile, write the cache and exit (prepare a deployment's first start)
+graphix --warm ./myprogram.gx
+</code></pre>
+<p>A restored program compiles nothing, so diagnostics printed while
+compiling (some warnings, <code>--fusion-stats</code>) appear only on a cold
+start: pass <code>--no-cache</code> to see them.</p>
+<h3 id="debugging-native-code"><a class="header" href="#debugging-native-code">Debugging Native Code</a></h3>
+<pre><code class="language-bash"># run every expression in the interpreter (no native code)
+graphix --no-fusion ./myprogram.gx
+
+# print the fusion profile (regions attempted and fused, and why
+# the rest were not) to stderr after compiling
+graphix --no-cache --fusion-stats ./myprogram.gx
+</code></pre>
+<p><code>--no-fusion</code> is also how to see the interpreter’s diagnostics for
+unchecked arithmetic (a division by zero), which native code does not
+log.</p>
 <h3 id="logging"><a class="header" href="#logging">Logging</a></h3>
 <p>Enable debug logging for troubleshooting:</p>
 <pre><code class="language-bash">RUST_LOG=debug graphix --log-dir /tmp/graphix-logs ./myprogram
