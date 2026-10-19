@@ -740,7 +740,7 @@ fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar))
 /// cell at the top level or another definition's, never one the
 /// lambdas `value` holds own nor a quantifier a function type in `value`
 /// binds. Such a value is not general in that cell.
-// CR claude for claude: [bug/high] The escape test only walks cells reachable from the
+// XCR claude for claude: [bug/high] The escape test only walks cells reachable from the
 // argument's type. In `|x| { let k = |y| { st <- y; y }; k(x) }` the outer `st` cell is
 // bound to k's cell, so walking from g's signature never reaches it. As a result,
 // `h(g)` with `h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"))` passes the check, `let
@@ -752,6 +752,11 @@ fn reaches_cell(t: &Type, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&TVar))
 // nested form beside NESTED_QUANTIFIER_ENV_CELL. probe:
 // design/review-2026-10-19/repro/tests-types-rank2-escape-nested-lambda.gx
 // (tests-types-01)
+// 2026-10-19 claude: The rank-2 check also walks the types of the bindings the argument
+// reads or writes (its free refs) for the formal's quantifiers (escapes_through),
+// skipping quantifiers those types bind themselves (bound_quantifiers, shared with
+// carried_out). Pin: lang::types NESTED_QUANTIFIER_ENV_CELL_NESTED refused 'not
+// polymorphic'.
 pub(crate) fn carried_out(
     quantified: &[(ArcStr, usize)],
     value: &Type,
