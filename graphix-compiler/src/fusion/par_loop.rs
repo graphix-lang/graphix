@@ -57,7 +57,7 @@ thread_local! {
 
 /// Loan `loan` to the kernel code `f` runs; nested runs stack.
 pub(crate) fn with_par_loan<T>(loan: Option<ParLoan>, f: impl FnOnce() -> T) -> T {
-    let _loan = emit_helpers::Restore::set(&PAR_LOAN, loan);
+    let _loan = crate::Restore::replace(&PAR_LOAN, loan);
     f()
 }
 
@@ -142,14 +142,8 @@ pub(crate) unsafe fn run(
     let find = kind & FIND != 0;
     let root = kind & ROOT != 0;
     let mode = |l: &ParLoan| if root { l.mode } else { l.body_mode };
-    // CR claude for claude: [structure/low] This filter repeats ProbePlan::of's Serial
-    // cases (Off, fewer than 2 slots), and the Serial arm below is unreachable! as a
-    // result. A new serial case in ProbePlan::of would panic here. Keep only the
-    // value-hook test in the filter and route ProbePlan::Serial to in_order. Found by
-    // reading; not run. (f-kernel-07)
-    let loan = PAR_LOAN.with(|c| c.get()).filter(|l| {
-        mode(l) != ParMode::Off && len >= 2 && !abstract_value::value_hooks_loaned()
-    });
+    let loan =
+        PAR_LOAN.with(|c| c.get()).filter(|_| !abstract_value::value_hooks_loaned());
     let Some(loan) = loan else {
         return unsafe { in_order(chunk, frame, len, find, out) };
     };
@@ -158,7 +152,7 @@ pub(crate) unsafe fn run(
     let site = unsafe { &*site };
     let forced = if root { loan.forced } else { None };
     let (at, grain) = match ProbePlan::of(mode(&loan), len, forced) {
-        ProbePlan::Serial => unreachable!("an Off loan and a short loop are filtered"),
+        ProbePlan::Serial => return unsafe { in_order(chunk, frame, len, find, out) },
         ProbePlan::Fork { grain } => (0, Some(grain)),
         plan @ (ProbePlan::Uncalibrated | ProbePlan::Probe) => 'auto: {
             if site.untimed(len) {
@@ -265,10 +259,8 @@ pub(crate) unsafe fn run(
             branch::on_pool(control, || {
                 forked.par_iter_mut().with_max_len(1).for_each(|r| {
                     branch::as_part(control, None, &live, || {
-                        let _env =
-                            emit_helpers::Restore::set(&KERNEL_ENV, env as *const _);
-                        let _gen =
-                            emit_helpers::Restore::set(&SELF_BLOCK_GEN, generation);
+                        let _env = crate::Restore::replace(&KERNEL_ENV, env as *const _);
+                        let _gen = crate::Restore::replace(&SELF_BLOCK_GEN, generation);
                         with_par_loan(Some(loan), || unsafe {
                             run_here(chunk, frame, r)
                         });

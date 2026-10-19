@@ -85,7 +85,7 @@ pub(super) fn compile_into_function<'a>(
     let mut initial_vals: LPooled<Vec<ClifValue>> = LPooled::take();
     initial_vals.extend_from_slice(b.block_params(entry));
     // Under a wake view init is not genuine: consumers read `init & !wake`.
-    let CtxWord { init: init_flag, wake: wake_flag } =
+    let CtxWord { born: born_flag, wake: wake_flag } =
         CtxWord::decode(b, initial_vals[0]);
     let helper_refs = HelperRefs::new(helper_ids, names);
     let state_ptr = initial_vals[1];
@@ -93,7 +93,7 @@ pub(super) fn compile_into_function<'a>(
     if crate::dbgenv::gxdbg_callret() {
         use crate::fusion::emit_helpers::CallRetTag;
         let t = b.ins().iconst(types::I64, CallRetTag::InitFlag as i64);
-        helper_refs.call(b, "graphix_dbg_disc", &[t, init_flag])?;
+        helper_refs.call(b, "graphix_dbg_disc", &[t, born_flag])?;
     }
     // Wire slot 2: the callee's per-call-site block; 0 for parents and
     // bodies that claim no site words.
@@ -161,7 +161,7 @@ pub(super) fn compile_into_function<'a>(
             params: spec.params,
             tail_scrut_stale_acc,
         },
-        init_flag,
+        born_flag,
         wake_flag,
         callee_refs: callees.refs,
         callee_ids: callees.ids,
@@ -303,22 +303,22 @@ pub(crate) struct SiteLayout {
 /// The context word (wire slot 0) as its two 0/1 flags.
 #[derive(Clone, Copy)]
 pub(super) struct CtxWord {
-    pub(super) init: ClifValue,
+    pub(super) born: ClifValue,
     pub(super) wake: ClifValue,
 }
 
 impl CtxWord {
     pub(super) fn decode(b: &mut FunctionBuilder, word: ClifValue) -> Self {
-        let init = b.ins().band_imm(word, kernel_abi::CTX_INIT);
+        let born = b.ins().band_imm(word, kernel_abi::CTX_BORN);
         let w = b.ins().band_imm(word, kernel_abi::CTX_WAKE);
         let wake = b.ins().ushr_imm(w, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
-        Self { init, wake }
+        Self { born, wake }
     }
 
     pub(super) fn encode(self, b: &mut FunctionBuilder) -> ClifValue {
         let wake =
             b.ins().ishl_imm(self.wake, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
-        b.ins().bor(self.init, wake)
+        b.ins().bor(self.born, wake)
     }
 }
 
@@ -507,7 +507,7 @@ pub(crate) struct LowerCtx<'a> {
     /// See [`TailCtx`].
     pub(super) tail: TailCtx<'a>,
     /// Wire slot 0 bit 0: 1 on the kernel's init cycle.
-    pub(super) init_flag: ClifValue,
+    pub(super) born_flag: ClifValue,
     /// Wire slot 0 bit 1: a wake view, under which init is not genuine
     /// (`init & !wake`).
     pub(super) wake_flag: ClifValue,

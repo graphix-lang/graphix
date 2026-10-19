@@ -39,8 +39,7 @@ use super::{
     scalar::{
         ElementRead, abstract_read_helper, compile_bin, compile_cast, compile_cmp,
         compile_const, compile_element_read, kind_disc, prim_to_clif,
-        scalar_to_payload_i64, string_buf_push_helper, value_buf_push_helper,
-        widen_to_i64, zero_const,
+        scalar_to_payload_i64, string_buf_push_helper, widen_to_i64, zero_const,
     },
 };
 
@@ -58,7 +57,7 @@ pub(crate) fn emit_const_node(
     typ: &Type,
 ) -> Result<CompiledExpr> {
     // A constant fires at init only and is never tainted.
-    let init = cx.init_flag();
+    let init = cx.born_flag();
     match kernel_abi::abi_kind(typ) {
         Some(AbiKind::Scalar(prim)) => {
             let disc = scalar_disc(cx.b, prim);
@@ -256,14 +255,6 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
                 let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
                 (is_zero, cx.b.ins().bor(is_zero, is_neg1))
             }
-            // CR claude for claude: [test-gap/low] Nothing pins this arm's per-width
-            // `min` for i8, i16 or i32. The only narrow MIN/-1 fixture is errors.rs
-            // rem8, which takes the Mod arm, and the unchecked-division pins in
-            // lib_tests/arith.rs are i64 and not #[native]. If `min` were collapsed to
-            // i64::MIN, `i8:-128 / i8:-1` in a kernel would reach sdiv and SIGFPE the
-            // process, and no test would fail. Add a FuseExpect::Jit fixture that
-            // divides a dynamic MIN by a dynamic -1 under #[native] for i8, i16 and i32
-            // and expects bottom. Found by reading; not run. (f-nodes-scalar-02)
             (true, _) => {
                 let min: i64 = match prim {
                     PrimType::I8 => i8::MIN as i64,
@@ -761,59 +752,18 @@ pub(crate) fn call_result_needs_value_widening(
         ))
 }
 
-/// Compile one producer field and emit its `graphix_value_buf_push_*`
-/// call into `buf`; returns the field's disc. The Node twin of
-/// `scaffold::push_field`.
-// CR claude for claude: [structure/low] This repeats scaffold::push_field's helper
-// table: the scalar push, owned/borrowed array and value pushes, push_string, the null
-// push, and the pair vs one-word call form. Only the kind's source differs. Freeze the
-// field's type with freeze_node_typ, emit the field, then call
-// `scaffold::push_field(cx, buf, cv, &frozen, node_composite_source(field))` and return
-// `cv.disc`, so the producer helpers are chosen in one place. Found by reading; not
-// run. (f-nodes-scalar-03)
+/// Compile one producer field and push it into `buf`
+/// ([`scaffold::push_field`]); returns the field's disc.
 fn emit_push_field_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     buf: ClifValue,
     field: &Node<R, E>,
 ) -> Result<ClifValue> {
-    let kind = cx.node_kind(field.typ());
-    let helper_name: &str = match kind {
-        Some(AbiKind::Scalar(p)) => value_buf_push_helper(p),
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            match node_composite_source(field) {
-                CompositeSource::Owned => "graphix_value_buf_push_array",
-                CompositeSource::Borrowed => "graphix_value_buf_push_array_borrowed",
-            }
-        }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            match node_composite_source(field) {
-                CompositeSource::Owned => "graphix_value_buf_push_value",
-                CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
-            }
-        }
-        // String SSA is owned ArcStr bits, which `_push_string` consumes;
-        // `_push_arcstr` derefs a `*const ArcStr` and would be UB here.
-        Some(AbiKind::String) => "graphix_value_buf_push_string",
-        Some(AbiKind::Null) => "graphix_value_buf_push_value",
-        other => {
-            return Err(anyhow!(
-                "emit_clif: producer field of shape {other:?} — not \
-                 representable"
-            ));
-        }
-    };
+    let typ = freeze_node_typ(cx.ctx, field.typ()).ok_or_else(|| {
+        anyhow!("emit_clif: producer field of type {} — not representable", field.typ())
+    })?;
     let cv = field.emit_clif(cx)?;
-    // A tainted field does not abort the kernel: the composite comes out
-    // tainted and its consumer gates. Pushing it is safe because every
-    // push helper masks the tag byte before cloning the value.
-    if matches!(
-        kind,
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
-    ) {
-        cx.call_helper(helper_name, &[buf, cv.disc, cv.payload])?;
-    } else {
-        cx.call_helper(helper_name, &[buf, cv.payload])?;
-    }
+    scaffold::push_field(cx, buf, cv, &typ, node_composite_source(field))?;
     Ok(cv.disc)
 }
 
@@ -840,7 +790,7 @@ fn producer_disc(
     field_discs: &[ClifValue],
 ) -> ClifValue {
     if field_discs.is_empty() {
-        let init = cx.init_flag();
+        let init = cx.born_flag();
         const_stale_gate(cx.b, init, base)
     } else {
         propagate_flags(cx.b, base, field_discs)
@@ -973,7 +923,9 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     push_marker(cx, outer, rep::Kind::Struct)?;
     // Fires iff the source or any replacement fired.
     let mut field_discs: SmallVec<[ClifValue; 8]> = smallvec![src_disc];
-    for (i, (name, field_typ)) in fields.iter().enumerate() {
+    // a field's `[name, value]` pair is an unmarked array
+    let pair = Type::Array(triomphe::Arc::new(Type::Any));
+    for (i, (name, _)) in fields.iter().enumerate() {
         match replace.iter().find(|r| r.index == Some(i)) {
             Some(r) => {
                 let disc = push_struct_pair(cx, outer, name, |cx, pair| {
@@ -983,19 +935,6 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
             }
             // a kept field's `[name, value]` pair is the source's, shared
             None => {
-                // CR claude for claude: [readability/low] A struct's [name, value] pair
-                // is an unmarked plain array, but this types it as a Tuple, which under
-                // the kind markers is a marked array with elements from
-                // rep::TUPLE_BASE. The type only picks the array read, the Array
-                // placeholder and the array push, and Type::Array picks the same three.
-                // Building and resolving a Tuple per kept field therefore costs an
-                // allocation and misleads any kind-aware code added later. Build one
-                // Type::Array for the pair before the loop and reuse it. Found by
-                // reading; not run. (f-nodes-scalar-04)
-                let pair = Type::Tuple(triomphe::Arc::from_iter([
-                    Type::Primitive(netidx_value::Typ::String.into()),
-                    resolve_node_typ(cx.ctx, field_typ),
-                ]));
                 let idx =
                     cx.b.ins().iconst(types::I64, (crate::rep::STRUCT_BASE + i) as i64);
                 // Guarded: a tainted source's placeholder has no fields.

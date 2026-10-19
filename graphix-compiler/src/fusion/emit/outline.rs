@@ -101,7 +101,7 @@ pub(super) fn emit_outlined(
         cx.env.locals.iter().map(|l| l.words).collect();
     let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
     let ctx_word =
-        CtxWord { init: cx.ctx.init_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
+        CtxWord { born: cx.ctx.born_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
     let header = [
         ctx_word,
         cx.state_ptr(),
@@ -266,7 +266,7 @@ fn emit_chunk(
         b.def_var(words.payload, payload);
         env.bind(l.name.clone(), words, l.kind, l.bind_id);
     }
-    let CtxWord { init: init_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
+    let CtxWord { born: born_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
     let tail_scrut_stale_acc = b.declare_var(types::I64);
     let stale = b.ins().iconst(types::I64, STALE);
     b.def_var(tail_scrut_stale_acc, stale);
@@ -288,7 +288,7 @@ fn emit_chunk(
             params: &[],
             tail_scrut_stale_acc,
         },
-        init_flag,
+        born_flag,
         wake_flag,
         claims: p.claims,
         state: continued(&p.state, state),

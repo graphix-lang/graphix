@@ -1561,7 +1561,7 @@ fn payload_local_kind(t: &Type) -> Option<LocalKind> {
 
 /// [`payload_local_kind`] of a non-scalar.
 fn owned_kind(t: &Type) -> Option<OwnedKind> {
-    kernel_abi::abi_kind(t).and_then(OwnedKind::of)
+    payload_local_kind(t).and_then(|l| l.owned().ok())
 }
 
 /// The container an owned bind is read out of.
@@ -1915,23 +1915,7 @@ fn emit_structure_cond(
                             "emit_clif: scrutinee bind of type {pred:?} not lowerable"
                         )
                     })?;
-                // CR claude for claude: [readability/low] This match maps each
-                // LocalKind to itself. Write `binds.push(SelectArmBind::Value { id:
-                // *id, kind })`. Found by reading; not run. (f-select-08)
-                binds.push(match kind {
-                    LocalKind::Scalar(prim) => {
-                        SelectArmBind::Value { id: *id, kind: LocalKind::Scalar(prim) }
-                    }
-                    LocalKind::Composite => {
-                        SelectArmBind::Value { id: *id, kind: LocalKind::Composite }
-                    }
-                    LocalKind::String => {
-                        SelectArmBind::Value { id: *id, kind: LocalKind::String }
-                    }
-                    LocalKind::Value => {
-                        SelectArmBind::Value { id: *id, kind: LocalKind::Value }
-                    }
-                });
+                binds.push(SelectArmBind::Value { id: *id, kind });
                 None
             }
             SelectScrut::Composite { ptr, .. } => {

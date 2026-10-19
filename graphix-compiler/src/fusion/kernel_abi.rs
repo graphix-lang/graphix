@@ -153,20 +153,9 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
     })
 }
 
-/// The top-level [`AbiKind`] of a `Type`; nested elements are not
-/// checked (see [`freeze_for_abi`]). `None` for shapes with no kernel
-/// encoding: an unbound TVar, `Fn`, `Any`, `ByRef`, a `Set` that is
-/// neither option/result nor all-variant, a `Ref` with an empty
-/// resolution cell, or a recursive named type.
 /// A union with its primitives, unions of them and typedefs naming them
 /// (`Number = [Int, Real]`) folded into the one primitive set they are,
 /// beside its other members; `None` when that changes nothing.
-// CR claude for claude: [readability/low] The doc above merges abi_kind's contract
-// ('The top-level AbiKind of a Type ...') into primitive_union's, and abi_kind itself
-// has no doc. That Set rule is also out of date: abi_kind_d accepts a union of
-// composites as Value and folds primitive unions through this function. Move the first
-// paragraph to abi_kind and list the Set cases it accepts. Found by reading; not run.
-// (f-kernel-03)
 fn primitive_union(members: &[Type]) -> Option<Type> {
     fn bits(t: &Type, depth: usize, acc: &mut BitFlags<Typ>) -> bool {
         if depth > MAX_FREEZE_EXPANSIONS {
@@ -221,6 +210,13 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
     })
 }
 
+/// The top-level [`AbiKind`] of a `Type`; nested elements are not
+/// checked (see [`freeze_for_abi`]). A `Set` is one of: a union that
+/// folds to one primitive set ([`primitive_union`]), an option or a
+/// result (`Nullable`), all variants (`Variant`), or all tuples, structs
+/// and arrays (`Value`). `None` for shapes with no kernel encoding: an
+/// unbound TVar, `Fn`, `Any`, `ByRef`, any other `Set`, a `Ref` with an
+/// empty resolution cell, or a recursive named type.
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
     abi_kind_d(t, None)
 }
@@ -541,19 +537,6 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
             Type::Map { .. } => Ok(resolved.clone()),
             Type::Error(_) => Ok(resolved.clone()),
             Type::Primitive(p) => {
-                // CR claude for claude: [dead/low] This five-way single-primitive test
-                // returns Ok(Type::Primitive(*p)), which is exactly what the
-                // fallthrough below returns for any non-empty set, so it decides
-                // nothing. Delete it and keep the empty-set refusal and the return.
-                // Found by reading; not run. (f-kernel-04)
-                if is_single_prim(resolved, Typ::String)
-                    || is_single_prim(resolved, Typ::Null)
-                    || is_single_prim(resolved, Typ::DateTime)
-                    || is_single_prim(resolved, Typ::Duration)
-                    || is_single_prim(resolved, Typ::Bytes)
-                {
-                    return Ok(Type::Primitive(*p));
-                }
                 // A primitive with no register form (a varint, a decimal,
                 // an error) and a union of several are one two-word Value.
                 if p.is_empty() {
@@ -849,14 +832,7 @@ pub enum ParamKind {
     Struct {
         fields: Vec<(ArcStr, Type)>,
     },
-    /// Runtime index 0 is the tag string; payloads start at index 1.
-    // CR claude for claude: [doc-drift/low] The doc above says runtime index 0 is the
-    // tag and payloads start at index 1. Under kind markers element 0 is the Variant
-    // marker, the tag is at rep::VARIANT_TAG (1) and the payload follows it
-    // (rep::make_variant, rep::variant). graphix_variant_tag_eq's doc in
-    // emit_helpers.rs still describes the old `String(tag)` / tag-at-slot-0 forms too.
-    // Point both docs at rep instead of giving indices. Found by reading; not run.
-    // (f-kernel-01)
+    /// Its runtime form is `rep`'s marked variant (`rep::variant`).
     Variant {
         cases: Vec<(ArcStr, Vec<Type>)>,
     },
@@ -996,9 +972,10 @@ pub struct SiteLeaf {
 /// Leading `u64` wire slots before the parameter list, present in every
 /// kernel.
 ///
-/// Slot 0 is the cycle-context word: bit 0 = init (the forced view,
-/// wakes included), bit 1 = wake (an arm's `wake_init` or the kernel's
-/// own slept bit). Genuine init is `bit0 & !bit1`.
+/// Slot 0 is the cycle-context word: bit 0 = born (`View::born`, a
+/// Birth or a Step: constants fire), bit 1 = standing values read stale
+/// (a Wake, a Step, or the kernel's own slept bit). A Birth is
+/// `bit0 & !bit1`.
 ///
 /// Slot 1 is the per-instance state pointer (`*mut u64`, 0 when the
 /// kernel claimed no words); only the region's root body may claim
@@ -1007,28 +984,18 @@ pub struct SiteLeaf {
 /// Slot 2 is the per-call-site state block pointer, sized by the callee
 /// and supplied by each caller from its own storage (a self-call's is a
 /// per-activation child block); 0 for region parents and callees that
-/// claim nothing. Every consumer null-guards it.
-// CR claude for claude: [readability/low] The doc above describes bit 0 as "init (the
-// forced view, wakes included)" and names `wake_init`. The caller builds it as
-// `ctx_word(ctx.event.born(), wake)`, so bit 0 is `View::born` and a wake never sets
-// it. Fix the doc, and rename `ctx_word`'s `init` parameter and `CTX_INIT` to born so a
-// reader cannot take it for any init view. Found by reading; not run. (x-doc-drift-14)
-// CR claude for claude: [doc-drift/low] The slot 0 doc above is stale.
-// FusedKernel::update sets bit 0 from ctx.event.born() (Birth or Step), so a Wake runs
-// with bit 0 clear, not 'wakes included'. `wake_init` no longer exists. Document bit 0
-// as born (constants fire) and bit 1 as 'standing values read stale' (Wake, Step or the
-// kernel's slept bit), and say bit0 & !bit1 is a Birth. Found by reading; not run.
-// (f-kernel-02)
+/// claim nothing; a site-channel claim traps on a null one.
 pub(crate) const CTX_WIRE_SLOTS: usize = 3;
 
-/// The context word's init bit (slot 0).
-pub(crate) const CTX_INIT: i64 = 1;
+/// The context word's born bit (slot 0).
+pub(crate) const CTX_BORN: i64 = 1;
 /// The context word's wake bit (slot 0).
 pub(crate) const CTX_WAKE: i64 = 2;
 
-/// The context word of a run under the init view `init` and a wake.
-pub(crate) fn ctx_word(init: bool, wake: bool) -> u64 {
-    (init as u64 * CTX_INIT as u64) | (wake as u64 * CTX_WAKE as u64)
+/// The context word of a run, `born` or not, reading standing values
+/// stale or not (`wake`).
+pub(crate) fn ctx_word(born: bool, wake: bool) -> u64 {
+    (born as u64 * CTX_BORN as u64) | (wake as u64 * CTX_WAKE as u64)
 }
 
 impl KernelSig {

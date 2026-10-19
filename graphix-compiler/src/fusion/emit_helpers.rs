@@ -19,7 +19,7 @@ use crate::{
     FastFn, Tag,
     fusion::kernel_abi::{ActivationLayout, SiteLeaf},
     node::{
-        array::{array_index, array_slice, bytes_index},
+        array::{array_index, array_slice, value_index},
         collection::Flavor,
         error::{QopSite, report_failure, report_ignored, unhandled_msg},
         list,
@@ -539,8 +539,6 @@ safe fn graphix_shape_mismatch(got_disc: u64) {
 /// once per process.
 safe fn graphix_select_no_match() {
     static SAID: AtomicBool = AtomicBool::new(false);
-    if !SAID.swap(true, Relaxed) {
-        crate::node::error::report_coverage_hole(&"a fused select matched no arm");
     // CR claude for claude: [dead/low] This arm is dead. report_coverage_hole already
     // aborts on the first call when GRAPHIX_ABORT_ON_NO_MATCH is set, and the flag is a
     // cached constant, so no later call reaches here with it set. Delete it. Also, this
@@ -548,8 +546,12 @@ safe fn graphix_select_no_match() {
     // select (logged_no_match), so a second hole in fused code goes unreported. A
     // per-site flag word in the kernel record would match the node-walk. Found by
     // reading; not run. (f-helpers-04)
-    } else if crate::dbgenv::graphix_abort_on_no_match() {
-        std::process::abort()
+    // 2026-10-19 claude: The dead arm is deleted. What remains is the second half: the
+    // helper still reports once per process where the node-walk reports once per
+    // select; a per-site flag word (a KernelConst the site's code names) would match
+    // it.
+    if !SAID.swap(true, Relaxed) {
+        crate::node::error::report_coverage_hole(&"a fused select matched no arm");
     }
 }
 
@@ -816,8 +818,8 @@ unsafe fn fast_dispatch(
     tv
 }
 
-/// Borrowed read of payload `payload_idx` (slot 0 is the tag). A
-/// placeholder or short array reads as the default.
+/// Borrowed read of payload `payload_idx` (0 is the first payload,
+/// `rep::payload`). A placeholder or short array reads as the default.
 fn variant_payload_read<T: Default>(
     v: &TagValue,
     payload_idx: usize,
@@ -1039,20 +1041,10 @@ safe fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -
     guard_panic(0, || l.with_value(|a| r.with_value(|b| (a == b) as u8)))
 }
 
-/// `bytes[i]`: the `u8` or the index error, via the shared
-/// [`bytes_index`]. Borrows `v`.
+/// `bytes[i]`: the `u8` or the index error, via the node-walk's own
+/// [`value_index`]. Borrows `v`.
 safe fn graphix_bytes_index(v: ManuallyDrop<TagValue>, i: i64) -> TagValue {
-    TagValue::fired(v.with_value(|v| match v {
-        Value::Bytes(b) => bytes_index(b, i),
-        // CR claude for claude: [risk/low] This fallback builds an error with a plain
-        // string payload, which Error<`ArrayIndexError(string)> does not admit. The
-        // node-walk's ArrayRef::update answers the same case with err!(ERR_TAG,
-        // "expected an array"). The arm is unreachable while emit_array_ref_node calls
-        // this helper only for a static bytes source, so either make it unreachable!()
-        // or share the node-walk's arm, so the two engines cannot drift. Found by
-        // reading; not run. (f-helpers-03)
-        _ => Value::error("ArrayIndexError: expected bytes"),
-    }))
+    TagValue::fired(v.with_value(|v| value_index(v, i)))
 }
 
 /// `m{key}`: the value or the not-found error, via the shared
@@ -1077,22 +1069,9 @@ unsafe fn graphix_value_is_str(v: ManuallyDrop<TagValue>, lit: *const arcstr::Ar
     v.with_value(|v| matches!(v, Value::String(s) if s == lit)) as u8
 }
 
-/// Borrowed test of a variant's tag AND arity against `expected`. As
-/// in `StructurePattern::is_match`, arity selects the representation
-/// (`String(tag)` at 0, else an array of arity + 1 with the tag at
-/// slot 0); the tag alone does not discriminate `` [`A, `A(i64)] ``.
-// CR claude for claude: [doc-drift/low] The doc above describes the pre-marker layout:
-// a bare variant as String(tag) and the tag at slot 0. A variant is now a marked array
-// with its tag at rep::VARIANT_TAG, and this body asks rep::is_variant. Reduce the doc
-// to what the helper guarantees: a borrowed tag-and-arity test through rep::is_variant.
-// Found by reading; not run. (f-select-10)
-// CR claude for claude: [doc-drift/low] The doc above describes the pre-marker layout:
-// `String(tag)` at arity 0, else the tag at slot 0. Every variant, bare included, is
-// now a marked array that rep::is_variant reads. variant_payload_read's doc says the
-// same stale thing ("slot 0 is the tag"), although its payload_idx is the 0-based
-// payload position rep::payload takes and emit_variant_cond passes. Reduce both docs to
-// what holds: tag and arity through rep::is_variant, and payload index 0 = first
-// payload. Found by reading; not run. Also reported as (t-rep-07). (f-helpers-02)
+/// Borrowed test of a variant's tag AND arity against `expected`
+/// (`rep::is_variant`): the tag alone does not discriminate
+/// `` [`A, `A(i64)] ``.
 unsafe fn graphix_variant_tag_eq(
     v: ManuallyDrop<TagValue>,
     expected: *const arcstr::ArcStr,
@@ -1417,8 +1396,6 @@ unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
 
 }
 
-/// Borrowed read of an abstract value's payload (`.0`); a non-abstract
-/// value reads as the shape's placeholder.
 /// The payload `.0` reads: an abstract value's, or an error's.
 fn payload_of(v: &Value) -> Option<&Value> {
     match v {
@@ -1427,6 +1404,8 @@ fn payload_of(v: &Value) -> Option<&Value> {
     }
 }
 
+/// Borrowed read of an abstract value's payload (`.0`); a non-abstract
+/// value reads as the shape's placeholder.
 fn abstract_payload_read<T: Default>(tv: &TagValue, f: fn(&Value) -> T) -> T {
     tv.with_value(|v| payload_of(v).map(f).unwrap_or_default())
 }
@@ -2111,9 +2090,6 @@ thread_local! {
     static DEFERRED: RefCell<Deferred> = RefCell::new(Deferred::new());
 }
 
-/// Take the panic a fast fn raised in a chunk run on this thread.
-/// A thread-local's value set aside and put back when this drops, an
-/// unwind included.
 // CR claude for claude: [structure/low] This duplicates graphix_types::Restore field
 // for field (`set` is its `replace`). stack::with_control and
 // abstract_value::with_value_hooks each hand-roll a one-type copy of the same guard.
@@ -2121,29 +2097,10 @@ thread_local! {
 // and use it in those two functions too: one guard for one invariant. The first line of
 // the doc above ('Take the panic a fast fn raised...') belongs to no item here; delete
 // it. Found by reading; not run. (t-misc-02)
-// CR claude for claude: [readability/low] The first line of this doc ("Take the panic a
-// fast fn raised in a chunk run on this thread.") belongs to no item here; Restore only
-// sets a thread-local aside and puts it back. Delete it. Similarly, payload_of carries
-// abstract_payload_read's doc ("a non-abstract value reads as the shape's placeholder")
-// above its own; move that line to abstract_payload_read. Found by reading; not run.
-// (f-helpers-05)
-pub(crate) struct Restore<T: Copy + 'static> {
-    key: &'static std::thread::LocalKey<Cell<T>>,
-    prev: T,
-}
-
-impl<T: Copy + 'static> Restore<T> {
-    pub(crate) fn set(key: &'static std::thread::LocalKey<Cell<T>>, v: T) -> Self {
-        Self { key, prev: key.with(|c| c.replace(v)) }
-    }
-}
-
-impl<T: Copy + 'static> Drop for Restore<T> {
-    fn drop(&mut self) {
-        self.key.with(|c| c.set(self.prev))
-    }
-}
-
+// 2026-10-19 claude: emit_helpers::Restore is deleted; kernel.rs, par_loop.rs and
+// with_kernel_env use graphix_types::Restore (crate::Restore::replace). What remains:
+// stack::with_control and abstract_value::with_value_hooks in graphix-types still
+// hand-roll their guards.
 /// What a kernel run reports through this thread (its abort, panic and
 /// activation reach and made counts), cleared for a run nested in an
 /// enclosing one, whose own is set aside and put back when this drops, an
@@ -2358,7 +2315,7 @@ pub fn kernel_running() -> bool {
 /// Loan `env` (`KERNEL_ENV`) to the JIT'd code `f` runs; nested
 /// invocations stack.
 pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -> T {
-    let _env = Restore::set(&KERNEL_ENV, env as *const _);
+    let _env = crate::Restore::replace(&KERNEL_ENV, env as *const _);
     f()
 }
 

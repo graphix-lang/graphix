@@ -2127,9 +2127,9 @@ fn emit_wrapper(
 
 /// Pack a scalar [`Value`] into a u64 slot as `prim`: signed ints
 /// sign-extend, unsigned zero-extend, floats keep their bits. `None`
-/// when `v` is not a scalar of `prim`'s shape; the caller substitutes
-/// the tainted placeholder. `Z32`/`Z64`/`V32`/`V64` pack as their
-/// fixed-width prim.
+/// when `v` is not a scalar of `prim`'s shape, which the caller reports
+/// as a mismatch. `Z32`/`Z64`/`V32`/`V64` pack as their fixed-width
+/// prim, which is a varint type's own.
 pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     (kernel_abi::scalar_prim_of_value(v) == Some(prim))
         .then(|| crate::tval::value_words(v)[1])

@@ -501,17 +501,9 @@ pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
     pub(crate) element: &'a CallbackParam,
 }
 
-/// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
-/// carry and stays interpreted.
 /// A fold's acc carried one register per field: a tuple of scalars
 /// built by a tuple literal, its parameter destructured into names or
 /// one name read only field by field (`p.0`).
-// CR claude for claude: [readability/low] This doc opens with "The fold kind. A List-
-// or Map-valued accumulator ...", which describes `emit_fold_kind`; that function has
-// no doc. In scaffold.rs, `AccNames` carries `emit_fold_fields_loop`'s paragraph above
-// its own, and the function has none. In call.rs, `OwnedDrop` has two docs run
-// together. Move each paragraph to the item it describes. Found by reading; not run.
-// (f-call-flow-05)
 fn unpackable_acc<R: Rt, E: UserEvent>(
     cx: &BodyCx,
     acc_type: &Type,
@@ -553,6 +545,8 @@ fn unpackable_acc<R: Rt, E: UserEvent>(
     (reads == field_reads).then_some((scaffold::AccNames::Whole(id), prims))
 }
 
+/// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
+/// carry and stays interpreted.
 pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,

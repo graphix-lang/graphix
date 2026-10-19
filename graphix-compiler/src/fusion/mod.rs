@@ -1277,8 +1277,6 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     first(results.drain(..).find_map(|(i, r)| r.err().map(|e| (i, e))))
 }
 
-/// Does the subtree call a lambda or run a collection operation, the
-/// computations that can loop?
 /// A part `#[native]` decorates is a region of its own, as a `let`
 /// initializer is, whatever it calls.
 fn asserted_native<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
@@ -1287,6 +1285,8 @@ fn asserted_native<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     attrs.iter().any(|a| a.name == native)
 }
 
+/// Does the subtree call a lambda or run a collection operation, the
+/// computations that can loop?
 fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     fn walk<R: Rt, E: UserEvent>(n: &Node<R, E>, calls: &mut bool) {
         *calls = match n.view() {
@@ -1604,15 +1604,7 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
     }
 }
 
-/// A region root must emit a value. Declarations stay in the graph;
-/// a bare binding read forwards an input and a constant holds its value,
-/// neither computing anything.
 /// Whether `node`, under any parentheses, is a constant.
-// CR claude for claude: [readability/low] The first paragraph of this doc ('A region
-// root must emit a value...') describes region_is_candidate, not is_constant. Likewise,
-// the first line of asserted_native's doc ('Does the subtree call a lambda or run a
-// collection operation...') belongs to calls_a_function. Move each paragraph onto the
-// function it describes. Found by reading; not run. (f-mod-lowering-04)
 pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {
@@ -1624,6 +1616,9 @@ pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     }
 }
 
+/// A region root must emit a value. Declarations stay in the graph;
+/// a bare binding read forwards an input and a constant holds its value,
+/// neither computing anything.
 pub(crate) fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {

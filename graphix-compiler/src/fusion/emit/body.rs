@@ -329,19 +329,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         freeze_node_typ(self.ctx, t).and_then(|t| kernel_abi::abi_kind(&t))
     }
 
-    /// Nonzero on an init view (`I64`): the `event.init()` word from wire
-    /// slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]), or in a loop body that
-    /// or the slot's first iteration, as a new slot is a new instance.
-    // CR claude for claude: [doc-drift/low] The doc above says this is the
-    // `event.init()` word, but FusedKernel::update packs `ctx_word(ctx.event.born(),
-    // wake)`. Under a plain Wake (init() but not born()) the flag is 0. The
-    // CTX_WIRE_SLOTS doc in kernel_abi.rs still says "bit 0 = init (the forced view,
-    // wakes included)". The JIT's init is the node-walk's born() (constants fire), and
-    // LoopFrame::run already calls it `born`. Rename init_flag/CtxWord::init/ctx_word's
-    // `init`/SlotView::init to born and fix both docs. Found by reading; not run.
-    // (f-scaffold-body-03)
-    pub fn init_flag(&self) -> ClifValue {
-        self.env.slot.map_or(self.ctx.init_flag, |s| s.init)
+    /// Nonzero where the run is born (`I64`), constants firing: the
+    /// `event.born()` bit of wire slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]),
+    /// or in a loop body that or the slot's first iteration, as a new slot
+    /// is a new instance.
+    pub fn born_flag(&self) -> ClifValue {
+        self.env.slot.map_or(self.ctx.born_flag, |s| s.born)
     }
 
     /// The disc of a read of the local at `index`.
@@ -353,11 +346,11 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         }
     }
 
-    /// The init view of an instance whose first use `word` records: the
-    /// init flag, or set while the word reads 0, which this use records.
-    /// No word, or a null guarded base, is the plain init flag.
+    /// Whether an instance whose first use `word` records is born: the
+    /// born flag, or set while the word reads 0, which this use records.
+    /// No word, or a null guarded base, is the plain born flag.
     pub(crate) fn first_use(&mut self, word: Option<StateWord>) -> ClifValue {
-        let init = self.init_flag();
+        let init = self.born_flag();
         let Some(word) = word else { return init };
         let Ok([v]) = word.with_addr(self, [init], |cx, addr| {
             let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
@@ -430,6 +423,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         // SlotFlags::new also re-traps a word claim_word already trapped. Keep the
         // trap, make StateWord a plain address, and fix the CTX_WIRE_SLOTS doc ("Every
         // consumer null-guards it"). Found by reading; not run. (f-scaffold-body-01)
+        // 2026-10-19 claude: The CTX_WIRE_SLOTS doc now says a site-channel claim
+        // traps on a null slot 2. The StateWord simplification (dropping the dead
+        // null-guard paths) remains.
         word.required_addr(self);
         word
     }

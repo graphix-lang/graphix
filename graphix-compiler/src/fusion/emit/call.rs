@@ -142,7 +142,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     // Suppressed under genuine init only (init minus wake): at init
     // every input is born; a wake delivers standing inputs stale.
     let genuine = {
-        let (init, wake) = (cx.init_flag(), cx.ctx.wake_flag);
+        let (init, wake) = (cx.born_flag(), cx.ctx.wake_flag);
         let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
         let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
         cx.b.ins().band(init_b, no_wake)
@@ -321,11 +321,9 @@ pub enum CompositeSource {
     Borrowed,
 }
 
-/// One owned cross-kernel-call arg to drop after the call returns: args
-/// pass borrowed (the callee clones every composite/value param on
-/// entry), so an owned-source arg's original would otherwise leak.
 /// An owned value the emitter drops after its consumer: its kind and
-/// its words.
+/// its words. A call's argument is one: args pass borrowed (the callee
+/// clones every composite/value param on entry).
 pub(super) type OwnedDrop = (LocalKind, CompiledExpr);
 
 /// Record an owned argument for the drop after its call, and hold it
@@ -364,7 +362,7 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
     }
 }
 
-/// The callee's context word: our init view, forced on this site's
+/// The callee's context word: born as we are, and on this site's
 /// first call ever (the node-walk primes an instance's first dispatch
 /// the same way). In a loop each slot is an instance with a first call
 /// of its own.
@@ -373,8 +371,8 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
         0 => Some(cx.claim_word()),
         _ => cx.slot_word(site),
     };
-    let init = cx.first_use(word);
-    CtxWord { init, wake: cx.ctx.wake_flag }.encode(cx.b)
+    let born = cx.first_use(word);
+    CtxWord { born, wake: cx.ctx.wake_flag }.encode(cx.b)
 }
 
 /// Claim a contiguous run from this body's channel and rebase the callee's

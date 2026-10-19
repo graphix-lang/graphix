@@ -324,3 +324,19 @@ run!(select_leaves_options_or_kinds_and_own_type_tests, r#"
   )
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"[[i64:2, i64:0, i64:1, i64:0, i64:5, i64:6, i64:0], [i64:1, i64:2, i64:3, i64:0, "y", "n", "n"], [i64:0, i64:3, i64:0, i64:4, i64:6, "null", "some", "b"], [i64:-1, i64:3, i64:0, i64:0, i64:3, i64:7, i64:-1, i64:10, i64:-2], ["1", "2.5", "s", "4", "c"], [i64:7, i64:0, i64:2, i64:3]]"#); FuseExpect::Jit);
+
+// A narrow MIN / -1 in a kernel is bottom at its own width's minimum, as
+// in the node-walk; a check against i64::MIN alone would trap.
+run!(narrow_min_div_minus_one_is_bottom, r#"
+{
+    let d8 = |a: i8, b: i8| a / b;
+    let d16 = |a: i16, b: i16| a / b;
+    let d32 = |a: i32, b: i32| a / b;
+    (
+        any(#[native] d8(i8:-128, i8:-1), i8:7),
+        any(#[native] d16(i16:-32768, i16:-1), i16:7),
+        any(#[native] d32(i32:-2147483648, i32:-1), i32:7),
+        #[native] d8(i8:-128, i8:2)
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i8:7, i16:7, i32:7, i8:-64]"); FuseExpect::Jit);

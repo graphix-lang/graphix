@@ -560,7 +560,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     if !arg_types.iter().all(|t| is_call_arg_supported(t)) {
         return None;
     }
-    if !is_call_return_supported(&return_type) {
+    if abi_kind(&return_type).is_none() {
         return None;
     }
     let name: ArcStr = info.name.as_str().into();
@@ -1745,29 +1745,6 @@ pub(crate) fn is_bytes(t: &Type) -> bool {
 /// True if `t` derefs to the single-bit `Map` shape.
 pub(crate) fn is_map(t: &Type) -> bool {
     t.with_deref(|r| matches!(r, Some(Type::Map { .. })))
-}
-
-/// A marshallable call return shape: every fusable shape but bare `Null`.
-// CR claude for claude: [doc-drift/low] The doc says 'every fusable shape but bare
-// Null', but the match accepts Null and Unit too, so this is `abi_kind(t).is_some()`.
-// Either reduce it to that and fix the doc, or restore the Null exclusion if it was
-// intended. Found by reading; not run. (f-mod-lowering-05)
-fn is_call_return_supported(t: &Type) -> bool {
-    match abi_kind(t) {
-        Some(
-            AbiKind::Scalar(_)
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value
-            | AbiKind::Unit
-            | AbiKind::Null
-            | AbiKind::String,
-        ) => true,
-        None => false,
-    }
 }
 
 #[cfg(test)]
