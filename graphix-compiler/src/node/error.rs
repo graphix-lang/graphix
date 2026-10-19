@@ -422,7 +422,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             }
         }
         if let Some(abort) = &mut self.action {
-            // CR claude for claude: [bug/medium] A seqq nested in an outer seq's step
+            // XCR claude for claude: [bug/medium] A seqq nested in an outer seq's step
             // gets two credits when the outer re-enters the step for a new run. The
             // sleep set `owed` because the inner run was in flight. At the Step entry
             // the queue is reborn and the lowering's constant `seqqactivation` fires a
@@ -433,8 +433,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             // only at a Wake. probe:
             // design/review-2026-10-19/repro/t-seq-nested-seqq-double-credit.gx
             // (t-seq-01)
+            // a queue born again here is owed nothing: its birth credits it
+            // 2026-10-19 claude: Catch::update drops the owed credit when it runs under
+            // a born view (the queue was reborn and its birth credits it) and pays it
+            // only at a wake. The repro prints consecutive inner values (18, 19; the
+            // old binary 18, 20). Pin: graphix-shell/tests/seqq_nested_credit.rs. Needs
+            // a soak (seq semantics).
             if let AbortRole::Machine { clock: Some((clock, owed)), .. } = &mut abort.role
                 && std::mem::take(owed)
+                && !ctx.event.born()
             {
                 ctx.rt.set_var(*clock, Value::Bool(true));
             }
