@@ -716,13 +716,13 @@ let result = data_table(
     let dir_bid = testing::find_bind_id(&h.f.compiled.env, "test::sort_dir")?;
     let mut dir_ref = h.f.gx.compile_ref(dir_bid).await?;
 
-    dir_ref.set(Value::String(arcstr::literal!("Descending")))?;
+    dir_ref.set(graphix_compiler::rep::make_variant(literal!("Descending"), []))?;
     await_order(&mut h, &alpha_desc, "alpha desc after direction flip").await?;
 
     col_ref.set(Value::String(arcstr::literal!("beta")))?;
     await_order(&mut h, &beta_desc, "beta desc after column switch").await?;
 
-    dir_ref.set(Value::String(arcstr::literal!("Ascending")))?;
+    dir_ref.set(graphix_compiler::rep::make_variant(literal!("Ascending"), []))?;
     await_order(&mut h, &beta_asc, "beta asc after direction flip").await?;
 
     col_ref.set(Value::String(arcstr::literal!("alpha")))?;
