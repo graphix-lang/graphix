@@ -197,8 +197,8 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
             })?
         }
         Some(t) if handler.sealed() && !etyp.has_unbound() => bail!(
-            "this error reaches a catch whose handler was checked to take {t}, \
-             which does not contain {etyp}"
+            "this error reaches a catch whose handler was checked to take {t}: \
+             {t} does not contain {etyp}"
         ),
         Some(t) => Type::union(env, &[&t, etyp])?,
     };
@@ -286,11 +286,13 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         c: &Arc<expr::CatchExpr>,
     ) -> Result<(Node<R, E>, Scope)> {
         let catch_scope = scope.append_block("ca", spec.id.inner());
+        // an ascribed catch takes its type now, so a raise it covers writes
+        // nothing, from whatever task checks the raise
         let typ = Type::empty_tvar();
         match &typ {
             Type::TVar(tv) => {
                 tv.freeze();
-                tv.bind(Type::Bottom)
+                tv.bind(c.constraint.clone().unwrap_or(Type::Bottom))
             }
             _ => unreachable!(),
         }
@@ -342,6 +344,9 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         };
         ctx.record_ref(bind_id, top_id);
         let own_handler = covered.dynamic.handler().unwrap();
+        if c.constraint.is_some() {
+            own_handler.seal();
+        }
         let polled = ctx.boundary.clone();
         own_handler.polled_by(&polled);
         let node = Node::new(Self {
@@ -1410,7 +1415,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 let contents = tv.binding().unwrap_or(Type::Bottom);
                 self.thrown = Some(contents);
             }
-            // CR claude for claude: [bug/medium] The ascription T reaches the error
+            // XCR claude for claude: [bug/medium] The ascription T reaches the error
             // bind only here, in the catch's own typecheck, which a block runs after
             // its other statements. A module with an interface checks before that in
             // its own task. So a `?` or a throwing call at the module's top level finds
@@ -1423,6 +1428,15 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             // the catch's binding in the module refusal. probe:
             // design/review-2026-10-19/repro/c-error-op-module-raise-to-outer-catch.sh
             // (c-error-op-02)
+            // 2026-10-19 claude: Catch::compile binds the ascription T into the catch's
+            // bind and seals the handler, so a raise T covers writes nothing from
+            // whatever task checks it (a module with an interface included) and one it
+            // does not cover is refused at the raise ('..checked to take T: T does not
+            // contain E'). The probe's --check now accepts with and without m.gxi. Pin:
+            // lang::modules::module_raises_to_an_ascribed_outer_catch;
+            // lang::errors::catch_ascription_too_narrow_is_an_error and
+            // lang::seq_try::refusals_interp keep the narrow refusal. The module
+            // refusal still does not name the binding it decides.
             tv.bind(t.clone());
             // `T` must cover every error the region throws, judged with
             // the check's settle

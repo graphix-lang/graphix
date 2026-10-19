@@ -1294,3 +1294,22 @@ run!(
     "/test/m.gx" => r#"
         let (a, b) = (1, 2)
     "#; FuseExpect::Jit);
+
+// A module with an interface raises to an ascribed catch outside it: the
+// ascription covers the raise, so the module's check writes nothing.
+run!(
+    module_raises_to_an_ascribed_outer_catch,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:0]"),
+    "/test.gx" => r#"
+        let n = 0;
+        catch(e: Error<ErrChain<`E>>) n <- e ~ n + 1;
+        mod m;
+        let result = (m::y, n)
+    "#,
+    "/test/m.gxi" => r#"
+        val y: i64;
+    "#,
+    "/test/m.gx" => r#"
+        let f = |x: i64| -> i64 select x { 1 => error(`E)?, x => x };
+        let y = f(2)
+    "#; FuseExpect::Jit);
