@@ -31,6 +31,7 @@ use netidx_derive::FromValue;
 use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
+use rust_decimal::prelude::ToPrimitive;
 use smallvec::SmallVec;
 use std::{
     cmp::Ordering as CmpOrdering,
@@ -294,7 +295,7 @@ impl SortKey {
                     None => Self::Text(s.clone()),
                 },
             },
-            // CR claude for claude: [bug/medium] SortKey::of_value has no
+            // XCR claude for claude: [bug/medium] SortKey::of_value has no
             // Value::Decimal arm, so a decimal falls to this Text arm and sorts by its
             // printed bytes. Ascending, 10.25 comes before 2.0 and 9.5, and every
             // decimal sorts after every integer and float, against the interface doc's
@@ -304,6 +305,19 @@ impl SortKey {
             // reading; design/review-2026-10-19/repro/gui-datatable-decimal-sort.gx
             // type-checks and shows the order when run with a display.
             // (gui-datatable-01)
+            // 2026-10-19 claude: SortKey::of_value maps an integral decimal to Int
+            // (to_i128, exact: a decimal's mantissa fits) and any other to Num
+            // (to_f64), so decimals sort with the other numbers in value order. A
+            // fractional decimal compares through f64, so two decimals closer than an
+            // f64 ulp at their magnitude tie. The gui crate takes rust_decimal for
+            // ToPrimitive. Pins:
+            // sort_tests::raw_numeric_sort_keys_preserve_precision_and_units (decimal
+            // cases) and order_tests::mixed_sort_keys_are_a_total_order (decimals
+            // added).
+            Value::Decimal(d) => match d.to_i128().filter(|_| d.is_integer()) {
+                Some(n) => Self::Int(n),
+                None => Self::Num(d.to_f64().unwrap_or(f64::NAN)),
+            },
             v => Self::Text(format_value(v)),
         }
     }
@@ -666,7 +680,10 @@ impl<X: GXExt> DataTableW<X> {
     /// Push each sparkline column's fallback into the history of every
     /// cell that never subscribes: a virtual row's, or a stored source's. A
     /// subscribed cell's history holds only its own values.
-    pub(super) fn push_defaults_to_sparklines(&self) {
+    /// Give the sparkline cells their defaults' points: every cell of
+    /// `fired`, the column whose source just gave a value, and a first
+    /// point to any other cell that has none yet.
+    pub(super) fn push_defaults_to_sparklines(&self, fired: Option<&ArcStr>) {
         if self.mode != DisplayMode::Table {
             return;
         }
@@ -686,6 +703,9 @@ impl<X: GXExt> DataTableW<X> {
                     continue;
                 };
                 let key = (row_path.clone(), col_name.clone());
+                if fired != Some(col_name) && inner.sparklines.contains_key(&key) {
+                    continue;
+                }
                 let history = inner.sparklines.entry(key).or_insert_with(LPooled::take);
                 push_sparkline_point(history, now, f, history_seconds);
             }
@@ -771,6 +791,13 @@ mod sort_tests {
         less(Value::from("Bob"), Value::from("inf"));
         less(Value::from("Bob"), Value::from("NaN"));
         less(Value::from("2"), Value::from("10"));
+        let dec = |s: &str| Value::Decimal(triomphe::Arc::new(s.parse().unwrap()));
+        less(dec("2.0"), dec("9.5"));
+        less(dec("9.5"), dec("10.25"));
+        less(dec("10.25"), Value::I64(11));
+        less(Value::I64(10), dec("10.25"));
+        less(dec("79228162514264337593543950334"), dec("79228162514264337593543950335"));
+        less(dec("10.25"), Value::from("Alice"));
     }
 
     #[test]
@@ -810,6 +837,11 @@ mod order_tests {
             Value::F64(f64::INFINITY),
             Value::from("Nan"),
             Value::from("inf"),
+            Value::Decimal(triomphe::Arc::new("0.5".parse().unwrap())),
+            Value::Decimal(triomphe::Arc::new("-3".parse().unwrap())),
+            Value::Decimal(triomphe::Arc::new(
+                "79228162514264337593543950335".parse().unwrap(),
+            )),
         ];
         let keys: LPooled<Vec<_>> = values.iter().map(SortKey::of_value).collect();
         for a in &*keys {

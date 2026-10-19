@@ -93,8 +93,9 @@ let result = data_table(#table: &tbl)
     Ok(())
 }
 
+/// A constant source fills the column's cell in every row.
 #[tokio::test(flavor = "current_thread")]
-async fn default_value_uniform() -> Result<()> {
+async fn a_constant_source_fills_every_row() -> Result<()> {
     let code = r#"
 
 let tbl = { rows: ["r0", "r1"], columns: [
@@ -154,27 +155,10 @@ let result = data_table(#table: &tbl)
     Ok(())
 }
 
+/// A Map source fills each row's cell from its entry, beside a
+/// subscribed column.
 #[tokio::test(flavor = "current_thread")]
-async fn default_value_per_row() -> Result<()> {
-    let code = r#"
-
-let a = "val_a";
-let b = "val_b";
-let tbl = { rows: ["r0", "r1"], columns: [
-        text_column(#name: "c0", #source: &{"r0" => a, "r1" => b })
-    ] };
-let result = data_table(
-#table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    assert_eq!(snap.grid[0][0], "val_a");
-    assert_eq!(snap.grid[1][0], "val_b");
-    Ok(())
-}
-#[tokio::test(flavor = "current_thread")]
-async fn virtual_column() -> Result<()> {
+async fn a_map_source_fills_rows_by_name() -> Result<()> {
     let code = r#"
 
 let a = "calc_a";
@@ -254,35 +238,6 @@ let result = data_table(
         clicked,
         Some(&Value::String(arcstr::literal!("r0/c0"))),
         "on_select should have fired with the cell path",
-    );
-    Ok(())
-}
-
-/// on_activate via `handle_cell_click` on the name column.
-#[tokio::test(flavor = "current_thread")]
-async fn on_activate_fires_on_name_click() -> Result<()> {
-    let code = r#"
-
-let activated = "";
-let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
-let result = data_table(
-    #on_activate: |#path: string| activated <- path,
-    #table: &tbl
-)
-"#;
-    let mut h = dt(code).await?;
-    let _ = h.watch("test::activated").await?;
-    h.drain().await?;
-
-    h.dt_mut().handle_cell_click(0, crate::widgets::data_table::ROW_NAME_KEY);
-    h.drain().await?;
-
-    let activated = h.get_watched("test::activated");
-    // A name-column click sends the row path itself.
-    assert_eq!(
-        activated,
-        Some(&Value::String(arcstr::literal!("r0"))),
-        "on_activate should have fired with the row path",
     );
     Ok(())
 }
@@ -1007,6 +962,45 @@ let result = data_table(
     Ok(())
 }
 
+/// A Spin cell holding a value past its range edits to a value inside it,
+/// from either button.
+#[tokio::test(flavor = "current_thread")]
+async fn spin_edits_stay_in_range() -> Result<()> {
+    let code = r#"
+
+let bumped = |#path: string, #value: f64| null;
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Spin({ min: 0.0, max: 10.0, increment: 1.0, on_edit: bumped }),
+            display_name: null,
+            source: &"100.0",
+            on_resize: &null, width: &null }
+    ] };
+let result = data_table(#table: &tbl)
+"#;
+    let mut h = InteractionHarness::with_viewport(
+        &table_code(code),
+        iced_core::Size::new(500.0, 200.0),
+    )
+    .await?;
+    h.inner.drain().await?;
+    let _ = h.view();
+    let bounds = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let mut edits = Vec::new();
+    for offset in (2..=90).step_by(2) {
+        let p = iced_core::Point::new(bounds.x + offset as f32, bounds.center().y);
+        edits.extend(h.click(p).into_iter().filter_map(|m| match m {
+            Message::Call(_, args) => match args.get(1) {
+                Some(Value::F64(x)) => Some(*x),
+                _ => None,
+            },
+            _ => None,
+        }));
+    }
+    assert!(!edits.is_empty(), "no click reached a spin button");
+    assert!(edits.iter().all(|x| *x == 10.0), "{edits:?}");
+    Ok(())
+}
+
 /// Clicking a Button cell fires on_click with (path, label).
 #[tokio::test(flavor = "current_thread")]
 async fn on_click_button_column() -> Result<()> {
@@ -1079,9 +1073,9 @@ let result = data_table(
     Ok(())
 }
 
-/// A per-row default backed by a graphix variable follows the variable.
+/// A Map source entry backed by a graphix variable follows the variable.
 #[tokio::test(flavor = "current_thread")]
-async fn default_value_per_row_ref_updates() -> Result<()> {
+async fn a_map_source_follows_its_variables() -> Result<()> {
     let code = r#"
 
 let a = "v1";
@@ -1107,16 +1101,10 @@ let result = data_table(
     Ok(())
 }
 
-/// `columns: []` plus virtual columns renders in Table mode, not Value
-/// mode.
+/// A table whose only column has a stored source renders in Table mode,
+/// not Value mode.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [doc-drift/low] The doc speaks of '`columns: []` plus virtual
-// columns', but columns holds one stored text_column; the API has one `source` per
-// column. The default_value_* tests and default_value_reactive_via_connect's doc and
-// 'required to reproduce' comment also name the removed default_value API and an old
-// bug. Rename them after the stored-source behaviour they check and drop the history.
-// Found by reading; not run. (tests-gui-a-07)
-async fn virtual_columns_prevent_value_mode() -> Result<()> {
+async fn a_stored_source_column_keeps_table_mode() -> Result<()> {
     let code = r#"
 
 let tbl = { rows: ["r0", "r1"], columns: [
@@ -1136,11 +1124,10 @@ let result = data_table(
     Ok(())
 }
 
-/// A default_value ref over a connect-updated nested Map reflects every
-/// update, not just the first (the data_table_calculated example).
+/// A source over a Map that a connect rewrites shows every update, not
+/// only the first, in subscribed rows (the data_table_calculated example).
 #[tokio::test(flavor = "current_thread")]
-async fn default_value_reactive_via_connect() -> Result<()> {
-    // Absolute (subscribed) row paths are required to reproduce.
+async fn a_connected_map_source_shows_every_update() -> Result<()> {
     let code = r#"
 
 sys::net::publish("/local/dt8b/r0/c0", v64:0);
@@ -1220,32 +1207,6 @@ let result = data_table(
         }
     }
     assert_eq!(h.dt_snapshot().grid[r0][sum_col], "40", "rapid updates");
-    Ok(())
-}
-
-/// A uniform string default propagates to every grid cell.
-#[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [structure/low] Duplicate tests: this one repeats
-// default_value_uniform; on_activate_fires_on_name_click is contained in
-// name_click_activate_only; virtual_column repeats default_value_per_row with one extra
-// column; sparkline_decimation_caps_length repeats types.rs
-// sparkline_bursts_retain_a_bounded_history step for step. Delete one of each pair.
-// Found by reading; not run. (tests-gui-a-05)
-async fn default_value_uniform_string() -> Result<()> {
-    let code = r#"
-
-let tbl = { rows: ["r0", "r1", "r2"], columns: [
-        text_column(#name: "c0", #source: &"UNI")
-    ] };
-let result = data_table(
-#table: &tbl
-)
-"#;
-    let h = dt(code).await?;
-    let snap = h.dt_snapshot();
-    for row in &snap.grid {
-        assert_eq!(row[0], "UNI");
-    }
     Ok(())
 }
 
@@ -1339,9 +1300,9 @@ let result = data_table(
     Ok(())
 }
 
-/// A Sparkline default that parses as f64 seeds the history.
+/// A Sparkline column's source that parses as f64 seeds the history.
 #[tokio::test(flavor = "current_thread")]
-async fn sparkline_default_value_seeds_history() -> Result<()> {
+async fn a_sparkline_source_seeds_history() -> Result<()> {
     let code = r#"
 
 let tbl = { rows: ["r0"], columns: [
@@ -1360,37 +1321,30 @@ let result = data_table(
     Ok(())
 }
 
-/// Decimation caps stored sparkline points at `MAX_SPARKLINE_POINTS`.
+/// A sparkline takes a point from its own source only: another column's
+/// source and a sort change add none.
 #[tokio::test(flavor = "current_thread")]
-async fn sparkline_decimation_caps_length() -> Result<()> {
-    use crate::widgets::data_table::MAX_SPARKLINE_POINTS;
-    use std::time::{Duration, Instant};
+async fn sparkline_defaults_ignore_other_columns() -> Result<()> {
     let code = r#"
 
+let other = "a";
+let sort: Array<SortBy> = [];
+let resort = |t: Any| sort <- t ~ [{ column: "other", direction: `Descending }];
 let tbl = { rows: ["r0"], columns: [
-        "anchor",
-        { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
+        text_column(#name: "other", #source: &other),
+        { name: "spark", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
             display_name: null,
-            source: &"0.0",
+            source: &"7.5",
             on_resize: &null, width: &null }
     ] };
-let result = data_table(
-#table: &tbl
-)
+let result = data_table(#sort_by: &sort, #table: &tbl)
 "#;
-    let h = dt(code).await?;
-    let dt_w = h.dt();
-    let base = Instant::now();
-    for i in 0..2000_u64 {
-        dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
-    }
-    let len = dt_w.dt_sparkline_len("r0", "load").expect("sparkline history");
-    assert!((MAX_SPARKLINE_POINTS / 2..=MAX_SPARKLINE_POINTS).contains(&len), "{len}");
-    for i in 2000..2500_u64 {
-        dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
-    }
-    let len = dt_w.dt_sparkline_len("r0", "load").expect("sparkline history");
-    assert!((MAX_SPARKLINE_POINTS / 2..=MAX_SPARKLINE_POINTS).contains(&len), "{len}");
+    let mut h = dt(code).await?;
+    set_var(&h, "test::other", Value::from("b")).await?;
+    h.drain().await?;
+    let resort = h.compile_named_callable("test::resort").await?;
+    h.call_callback(resort, ValArray::from_iter([Value::Null])).await?;
+    assert_eq!(h.dt().dt_sparkline_values("r0", "spark").as_deref(), Some(&[7.5][..]));
     Ok(())
 }
 
@@ -1985,11 +1939,7 @@ let result = data_table(
     })])
     .await?;
     let (wheeled, _) = h.inner.dt().dt_first_cell();
-    // CR claude for claude: [test-gap/low] `>=` passes when the wheel notch is dropped
-    // entirely (first_row unchanged); from row keyed > 20 of 100 a notch down must move
-    // the view, so the assertion should be `wheeled > keyed`. Found by reading; not
-    // run. (tests-gui-a-03)
-    assert!(wheeled >= keyed, "a notch down from row {keyed} went to row {wheeled}");
+    assert!(wheeled > keyed, "a notch down from row {keyed} went to row {wheeled}");
     Ok(())
 }
 
@@ -2115,14 +2065,9 @@ let result = data_table(#selection: &sel, #table: &tbl)
     };
     set_var(&h, "test::sel", sel(&["/l/t/a/b/c0"])).await?;
     settle(&mut h, "the scroll to /l/t/a/b", |h| h.dt().dt_first_cell().0 == 21).await?;
-    // CR claude for claude: [test-gap/low] The loop lists the visible selection
-    // (/l/t/a/b/c0) first, so an ensure_selection_visible that only consults the first
-    // selected cell also keeps the view at 21 and passes. Listing the off-screen
-    // /l/t/x{k}/c0 first is what pins 'any selected cell on screen keeps the view'.
-    // Found by reading; not run. (tests-gui-a-02)
     for k in 1..9 {
         let other = format!("/l/t/x{k}/c0");
-        set_var(&h, "test::sel", sel(&["/l/t/a/b/c0", &other])).await?;
+        set_var(&h, "test::sel", sel(&[&other, "/l/t/a/b/c0"])).await?;
         for _ in 0..3 {
             h.drain().await?;
         }
@@ -2132,12 +2077,9 @@ let result = data_table(#selection: &sel, #table: &tbl)
     Ok(())
 }
 
-/// Decimation keeps a one-sample spike wherever it falls in its run.
+/// Decimation keeps a one-sample spike or dip wherever it falls in its
+/// run.
 #[test]
-// CR claude for claude: [test-gap/low] Only a positive spike is planted, so
-// decimate_sparkline keeping the run's first point instead of its minimum still passes,
-// though its doc promises valleys survive. Add the same loop with a -100 dip. Found by
-// reading; not run. (tests-gui-a-04)
 fn sparkline_decimation_keeps_spikes() {
     use crate::widgets::data_table::decimate_sparkline;
     use std::{
@@ -2145,15 +2087,20 @@ fn sparkline_decimation_keeps_spikes() {
         time::{Duration, Instant},
     };
     let base = Instant::now();
-    for at in 0..8 {
-        let mut h: VecDeque<(Instant, f64)> = (0..64)
-            .map(|i| {
-                (base + Duration::from_millis(i), if i == 20 + at { 100.0 } else { 1.0 })
-            })
-            .collect();
-        decimate_sparkline(&mut h);
-        decimate_sparkline(&mut h);
-        assert!(h.iter().any(|(_, v)| *v == 100.0), "spike at {} lost", 20 + at);
+    for spike in [100.0, -100.0] {
+        for at in 0..8 {
+            let mut h: VecDeque<(Instant, f64)> = (0..64)
+                .map(|i| {
+                    (
+                        base + Duration::from_millis(i),
+                        if i == 20 + at { spike } else { 1.0 },
+                    )
+                })
+                .collect();
+            decimate_sparkline(&mut h);
+            decimate_sparkline(&mut h);
+            assert!(h.iter().any(|(_, v)| *v == spike), "{spike} at {} lost", 20 + at);
+        }
     }
 }
 
@@ -2283,6 +2230,31 @@ let result = data_table(#table: &tbl)
     assert_eq!(h.dt().dt_user_width("c0"), None);
     set_var(&h, "test::w", Value::F64(90.0)).await?;
     settle(&mut h, "the reset", |h| h.dt().dt_ref_width("c0") == Some(90.0)).await
+}
+
+/// A pinned column's resize handle comes and goes with its `on_resize`,
+/// so a change of that callback's presence redraws, and only that.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_on_resize_change_redraws() -> Result<()> {
+    let code = r#"
+
+let w = 100.0;
+let resize = |x: f64| null;
+let on_w: [fn(width: f64) -> Any, null] = null;
+let tbl = { rows: ["r0"], columns: [
+        text_column(#name: "c0", #source: &"x", #width: &w, #on_resize: &on_w)
+    ] };
+let result = data_table(#table: &tbl)
+"#;
+    let mut h = dt(code).await?;
+    let resize = h.watch("test::resize").await?;
+    let id = h.dt().dt_on_resize_ref("c0").expect("an on_resize ref");
+    let rt = h.rt_handle.clone();
+    for (v, redraws) in [(resize, true), (Value::Null, true), (Value::Null, false)] {
+        let changed = update_widget(&mut h.widget, &rt, id, &v)?;
+        assert_eq!(changed, redraws, "on_resize <- {v}");
+    }
+    Ok(())
 }
 
 /// Truncation ends on a character boundary at every width.

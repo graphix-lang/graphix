@@ -5,6 +5,7 @@ use super::{
     types::{ColumnType, push_sparkline_point},
 };
 use arcstr::ArcStr;
+use graphix_compiler::expr::ExprId;
 use graphix_rt::GXExt;
 use netidx::path::Path;
 use poolshark::local::LPooled;
@@ -18,6 +19,11 @@ impl<X: GXExt> DataTableW<X> {
     /// The width set by the column's `width` ref, if any.
     pub fn dt_ref_width(&self, col: &str) -> Option<f32> {
         self.columns.get(col).and_then(|c| c.ref_width)
+    }
+
+    /// The id of the column's `on_resize` ref, if it has one.
+    pub fn dt_on_resize_ref(&self, col: &str) -> Option<ExprId> {
+        self.columns.get(col).and_then(|c| c.on_resize_ref.as_ref()).map(|r| r.id)
     }
 
     /// The viewport metrics from the most recent layout.
