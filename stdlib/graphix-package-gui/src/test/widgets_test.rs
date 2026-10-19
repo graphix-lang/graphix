@@ -9,7 +9,7 @@ async fn reacts(decls: &str, widget: &str, var: &str, value: Value) -> Result<()
     let mut h = GuiTestHarness::new(&code).await?;
     h.drain().await?;
     h.render()?;
-    h.set_var(var, value).await?;
+    h.set_var(var, value)?;
     assert!(h.drain().await?, "writing {var} changes the widget");
     h.render()
 }
@@ -453,7 +453,7 @@ async fn bad_sizes_and_coordinates_are_refused() -> Result<()> {
         let mut h = GuiTestHarness::new(&code).await?;
         h.drain().await?;
         let good = retained_value(&h);
-        h.set_var(var, bad.clone()).await?;
+        h.set_var(var, bad.clone())?;
         assert!(h.drain().await.is_err(), "{widget} takes {bad:?}");
         assert_eq!(retained_value(&h), good, "{widget} retains its last good value");
         h.render()?;

@@ -520,7 +520,7 @@ let result = data_table(
         "initial ascending sort: r1(10) < r2(20) < r0(30)"
     );
 
-    h.set_var("test::v1", Value::F64(100.0)).await?;
+    h.set_var("test::v1", Value::F64(100.0))?;
     h.wait_until(
         |h| {
             let snap = h.dt_snapshot();
@@ -667,13 +667,13 @@ let result = data_table(
     h.set_var("test::sort_dir", graphix_compiler::rep::make_variant(literal!("Descending"), [])).await?;
     await_order(&mut h, &alpha_desc, "alpha desc after direction flip").await?;
 
-    h.set_var("test::sort_col", Value::String(arcstr::literal!("beta"))).await?;
+    h.set_var("test::sort_col", Value::String(arcstr::literal!("beta")))?;
     await_order(&mut h, &beta_desc, "beta desc after column switch").await?;
 
     h.set_var("test::sort_dir", graphix_compiler::rep::make_variant(literal!("Ascending"), [])).await?;
     await_order(&mut h, &beta_asc, "beta asc after direction flip").await?;
 
-    h.set_var("test::sort_col", Value::String(arcstr::literal!("alpha"))).await?;
+    h.set_var("test::sort_col", Value::String(arcstr::literal!("alpha")))?;
     await_order(&mut h, &alpha_asc, "alpha asc after returning to alpha").await?;
 
     Ok(())
@@ -1081,7 +1081,7 @@ let result = data_table(
 "#;
     let mut h = dt(code).await?;
     assert_eq!(h.dt_snapshot().grid[0][0], "v1");
-    h.set_var("test::a", Value::String(arcstr::literal!("v1b"))).await?;
+    h.set_var("test::a", Value::String(arcstr::literal!("v1b")))?;
     h.wait_until(
         |h| h.dt_snapshot().grid[0][0] == "v1b",
         Duration::from_secs(10),
@@ -1269,7 +1269,7 @@ let result = data_table(
 "#;
     let mut h = dt(code).await?;
     for v in [1, 2, 3] {
-        h.set_var("test::c", Value::I64(v)).await?;
+        h.set_var("test::c", Value::I64(v))?;
         h.wait_until(
             |h| {
                 let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
@@ -1329,7 +1329,7 @@ let tbl = { rows: ["r0"], columns: [
 let result = data_table(#sort_by: &sort, #table: &tbl)
 "#;
     let mut h = dt(code).await?;
-    h.set_var("test::other", Value::from("b")).await?;
+    h.set_var("test::other", Value::from("b"))?;
     h.drain().await?;
     let resort = h.compile_named_callable("test::resort").await?;
     h.call_callback(resort, ValArray::from_iter([Value::Null])).await?;
@@ -1714,7 +1714,7 @@ let result = data_table(#sort_by: &sort_by, #table: &tbl)
     );
     let mut h = dt(&code).await?;
     assert_eq!(h.dt_snapshot().row_basenames, ["r1", "r0", "r2"]);
-    h.set_var("test::sort_by", Value::Array(ValArray::from_iter([]))).await?;
+    h.set_var("test::sort_by", Value::Array(ValArray::from_iter([])))?;
     settle(&mut h, "the table's order", |h| {
         h.dt_snapshot().row_basenames == ["r0", "r1", "r2"]
     })
@@ -1783,7 +1783,7 @@ let result = data_table(#table: &tbl)
     let _ = h.watch("test::got1").await?;
     let _ = h.watch("test::got2").await?;
     assert_eq!(h.dt().dt_subscription_count(), 3);
-    h.set_var("test::phase", Value::I64(1)).await?;
+    h.set_var("test::phase", Value::I64(1))?;
     settle(&mut h, "the fourth row", |h| h.dt_snapshot().row_basenames.len() == 4)
         .await?;
     assert_eq!(h.dt().dt_subscription_count(), 4, "c1 is stored: c0 of four rows");
@@ -1794,7 +1794,7 @@ let result = data_table(#table: &tbl)
         h.get_watched("test::got1") == Some(&Value::String("v1".into()))
     })
     .await?;
-    h.set_var("test::phase", Value::I64(2)).await?;
+    h.set_var("test::phase", Value::I64(2))?;
     settle(&mut h, "two rows", |h| h.dt_snapshot().row_basenames.len() == 2).await?;
     assert_eq!(h.dt().dt_subscription_count(), 2, "the removed rows' subscriptions drop");
     h.dt_mut().handle_cell_edit(0, "c1".into());
@@ -1833,7 +1833,7 @@ let result = data_table(#table: &tbl)
     h.dt_mut().handle_scroll(0.0, 220.0, 400.0, 300.0);
     assert_eq!(h.dt().dt_first_cell().0, 10);
     h.dt_mut().handle_cell_edit(12, "c0".into());
-    h.set_var("test::phase", Value::I64(1)).await?;
+    h.set_var("test::phase", Value::I64(1))?;
     settle(&mut h, "the new row", |h| h.dt_snapshot().row_basenames.len() == 101).await?;
     assert_eq!(h.dt().dt_first_cell().0, 10);
     assert_eq!(h.dt().dt_editing(), Some(("r12".into(), "c0".into())));
@@ -1935,7 +1935,7 @@ let result = data_table(#table: &tbl)
     })
     .await?;
     assert_eq!(h.inner.dt().dt_sparkline_count(), 2);
-    h.inner.set_var("test::phase", Value::I64(1)).await?;
+    h.inner.set_var("test::phase", Value::I64(1))?;
     settle(&mut h.inner, "one row", |h| h.dt_snapshot().row_basenames.len() == 1).await?;
     assert_eq!(h.inner.dt().dt_sparkline_count(), 1, "the removed row's history goes");
     let live = h.inner.dt().dt_sparkline_values("live", "load").unwrap_or_default();
@@ -1999,11 +1999,11 @@ let result = data_table(#selection: &sel, #table: &tbl)
             paths.iter().map(|p| Value::String((*p).into())),
         ))
     };
-    h.set_var("test::sel", sel(&["/l/t/a/b/c0"])).await?;
+    h.set_var("test::sel", sel(&["/l/t/a/b/c0"]))?;
     settle(&mut h, "the scroll to /l/t/a/b", |h| h.dt().dt_first_cell().0 == 21).await?;
     for k in 1..9 {
         let other = format!("/l/t/x{k}/c0");
-        h.set_var("test::sel", sel(&[&other, "/l/t/a/b/c0"])).await?;
+        h.set_var("test::sel", sel(&[&other, "/l/t/a/b/c0"]))?;
         for _ in 0..3 {
             h.drain().await?;
         }
@@ -2164,7 +2164,7 @@ let result = data_table(#table: &tbl)
     settle(&mut h, "the clamped width", |h| h.dt().dt_ref_width("c0") == Some(150.0))
         .await?;
     assert_eq!(h.dt().dt_user_width("c0"), None);
-    h.set_var("test::w", Value::F64(90.0)).await?;
+    h.set_var("test::w", Value::F64(90.0))?;
     settle(&mut h, "the reset", |h| h.dt().dt_ref_width("c0") == Some(90.0)).await
 }
 
@@ -2272,7 +2272,7 @@ let result = table(&[table_column(&text(&"t"))], &[[dt]])
     };
     h.wait_until(wait(["r1", "r0"]), std::time::Duration::from_secs(5), "first sort")
         .await?;
-    h.set_var("test::v1", Value::F64(100.0)).await?;
+    h.set_var("test::v1", Value::F64(100.0))?;
     h.wait_until(wait(["r0", "r1"]), std::time::Duration::from_secs(5), "re-sort").await
 }
 
@@ -2336,7 +2336,7 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
     let change = h.compile_named_callable("test::change").await?;
     h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
     for v in [1, 2] {
-        h.set_var("test::c", Value::I64(v)).await?;
+        h.set_var("test::c", Value::I64(v))?;
         h.wait_until(
             |h| {
                 h.dt()
@@ -2440,8 +2440,7 @@ let result = data_table(#table: &tbl, #selection: &sel,
     h.set_var(
         "test::sel",
         Value::Array(ValArray::from_iter([Value::from("r90/c"), Value::from("r70/c")])),
-    )
-    .await?;
+    )?;
     settle(&mut h, "first selection in view", |h| h.dt().dt_first_cell().0 == 61).await?;
     h.dt_mut().handle_table_key(&TableKeyAction::Down);
     settle(&mut h, "navigation from first selection", |h| {

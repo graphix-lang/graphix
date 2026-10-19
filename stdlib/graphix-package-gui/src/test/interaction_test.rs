@@ -803,7 +803,7 @@ async fn combo_box_keeps_typing_across_new_options() -> Result<()> {
     let typed = h.type_text("ban");
     h.apply(&typed);
     let more = ["apple", "banana", "cherry", "date"].map(Value::from);
-    h.inner.set_var("test::opts", Value::Array(ValArray::from_iter(more))).await?;
+    h.inner.set_var("test::opts", Value::Array(ValArray::from_iter(more)))?;
     h.drain().await?;
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
     expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("banana")));
@@ -1019,7 +1019,7 @@ async fn a_context_menu_without_items_closes() -> Result<()> {
     right_click(&mut h, Point::new(20.0, 20.0));
     let _ = h.move_cursor(Point::new(250.0, 280.0));
     for shown in [false, true] {
-        h.inner.set_var("test::show", Value::Bool(shown)).await?;
+        h.inner.set_var("test::show", Value::Bool(shown))?;
         h.drain().await?;
         let _ = h.process_events(&[]);
     }

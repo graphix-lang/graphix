@@ -175,10 +175,8 @@ impl GuiTestHarness {
     }
 
     /// Set the program variable `name`, module-qualified, from the test.
-    async fn set_var(&self, name: &str, v: Value) -> Result<()> {
-        let bid = find_bind_id(&self.f.compiled.env, name)?;
-        self.f.gx.compile_ref(bid).await?.set(v)?;
-        Ok(())
+    fn set_var(&self, name: &str, v: Value) -> Result<()> {
+        self.f.gx.set(find_bind_id(&self.f.compiled.env, name)?, v)
     }
 
     /// Watch a module-qualified variable such as "test::released" and
