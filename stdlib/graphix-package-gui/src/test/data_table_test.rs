@@ -664,13 +664,19 @@ let result = data_table(
 
     await_order(&mut h, &alpha_asc, "initial alpha asc").await?;
 
-    h.set_var("test::sort_dir", graphix_compiler::rep::make_variant(literal!("Descending"), [])).await?;
+    h.set_var(
+        "test::sort_dir",
+        graphix_compiler::rep::make_variant(literal!("Descending"), []),
+    )?;
     await_order(&mut h, &alpha_desc, "alpha desc after direction flip").await?;
 
     h.set_var("test::sort_col", Value::String(arcstr::literal!("beta")))?;
     await_order(&mut h, &beta_desc, "beta desc after column switch").await?;
 
-    h.set_var("test::sort_dir", graphix_compiler::rep::make_variant(literal!("Ascending"), [])).await?;
+    h.set_var(
+        "test::sort_dir",
+        graphix_compiler::rep::make_variant(literal!("Ascending"), []),
+    )?;
     await_order(&mut h, &beta_asc, "beta asc after direction flip").await?;
 
     h.set_var("test::sort_col", Value::String(arcstr::literal!("alpha")))?;

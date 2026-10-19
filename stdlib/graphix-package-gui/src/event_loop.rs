@@ -476,8 +476,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     });
                 }
                 let logical = size.to_logical::<f32>(scale);
-                let _ = end_tx
-                    .send((window_id, WindowSizeV(Size::new(logical.width, logical.height))));
+                let _ = end_tx.send((
+                    window_id,
+                    WindowSizeV(Size::new(logical.width, logical.height)),
+                ));
             }
             WindowEvent::RedrawRequested => {
                 if !tw.resize_render_timer_armed {
