@@ -43,7 +43,7 @@ let hosts = ["washu-chan", "katana", "aieka", "ryouko"];
 //
 // The last counter line of each source is republished every few seconds.
 // That reduction belongs here, next to the log, not in the dashboard.
-// CR claude for claude: [bug/low] The remote loop picks the campaign with `ls -dt
+// XCR claude for claude: [bug/low] The remote loop picks the campaign with `ls -dt
 // ~/tmp/target/fuzz/*/ | head -1`, the newest directory by mtime.
 // `~/tmp/target/fuzz/crashes` is the default corpus of a manual `graphix-fuzz
 // fuzz|generate|soak` (main.rs `corpus_dir`). Writing a finding there makes it newer
@@ -53,6 +53,9 @@ let hosts = ["washu-chan", "katana", "aieka", "ryouko"];
 // take its campaign directory. probe:
 // design/review-2026-10-19/repro/fuzz-main-aux-soakdash-picks-crashes.sh
 // (fuzz-main-aux-01)
+// 2026-10-19 claude: The remote loop now takes the newest state/soak.pid and its
+// campaign directory, so a corpus directory with no pid file (crashes) is never
+// picked. The repro, with the new selection lines, prints LIVE oct19a yes.
 let remote = r#"
 while :; do
   # Re-resolve the campaign EVERY cycle. Binding it once at connect time
@@ -60,10 +63,10 @@ while :; do
   # started: restart the fleet under a new name and the dashboard sat on
   # the old directory reporting DOWN forever, unable to recover without
   # being restarted itself.
-  d=$(ls -dt ~/tmp/target/fuzz/*/ 2>/dev/null | head -1)
-  if [ -z "$d" ]; then echo "LIVE - no 0"; sleep 5; continue; fi
+  pidfile=$(ls -t ~/tmp/target/fuzz/*/state/soak.pid 2>/dev/null | head -1)
+  if [ -z "$pidfile" ]; then echo "LIVE - no 0"; sleep 5; continue; fi
+  d=$(dirname "$(dirname "$pidfile")")
   c=$(basename "$d")
-  pidfile="$d/state/soak.pid"
   pid=$(cat "$pidfile" 2>/dev/null)
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=yes; else live=no; fi
   # The pid file is written at launch, so its mtime is the campaign's

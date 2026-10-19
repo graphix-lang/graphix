@@ -136,7 +136,7 @@ launch() {
             GRAPHIX_FUZZ_CORPUS="$corpus" \
             "$binary" "$@"
     ' soak-lane "$pidfile" "$nice_level" "$workers" "$dir/corpus" \
-        "$dir/graphix-fuzz" soak forever "$seed" "$mix" > "$dir/soak.log" 2>&1 < /dev/null
+        "$dir/graphix-fuzz" soak forever "$seed" ${mix:+"$mix"} > "$dir/soak.log" 2>&1 < /dev/null
     for _ in {1..100}; do
         soak_live "$dir" && return 0
         sleep 0.1
@@ -215,13 +215,17 @@ start() {
     # The WHOLE box: one pool, so the 8x oversubscription is claimed once.
     workers=${2:-$(( $(ncpu) * 8 ))}
     seed=${3:-$(date +%s)}
-    # CR claude for claude: [structure/low] The default mix is written here, in
+    # XCR claude for claude: [structure/low] The default mix is written here, in
     # fleet.sh's `MIX` and in main.rs `DEFAULT_MIX`. Because this script always passes a
     # mix, `DEFAULT_MIX` never governs a launched campaign, and retuning it does nothing
     # on the fleet. Keep the binary's constant as the only default: pass the mix
     # argument only when one was given here, and only when FLEET_MIX is set in fleet.sh.
     # Found by reading; not run. (fuzz-main-aux-07)
-    mix=${4:-50:25:25:10}
+    # 2026-10-19 claude: The soak script now passes a mix only when one is given (its
+    # config records default); the fleet MIX is empty unless FLEET_MIX is set, and it
+    # travels last in the ssh argv so an empty one cannot shift asan. DEFAULT_MIX in
+    # main.rs is the one default. No test reaches the scripts; bash -n only.
+    mix=${4:-}
     [[ $workers =~ ^[1-9][0-9]*$ ]] || {
         echo "workers must be positive" >&2
         exit 2
@@ -238,7 +242,7 @@ start() {
         echo "base-seed must be an unsigned integer" >&2
         exit 2
     }
-    [[ $mix =~ ^[0-9]+(\.[0-9]+)?(:[0-9]+(\.[0-9]+)?){3}$ ]] || {
+    [[ -z $mix || $mix =~ ^[0-9]+(\.[0-9]+)?(:[0-9]+(\.[0-9]+)?){3}$ ]] || {
         echo "mix must be fuzz:generate:reactive:typemorph, e.g. 50:25:25:10" >&2
         exit 2
     }
@@ -306,7 +310,7 @@ start() {
     mkdir -p "$dir/state" "$dir/corpus"
     cp "$binary" "$dir/graphix-fuzz"
     printf 'workers=%s\nmix=%s\nnice=%s\nbase_seed=%s\nasan=%s\n' \
-        "$workers" "$mix" "$nice_level" "$seed" "${SOAK_ASAN:-0}" \
+        "$workers" "${mix:-default}" "$nice_level" "$seed" "${SOAK_ASAN:-0}" \
         > "$dir/state/config"
 
     trap 'stop_campaign "$dir"' ERR INT TERM
