@@ -26,20 +26,9 @@ graphix_package_core::impl_abstract_arc!(
     static CONNECTION_WRAPPER = "sqlite::Connection"
 );
 
-// CR claude for claude: [structure/low] This repeats
-// CachedVals::abstract_arg::<ConnectionValue>, and SqliteOpenEv/SqliteCloseEv each
-// re-spell with_conn's spawn_blocking await and "spawn_blocking failed" error. Close
-// words the closed state differently from with_conn. Use abstract_arg here, and have
-// with_conn hand its closure the Option<Connection> so close is `take()` through it;
-// open can share one blocking helper. Found by reading; not run. (http-sqlite-db1-05)
-fn get_conn_arc(cached: &CachedVals, idx: usize) -> Option<Conn> {
-    match cached.value(idx)? {
-        Value::Abstract(a) => {
-            let cv = a.downcast_ref::<ConnectionValue>()?;
-            Some(cv.inner.clone())
-        }
-        _ => None,
-    }
+/// The connection argument `cached` holds first.
+fn conn(cached: &CachedVals) -> Option<Conn> {
+    cached.abstract_arg::<ConnectionValue>(0).map(|c| c.inner.clone())
 }
 
 /// A TEXT that is not UTF-8 is refused, naming its column: read as "" it
@@ -88,22 +77,27 @@ fn params(ps: &ValArray) -> impl rusqlite::Params + '_ {
     rusqlite::params_from_iter(ps.iter().map(Param))
 }
 
+/// `f` on a blocking thread.
+async fn blocking(f: impl FnOnce() -> Value + Send + 'static) -> Value {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(v) => v,
+        Err(e) => errf!("SqliteError", "spawn_blocking failed: {e}"),
+    }
+}
+
+fn closed() -> Value {
+    errf!("SqliteError", "connection closed")
+}
+
 async fn with_conn<F>(conn_arc: Conn, f: F) -> Value
 where
     F: FnOnce(&mut rusqlite::Connection) -> Value + Send + 'static,
 {
-    match tokio::task::spawn_blocking(move || {
-        let mut guard = conn_arc.lock();
-        match guard.as_mut() {
-            Some(conn) => f(conn),
-            None => errf!("SqliteError", "connection closed"),
-        }
+    blocking(move || match conn_arc.lock().as_mut() {
+        Some(conn) => f(conn),
+        None => closed(),
     })
     .await
-    {
-        Ok(v) => v,
-        Err(e) => errf!("SqliteError", "spawn_blocking failed: {e}"),
-    }
 }
 
 #[derive(Debug, Default)]
@@ -119,17 +113,12 @@ impl EvalCachedAsync for SqliteOpenEv {
     }
 
     fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || rusqlite::Connection::open(&*path))
-                .await
-            {
-                Err(e) => errf!("SqliteError", "spawn_blocking failed: {e}"),
-                Ok(Err(e)) => errf!("SqliteError", "{e}"),
-                Ok(Ok(conn)) => CONNECTION_WRAPPER.wrap(ConnectionValue {
-                    inner: Arc::new(Reaped::new(Mutex::new(Some(conn)))),
-                }),
-            }
-        }
+        blocking(move || match rusqlite::Connection::open(&*path) {
+            Err(e) => errf!("SqliteError", "{e}"),
+            Ok(conn) => CONNECTION_WRAPPER.wrap(ConnectionValue {
+                inner: Arc::new(Reaped::new(Mutex::new(Some(conn)))),
+            }),
+        })
     }
 }
 
@@ -144,7 +133,7 @@ impl EvalCachedAsync for SqliteExecEv {
     const NAME: &str = "sqlite_exec";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let conn = get_conn_arc(cached, 0)?;
+        let conn = conn(cached)?;
         let sql = cached.get::<ArcStr>(1)?;
         let params = cached.get::<ValArray>(2)?;
         Some((conn, sql, params))
@@ -175,7 +164,7 @@ impl EvalCachedAsync for SqliteExecBatchEv {
     const NAME: &str = "sqlite_exec_batch";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let conn = get_conn_arc(cached, 0)?;
+        let conn = conn(cached)?;
         let sql = cached.get::<ArcStr>(1)?;
         Some((conn, sql))
     }
@@ -202,7 +191,7 @@ impl ReadFormat for Query {
     type Args = (Conn, ArcStr, ValArray);
 
     fn prepare_args(cached: &CachedVals) -> Option<Self::Args> {
-        let conn = get_conn_arc(cached, 0)?;
+        let conn = conn(cached)?;
         let sql = cached.get::<ArcStr>(1)?;
         let params = cached.get::<ValArray>(2)?;
         Some((conn, sql, params))
@@ -279,7 +268,7 @@ macro_rules! simple_sql_builtin {
             const NAME: &str = $builtin_name;
 
             fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-                get_conn_arc(cached, 0)
+                conn(cached)
             }
 
             fn eval(conn_arc: Self::Args) -> impl Future<Output = Value> + Send {
@@ -312,27 +301,14 @@ impl EvalCachedAsync for SqliteCloseEv {
     const NAME: &str = "sqlite_close";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_conn_arc(cached, 0)
+        conn(cached)
     }
 
     fn eval(conn_arc: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let mut guard = conn_arc.lock();
-                match guard.take() {
-                    Some(conn) => {
-                        drop(conn);
-                        Value::Null
-                    }
-                    None => errf!("SqliteError", "connection already closed"),
-                }
-            })
-            .await
-            {
-                Ok(v) => v,
-                Err(e) => errf!("SqliteError", "spawn_blocking failed: {e}"),
-            }
-        }
+        blocking(move || match conn_arc.lock().take() {
+            Some(_) => Value::Null,
+            None => closed(),
+        })
     }
 }
 

@@ -418,3 +418,31 @@ run!(http_rest_caller_header_replaces_default, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "accept=application/json|content-type=application/merge-patch+json")
 }; FuseExpect::Jit);
+
+// A request's HTTPError names its cause, which reqwest's own message
+// leaves out (http-sqlite-db1-03).
+run!(http_error_names_its_cause, r#"{
+    let c = http::default_client(null)$;
+    let msg = |r: Any| select r { error as e => "[e]", _ => "answered" };
+    let refused = msg(http::get(c, "http://127.0.0.1:1/x"));
+    let relative = msg(http::get(c, "notaurl"));
+    (str::contains(#part: "refused", refused), str::contains(#part: "relative URL without a base", relative))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[true, true]")
+}; FuseExpect::Jit);
+
+// A raising handler's 500 body is the error as data, never its kind
+// markers (x-rerun-2-02).
+run!(http_500_body_carries_no_markers, r#"{
+    let handler = |req: http::Request| {
+        let e: Result<string, `Internal(string)> = error(`Internal(req.path));
+        { body: e?, headers: [], status: u16:200, url: "" }
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let a = http::request(client, "http://[addr]/raise")$;
+    (a.status, str::contains(#part: "abstract:", a.body), str::contains(#part: "\[\"Internal\", \"/raise\"\]", a.body))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[u16:500, false, true]")
+}; FuseExpect::Jit);
