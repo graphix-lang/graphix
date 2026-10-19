@@ -104,41 +104,7 @@ macro_rules! slider_widget {
                 let bounds = bounds.unwrap_or_default();
                 let step = self.p.step.t.flatten().filter(|s| s.is_finite() && *s > 0.0);
                 let continuous = step.is_none();
-                let normalized = continuous || !(bounds.max - bounds.min).is_finite();
-                let scale = normalized.then_some(bounds);
-                let (min, max, val) = if normalized {
-                    (
-                        0.0,
-                        if bounds.min == bounds.max { 0.0 } else { 1.0 },
-                        bounds.fraction(val),
-                    )
-                } else {
-                    (bounds.min, bounds.max, val)
-                };
-                let on_change_id = if disabled { None } else { self.on_change.id() };
-                let mut sl = widget::$Widget::new(min..=max, val, move |v| {
-                    slider_change(on_change_id, scale, v)
-                });
-                let step = step
-                    .map(|s| {
-                        if normalized {
-                            (s / 2.0) / (bounds.max / 2.0 - bounds.min / 2.0)
-                        } else {
-                            s
-                        }
-                    })
-                    .unwrap_or(1e-6)
-                    .max(f64::MIN_POSITIVE);
-                sl = sl.step(step);
-                if let Some(id) = self.on_release.id().filter(|_| !disabled) {
-                    sl = sl.on_release(Message::Call(
-                        id,
-                        ValArray::from_iter([Value::Null]),
-                    ));
-                }
-                slider_dim_set!($kind1, self, sl, $dim1);
-                slider_dim_set!($kind2, self, sl, $dim2);
-                // CR claude for claude: [bug/medium] A stepped slider reaches iced with
+                // XCR claude for claude: [bug/medium] A stepped slider reaches iced with
                 // its raw range and step. iced snaps a drag to min + k*step, but its
                 // ArrowUp/ArrowDown and Ctrl+wheel snap to (round(v/step) ± 1) * step,
                 // i.e. multiples of step from zero. So #min 0.5, #step 1.0 at 0.5 sends
@@ -148,6 +114,38 @@ macro_rules! slider_widget {
                 // back to min + k*step in slider_change. Then both input paths share
                 // one lattice, and the normalized path stays for a non-finite count.
                 // Found by reading; not run. (gui-widgets-b-02)
+                // 2026-10-19 claude: A stepped slider is now given to iced in step
+                // counts (Scale::Steps: range 0..=floor((max-min)/step), step 1, mapped
+                // back to min + k*step), so the drag, the arrows and Ctrl+wheel share
+                // one lattice; a count that is not finite keeps the fraction path.
+                // slider.md says so (gui-widgets-b-04). Pin:
+                // interaction_test::stepped_slider_keys_wheel_and_drags_share_one_lattice
+                // (both orientations).
+                let scale = Scale::new(bounds, step);
+                let (max, val, step) = match scale {
+                    Scale::Steps { count, .. } => (count, scale.position(val), 1.0),
+                    Scale::Fraction(bounds) => (
+                        if bounds.min == bounds.max { 0.0 } else { 1.0 },
+                        bounds.fraction(val),
+                        step.map_or(1e-6, |s| {
+                            (s / 2.0) / (bounds.max / 2.0 - bounds.min / 2.0)
+                        })
+                        .max(f64::MIN_POSITIVE),
+                    ),
+                };
+                let on_change_id = if disabled { None } else { self.on_change.id() };
+                let mut sl = widget::$Widget::new(0.0..=max, val, move |v| {
+                    slider_change(on_change_id, scale, v)
+                });
+                sl = sl.step(step);
+                if let Some(id) = self.on_release.id().filter(|_| !disabled) {
+                    sl = sl.on_release(Message::Call(
+                        id,
+                        ValArray::from_iter([Value::Null]),
+                    ));
+                }
+                slider_dim_set!($kind1, self, sl, $dim1);
+                slider_dim_set!($kind2, self, sl, $dim2);
                 if continuous {
                     Element::new(SliderInput {
                         content: sl,
@@ -207,14 +205,55 @@ impl Bounds {
     }
 }
 
-fn slider_change(id: Option<CallableId>, scale: Option<Bounds>, value: f64) -> Message {
+/// What iced's slider holds in place of the program's value: a step
+/// count when the steps can be counted, else a fraction of the bounds.
+/// Both of iced's input paths, a drag and the arrows or the wheel, then
+/// land on the program's lattice, min + k * step.
+#[derive(Clone, Copy)]
+enum Scale {
+    Steps { min: f64, max: f64, step: f64, count: f64 },
+    Fraction(Bounds),
+}
+
+impl Scale {
+    fn new(bounds: Bounds, step: Option<f64>) -> Self {
+        match step {
+            Some(step) if ((bounds.max - bounds.min) / step).is_finite() => Self::Steps {
+                min: bounds.min,
+                max: bounds.max,
+                step,
+                count: ((bounds.max - bounds.min) / step).floor(),
+            },
+            _ => Self::Fraction(bounds),
+        }
+    }
+
+    /// Where the program's `value` sits on iced's slider.
+    fn position(self, value: f64) -> f64 {
+        match self {
+            Self::Steps { min, max, step, count } => {
+                ((value.clamp(min, max) - min) / step).round().min(count)
+            }
+            Self::Fraction(bounds) => bounds.fraction(value),
+        }
+    }
+
+    /// The program's value at iced's `position`.
+    fn value(self, position: f64) -> f64 {
+        match self {
+            Self::Steps { min, max, step, .. } => {
+                (min + position.round() * step).min(max)
+            }
+            Self::Fraction(bounds) => bounds.value(position),
+        }
+    }
+}
+
+fn slider_change(id: Option<CallableId>, scale: Scale, position: f64) -> Message {
     match id {
-        Some(id) => Message::Call(
-            id,
-            ValArray::from_iter([Value::F64(
-                scale.map_or(value, |bounds| bounds.value(value)),
-            )]),
-        ),
+        Some(id) => {
+            Message::Call(id, ValArray::from_iter([Value::F64(scale.value(position))]))
+        }
         None => Message::Nop,
     }
 }
@@ -315,7 +354,11 @@ impl<W: Widget<Message, GraphixTheme, Renderer>> Widget<Message, GraphixTheme, R
         {
             let next = (self.value + direction * 0.01).clamp(0.0, 1.0);
             if self.bounds.value(next) != self.bounds.value(self.value) {
-                shell.publish(slider_change(self.on_change, Some(self.bounds), next));
+                shell.publish(slider_change(
+                    self.on_change,
+                    Scale::Fraction(self.bounds),
+                    next,
+                ));
             }
             shell.capture_event();
             return;

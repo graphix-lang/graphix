@@ -1,13 +1,13 @@
 use crate::{
     render::WindowSurface,
-    types::{ImageSourceV, SizeV, ThemeV},
+    types::{ImageSourceV, ThemeV, WindowSizeV},
     widgets::Child,
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
-use iced_core::mouse;
+use iced_core::{mouse, touch};
 use iced_runtime::user_interface::Cache;
 use netidx::publisher::Value;
 use std::{sync::Arc, time::Instant};
@@ -19,7 +19,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 pub struct ResolvedWindow<X: GXExt> {
     pub gx: GXHandle<X>,
     pub title: TRef<X, ArcStr>,
-    pub size: TRef<X, SizeV>,
+    pub size: TRef<X, WindowSizeV>,
     pub theme: TRef<X, ThemeV>,
     pub icon: TRef<X, ImageSourceV>,
     pub decoded_icon: Option<winit::window::Icon>,
@@ -38,14 +38,7 @@ impl<X: GXExt> ResolvedWindow<X> {
         )
         .context("window")?;
         let icon = TRef::new(icon).context("window tref icon")?;
-        let decoded_icon =
-            icon.t.as_ref().and_then(|s: &ImageSourceV| match s.decode_icon() {
-                Ok(i) => i,
-                Err(e) => {
-                    log::warn!("failed to decode window icon: {e}");
-                    None
-                }
-            });
+        let decoded_icon = window_icon(&icon);
         Ok(Self {
             gx,
             title: TRef::new(title).context("window tref title")?,
@@ -82,14 +75,8 @@ impl<X: GXExt> ResolvedWindow<X> {
     ) -> TrackedWindow<X> {
         TrackedWindow {
             window_ref,
-            gx: self.gx,
+            props: self,
             window,
-            title: self.title,
-            size: self.size,
-            theme: self.theme,
-            icon: self.icon,
-            decoded_icon: self.decoded_icon,
-            content: self.content,
             surface,
             cache: Cache::default(),
             cursor: mouse::Cursor::Unavailable,
@@ -106,22 +93,28 @@ impl<X: GXExt> ResolvedWindow<X> {
     }
 }
 
-/// The pointer as iced sees it after `ev`: where it last moved, and
-/// unavailable once it has left the window.
-// CR claude for claude: [bug/medium] Touch events never move the tracked cursor, so a
-// tap on a button, checkbox or slider does nothing. iced's widgets act on FingerPressed
-// only when cursor.is_over(bounds), and the cursor stays Unavailable or wherever the
-// mouse last was. iced's own winit shell takes the cursor position from touch locations
-// too. Fix: also set Cursor::Available(position) on Event::Touch
-// FingerPressed/FingerMoved/FingerLifted/FingerLost. Then add an InteractionHarness pin
-// that taps a button and expects one Call (frame_test's touch pin checks only the
-// conversion). probe: design/review-2026-10-19/repro/tests-gui-b-touch-taps-ignored.rs
-// (a click gives 1 call, a tap gives 0). (tests-gui-b-01)
+/// The icon `icon` names, or none when it names none or fails to decode.
+fn window_icon<X: GXExt>(icon: &TRef<X, ImageSourceV>) -> Option<winit::window::Icon> {
+    icon.t.as_ref().and_then(|s| match s.decode_icon() {
+        Ok(i) => i,
+        Err(e) => {
+            log::warn!("failed to decode window icon: {e}");
+            None
+        }
+    })
+}
+
+/// The pointer as iced sees it after `ev`: where a mouse or a finger
+/// last was, and unavailable once the mouse has left the window.
 pub fn track_cursor(cursor: &mut mouse::Cursor, ev: &iced_core::Event) {
     match ev {
-        iced_core::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-            *cursor = mouse::Cursor::Available(*position)
-        }
+        iced_core::Event::Mouse(mouse::Event::CursorMoved { position })
+        | iced_core::Event::Touch(
+            touch::Event::FingerPressed { position, .. }
+            | touch::Event::FingerMoved { position, .. }
+            | touch::Event::FingerLifted { position, .. }
+            | touch::Event::FingerLost { position, .. },
+        ) => *cursor = mouse::Cursor::Available(*position),
         iced_core::Event::Mouse(mouse::Event::CursorLeft) => {
             *cursor = mouse::Cursor::Unavailable
         }
@@ -130,22 +123,11 @@ pub fn track_cursor(cursor: &mut mouse::Cursor, ev: &iced_core::Event) {
 }
 
 /// Per-window state tracking.
-// CR claude for claude: [structure/low] This struct repeats ResolvedWindow's seven
-// fields. into_tracked and handle_update's recompile copy them one by one, and the
-// decode-icon-or-warn closure is written twice. Hold `props: ResolvedWindow<X>` here so
-// a recompile is one assignment, and make icon decoding one function both sites call.
-// The window's refs could then also be tested without an OS window. Found by reading;
-// not run. (gui-core-07)
 pub struct TrackedWindow<X: GXExt> {
     pub window_ref: Ref<X>,
-    pub gx: GXHandle<X>,
+    /// What the window's value says it is, replaced whole when it changes.
+    pub props: ResolvedWindow<X>,
     pub window: Arc<Window>,
-    pub title: TRef<X, ArcStr>,
-    pub size: TRef<X, SizeV>,
-    pub theme: TRef<X, ThemeV>,
-    pub icon: TRef<X, ImageSourceV>,
-    pub decoded_icon: Option<winit::window::Icon>,
-    pub content: Child<X>,
     pub surface: WindowSurface,
     /// The interface's state between frames.
     pub cache: Cache,
@@ -157,7 +139,7 @@ pub struct TrackedWindow<X: GXExt> {
     pub pending_events: Vec<iced_core::Event>,
     pub needs_redraw: bool,
     pub redraw_at: Option<Instant>,
-    pub last_set_size: Option<SizeV>,
+    pub last_set_size: Option<WindowSizeV>,
     pub pending_resize: Option<(u32, u32, f64)>,
     /// True while a resize render timer is armed; at most one per drag.
     pub resize_render_timer_armed: bool,
@@ -172,7 +154,7 @@ impl<X: GXExt> TrackedWindow<X> {
         v: &Value,
     ) -> Result<()> {
         if id == self.window_ref.id && self.window_ref.last.as_ref() != Some(v) {
-            // CR claude for claude: [bug/medium] `last` is recorded before
+            // XCR claude for claude: [bug/medium] `last` is recorded before
             // ResolvedWindow::compile. When the compile fails (for example, the new
             // window's content is a text whose size is 0 at that moment), the window
             // keeps the old window's refs but `last` already equals the new value, so a
@@ -180,35 +162,35 @@ impl<X: GXExt> TrackedWindow<X> {
             // Child::update and Children::update set `last` only after a successful
             // compile, and reconcile_test.rs pins that. Move this assignment below the
             // compile. Found by reading; not run. (gui-core-01)
-            self.window_ref.last = Some(v.clone());
-            let resolved = rt
-                .block_on(ResolvedWindow::compile(self.gx.clone(), v.clone()))
+            // 2026-10-19 claude: window_ref.last is now set after
+            // ResolvedWindow::compile succeeds, and the window holds its refs as props:
+            // ResolvedWindow (gui-core-07), so a recompile is one assignment. No pin:
+            // handle_update needs an OS window, which no test has.
+            self.props = rt
+                .block_on(ResolvedWindow::compile(self.props.gx.clone(), v.clone()))
                 .context("window ref recompile")?;
-            self.title = resolved.title;
-            self.size = resolved.size;
-            self.theme = resolved.theme;
-            self.icon = resolved.icon;
-            self.decoded_icon = resolved.decoded_icon;
-            self.content = resolved.content;
-            if let Some(t) = self.title.t.as_ref() {
+            self.window_ref.last = Some(v.clone());
+            let p = &self.props;
+            if let Some(t) = p.title.t.as_ref() {
                 self.window.set_title(t);
             }
-            if let Some(sz) = self.size.t.as_ref() {
+            if let Some(sz) = p.size.t.as_ref() {
                 let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
                     sz.0.width,
                     sz.0.height,
                 ));
             }
-            self.window.set_window_icon(self.decoded_icon.clone());
+            self.window.set_window_icon(p.decoded_icon.clone());
             self.needs_redraw = true;
             return Ok(());
         }
         let mut changed = false;
-        if let Some(t) = self.title.update(id, v).context("window update title")? {
+        let p = &mut self.props;
+        if let Some(t) = p.title.update(id, v).context("window update title")? {
             self.window.set_title(t);
             changed = true;
         }
-        if let Some(sz) = self.size.update(id, v).context("window update size")? {
+        if let Some(sz) = p.size.update(id, v).context("window update size")? {
             if self.last_set_size.take() != Some(*sz) {
                 let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
                     sz.0.width,
@@ -217,22 +199,15 @@ impl<X: GXExt> TrackedWindow<X> {
             }
             changed = true;
         }
-        if self.theme.update(id, v).context("window update theme")?.is_some() {
+        if p.theme.update(id, v).context("window update theme")?.is_some() {
             changed = true;
         }
-        if self.icon.update(id, v).context("window update icon")?.is_some() {
-            self.decoded_icon =
-                self.icon.t.as_ref().and_then(|s: &ImageSourceV| match s.decode_icon() {
-                    Ok(i) => i,
-                    Err(e) => {
-                        log::warn!("failed to decode window icon: {e}");
-                        None
-                    }
-                });
-            self.window.set_window_icon(self.decoded_icon.clone());
+        if p.icon.update(id, v).context("window update icon")?.is_some() {
+            p.decoded_icon = window_icon(&p.icon);
+            self.window.set_window_icon(p.decoded_icon.clone());
             changed = true;
         }
-        changed |= self.content.update(rt, &self.gx, id, v).context("window content")?;
+        changed |= p.content.update(rt, &p.gx, id, v).context("window content")?;
         self.needs_redraw |= changed;
         Ok(())
     }
@@ -242,10 +217,9 @@ impl<X: GXExt> TrackedWindow<X> {
     }
 
     pub fn iced_theme(&self) -> crate::theme::GraphixTheme {
-        self.theme.t.as_ref().map(|t| t.0.clone()).unwrap_or(crate::theme::GraphixTheme {
-            inner: iced_core::Theme::Dark,
-            overrides: None,
-        })
+        self.props.theme.t.as_ref().map(|t| t.0.clone()).unwrap_or(
+            crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None },
+        )
     }
 
     pub fn push_event(&mut self, event: iced_core::Event) {

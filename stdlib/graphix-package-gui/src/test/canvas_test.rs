@@ -6,13 +6,6 @@ use compact_str::format_compact;
 use graphix_rt::NoExt;
 use netidx::publisher::{FromValue, Value};
 
-// CR claude for claude: [test-gap/low] The positive canvas tests (line_renders through
-// path_and_curves_render, canvas_arc_to_reversal_draws) assert only the shape count and
-// that render returns; CanvasW::draw logs a skipped shape and sets invalid_geometry
-// rather than failing. A CheckedPath::build or draw_shape change that drops every
-// circle, path or rect stroke passes them all. Assert !has_invalid_geometry() after
-// each positive render, as canvas_huge_line_keeps_finite_endpoints does. Found by
-// reading; not run. (tests-gui-a-01)
 async fn canvas_harness(
     expected_count: usize,
     shapes_expr: &str,
@@ -27,6 +20,17 @@ async fn canvas_harness(
     Ok(h)
 }
 
+fn invalid_geometry(h: &GuiTestHarness) -> bool {
+    h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap().has_invalid_geometry()
+}
+
+/// Render, every shape drawn: none skipped as invalid geometry.
+async fn render_all(h: &mut GuiTestHarness) -> Result<()> {
+    h.render().await?;
+    assert!(!invalid_geometry(h), "a shape was skipped");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn line_renders() -> Result<()> {
     let mut h = canvas_harness(
@@ -37,8 +41,7 @@ async fn line_renders() -> Result<()> {
         ),
     )
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -51,8 +54,7 @@ async fn circle_with_fill_only() -> Result<()> {
         ),
     )
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -62,8 +64,7 @@ async fn circle_with_stroke_only() -> Result<()> {
         "fill: null, stroke: {color: color(#r: 0.0, #g: 0.0, #b: 1.0, #a: 1.0)$, width: 3.0}})",
     ))
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -77,8 +78,7 @@ async fn circle_with_both() -> Result<()> {
         ),
     )
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -88,8 +88,7 @@ async fn circle_with_neither() -> Result<()> {
         "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, fill: null, stroke: null})",
     )
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -103,8 +102,7 @@ async fn rect_with_fill() -> Result<()> {
         ),
     )
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -115,8 +113,7 @@ async fn rect_with_stroke() -> Result<()> {
         "fill: null, stroke: {color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.0}})",
     ))
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -129,8 +126,7 @@ async fn text_renders() -> Result<()> {
         ),
     )
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[test]
@@ -167,8 +163,7 @@ async fn path_and_curves_render() -> Result<()> {
         "color: color(#r: 0.0, #g: 0.0, #b: 1.0, #a: 1.0)$, width: 1.0})",
     ))
     .await?;
-    h.render().await?;
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[test]
@@ -203,7 +198,7 @@ async fn canvas_arc_to_reversal_draws() -> Result<()> {
          `ArcTo({a: {x: 100.0, y: 0.0}, b: {x: 0.0, y: 0.00001}, radius: 10.0}), `Close], \
          fill: color(#r: 1.0)$, stroke: null})",
     ).await?;
-    h.render().await
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -213,8 +208,7 @@ async fn canvas_overflowing_circle_is_skipped() -> Result<()> {
          radius: 300000000000000000000000000000000000000.0, fill: color(#g: 1.0)$, stroke: null})",
     ).await?;
     h.render().await?;
-    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap();
-    assert!(canvas.has_invalid_geometry());
+    assert!(invalid_geometry(&h));
     Ok(())
 }
 
@@ -227,10 +221,7 @@ async fn canvas_huge_line_keeps_finite_endpoints() -> Result<()> {
          color: color(#b: 1.0)$, width: 2.0})",
     )
     .await?;
-    h.render().await?;
-    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap();
-    assert!(!canvas.has_invalid_geometry());
-    Ok(())
+    render_all(&mut h).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -243,7 +234,6 @@ async fn canvas_overflowing_filled_rectangle_is_skipped() -> Result<()> {
     )
     .await?;
     h.render().await?;
-    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap();
-    assert!(canvas.has_invalid_geometry());
+    assert!(invalid_geometry(&h));
     Ok(())
 }

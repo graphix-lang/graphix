@@ -6,7 +6,7 @@ use anyhow::Result;
 use compact_str::format_compact;
 use graphix_rt::NoExt;
 use iced_core::{Event, Point, Size, mouse};
-use netidx::publisher::Value;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 
 /// Widgets use Shrink sizing and sit at (0,0); the viewport center
 /// misses them.
@@ -27,6 +27,28 @@ async fn button_click_produces_call() -> Result<()> {
         h.dispatch_calls(&msgs).await?;
         assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(n)));
     }
+    Ok(())
+}
+
+/// A tap presses a button as a click does: a finger moves the pointer.
+#[tokio::test(flavor = "current_thread")]
+async fn button_tap_produces_call() -> Result<()> {
+    use iced_core::touch;
+    let code = r#"
+        use gui::{button::button, text::text};
+        let result = button(#on_press: |t| t, &text(&"Tap"))
+    "#;
+    let mut h = InteractionHarness::new(code).await?;
+    let id = touch::Finger(1);
+    let mut msgs = h.process_events(&[Event::Touch(touch::Event::FingerPressed {
+        id,
+        position: WIDGET_HIT,
+    })]);
+    msgs.extend(h.process_events(&[Event::Touch(touch::Event::FingerLifted {
+        id,
+        position: WIDGET_HIT,
+    })]));
+    assert_eq!(msgs.iter().filter(|m| matches!(m, super::Message::Call(..))).count(), 1);
     Ok(())
 }
 
@@ -517,14 +539,6 @@ async fn mouse_area_on_move_produces_call() -> Result<()> {
     let mut h = InteractionHarness::new(&code).await?;
     let initial = h.watch("test::moved").await?;
     assert_eq!(initial, Value::Bool(false));
-    // Only cursor motion after the on_enter arm reaches on_move.
-    // CR claude for claude: [readability/low] The comment above is wrong for this
-    // program. It sets no on_enter, and iced's mouse_area publishes on_move on the
-    // first hovered motion when on_enter is None. Only an area with on_enter swallows
-    // the entering motion. Delete the comment and this move, or add #on_enter if the
-    // enter-then-move order is what should be pinned. Found by reading (iced_widget
-    // 0.14.2 mouse_area::update); not run. (tests-gui-b-03)
-    h.move_cursor(Point::new(5.0, 5.0));
     let msgs = h.move_cursor(WIDGET_HIT);
     h.dispatch_calls(&msgs).await?;
     assert_eq!(h.get_watched("test::moved"), Some(&Value::Bool(true)));
@@ -548,6 +562,27 @@ async fn keyboard_area_on_key_press_produces_call() -> Result<()> {
     h.dispatch_calls(&msgs).await?;
     assert_eq!(h.get_watched("test::pressed"), Some(&Value::Bool(true)));
     Ok(())
+}
+
+/// A key's text is what it types: none for a key that types a control
+/// character.
+#[test]
+fn key_text_is_printable() {
+    use crate::widgets::keyboard_area::key_event_to_value;
+    use iced_core::keyboard::{Key, Modifiers, key::Named};
+    let enter = Key::Named(Named::Enter);
+    for control in ["\r", "\x01", "\x1b", "\x7f"] {
+        assert_eq!(
+            key_event_to_value(&enter, Modifiers::empty(), Some(control), false),
+            key_event_to_value(&enter, Modifiers::empty(), None, false),
+            "{control:?}"
+        );
+    }
+    let a = Key::Character("a".into());
+    assert_ne!(
+        key_event_to_value(&a, Modifiers::empty(), Some("a"), false),
+        key_event_to_value(&a, Modifiers::empty(), None, false)
+    );
 }
 
 /// An area with no press handler leaves presses to the area around it.
@@ -754,6 +789,31 @@ async fn combo_box_keeps_typing_across_equal_options() -> Result<()> {
     Ok(())
 }
 
+/// New options keep what the user is typing: the filter stands.
+#[tokio::test(flavor = "current_thread")]
+async fn combo_box_keeps_typing_across_new_options() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let opts = [\"apple\", \"banana\", \"cherry\"];\n\
+         let result = combo_box(#on_select: |s| null, #placeholder: &\"Pick\", &opts)"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+    let _ = h.view();
+    let _ = h.click(WIDGET_HIT);
+    let typed = h.type_text("ban");
+    h.apply(&typed);
+    let opts = graphix_package_core::testing::find_bind_id(
+        &h.inner.f.compiled.env,
+        "test::opts",
+    )?;
+    let more = ["apple", "banana", "cherry", "date"].map(Value::from);
+    h.inner.f.gx.compile_ref(opts).await?.set(Value::Array(ValArray::from_iter(more)))?;
+    h.drain().await?;
+    let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("banana")));
+    Ok(())
+}
+
 /// Keys typed before the runtime echoes the earlier ones build on what
 /// was typed: the input's text is the user's, not the stale value's.
 #[tokio::test(flavor = "current_thread")]
@@ -812,18 +872,10 @@ async fn text_editor_keeps_its_cursor_through_echoes() -> Result<()> {
     for c in ["a", "b", "c"] {
         h.live(&[char_key(c)]).await?;
     }
-    // CR claude for claude: [style/low] This hand-parses the struct layout, which only
-    // rep.rs may know. It works because the kind marker in element 0 is not an Array.
-    // Read the field as key_names does: rep::struct_fields, then
-    // rep::field_named(fields, "text"). Found by reading; not run. (tests-gui-b-08)
-    let text = match h.get_watched("test::doc") {
-        Some(Value::Array(fields)) => fields.iter().find_map(|f| match f {
-            Value::Array(kv) if kv[0] == Value::from("text") => Some(kv[1].clone()),
-            _ => None,
-        }),
-        _ => None,
-    };
-    assert_eq!(text, Some(Value::from("abc")));
+    let doc = h.get_watched("test::doc").expect("doc");
+    let fields = graphix_compiler::rep::struct_fields(doc).expect("a struct");
+    let (_, text) = graphix_compiler::rep::field_named(fields, "text").expect("text");
+    assert_eq!(text, &Value::from("abc"));
     Ok(())
 }
 
@@ -872,11 +924,7 @@ async fn a_radio_without_its_value_selects_nothing() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
-    // CR claude for claude: [test-gap/low] A missed click also produces no Call, so
-    // this passes even if the radio is not there. RadioW::view publishes Nop for a
-    // click on a value-less radio. Assert msgs is exactly [Message::Nop]. Found by
-    // reading; not run. (tests-gui-b-09)
-    assert!(!msgs.iter().any(|m| matches!(m, super::Message::Call(..))), "{msgs:?}");
+    assert!(matches!(&msgs[..], [super::Message::Nop]), "{msgs:?}");
     Ok(())
 }
 
@@ -973,6 +1021,35 @@ fn right_click(h: &mut InteractionHarness, at: Point) {
     let _ = h.process_events(&[Event::Mouse(mouse::Event::ButtonReleased(
         mouse::Button::Right,
     ))]);
+}
+
+/// A context menu whose items go away closes: when they come back it
+/// stays closed until the next right-click.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_context_menu_without_items_closes() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let show = true;\n\
+         let items = select show {{ \
+             true => [menu::action(#on_click: |c| c, &\"Copy\")], false => [] }};\n\
+         let result = menu::context_menu(&items, \
+             &container(#width: &`Fill, #height: &`Fixed(40.0), &text(&\"target\")))"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let show = graphix_package_core::testing::find_bind_id(
+        &h.inner.f.compiled.env,
+        "test::show",
+    )?;
+    right_click(&mut h, Point::new(20.0, 20.0));
+    let _ = h.move_cursor(Point::new(250.0, 280.0));
+    for shown in [false, true] {
+        h.inner.f.gx.compile_ref(show).await?.set(Value::Bool(shown))?;
+        h.drain().await?;
+        let _ = h.process_events(&[]);
+    }
+    let msgs = h.click(Point::new(60.0, 30.0));
+    assert!(!msgs.iter().any(|m| matches!(m, super::Message::Call(..))), "{msgs:?}");
+    Ok(())
 }
 
 /// A shortcut key is one character, whatever its byte length.
@@ -1214,7 +1291,6 @@ async fn mouse_button_names_use_static_storage() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn handler_presence_changes_request_a_frame() -> Result<()> {
-    use netidx::protocol::valarray::ValArray;
     for widget in [
         "button(#on_press: handler, &text(&\"go\"))",
         "text_input(#on_input: handler, &\"\")",
@@ -1237,12 +1313,6 @@ async fn handler_presence_changes_request_a_frame() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] The final assertion cannot fail. The handler
-// writes "" on every edit, so doc is "" after 'y' whether 'y' was inserted into the
-// cleared editor, dropped, or appended to the stale "abcdefx". Only a panic is caught.
-// Assert instead that the 'y' frame's call carries "y": process_events, then
-// expect_call_with_args(.. == "y"), then apply. Found by reading; not run.
-// (tests-gui-b-02)
 async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
     let code = format_compact!(
         "{IMPORTS}; let doc = \"abcdef\"; let result = text_editor(#on_edit: |s| doc <- s ~ \"\", &doc)"
@@ -1254,8 +1324,9 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
     h.apply(&msgs);
     h.live(&[char_key("x")]).await?;
     assert_eq!(h.get_watched("test::doc"), Some(&Value::from("")));
-    h.live(&[char_key("y")]).await?;
-    assert_eq!(h.get_watched("test::doc"), Some(&Value::from("")));
+    let msgs = h.process_events(&[char_key("y")]);
+    let edits = h.process_editor_actions(&msgs);
+    assert_eq!(edits.iter().map(|(_, v)| v).collect::<Vec<_>>(), [&Value::from("y")]);
     Ok(())
 }
 
@@ -1333,6 +1404,44 @@ async fn continuous_slider_keys_and_wheel_move_one_percent() -> Result<()> {
             keyboard::Modifiers::empty(),
         ))]);
         assert!((value(&h.click(hit)) - 37.325).abs() < 0.0002, "{name} fine drag");
+    }
+    Ok(())
+}
+
+/// A stepped slider's keys, wheel and drags all land on min + k * step.
+#[tokio::test(flavor = "current_thread")]
+async fn stepped_slider_keys_wheel_and_drags_share_one_lattice() -> Result<()> {
+    use iced_core::keyboard::{self, key::Named};
+    for (name, size, hit) in [
+        ("slider", Size::new(400.0, 22.0), Point::new(149.3, 10.0)),
+        ("vertical_slider", Size::new(22.0, 400.0), Point::new(10.0, 250.7)),
+    ] {
+        let code = format_compact!(
+            "{IMPORTS}; let result = {name}(#min: &0.5, #max: &10.5, #step: &1.0, #on_change: |v| null, &5.5)"
+        );
+        let mut h = InteractionHarness::with_viewport(&code, size).await?;
+        h.move_cursor(hit);
+        let value = |msgs: &[super::Message]| -> f64 {
+            msgs.iter()
+                .find_map(|m| match m {
+                    super::Message::Call(_, args) => match args.first() {
+                        Some(Value::F64(v)) => Some(*v),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("slider callback")
+        };
+        assert_eq!(value(&h.press_key(Named::ArrowUp)), 6.5, "{name} key");
+        h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
+            keyboard::Modifiers::CTRL,
+        ))]);
+        assert_eq!(value(&h.scroll(0.0, -1.0)), 4.5, "{name} wheel");
+        h.process_events(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
+            keyboard::Modifiers::empty(),
+        ))]);
+        let dragged = value(&h.click(hit));
+        assert_eq!(dragged - dragged.floor(), 0.5, "{name} drag: {dragged}");
     }
     Ok(())
 }
