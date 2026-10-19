@@ -103,26 +103,29 @@ impl LineQueue {
     }
 }
 
+/// Queue `out` and wake the graph to take it; unless it is the `last`
+/// the reader sends, wait until the graph has taken it all.
 async fn send_lines(
     tx: &mut mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
     id: BindId,
     mut out: GPooled<Vec<(BindId, Value)>>,
-    queue: Option<&LineQueue>,
+    queue: &LineQueue,
+    last: bool,
 ) -> bool {
     if out.is_empty() {
         return true;
     }
-    if let Some(queue) = queue {
-        out.reverse();
+    out.reverse();
+    {
         let mut pending = queue.pending.lock();
         assert!(pending.is_empty());
         std::mem::swap(&mut *pending, &mut out);
-        out.push((id, Value::Null));
     }
+    out.push((id, Value::Null));
     if tx.send(out).await.is_err() {
         return false;
     }
-    if let Some(queue) = queue {
+    if !last {
         queue.drained.notified().await;
     }
     true
@@ -134,18 +137,18 @@ async fn send_lines(
 /// Framing is at the BYTE level so a multi-byte character split across a
 /// read boundary survives; only complete lines are decoded, and lossily.
 ///
-/// Without a queue, send one array per read. With a queue, wait for the
-/// graph to consume every line before reading another chunk.
+/// Batched, queue one array per read, else each line; either way wait
+/// for the graph to take everything queued before reading another chunk.
 fn line_reader(
     stream: Arc<Halves>,
     id: BindId,
-    queue: Option<Arc<LineQueue>>,
+    batched: bool,
+    queue: Arc<LineQueue>,
     mut tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
 ) -> impl Future<Output = ()> + Send {
     let mut stopped = stream.lines_stopped();
     async move {
         let read = async {
-            let batched = queue.is_none();
             loop {
                 let mut guard = stream.reader().await;
                 let Some(s) = guard.as_mut() else { break };
@@ -220,7 +223,7 @@ fn line_reader(
                     }
                 };
                 drop(guard);
-                if !send_lines(&mut tx, id, out, queue.as_deref()).await || done {
+                if !send_lines(&mut tx, id, out, &queue, done).await || done {
                     break;
                 }
             }
@@ -234,7 +237,7 @@ fn line_reader(
 }
 
 #[derive(Debug)]
-// CR claude for claude: [risk/low] Dropping this does not stop the reader: an
+// XCR claude for claude: [risk/low] Dropping this does not stop the reader: an
 // AbortHandle does not abort on drop, and IoLines aborts only in `stop`. A runtime that
 // ends without deleting its nodes (handle drop, abort, a budget stop) leaves the reader
 // running. It holds the stream's read half and consumes the next chunk of stdin or of a
@@ -242,10 +245,19 @@ fn line_reader(
 // through then waits on `drained` forever, which keeps its task and the stream's fd
 // alive for the rest of the process. Fix: a Drop impl on Reading that aborts `task`, so
 // `stop` only has to take `reading`. Found by reading; not run. (x-concurrency-03)
+// 2026-10-19 claude: Reading has a Drop that aborts its task; IoLines drops the Reading
+// to stop. Found by reading; no pin (a runtime that ends without deleting its nodes is
+// not reachable from a fixture).
 struct Reading {
     stream: Arc<Halves>,
     task: tokio::task::AbortHandle,
-    queue: Option<Arc<LineQueue>>,
+    queue: Arc<LineQueue>,
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        self.task.abort()
+    }
 }
 
 /// `Lines::lines` (BATCHED = false) and `Lines::lines_batched`
@@ -256,14 +268,6 @@ pub(crate) struct IoLines<const BATCHED: bool> {
     /// The stream being read and its reader.
     reading: Option<Reading>,
     out: TagValue,
-}
-
-impl<const BATCHED: bool> IoLines<BATCHED> {
-    fn stop(&mut self) {
-        if let Some(reader) = self.reading.take() {
-            reader.task.abort();
-        }
-    }
 }
 
 impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED> {
@@ -314,13 +318,12 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
             && let Some(stream) = stream_of(&tv.value_cloned())
             && !self.reading.as_ref().is_some_and(|r| Arc::ptr_eq(&r.stream, &stream))
         {
-            if self.reading.is_some() {
-                self.stop();
+            if self.reading.take().is_some() {
                 self.var.remint(ctx);
             }
             let (tx, rx) = mpsc::channel(3);
             ctx.rt.watch_var(rx);
-            // CR claude for claude: [bug/medium] lines_batched loses every batch its
+            // XCR claude for claude: [bug/medium] lines_batched loses every batch its
             // reader reads while this call's arm sleeps. Only the unbatched form gets a
             // LineQueue. The batched reader sends each read straight to the RtVar
             // through watch_var, the runtime delivers it while IoLines is asleep, and
@@ -333,35 +336,35 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
             // line_reader's send. probe:
             // design/review-2026-10-19/repro/sys-io-lines-batched-sleep-loses-lines.gx
             // (sys-io-01)
-            let queue = (!BATCHED).then(|| Arc::new(LineQueue::new()));
+            // 2026-10-19 claude: Both forms use the LineQueue now: line_reader takes
+            // batched and the queue, queues one array per read when batched, and waits
+            // for the graph to drain it; update pops from the queue alone. Pin:
+            // lib_tests::process::io_lines_batched_keeps_lines_across_a_sleep (before:
+            // never reaches 4 lines). design/async_sleep_outputs.md's Line reader
+            // identity says both forms hold the reader back.
+            let queue = Arc::new(LineQueue::new());
             let reader =
-                tokio::spawn(line_reader(stream.clone(), self.var.id, queue.clone(), tx));
-            self.reading = Some(Reading { stream, task: reader.abort_handle(), queue });
+                line_reader(stream.clone(), self.var.id, BATCHED, queue.clone(), tx);
+            let task = tokio::spawn(reader).abort_handle();
+            self.reading = Some(Reading { stream, task, queue });
         }
-        if let Some(queue) = self.reading.as_ref().and_then(|r| r.queue.as_ref()) {
-            match queue.pop() {
-                Some((value, more)) => {
-                    if more {
-                        ctx.rt.set_var(self.var.id, Value::Null);
-                    }
-                    self.out.set(TagValue::fired(value))
+        match self.reading.as_ref().and_then(|r| r.queue.pop()) {
+            Some((value, more)) => {
+                if more {
+                    ctx.rt.set_var(self.var.id, Value::Null);
                 }
-                None => self.out.ride(),
+                self.out.set(TagValue::fired(value))
             }
-        } else {
-            match ctx.event.variables.get(&self.var.id) {
-                Some(tv) => self.out.set(TagValue::fired(tv.value_cloned())),
-                None => self.out.ride(),
-            }
+            None => self.out.ride(),
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.stop();
+        self.reading = None;
         self.var.release(ctx);
     }
 
-    // CR claude for claude: [bug/high] In BATCHED mode the reader is not held back.
+    // XCR claude for claude: [bug/high] In BATCHED mode the reader is not held back.
     // line_reader keeps reading while this node sleeps and sends each batch to
     // `var.id`, which update reads only from the event. A batch delivered during the
     // sleep reaches no reader, and the wake catch-up cannot re-raise it because IoLines
@@ -373,6 +376,8 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
     // takes each batch. Then pin it with an arm that sleeps mid-stream. probe:
     // design/review-2026-10-19/repro/x-node-contract-lines-batched-sleep.gx
     // (x-node-contract-01)
+    // 2026-10-19 claude: Fixed with sys-io-01: batched mode is on LineQueue, one array
+    // per read. Pin: lib_tests::process::io_lines_batched_keeps_lines_across_a_sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
     }
@@ -666,7 +671,7 @@ mod test {
                     (id, Value::I64(chunk * 2)),
                     (id, Value::I64(chunk * 2 + 1)),
                 ]);
-                assert!(send_lines(&mut tx, id, out, Some(&sender_queue)).await);
+                assert!(send_lines(&mut tx, id, out, &sender_queue, false).await);
             }
         });
         for chunk in 0..2 {
@@ -730,12 +735,14 @@ mod test {
     #[tokio::test]
     async fn close_cancels_lines() {
         let (tx, _rx) = mpsc::channel(3);
-        close_pending_read(|stream| line_reader(stream, BindId::new(), None, tx)).await;
+        let queue = Arc::new(LineQueue::new());
+        close_pending_read(|stream| line_reader(stream, BindId::new(), true, queue, tx))
+            .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn whole_take_stops_lines_and_preserves_partial_bytes() {
+    async fn stopped_lines_preserve_partial_bytes() {
         use futures::StreamExt;
         use std::{process::Stdio, time::Duration};
         use tokio::{process::Command, time::timeout};
@@ -749,10 +756,15 @@ mod test {
         let stream =
             Arc::new(Halves::new(StreamKind::ChildStdout(child.stdout.take().unwrap())));
         let (tx, mut rx) = mpsc::channel(3);
-        let reader = tokio::spawn(line_reader(stream.clone(), BindId::new(), None, tx));
-        let batch = timeout(Duration::from_secs(1), rx.next()).await.unwrap().unwrap();
-        assert!(matches!(&batch[0].1, Value::Array(lines)
+        let queue = Arc::new(LineQueue::new());
+        let reader = line_reader(stream.clone(), BindId::new(), true, queue.clone(), tx);
+        let reader = tokio::spawn(reader);
+        timeout(Duration::from_secs(1), rx.next()).await.unwrap().unwrap();
+        let (batch, more) = queue.pop().unwrap();
+        assert!(!more);
+        assert!(matches!(&batch, Value::Array(lines)
             if matches!(&lines[..], [Value::String(s)] if s == "ready")));
+        stream.stop_lines();
         let whole = timeout(Duration::from_secs(1), stream.take())
             .await
             .expect("take stayed behind the line reader")

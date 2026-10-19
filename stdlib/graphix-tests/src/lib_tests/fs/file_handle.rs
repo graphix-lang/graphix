@@ -100,3 +100,24 @@ const CREATE_NEW_EXISTING: &str = r#"{
 run!(test_create_new_existing, CREATE_NEW_EXISTING, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
 });
+
+// An fstat beside a line reader leaves it reading: only what consumes
+// the stream or moves its position ends the reader (x-rerun-5-01).
+run!(
+    fstat_leaves_lines_reading,
+    r#"{
+  use sys::fs::{fstat, open, write_all};
+  use sys::io::Lines;
+  let temp = sys::fs::tempdir::create(null)?;
+  let path = sys::join_path(sys::fs::tempdir::path(temp), "lines.txt");
+  let body = str::join(#sep: "\n", array::init(20000, |i| "line [i]"));
+  let wrote = write_all(#path: path, body)?;
+  let f = open(`Read, wrote ~ path)?;
+  let ls = Lines::lines_batched(f)?;
+  let n = 0;
+  n <- ls ~ n + array::len(ls);
+  let st = fstat(ls ~ f)?;
+  select n { 20000 => n, _ => never() }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(20000)))
+);

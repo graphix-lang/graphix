@@ -1,73 +1,80 @@
-use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
-};
-use graphix_package_core::FireOnce;
 use netidx::subscriber::Value;
-use netidx_core::pack::{Pack, PackError};
 
-macro_rules! dirs_builtin {
-    ($name:ident, $builtin:literal, $fn:path) => {
+/// A builtin that produces `$value` once, where it is born (again at a
+/// rebirth), and nothing after: `$ctx` names the `ExecCtx` for `$value`.
+macro_rules! born_builtin {
+    ($name:ident, $builtin:literal, |$ctx:ident| $value:expr) => {
         #[derive(Debug)]
         pub(crate) struct $name {
-            once: FireOnce,
-            out: TagValue,
+            once: ::graphix_package_core::FireOnce,
+            out: ::graphix_compiler::TagValue,
         }
 
-        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            const EFFECT: Effect = Effect::Async;
+        impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent> ::graphix_compiler::BuiltIn<R, E> for $name {
+            const EFFECT: ::graphix_compiler::effects::Effect =
+                ::graphix_compiler::effects::Effect::Async;
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut CompileCtx<R, E>,
-                _typ: &'a FnType,
-                _resolved: Option<&'d FnType>,
-                _scope: &'b Scope,
-                _from: &'c [Node<R, E>],
-                _top_id: ExprId,
-            ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
+                _ctx: &'a mut ::graphix_compiler::CompileCtx<R, E>,
+                _typ: &'a ::graphix_compiler::typ::FnType,
+                _resolved: Option<&'d ::graphix_compiler::typ::FnType>,
+                _scope: &'b ::graphix_compiler::Scope,
+                _from: &'c [::graphix_compiler::Node<R, E>],
+                _top_id: ::graphix_compiler::expr::ExprId,
+            ) -> anyhow::Result<Box<dyn ::graphix_compiler::Apply<R, E>>> {
+                Ok(Box::new(Self { once: ::graphix_package_core::FireOnce::default(), out: ::graphix_compiler::TagValue::phantom() }))
             }
 
             fn image_decode(
-                _ctx: &mut ExecCtx<'_, R, E>,
-                _from: &[Node<R, E>],
+                _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
+                _from: &[::graphix_compiler::Node<R, E>],
                 buf: &mut &[u8],
-            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-                let once = FireOnce::decode(buf)?;
-                Ok(Box::new(Self { once, out: TagValue::phantom() }))
+            ) -> Result<Box<dyn ::graphix_compiler::Apply<R, E>>, ::netidx_core::pack::PackError> {
+                let once = <::graphix_package_core::FireOnce as ::netidx_core::pack::Pack>::decode(buf)?;
+                Ok(Box::new(Self { once, out: ::graphix_compiler::TagValue::phantom() }))
             }
         }
 
-        impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
-            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-                self.once.encode(buf)
+        impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent> ::graphix_compiler::Apply<R, E> for $name {
+            fn image_encode(&self, buf: &mut ::graphix_compiler::image::ImageBuf,
+            ) -> Result<(), ::netidx_core::pack::PackError> {
+                ::netidx_core::pack::Pack::encode(&self.once, buf)
             }
 
             fn update(
                 &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                _from: &mut [Node<R, E>],
-            ) -> &TagValue {
+                ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
+                _from: &mut [::graphix_compiler::Node<R, E>],
+            ) -> &::graphix_compiler::TagValue {
                 if ctx.event.born() && self.once.take() {
-                    let v = match $fn() {
-                        Some(p) => Value::String(crate::convert_path(&p)),
-                        None => Value::Null,
-                    };
-                    self.out.set(TagValue::fired(v))
+                    let $ctx = &mut *ctx;
+                    let v = $value;
+                    self.out.set(::graphix_compiler::TagValue::fired(v))
                 } else {
                     self.out.ride()
                 }
             }
 
-            fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+            fn delete(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>) {}
 
-            fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
+            fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>) {}
 
-            fn reborn(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+            fn reborn(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>) {
                 self.once.reset();
             }
         }
+    };
+}
+
+pub(crate) use born_builtin;
+
+macro_rules! dirs_builtin {
+    ($name:ident, $builtin:literal, $fn:path) => {
+        born_builtin!($name, $builtin, |_ctx| match $fn() {
+            Some(p) => Value::String(crate::convert_path(&p)),
+            None => Value::Null,
+        });
     };
 }
 

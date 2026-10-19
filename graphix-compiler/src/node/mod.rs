@@ -180,18 +180,18 @@ pub(crate) use crate::expr::NOP;
 /// Set by a node's `sleep()`, taken by its next update: the first update
 /// after a sleep recomputes from the present world.
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct WakeBit(bool);
+pub struct WakeBit(bool);
 
 impl WakeBit {
-    pub(crate) fn set(&mut self) {
+    pub fn set(&mut self) {
         self.0 = true
     }
 
-    pub(crate) fn take(&mut self) -> bool {
+    pub fn take(&mut self) -> bool {
         std::mem::take(&mut self.0)
     }
 
-    pub(crate) fn is_set(&self) -> bool {
+    pub fn is_set(&self) -> bool {
         self.0
     }
 }

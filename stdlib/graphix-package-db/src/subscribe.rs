@@ -8,6 +8,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
+    node::WakeBit,
     rep,
     typ::{FnType, Type},
 };
@@ -147,7 +148,7 @@ pub(crate) struct DbSubscribe {
     args: CachedVals,
     bind_id: BindId,
     abort: Option<tokio::task::AbortHandle>,
-    slept: bool,
+    slept: WakeBit,
     out: TagValue,
 }
 
@@ -167,7 +168,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
             args: CachedVals::new(from),
             bind_id: BindId::new(),
             abort: None,
-            slept: false,
+            slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
     }
@@ -181,7 +182,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
             args: CachedVals::image_decode(buf)?,
             bind_id: BindId::new(),
             abort: None,
-            slept: false,
+            slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
     }
@@ -232,7 +233,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                 self.out.set_bottom(fresh)
             }
             Invocation::Fired => {
-                self.slept = false;
+                self.slept = WakeBit::default();
                 if self.abort.is_some()
                     && self.args.values().eq(previous.iter().map(Option::as_ref))
                 {
@@ -244,7 +245,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                 self.out.set(TagValue::fired(SUBSCRIPTION_WRAPPER.wrap(sub)))
             }
             Invocation::Quiet => {
-                if std::mem::take(&mut self.slept) {
+                if self.slept.take() {
                     self.watch(ctx);
                 }
                 self.out.ride()
@@ -254,7 +255,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
-        self.slept = true;
+        self.slept.set();
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
@@ -325,26 +326,17 @@ macro_rules! db_event_accessor {
             }
 
             fn image_decode(
-                ctx: &mut ExecCtx<'_, R, E>,
+                _ctx: &mut ExecCtx<'_, R, E>,
                 _from: &[Node<R, E>],
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
                 let top_id = ExprId::decode(buf)?;
                 let cached = CachedVals::image_decode(buf)?;
-                // CR claude for claude: [dead/low] bind_id is Some only when `cached`
-                // holds a SubscriptionValue, which is impl_no_pack, so an image with a
-                // bind id is never written. This field and the record_ref below can
-                // never fire. Remove bind_id from the accessor's codec: decode it as
-                // None and drop the branch. Found by reading; not run. (db2-04)
-                let bind_id = <Option<BindId>>::decode(buf)?;
                 let data = <Option<Type>>::decode(buf)?;
-                if let Some(bid) = bind_id {
-                    ctx.record_ref(bid, top_id);
-                }
                 Ok(Box::new($name {
                     top_id,
                     cached,
-                    bind_id,
+                    bind_id: None,
                     data,
                     out: TagValue::phantom(),
                 }))
@@ -354,8 +346,9 @@ macro_rules! db_event_accessor {
         impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 self.top_id.encode(buf)?;
+                // a subscription value, which a bind id follows, has no
+                // image: `cached` refuses it
                 self.cached.image_encode(buf)?;
-                self.bind_id.encode(buf)?;
                 self.data.encode(buf)
             }
 

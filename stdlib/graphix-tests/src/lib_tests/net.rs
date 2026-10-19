@@ -708,3 +708,29 @@ run!(net_write_not_repeated_after_wake, r#"{
     };
     sys::time::after_idle(duration:400.ms, ready) ~ writes
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+
+// A write handler's argument and an rpc's are read from data: the check
+// refuses a function and a reference (an rpc's argument also a type it
+// cannot settle), and a write a handler's unsettled type cannot be cast
+// to answers the writer, never reaching the handler uncast
+// (x-builtin-effects-02, gx-stdlib-01, sys-net-03, tests-lib-b2-01,
+// tests-lib-b2-02).
+run!(net_on_write_open_type_takes_no_write, r#"{
+    let n: i64 = -1;
+    let p = "/local/ow_open";
+    sys::net::publish(#on_write: |v: Array<'b>| n <- v ~ array::len(v), p, 0);
+    let s: i64 = sys::net::subscribe(p)$;
+    sys::net::write(p, once(s) ~ {a: 1, b: 2});
+    sys::time::after_idle(duration: 300.ms, s) ~ n
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(-1))); FuseExpect::None);
+
+run!(net_on_write_function_refused, r#"{
+    let got = 0;
+    sys::net::publish(#on_write: |f: fn(x: i64) -> i64| got <- f(41), "/local/ow_fn", 0);
+    got
+}"#, testing::refused("is not data"); FuseExpect::None);
+
+run!(net_rpc_reference_argument_refused, r#"{
+    let rpc = sys::net::rpc(#path: "/local/rpc_ref", #doc: "", #spec: null, #f: |a: &i64| *a + 1);
+    rpc
+}"#, testing::refused("is not data"); FuseExpect::None);

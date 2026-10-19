@@ -8,12 +8,12 @@ use graphix_compiler::{
     err, errf,
     expr::ExprId,
     image::{self, ImageBuf},
-    node::{coretraits, genn},
+    node::{WakeBit, coretraits, genn},
     rep,
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CastTarget, Handler, Inbox, Reply, RtVar, castable, seam_arg, write_data,
+    CastTarget, ErrorText, Handler, Inbox, Reply, RtVar, castable, seam_arg, write_data,
 };
 use netidx::{
     path::Path,
@@ -66,7 +66,7 @@ pub(crate) struct Write {
     dv: Either<(Path, Dval), Vec<Value>>,
     /// Set by `sleep`, taken by the next update: the target is found again
     /// from the present path.
-    slept: bool,
+    slept: WakeBit,
     out: TagValue,
 }
 
@@ -84,7 +84,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Write {
             dv: Either::Right(vec![]),
-            slept: false,
+            slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
     }
@@ -94,10 +94,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let queued = Pack::decode(buf)?;
+        let _ = buf;
         Ok(Box::new(Write {
-            dv: Either::Right(queued),
-            slept: false,
+            dv: Either::Right(vec![]),
+            slept: WakeBit::default(),
             out: TagValue::phantom(),
         }))
     }
@@ -132,11 +132,12 @@ impl Write {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
-    /// `Left` is a live subscription.
+    /// A live subscription and queued values exist only once a cycle ran.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        let _ = buf;
         match &self.dv {
-            Either::Left(_) => Err(PackError::Application(image::NOT_QUIESCENT)),
-            Either::Right(queued) => queued.encode(buf),
+            Either::Right(queued) if queued.is_empty() => Ok(()),
+            _ => Err(PackError::Application(image::NOT_QUIESCENT)),
         }
     }
 
@@ -145,7 +146,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         let (val, val_fired) = seam_arg(ctx, &mut from[1]);
         // the standing value goes to a new path when nothing queued is newer
@@ -198,7 +199,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
-        self.slept = true;
+        self.slept.set();
         self.release(ctx)
     }
 }
@@ -207,7 +208,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
 pub(crate) struct Subscribe {
     /// `sleep()` tears the subscription down, so the first update after
     /// must re-establish it from the PRESENT path.
-    slept: bool,
+    slept: WakeBit,
     cur: Option<(Path, Dval)>,
     var: RtVar,
     target: CastTarget,
@@ -229,7 +230,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         let _ = from;
         let var = RtVar::new(ctx, top_id);
         Ok(Box::new(Subscribe {
-            slept: false,
+            slept: WakeBit::default(),
             cur: None,
             var,
             target: CastTarget::of(resolved),
@@ -242,11 +243,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let slept = bool::decode(buf)?;
         let var = RtVar::image_decode(ctx, buf)?;
         let target = CastTarget::decode(buf)?;
         Ok(Box::new(Subscribe {
-            slept,
+            slept: WakeBit::default(),
             cur: None,
             var,
             target,
@@ -261,14 +261,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         if self.cur.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        // CR claude for claude: [structure/low] [structure] `slept` is always false
-        // here: an image is taken before any cycle. Only this builtin and List, Publish
-        // and PublishRpc write it; Write, the watch/time builtins, http serve and db
-        // subscribe start it false. All eleven re-implement graphix_compiler's
-        // node::WakeBit as a raw bool. Make WakeBit pub, use it in each, and drop the
-        // four slept encodes/decodes (REGISTRATION_FORMAT bump). Found by reading; not
-        // run. (x-dup-03)
-        self.slept.encode(buf)?;
         self.var.image_encode(buf)?;
         self.target.encode(buf)
     }
@@ -279,7 +271,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         static ERR_TAG: ArcStr = literal!("SubscribeError");
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         match (path, path_fired || woke) {
             (_, false) => (),
@@ -362,7 +354,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
-        self.slept = true;
+        self.slept.set();
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.var.id);
         }
@@ -520,16 +512,22 @@ impl RpcCall {
     }
 }
 
+/// Where a listing stands: answered, in flight, or in flight with a tick
+/// that came meanwhile owed another.
+#[derive(Debug, Clone, Copy)]
+enum Listing {
+    Done,
+    InFlight,
+    Owed,
+}
+
 macro_rules! list {
-    // CR claude for claude: [dead/low] $typ is never used in the body, so the two
-    // signature strings passed for List and ListTable are dead, and they already differ
-    // from net.gxi. Remove the parameter and the arguments. Found by reading; not run.
-    // (sys-net-07)
-    ($name:ident, $builtin:literal, $table:expr, $typ:literal) => {
+    ($name:ident, $builtin:literal, $table:expr) => {
         #[derive(Debug)]
         pub(crate) struct $name {
-            slept: bool,
-            current: Option<Path>,
+            slept: WakeBit,
+            /// The path listed, and where its listing stands.
+            current: Option<(Path, Listing)>,
             var: RtVar,
             out: TagValue,
         }
@@ -545,6 +543,15 @@ macro_rules! list {
                 if self.current.take().is_some() {
                     NetState::get(ctx).stop_list(self.var.id);
                 }
+            }
+
+            fn list<R: Rt, E: UserEvent>(
+                &mut self,
+                ctx: &mut ExecCtx<'_, R, E>,
+                path: Path,
+            ) {
+                self.current = Some((path.clone(), Listing::InFlight));
+                NetState::get(ctx).list(ctx, self.var.id, path, $table);
             }
         }
 
@@ -563,7 +570,7 @@ macro_rules! list {
                 let _ = from;
                 let var = RtVar::new(ctx, top_id);
                 Ok(Box::new($name {
-                    slept: false,
+                    slept: WakeBit::default(),
                     current: None,
                     var,
                     out: TagValue::phantom(),
@@ -575,10 +582,9 @@ macro_rules! list {
                 _from: &[Node<R, E>],
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-                let slept = bool::decode(buf)?;
                 let var = RtVar::image_decode(ctx, buf)?;
                 Ok(Box::new($name {
-                    slept,
+                    slept: WakeBit::default(),
                     current: None,
                     var,
                     out: TagValue::phantom(),
@@ -592,7 +598,6 @@ macro_rules! list {
                 if self.current.is_some() {
                     return Err(PackError::Application(image::NOT_QUIESCENT));
                 }
-                self.slept.encode(buf)?;
                 self.var.image_encode(buf)
             }
 
@@ -601,7 +606,7 @@ macro_rules! list {
                 ctx: &mut ExecCtx<'_, R, E>,
                 from: &mut [Node<R, E>],
             ) -> &TagValue {
-                let woke = std::mem::take(&mut self.slept);
+                let woke = self.slept.take();
                 let (_, trigger_fired) = seam_arg(ctx, &mut from[0]);
                 let (path, path_fired) = seam_arg(ctx, &mut from[1]);
                 if (woke || path_fired || trigger_fired)
@@ -614,7 +619,7 @@ macro_rules! list {
                             "invalid path {requested}"
                         )));
                     };
-                    // CR claude for claude: [bug/medium] Each poll tick with an
+                    // XCR claude for claude: [bug/medium] Each poll tick with an
                     // unchanged path reissues the listing under the same id, and
                     // NetState::spawn_request's replacement aborts the one in flight. A
                     // listing slower than its #update period (default 1 s) therefore
@@ -625,12 +630,30 @@ macro_rules! list {
                     // owe at most one more listing (or drop the tick). probe:
                     // design/review-2026-10-19/repro/sys-net-list-poll-starves.sh
                     // (sys-net-02)
-                    if trigger_fired || self.current.as_ref() != Some(&path) {
-                        if self.current.as_ref() != Some(&path) {
-                            self.remint(ctx);
+                    // a tick while a listing is in flight owes one more: a
+                    // listing slower than the ticks still answers
+                    // 2026-10-19 claude: A listing in flight is no longer replaced by a
+                    // tick on the same path: each site keeps a Listing (Done, InFlight,
+                    // Owed) beside its path; a tick while one is in flight owes one
+                    // more, issued when the answer arrives; a path change, sleep or
+                    // delete still aborts. No pin: needs a resolver slower than the
+                    // tick
+                    // (design/review-2026-10-19/repro/sys-net-list-poll-starves.sh);
+                    // net's list tests pass.
+                    match &mut self.current {
+                        Some((p, listing)) if *p == path => {
+                            match (trigger_fired, *listing) {
+                                (false, _) => (),
+                                (true, Listing::Done) => self.list(ctx, path),
+                                (true, Listing::InFlight | Listing::Owed) => {
+                                    *listing = Listing::Owed
+                                }
+                            }
                         }
-                        self.current = Some(path.clone());
-                        NetState::get(ctx).list(ctx, self.var.id, path, $table);
+                        Some(_) | None => {
+                            self.remint(ctx);
+                            self.list(ctx, path)
+                        }
                     }
                 }
                 let res = ctx
@@ -638,6 +661,16 @@ macro_rules! list {
                     .variables
                     .get(&self.var.id)
                     .and_then(|v| v.with_value(list_response));
+                if res.is_some() {
+                    match &mut self.current {
+                        Some((path, Listing::Owed)) => {
+                            let path = path.clone();
+                            self.list(ctx, path)
+                        }
+                        Some((_, listing)) => *listing = Listing::Done,
+                        None => (),
+                    }
+                }
                 match res {
                     Some(v) => self.out.set(TagValue::fired(v)),
                     None => self.out.ride(),
@@ -651,28 +684,17 @@ macro_rules! list {
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 self.out = TagValue::phantom();
-                self.slept = true;
+                self.slept.set();
                 self.remint(ctx);
             }
         }
     };
 }
 
-list!(
-    List,
-    "sys_net_list",
-    false,
-    "fn(?#update:Any, string) -> Result<Array<string>, `ListError(string)>"
-);
+list!(List, "sys_net_list", false);
+list!(ListTable, "sys_net_list_table", true);
 
-list!(
-    ListTable,
-    "sys_net_list_table",
-    true,
-    "fn(?#update:Any, string) -> Result<Table, `ListError(string)>"
-);
-
-// CR claude for claude: [bug/medium] publish's #on_write argument ('a in net.gxi) has
+// XCR claude for claude: [bug/medium] publish's #on_write argument ('a in net.gxi) has
 // no Concrete bound, and this casts written values only when that type is concrete. An
 // open handler type such as `|v: Array<'b>|` therefore gets the data form uncast:
 // writing {a: 1, b: 2} gives array::len(v) = 2, and writing 5 hands an i64 to an
@@ -681,7 +703,22 @@ list!(
 // same bound: `#f: |a: &i64| ..` passes the check and fails only at run time with
 // PublishRpcError. probe: design/review-2026-10-19/repro/sys-net-on-write-open-type.gx
 // (sys-net-03)
-// CR claude for claude: [bug/high] When the on_write callback's argument type is not
+// 2026-10-19 claude: on_write's 'a: Concrete + Data in net.gx and net.gxi makes the
+// check ask for an annotation, so castable holds for every accepted handler; where
+// cast_typ is still None, Publish::update answers the writer with InvalidCast and
+// feeds nothing. rpc's 'args has the same bound. Pins:
+// lib_tests::net::net_on_write_open_type_refused, net_rpc_reference_argument_refused.
+// 2026-10-19 claude: Correction: publish's on_write argument is bounded 'a: Data, not
+// Concrete + Data. Concrete refused every publish that omits #on_write: the omitted
+// default |v: Any| leaves the site's 'a open ('must be fully known here'), which broke
+// every net, dynamic-module and queue fixture that publishes. So the check refuses a
+// function or reference handler argument, and a type it leaves open is caught at run
+// time: cast_typ is None and Publish::update answers the writer with InvalidCast,
+// feeding nothing. Pins: lib_tests::net::net_on_write_function_refused,
+// net_on_write_open_type_takes_no_write. A Concrete bound needs the omitting site's
+// default to settle 'a (a checker question: the default's |v: Any| does not bind the
+// open cell). rpc keeps 'args: Concrete + Data.
+// XCR claude for claude: [bug/high] When the on_write callback's argument type is not
 // castable (a function, a reference, a type holding ⊥), cast_typ is None, and update
 // hands the written value to the callback uncast. The checker accepts such an
 // annotation because publish's `#on_write: fn(v: 'a)` in net.gx/net.gxi has no `'a:
@@ -692,11 +729,30 @@ list!(
 // never feed an uncast value: cast, or answer the writer with InvalidCast. probe:
 // design/review-2026-10-19/repro/tests-lib-b2-on-write-raw-value-crash.gx
 // (tests-lib-b2-01)
+// 2026-10-19 claude: Bound added ('a: Concrete + Data) and the uncast feed removed: a
+// None cast_typ answers the writer with InvalidCast. Pins:
+// lib_tests::net::net_on_write_function_refused, net_on_write_open_type_refused.
+// 2026-10-19 claude: Correction: publish's on_write argument is bounded 'a: Data, not
+// Concrete + Data. Concrete refused every publish that omits #on_write: the omitted
+// default |v: Any| leaves the site's 'a open ('must be fully known here'), which broke
+// every net, dynamic-module and queue fixture that publishes. So the check refuses a
+// function or reference handler argument, and a type it leaves open is caught at run
+// time: cast_typ is None and Publish::update answers the writer with InvalidCast,
+// feeding nothing. Pins: lib_tests::net::net_on_write_function_refused,
+// net_on_write_open_type_takes_no_write. A Concrete bound needs the omitting site's
+// default to settle 'a (a checker question: the default's |v: Any| does not bind the
+// open cell). rpc keeps 'args: Concrete + Data.
+/// What a write is cast to for the handler: its argument type, `Any` where
+/// nothing constrains it (open, or settled to ⊥: the handler takes data
+/// as it comes), none where only a part is open (no cast makes that form).
 fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
     resolved?.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
             let t = &cb_ft.args[0].typ;
-            castable(t).then(|| t.clone())
+            match t.with_deref(|t| matches!(t, None | Some(Type::Bottom))) {
+                true => Some(Type::Any),
+                false => castable(t).then(|| t.clone()),
+            }
         }
         _ => None,
     })
@@ -706,7 +762,7 @@ fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
 pub(crate) struct Publish<R: Rt, E: UserEvent> {
     /// Wake catch-up: `sleep()` unpublishes, so the first update after
     /// must republish from the present path/value.
-    slept: bool,
+    slept: WakeBit,
     current: Option<(Path, Val)>,
     top_id: ExprId,
     /// write requests on the published value arrive here as custom
@@ -741,7 +797,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                 let wid = BindId::new();
                 ctx.record_ref(wid, top_id);
                 Ok(Box::new(Publish {
-                    slept: false,
+                    slept: WakeBit::default(),
                     current: None,
                     top_id,
                     wid,
@@ -759,14 +815,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let slept = bool::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let wid = BindId::decode(buf)?;
         let on_write = genn::Callback::image_decode(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
         ctx.record_ref(wid, top_id);
         Ok(Box::new(Publish {
-            slept,
+            slept: WakeBit::default(),
             current: None,
             top_id,
 
@@ -784,7 +839,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         if self.current.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.slept.encode(buf)?;
         self.top_id.encode(buf)?;
 
         self.wid.encode(buf)?;
@@ -812,7 +866,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }};
         }
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let (fv, f_fired) = seam_arg(ctx, &mut from[0]);
         let (pathv, path_fired) = seam_arg(ctx, &mut from[1]);
         let (val, val_fired) = seam_arg(ctx, &mut from[2]);
@@ -849,6 +903,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
+                    // the check holds the handler's argument concrete: a
+                    // type it could not settle takes no write
                     let v = match &self.cast_typ {
                         Some(typ) => coretraits::with_display_hooks(ctx, |env| {
                             typ.cast_value(env, req.value.clone())
@@ -866,7 +922,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                         // when cast_typ is None and the type is not Any. probe:
                         // design/review-2026-10-19/repro/x-panics-on-write-uncast.gx
                         // (x-panics-02)
-                        None => req.value.clone(),
+                        // 2026-10-19 claude: The bound is in: net.gx/net.gxi declare
+                        // publish's on_write argument 'a: Concrete + Data and rpc's
+                        // 'args: Concrete + Data (the for-claude CRs
+                        // x-builtin-effects-02, gx-stdlib-01, sys-net-03 and
+                        // tests-lib-b2-01 asked for it), so the check refuses a
+                        // function, reference or open handler type, and Publish::update
+                        // now answers the writer with InvalidCast where cast_typ is
+                        // None instead of feeding the raw value. If that matches the
+                        // rule you want, delete this CR.
+                        // 2026-10-19 claude: Correction to the note above: publish's
+                        // on_write 'a is bounded Data only (Concrete refused the
+                        // omitted default, which leaves 'a open); an open handler type
+                        // takes no write, the writer is answered InvalidCast.
+                        None => errf!(
+                            literal!("InvalidCast"),
+                            "the write handler's argument type is not known"
+                        ),
                     };
                     // a value the handler cannot take is the writer's error
                     if let Value::Error(_) = &v
@@ -918,7 +990,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
-        self.slept = true;
+        self.slept.set();
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
@@ -998,7 +1070,7 @@ fn parse_spec(spec: &Value) -> Result<Vec<ArgSpec>> {
 pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     /// Wake catch-up: `sleep()` drops the published proc, so the first
     /// update after must republish from the present path/doc/spec.
-    slept: bool,
+    slept: WakeBit,
     var: RtVar,
     handler: Handler<R, E, RpcReply>,
     /// Calls posted under `id`, taken at each wake.
@@ -1057,7 +1129,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
             if let Value::Error(e) =
                 coretraits::with_display_hooks(ctx, |env| typ.cast_value(env, defaults))
             {
-                bail!("rpc #spec does not fit #f's argument {typ}: {e}")
+                bail!("rpc #spec does not fit #f's argument {typ}: {}", ErrorText(&e))
             }
         }
         let proc = NetState::get(ctx).publish_rpc(
@@ -1090,7 +1162,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         let handler = Handler::new(ctx, &typ.args[3].typ, scope, top_id)?;
         let var = RtVar::new(ctx, top_id);
         Ok(Box::new(PublishRpc {
-            slept: false,
+            slept: WakeBit::default(),
             var,
             handler,
             inbox: Default::default(),
@@ -1106,12 +1178,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let slept = bool::decode(buf)?;
         let var = RtVar::image_decode(ctx, buf)?;
         let handler = Handler::image_decode(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
         Ok(Box::new(PublishRpc {
-            slept,
+            slept: WakeBit::default(),
             var,
             handler,
             inbox: Default::default(),
@@ -1129,7 +1200,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         if self.current.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.slept.encode(buf)?;
         self.var.image_encode(buf)?;
         self.handler.image_encode(buf)?;
         self.cast_typ.encode(buf)
@@ -1140,7 +1210,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let (pathv, path_fired) = seam_arg(ctx, &mut from[0]);
         let (docv, doc_fired) = seam_arg(ctx, &mut from[1]);
         let (specv, spec_fired) = seam_arg(ctx, &mut from[2]);
@@ -1213,7 +1283,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
-        self.slept = true;
+        self.slept.set();
         self.var.remint(ctx);
         self.inbox = Default::default();
         self.current = None;

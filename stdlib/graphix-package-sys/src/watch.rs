@@ -14,6 +14,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::{self, ImageBuf},
+    node::WakeBit,
     rep,
     typ::FnType,
 };
@@ -197,7 +198,7 @@ impl WatcherValue {
         path: &str,
         interest: BitFlags<Interest>,
     ) -> Result<Watched> {
-        // CR claude for claude: [risk/low] add only sends Cmd::Watch to the watcher's
+        // XCR claude for claude: [risk/low] add only sends Cmd::Watch to the watcher's
         // background task. That task can emit the watch's first event, usually
         // `Established`, before the insert below maps its id, and
         // NotifyChan::handle_event drops events whose id has no mapping. A program
@@ -205,8 +206,15 @@ impl WatcherValue {
         // add and insert under it; handle_event takes the same lock and waits out the
         // insert. A 400-watch probe did not hit the window in 8 runs. Found by reading.
         // (x-concurrency-04)
+        // the watch's first event waits for its mapping: handle_event takes
+        // the same lock, and the add only queues a command
+        // 2026-10-19 claude: WatcherValue::add holds the idmap lock across watcher.add
+        // (an unbounded send) and the insert, so handle_event waits for the mapping. No
+        // pin (the window never showed in 400-watch probes).
+        let mut idmap = self.idmap.lock();
         let w = self.watcher.add(path.into(), interest)?;
-        self.idmap.lock().insert(w.id(), id);
+        idmap.insert(w.id(), id);
+        drop(idmap);
         Ok(Watched { w, idmap: Arc::clone(&self.idmap) })
     }
 }
@@ -369,7 +377,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
 
 #[derive(Debug)]
 pub(crate) struct WatchApply {
-    slept: bool,
+    slept: WakeBit,
     interest: Option<BitFlags<Interest>>,
     path: Option<ArcStr>,
     watcher_val: Option<Value>,
@@ -389,7 +397,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(WatchApply {
-            slept: false,
+            slept: WakeBit::default(),
             interest: None,
             path: None,
             watcher_val: None,
@@ -405,7 +413,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
         let interest = Pack::decode(buf)?;
         let path = Pack::decode(buf)?;
         Ok(Box::new(WatchApply {
-            slept: false,
+            slept: WakeBit::default(),
             interest,
             path,
             watcher_val: None,
@@ -429,7 +437,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let (interest, interest_fired) = seam_arg(ctx, &mut from[0]);
         let (watcher, watcher_fired) = seam_arg(ctx, &mut from[1]);
         let (path, path_fired) = seam_arg(ctx, &mut from[2]);
@@ -478,7 +486,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
-        self.slept = true;
+        self.slept.set();
         self.interest = None;
         self.path = None;
         self.watcher_val = None;
@@ -567,7 +575,7 @@ pub(crate) struct WatchStream<K: WatchKind> {
     bind_ids: IntSet<BindId>,
     out: TagValue,
     /// Asleep since the last update: the first update after watches again.
-    slept: bool,
+    slept: WakeBit,
     kind: PhantomData<K>,
 }
 
@@ -588,7 +596,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
             cached: CachedVals::new(from),
             bind_ids: IntSet::default(),
             out: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
             kind: PhantomData,
         }))
     }
@@ -605,7 +613,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
             cached,
             bind_ids: IntSet::default(),
             out: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
             kind: PhantomData,
         }))
     }
@@ -638,7 +646,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         if let Invocation::Bottom { fresh } = invocation {
             return self.out.set_bottom(fresh);
         }
-        if invocation == Invocation::Fired || std::mem::take(&mut self.slept) {
+        if invocation == Invocation::Fired || self.slept.take() {
             self.unwatch(ctx);
             for v in self.cached.values().flatten() {
                 extract_bind_ids(v, &mut self.bind_ids);
@@ -669,7 +677,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         self.unwatch(ctx);
-        self.slept = true;
+        self.slept.set();
         self.var.remint(ctx);
     }
 
