@@ -3,7 +3,7 @@ use compact_str::{CompactString, format_compact};
 use graphix_compiler::expr::ExprId;
 use graphix_package_core::testing::{self, Fixture, find_bind_id};
 use graphix_rt::{CallableId, GXHandle, NoExt};
-use iced_core::{Event, Point, Size, clipboard, mouse, window};
+use iced_core::{Event, Point, Size, clipboard, keyboard, mouse, window};
 use iced_runtime::user_interface;
 use iced_wgpu::{
     graphics::{Shell, Viewport},
@@ -174,6 +174,13 @@ impl GuiTestHarness {
         }
     }
 
+    /// Set the program variable `name`, module-qualified, from the test.
+    async fn set_var(&self, name: &str, v: Value) -> Result<()> {
+        let bid = find_bind_id(&self.f.compiled.env, name)?;
+        self.f.gx.compile_ref(bid).await?.set(v)?;
+        Ok(())
+    }
+
     /// Watch a module-qualified variable such as "test::released" and
     /// return its initial value; `get_watched()` reads it after a
     /// `drain()`.
@@ -332,6 +339,44 @@ impl GuiTestHarness {
     }
 }
 
+/// A key going down, as the event loop delivers it.
+fn key_press(
+    key: keyboard::Key,
+    modifiers: keyboard::Modifiers,
+    text: Option<iced_core::SmolStr>,
+) -> Event {
+    Event::Keyboard(keyboard::Event::KeyPressed {
+        modified_key: key.clone(),
+        key,
+        physical_key: keyboard::key::Physical::Unidentified(
+            keyboard::key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers,
+        text,
+        repeat: false,
+    })
+}
+
+fn named_key(named: keyboard::key::Named) -> Event {
+    key_press(keyboard::Key::Named(named), keyboard::Modifiers::empty(), None)
+}
+
+/// A key that types `c`.
+fn char_key(c: &str) -> Event {
+    let s: iced_core::SmolStr = c.into();
+    key_press(keyboard::Key::Character(s.clone()), keyboard::Modifiers::empty(), Some(s))
+}
+
+/// A left click at `at`: the move there, the press and the release.
+fn left_click(at: Point) -> [Event; 3] {
+    [
+        Event::Mouse(mouse::Event::CursorMoved { position: at }),
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ]
+}
+
 /// Shared headless wgpu adapter and device, created once for all tests.
 struct HeadlessGpu {
     adapter: wgpu::Adapter,
@@ -466,18 +511,11 @@ impl InteractionHarness {
     }
 
     fn click(&mut self, pos: Point) -> Vec<Message> {
-        let mut all = Vec::new();
         // One UI frame per event so pressed → released transitions.
-        all.extend(self.process_events(&[Event::Mouse(mouse::Event::CursorMoved {
-            position: pos,
-        })]));
-        all.extend(self.process_events(&[Event::Mouse(mouse::Event::ButtonPressed(
-            mouse::Button::Left,
-        ))]));
-        all.extend(self.process_events(&[Event::Mouse(mouse::Event::ButtonReleased(
-            mouse::Button::Left,
-        ))]));
-        all
+        left_click(pos)
+            .iter()
+            .flat_map(|ev| self.process_events(std::slice::from_ref(ev)))
+            .collect()
     }
 
     /// Deliver `events` one frame each, applying each frame's messages
@@ -514,61 +552,25 @@ impl InteractionHarness {
     }
 
     fn type_text(&mut self, text: &str) -> Vec<Message> {
-        use iced_core::keyboard;
         let mut all_msgs = Vec::new();
+        let mut buf = [0; 4];
         for ch in text.chars() {
-            let s: iced_core::SmolStr = ch.to_string().into();
-            all_msgs.extend(self.process_events(&[Event::Keyboard(
-                keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Character(s.clone()),
-                    modified_key: keyboard::Key::Character(s.clone()),
-                    physical_key: keyboard::key::Physical::Unidentified(
-                        keyboard::key::NativeCode::Unidentified,
-                    ),
-                    location: keyboard::Location::Standard,
-                    modifiers: keyboard::Modifiers::empty(),
-                    text: Some(s),
-                    repeat: false,
-                },
-            )]));
+            all_msgs.extend(self.process_events(&[char_key(ch.encode_utf8(&mut buf))]));
         }
         all_msgs
     }
 
-    fn press_key(&mut self, named: iced_core::keyboard::key::Named) -> Vec<Message> {
-        use iced_core::keyboard;
-        self.process_events(&[Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(named),
-            modified_key: keyboard::Key::Named(named),
-            physical_key: keyboard::key::Physical::Unidentified(
-                keyboard::key::NativeCode::Unidentified,
-            ),
-            location: keyboard::Location::Standard,
-            modifiers: keyboard::Modifiers::empty(),
-            text: None,
-            repeat: false,
-        })])
+    fn press_key(&mut self, named: keyboard::key::Named) -> Vec<Message> {
+        self.process_events(&[named_key(named)])
     }
 
     /// Ctrl and a letter, the modifiers delivered first as the event loop
     /// does.
     fn press_ctrl(&mut self, c: &str) -> Vec<Message> {
-        use iced_core::keyboard;
         let ctrl = keyboard::Modifiers::CTRL;
-        let s: iced_core::SmolStr = c.into();
         self.process_events(&[
             Event::Keyboard(keyboard::Event::ModifiersChanged(ctrl)),
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key: keyboard::Key::Character(s.clone()),
-                modified_key: keyboard::Key::Character(s),
-                physical_key: keyboard::key::Physical::Unidentified(
-                    keyboard::key::NativeCode::Unidentified,
-                ),
-                location: keyboard::Location::Standard,
-                modifiers: ctrl,
-                text: None,
-                repeat: false,
-            }),
+            key_press(keyboard::Key::Character(c.into()), ctrl, None),
         ])
     }
 

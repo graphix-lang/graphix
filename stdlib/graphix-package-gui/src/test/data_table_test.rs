@@ -520,9 +520,7 @@ let result = data_table(
         "initial ascending sort: r1(10) < r2(20) < r0(30)"
     );
 
-    let bid = testing::find_bind_id(&h.f.compiled.env, "test::v1")?;
-    let mut v1_ref = h.f.gx.compile_ref(bid).await?;
-    v1_ref.set(Value::F64(100.0))?;
+    h.set_var("test::v1", Value::F64(100.0)).await?;
     h.wait_until(
         |h| {
             let snap = h.dt_snapshot();
@@ -666,21 +664,16 @@ let result = data_table(
 
     await_order(&mut h, &alpha_asc, "initial alpha asc").await?;
 
-    let col_bid = testing::find_bind_id(&h.f.compiled.env, "test::sort_col")?;
-    let mut col_ref = h.f.gx.compile_ref(col_bid).await?;
-    let dir_bid = testing::find_bind_id(&h.f.compiled.env, "test::sort_dir")?;
-    let mut dir_ref = h.f.gx.compile_ref(dir_bid).await?;
-
-    dir_ref.set(graphix_compiler::rep::make_variant(literal!("Descending"), []))?;
+    h.set_var("test::sort_dir", graphix_compiler::rep::make_variant(literal!("Descending"), [])).await?;
     await_order(&mut h, &alpha_desc, "alpha desc after direction flip").await?;
 
-    col_ref.set(Value::String(arcstr::literal!("beta")))?;
+    h.set_var("test::sort_col", Value::String(arcstr::literal!("beta"))).await?;
     await_order(&mut h, &beta_desc, "beta desc after column switch").await?;
 
-    dir_ref.set(graphix_compiler::rep::make_variant(literal!("Ascending"), []))?;
+    h.set_var("test::sort_dir", graphix_compiler::rep::make_variant(literal!("Ascending"), [])).await?;
     await_order(&mut h, &beta_asc, "beta asc after direction flip").await?;
 
-    col_ref.set(Value::String(arcstr::literal!("alpha")))?;
+    h.set_var("test::sort_col", Value::String(arcstr::literal!("alpha"))).await?;
     await_order(&mut h, &alpha_asc, "alpha asc after returning to alpha").await?;
 
     Ok(())
@@ -1088,9 +1081,7 @@ let result = data_table(
 "#;
     let mut h = dt(code).await?;
     assert_eq!(h.dt_snapshot().grid[0][0], "v1");
-    let bid = testing::find_bind_id(&h.f.compiled.env, "test::a")?;
-    let mut a_ref = h.f.gx.compile_ref(bid).await?;
-    a_ref.set(Value::String(arcstr::literal!("v1b")))?;
+    h.set_var("test::a", Value::String(arcstr::literal!("v1b"))).await?;
     h.wait_until(
         |h| h.dt_snapshot().grid[0][0] == "v1b",
         Duration::from_secs(10),
@@ -1277,10 +1268,8 @@ let result = data_table(
 )
 "#;
     let mut h = dt(code).await?;
-    let bid = testing::find_bind_id(&h.f.compiled.env, "test::c")?;
-    let mut c = h.f.gx.compile_ref(bid).await?;
     for v in [1, 2, 3] {
-        c.set(Value::I64(v))?;
+        h.set_var("test::c", Value::I64(v)).await?;
         h.wait_until(
             |h| {
                 let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
@@ -1340,7 +1329,7 @@ let tbl = { rows: ["r0"], columns: [
 let result = data_table(#sort_by: &sort, #table: &tbl)
 "#;
     let mut h = dt(code).await?;
-    set_var(&h, "test::other", Value::from("b")).await?;
+    h.set_var("test::other", Value::from("b")).await?;
     h.drain().await?;
     let resort = h.compile_named_callable("test::resort").await?;
     h.call_callback(resort, ValArray::from_iter([Value::Null])).await?;
@@ -1651,13 +1640,6 @@ let result = data_table(
     Ok(())
 }
 
-/// Set the program variable `name` from the test.
-async fn set_var(h: &GuiTestHarness, name: &str, v: Value) -> Result<()> {
-    let bid = testing::find_bind_id(&h.f.compiled.env, name)?;
-    h.f.gx.compile_ref(bid).await?.set(v)?;
-    Ok(())
-}
-
 /// Drain until `pred` holds of the table, or fail with `why`.
 async fn settle(
     h: &mut GuiTestHarness,
@@ -1665,52 +1647,6 @@ async fn settle(
     mut pred: impl FnMut(&GuiTestHarness) -> bool,
 ) -> Result<()> {
     h.wait_until(|h| pred(h), std::time::Duration::from_secs(5), why).await
-}
-
-// CR claude for claude: [structure/low] named_key and char_key repeat the KeyPressed
-// literal that test/mod.rs builds in type_text, press_key and press_ctrl and
-// interaction_test builds in char_key; left_click repeats InteractionHarness::click.
-// set_var below is also written inline in widgets_test reacts and
-// bad_sizes_and_coordinates_are_refused and in five tests here. Move these to
-// test/mod.rs (set_var on GuiTestHarness or testing::Fixture) and call them. Found by
-// reading; not run. (tests-gui-a-06)
-fn named_key(named: iced_core::keyboard::key::Named) -> Event {
-    use iced_core::keyboard;
-    Event::Keyboard(keyboard::Event::KeyPressed {
-        key: keyboard::Key::Named(named),
-        modified_key: keyboard::Key::Named(named),
-        physical_key: keyboard::key::Physical::Unidentified(
-            keyboard::key::NativeCode::Unidentified,
-        ),
-        location: keyboard::Location::Standard,
-        modifiers: keyboard::Modifiers::empty(),
-        text: None,
-        repeat: false,
-    })
-}
-
-fn char_key(c: &str) -> Event {
-    use iced_core::keyboard;
-    let s: iced_core::SmolStr = c.into();
-    Event::Keyboard(keyboard::Event::KeyPressed {
-        key: keyboard::Key::Character(s.clone()),
-        modified_key: keyboard::Key::Character(s.clone()),
-        physical_key: keyboard::key::Physical::Unidentified(
-            keyboard::key::NativeCode::Unidentified,
-        ),
-        location: keyboard::Location::Standard,
-        modifiers: keyboard::Modifiers::empty(),
-        text: Some(s),
-        repeat: false,
-    })
-}
-
-fn left_click(at: Point) -> [Event; 3] {
-    [
-        Event::Mouse(mouse::Event::CursorMoved { position: at }),
-        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
-    ]
 }
 
 /// A table whose one column `k` holds the stored values `vals` per row.
@@ -1778,7 +1714,7 @@ let result = data_table(#sort_by: &sort_by, #table: &tbl)
     );
     let mut h = dt(&code).await?;
     assert_eq!(h.dt_snapshot().row_basenames, ["r1", "r0", "r2"]);
-    set_var(&h, "test::sort_by", Value::Array(ValArray::from_iter([]))).await?;
+    h.set_var("test::sort_by", Value::Array(ValArray::from_iter([]))).await?;
     settle(&mut h, "the table's order", |h| {
         h.dt_snapshot().row_basenames == ["r0", "r1", "r2"]
     })
@@ -1847,7 +1783,7 @@ let result = data_table(#table: &tbl)
     let _ = h.watch("test::got1").await?;
     let _ = h.watch("test::got2").await?;
     assert_eq!(h.dt().dt_subscription_count(), 3);
-    set_var(&h, "test::phase", Value::I64(1)).await?;
+    h.set_var("test::phase", Value::I64(1)).await?;
     settle(&mut h, "the fourth row", |h| h.dt_snapshot().row_basenames.len() == 4)
         .await?;
     assert_eq!(h.dt().dt_subscription_count(), 4, "c1 is stored: c0 of four rows");
@@ -1858,7 +1794,7 @@ let result = data_table(#table: &tbl)
         h.get_watched("test::got1") == Some(&Value::String("v1".into()))
     })
     .await?;
-    set_var(&h, "test::phase", Value::I64(2)).await?;
+    h.set_var("test::phase", Value::I64(2)).await?;
     settle(&mut h, "two rows", |h| h.dt_snapshot().row_basenames.len() == 2).await?;
     assert_eq!(h.dt().dt_subscription_count(), 2, "the removed rows' subscriptions drop");
     h.dt_mut().handle_cell_edit(0, "c1".into());
@@ -1897,7 +1833,7 @@ let result = data_table(#table: &tbl)
     h.dt_mut().handle_scroll(0.0, 220.0, 400.0, 300.0);
     assert_eq!(h.dt().dt_first_cell().0, 10);
     h.dt_mut().handle_cell_edit(12, "c0".into());
-    set_var(&h, "test::phase", Value::I64(1)).await?;
+    h.set_var("test::phase", Value::I64(1)).await?;
     settle(&mut h, "the new row", |h| h.dt_snapshot().row_basenames.len() == 101).await?;
     assert_eq!(h.dt().dt_first_cell().0, 10);
     assert_eq!(h.dt().dt_editing(), Some(("r12".into(), "c0".into())));
@@ -1999,7 +1935,7 @@ let result = data_table(#table: &tbl)
     })
     .await?;
     assert_eq!(h.inner.dt().dt_sparkline_count(), 2);
-    set_var(&h.inner, "test::phase", Value::I64(1)).await?;
+    h.inner.set_var("test::phase", Value::I64(1)).await?;
     settle(&mut h.inner, "one row", |h| h.dt_snapshot().row_basenames.len() == 1).await?;
     assert_eq!(h.inner.dt().dt_sparkline_count(), 1, "the removed row's history goes");
     let live = h.inner.dt().dt_sparkline_values("live", "load").unwrap_or_default();
@@ -2063,11 +1999,11 @@ let result = data_table(#selection: &sel, #table: &tbl)
             paths.iter().map(|p| Value::String((*p).into())),
         ))
     };
-    set_var(&h, "test::sel", sel(&["/l/t/a/b/c0"])).await?;
+    h.set_var("test::sel", sel(&["/l/t/a/b/c0"])).await?;
     settle(&mut h, "the scroll to /l/t/a/b", |h| h.dt().dt_first_cell().0 == 21).await?;
     for k in 1..9 {
         let other = format!("/l/t/x{k}/c0");
-        set_var(&h, "test::sel", sel(&[&other, "/l/t/a/b/c0"])).await?;
+        h.set_var("test::sel", sel(&[&other, "/l/t/a/b/c0"])).await?;
         for _ in 0..3 {
             h.drain().await?;
         }
@@ -2228,7 +2164,7 @@ let result = data_table(#table: &tbl)
     settle(&mut h, "the clamped width", |h| h.dt().dt_ref_width("c0") == Some(150.0))
         .await?;
     assert_eq!(h.dt().dt_user_width("c0"), None);
-    set_var(&h, "test::w", Value::F64(90.0)).await?;
+    h.set_var("test::w", Value::F64(90.0)).await?;
     settle(&mut h, "the reset", |h| h.dt().dt_ref_width("c0") == Some(90.0)).await
 }
 
@@ -2251,7 +2187,7 @@ let result = data_table(#table: &tbl)
     let id = h.dt().dt_on_resize_ref("c0").expect("an on_resize ref");
     let rt = h.rt_handle.clone();
     for (v, redraws) in [(resize, true), (Value::Null, true), (Value::Null, false)] {
-        let changed = update_widget(&mut h.widget, &rt, id, &v)?;
+        let changed = update_widget(&mut h.root, &h.f.gx, &rt, id, &v)?;
         assert_eq!(changed, redraws, "on_resize <- {v}");
     }
     Ok(())
@@ -2336,7 +2272,7 @@ let result = table(&[table_column(&text(&"t"))], &[[dt]])
     };
     h.wait_until(wait(["r1", "r0"]), std::time::Duration::from_secs(5), "first sort")
         .await?;
-    set_var(&h, "test::v1", Value::F64(100.0)).await?;
+    h.set_var("test::v1", Value::F64(100.0)).await?;
     h.wait_until(wait(["r0", "r1"]), std::time::Duration::from_secs(5), "re-sort").await
 }
 
@@ -2399,10 +2335,8 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
     .await?;
     let change = h.compile_named_callable("test::change").await?;
     h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
-    let bid = testing::find_bind_id(&h.f.compiled.env, "test::c")?;
-    let mut c = h.f.gx.compile_ref(bid).await?;
     for v in [1, 2] {
-        c.set(Value::I64(v))?;
+        h.set_var("test::c", Value::I64(v)).await?;
         h.wait_until(
             |h| {
                 h.dt()
@@ -2503,8 +2437,7 @@ let result = data_table(#table: &tbl, #selection: &sel,
         rows.join(", ")
     );
     let mut h = dt(&code).await?;
-    set_var(
-        &h,
+    h.set_var(
         "test::sel",
         Value::Array(ValArray::from_iter([Value::from("r90/c"), Value::from("r70/c")])),
     )

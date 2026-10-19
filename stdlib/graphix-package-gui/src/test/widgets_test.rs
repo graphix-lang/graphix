@@ -1,6 +1,5 @@
 use super::{GuiTestHarness, IMPORTS, gui_harness as harness};
 use anyhow::Result;
-use graphix_package_core::testing;
 use netidx::publisher::Value;
 
 /// The widget built from `decls` and `widget` takes the update when the
@@ -10,8 +9,7 @@ async fn reacts(decls: &str, widget: &str, var: &str, value: Value) -> Result<()
     let mut h = GuiTestHarness::new(&code).await?;
     h.drain().await?;
     h.render()?;
-    let bid = testing::find_bind_id(&h.f.compiled.env, var)?;
-    h.f.gx.compile_ref(bid).await?.set(value)?;
+    h.set_var(var, value).await?;
     assert!(h.drain().await?, "writing {var} changes the widget");
     h.render()
 }
@@ -455,8 +453,7 @@ async fn bad_sizes_and_coordinates_are_refused() -> Result<()> {
         let mut h = GuiTestHarness::new(&code).await?;
         h.drain().await?;
         let good = retained_value(&h);
-        let bid = testing::find_bind_id(&h.f.compiled.env, var)?;
-        h.f.gx.compile_ref(bid).await?.set(bad.clone())?;
+        h.set_var(var, bad.clone()).await?;
         assert!(h.drain().await.is_err(), "{widget} takes {bad:?}");
         assert_eq!(retained_value(&h), good, "{widget} retains its last good value");
         h.render()?;

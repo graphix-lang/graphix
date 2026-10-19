@@ -1,5 +1,5 @@
 use super::{
-    IMPORTS, InteractionHarness, expect_call, expect_call_with_args,
+    IMPORTS, InteractionHarness, char_key, expect_call, expect_call_with_args,
     interaction_harness as harness,
 };
 use anyhow::Result;
@@ -802,12 +802,8 @@ async fn combo_box_keeps_typing_across_new_options() -> Result<()> {
     let _ = h.click(WIDGET_HIT);
     let typed = h.type_text("ban");
     h.apply(&typed);
-    let opts = graphix_package_core::testing::find_bind_id(
-        &h.inner.f.compiled.env,
-        "test::opts",
-    )?;
     let more = ["apple", "banana", "cherry", "date"].map(Value::from);
-    h.inner.f.gx.compile_ref(opts).await?.set(Value::Array(ValArray::from_iter(more)))?;
+    h.inner.set_var("test::opts", Value::Array(ValArray::from_iter(more))).await?;
     h.drain().await?;
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
     expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("banana")));
@@ -877,22 +873,6 @@ async fn text_editor_keeps_its_cursor_through_echoes() -> Result<()> {
     let (_, text) = graphix_compiler::rep::field_named(fields, "text").expect("text");
     assert_eq!(text, &Value::from("abc"));
     Ok(())
-}
-
-fn char_key(c: &str) -> Event {
-    use iced_core::keyboard;
-    let s: iced_core::SmolStr = c.into();
-    Event::Keyboard(keyboard::Event::KeyPressed {
-        key: keyboard::Key::Character(s.clone()),
-        modified_key: keyboard::Key::Character(s.clone()),
-        physical_key: keyboard::key::Physical::Unidentified(
-            keyboard::key::NativeCode::Unidentified,
-        ),
-        location: keyboard::Location::Standard,
-        modifiers: keyboard::Modifiers::empty(),
-        text: Some(s),
-        repeat: false,
-    })
 }
 
 /// A mouse area with only a hover handler takes no clicks: the button
@@ -1036,14 +1016,10 @@ async fn a_context_menu_without_items_closes() -> Result<()> {
              &container(#width: &`Fill, #height: &`Fixed(40.0), &text(&\"target\")))"
     );
     let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
-    let show = graphix_package_core::testing::find_bind_id(
-        &h.inner.f.compiled.env,
-        "test::show",
-    )?;
     right_click(&mut h, Point::new(20.0, 20.0));
     let _ = h.move_cursor(Point::new(250.0, 280.0));
     for shown in [false, true] {
-        h.inner.f.gx.compile_ref(show).await?.set(Value::Bool(shown))?;
+        h.inner.set_var("test::show", Value::Bool(shown)).await?;
         h.drain().await?;
         let _ = h.process_events(&[]);
     }

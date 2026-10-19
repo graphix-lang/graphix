@@ -132,7 +132,7 @@ async fn line_pixels(stroke: &str) -> Result<usize> {
            #stroke_width: {stroke}, &[(0.0, 0.0), (5.0, 5.0)])]"
     ))
     .await?;
-    Ok(color_pixels(&screenshot(&mut h).await, [255, 0, 255]))
+    Ok(color_pixels(&h.screenshot(400, 200), [255, 0, 255]))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -222,7 +222,7 @@ async fn dark_background_label_colors() -> Result<()> {
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    let pixels = screenshot(&mut h).await;
+    let pixels = h.screenshot(400, 200);
     assert!(pixels_of_hue(&pixels, MAGENTA) > 10, "title color");
     assert!(pixels_of_hue(&pixels, CYAN) > 10, "label color");
     Ok(())
@@ -249,7 +249,7 @@ async fn legend_style() -> Result<()> {
          &[chart::line(#label: \"Test\", &[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    let pixels = screenshot(&mut h).await;
+    let pixels = h.screenshot(400, 200);
     assert!(pixels_of_hue(&pixels, GREEN) > 200, "legend background");
     Ok(())
 }
@@ -273,7 +273,7 @@ async fn a_pie_shows_its_title() -> Result<()> {
            &[pie(&[("a", 1.0), ("b", 2.0)])]"#,
     )
     .await?;
-    let pixels = screenshot(&mut h).await;
+    let pixels = h.screenshot(400, 200);
     assert!(pixels_of_hue(&pixels, MAGENTA) > 10, "the title draws");
     let info = chart(&h).plot_info().expect("drawn");
     let below = 200.0 - info.rect.y - info.rect.height;
@@ -298,7 +298,7 @@ async fn error_bars_draw_only_what_is_in_view() -> Result<()> {
                &[{{x: 2.0, min: 1.0, avg: 2.0, max: {max}}}])]"
         ))
         .await?;
-        Ok(color_pixels(&screenshot(&mut h).await, [255, 0, 255]))
+        Ok(color_pixels(&h.screenshot(400, 200), [255, 0, 255]))
     };
     let (cut, capped) = (bar_pixels("9.0").await?, bar_pixels("4.99").await?);
     assert!(cut + 15 < capped, "a cut end draws no cap: {cut} vs {capped}");
