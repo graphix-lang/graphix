@@ -831,8 +831,13 @@ and forced grain (`ctx.fork_mode()`, `ctx.fork.forced`) to the run; a
 callee body ignores the forced grain (`#[parallel]` excludes callees).
 `Off` and runs outside a loan call the chunk once over the whole loop.
 Under `Auto` the loop is a `ProbeSite` (phase 5): it runs its first
-slots in order, timing each, and forks the rest in ranges of the grain
-the estimate gives, at most `CHUNKS_PER_WORKER` (16) per worker: a
+slots in order, timed as one run, and forks the rest in ranges of the
+grain the estimate gives. A slot timed alone carries the run's fixed
+cost, which makes a cheap loop look worth a fork, so while the estimate
+is unknown or under `T / PROBE_BATCH` a probe times at least
+`PROBE_BATCH` (16) slots; a settled loop of dearer slots probes the one
+slot it asks for and forks the rest. Ranges number at most
+`CHUNKS_PER_WORKER` (16) per worker: a
 chunk costs a call and a buffer, so ranges are cheaper than a node-walk
 fork's and more of them even out slots of uneven cost. A loop's cost is
 its code's, so the site (`cost::LoopSite`) is one per compiled loop, a

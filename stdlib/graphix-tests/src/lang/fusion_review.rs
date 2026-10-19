@@ -201,3 +201,87 @@ run!(select_variant_composite_whole_bind, r#"
     #[native] (f(`Some("payload")), f(`No))
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if **a == [Value::Bool(true), Value::Bool(false)]); FuseExpect::Jit);
+
+// A chain of distinct functions nests kernel frames as deep as the
+// program is long; each call checks the stack as a self-call does.
+run!(cross_kernel_chain_stack_space, {
+    use std::fmt::Write;
+    const N: usize = 500;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    src.push_str("{\n");
+    for i in 0..N {
+        writeln!(src, "let v{i} = {i};").unwrap();
+    }
+    writeln!(src, "let f{N} = |x: i64| -> i64 x;").unwrap();
+    for i in (0..N).rev() {
+        writeln!(src, "let f{i} = |x: i64| -> i64 f{}(x) + v{i};", i + 1).unwrap();
+    }
+    src.push_str("#[native] f0(1) }");
+    arcstr::ArcStr::from(src.as_str())
+}, |v: Result<&Value>| matches!(v, Ok(Value::I64(124751))); FuseExpect::Jit);
+
+// A value-shaped production, bottom included, entering a composite
+// slot: an argument, a composite return, a tail loop's rebind and a
+// fold's accumulator.
+run!(value_into_composite_slot, r#"
+{
+    let f = |a: Array<[i64, string]>| -> i64 array::len(a);
+    let g = |k: i64| f(select k { 0 => [1], 1 => ["x", "y"], _ => never() });
+    let h = |k: i64| -> Array<[i64, string]> select k { 0 => [1], 1 => ["x", "y"], _ => never() };
+    let rec t = |a: Array<[i64, string]>, k: i64| -> i64 select k {
+        0 => array::len(a),
+        k => t(select 6 / (k - 3) { 1 => [1], _ => ["x", "y"] }, k - 1)
+    };
+    let fl = |k: i64| {
+        let init: Array<[i64, string]> = [];
+        array::len(array::fold([k, k], init, |acc, x| select x { 0 => [1], 1 => ["x", "y"], _ => never() }))
+    };
+    (
+        any(#[native] g(2), 7),
+        any(#[native] array::len(h(2)), 7),
+        #[native] t([], 4),
+        any(#[native] fl(2), 7),
+        #[native] (g(0), g(1), array::len(h(1)), t([], 2), fl(1))
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:7, i64:7, i64:2, i64:7, [i64:1, i64:2, i64:2, i64:2, i64:2]]"); FuseExpect::Jit);
+
+// A kernel evaluates a call's arguments in the order they are written,
+// as the node-walk does, so their raises reach the handler in that order.
+run!(labeled_args_raise_in_written_order, r#"
+{
+    let f = |#a: i64, #b: i64, c: i64| a + b + c;
+    let log: Array<string> = [];
+    let n = 1;
+    let r = {
+        catch(e) log <- e ~ array::push(log, select "[e]" {
+            s if str::contains(#part: "remainder", s) => "b",
+            _ => "a"
+        });
+        #[native] f(#b: (n %? 0)?, #a: (n /? 0)?, n)
+    };
+    sys::time::after_idle(duration:10.ms, log)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["b", "a"]"#); FuseExpect::Jit);
+
+// An argument that raises through a call with no static target is not
+// fed to a kernel ahead of an earlier argument that raises in it.
+run!(fed_arg_raising_through_a_dynamic_call, r#"
+{
+    let f = |a: i64, b: i64| a + b;
+    let n = 1;
+    let g = select n {
+        0 => |x: i64| -> i64 (x %? 0)?,
+        _ => |x: i64| -> i64 (x %? 0)?
+    };
+    let log: Array<string> = [];
+    let r = {
+        catch(e) log <- e ~ array::push(log, select "[e]" {
+            s if str::contains(#part: "remainder", s) => "fed",
+            _ => "fused"
+        });
+        f((n /? 0)?, count(g(n)))
+    };
+    sys::time::after_idle(duration:10.ms, log)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["fused", "fed"]"#); FuseExpect::Jit);

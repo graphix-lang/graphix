@@ -573,7 +573,7 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    emit_builtin_call_node(cx, &info, &[inner])
+    emit_builtin_call_node(cx, &info, &[inner], &[0])
 }
 
 /// String interpolation `"x is [x]"`: push each part into a heap

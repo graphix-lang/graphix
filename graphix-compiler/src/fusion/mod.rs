@@ -46,6 +46,47 @@ use smallvec::SmallVec;
 use std::{cell::RefCell, collections::BTreeMap, sync::LazyLock};
 use triomphe::Arc;
 
+/// A type in a refusal's reason: its first [`Brief::BYTES`] as printed,
+/// tvars dereferenced. A type that shares its parts prints as a tree,
+/// 2^depth long, and the printer stops at the first write refused.
+pub(crate) struct Brief<'a>(pub(crate) &'a Type);
+
+impl Brief<'_> {
+    pub(crate) const BYTES: usize = 512;
+}
+
+impl std::fmt::Display for Brief<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct Capped<'a, 'b> {
+            f: &'a mut std::fmt::Formatter<'b>,
+            left: usize,
+        }
+        impl std::fmt::Write for Capped<'_, '_> {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                if s.len() <= self.left {
+                    self.left -= s.len();
+                    return self.f.write_str(s);
+                }
+                let mut end = self.left;
+                while !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                self.left = 0;
+                self.f.write_str(&s[..end])?;
+                Err(std::fmt::Error)
+            }
+        }
+        let mut capped = Capped { f, left: Self::BYTES };
+        let typ = self.0;
+        match format_with_flags(PrintFlag::DerefTVars, || {
+            std::fmt::Write::write_fmt(&mut capped, format_args!("{typ}"))
+        }) {
+            Err(_) if capped.left == 0 => capped.f.write_str("…"),
+            r => r,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct FusionSource {
     origin: triomphe::Arc<Origin>,
@@ -788,6 +829,24 @@ pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
     }
 }
 
+/// A `?` under a handler.
+pub(crate) fn raises_to_handler<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
+    matches!(n.view(), NodeView::Qop(q) if q.handler().is_some())
+}
+
+/// Whether evaluating `node` can raise to a handler: a `?` under one
+/// that it reaches through statically resolved calls, or a call with no
+/// static target, whose body no walk sees.
+pub(crate) fn may_raise_to_handler<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut any = false;
+    for_each_reachable_node(node, &mut |n| {
+        any |= raises_to_handler(n)
+            || matches!(n.view(), NodeView::CallSite(cs)
+                if matches!(cs.resolved_apply(), None | Some(ApplyView::Opaque)))
+    });
+    any
+}
+
 /// The callee of one statically-resolved lambda call site in a region
 /// being compiled, recorded by [`discover_lambda_calls`] and consumed by
 /// `CallSite::emit_clif` to emit a CLIF `call` against it: the cached
@@ -995,7 +1054,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     // A feeder runs before the kernel, so a fed argument's raise would
     // reach its handler ahead of a fused earlier argument's: then nothing
     // is fed.
-    // CR claude for claude: [bug/medium] This test sees a raise only through statically
+    // XCR claude for claude: [bug/medium] This test sees a raise only through statically
     // resolved lambdas, so a fed argument that raises through a dynamic call (a
     // select-chosen function value) counts as raise-free. It is then fed, and its raise
     // reaches the handler before an earlier fused argument's: `f((n /? 0)?,
@@ -1005,13 +1064,15 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     // closure. probe:
     // design/review-2026-10-19/repro/f-mod-lowering-fed-arg-dynamic-raise.gx
     // (f-mod-lowering-03)
-    let raises = |n: &Node<R, E>| {
-        let mut any = false;
-        for_each_reachable_node(n, &mut |n| {
-            any |= matches!(n.view(), NodeView::Qop(q) if q.handler().is_some())
-        });
-        any
-    };
+    // 2026-10-19 claude: fusion::may_raise_to_handler counts a call with no static
+    // target (resolved_apply None or Opaque) as raising; try_fuse_feeding_args uses it.
+    // arm_raise_blocker shares fusion::raises_to_handler for the Qop test but not the
+    // dynamic-call clause: its root is a region being fused, which a dynamic call never
+    // is, and a let rec self-call has no resolved apply, so the clause refused every
+    // self-recursive kernel with a raise. analysis::region_facts' own raises route is
+    // untouched. Pin: graphix-tests --test fusion_review
+    // fed_arg_raising_through_a_dynamic_call (the review binary logs [fed, fused]
+    // fused).
     let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
     for arg in cs.args.values_mut() {
         let feed = arg.node.as_mut().is_some_and(|node| {
@@ -1024,7 +1085,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     let mut fused_raise = false;
     for (arg, feed) in cs.args.values().zip(feeds.iter()).take(last + 1) {
         let Some(node) = arg.node.as_ref() else { continue };
-        match (*feed, raises(node)) {
+        match (*feed, may_raise_to_handler(node)) {
             (true, true) if fused_raise => return Ok(None),
             (false, true) => fused_raise = true,
             _ => (),
@@ -1314,7 +1375,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             })
             .ok();
         }
-        // CR claude for claude: [bug/high] f-mod-lowering-02 has regressed and is now
+        // XCR claude for claude: [bug/high] f-mod-lowering-02 has regressed and is now
         // worse. This reason prints the region's whole type, and the printer walks the
         // type as a tree. A type that shares its parts (`let x2 = `A(x1, x1)`, or `(x1,
         // x1)`) prints at 9*2^n bytes, even when unfolds_past has already judged the
@@ -1326,9 +1387,15 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         // Then pin a shared tuple chain through try_fuse. probe:
         // design/review-2026-10-19/repro/x-rerun-2-variant-dag-refusal-oom.gx
         // (x-rerun-2-01)
-        let reason = format_with_flags(PrintFlag::DerefTVars, || {
-            format_compact!("a region of type {} has no kernel return", node.typ())
-        });
+        // 2026-10-19 claude: A refusal renders a type through fusion::Brief: the
+        // printer writes into a sink that refuses past 512 bytes, so a type that shares
+        // its parts stops at its prefix (here and in lowering::frozen_or_blocked). Pin:
+        // lowering::tests::shared_type_reason_is_bounded (60-level shared variant and
+        // tuple chains). The repro prints 1 in under a second fused.
+        let reason = format_compact!(
+            "a region of type {} has no kernel return",
+            Brief(node.typ())
+        );
         return refuse(ctx, node.spec(), &reason);
     };
     drop(phase);

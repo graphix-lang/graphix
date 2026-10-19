@@ -55,7 +55,9 @@ use triomphe::Arc;
 use super::{
     abi::{LocalKind, local_payload_ty},
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
-    lower::{Callees, EmittedBody, HelperFuncIds, SiteLayout, compile_into_function},
+    lower::{
+        Callees, EmittedBody, HelperFuncIds, KernelFns, SiteLayout, compile_into_function,
+    },
     record::{
         BodyRecord, EmitConst, RecordKind, RecordReloc, RelocTarget, SymbolTable,
         record_decode, record_encode,
@@ -262,6 +264,21 @@ impl Names {
     }
 }
 
+/// A compiled function a later caller's relocation can name: a kernel
+/// body, or its spill thunk (by the body's record).
+enum Recorded {
+    Body(Arc<BodyRecord>),
+    Thunk(Arc<BodyRecord>),
+}
+
+impl Recorded {
+    fn body(&self) -> &Arc<BodyRecord> {
+        match self {
+            Recorded::Body(r) | Recorded::Thunk(r) => r,
+        }
+    }
+}
+
 /// What emission and linking share and never change: the ISA and the
 /// runtime helpers' ids, declared first in every root [`Names`].
 pub(crate) struct EmitShared {
@@ -285,8 +302,9 @@ impl EmitShared {
     }
 
     /// Name every relocation target symbolically: a helper, a recorded
-    /// callee (entered in `callees`), the owner, the thunk, one of the
-    /// owner's chunks, a libcall or one of the function's constants.
+    /// callee or its thunk (the callee entered in `callees`), the owner,
+    /// the thunk, one of the owner's chunks, a libcall or one of the
+    /// function's constants.
     fn record_relocs(
         &self,
         relocs: &[ModuleReloc],
@@ -294,7 +312,7 @@ impl EmitShared {
         thunk: Option<FuncId>,
         chunks: &[FuncId],
         consts: &[EmitConst],
-        records: &BTreeMap<FuncId, Arc<BodyRecord>>,
+        records: &BTreeMap<FuncId, Recorded>,
         callees: &mut Vec<Arc<BodyRecord>>,
     ) -> Result<Vec<RecordReloc>> {
         relocs
@@ -311,16 +329,20 @@ impl EmitShared {
                             RelocTarget::Chunk(i as u32)
                         } else if let Some(name) = self.helper_names.get(&fid) {
                             RelocTarget::Helper((*name).into())
-                        } else if let Some(rec) = records.get(&fid) {
+                        } else if let Some(r) = records.get(&fid) {
+                            let rec = r.body();
                             let i = match callees.iter().position(|c| Arc::ptr_eq(c, rec))
                             {
-                                Some(i) => i,
+                                Some(i) => i as u32,
                                 None => {
                                     callees.push(rec.clone());
-                                    callees.len() - 1
+                                    callees.len() as u32 - 1
                                 }
                             };
-                            RelocTarget::Callee(i as u32)
+                            match r {
+                                Recorded::Body(_) => RelocTarget::Callee(i),
+                                Recorded::Thunk(_) => RelocTarget::CalleeThunk(i),
+                            }
                         } else {
                             bail!("a relocation to an unrecorded function")
                         }
@@ -474,7 +496,15 @@ struct Generation {
     /// The records installed here, by the record's address. The entry
     /// holds the record: the code refers to its constants by address,
     /// and a freed record's address can be another's.
-    loaded: BTreeMap<usize, (FuncId, Arc<BodyRecord>)>,
+    loaded: BTreeMap<usize, (Installed, Arc<BodyRecord>)>,
+}
+
+/// A record's function in a module, and its spill thunk's when it has
+/// one.
+#[derive(Clone, Copy)]
+struct Installed {
+    id: FuncId,
+    thunk: Option<FuncId>,
 }
 
 impl Drop for Generation {
@@ -555,16 +585,17 @@ impl Generation {
     /// Install each wrapper's record tree, finalize once, and return the
     /// wrappers' entries in order.
     fn install(&mut self, wrappers: &[Arc<BodyRecord>]) -> Result<Vec<*const u8>> {
-        let ids: LPooled<Vec<FuncId>> =
+        let ids: LPooled<Vec<Installed>> =
             wrappers.iter().map(|w| self.load(w)).collect::<Result<_>>()?;
         let _finalize = profile::phase(Phase::Finalize);
         self.module.finalize_definitions().context("finalize_definitions")?;
-        Ok(ids.iter().map(|id| self.module.get_finalized_function(*id)).collect())
+        Ok(ids.iter().map(|i| self.module.get_finalized_function(i.id)).collect())
     }
 
     /// Install a record's function, its thunk, its chunks and its
-    /// callees (once per record) and return the function's id.
-    // CR claude for claude: [bug/high] load recurses through every callee record, and
+    /// callees (once per record) and return their ids. The record tree
+    /// is as deep as the program's static call chain.
+    // XCR claude for claude: [bug/high] load recurses through every callee record, and
     // each chunk's callees, with no stack::ensure_sufficient. Its depth is therefore
     // the program's static call-chain depth. A chain of 4800 lambdas, each calling the
     // one before, fuses and then aborts the whole process here at link ("stack
@@ -575,12 +606,18 @@ impl Generation {
     // guard; that part was found by reading, because the compile aborts before an image
     // is written. probe: design/review-2026-10-19/repro/x-rerun-6-jit-load-overflow.sh
     // (x-rerun-6-01)
-    fn load(&mut self, rec: &Arc<BodyRecord>) -> Result<FuncId> {
+    // 2026-10-19 claude: Generation::load recurses through load_all, which runs under
+    // crate::stack::ensure_sufficient. record_encode/record_decode needed nothing:
+    // image::object_encode and image::decode_at already run each object's contents
+    // under ensure_sufficient. Pin: graphix-shell/tests/deep_nesting.rs shape fnchain
+    // (FLAT_SHAPES, 3000 deep; its run mode aborted at link on the 512K stack without
+    // the guard; image mode covers the record codec).
+    fn load(&mut self, rec: &Arc<BodyRecord>) -> Result<Installed> {
         let key = Arc::as_ptr(rec) as usize;
-        if let Some((id, _)) = self.loaded.get(&key) {
-            return Ok(*id);
+        if let Some((installed, _)) = self.loaded.get(&key) {
+            return Ok(*installed);
         }
-        // CR claude for claude: [bug/medium] load recurses once per level of the record
+        // XCR claude for claude: [bug/medium] load recurses once per level of the record
         // tree: callees, and chunks' callees. That depth is the program's static
         // call-chain length inside one region, and nothing guards it. The link runs on
         // a 2 MiB tokio worker, so a chain of 6000 lambda definitions (f_i calls
@@ -590,27 +627,34 @@ impl Generation {
         // record_encode and record_decode in record.rs recurse over callees the same
         // way. Add a deep-callee-chain case to graphix-shell/tests/deep_nesting.rs.
         // probe: design/review-2026-10-19/repro/f-jit-load-stack-overflow.sh (f-jit-01)
-        let callees: SmallVec<[FuncId; 8]> =
-            rec.callees.iter().map(|c| self.load(c)).collect::<Result<_>>()?;
+        // 2026-10-19 claude: Same fix as x-rerun-6-01: load_all runs the callee
+        // recursion under ensure_sufficient; the deep-callee-chain case is
+        // deep_nesting.rs shape fnchain (aborted without the guard, checked by hand).
+        let callees = self.load_all(&rec.callees)?;
         let id = self.declare_record(rec)?;
-        let thunk_id = match rec.thunk() {
-            Some(t) => Some(self.declare_record(t)?),
+        let thunk = match rec.thunk() {
+            Some(t) => {
+                let tid = self.declare_record(t)?;
+                self.define_record(t, tid, None, &[], id, &[])?;
+                Some(tid)
+            }
             None => None,
         };
-        if let (Some(t), Some(tid)) = (rec.thunk(), thunk_id) {
-            self.define_record(t, tid, None, &[], id, &[])?;
-        }
         let mut chunks: SmallVec<[FuncId; 2]> = SmallVec::new();
         for c in rec.chunks() {
-            let callees: SmallVec<[FuncId; 8]> =
-                c.callees.iter().map(|c| self.load(c)).collect::<Result<_>>()?;
+            let callees = self.load_all(&c.callees)?;
             let cid = self.declare_record(c)?;
-            self.define_record(c, cid, thunk_id, &[], id, &callees)?;
+            self.define_record(c, cid, thunk, &[], id, &callees)?;
             chunks.push(cid);
         }
-        self.define_record(rec, id, thunk_id, &chunks, id, &callees)?;
-        self.loaded.insert(key, (id, rec.clone()));
-        Ok(id)
+        self.define_record(rec, id, thunk, &chunks, id, &callees)?;
+        let installed = Installed { id, thunk };
+        self.loaded.insert(key, (installed, rec.clone()));
+        Ok(installed)
+    }
+
+    fn load_all(&mut self, recs: &[Arc<BodyRecord>]) -> Result<SmallVec<[Installed; 8]>> {
+        crate::stack::ensure_sufficient(|| recs.iter().map(|c| self.load(c)).collect())
     }
 
     fn declare_record(&mut self, rec: &BodyRecord) -> Result<FuncId> {
@@ -635,7 +679,7 @@ impl Generation {
         thunk: Option<FuncId>,
         chunks: &[FuncId],
         owner: FuncId,
-        callees: &[FuncId],
+        callees: &[Installed],
     ) -> Result<()> {
         let symbol = self
             .module
@@ -662,10 +706,16 @@ impl Generation {
                         .ok_or_else(|| anyhow!("unknown helper {n}"))?;
                     ModuleRelocTarget::user(0, fid.as_u32())
                 }
-                RelocTarget::Callee(i) => {
-                    let fid = callees
+                RelocTarget::Callee(i) | RelocTarget::CalleeThunk(i) => {
+                    let callee = callees
                         .get(*i as usize)
                         .ok_or_else(|| anyhow!("a relocation to a missing callee"))?;
+                    let fid = match r.target {
+                        RelocTarget::Callee(_) => callee.id,
+                        _ => callee.thunk.ok_or_else(|| {
+                            anyhow!("a relocation to the thunk of a callee with none")
+                        })?,
+                    };
                     ModuleRelocTarget::user(0, fid.as_u32())
                 }
                 RelocTarget::Owner => ModuleRelocTarget::user(0, owner.as_u32()),
@@ -1094,6 +1144,7 @@ impl Emission {
                 // the task's callers sized their blocks by its body's layout
                 Some(have) if same_layout(&have.site_layout, &cached.site_layout) => {
                     moved.insert(cached.func_id.as_u32(), have.func_id);
+                    moved.insert(cached.thunk_id.as_u32(), have.thunk_id);
                 }
                 // the key failed to decide the body: the task's callers keep
                 // theirs, renumbered, and the cache keeps this one's
@@ -1113,6 +1164,7 @@ impl Emission {
         };
         for (key, mut cached) in kept.drain(..) {
             cached.func_id = renumber(cached.func_id);
+            cached.thunk_id = renumber(cached.thunk_id);
             self.caches.by_kernel.insert(key, cached);
         }
         self.names.funcs.extend(names.funcs);
@@ -1217,7 +1269,7 @@ pub struct Jit {
     generation: Generation,
     /// Generations retired so far.
     retired: usize,
-    /// Every compiled kernel body's record, by its id in [`Names`]; a
+    /// Every compiled kernel body and spill thunk, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
     // CR claude for eric: [perf/low] Nothing ever removes entries from this map, from
     // the root Emission's Caches (by_kernel, kernels, layout_ids) or from the current
@@ -1231,7 +1283,7 @@ pub struct Jit {
     // key the cache (for example from ctx.discard of a definition). Alternatively,
     // decide that a context's fusion memory is unbounded by design and say so in
     // design/final_jit_architecture.md. (f-jit-04)
-    records: BTreeMap<FuncId, Arc<BodyRecord>>,
+    records: BTreeMap<FuncId, Recorded>,
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
     in_flight: Option<InFlight>,
@@ -1436,7 +1488,10 @@ impl Jit {
                         callees,
                         kernel: p.kernel,
                     });
-                    self.records.insert(p.id, record);
+                    if let Some(tid) = tid {
+                        self.records.insert(tid, Recorded::Thunk(record.clone()));
+                    }
+                    self.records.insert(p.id, Recorded::Body(record));
                 }
                 PendingOf::Wrapper { entry } => {
                     let relocs = self.shared.record_relocs(
@@ -1593,9 +1648,20 @@ fn same_layout(a: &Option<SiteLayout>, b: &Option<SiteLayout>) -> bool {
     }
 }
 
+/// A kernel a region declares: its body's id and signature, and its
+/// spill thunk's (a lambda kernel's; the region's parent has none).
+#[derive(Clone)]
+struct Declared {
+    func: FuncId,
+    thunk: Option<FuncId>,
+    sig: Signature,
+}
+
 struct CachedBody {
     /// The body's id in [`Names`].
     func_id: FuncId,
+    /// The body's spill thunk's id.
+    thunk_id: FuncId,
     signature: Signature,
     /// Filled when the body is emitted. `None` at a caller's emission
     /// is a self-call, which roots a per-activation block tree.
@@ -1727,7 +1793,7 @@ fn compile_region_inner(
     };
     // Insertion order fixes the funcref numbering; a pointer-ordered map
     // makes it ASLR-dependent.
-    let mut funcids: LPooled<Vec<(KernelKey, (FuncId, Signature))>> = LPooled::take();
+    let mut funcids: LPooled<Vec<(KernelKey, Declared)>> = LPooled::take();
     // Seeded only from this region's own cache keys: another layout
     // variant of a body may have a different SiteLayout, and sizing
     // blocks from it is an out-of-bounds write.
@@ -1735,7 +1801,8 @@ fn compile_region_inner(
     let parent_key = kernel_abi::kernel_key(kernel);
     let parent_sig = kernel_signature(&*em.shared.isa, kernel)?;
     let parent_fid = em.names.local(&parent_sig);
-    funcids.push((parent_key, (parent_fid, parent_sig)));
+    funcids
+        .push((parent_key, Declared { func: parent_fid, thunk: None, sig: parent_sig }));
     for (key, k) in callees {
         let key = CacheKey { kernel: *key, layout: layout_of(*key) };
         let entry = match em.caches.by_kernel(&key) {
@@ -1743,22 +1810,28 @@ fn compile_region_inner(
                 if let Some(l) = e.site_layout.as_ref() {
                     callee_layouts.insert(key.kernel, l.clone());
                 }
-                (e.func_id, e.signature.clone())
+                Declared {
+                    func: e.func_id,
+                    thunk: Some(e.thunk_id),
+                    sig: e.signature.clone(),
+                }
             }
             None => {
                 let sig = kernel_signature(&*em.shared.isa, k)?;
-                let fid = em.names.local(&sig);
+                let func = em.names.local(&sig);
+                let thunk = em.names.local(&trampoline_signature(&*em.shared.isa));
                 em.caches.by_kernel.insert(
                     key,
                     CachedBody {
-                        func_id: fid,
+                        func_id: func,
+                        thunk_id: thunk,
                         signature: sig.clone(),
                         _kernel: k.clone(),
                         site_layout: None,
                     },
                 );
                 fresh.push((key, k.clone()));
-                (fid, sig)
+                Declared { func, thunk: Some(thunk), sig }
             }
         };
         funcids.push((key.kernel, entry));
@@ -1862,13 +1935,13 @@ fn def_order(
 fn emit_kernel_body(
     em: &mut Emission,
     kernel: &Arc<KernelSig>,
-    funcids: &[(KernelKey, (FuncId, Signature))],
+    funcids: &[(KernelKey, Declared)],
     body_emitter: &BodySource,
     callee_layouts: &AHashMap<KernelKey, SiteLayout>,
 ) -> Result<(EmittedBody, Pending)> {
     let mut clif_profile = profile::phase(Phase::Clif);
     let self_key = kernel_abi::kernel_key(kernel);
-    let (func_id, sig) =
+    let Declared { func: func_id, thunk: thunk_id, sig } =
         funcids.iter().find(|(p, _)| *p == self_key).map(|(_, e)| e.clone()).ok_or_else(
             || {
                 anyhow!(
@@ -1890,22 +1963,20 @@ fn emit_kernel_body(
     if let Some((_, info)) = body_emitter.spec.self_call() {
         callee_keys.insert(kernel_abi::kernel_key(&info.kernel));
     }
-    let self_thunk = body_emitter.spec.self_call().map(|own| {
-        let tsig = trampoline_signature(&*em.shared.isa);
-        (own, em.names.local(&tsig))
-    });
-    let self_thunk_id = self_thunk.map(|(_, tid)| tid);
     let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
     let chunks: RefCell<Vec<ChunkFn>> = RefCell::new(Vec::new());
     let mut emitted = None;
     let func = em.build(func_id, sig.clone(), |names, helpers, b| {
         // Import in `funcids` order so the funcref numbering is deterministic.
-        let mut callee_refs: BTreeMap<KernelKey, FuncRef> = BTreeMap::new();
-        let mut callee_ids: BTreeMap<KernelKey, FuncId> = BTreeMap::new();
-        for (key, (fid, _)) in funcids {
-            if callee_keys.contains(key) {
-                callee_refs.insert(*key, names.import_func(*fid, b.func));
-                callee_ids.insert(*key, *fid);
+        let mut callee_refs: BTreeMap<KernelKey, KernelFns<FuncRef>> = BTreeMap::new();
+        let mut callee_ids: BTreeMap<KernelKey, KernelFns<FuncId>> = BTreeMap::new();
+        for (key, d) in funcids {
+            if let (true, Some(thunk)) = (callee_keys.contains(key), d.thunk) {
+                let ids = KernelFns { body: d.func, thunk };
+                let body = names.import_func(ids.body, b.func);
+                let thunk = names.import_func(ids.thunk, b.func);
+                callee_refs.insert(*key, KernelFns { body, thunk });
+                callee_ids.insert(*key, ids);
             }
         }
         if callee_refs.len() != callee_keys.len() {
@@ -1914,12 +1985,10 @@ fn emit_kernel_body(
                 kernel.fn_name
             );
         }
-        let self_call = self_thunk.map(|((bind, info), thunk_id)| OwnCall {
-            bind: *bind,
-            info,
-            thunk: names.import_func(thunk_id, b.func),
-            thunk_id,
-        });
+        let self_call = body_emitter
+            .spec
+            .self_call()
+            .map(|(bind, info)| OwnCall { bind: *bind, info });
         let names = RefCell::new(names);
         emitted = Some(compile_into_function(
             b,
@@ -1943,7 +2012,7 @@ fn emit_kernel_body(
     };
     let emitted: EmittedBody = emitted.expect("emitted on success");
     let chunks = chunks.into_inner();
-    let thunk = match self_thunk_id {
+    let thunk = match thunk_id {
         None => None,
         Some(tid) => Some((tid, emit_trampoline(em, tid, func_id, &sig, false)?)),
     };

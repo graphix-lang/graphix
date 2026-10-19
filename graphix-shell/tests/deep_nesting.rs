@@ -208,6 +208,16 @@ fn program(shape: &str, d: usize) -> String {
             s.push_str(&format!("let x = cast<A{d}>(`Z)$;\nx == x"));
             s
         }
+        // A static call chain as long as the program: its kernels'
+        // records nest, and so do their frames.
+        "fnchain" => {
+            let mut s = String::from("let f0 = |x: i64| x;\n");
+            for i in 1..=d {
+                s.push_str(&format!("let f{i} = |x: i64| f{}(x) + 1;\n", i - 1));
+            }
+            s.push_str(&format!("let x = f{d}(1)"));
+            s
+        }
         _ => panic!("unknown shape {shape}"),
     }
 }
@@ -225,7 +235,7 @@ fn paren_chain(d: usize) -> String {
 
 /// Shapes with no source nesting at all: the parser cannot refuse
 /// them, so each must compile at `FLAT_DEPTH`.
-const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
+const FLAT_SHAPES: &[&str] = &["flattype", "flatcast", "fnchain"];
 const FLAT_DEPTH: usize = 3000;
 
 /// Cells chained by bounds in one signature (`chainbounds`).

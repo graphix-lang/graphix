@@ -210,16 +210,19 @@ counter went; the kernel's non-tail self-calls run on the machine
 stack, so it needed the JIT twin of `ensure_sufficient`:
 
 - `graphix_stack_check` (0 interrupted / 1 call / 2 grow) at every
-  SELF-call site — the same helper-returned-flag branch shape the
-  counter had, so the fast path costs what the counter cost. On 2 the
-  site spills its CLIF args to a stack slot at an 8-byte stride and
-  calls `graphix_grow_stack(thunk, args, out)`, which runs the kernel's
-  SPILL THUNK on a fresh 32MB segment (`stacker::grow`); the thunk
-  (the kernel's `self_thunk`, one per self-calling kernel, named before
-  the body and emitted after it by `jit::emit_trampoline`) loads the params as the
-  signature declares, calls the kernel, stores the two result words.
-  Cross-kernel edges are acyclic (mutual recursion de-fuses), so only
-  self-calls check. Measured: 2,000,000 deep in 1.4s and 507MB, ~250
+  kernel call site, a self-call's and another kernel's alike — the same
+  helper-returned-flag branch shape the counter had, so the fast path
+  costs what the counter cost. On 2 the site spills its CLIF args to a
+  stack slot at an 8-byte stride and calls
+  `graphix_grow_stack(thunk, args, out)`, which runs the callee's SPILL
+  THUNK on a fresh 32MB segment (`stacker::grow`); the thunk (one per
+  lambda kernel, declared with the kernel's body so a caller can import
+  it, emitted after the body by `jit::emit_trampoline`, and named by a
+  caller's record as `RelocTarget::CalleeThunk`) loads the params as
+  the signature declares, calls the kernel, stores the two result words.
+  Cross-kernel edges are acyclic (mutual recursion de-fuses), but a
+  chain of distinct functions is as deep as the program is long, so
+  every call checks. Measured: 2,000,000 deep in 1.4s and 507MB, ~250
   bytes of stack per level.
 - The block-tree walks (`FusedKernel::drop`'s free, the reclaim) are
   explicit worklists — they recursed one Rust frame per activation,

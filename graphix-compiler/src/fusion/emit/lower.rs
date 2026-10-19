@@ -41,23 +41,28 @@ use super::{
     record::EmitConst,
 };
 
+/// A kernel a body calls: its body, and the spill thunk a call takes
+/// when the remaining stack is inside the red zone.
+#[derive(Clone, Copy)]
+pub(super) struct KernelFns<F> {
+    pub(super) body: F,
+    pub(super) thunk: F,
+}
+
 /// The kernels a body calls, as the function being built names them,
 /// and by their ids, for another function of the body to import.
 pub(super) struct Callees<'a> {
-    pub(super) refs: &'a BTreeMap<KernelKey, FuncRef>,
-    pub(super) ids: &'a BTreeMap<KernelKey, FuncId>,
+    pub(super) refs: &'a BTreeMap<KernelKey, KernelFns<FuncRef>>,
+    pub(super) ids: &'a BTreeMap<KernelKey, KernelFns<FuncId>>,
     pub(super) self_call: Option<OwnCall<'a>>,
 }
 
-/// A self-recursive body's call of itself: the self binding, the
-/// kernel's own call descriptor and the spill thunk a self-call takes
-/// when the remaining stack is inside the red zone.
+/// A self-recursive body's call of itself: the self binding and the
+/// kernel's own call descriptor.
 #[derive(Clone, Copy)]
 pub(crate) struct OwnCall<'a> {
     pub(crate) bind: BindId,
     pub(crate) info: &'a LambdaCallInfo,
-    pub(super) thunk: FuncRef,
-    pub(super) thunk_id: FuncId,
 }
 
 pub(super) fn compile_into_function<'a>(
@@ -520,11 +525,12 @@ pub(crate) struct LowerCtx<'a> {
     /// The frame `close_slot_tables` just popped, for the loop exit's
     /// `emit_slot_truncates`.
     pub(super) closed_frame: RefCell<Option<ClosedFrame>>,
-    /// Callee kernel identity (`kernel_key`) → `FuncRef`, declared in
-    /// the current function before the FunctionBuilder is built.
-    pub(super) callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
+    /// Callee kernel identity (`kernel_key`) → its body and thunk,
+    /// declared in the current function before the FunctionBuilder is
+    /// built.
+    pub(super) callee_refs: &'a BTreeMap<KernelKey, KernelFns<FuncRef>>,
     /// The callees by id, for a chunk to import.
-    pub(super) callee_ids: &'a BTreeMap<KernelKey, FuncId>,
+    pub(super) callee_ids: &'a BTreeMap<KernelKey, KernelFns<FuncId>>,
     pub(super) helper_ids: &'a HelperFuncIds,
     /// `FuncRef`s for the runtime helpers, by helper name.
     pub(super) helper_refs: HelperRefs<'a>,

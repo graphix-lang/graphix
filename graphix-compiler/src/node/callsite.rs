@@ -1243,6 +1243,24 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.args.values().filter_map(|a| a.node.as_ref())
     }
 
+    /// The order the node-walk updates `nodes`, some of this call's
+    /// argument nodes in another order: their indices by each one's place
+    /// among the arguments, the written ones then the defaults a bind
+    /// added; a node that is no argument goes last. It is the order their
+    /// raises reach a handler.
+    pub(crate) fn update_order(
+        &self,
+        nodes: &[Option<&Node<R, E>>],
+    ) -> SmallVec<[usize; 12]> {
+        let rank = |n: Option<&Node<R, E>>| {
+            n.and_then(|n| self.arg_nodes().position(|a| std::ptr::eq(a, n)))
+                .unwrap_or(usize::MAX)
+        };
+        let mut order: SmallVec<[usize; 12]> = (0..nodes.len()).collect();
+        order.sort_by_key(|i| rank(nodes[*i]));
+        order
+    }
+
     /// Look up a labeled argument's compiled sub-Node.
     pub fn arg_named(&self, name: &ArcStr) -> Option<&Node<R, E>> {
         self.arg(&ArgKey::Named(name.clone()))
@@ -3366,7 +3384,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }),
             })
             .collect::<Result<SmallVec<[_; 8]>>>()?;
-        emit_builtin_call_node(cx, &info, &arg_nodes)
+        let order = self.update_order(
+            &arg_nodes.iter().map(|n| Some(*n)).collect::<SmallVec<[_; 8]>>(),
+        );
+        emit_builtin_call_node(cx, &info, &arg_nodes, &order)
     }
 }
 

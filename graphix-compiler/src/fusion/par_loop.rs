@@ -191,16 +191,7 @@ pub(crate) unsafe fn run(
                 }
             };
             // the first slot an uncalibrated loop timed is one of the probes
-            let Some(k) = site.probes(len - at).map(|k| k.saturating_sub(probes.len()))
-            else {
-                if at == 0 {
-                    return unsafe { in_order(chunk, frame, len, find, out) };
-                }
-                break 'auto (at, None);
-            };
-            // the probed slots run as one, at least a batch of them, so a
-            // run's fixed costs spread over them
-            // CR claude for claude: [perf/high] A settled site asks for one probe
+            // XCR claude for claude: [perf/high] A settled site asks for one probe
             // (ProbeSite::probes returns 1), but this widens it to PROBE_BATCH, so
             // every run of a loop whose slots pay for a fork executes 16 slots in order
             // before forking the rest. A 32-slot loop of heavy slots stays half serial
@@ -213,9 +204,19 @@ pub(crate) unsafe fn run(
             // probe:
             // design/review-2026-10-19/repro/c-cost-misc-kernel-loop-probe-batch.gx
             // (c-cost-misc-01)
-            let k = match k {
-                0 => 0,
-                k => k.max(cost::PROBE_BATCH).min(len - at),
+            // 2026-10-19 claude: LoopSite::probes now takes the calibration and the
+            // slots already timed and widens a probe to PROBE_BATCH only while the
+            // site's estimate is unknown or under T / PROBE_BATCH; a settled site of
+            // dearer slots probes the one slot it asks for. design/parallel_eval.md §10
+            // describes the batch. Pin:
+            // cost::tests::loop_site_batches_only_cheap_probes. The repro now traces
+            // '32 slots, 1 probed, 31 ranges' on every settled run: auto 2.5 s against
+            // force 2.2 s (the review binary's auto 8.8 s, a loaded machine).
+            let Some(k) = site.probes(cal, len - at, probes.len()) else {
+                if at == 0 {
+                    return unsafe { in_order(chunk, frame, len, find, out) };
+                }
+                break 'auto (at, None);
             };
             if k > 0 {
                 let mut r = Run::new(at, at + k, find);

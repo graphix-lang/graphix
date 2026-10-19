@@ -1066,7 +1066,7 @@ pub(crate) enum FoldAcc<'a> {
 }
 
 impl FoldAcc<'_> {
-    fn local_kind(&self) -> LocalKind {
+    pub(super) fn local_kind(&self) -> LocalKind {
         match self {
             FoldAcc::Scalar(p) => LocalKind::Scalar(*p),
             FoldAcc::Composite { .. } => LocalKind::Composite,

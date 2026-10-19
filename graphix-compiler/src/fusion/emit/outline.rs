@@ -3,15 +3,14 @@
 //! `graphix_par_loop` runs in order or forked (`fusion::par_loop`,
 //! `design/parallel_eval.md` §10).
 
-use super::lower::OwnCall;
 use super::{
     abi::{JitEnv, STALE, ValueVar, local_payload_ty},
     body::{BodyCx, emit_kernel_abort},
     call::{BufKind, close_buf, open_buf},
     jit::{ChunkFn, chunk_signature},
     lower::{
-        Channel, ClosedFrame, CtxWord, HelperRefs, LowerCtx, SlotTable, SlotTableFrame,
-        StateChannel, TailCtx, TruncRec,
+        Channel, ClosedFrame, CtxWord, HelperRefs, KernelFns, LowerCtx, SlotTable,
+        SlotTableFrame, StateChannel, TailCtx, TruncRec,
     },
     record::KernelConst,
     scaffold::{Accs, Iteration, LoopFrame, Sink, SinkKind, Slots, Sunk, open_sink},
@@ -271,15 +270,15 @@ fn emit_chunk(
     let tail_scrut_stale_acc = b.declare_var(types::I64);
     let stale = b.ins().iconst(types::I64, STALE);
     b.def_var(tail_scrut_stale_acc, stale);
-    let callee_refs: BTreeMap<KernelKey, FuncRef> = p
+    let callee_refs: BTreeMap<KernelKey, KernelFns<FuncRef>> = p
         .callee_ids
         .iter()
-        .map(|(k, fid)| (*k, names.borrow().import_func(*fid, b.func)))
+        .map(|(k, ids)| {
+            let names = names.borrow();
+            let body = names.import_func(ids.body, b.func);
+            (*k, KernelFns { body, thunk: names.import_func(ids.thunk, b.func) })
+        })
         .collect();
-    let self_call = p.self_call.map(|own| OwnCall {
-        thunk: names.borrow().import_func(own.thunk_id, b.func),
-        ..own
-    });
     let consts = RefCell::new(Vec::new());
     let ctx = LowerCtx {
         tail: TailCtx {
@@ -316,7 +315,7 @@ fn emit_chunk(
         ladder: RefCell::default(),
         builtin_apply_sites: p.builtin_apply_sites,
         lambda_call_sites: p.lambda_call_sites,
-        self_call,
+        self_call: p.self_call,
         type_env: p.type_env,
     };
     let mut ccx = BodyCx { b: &mut b, env: &mut env, ctx: &ctx };

@@ -10,7 +10,7 @@ use crate::{
     expr::{Expr, ExprId, ExprKind},
     fusion::{
         LambdaCallInfo,
-        kernel_abi::{self, AbiKind, KernelKey},
+        kernel_abi::{self, AbiKind, KernelKey, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
     typ::Type,
@@ -31,14 +31,14 @@ use super::{
         CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
         propagate_flags, scalar_disc, value_disc,
     },
-    call::{CompositeSource, emit_drop_local, emit_pending_abort},
+    call::{CompositeSource, emit_drop_local, emit_pending_abort, owned_drop_kind},
     flow::{emit_body_tail, emit_scope_drops},
     jit::Names,
     lower::{
         Channel, ClosedFrame, LowerCtx, SiteLayout, SlotTable, SlotTableFrame, StateWord,
         TruncAnchor, TruncLeaf, TruncRec, freeze_node_typ,
     },
-    nodes::emit_owned_value_operand_node,
+    nodes::{emit_owned_value_operand_node, narrow_value_to_composite},
     record::{EmitConst, KernelConst, KernelType},
     scalar::scalar_to_payload_i64,
 };
@@ -947,6 +947,89 @@ pub fn ensure_owned_value_src(
     }
 }
 
+/// What a slot of one kind does to a node's production of another.
+#[derive(Clone, Copy)]
+enum SlotFit {
+    /// A scalar into a value slot: widened to the Value encoding,
+    /// which owns nothing.
+    Widen(PrimType),
+    /// A value-shaped production into a composite slot: made owned,
+    /// then narrowed, a bottom's placeholder to the empty array.
+    Narrow,
+    /// The production as it is.
+    Same,
+}
+
+fn slot_fit<R: Rt, E: UserEvent>(
+    cx: &BodyCx,
+    node: &Node<R, E>,
+    slot: LocalKind,
+) -> SlotFit {
+    match (cx.node_kind(node.typ()), slot) {
+        (Some(AbiKind::Scalar(p)), LocalKind::Value) => SlotFit::Widen(p),
+        (
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value),
+            LocalKind::Composite,
+        ) => SlotFit::Narrow,
+        _ => SlotFit::Same,
+    }
+}
+
+/// Whether a slot of kind `slot` must clone `node`'s production to own
+/// it ([`emit_into_slot`]'s `source`, known before the emission).
+pub(super) fn slot_source<R: Rt, E: UserEvent>(
+    cx: &BodyCx,
+    node: &Node<R, E>,
+    slot: LocalKind,
+) -> CompositeSource {
+    match slot_fit(cx, node, slot) {
+        SlotFit::Same => node_composite_source(node),
+        SlotFit::Widen(_) | SlotFit::Narrow => CompositeSource::Owned,
+    }
+}
+
+/// A node's production as a slot of some kind takes it.
+pub(super) struct Slotted {
+    pub(super) cv: CompiledExpr,
+    /// Whether the slot must clone it to own it.
+    pub(super) source: CompositeSource,
+    /// What it leaves its consumer to drop when the slot only borrows it.
+    pub(super) owns: Option<LocalKind>,
+}
+
+/// Emit `node` into a slot of kind `slot`: an argument, a tail loop's
+/// rebind, a binding, a composite return or a fold's accumulator.
+pub(super) fn emit_into_slot<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    node: &Node<R, E>,
+    slot: LocalKind,
+) -> Result<Slotted> {
+    let fit = slot_fit(cx, node, slot);
+    let cv = node.emit_clif(cx)?;
+    let source = node_composite_source(node);
+    Ok(match fit {
+        SlotFit::Widen(p) => Slotted {
+            cv: CompiledExpr::new(cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload)),
+            source: CompositeSource::Owned,
+            owns: None,
+        },
+        SlotFit::Narrow => {
+            let (disc, payload) =
+                ensure_owned_value_src(cx, source, cv.disc, cv.payload)?;
+            Slotted {
+                cv: narrow_value_to_composite(cx, CompiledExpr::new(disc, payload))?,
+                source: CompositeSource::Owned,
+                owns: Some(LocalKind::Composite),
+            }
+        }
+        SlotFit::Same => Slotted {
+            cv,
+            source,
+            owns: cx.node_kind(node.typ()).and_then(|k| owned_drop_kind(k, source)),
+        },
+    })
+}
+
 /// Get (or lazily create) the kernel's single `pending_exit` block —
 /// where every forced-bottom path jumps after dropping the owned set.
 /// Its body (sentinel + `return`) is emitted at the end of
@@ -987,6 +1070,10 @@ pub(super) fn emit_return_from_node<R: Rt, E: UserEvent>(
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let cv = emit_owned_value_operand_node(cx, node)?;
             emit_kernel_return(cx, return_type, cv, CompositeSource::Owned)
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let s = emit_into_slot(cx, node, LocalKind::Composite)?;
+            emit_kernel_return(cx, return_type, s.cv, s.source)
         }
         _ => {
             let cv = node.emit_clif(cx)?;

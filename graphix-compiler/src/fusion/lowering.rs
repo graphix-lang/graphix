@@ -9,7 +9,7 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     fusion::{
-        self, FusionBlocker,
+        self, Brief, FusionBlocker,
         kernel_abi::{
             self, AbiKind, KernelParam, KernelSig, ParamKind, Seen, abi_kind,
             expand_key_fp, freeze_for_abi_normalized, scalar_prim,
@@ -196,11 +196,11 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
     // CLAUDE.md. probe:
     // design/review-2026-10-19/repro/f-call-flow-arm-entry-unhandled-raise.gx (0 vs 1
     // reports) and f-call-flow-tail-loop-unhandled-raise.gx (1 vs 6) (f-call-flow-02)
-    let raises =
-        |n: &Node<R, E>| matches!(n.view(), NodeView::Qop(q) if q.handler().is_some());
     let mut any = false;
     if !selects.is_empty() {
-        fusion::for_each_reachable_node(root, &mut |n| any |= raises(n));
+        fusion::for_each_reachable_node(root, &mut |n| {
+            any |= fusion::raises_to_handler(n)
+        });
     }
     if !any {
         return None;
@@ -220,7 +220,7 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
                 NodeView::Select(_) => {
                     nested.insert(n as *const Node<R, E> as usize);
                 }
-                _ if found.is_none() && raises(n) => found = Some(n),
+                _ if found.is_none() && fusion::raises_to_handler(n) => found = Some(n),
                 _ => (),
             });
         }
@@ -393,9 +393,7 @@ fn always_fits(src: PrimType, tgt: PrimType) -> bool {
 fn frozen_or_blocked(t: &Type, spec: &Expr, what: &str) -> Result<Type, FusionBlocker> {
     freeze_for_abi_normalized(t).ok_or_else(|| FusionBlocker {
         spec: spec.clone(),
-        reason: crate::format_with_flags(PrintFlag::DerefTVars, || {
-            format_compact!("{what} type {t} has no kernel ABI form")
-        }),
+        reason: format_compact!("{what} type {} has no kernel ABI form", Brief(t)),
     })
 }
 
@@ -1794,5 +1792,27 @@ mod tests {
         }
         assert!(unfolds_past(&typ, FUSION_SIZE_CAP));
         assert!(unfolds_past(&typ, u32::MAX));
+    }
+
+    /// A refusal renders a type that shares its parts in time bounded by
+    /// its prefix, not 2^depth.
+    #[test]
+    fn shared_type_reason_is_bounded() {
+        let mut variant = Type::Primitive(Typ::I64.into());
+        let mut tuple = variant.clone();
+        for _ in 1..=60 {
+            variant = Type::Variant(
+                arcstr::literal!("A"),
+                Arc::from_iter([variant.clone(), variant]),
+                Default::default(),
+            );
+            tuple = Type::Tuple(Arc::from_iter([tuple.clone(), tuple]));
+        }
+        for typ in [&variant, &tuple] {
+            let s = format_compact!("{}", Brief(typ));
+            assert!(s.len() <= Brief::BYTES + '…'.len_utf8() && s.ends_with('…'), "{s}");
+        }
+        let small = Type::Primitive(Typ::I64.into());
+        assert_eq!(format_compact!("{}", Brief(&small)), "i64");
     }
 }
