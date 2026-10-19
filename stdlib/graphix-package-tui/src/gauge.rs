@@ -20,7 +20,7 @@ pub(super) struct GaugeW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> GaugeW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        Ok(Box::new(Self(Props::compile(&gx, &v).await.context("gauge")?)))
+        Ok(TuiW::new(Self(Props::compile(&gx, &v).await.context("gauge")?)))
     }
 }
 

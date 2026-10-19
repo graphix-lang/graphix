@@ -1,13 +1,12 @@
-use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::{expr::ExprId, rep};
-use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref};
+use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref, reconcile};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
 use serde_derive::{Deserialize, Serialize};
-use std::{future::Future, hash::Hash, pin::Pin};
+use std::{future::Future, pin::Pin};
 
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
@@ -59,6 +58,9 @@ pub enum Message {
     EditorAction(ExprId, iced_widget::text_editor::Action),
     /// A data table's own input, addressed to that table alone.
     Table(TableId, TableMsg),
+    /// The text now typed into the combo box keyed by its options' ref;
+    /// empty after a choice.
+    ComboText(ExprId, String),
 }
 
 netidx_core::atomic_id!(TableId);
@@ -296,82 +298,6 @@ impl<X: GXExt> Children<X> {
     }
 }
 
-/// Pair each of the `new` values with an old item made from an equal
-/// value, the one at the same index first, else any; `None` where no old
-/// item is left.
-pub(crate) fn keep_equal<K: Eq + Hash, T>(
-    old: impl IntoIterator<Item = (K, T)>,
-    new: &[K],
-) -> LPooled<Vec<Option<T>>> {
-    let mut keys: LPooled<Vec<K>> = LPooled::take();
-    let mut items: LPooled<Vec<Option<T>>> = LPooled::take();
-    for (key, item) in old {
-        keys.push(key);
-        items.push(Some(item));
-    }
-    let mut index: Option<LPooled<AHashMap<&K, usize>>> = None;
-    let mut next: LPooled<Vec<Option<usize>>> = LPooled::take();
-    new.iter()
-        .enumerate()
-        .map(|(i, val)| {
-            if keys.get(i) == Some(val) && items[i].is_some() {
-                return items[i].take();
-            }
-            let index = index.get_or_insert_with(|| {
-                let mut index: LPooled<AHashMap<&K, usize>> = LPooled::take();
-                next.resize(keys.len(), None);
-                for (j, key) in keys.iter().enumerate().rev() {
-                    if items[j].is_some() {
-                        next[j] = index.insert(key, j);
-                    }
-                }
-                index
-            });
-            while let Some(j) = index.get(val).copied() {
-                match next[j] {
-                    Some(k) => {
-                        index.insert(&keys[j], k);
-                    }
-                    None => {
-                        index.remove(val);
-                    }
-                }
-                if let Some(item) = items[j].take() {
-                    return Some(item);
-                }
-            }
-            None
-        })
-        .collect()
-}
-
-/// Old entries stay intact until every fresh item compiles. Fresh items
-/// compile concurrently; equal values keep their existing item.
-pub(crate) async fn reconcile<T, F: Future<Output = Result<T>>>(
-    old: &mut Vec<(Value, T)>,
-    mut items: LPooled<Vec<Value>>,
-    compile: impl Fn(Value) -> F,
-) -> Result<()> {
-    let mut kept =
-        keep_equal(old.iter().enumerate().map(|(i, (v, _))| (v.clone(), i)), &items);
-    let fresh = items
-        .iter()
-        .zip(kept.iter())
-        .filter(|(_, t)| t.is_none())
-        .map(|(v, _)| compile(v.clone()));
-    let mut fresh = futures::future::try_join_all(fresh).await?.into_iter();
-    let mut slots: LPooled<Vec<Option<T>>> =
-        old.drain(..).map(|(_, t)| Some(t)).collect();
-    old.extend(items.drain(..).zip(kept.drain(..)).map(|(v, at)| {
-        let t = match at {
-            Some(i) => slots[i].take().expect("each kept item is used once"),
-            None => fresh.next().expect("each fresh item has a result"),
-        };
-        (v, t)
-    }));
-    Ok(())
-}
-
 const MEASURED: usize = 8192;
 type WidthMap =
     indexmap::IndexMap<(ArcStr, u32, iced_core::Font), f32, ahash::RandomState>;
@@ -498,12 +424,7 @@ impl<T: PartialEq> Echoes<T> {
             return false;
         }
         shell.call_handled = true;
-        // CR claude for claude: [readability/low] call_answered is an async fn that
-        // never awaits (an argument check and a channel send), so this block_on only
-        // makes the GUI thread look as if it waits on the runtime. Make
-        // Callable::call_answered and call_unchecked plain fns in graphix-rt and call
-        // it directly. Found by reading; not run. (gui-widgets-a-06)
-        match futures::executor::block_on(f.call_answered(args.clone())) {
+        match f.call_answered(args.clone()) {
             Ok(()) => {
                 self.0.push_back((f.answer, Some(value)));
                 true

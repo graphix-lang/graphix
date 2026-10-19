@@ -179,7 +179,7 @@ callable's `answer` id:
 ```rust
 f.call_answered(netidx_value::ValArray::from_iter_exact(
     [Value::from(1), Value::from(2), Value::from(3)]
-)).await?;
+))?;
 'answer: loop {
     let mut batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("the runtime is dead"))?;
     for ev in batch.drain(..) {

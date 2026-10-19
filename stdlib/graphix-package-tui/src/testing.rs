@@ -134,6 +134,23 @@ impl TuiTestHarness {
         }
     }
 
+    /// Take updates until `done` holds, for at most `timeout`; past it,
+    /// an error showing the last render.
+    pub async fn wait_for(
+        &mut self,
+        timeout: Duration,
+        mut done: impl FnMut(&mut Self) -> Result<bool>,
+    ) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !done(self)? {
+            if tokio::time::Instant::now() > deadline {
+                bail!("timed out; render:\n{}", self.render_lines()?.join("\n"))
+            }
+            self.next_update(Duration::from_millis(500)).await?;
+        }
+        Ok(())
+    }
+
     /// Track a graphix variable by name so its updates land in
     /// `watched`. `name` is module-qualified (e.g. `"test::clicks"`).
     /// Returns the initial value.

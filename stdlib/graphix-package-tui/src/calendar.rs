@@ -7,8 +7,12 @@ use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::Rect,
-    widgets::calendar::{CalendarEventStore, Monthly},
+    widgets::{
+        Widget,
+        calendar::{CalendarEventStore, Monthly},
+    },
 };
 use time::{Date, Month};
 
@@ -77,7 +81,7 @@ impl<X: GXExt> CalendarW<X> {
         if let Some(v) = t.events_ref.last.take() {
             t.set_events(&v)?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
     fn set_events(&mut self, v: &Value) -> Result<()> {
@@ -126,17 +130,17 @@ impl<X: GXExt> TuiWidget for CalendarW<X> {
         if let Some(Some(s)) = &p.default_style.t {
             cal = cal.default_style(s.0);
         }
-        // CR claude for claude: [bug/medium] A calendar shorter than its month draws
-        // its remaining weeks over the widgets below it. ratatui's
-        // Monthly::render_monthly draws every week and only checks `buf.area.height >
-        // y` (the whole frame), not its own area. In a 3-row layout slot above a text,
-        // rows 3-6 show 'below0 11 12 13 14 15' and the later weeks. When rect.height <
-        // cal.height(), render into a Buffer::empty(Rect::new(0, 0, rect.width,
-        // rect.height)), where ratatui's check is then correct, and copy its cells into
-        // frame.buffer_mut() at rect's offset. Otherwise render directly as now. probe:
-        // design/review-2026-10-19/repro/tui-widgets-calendar-overdraw.gx
-        // (tui-widgets-02)
-        frame.render_widget(cal, rect);
+        if rect.height >= cal.height() {
+            frame.render_widget(cal, rect);
+        } else {
+            // ratatui draws every week, bounded by the buffer and not the
+            // area, so a short one draws into a buffer of its own
+            let mut short = Buffer::empty(Rect::new(0, 0, rect.width, rect.height));
+            cal.render(short.area, &mut short);
+            short.area.x = rect.x;
+            short.area.y = rect.y;
+            frame.buffer_mut().merge(&short);
+        }
         Ok(())
     }
 }

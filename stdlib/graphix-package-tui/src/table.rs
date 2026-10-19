@@ -1,7 +1,7 @@
 use super::{
-    FlexV, HighlightSpacingV, LineV, StyleV, TRef, TuiW, TuiWidget, compile_each,
-    into_borrowed_line,
+    FlexV, HighlightSpacingV, LineV, StyleV, TRef, TuiW, TuiWidget, into_borrowed_line,
     layout::ConstraintV,
+    reconcile,
     validate::{Dim, Index},
 };
 use anyhow::{Context, Result};
@@ -99,7 +99,7 @@ pub(super) struct TableW<X: GXExt> {
     /// every frame.
     row: Option<usize>,
     column: Option<usize>,
-    rows: Vec<TRef<X, RowV>>,
+    rows: Vec<(Value, TRef<X, RowV>)>,
     rows_ref: Ref<X>,
     state: TableState,
 }
@@ -128,17 +128,30 @@ impl<X: GXExt> TableW<X> {
         if let Some(v) = t.rows_ref.last.take() {
             t.set_rows(v).await?;
         }
-        Ok(Box::new(t))
+        Ok(TuiW::new(t))
     }
 
+    // XCR claude for claude: [perf/medium] This recompiles every element each time the
+    // caller's list ref fires, and a ref fires on every production, whether or not the
+    // value changed. `TableW::set_rows` uses it for `&Array<&Row>`: the browser's `rows =
+    // array::map(cells, |row| &tui::table::row(..))` fires whenever any visible cell
+    // changes. Each live update then recompiles every visible row ref: one runtime round
+    // trip, one node created and one deleted per row. Chart datasets, bar-chart groups and
+    // canvas shapes go through here too. `reconcile` below already keeps the elements whose
+    // source value is unchanged. Move these callers to it (they would hold `Vec<(Value,
+    // T)>`) and delete this helper. Found by reading; not run. (tui-core-04)
+    // 2026-10-19 claude: compile_each is deleted. Table rows, canvas shapes, chart
+    // datasets, bar-chart groups and each group's bars hold Vec<(Value, T)> and go through
+    // graphix_rt::reconcile, so an element whose source is unchanged is kept. No pin counts
+    // the round trips a refire costs; the widget tests (render_test, widgets_test,
+    // panic_test) cover the draw paths.
     async fn set_rows(&mut self, v: Value) -> Result<()> {
-        self.rows = compile_each(v, |id| {
+        reconcile(&mut self.rows, v.cast_to()?, |id| {
             let gx = self.gx.clone();
             async move { TRef::new(gx.compile_ref(id.cast_to::<BindId>()?).await?) }
         })
         .await
-        .context("rows")?;
-        Ok(())
+        .context("rows")
     }
 }
 
@@ -166,7 +179,7 @@ impl<X: GXExt> TuiWidget for TableW<X> {
         if self.rows_ref.id == id {
             return Ok(Some(Box::pin(self.set_rows(v.clone()))));
         }
-        for r in self.rows.iter_mut() {
+        for (_, r) in self.rows.iter_mut() {
             r.update(id, v)?;
         }
         Ok(None)
@@ -175,7 +188,7 @@ impl<X: GXExt> TuiWidget for TableW<X> {
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
         let mut table = Table::default()
-            .rows(self.rows.iter().filter_map(|r| r.t.as_ref().map(|r| r.build())));
+            .rows(self.rows.iter().filter_map(|(_, r)| r.t.as_ref().map(|r| r.build())));
         if let Some(Some(s)) = p.cell_highlight_style.t {
             table = table.cell_highlight_style(s.0);
         }

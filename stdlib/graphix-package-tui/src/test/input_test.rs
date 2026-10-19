@@ -2,19 +2,12 @@
 //! bursts, handler swaps and unanswered events, and the form, line editor
 //! and browser built on it.
 
+use super::{ch, key};
 use crate::testing::TuiTestHarness;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use std::time::Duration;
-
-fn key(code: KeyCode) -> Event {
-    Event::Key(KeyEvent::from(code))
-}
-
-fn ch(c: char) -> Event {
-    key(KeyCode::Char(c))
-}
 
 fn strings(v: &[&str]) -> Value {
     Value::Array(ValArray::from_iter(v.iter().map(|s| Value::from(s.to_string()))))
@@ -78,19 +71,9 @@ let result = input_handler(#handle: &handle, &text(&"x"))
     .await?;
     h.watch("test::count").await?;
     h.dispatch_events([ch('m'), ch('a')]).await?;
-    // CR claude for claude: [test-gap/low] [test-gap] `before` accepts any count, so an
-    // 'a' that the swap from fa to fb loses (count 0) passes. That lost event is the
-    // failure this test is named for. The outcome is deterministic (the call and the
-    // delete travel on one channel, and delete_callable still answers pending calls),
-    // so pin the one value: 1 if fa answers 'a', 10 if fb does. Found by reading; not
-    // run. (tests-tui-07)
-    let before = h.get_watched("test::count").cloned();
-    let before = match before {
-        Some(Value::I64(n)) => n,
-        v => anyhow::bail!("count is {v:?}"),
-    };
+    assert_eq!(h.get_watched("test::count"), Some(&Value::I64(10)));
     h.dispatch_event(ch('b')).await?;
-    assert_eq!(h.get_watched("test::count"), Some(&Value::I64(before + 10)));
+    assert_eq!(h.get_watched("test::count"), Some(&Value::I64(20)));
     Ok(())
 }
 
@@ -189,18 +172,20 @@ let f = form(
   #on_cancel: |e| { cancelled <- e ~ true; null },
   fields
 );
-let result = input_handler(#handle: &f.handle, &f.view)
+let continued = 0;
+let handle = |e: Event| select f.handle(e) {
+    r@ `Continue => { continued <- (r ~ continued) + 1; r },
+    r => r
+};
+let result = input_handler(#handle: &handle, &f.view)
 "#,
     )
     .await?;
     h.watch("test::cancelled").await?;
-    // CR claude for claude: [test-gap/low] [test-gap] This test cannot see a stall. An
-    // event its handler leaves unanswered is answered Null by the runtime and dropped
-    // (InputHandlerW::answered), so Esc reaches on_cancel even if 'a' and Tab produced
-    // nothing. Wrap f.handle with a `Continue` counter, as
-    // a_form_without_cancel_continues_escape does, and assert that 'a' and Tab each
-    // answered `Continue`. Found by reading; not run. (tests-tui-04)
-    h.dispatch_events([ch('a'), key(KeyCode::Tab), key(KeyCode::Esc)]).await?;
+    h.watch("test::continued").await?;
+    h.dispatch_events([ch('a'), key(KeyCode::Tab)]).await?;
+    assert_eq!(h.get_watched("test::continued"), Some(&Value::I64(2)));
+    h.dispatch_event(key(KeyCode::Esc)).await?;
     assert_eq!(h.get_watched("test::cancelled"), Some(&Value::Bool(true)));
     Ok(())
 }
@@ -306,26 +291,13 @@ let result = browser(
     )
     .await?;
     h.watch("test::selected_path").await?;
-    // CR claude for claude: [structure/low] [structure] This deadline-poll loop is
-    // written out four times: here, twice more in this file, and in control_test. Add
-    // `TuiTestHarness::wait_for(timeout, pred)` in testing.rs and use it at all four
-    // sites. In the same spirit, the `key`/`ch` builders are defined five times across
-    // the test files (they belong in test/mod.rs), widgets_test's per-test
-    // crossterm/netidx `use`s belong at the top of the file, and examples_test's
-    // REGISTER restates the unused crate::TEST_REGISTER. Found by reading; not run.
-    // (tests-tui-10)
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while h.get_watched("test::selected_path") != Some(&Value::from("/local/browse/r0")) {
-        if tokio::time::Instant::now() > deadline {
-            let at = h.get_watched("test::selected_path").cloned();
-            anyhow::bail!(
-                "selected_path is {at:?}; render:\n{}",
-                h.render_lines()?.join("\n")
-            )
-        }
-        h.next_update(Duration::from_millis(500)).await?;
-    }
-    Ok(())
+    h.wait_for(Duration::from_secs(10), |h| {
+        Ok(h.get_watched("test::selected_path") == Some(&Value::from("/local/browse/r0")))
+    })
+    .await
+    .with_context(|| {
+        format!("selected_path is {:?}", h.get_watched("test::selected_path"))
+    })
 }
 
 /// Navigation never reports a row of the listing it leaves: the selection
@@ -355,26 +327,22 @@ let result = browser(#cursor, #selected_row: &mut sel, #size: {width: 40, height
     )
     .await?;
     h.watch("test::seen").await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(Value::Array(a)) = h.get_watched("test::seen")
-            && a.last() == Some(&Value::Null)
-        {
-            let mut seen: Vec<Value> = a.iter().cloned().collect();
-            seen.dedup();
-            let want = ["/local/nav/a/a0", "/local/nav/a/a2", "/local/nav/b/b0"]
-                .map(Value::from)
-                .into_iter()
-                .chain([Value::Null])
-                .collect::<Vec<_>>();
-            assert_eq!(seen, want);
-            return Ok(());
-        }
-        if tokio::time::Instant::now() > deadline {
-            anyhow::bail!("seen {:?}", h.get_watched("test::seen"))
-        }
-        h.next_update(Duration::from_millis(500)).await?;
-    }
+    h.wait_for(Duration::from_secs(10), |h| {
+        Ok(matches!(h.get_watched("test::seen"),
+            Some(Value::Array(a)) if a.last() == Some(&Value::Null)))
+    })
+    .await
+    .with_context(|| format!("seen {:?}", h.get_watched("test::seen")))?;
+    let Some(Value::Array(a)) = h.get_watched("test::seen") else { unreachable!() };
+    let mut seen: Vec<Value> = a.iter().cloned().collect();
+    seen.dedup();
+    let want = ["/local/nav/a/a0", "/local/nav/a/a2", "/local/nav/b/b0"]
+        .map(Value::from)
+        .into_iter()
+        .chain([Value::Null])
+        .collect::<Vec<_>>();
+    assert_eq!(seen, want);
+    Ok(())
 }
 
 /// A scroll by one row resubscribes only the row that enters: no row that
@@ -412,14 +380,101 @@ let result = b
     )
     .await?;
     h.watch("test::answer").await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while !matches!(h.get_watched("test::answer"), Some(Value::I64(_))) {
-        if tokio::time::Instant::now() > deadline {
-            anyhow::bail!("no result; render:\n{}", h.render_lines()?.join("\n"))
-        }
-        h.next_update(Duration::from_millis(500)).await?;
-    }
+    h.wait_for(Duration::from_secs(10), |h| {
+        Ok(matches!(h.get_watched("test::answer"), Some(Value::I64(_))))
+    })
+    .await?;
     assert_eq!(h.get_watched("test::answer"), Some(&Value::I64(1)));
+    Ok(())
+}
+
+/// The values a browser fixture's `seen` took, run to its end, without
+/// repeats.
+async fn seen_by_the_end(h: &mut TuiTestHarness) -> Result<Vec<Value>> {
+    h.watch("test::done").await?;
+    h.wait_for(Duration::from_secs(10), |h| {
+        Ok(matches!(h.get_watched("test::done"), Some(Value::Array(_))))
+    })
+    .await?;
+    let Some(Value::Array(a)) = h.get_watched("test::done") else { unreachable!() };
+    let mut seen: Vec<Value> = a.iter().cloned().collect();
+    seen.dedup();
+    Ok(seen)
+}
+
+/// A scroll back to where the window was before goes back there, however
+/// the window got away from it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_scrolls_back_down_then_up() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r##"
+use tui::{Tui, browser::{MoveCursor, browser}};
+let pubs = array::init(12, |k| sys::net::publish("/local/back/r[k]", k));
+let path = sys::time::after_idle(duration:200.ms, "/local/back");
+let cur: MoveCursor = never();
+let b: Tui = browser(#rate: duration:10.ms, #size: {width: 40, height: 4}, #cursor: cur, path);
+let first = select b {
+  `Table(t) => {
+    let rows = *t.rows;
+    "[(*(rows[0]$)).cells[0]$.content.spans]"
+  },
+  _ => never()
+};
+let loaded = false;
+loaded <- select (loaded, str::contains(#part: "r0", first)) { (false, true) => true, _ => never() };
+let script: Array<MoveCursor> = [`Up(1), `Down(1), `Down(1), `Down(1), `Up(1), `Up(1), `Up(1), `Up(1)];
+let i = 0;
+let tick = select loaded { true => sys::time::timer(duration:100.ms, 9), false => never() };
+i <- tick ~ i + 1;
+cur <- (tick ~ script[i])$;
+let seen: Array<string> = [];
+seen <- first ~ array::push(seen, first);
+let done = select i { 9 => i ~ seen, _ => never() };
+let result = b
+"##,
+        40,
+        4,
+    )
+    .await?;
+    let seen = seen_by_the_end(&mut h).await?;
+    assert!(seen.len() == 3 && seen[0] == seen[2] && seen[0] != seen[1], "{seen:?}");
+    Ok(())
+}
+
+/// A window that shrinks under the selection takes the selection with it:
+/// the selected row is the last one still shown, and Up moves from there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_selection_stays_in_a_shrunk_window() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r##"
+use tui::{Tui, browser::{MoveCursor, browser}};
+let pubs = array::init(12, |k| sys::net::publish("/local/shrink/r[k]", k));
+let path = sys::time::after_idle(duration:200.ms, "/local/shrink");
+let cur: MoveCursor = never();
+let size = {width: 40, height: 8};
+let sel: [string, null] = never();
+let b: Tui = browser(#size: size, #cursor: cur, #selected_row: &mut sel, path);
+let loaded = false;
+loaded <- select (loaded, sel) { (false, "/local/shrink/r0") => true, _ => never() };
+let i = 0;
+let tick = select loaded { true => sys::time::timer(duration:100.ms, 10), false => never() };
+i <- tick ~ i + 1;
+cur <- select i { x if x < 6 => i ~ `Down(1), 8 => i ~ `Up(1), _ => never() };
+size <- select i { 7 => i ~ {width: 40, height: 4}, _ => never() };
+let seen: Array<[string, null]> = [];
+seen <- sel ~ array::push(seen, sel);
+let done = select i { 10 => i ~ seen, _ => never() };
+let result = b
+"##,
+        40,
+        8,
+    )
+    .await?;
+    let seen = seen_by_the_end(&mut h).await?;
+    let want: Vec<Value> = [0, 1, 10, 11, 2, 3, 4, 10, 1]
+        .map(|k| Value::from(format!("/local/shrink/r{k}")))
+        .into();
+    assert_eq!(seen, want);
     Ok(())
 }
 
@@ -441,6 +496,24 @@ let result = input_handler(#handle: &handle, &f.view)
     h.watch("test::continued").await?;
     h.dispatch_events([key(KeyCode::Esc), key(KeyCode::Esc)]).await?;
     assert_eq!(h.get_watched("test::continued"), Some(&Value::I64(2)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_form_takes_a_paste_into_the_focused_field() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::{form::form, input_handler::input_handler};
+let out: Array<string> = [];
+let f = form(#title: "t", #on_submit: |v| { out <- v; null }, [{label: "url", value: ""}]);
+let result = input_handler(#handle: &f.handle, &f.view)
+"#,
+    )
+    .await?;
+    h.watch("test::out").await?;
+    h.dispatch_events([Event::Paste("https://example.com".into()), key(KeyCode::Enter)])
+        .await?;
+    assert_eq!(h.get_watched("test::out"), Some(&strings(&["https://example.com"])));
     Ok(())
 }
 

@@ -42,8 +42,10 @@ use tokio::{
 };
 
 mod gx;
+mod reconcile;
 mod rt;
 use gx::GX;
+pub use reconcile::{keep_equal, reconcile};
 pub use rt::GXRt;
 
 /// Trait to extend the event loop
@@ -379,7 +381,7 @@ impl<X: GXExt> Callable<X> {
     /// cycle, or, when that cycle queued writes (a handler's `<-`), at the
     /// end of the next, so their updates come first. A later output of
     /// the call site answers nothing.
-    pub async fn call_answered(&self, args: ValArray) -> Result<()> {
+    pub fn call_answered(&self, args: ValArray) -> Result<()> {
         check_args(&self.typ, &self.env, &args)?;
         self.send(args, true)
     }
@@ -394,7 +396,7 @@ impl<X: GXExt> Callable<X> {
 
     /// Call the lambda with args, unchecked here: the runtime refuses,
     /// and logs, a call whose arguments do not fit.
-    pub async fn call_unchecked(&self, args: ValArray) -> Result<()> {
+    pub fn call_unchecked(&self, args: ValArray) -> Result<()> {
         self.send(args, false)
     }
 
