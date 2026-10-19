@@ -101,6 +101,12 @@ async fn lowering_refusals() -> Result<()> {
         "a try statement takes no attribute",
     )
     .await;
+    // a `{ .. }` statement lowers to machinery an attribute would judge
+    refused(
+        "{ let t = 1; seq t { let x = #[native] { let y = sys::time::now(t); y }; x } }",
+        "a `{ .. }` statement takes no attribute",
+    )
+    .await;
     // `#[native]` on a statement moves onto the step's value
     refused(
         "{ let t = sys::time::timer(duration:1.ms, false); seq { #[native] let y = t ~ 5; y } }",

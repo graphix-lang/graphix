@@ -994,6 +994,12 @@ impl Machine<'_> {
     /// the block, connects clocked to the entry, and the value the last
     /// statement's once every statement has produced.
     fn lower_block(&self, spec: &Expr, exprs: &[Expr], visible: &Names) -> Result<Expr> {
+        if spec.dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
+            return Err(anyhow!(
+                "a `{{ .. }}` statement takes no attribute: annotate a statement in it"
+            )
+            .at(spec));
+        }
         let pos = spec.pos;
         let mut vis = scope(visible);
         let mut body: LPooled<Vec<Expr>> = LPooled::take();
@@ -1087,12 +1093,6 @@ impl Machine<'_> {
             }
         };
         body.push(value);
-        // CR claude for claude: [bug/medium] The lowered block drops the block's
-        // decorations. `let x = #[native] { .. }` or `#[sync] { .. }` in a seq is
-        // accepted unchecked, while the same code outside a seq is refused. Refuse a
-        // block that carries attributes, as lower_try does, or put spec.dec on the
-        // lowered block so the compiler judges it. probe:
-        // design/review-2026-10-19/repro/t-seq-block-attr-dropped.gx (t-seq-03)
         Ok(block(pos, body.drain(..)))
     }
 }
