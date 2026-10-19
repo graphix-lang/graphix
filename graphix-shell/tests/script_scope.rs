@@ -3,48 +3,31 @@
 //! package of its own, and a module named like a package is a duplicate
 //! in both.
 
-use std::{
-    fs,
-    process::{Command, Stdio},
-};
+mod common;
+use common::graphix;
+use std::fs;
 
 const EXIT: &str = "sys::exit(sys::time::after_idle(duration:100.ms, 0));\n";
 
 /// `--check`'s and the run's outcome for `main` (with `files` beside
 /// it): `Ok(stdout)` or `Err(stderr)` for each.
-fn verdicts(
-    case: &str,
-    main: &str,
-    files: &[(&str, &str)],
-) -> [Result<String, String>; 2] {
-    let dir = std::env::temp_dir()
-        .join(format!("gx-script-scope-{case}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("tempdir");
+fn verdicts(main: &str, files: &[(&str, &str)]) -> [Result<String, String>; 2] {
+    let dir = tempfile::tempdir().expect("tempdir");
     for (name, text) in files {
-        fs::write(dir.join(name), text).expect("write module");
+        fs::write(dir.path().join(name), text).expect("write module");
     }
-    let path = dir.join("main.gx");
-    fs::write(&path, main).expect("write program");
-    let go = |check: bool| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
-        cmd.args(["--no-netidx", "--no-cache"]);
-        if check {
-            cmd.arg("--check");
-        }
-        let out = cmd.arg(&path).stdin(Stdio::null()).output().expect("run graphix");
-        match out.status.success() {
-            true => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
-            false => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
+    let go = |args: &[&str]| {
+        let ran = graphix(dir.path(), main, args, &[]);
+        match ran.status.success() {
+            true => Ok(ran.stdout),
+            false => Err(ran.stderr),
         }
     };
-    let r = [go(true), go(false)];
-    let _ = fs::remove_dir_all(&dir);
-    r
+    [go(&["--no-cache", "--check"]), go(&["--no-cache"])]
 }
 
 fn accepted(case: &str, main: &str, files: &[(&str, &str)], prints: &str) {
-    let [check, run] = verdicts(case, main, files);
+    let [check, run] = verdicts(main, files);
     check.unwrap_or_else(|e| panic!("{case}: --check refused: {e}"));
     let out = run.unwrap_or_else(|e| panic!("{case}: the run refused: {e}"));
     assert!(out.contains(prints), "{case}: printed {out}");
@@ -97,7 +80,6 @@ fn a_block_is_in_the_scripts_package() {
 #[test]
 fn a_module_named_like_a_package_is_a_duplicate() {
     let [check, run] = verdicts(
-        "dup-str",
         &format!("mod str;\n{EXIT}println(\"[str::x]\")\n"),
         &[("str.gx", "let x = 41\n")],
     );
@@ -109,7 +91,7 @@ fn a_module_named_like_a_package_is_a_duplicate() {
 
 #[test]
 fn a_root_duplicate_names_the_top_level() {
-    let [check, _] = verdicts("dup-root", "type T = i64;\ntype T = string;\n0\n", &[]);
+    let [check, _] = verdicts("type T = i64;\ntype T = string;\n0\n", &[]);
     let e = check.expect_err("--check accepted a duplicate type");
     assert!(e.contains("T is already defined at the top level"), "{e}");
 }

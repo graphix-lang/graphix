@@ -3,7 +3,8 @@
 //! run alike either way, so a divergence the knob shows means something.
 //! The knob is process-wide, so each program runs in a child.
 
-use std::{env, fs, process::Command};
+mod common;
+use common::graphix;
 
 /// Generic programs and the value each prints.
 const PROGRAMS: [(&str, &str); 5] = [
@@ -27,24 +28,21 @@ const PROGRAMS: [(&str, &str); 5] = [
     ),
 ];
 
-fn run(program: &str, no_subst: bool, i: usize) -> String {
-    let path = env::temp_dir().join(format!("no_subst_{}_{i}.gx", std::process::id()));
+fn run(program: &str, no_subst: bool) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
     let exit = "sys::exit(sys::time::after_idle(duration:100.ms, 0));\n";
-    fs::write(&path, format!("{exit}{program}")).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
-    cmd.arg("--no-cache").arg(&path);
-    if no_subst {
-        cmd.env("GRAPHIX_NO_SUBST", "1");
-    }
-    let out = cmd.output().unwrap();
-    let _ = fs::remove_file(&path);
-    String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or("").to_string()
+    let env: &[(&str, &str)] = match no_subst {
+        true => &[("GRAPHIX_NO_SUBST", "1")],
+        false => &[],
+    };
+    let ran = graphix(dir.path(), &format!("{exit}{program}"), &["--no-cache"], env);
+    ran.stdout.lines().last().unwrap_or("").to_string()
 }
 
 #[test]
 fn generic_programs_run_alike_without_substitution() {
-    for (i, (program, expected)) in PROGRAMS.iter().enumerate() {
-        assert_eq!(run(program, false, i), *expected, "{program}");
-        assert_eq!(run(program, true, i), *expected, "under GRAPHIX_NO_SUBST: {program}");
+    for (program, expected) in PROGRAMS.iter() {
+        assert_eq!(run(program, false), *expected, "{program}");
+        assert_eq!(run(program, true), *expected, "under GRAPHIX_NO_SUBST: {program}");
     }
 }

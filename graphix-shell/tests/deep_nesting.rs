@@ -155,6 +155,53 @@ fn program(shape: &str, d: usize) -> String {
             format!("let x = {s}")
         }
         "qop" => format!("let x = {}1{}", "cast<i64>(".repeat(d), ")$".repeat(d)),
+        "list" => format!("let x = {}1{}", "[<".repeat(d), ">]".repeat(d)),
+        "listpat" => {
+            let v = format!("{}1{}", "[<".repeat(d), ">]".repeat(d));
+            let pat = format!("{}x{}", "[<".repeat(d), ">]".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => 1, _ => 0 }}")
+        }
+        "variantpat" => {
+            let v = format!("{}1{}", "`A(".repeat(d), ")".repeat(d));
+            let pat = format!("{}x{}", "`A(".repeat(d), ")".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => x }}")
+        }
+        "structpat" => {
+            let v = format!("{}1{}", "{a: ".repeat(d), "}".repeat(d));
+            let pat = format!("{}x{}", "{a: ".repeat(d), "}".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => x }}")
+        }
+        // CR claude for eric: [bug/low] The bool form of this shape, `select (true,
+        // (true, .. 1)) { (true | false, (true | false, .. x)) => x }`, is refused as
+        // non-exhaustive ('missing match cases: no arm covers (bool, (bool, ..') from
+        // eleven levels on, though its one arm matches every value: LiteralPool
+        // enumerates a group's combinations of heads and gives up past
+        // MAX_POOL_COMBINATIONS (1024, graphix-compiler/src/node/select.rs), so eleven
+        // bool positions never complete. Ten levels check. The same holds for any arm set
+        // over eleven or more independent bool or variant-head positions. Decide whether
+        // coverage over many positions must be complete (a per-position decision where
+        // positions are independent, as a lone or-arm's are) or the cap is the rule, then
+        // document it. Found by the deep_nesting orpat case at depth 331; this shape now
+        // uses integer literals, which never pool. (pool-cap-01)
+        "orpat" => {
+            let v = format!("{}1{}", "(1, ".repeat(d), ")".repeat(d));
+            let pat = format!("{}x{}", "(1 | 2, ".repeat(d), ")".repeat(d));
+            format!("let v = {v};\nlet x = select v {{ {pat} => x, _ => 0 }}")
+        }
+        "refmut" => {
+            format!("let v = 1;\nlet r = {}v{}", "&mut (".repeat(d), ")".repeat(d))
+        }
+        "catch" => format!("let x = {}1{}", "{ catch(e) e; ".repeat(d), " }".repeat(d)),
+        "trywith" => format!(
+            "seq {{ {}1; 1{} }}",
+            "try { 1; ".repeat(d),
+            " } with(e) { 0 }".repeat(d)
+        ),
+        "structwith" => format!(
+            "let s = {{a: 1}};\nlet x = {}s{}",
+            "{(".repeat(d),
+            ") with a: 1}".repeat(d)
+        ),
         // Runs inside parens: each fold is under the limit, the AST they
         // build together is `d` deep.
         "parenchain" => format!("let x = {}", paren_chain(d)),
@@ -235,14 +282,6 @@ const CHAIN_DEPTH: usize = 10000;
 /// bounds none of it: module resolution recurses once per file.
 const MODCHAIN_DEPTH: usize = 1000;
 
-// CR claude for claude: [test-gap/low] These shapes miss the recursive constructs added
-// since this list was last grown: List literals and patterns, variant, struct and
-// or-patterns, &mut chains, nested catch, try/with and {s with ..}. CLAUDE.md asks for
-// a case per construct. Each has its own parser knot and walks. Add them here
-// (accepted() finds their depths: 331 for the pattern and list shapes, 248 for &mut).
-// By hand they pass check, run, --no-fusion, fmt and the LSP queries at a 256K stack,
-// so this is a missing pin, not a bug. Found by reading; shapes probed with the debug
-// binary. (tests-shell-compiler-04)
 const SHAPES: &[&str] = &[
     "parens",
     "array",
@@ -275,6 +314,15 @@ const SHAPES: &[&str] = &[
     "seqarm",
     "seqblock",
     "seqabort",
+    "list",
+    "listpat",
+    "variantpat",
+    "structpat",
+    "orpat",
+    "refmut",
+    "catch",
+    "trywith",
+    "structwith",
 ];
 
 /// What a child may map: a runaway case dies alone, by a signal.
