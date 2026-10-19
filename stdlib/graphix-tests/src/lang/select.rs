@@ -4053,3 +4053,30 @@ run!(native_guard_prologue_follows_the_chain, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"["zero", "small", "small", "pure", "pure", "other", "other", "impure", "impure"]"#)
 }; FuseExpect::Jit);
+
+// An exhaustive struct pattern matches only a struct of exactly its
+// fields: `{x, y}` names every field of the first member alone, so the
+// second member reaches past it.
+run!(struct_pattern_width_uncovered, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let f = |w: U| select w { U as {x, y} => "[y]!" };
+  f({x: 1, y: "s"})
+}"#, refused("missing match cases"); FuseExpect::None);
+
+run!(struct_pattern_width_exact, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let f = |w: U| select w { U as {x, y} => "[y]!", _ => "other" };
+  array::map([{x: 1, y: "s"}, {x: 1, y: 42, z: "z"}], f)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["s!", "other"]"#)
+}; FuseExpect::Jit);
+
+// Each alternative takes the member of its own width, so the second
+// alternative binds `y` to the string field `z`.
+run!(struct_pattern_width_or, r#"{
+  type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+  let vs: Array<U> = [{x: 1, y: "s"}, {x: 1, y: 42, z: "zz"}];
+  array::map(vs, |v| select v { {x, y} | {x, y: _, z: y} => "[y]!" })
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"["s!", "zz!"]"#)
+}; FuseExpect::Jit);

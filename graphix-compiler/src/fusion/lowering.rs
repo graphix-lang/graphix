@@ -26,7 +26,10 @@ use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    collections::hash_map::Entry,
+};
 use triomphe::Arc;
 
 pub use kernel_abi::PrimType;
@@ -115,6 +118,34 @@ pub struct BuiltinCallSiteInfo {
 #[derive(Debug, Default, Clone)]
 pub struct BuiltinCallDiscovery {
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
+}
+
+impl BuiltinCallDiscovery {
+    /// Two instances of one callback in a region share their sites'
+    /// ids, and emission finds a site by id, so a site that two
+    /// instances type apart refuses the region.
+    fn insert(
+        &mut self,
+        spec: &Expr,
+        info: BuiltinCallSiteInfo,
+    ) -> Result<(), FusionBlocker> {
+        match self.apply_sites.entry(spec.id) {
+            Entry::Vacant(e) => {
+                e.insert(info);
+                Ok(())
+            }
+            Entry::Occupied(e)
+                if e.get().arg_types == info.arg_types
+                    && e.get().return_type == info.return_type =>
+            {
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(FusionBlocker {
+                spec: spec.clone(),
+                reason: "two instances in one region type this call apart".into(),
+            }),
+        }
+    }
 }
 
 /// Discover the fusable call sites in a subtree: every `CallSite` on a
@@ -410,8 +441,8 @@ fn try_register_cast<R: Rt, E: UserEvent>(
     }
     let arg_frozen = frozen_or_blocked(source, &tc.spec, "the cast source's")?;
     let ret_frozen = frozen_or_blocked(&tc.typ, &tc.spec, "the cast result's")?;
-    out.apply_sites.insert(
-        tc.spec.id,
+    out.insert(
+        &tc.spec,
         BuiltinCallSiteInfo {
             marshal_args: vec![MarshalArg::Call(0)],
             arg_types: vec![arg_frozen],
@@ -421,8 +452,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
                 source: source.clone(),
             },
         },
-    );
-    Ok(())
+    )
 }
 
 /// Register one CallSite as a fastcall site, if it qualifies. Types
@@ -466,7 +496,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(ft) => ft.resolve_tvars(),
         None => (*info.typ).clone(),
     };
-    let apply_id = apply_expr.id;
     let mut call_positional: SmallVec<[usize; 8]> = SmallVec::new();
     let mut call_labeled: LPooled<ahash::AHashMap<&str, usize>> = LPooled::take();
     for (call_idx, (label, _)) in a.args.iter().enumerate() {
@@ -587,11 +616,11 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             SiteDispatch::Typed { name, f, typ: Arc::new(fn_type.clone()) }
         }
     };
-    out.apply_sites.insert(
-        apply_id,
+    out.insert(
+        apply_expr,
         BuiltinCallSiteInfo { marshal_args, arg_types, return_type, dispatch },
-    );
-    None
+    )
+    .err()
 }
 
 /// The bare identifier of a single-level path; a kernel reads a `Ref`

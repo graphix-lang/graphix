@@ -2457,3 +2457,30 @@ run!(struct_pattern_over_placeholder, r#"{
     };
     null
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Null)); FuseExpect::Jit);
+
+// Two instances of one generic callback in a region share their call
+// sites' ids; each must call its own instance's kernel (u64::MAX < 0 is
+// false, and an f64 instance never calls an i64 kernel).
+run!(callback_instances_call_their_own_kernels, r#"{
+  let h = |a, b| a < b;
+  let g = |x| h(x, x - x);
+  let n = 0;
+  n <- select n { k if k < 2 => k + 1, _ => never() };
+  let xs: Array<i64> = [0 - 1, n];
+  let ys: Array<u64> = [u64:18446744073709551615, cast<u64>(n)$];
+  (array::map(xs, g), array::map(ys, g))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[true, false], [false, false]]")
+}; FuseExpect::Jit);
+
+run!(callback_instances_at_float_and_int, r#"{
+  let h = |x| x + x;
+  let g = |x| h(x) * x;
+  let n = 0;
+  n <- select n { k if k < 2 => k + 1, _ => never() };
+  let xs: Array<i64> = [1, 2, n];
+  let ys: Array<f64> = [1.5, 2.5, cast<f64>(n)$];
+  (array::map(xs, g), array::map(ys, g))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[i64:2, i64:8, i64:0], [f64:4.5, f64:12.5, f64:0.]]")
+}; FuseExpect::Jit);

@@ -29,6 +29,50 @@ pub enum SliceKind {
     List,
 }
 
+/// How many fields a struct a struct pattern matches has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructWidth {
+    /// The field count of the struct type the pattern was compiled or
+    /// realigned against.
+    Exact(usize),
+    /// A partial pattern over a predicate inferred from the fields it
+    /// names, which nothing completed.
+    AtLeast(usize),
+}
+
+impl StructWidth {
+    pub fn admits(self, len: usize) -> bool {
+        match self {
+            Self::Exact(n) => len == n,
+            Self::AtLeast(n) => len >= n,
+        }
+    }
+
+    fn parts(self) -> (bool, usize) {
+        match self {
+            Self::Exact(n) => (false, n),
+            Self::AtLeast(n) => (true, n),
+        }
+    }
+}
+
+impl Pack for StructWidth {
+    fn encoded_len(&self) -> usize {
+        self.parts().encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl bytes::BufMut) -> Result<(), PackError> {
+        self.parts().encode(buf)
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> Result<Self, PackError> {
+        Ok(match <(bool, usize)>::decode(buf)? {
+            (false, n) => Self::Exact(n),
+            (true, n) => Self::AtLeast(n),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum StructPatternNode {
     Ignore,
@@ -54,6 +98,7 @@ pub enum StructPatternNode {
     },
     Struct {
         all: Option<BindId>,
+        width: StructWidth,
         binds: Box<[(ArcStr, usize, StructPatternNode)]>,
     },
     Variant {
@@ -505,7 +550,10 @@ impl StructPatternNode {
             let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
             let sub = self.children_inferred(inferred);
             match self {
-                Self::Struct { binds, all: _ } => {
+                Self::Struct { binds, width, all: _ } => {
+                    if let Some(fields) = struct_fields(env, typ) {
+                        *width = StructWidth::Exact(fields.len())
+                    }
                     for ((name, index, p), t) in binds.iter_mut().zip(ts) {
                         let Some((t, i)) = t else {
                             bail!("no such struct field {name} in {typ}")
@@ -946,6 +994,11 @@ impl StructPatternNode {
                 if *exhaustive && fields.len() < elts.len() {
                     bail!("missing bindings for struct fields")
                 }
+                let width = if !*exhaustive && cx.inferred {
+                    StructWidth::AtLeast(elts.len())
+                } else {
+                    StructWidth::Exact(elts.len())
+                };
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
                 let binds = fields
                     .into_iter()
@@ -955,7 +1008,7 @@ impl StructPatternNode {
                         Ok((name.clone(), i, p))
                     })
                     .collect::<Result<Box<[(ArcStr, usize, Self)]>>>()?;
-                Self::Struct { all, binds }
+                Self::Struct { all, width, binds }
             }
         };
         Ok(t)
@@ -1049,7 +1102,7 @@ impl StructPatternNode {
                     n.ids(f)
                 }
             }
-            Self::Struct { all, binds } => {
+            Self::Struct { all, width: _, binds } => {
                 if let Some(id) = all {
                     f(*id)
                 }
@@ -1171,8 +1224,8 @@ impl StructPatternNode {
                 }
                 _ => (),
             },
-            Self::Struct { all, binds } => match rep::struct_fields(v) {
-                Some(a) if a.len() >= binds.len() => {
+            Self::Struct { all, width, binds } => match rep::struct_fields(v) {
+                Some(a) if width.admits(a.len()) => {
                     if let Some(id) = all {
                         f(*id, v.clone())
                     }
@@ -1249,7 +1302,7 @@ impl StructPatternNode {
             },
             // a field is the pair at its index naming it: a struct of
             // another shape that has the index fails
-            // CR claude for claude: [bug/critical] The struct test ignores whether the
+            // XCR claude for claude: [bug/critical] The struct test ignores whether the
             // pattern is exhaustive. `{x, y}` matches here, and covers in covers_inner,
             // a struct with more fields: `a.len() >= binds.len()`. Under a written
             // union `[{x: i64, y: string}, {x: i64, y: i64, z: string}] as {x, y}`, the
@@ -1265,9 +1318,17 @@ impl StructPatternNode {
             // design/review-2026-10-19/repro/c-pattern-struct-exhaustive-ignored.gx,
             // design/review-2026-10-19/repro/c-pattern-or-struct-field-count.gx
             // (c-pattern-01)
-            Self::Struct { all: _, binds } => match rep::struct_fields(v) {
+            // 2026-10-19 claude: StructPatternNode::Struct carries a StructWidth:
+            // Exact(field count of the struct type it was compiled or realigned
+            // against), or AtLeast for a partial pattern over a predicate inferred from
+            // its own fields that nothing completed (the x-typecheck-patterns-05 case,
+            // left as it was for Eric). is_match, bind, covers, the coverage pool
+            // (select.rs) and the JIT's composite cond (IntCC::Equal for Exact) all
+            // test it. REGISTRATION_FORMAT 69 -> 70. Pins:
+            // lang::select::struct_pattern_width_{uncovered,exact,or}.
+            Self::Struct { all: _, width, binds } => match rep::struct_fields(v) {
                 Some(a) => {
-                    a.len() >= binds.len()
+                    width.admits(a.len())
                         && binds.iter().all(|(name, i, p)| match rep::field_at(a, *i) {
                             Some((field, v)) if field == name => p.is_match(v),
                             _ => false,
@@ -1324,7 +1385,9 @@ impl StructPatternNode {
             (Self::Variant { tag, binds, .. }, Some(Type::Variant(t, ts, _))) => {
                 t == tag && ts.len() == binds.len()
             }
-            (Self::Struct { .. }, Some(Type::Struct(_))) => true,
+            (Self::Struct { width, .. }, Some(Type::Struct(fs))) => {
+                width.admits(fs.len())
+            }
             (Self::Abstract { id, .. }, Some(Type::Abstract { id: t, .. })) => id == t,
             _ => false,
         };
@@ -1420,7 +1483,7 @@ impl StructPatternNode {
             Self::Slice { kind: SliceKind::Tuple, all: _, binds } => {
                 binds.iter().all(|p| p.matches_anything())
             }
-            Self::Struct { all: _, binds } => {
+            Self::Struct { all: _, width: _, binds } => {
                 binds.iter().all(|(_, _, p)| p.matches_anything())
             }
             Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
@@ -1872,8 +1935,9 @@ impl StructPatternNode {
             Self::SliceSuffix { all, head, suffix } => {
                 all.encoded_len() + head.encoded_len() + boxed_len(suffix)
             }
-            Self::Struct { all, binds } => {
+            Self::Struct { all, width, binds } => {
                 all.encoded_len()
+                    + width.encoded_len()
                     + varint_len(binds.len() as u64)
                     + binds
                         .iter()
@@ -1925,9 +1989,10 @@ impl StructPatternNode {
                 head.encode(buf)?;
                 boxed_encode(suffix, buf)?
             }
-            Self::Struct { all, binds } => {
+            Self::Struct { all, width, binds } => {
                 buf.put_u8(6);
                 all.encode(buf)?;
+                width.encode(buf)?;
                 encode_varint(binds.len() as u64, buf);
                 for (n, i, p) in binds.iter() {
                     n.encode(buf)?;
@@ -1982,13 +2047,14 @@ impl StructPatternNode {
             },
             6 => {
                 let all = Pack::decode(buf)?;
+                let width = Pack::decode(buf)?;
                 let n = crate::image::count_decode(buf)?;
                 let binds = (0..n)
                     .map(|_| {
                         Ok((Pack::decode(buf)?, Pack::decode(buf)?, Pack::decode(buf)?))
                     })
                     .collect::<Result<_, PackError>>()?;
-                Self::Struct { all, binds }
+                Self::Struct { all, width, binds }
             }
             7 => Self::Variant {
                 tag: Pack::decode(buf)?,

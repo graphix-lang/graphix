@@ -10,7 +10,7 @@ use crate::{
     },
     node::{
         op::CmpOp,
-        pattern::{PatternNode, SliceKind, StructPatternNode, set_members},
+        pattern::{PatternNode, SliceKind, StructPatternNode, StructWidth, set_members},
         select::Select,
     },
     stack,
@@ -413,7 +413,7 @@ fn classify_scrutinee<R: Rt, E: UserEvent>(
 /// Structure condition + scalar leaf binds for a tuple/struct/slice
 /// pattern over a composite scrutinee, mirroring
 /// `StructPatternNode::is_match` / `bind`: Slice tests `len == N`,
-/// SlicePrefix/SliceSuffix/Struct `len >= N`; suffix leaves index from
+/// SlicePrefix/SliceSuffix `len >= N`, Struct its width; suffix leaves index from
 /// the end, struct leaves read `a[i][1]`.
 ///
 /// Element reads are total, so the condition is the AND of the length
@@ -564,7 +564,7 @@ fn emit_composite_pattern_cond_inner(
                 .collect();
             (leaves, IntCC::SignedGreaterThanOrEqual, n)
         }
-        StructPatternNode::Struct { all, binds: sbinds } => {
+        StructPatternNode::Struct { all, width, binds: sbinds } => {
             if let Some(id) = all {
                 binds.push(SelectArmBind::Subslice {
                     id: *id,
@@ -594,7 +594,15 @@ fn emit_composite_pattern_cond_inner(
                     Ok(LeafSpec { idx: ElemIdx::StructField(*i), sub, typ })
                 })
                 .collect::<Result<SmallVec<[_; 8]>>>()?;
-            (leaves, IntCC::SignedGreaterThanOrEqual, sbinds.len())
+            // a struct's fields start at its base in its array
+            match width {
+                StructWidth::Exact(n) => {
+                    (leaves, IntCC::Equal, crate::rep::STRUCT_BASE + n)
+                }
+                StructWidth::AtLeast(n) => {
+                    (leaves, IntCC::SignedGreaterThanOrEqual, crate::rep::STRUCT_BASE + n)
+                }
+            }
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
     };

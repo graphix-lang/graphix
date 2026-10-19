@@ -1021,7 +1021,10 @@ fn pooled_leaves(
                 StructPatternNode::Abstract { id, bind, rep, .. },
                 Type::Abstract { id: t, .. },
             ) if id == t => at(0, bind, rep),
-            (StructPatternNode::Struct { all: _, binds }, Type::Struct(fs)) => {
+            (StructPatternNode::Struct { all: _, width, binds }, Type::Struct(fs)) => {
+                if !width.admits(fs.len()) {
+                    return Ok(false);
+                }
                 for (i, (name, t, _)) in fs.iter().enumerate() {
                     let p = binds.iter().find(|(n, _, _)| n == name);
                     let p = p.map_or(&StructPatternNode::Ignore, |(_, _, p)| p);
@@ -1059,7 +1062,7 @@ impl Shape {
             StructPatternNode::Variant { tag, all: _, binds } => {
                 Some(Shape::Variant(tag.clone(), binds.len()))
             }
-            StructPatternNode::Struct { all: _, binds } => {
+            StructPatternNode::Struct { all: _, width: _, binds } => {
                 let mut names: SmallVec<[ArcStr; 8]> =
                     binds.iter().map(|(n, _, _)| n.clone()).collect();
                 names.sort();
