@@ -1,0 +1,19 @@
+// Title: hbs::render aborts the process on a deeply nested template: the
+// partial-depth cap (MAX_PARTIAL_DEPTH) counts partials only, not blocks.
+// Command: timeout -s KILL 120 graphix --no-cache x-panics-hbs-nesting-stack-overflow.gx
+// Expected: an `HbsErr` value (nesting too deep) for both renders.
+// Observed: "thread 'tokio-rt-worker' has overflowed its stack / fatal runtime
+//   error: stack overflow, aborting" (the whole process dies).
+// With k = 4 the partial cap answers HbsErr("partials nest more than 128 deep");
+// k = 12 (12 nested blocks per partial) overflows first. A single template of
+// 5000 nested {{#if a}} blocks and no partials also abort, with a = false so
+// that render enters only the outermost block: the overflow is in building the
+// registry (Template clone, bound_partials, drop), not only in render.
+let k = 12;
+let open = str::join(#sep: "", array::init(k, |i| "{{#if a}}"));
+let close = str::join(#sep: "", array::init(k, |i| "{{/if}}"));
+let p = str::concat(open, "{{> q}}", close);
+let q = str::concat(open, "{{> p}}", close);
+let r = hbs::render(#partials: {p: p, q: q}, "{{> p}}", {a: true});
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+select r { error as e => "[e]", s => "len [str::len(s)]" }

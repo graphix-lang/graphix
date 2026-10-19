@@ -63,6 +63,17 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("text_editor")?;
+        // CR claude for eric: [risk/medium] An answer counts as a rejection whenever
+        // the echo has not arrived yet, but the runtime holds an answer for only one
+        // cycle (gx.rs held_answers drains unconditionally). So a handler whose write
+        // takes two hops (`|s| edit <- s` with `doc <- edit`, the
+        // writers-write-an-event pattern) or goes through a seq gets its edit rewound
+        // here: before_view rebuilds the editor from the old content until the echo
+        // lands. A key typed in that window applies to the old text, and the later
+        // echoes drop the earlier keystroke. text_input and the toggles flicker back
+        // the same way. Decide whether rejection means "not echoed once the runtime is
+        // idle" or document a one-hop rule, and pin a two-hop handler. Found by
+        // reading; not run. (gui-widgets-b-03)
         let mut sync = self.echoes.answered(id);
         if id == self.p.content.r.id
             && let Some(text) = &self.p.content.t

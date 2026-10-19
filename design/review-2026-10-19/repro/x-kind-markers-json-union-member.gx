@@ -1,0 +1,19 @@
+// Title: the json/toml/hbs writers read a value's shape (graphix_package_core::shape)
+// from stripped data, so (a) a union member is picked by data form: a struct
+// beside an array member is written as an array of pairs and reads back as the
+// array member, a tuple of pairs under a nullable is written as an object; and
+// (b) the List arm never matches (a list is a flat array in data), so a list's
+// elements are written untyped: List<Array<(string, i64)>> writes its arrays of
+// pairs as objects.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/x-kind-markers-json-union-member.gx
+// Expected: ["{\"a\":1}", "{\"a\":1}", "[[\"a\",1],[\"b\",2]]", "[[[\"a\",1]]]"] then {a: 1}
+// Observed: ["[[\"a\",1]]", "{\"a\":1}", "{\"a\":1,\"b\":2}", "[{\"a\":1}]"] then [("a", 1)]
+// (toml::write_str({v: f}) likewise writes v = [["a", 1]].)
+let f: [{a: i64}, Array<(string, i64)>] = {a: 1};
+let b: [{a: i64}, null] = {a: 1};
+let c: [((string, i64), (string, i64)), null] = (("a", 1), ("b", 2));
+let l: List<Array<(string, i64)>> = [<[("a", 1)]>];
+let f2: [{a: i64}, Array<(string, i64)>] = json::read(json::write_str(f)$)$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println([json::write_str(f)$, json::write_str(b)$, json::write_str(c)$, json::write_str(l)$]);
+f2

@@ -1474,6 +1474,10 @@ fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
 /// trees the compiler builds without them (error messages, --expand,
 /// hover); a declaration or a lambda as an operand is written only in
 /// parens, so those stay.
+// CR claude for claude: [readability/low] The doc above starts with add_parens'
+// sentence ("Add the ExplicitParens a generated tree needs.."), so strip_parens reads
+// as if it adds parens, and add_parens has no doc. Move those two lines down to fn
+// add_parens. Found by reading; not run. (tests-expr-05)
 fn strip_parens(e: &Expr) -> Expr {
     use ExprKind::*;
     match &e.kind {
@@ -1652,6 +1656,14 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
     })
 }
 
+// CR claude for claude: [test-gap/medium] This merges a spliced string constant into
+// the neighbouring text, and str_forms skips spliced constants too. So the round trips
+// cannot see the printer turning a splice into text (StrPart::of_all: `"a["b"]["q"]"`
+// formats to `"a["b"]q"`, and a raw splice loses its `r`). Compare interpolation args
+// one by one with check(), drop the (StringInterpolate, Constant) arm, have str_forms
+// keep a spliced constant's form, and add `"a["b"]"` vs `"ab"` to
+// check_sees_a_lost_element. Found by reading; the printer bug it hides is probed in
+// design/review-2026-10-19/repro/tests-expr-splice-as-text.sh. (tests-expr-03)
 fn acc_strings<'a>(args: impl IntoIterator<Item = &'a Expr> + 'a) -> Arc<[Expr]> {
     let mut v: LPooled<Vec<Expr>> = LPooled::take();
     for s in args {
@@ -2255,6 +2267,14 @@ proptest! {
         prop_assert!(check(&s, &e), "{st}\n{s:?}\n{e:?}")
     }
 
+    // CR claude for claude: [test-gap/medium] This property has no #[test], so it never
+    // runs. The `#[test]` meant for it sits above the doc comment of
+    // printer_parenthesizes_unparenthesized_trees, which now carries two and is
+    // registered twice in the test list. Since then, pretty-layout changes (types laid
+    // out over lines) have landed with no round trip. Move that stray `#[test]` down to
+    // this fn and run the property. probe:
+    // design/review-2026-10-19/repro/tests-expr-pp-round-trip-not-a-test.sh
+    // (tests-expr-01)
     fn expr_pp_round_trip(s in expr(), width in 0usize..120) {
         // every layout: all broken, the usual width, and anywhere between
         for w in [0, 80, width] {
@@ -2289,6 +2309,12 @@ proptest! {
     /// its positions; a decoded type's same-named variables are the
     /// typechecker's to alias.
     #[test]
+    // CR claude for claude: [test-gap/low] This and sig_pack_round_trip compare
+    // canonical prints, which write no `//` comments. A codec that dropped Decorations
+    // comments, SigItem.comments or TraitMethod.comments would pass both. Assert
+    // check(&e, &unpacked[0]) here (it compares decorations and leaves out str_form,
+    // which the codec does not carry), and check_module_sig in sig_pack_round_trip.
+    // Found by reading; not run. (tests-expr-04)
     fn pack_round_trip(s in expr()) {
         use crate::expr::serialize::{pack_module, unpack_module};
         let st = format_with_flags(PrintFlag::AsWritten, || s.to_string());

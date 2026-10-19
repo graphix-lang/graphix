@@ -1821,6 +1821,11 @@ run!(fed_callback_regions_fuse_in_slots, FED_CALLBACK_REGIONS_FUSE_IN_SLOTS, |v:
 
 // Each slot runs the fed kernel: one run a slot, where a slot that did not
 // take the prototype's kernel would node-walk its call.
+// CR claude for claude: [risk/low] This test asserts `fused == 3`, but fused-kernel
+// runs are counted only in debug builds (record_fusion_invocation is
+// #[cfg(debug_assertions)]), so a release or quick-profile `cargo test` fails it with 0
+// runs. Gate it with #[cfg(debug_assertions)], as the other counter tests in this file
+// are. Found by reading; not run. (tests-fusion-traits-10)
 #[tokio::test(flavor = "current_thread")]
 async fn fed_callback_kernel_runs_in_each_slot() -> Result<()> {
     let (v, (fused, _)) = load_and_count(FED_CALLBACK_REGIONS_FUSE_IN_SLOTS).await?;
@@ -1923,6 +1928,13 @@ run!(tail_scalar_to_nullable, TAIL_SCALAR_TO_NULLABLE, |v: Result<&Value>| match
 // A `?` that always raises stands in its consumer's shape: here an f64
 // operand, which the fused add reads as one.
 async fn always_raising_operand(mode: graphix_package_core::testing::Mode) -> Result<()> {
+    // CR claude for claude: [test-gap/low] This fixture, tail_body_with_collection,
+    // fresh_depth_is_born, fresh_tail_depth_is_born and traits::core_display_println
+    // all describe the fused path, but run_delta never checks that anything fused, so
+    // their jit and jit_par modes would pass on a program that node-walks entirely. Use
+    // super::dense_deltas::run_delta_fused(code, mode, FuseExpect::Jit), which exists
+    // for this, in all five. Found by reading; the bodies fuse today
+    // (GRAPHIX_DBG_KERNELS). (tests-fusion-traits-07)
     let (values, _) = super::dense_deltas::run_delta(
         r#"{
             let got = 0;

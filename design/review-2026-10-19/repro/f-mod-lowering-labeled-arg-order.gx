@@ -1,0 +1,17 @@
+// Title: a fused lambda call evaluates its arguments in formal order, the
+//   node-walk in the call's written order: raises reach the handler in a
+//   different order (JIT != node-walk).
+// Command: graphix-fuzz check f-mod-lowering-labeled-arg-order.gx
+//   (or GRAPHIX_PAR=off graphix --no-cache [--no-fusion] this file)
+// Expected (node-walk, written order #b then #a): ["b", "a", "b", "a", "b", "a"]
+// Observed (JIT, formal order a then b): ["a", "b", "a", "b", "a", "b"]
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+let f = |#a: i64, #b: i64, c: i64| a + b + c;
+let n = 0;
+n <- select n { k if k < 2 => k + 1, _ => never() };
+let log: Array<string> = [];
+let r = {
+  catch(e) log <- e ~ array::push(log, select "[e]" { s if str::contains(#part: "remainder", s) => "b", _ => "a" });
+  f(#b: (n %? 0)?, #a: (n /? 0)?, n)
+};
+log

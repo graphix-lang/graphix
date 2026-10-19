@@ -1,0 +1,12 @@
+// Merging use statements leaves a two-statement block with one, which
+// does not parse: the formatter refuses with "formatter bug" on text that
+// parses (the use in the value slot is refused later, by the compile).
+//
+// Run: graphix fmt --stdout design/review-2026-10-19/repro/t-format-resolver-merge-empties-block.gx
+// Expected: the file back unchanged, or the uses merged only where a
+//           block keeps two statements
+// Observed: formatter bug: the formatted text does not parse: ...
+//           a block must contain at least 2 expressions
+//               let f = |x| { use array::{len, map} };
+let f = |x| { use array::len; use array::map };
+1

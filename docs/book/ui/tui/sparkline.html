@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -288,8 +288,14 @@ layout(
 <h3 id="sparkline-from-netidx"><a class="header" href="#sparkline-from-netidx">Sparkline from Netidx</a></h3>
 <p>This example is self-contained: it both publishes and subscribes to a
 simulated CPU value over netidx, so you can run it without any
-external publisher. Drop the <code>publish</code> call and point the subscribe at
-a real path to chart live data instead — for example, the output of:</p>
+external publisher. Drop the <code>publish</code> call and point the subscribe at</p>
+<!-- CR claude for claude: [bug/low] The pipeline below publishes field 6 of top's
+`%Cpu(s): <us> us, <sy> sy, <ni> ni, <id> id` line, which is the nice percentage, so the
+chart reads about 0 while the CPU is busy. Without `-b`, `top` also fails in a pipe with
+no tty. Fix: `top -b | grep --line-buffered Cpu | awk '{
+printf("/local/metrics/cpu|f64|%s\n", 100 - $8); fflush() }'`. probe:
+design/review-2026-10-19/repro/book-ui-a-sparkline-top-field.sh (book-ui-a-04) -->
+<p>a real path to chart live data instead — for example, the output of:</p>
 <pre><code>top | \
 grep --line-buffered Cpu | \
 awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \

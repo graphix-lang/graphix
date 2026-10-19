@@ -345,6 +345,13 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             }
         },
         // a List target: literal / from_array / cons / the list HOFs
+        // CR claude for claude: [structure/low] The map, filter and filter_map/flat_map
+        // arms below repeat map_parts and filter_parts by hand, differing only in a
+        // List source instead of an Array one. The scalar fold arm and
+        // try_map_builtin's map::fold repeat the same accumulator + binder setup. Pass
+        // the source GenType into map_parts/filter_parts and use them here, and share
+        // one fold-binder helper between the two folds, so a scoping or pinning fix
+        // cannot miss the list copies. Found by reading; not run. (fuzz-gen-a-06)
         GenType::List(e) => match rng.below(5) {
             0 => {
                 let src =
@@ -886,6 +893,21 @@ fn try_format_round_trip(
     ty: &GenType,
     depth: usize,
 ) -> Option<String> {
+    // CR claude for claude: [test-gap/low] `data` excludes List, Dur, Time and Bytes,
+    // but all of them round-trip today. A List writes flat and is rebuilt by the reader
+    // cast; datetime, duration and bytes go through json and pack. Only toml refuses a
+    // duration on write. So the composite-form reader's list path and those conversions
+    // are never generated. Accept List(t) when data(t), accept Dur/Time/Bytes, and keep
+    // durations out of the toml arm. probe:
+    // design/review-2026-10-19/repro/fuzz-gen-b-codec-gap.gx (fuzz-gen-b-03)
+    // CR claude for claude: [test-gap/low] One predicate judges three formats, so it
+    // gets both sides wrong. It refuses List, duration, datetime, bytes and non-string
+    // map keys, which json and pack round-trip (the List one goes through the rep.rs
+    // rebuild the kind markers just changed). For toml it admits decimal, u64/v64 above
+    // i64::MAX and a null inside an array or tuple, which toml::write_str refuses, so
+    // those round trips always bottom. Pick the format first and judge the type against
+    // it. probe: design/review-2026-10-19/repro/fuzz-gen-a-codec-data-gap.gx
+    // (fuzz-gen-a-04)
     fn data(ty: &GenType) -> bool {
         match ty {
             GenType::Num(_) | GenType::Bool | GenType::Str => true,

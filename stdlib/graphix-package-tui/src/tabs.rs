@@ -82,6 +82,12 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
         if self.tabs_ref.id == id {
             return Ok(Some(Box::pin(async move {
                 self.set_tabs(v.clone()).await?;
+                // CR claude for claude: [dead/low] Dead work: `id` here is
+                // self.tabs_ref.id, and GX::compile_ref gives every Ref a fresh ExprId,
+                // so no child can hold it. This walks every descendant's handle_update
+                // and changes nothing. Return Box::pin(self.set_tabs(v.clone())) alone.
+                // LayoutW::handle_update in layout.rs has the same tail after
+                // set_children. Found by reading; not run. (tui-widgets-04)
                 finish_update(update_children(
                     self.tabs.iter_mut().map(|(_, c)| c),
                     id,

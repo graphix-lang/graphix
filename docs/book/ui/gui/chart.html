@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -591,6 +591,14 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>label_size</strong> — Font size for axis labels. Must be finite, positive and at most 4096 pixels.</li>
 <li><strong>x_label_area_size</strong> — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.</li>
 <li><strong>x_labels</strong> — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
+</ul>
+<!-- CR claude for claude: [doc-drift/low] "0 draws bold lines only" holds only for a
+numeric x axis. `configure_mesh` clamps the value with `ticks(n, x_min_lines)`, and
+`x_min_lines` is 1 for the datetime axis and for the bar chart's category axis, so 0
+still draws a light line there. Fix: document the floor, or remove it if plotters no
+longer needs it for those coordinate types. Found by reading; not run. (book-ui-a-06)
+-->
+<ul>
 <li><strong>x_light_lines</strong> — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.</li>
 <li><strong>y_label_area_size</strong> — Width of the y-axis label area in pixels. Increase to prevent label clipping.</li>
 <li><strong>y_labels</strong> — Number of y-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>

@@ -1,0 +1,27 @@
+// Title: a seq step that waits on a call over a changing level stalls, while the same
+//   step with the function written inline completes.
+// cmd: timeout -s KILL 10 graphix --no-cache t-seq-call-over-level-stalls.gx
+// expected (if a call of a pure function behaved as its body does): three lines,
+//   "inline guard: 3", "call guard: 3", "call scrutinee: 3"
+// observed: only "inline guard: 3". `big(v)` in a guard and `big(x)` as the scrutinee are
+//   issued once at the step's entry over the snapshot x = 0 (issue_call), never again, so
+//   the steps wait forever; `v > 2` tracks x and completes.
+let x = 0;
+select x { k if k < 5 => x <- x + 1, _ => never() };
+let big = |v| v > 2;
+let a = seq {
+    let v = select x { v if v > 2 => v, _ => never() };
+    "inline guard: [v]"
+};
+let b = seq {
+    let v = select x { v if big(v) => v, _ => never() };
+    "call guard: [v]"
+};
+let c = seq {
+    let v = select big(x) { true => x, false => never() };
+    "call scrutinee: [v]"
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+println(a);
+println(b);
+println(c)

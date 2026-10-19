@@ -1,0 +1,12 @@
+// Title: slept_arm's doc says `once` restarts in its own sleep; it resumes
+// Command: graphix-fuzz run fuzz-gen-b-once-resume.gx
+// Expected (CLAUDE.md, a wake is a resume): `once` keeps its latch across
+//   the arm's sleep, so in0=3 re-selects the arm without a new fire.
+// Observed, both engines: [0:0]; [0:1]; [0:20]; [0:1]; [0:40]; [0:1]
+//   (the 3 and the 5 never pass `once`), contradicting the doc comment on
+//   graphix-fuzz/src/generate/reactive.rs slept_arm.
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:4; in0=i64:5
+{
+  let s = select (in0 % i64:2) { i64:0 => in0 * i64:10, _ => once(in0) };
+  s
+}

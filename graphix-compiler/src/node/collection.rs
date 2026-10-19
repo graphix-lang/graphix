@@ -315,6 +315,12 @@ pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
 /// The diagnostic of a collection init count past the element limit,
 /// from both engines.
 pub(crate) fn log_init_oversize(n: i64) {
+    // CR claude for claude: [bug/low] This diagnostic goes to the default log target,
+    // which the shell filters out unless --log-dir is given. An oversize array::init /
+    // list::init therefore just bottoms without a word, although the doc above says it
+    // is logged. Log it under crate::FAILURE_TARGET like the other hot-operator
+    // failures (buffer::encode's Pad does). probe:
+    // design/review-2026-10-19/repro/x-panics-init-oversize-silent.gx (x-panics-08)
     log::error!(
         "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
     );
@@ -467,6 +473,15 @@ impl Callback {
         typ: &Type,
     ) -> (BindId, Node<R, E>) {
         let id = BindId::new();
+        // CR claude for claude: [bug/low] The slot's synthetic argument is positioned
+        // at SourcePosition::default() with the SYNTHETIC origin. `array::map([1, 2,
+        // 3], dbg)` therefore still prints `line: 1, column: 1 dbg(collection_element):
+        // 1`, a place in no file, while `|x| dbg(x)` prints its own site. Give the
+        // argument the position and origin of what this instance's callback parameter
+        // was bound to at the call: the user's `dbg` argument, or at least the
+        // parameter binding that Callback::spec already looks up. probe:
+        // design/review-2026-10-19/repro/x-rerun-6-builtin-callback-position.gx
+        // (x-rerun-6-03)
         let spec =
             genn::name_spec(name, SourcePosition::default(), genn::SYNTHETIC.clone());
         (id, Ref::new(ctx, id, typ.clone(), self.top_id, spec))
@@ -1234,6 +1249,12 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         base.source.delete(ctx);
         base.prototype.delete(ctx);
         ctx.rt.store_release(&base.prototype_id);
+        // CR claude for claude: [dead/low] The prototype's argument ids come from
+        // Callback::slot_arg, which mints bare BindIds with no environment binding, so
+        // this unbind_variable finds nothing. The same dead call sits in
+        // FoldQ::delete's prototype loop. Delete both and keep only
+        // ctx.rt.store_release, as Slot::delete and FoldSlot::delete do. Found by
+        // reading; not run. (c-collection-01)
         ctx.env.unbind_variable(base.prototype_id);
         for slot in slots.iter_mut() {
             slot.delete(ctx);
@@ -1476,6 +1497,9 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
 /// Deliver `tv` to a callback argument this cycle and stand it in the
 /// store, a bottom as a stale bottom.
+// CR claude for claude: [readability/low] The two doc lines above this impl describe
+// ExecCtx::deliver, the helper they were moved into, not FoldQ's Update impl. Delete
+// them. Found by reading; not run. (c-collection-02)
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         f(&self.base.source);
@@ -1543,6 +1567,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // a quiet acc is news to no slot: it only stands, unless the
         // slots read their accs anew
         let anew = moved || woke || back;
+        // CR claude for claude: [structure/low] A fresh slot's accumulator is defined
+        // twice. pass_acc delivers it when `fresh` is set (slot 0 when old_len == 0,
+        // slot i+1 when views.fresh(i + 1)), and the seed at the top of that slot's
+        // iteration then overwrites the delivery with FIRED or FRESH_BOTTOM. So the
+        // `fresh` path never decides anything and costs a deliver per grown slot. Drop
+        // the `fresh` parameter, leave fresh slots to the seed, and write `anew = moved
+        // || back` (take_source already folds `woke` into `moved`). Found by reading;
+        // not run. (c-collection-03)
         let pass_acc = |ctx: &mut ExecCtx<'_, R, E>, id, tv: TagValue, fresh: bool| {
             if tv.tag().triggers() || fresh || anew {
                 ctx.deliver(id, tv)

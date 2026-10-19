@@ -1,0 +1,12 @@
+// Title: a slice pattern under a written union is refused where a tuple,
+// struct or variant pattern narrows to its member.
+// Command: graphix --check c-pattern-slice-under-written-union.gx
+// Expected: accepted, as `g` is (the tuple pattern narrows the payload
+// [(i64, i64), null] to its tuple member and is refutable).
+// Observed: "slice patterns can't match [null, Array<i64>]" at f's arm.
+// The same refusal for `[Array<i64>, null] as [x, ..]` as a select arm.
+type T = Abstract<[Array<i64>, null]>;
+type V = Abstract<[(i64, i64), null]>;
+let f = |t: T| select t { T([x, ..]) => x, _ => 0 };
+let g = |v: V| select v { V((x, _)) => x, _ => 0 };
+(f(T([1])), g(V((2, 3))))

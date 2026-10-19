@@ -1,0 +1,7 @@
+// `(e,)` and `(T,)` read as plain grouping in expressions and types, while
+// the pattern `(x,)` is refused ("tuples must have at least 2 elements").
+// command: graphix fmt --stdout design/review-2026-10-19/repro/t-parser-a-one-tuple-comma.gx
+// expected: refused, as the pattern is: Graphix has no 1-tuple
+// observed: accepted; fmt prints `let t: i64 = (1)`, dropping the comma
+let t: (i64,) = (1,);
+t

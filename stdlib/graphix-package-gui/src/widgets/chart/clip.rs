@@ -92,6 +92,15 @@ pub fn clip_polyline(
 /// The outline of the area under `pts` inside `view`: the line cut to
 /// the view's x interval, its y moved into the view. Filled down to the
 /// baseline clamped the same way, it is exactly the area's visible part.
+// CR claude for claude: [bug/medium] Clamping vertex y is not exact. Where a segment
+// crosses the view's top or bottom, the fill's edge becomes a chord between clamped
+// endpoints and falls below the line that clip_polyline draws. In view 0..10, area
+// (-5,20),(5,20),(15,-5) fills to y=8 at x=9 while the line is at 10. A NaN point also
+// does not break the area: the pieces on either side are joined into one outline, so
+// the fill spans the gap the line shows. Fix: return one outline per run, like
+// clip_polyline, and split each x-clipped segment at its crossings of y.0/y.1 before
+// clamping. an_area_is_cut_to_x_and_clamped_in_y only checks endpoints and cannot see
+// this. probe: design/review-2026-10-19/repro/gui-chart-area-clamp.rs (gui-chart-02)
 pub fn clip_area(pts: &[(f64, f64)], view: View) -> LPooled<Vec<(f64, f64)>> {
     let in_x = View { x: view.x, y: (f64::NEG_INFINITY, f64::INFINITY) };
     let mut out: LPooled<Vec<(f64, f64)>> = LPooled::take();

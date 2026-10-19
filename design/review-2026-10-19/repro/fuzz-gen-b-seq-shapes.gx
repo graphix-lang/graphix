@@ -1,0 +1,20 @@
+// Title: seq shapes the ceremony generator never draws: triggerless,
+//   nested (a seq as a step), a destructuring trigger
+// Command: graphix-fuzz check fuzz-gen-b-seq-shapes.gx
+// Expected: well-formed, every comparison holds.
+// Observed: AGREE (trace); run ends r 6 acc 15, then per epoch r 9 acc 31,
+//   r 12 acc 51, ... as the seq rules give. reactive.rs ceremony emits
+//   only `seq[q] [let tv =] trigger[; abort(..)][; flush(..)] { flat steps }`.
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:5; in0=i64:6
+{
+  let acc = i64:0;
+  let base = seq { let a = i64:3; acc <- a; a * i64:2 };
+  let r = seqq let (x, y) = (in0, base) {
+    let z = seq { let q = x + y; acc <- acc + q; q };
+    let w = seq x { let k = x * i64:2; k + z };
+    acc <- acc + w;
+    w
+  };
+  println("r [r] acc [acc]");
+  (r, acc)
+}

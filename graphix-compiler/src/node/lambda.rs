@@ -848,6 +848,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             publish_production(ctx, Feeds::Pattern(pat), tv, false, root);
         }
         // an interrupted dispatch is not a bottom: it rides its last result
+        // CR claude for eric: [bug/medium] An interrupted dispatch skips the body, and
+        // with it every builtin in the body that reads its own delivery from ctx.event
+        // this cycle. do_cycle then clears the event and nothing delivers it again. A
+        // repeating sys::time::Timer keeps its spent id and never re-arms. A
+        // CachedArgsAsync site never decrements `inflight`, so a Fifo site queues every
+        // later call forever. IoLines' reader waits on `drained` forever. The Inbox of
+        // http::serve and sys::net::rpc keeps `woken` set and is never woken again. The
+        // collection slot loops that stop on an interrupt do the same. The interrupt
+        // doc promises a value recomputes when an input fires again; these never do.
+        // Decide the remedy. One option: the run loop delivers again, next cycle, the
+        // reply and custom deliveries an interrupted cycle left unconsumed in its
+        // event. The other is that only loops abort, never a body. Pin it either way.
+        // probe: design/review-2026-10-19/repro/x-concurrency-interrupt-kills-timer.sh
+        // (x-concurrency-01)
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
@@ -1458,6 +1472,16 @@ fn instance_type<R: Rt, E: UserEvent>(
     Ok(match mode {
         BindMode::Static { instance } => Arc::new(instance.clone()),
         BindMode::Dynamic(r) if same_parameters(r, def_typ) => Arc::new(r.clone()),
+        // CR claude for claude: [structure/low] This fits a callee with a defaulted
+        // label the site's view omits by `def_typ.instantiate(&ctx.rec_defs)`.
+        // CallSite::setup_static_bind fits the static case its own way: `reset_tvars`,
+        // `alias_tvars`, `check_contains`, `resolve_tvars`. reset_tvars copies every
+        // open cell, while instantiate shares open gates' and environment cells and
+        // freezes repeated copies. One rule, 'fit as a call fits it', has two
+        // implementations that can drift. Fix: let setup_static_bind hand the site's
+        // ftype here and fit Static and Dynamic in one branch with FnType::instantiate,
+        // then delete the copy in setup_static_bind. Found by reading; not run.
+        // (c-lambda-03)
         BindMode::Dynamic(r) => {
             let copy = def_typ.instantiate(&ctx.rec_defs);
             r.check_contains(&ctx.env, &copy)?;
@@ -1508,6 +1532,17 @@ impl Lambda {
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
         // a written type, as the definition's signature holds it
+        // CR claude for eric: [risk/medium] A `'a` written in a nested lambda's
+        // signature is that lambda's own fresh quantifier, never the enclosing
+        // definition's `'a`. So `'a: Number |k: 'a| |x: 'a| [x, k]` returns a closure
+        // that takes a string (`mk(1)("s")` gives ["s", 1]), and `|x: 'a| x + k` is
+        // refused as "cannot compute 'a: unbound + 'a: unbound". The printer shows both
+        // variables as `'a` (`fn<'a: Number>(k: 'a) -> fn(x: 'a) -> Array<['a, 'a]>`),
+        // and no doc states the scoping rule. Decide between two fixes. One: a written
+        // variable an enclosing gate declares names that gate's cell. Two: keep
+        // shadowing, document it, and print distinct same-named variables distinctly.
+        // probe: design/review-2026-10-19/repro/c-lambda-nested-tvar-scope.gx
+        // (c-lambda-02)
         let written = |env: &Env, t: &Type| -> Result<Type> {
             Ok(t.scope_refs(&scope.lexical)
                 .rewrite_trait_args(env)?
@@ -1600,6 +1635,13 @@ impl Lambda {
             if flags.contains(CFlag::NoBuiltins) {
                 bail!("defining builtins is not allowed in this context")
             }
+            // CR claude for claude: [bug/low] This annotation check covers the argspec
+            // but not the variadic. An untyped `@args` becomes a fresh tvar, so
+            // `|@args| -> i64 'core_sum` is accepted, and `s("a", "b")` checks as i64
+            // while core_sum is handed strings. `|x| -> i64 'core_sum` is refused here.
+            // Fix: bail the same way when `l.vargs` is `Some(None)`. probe:
+            // design/review-2026-10-19/repro/c-lambda-untyped-builtin-vargs.gx
+            // (c-lambda-04)
             for a in argspec.iter() {
                 if a.constraint.is_none() {
                     bail!(
@@ -1837,6 +1879,19 @@ fn check_defaults<R: Rt, E: UserEvent>(
         }
         DefOrigin::Runtime => return Ok(()),
     };
+    // CR claude for eric: [bug/high] An open parameter type is only narrowed by its
+    // default's conjuncts here, never linked to the default's type. In `let mk = |z| {
+    // let g = |#d = z, x| [d, x]; g }` nothing then reaches z's cell, and mk's gate
+    // settles z to ⊥ in its DefTable. The call check reopens that vacuous ⊥ and accepts
+    // `mk(1)`, and the build refuses the instance (`an instance at fn(z: i64) -> .. of
+    // a definition typed fn(z: _) -> ..`). A closure factory whose returned lambda
+    // defaults a label to the factory's parameter never compiles, while --check and the
+    // LSP call it clean. It works when z is annotated or when mk calls g itself. Decide
+    // which way to fix it: tie an open parameter to its default's type when that type
+    // holds an enclosing open gate's cell, or have the gate keep any cell a nested
+    // default reads generic rather than settling it to ⊥. probe:
+    // design/review-2026-10-19/repro/x-typecheck-generics-default-reads-outer-param.gx
+    // (x-typecheck-generics-01)
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
         let mut node = ctx.with_restored(def.env.clone(), |ctx| {
@@ -2002,6 +2057,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
+        // CR claude for claude: [bug/medium] An instance-defined literal takes its
+        // table's facts here, but its ParamCalls stay default. DefTable records `facts`
+        // and not the ParamCalls that Lambda::typecheck0 stores from
+        // analysis::def_body_facts. So analysis::callback_facts finds no captured fn
+        // parameter, and a builtin handed `|x| f(x)` is judged without f's facts. With
+        // `g = |v, f| filter(v, |x| f(x))` called with an async f, `#[sync]` on the
+        // caller is accepted and `#[async]` refused. GRAPHIX_NO_SUBST=1 gives the right
+        // verdicts, and so does `filter(v, f)`. The same facts decide arm sleep and the
+        // tail-loop stateless gate. Fix: carry ParamCalls in the table and set
+        // def.param_calls here. Remap `captured` (the def check's formal ids) to this
+        // instance's formals, for example by recording formals by position. probe:
+        // design/review-2026-10-19/repro/c-lambda-instance-param-calls.sh (c-lambda-01)
         def.join_facts(tables.table.facts);
         def.table.set(tables);
         Ok(())

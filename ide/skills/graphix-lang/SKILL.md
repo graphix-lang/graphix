@@ -29,6 +29,13 @@ constant argument to `exit` runs at init — always gate it).
 
 ## The rules that bite (read these first)
 
+<!-- CR claude for claude: [doc-drift/medium] The reason is wrong. Without `~`, the body
+`n <- n + 1` does not depend on `c`: the callable is a lambda instance born when it is
+compiled, so the body is the self-loop of the next bullet. It counts at 100% CPU from
+the widget's creation with no click at all; it does not 'capture the initial value'. Say
+that instead. probe:
+design/review-2026-10-19/repro/lang-skill-callback-without-sample.gx (a lambda instance
+whose argument never fires, counting anyway) (lang-skill-03) -->
 - **Sample state you read in a handler**: `#on_press: |c| n <- c ~ n + 1`.
   Without `~` the callback captures the initial value.
 - **An arm that connects to a binding it also reads unsampled is a
@@ -58,6 +65,12 @@ constant argument to `exit` runs at init — always gate it).
 - **`~` banks, `~!` does not**: `e ~ v` is `v` at each fire of `e`, and a
   fire that finds `v` absent is paid when `v` first arrives; `e ~! v` is
   bottom then. Use `~!` when a late payment would be a phantom event.
+<!-- CR claude for claude: [doc-drift/low] '`let snap = known` does not help' is wrong
+for a let that is a step of the seq. A passed step sleeps and keeps its value, as the
+Sequencing section says ('a `let` keeps the value its step produced'), so `let snap =
+known; let states = map(snap, ..); zip(snap, states)` is aligned while `known` moves on.
+Only a let outside the seq tracks. Fix the bullet to say so. probe:
+design/review-2026-10-19/repro/lang-skill-seq-let-snapshot.gx (lang-skill-06) -->
 - **`seqq` reads the world once per run, `seq` once per step**: `seqq`
   captures every outer variable the body only reads along with the
   queued request, so two steps see the same `known`. Under `seq` a later
@@ -149,6 +162,13 @@ type List2<'a> = [`Cons('a, List2<'a>), `Nil]   // recursive
 'a: Number  'a: Int  'a: Float   // constraints; sets Number Int Sint Uint Float Real
 ```
 
+<!-- CR claude for claude: [doc-drift/low] Missing rule: an abstract type crosses data
+(json/toml/pack reads and writers, casts, net) only through a core `Cast` impl in its
+defining module. Without `impl Cast for T {};`, a struct holding one is refused as a
+written value or read target. Add that sentence here. While at it: the operator list
+omits unary `-x`, and the stdlib section omits the `list` package and
+db/sqlite/hbs/args. probe:
+design/review-2026-10-19/repro/lang-skill-abstract-needs-cast.gx (lang-skill-08) -->
 Abstract (nominal) types: `type Counter = Abstract<i64>` as a whole
 typedef body; `Counter(x)` constructs, `c.0` reads the payload, pattern
 `Counter(p)` destructures — only where the definition is visible (the
@@ -195,6 +215,12 @@ must declare every bound its implementation needs. `'a: [Number, null] +
 OneNumber` is a nullable number of one numeric type. Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
 `x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
+<!-- CR claude for claude: [doc-drift/low] `?` and `$` do not 'read as the error form'
+on an untyped parameter: the check refuses any operand whose type is unknown there ('the
+operand of $ has type '_N: unbound, not known here: annotate it ...'). That applies to a
+Result argument too. Say that the operand's type must be known, and annotate the
+parameter in either case. probe:
+design/review-2026-10-19/repro/lang-skill-untyped-param-dollar.gx (lang-skill-05) -->
 chain (`(k ~ sel)$.name`). On an untyped parameter they read as the
 error form, so a nullable one is annotated: `|t, scope: [Scope, null]|
 .. (t ~ scope)$`.
@@ -294,6 +320,11 @@ across a bottom cycle).
 - References and functions cannot be ordered, sorted or used as map
   keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 
+<!-- CR claude for claude: [doc-drift/low] In the example below, the slice ladder ends
+`[h, rest..] => h, [a, ..] => a`. The last arm is dead (`[h, rest..]` covers every
+non-empty array), and the checker refuses it, while the paragraph above says a select
+has no dead arms. Drop `[a, ..] => a`. probe:
+design/review-2026-10-19/repro/lang-skill-select-example-dead-arm.gx (lang-skill-09) -->
 ```graphix
 select x {
   i64 as n => n + 1,              // type test
@@ -380,10 +411,25 @@ let edit = never();  book <- edit;        // this: writers do `edit <- upsert(bo
 seqq let b = edit { write(path, b)? }
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] `seqq let (dir, b) = (d$, edit)` runs on
+every change of `d` as well as on `edit`, because a tuple fires when either part does. A
+move of `d` re-saves the last edit into the new directory (edit1, then dirA, then dirB
+gives 'save edit1 to dirA', 'save edit1 to dirB'). That breaks the skill's own 'samples
+the WHOLE input on the trigger' rule. Recommend `seqq let (dir, b) = edit ~ (d$, edit)`:
+one run per edit, and an edit made while d is null is banked until d arrives. probe:
+design/review-2026-10-19/repro/lang-skill-seqq-tuple-trigger-rerun.gx (lang-skill-02)
+-->
 To gate a seq on a nullable, put it in the trigger: `seqq let (dir, b) =
 (d$, edit) { .. }` never runs while `d` is null. A `d$` in a step stalls
 the run instead, and a stalled `seqq` queues every later trigger forever.
 
+<!-- CR claude for claude: [doc-drift/medium] The `put(5); let s = b` example stalls if
+`put` is what the sentence describes, a function that writes `b` (`|v| b <- v`). A
+connect produces no value, so the call step never completes, and --check says nothing.
+The pins use `|v| { b <- v; v }`. Show that definition, and widen the stall rule below
+('a select whose arms are connects') to any step whose value never fires, a call to a
+connect-bodied function included. probe:
+design/review-2026-10-19/repro/lang-skill-seq-connect-call-stalls.gx (lang-skill-04) -->
 A statement starts in the first cycle its predecessor's effect can be
 seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
 `n <- n + 1; publish(n)` publishes the NEW `n` (a cycle later);
@@ -440,6 +486,14 @@ tag to its catch. Errors come off first: on `[T, null, Error<E>]` one
 raise on success) and `get(t, k)?$` takes both. `opt::ok_or(x, `E)?`
 when the catch should hear more than `NullError`.
 
+<!-- CR claude for claude: [doc-drift/medium] This paragraph is wrong in two places. `k
+~ sel$` is not silent: it banks a key pressed before the first selection, exactly as the
+`let v = sel$; k ~ v` 'exception' does (the let is only a name). And a call taking `x$`
+does fire when `x` returns: `f(k ~ t, sel$)` re-delivers the stale key sample at every
+arrival of `sel`, because a call fires when any argument fires. Only `(k ~ sel)$`
+(sample the nullable, then unwrap) drops a key pressed while `sel` is null. Rewrite the
+rule around that, and drop `k ~ sel$` from the silent list. probe:
+design/review-2026-10-19/repro/lang-skill-dollar-gate-fires.gx (lang-skill-01) -->
 `$` gates: while `x` is null or an error, a call or struct taking `x$`
 does not fire and owes nothing when `x` returns. `f(k ~ t, sel$)` is
 silent while `sel` is null, and so are `k ~ sel$` and `(k ~ sel)$`:
@@ -515,6 +569,12 @@ whose TYPE is their kind (`sys::fs::File`, `sys::tcp::TcpStream`, …).
 
 ## Standard library, briefly
 
+<!-- CR claude for claude: [doc-drift/low] Two things in this paragraph are inaccurate.
+A `let` over `never()` takes its type from its first use, a reader or a writer, not
+'from its writers': a read through `str::len` before `go <- 1` makes go a string and
+refuses the write. And `is_err` does not gate a stream: it is `fn(e: Any) -> bool` and
+fires false on every value. Fix both sentences. probe:
+design/review-2026-10-19/repro/lang-skill-never-let-first-use.gx (lang-skill-11) -->
 Core (always in scope): `print println dbg log cast<T>(x) error is_err
 filter filter_err count once uniq sum product min max mean and or all
 queue hold take skip throttle range`. `is_err`, `filter` and `filter_err`
@@ -536,6 +596,13 @@ argument is the array windowed, usually `t ~ data`, and its values
 after it are variadic). `map`, `str`
 (`contains split trim replace join len parse ..`), `re`, `rand`.
 
+<!-- CR claude for claude: [doc-drift/low] 'or the arm sleeping, stops it' contradicts
+the Select section of this skill and CLAUDE.md: an arm's sleep pauses a timer, and the
+timer resumes at the wake (ticks hold while asleep, then continue). Write '(a finite
+repeat count ends it; an arm's sleep pauses it)'. The check's warn_birth_only also warns
+on this timer that it 'acts only at this arm's first entry', the same misfire as for
+subscribe. probe: design/review-2026-10-19/repro/lang-skill-arm-timer-warning.gx
+(lang-skill-07) -->
 `sys::time`: `timer(timeout: [duration, Number], repeat)` (a finite
 repeat count, or the arm sleeping, stops it), `after_idle(timeout, v)`,
 `now(trigger)`, and the pure arithmetic `add`, `sub`, `add_dur`,
@@ -576,6 +643,12 @@ e ~ `Stop }`. The `e ~` is not optional: a handler whose result is a
 constant answers the first event and then never again (the `|v| k` rule),
 and the keys after it are lost.
 
+<!-- CR claude for claude: [doc-drift/low] The tui module is `barchart` (its function is
+`bar_chart`): the import pattern taught just above, `use tui::bar_chart::bar_chart`, is
+refused. The lists also miss tui scrollbar/text/layout/line_edit/form and gui
+vertical_slider/combo_box/grid/markdown/menu/qr_code/table/data_table. Regenerate both
+lists from the packages' mod.gxi. probe:
+design/review-2026-10-19/repro/lang-skill-widget-module-names.gx (lang-skill-10) -->
 Widgets: gui — window text button text_input checkbox toggler radio
 slider progress_bar pick_list column row container scrollable stack
 space rule tooltip canvas chart image mouse_area keyboard_area

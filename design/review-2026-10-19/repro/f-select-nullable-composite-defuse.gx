@@ -1,0 +1,21 @@
+// f-select: a slice, tuple or struct pattern over a nullable scrutinee de-fuses
+// the whole select ("slice/tuple/struct select pattern over a non-composite
+// scrutinee not lowerable"): emit_structure_cond lowers composite structure
+// only over SelectScrut::Composite, and emit_arm_cond's Value-kind member path
+// (graphix_value_is_a + borrowed empty fallback) is taken only under an
+// explicit type predicate over a ValueKind::Value scrutinee.
+// command: graphix-fuzz run design/review-2026-10-19/repro/f-select-nullable-composite-defuse.gx
+// expected: h and p fuse, as the same arms over a bare Array / tuple do
+// observed: values agree (AGREE under check); fusion reports the failure above for h and p
+{
+  let h = |a: [Array<string>, null]| select a {
+      null as _ => -1,
+      [s, rest..] => str::len(s) + array::len(rest),
+      [] => 0
+  };
+  let p = |t: [(i64, i64), null]| select t {
+      null as _ => 0,
+      (x, y) => x + y
+  };
+  (h(null), h(["ab", "c"]), h([]), p(null), p((1, 2)))
+}

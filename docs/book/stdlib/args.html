@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -256,11 +256,11 @@ let cli: args::ParseResult = select args::parse(
     Error&lt;'e&gt; as e =&gt; select e.0 {
         `ArgHelp(text) =&gt; {
             println(text);
-            sys::exit(0)
+            sys::exit(text ~ 0)
         },
         `ArgError(text) =&gt; {
             println(text);
-            sys::exit(2)
+            sys::exit(text ~ 2)
         }
     }
 };

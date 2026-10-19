@@ -205,9 +205,20 @@ Pruning changes no output, so it has an exact oracle.
 - **The fuzzer** gains `Pair::Prune`: the node-walk with pruning
   against the node-walk without, per-cycle trace, bit for bit; and the
   existing pairs run with pruning on.
+<!-- CR claude for eric: [test-gap/medium] No gate runs the prune audit:
+`testing::Mode::prune` is `PruneMode::from_env()`, which is `On` unless GRAPHIX_PRUNE is
+set, and nothing in the tree sets `PruneMode::Audit`. Only the fuzzer's `Pair::Prune`
+output comparison covers pruning. This section also names `GRAPHIX_NO_PRUNE`,
+`GRAPHIX_PRUNE_AUDIT`, `Control::boundaries_walked` and a slab, none of which were
+built. Decide whether `run!`'s interp mode should run under Audit, as designed here.
+Then rewrite this section and "The slab" to the build. Found by reading; not run.
+(x-doc-drift-02) -->
 - **`run!`** runs pruned (the default); the audit runs in the plain
   gate for the `lang` and `lib_tests` fixtures (a test helper sets it),
   so the gate itself hunts missing marks.
+<!-- CR claude for claude: [doc-drift/low] `Control::boundaries_walked` does not exist.
+The counter is `Control::boundaries()` (walked, skipped), as this doc says further down.
+Rename it here. Found by reading; not run. (t-misc-05) -->
 - **Pins.** A runtime counter of boundaries walked
   (`Control::boundaries_walked`) pins the CR probes: an idle
   `array::map` of 2000 slots beside a ticking counter walks a constant

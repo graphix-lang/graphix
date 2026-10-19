@@ -1,0 +1,10 @@
+// Title: book/src/modules/interfaces.md teaches `T({ x.0 with a: 1 })`, which does not parse
+// Command: graphix --no-cache book-modules-udt-abstract-update.gx
+// Expected (the book): prints T({a: 1, b: "s"})
+// Observed: Parse error at the closing `)`: "a functional update's source is a name or
+//   parenthesized". `T({ (x.0) with a: 1 })` (the line below, uncommented) works.
+type T = Abstract<{ a: i64, b: string }>;
+let x = T({ a: 0, b: "s" });
+let y = T({ x.0 with a: 1 });
+// let y = T({ (x.0) with a: 1 });
+y

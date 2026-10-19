@@ -1,0 +1,17 @@
+// Title: an exhaustive struct alternative accepts a wider struct, so an
+// or-pattern binds a field of another member's type.
+// Command: graphix --no-cache c-pattern-or-struct-field-count.gx
+//   (and --no-fusion; graphix-fuzz run on the same file)
+// Expected: ["s!", "zz!"]: `{x, y}` names exactly the fields of
+// {x: i64, y: string}, so the value {x: 1, y: 42, z: "zz"} takes the
+// second alternative, whose y is field z. Or the check refuses the arm.
+// Observed: the node-walk prints ["s!", "42!"] (y: string holds 42); with
+// fusion the kernel panics: "kernel param `y`: runtime I64(42) does not
+// match the compiled String slot" and the runtime dies.
+// StructPatternNode::Struct's is_match tests `a.len() >= binds.len()` for
+// an exhaustive pattern too, and footprint calls the two members apart.
+type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+let vs: Array<U> = [{x: 1, y: "s"}, {x: 1, y: 42, z: "zz"}];
+array::map(vs, |v| select v {
+  {x, y} | {x, y: _, z: y} => "[y]!"
+})

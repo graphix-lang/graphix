@@ -1464,6 +1464,13 @@ const NESTED_QUANTIFIER_SQUARE: &str = r#"{
 // Through an alias of the quantified type, the same.
 /// A type test can't tell one function signature from another, inside
 /// a tuple too.
+// CR claude for claude: [readability/low] The line 'Through an alias of the quantified
+// type, the same.' above this doc comment belongs to NESTED_QUANTIFIER_ALIAS_MONO
+// further down; here it reads as if this fixture were an alias test. The headers above
+// NON_CONTRACTIVE ('Each refused program was accepted and went wrong ...') and
+// CONJUNCT_REACHES_OPEN_CELLS ('each rule below once admitted ...') narrate history.
+// Move the alias line and state the rules instead. Found by reading; not run.
+// (tests-types-07)
 const TYPE_TEST_HOLDING_A_FN: &str = r#"{
     let fs = |x: string| "[x]!";
     let u: [(fn(x: i64) -> i64, i64), (fn(x: string) -> string, i64)] = (fs, 1);
@@ -1688,6 +1695,15 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
 });
 
 // Mixed sets compare like any union, numeric ones included.
+// CR claude for eric: [bug/medium] Values of a mixed numeric union order by numeric
+// class before value (Value::partial_cmp compares Typ first). array::sort of [3, 2.5,
+// 1, 0.5]: Array<[i64, f64]> is [1, 3, 0.5, 2.5], min(i64:3, f64:2.5) is 3, and i64:3 <
+// f64:2.5 is true. This fixture compares 3 with 2.5 by == only, so it would pass under
+// either ordering. Either the orderings and Ordered refuse a type holding two numeric
+// types, as Singleton does for arithmetic, or mixed classes order by value. Pin
+// whichever is chosen here with values where the two differ, and i64:3 == f64:3.0.
+// probe: design/review-2026-10-19/repro/tests-types-mixed-numeric-order.gx
+// (tests-types-04)
 const COMPARISON_MIXED: &str = r#"{
   let x: [i64, f64] = 3;
   let y: [i64, f64] = 2.5;
@@ -2144,6 +2160,15 @@ run!(deep_abstract_eq, DEEP_ABSTRACT_EQ, |v: Result<&Value>| matches!(v, Ok(Valu
 
 /// Crafted bytes nesting a type's params past any sane depth are an
 /// error, not a stack overflow.
+// CR claude for claude: [test-gap/medium] This fixture cannot fail. GxAbstract::decode
+// refuses outside an image session before it reads the id, name or params, so the
+// 2^16-deep params never reach the nesting guard, and the target is i64 anyway. The
+// shallow input with no nested params gives the same ParseError. Removing the guard
+// from Type's or GxAbstract's decode leaves this green. Delete it, and if the guard
+// needs a pin, decode the crafted bytes under an image session in a graphix-types unit
+// test, the only path that reads abstract params. probe:
+// design/review-2026-10-19/repro/tests-types-crafted-abstract-vacuous.gx
+// (tests-types-05)
 const CRAFTED_ABSTRACT_PARAMS: &str = r#"
 {
     type T = Abstract<i64>;
@@ -2321,6 +2346,13 @@ run!(hole_in_a_fn_quantifier, HOLE_IN_A_FN_QUANTIFIER, refused("'_ is the hole")
 
 /// An inline literal passed to a union formal is checked before a member
 /// is chosen for it.
+// CR claude for claude: [structure/low] This program is the `f(["a"])` term of
+// literal_into_a_union_formal below, over the same formal type. Likewise
+// SAME_NAME_OTHER_DEFINITION (refused 'does not contain') is covered by
+// same_name_definitions_are_told_apart, which pins the full 'different definitions'
+// message. Each run! costs four modes. Delete the weaker copies, or fold
+// SAME_NAME_OTHER_DEFINITION's parameter swap into the message test. Found by reading;
+// not run. (tests-types-08)
 const UNION_FORMAL_INLINE_LITERAL: &str = r#"
 {
     let g = |x: [Array<f64>, Array<string>]| 7;
@@ -2679,6 +2711,11 @@ run!(abstract_payload_prints_typed, ABSTRACT_PAYLOAD_PRINTS_TYPED, |v: Result<&V
 }; FuseExpect::Jit);
 
 /// A bare variant is a string at run time: `array` does not cover it.
+// CR claude for claude: [doc-drift/low] The doc comment above says a bare variant is a
+// string at run time. Under the kind markers (rep.rs) it is an array whose element 0 is
+// the Variant marker; only data writes it as its tag. The test holds because the
+// primitive `array` holds unmarked arrays only. Reword the comment to give that reason.
+// Found by reading; not run. (tests-types-06)
 const ARRAY_DOES_NOT_COVER_A_BARE_VARIANT: &str = r#"
 {
     let f = |x: [`Foo, i64, Array<i64>]| select x { array as _ => 1, i64 as _ => 2 };

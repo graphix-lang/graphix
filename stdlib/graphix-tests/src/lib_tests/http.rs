@@ -164,6 +164,16 @@ run!(http_abandoned_request_then_good, r#"{
 
 // A request that raises as it is dispatched, in the cycle the one before
 // it was answered with its own error, is answered with its own.
+// CR claude for claude: [test-gap/low] The scenario in the comment above does not
+// happen any more. Request instances run concurrently, each with its own ErrorRelay, so
+// /b raises at about 100 ms and /a at about 300 ms, never in one cycle.
+// Receipts::take's one-delivery-a-cycle guard, which this fixture was added to pin, is
+// exercised by nothing: removing it would pass. Reword the comment to what is checked
+// (concurrent raises answered with their own errors), and pin the guard where two
+// deliveries can reach one relay in one cycle, or delete it if per-request relays make
+// it unreachable. probe:
+// design/review-2026-10-19/repro/tests-lib-b1-http-raise-not-same-cycle.gx
+// (tests-lib-b1-04)
 run!(http_raises_answer_their_own_requests, r#"{
     let handler = |req: http::Request| {
         let late = sys::time::after_idle(duration:300.ms, req.path);

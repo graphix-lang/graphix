@@ -405,11 +405,33 @@ impl AbstractId {
         if !parts().any(|p| p.starts_with('#')) {
             return Self::of(scope, name);
         }
+        // CR claude for claude: [bug/low] `stable` is spelled "/a/m", while Self::of
+        // hashes the ModPath's Display form "a::m". A module's abstract type therefore
+        // has one identity when the module is loaded inside function bodies and a
+        // different one when the same file is loaded at the top level. Two body loads
+        // share a type, a top-level and a body load do not, contrary to the doc's "a
+        // module's type is its path without them". Fix: build a ModPath of the non-`#`
+        // parts and call Self::of with it (and use its Display in the in-body format).
+        // probe: design/review-2026-10-19/repro/t-typ-mod-abstract-id-nested-module.sh
+        // (t-typ-mod-03)
         let mut stable = compact_str::CompactString::new("");
         for p in parts().filter(|p| !p.starts_with('#')) {
             stable.push('/');
             stable.push_str(p);
         }
+        // CR claude for eric: [bug/medium] A module declared inside a block or function
+        // body has scope `/#do../m`. Here its types are keyed by `/m::T` alone, because
+        // the `#` parts are dropped unless the last part is one. So two different
+        // dynamic modules named `m` in two blocks mint one nominal type. With equal
+        // representations, the second module's `get` accepts the first module's value
+        // (the repro prints 42). With different representations, the second module is
+        // refused as a redefinition ('T is already defined as Abstract<i64>'). A module
+        // whose scope crosses a `#` component needs its declaration in the key: the
+        // `mod` statement's origin and position, as a body type already has. That key
+        // is still the same for every instance and every process. probe:
+        // design/review-2026-10-19/repro/t-expr-core-abstract-id-shared.gx,
+        // design/review-2026-10-19/repro/t-expr-core-abstract-id-refused.gx
+        // (t-expr-core-01)
         let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
         let place = match in_body {
             false => format_compact!("{stable}::{name}"),
@@ -864,6 +886,12 @@ impl TypeRef {
     /// only sends the pair to the expansion arm.
     /// Whether two references name one definition: two filled cells by
     /// the definition, two open ones by the written scope and name.
+    // CR claude for claude: [readability/low] The first of the two doc paragraphs above
+    // this function belongs to cells_agree, which has none: same_definition compares
+    // two open cells by scope and name, not "alike". It also says a filled/open pair
+    // "may differ", where both functions answer false. Move that paragraph to
+    // cells_agree and state the false; the two matches differ only in the (None, None)
+    // arm. Found by reading; not run. (t-typ-mod-05)
     pub(crate) fn same_definition(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
@@ -1971,6 +1999,14 @@ impl Type {
                 }
             }
             Type::Ref(tr) => {
+                // CR claude for claude: [risk/low] Ownership is deduped by def_key, but
+                // def_key follows same_as. After link_same, an interface's definition
+                // and its implementation's share a key although they are two
+                // allocations, each held only weakly by its own cells. A DefTable or
+                // KernelType naming both owns only the first one met, and the other's
+                // cells die with its env entry ("outlived its definition"). Key `out`
+                // by Arc::as_ptr(&r) instead; identity questions keep def_key. Found by
+                // reading; not run. (t-typ-mod-04)
                 if let Some(r) = tr.resolved()
                     && !out.contains_key(&r.def_key())
                 {
@@ -2616,6 +2652,18 @@ impl Type {
                                 tv.add_cell_constraint(constraint)
                             }
                         }
+                        // CR claude for claude: [bug/medium] A bound checked against an
+                        // argument that is not a bare cell is checked only as the
+                        // argument stands: the open members of a union argument never
+                        // get it, as require_bounds gives them when a cell binds. So
+                        // Result<[i64, 'x], `E> accepts error(`Q) (its 'x binds to
+                        // Error<`Q>, although Result<[i64, Error<`Q>], `E> written out
+                        // is refused). A select over Result<[i64, 'x], `E> is also
+                        // refused because 'x is not a NoError cell. Fix: after
+                        // check_contains, hand the bound to the argument's open members
+                        // (require_bounds(&[constraint], arg)). probe:
+                        // design/review-2026-10-19/repro/x-kind-markers-noerror-open-member.sh
+                        // (x-kind-markers-04)
                         _ if commit => constraint.check_contains(env, arg)?,
                         _ => {
                             if !constraint.contains_with_flags(
@@ -2644,6 +2692,15 @@ impl Type {
     }
 
     /// Core's `ErrChain<payload>`.
+    // CR claude for claude: [bug/high] The synthetic `ErrChain` ref is an Open cell in
+    // the root scope, resolved later by name. A script-level `type ErrChain<'a> = ..`
+    // (or a `use` of another ErrChain) shadows core's, so every `?` raise and catch
+    // binder is typed with the user's type while the runtime builds core's struct.
+    // `e.0.ori + 1` is accepted and computes garbage. chain_error_type's Struct arm
+    // judges chain-ness through this ref too. Fix: pre-fill the cell with core's
+    // definition (take the env), or scope the ref at `/core`, and pin the shadowing
+    // case. probe: design/review-2026-10-19/repro/t-typ-mod-errchain-shadowed.gx
+    // (t-typ-mod-01)
     pub fn err_chain(payload: Type) -> Type {
         static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
         Type::Ref(Arc::new(TypeRef::synthetic(
@@ -2758,6 +2815,8 @@ impl Type {
 
     /// `Bottom`, or a union whose every member (through bound tvars)
     /// is. An unbound tvar is not provably bottom.
+    // CR claude for claude: [dead/low] Nothing calls all_bottom but itself, here or in
+    // ../netidx. Delete it. Found by reading; not run. (t-typ-mod-06)
     pub fn all_bottom(&self) -> bool {
         ensure_sufficient(|| {
             self.with_deref(|t| match t {

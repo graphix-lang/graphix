@@ -1,0 +1,18 @@
+// lang-skill: SKILL.md says under `seq` "`let snap = known` does not help (a `let` is a name for
+// the node, it tracks)" and that zip(known, map(known, slow)) is misaligned. A passed seq step
+// sleeps, so the let keeps its step's value: the snapshot does help.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache lang-skill-seq-let-snapshot.gx   (same with --no-fusion, GRAPHIX_PAR=force)
+// Expected per the skill: snap tracks known, the zip pairs 4s with 10s.
+// Observed: ([(1, 10), (1, 10)], [4, 4]): snap stayed [1, 1] while known moved to [4, 4].
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let known = [n, n];
+let go = select n { 1 => true, _ => never() };
+let a = seq go {
+  let snap = known;
+  let states = sys::time::after_idle(duration:200.ms, array::map(snap, |x| x * 10));
+  (array::zip(snap, states), known)
+};
+sys::exit(select n { 12 => 0, _ => never() });
+a

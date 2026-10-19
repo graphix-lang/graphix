@@ -1,0 +1,14 @@
+// design/dense_delivery.md says the restart builtins clear their latches in sleep();
+// the tree keeps them (CLAUDE.md "Sleep is pause"): the doc is stale.
+// Command: timeout -s KILL 30 graphix --no-cache --no-fusion x-doc-drift-count-survives-sleep.gx
+// Doc predicts (count reset at each sleep): 1 -1 1 -1 1 -1 1 -1 1
+// Observed (state survives the sleep, as CLAUDE.md rules): 1 -1 2 -1 3 -1 4
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let t = sys::time::timer(duration:20.ms, 6);
+let n = 0;
+n <- t ~ n + 1;
+let s = select n % 2 { 0 => `A, _ => `B };
+select s {
+  `A => count(n),
+  `B => 0 - 1
+}

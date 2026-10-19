@@ -1,0 +1,20 @@
+// tui::exit ends a script with the SIGINT status 130, as a Ctrl-C would.
+// Driver: design/review-2026-10-19/repro/tui-core-ptyrun.py runs a command
+// under a PTY and types keys at given times.
+// Command (from the repo root):
+//   timeout -s KILL 60 python3 design/review-2026-10-19/repro/tui-core-ptyrun.py \
+//     20 '6=q' graphix --no-cache design/review-2026-10-19/repro/tui-core-exit-status-130.gx
+// Expected: EXIT 0 (the program asked to quit; it was not interrupted).
+// Observed: EXIT 130.
+use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
+let handle = |e: Event| on_press(e, |k| select k.code {
+  q@ `Char("q") => {
+    tui::exit(q ~ null);
+    `Stop
+  },
+  _ => `Continue
+});
+input_handler(#handle: &handle, &paragraph(&"press q"))

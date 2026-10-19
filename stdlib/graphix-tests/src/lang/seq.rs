@@ -537,6 +537,15 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
 // A block issues its statements at entry, so two calls in one block are
 // in flight together; as separate steps the second starts only when the
 // first completes. 100 ms apart either way, so a stall cannot reorder them.
+// CR claude for claude: [test-gap/low] The fixture still orders "done" against "late"
+// by wall clock, and the comment above is false: a 200 ms stall of the runtime from 150
+// ms after init delivers both deadlines together, and the block case reports "late".
+// Assert an order a stall cannot invert. Take sys::time::now at a's and at b's arrival:
+// the gap is under 200 ms for the block (both calls start in one cycle) and at least
+// 200 ms for the separate steps (b starts when a completes). A stall can only shrink
+// the first. probe:
+// design/review-2026-10-19/repro/x-rerun-6-block-issues-together-stall.sh
+// (x-rerun-6-06)
 async fn block_issues_together(mode: Mode) -> Result<()> {
     for (body, expected) in
         [("{ a <- f(1); b <- f(2) }", "done"), ("a <- f(1); b <- f(2)", "late")]

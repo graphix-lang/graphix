@@ -1,0 +1,8 @@
+// An integer literal out of its type's range is refused with no reason,
+// where a float one is told "a float literal out of its type's range".
+// command: graphix --check design/review-2026-10-19/repro/t-parser-a-int-overflow-diag.gx
+// expected: a note naming the literal out of range for u8
+// observed: Parse error at line: 8, column: 15 / the parser could not continue past this point
+//   (no note); `let a = 99999999999999999999` instead lists "Unexpected invalid signed
+//   integer" and ~35 expected tokens
+let a = u8:256

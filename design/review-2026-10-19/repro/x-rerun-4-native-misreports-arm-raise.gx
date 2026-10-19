@@ -1,0 +1,17 @@
+// x-rerun-4: #[native] on a select whose arm holds a handler-ful `?` names a
+// type-freeze miss of the same source instead of the arm-raise blocker.
+// Command: graphix --no-cache x-rerun-4-native-misreports-arm-raise.gx
+// Expected: refused, naming the real blocker: "a `?` under a handler raises an
+//   edge its arm may owe to the select's fire tracker — arm entry is the
+//   node-walk's" (what the same program prints with `let v: i64 = f(x)` at top
+//   level, see tests-lang-rest-a-arm-input-raise-native.gx in the 2026-10-12 repros).
+// Observed: "#[native] expression did not fully fuse to native code:
+//   - a region of type _ has no kernel return". GXDBG_NATIVE_ALL=1 shows the
+//   select's ExprId with two failures, the arm-raise blocker first and the
+//   freeze miss last; native_residue reports failure_for_source, the last.
+let n = 0;
+let f = |x: i64| { catch(e) n <- e ~ n + 1; #[native] select x { 2 => error(`E(x))?, _ => x } };
+let x = array::iter([1, 2, 3, 4]);
+let v = f(x);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(v, n)

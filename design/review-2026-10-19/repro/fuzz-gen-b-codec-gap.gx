@@ -1,0 +1,21 @@
+// Title: codec round trips the generator excludes (List, datetime, duration, bytes) work
+// Command: graphix --no-cache fuzz-gen-b-codec-gap.gx
+// Expected: each value reads back into its type through json / pack (toml
+//   for the list-in-struct case), so exprs.rs try_format_round_trip could
+//   draw them.
+// Observed: [<1, 2, 3>] [<(1, "a"), (2, "b")>] {x: [<`A(1), `B>]} {k: [[<1>], [<2, 3>]]}
+//   b 250.ms / c aGVsbG8= / e (2020-01-01 00:00:00 UTC, 3.us, AA==)
+//   (toml refuses a duration on write: "cannot represent duration in TOML").
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+let a: List<i64> = json::read(json::write_str([<1, 2, 3>])$)$;
+let b: List<(i64, string)> = pack::read(pack::write_bytes([<(1, "a"), (2, "b")>])$)$;
+let c: {x: List<[`A(i64), `B]>} = json::read(json::write_str({x: [<`A(1), `B>]})$)$;
+let d: {k: Array<List<i64>>} = toml::read(toml::write_str({k: [[<1>], [<2, 3>]]})$)$;
+println("[a] [b] [c] [d]");
+let du: [duration, Error<Any>] = json::read(json::write_str(duration:250.ms)$);
+println("b [du]");
+let by: [bytes, Error<Any>] = json::read(json::write_str(bytes:aGVsbG8=)$);
+println("c [by]");
+let e: [(datetime, duration, bytes), Error<Any>] = pack::read(pack::write_bytes((datetime:"2020-01-01T00:00:00Z", duration:3.us, bytes:AA==))$);
+println("e [e]");
+0

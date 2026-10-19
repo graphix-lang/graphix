@@ -1,0 +1,21 @@
+// Title: db::drop_tree silently ends every subscription on the tree; a copy kept from on_change never converges
+// Command: rm -rf /tmp/db2-drop.db; timeout -s KILL 30 graphix --no-cache db2-drop-tree-silences-subscription.gx
+// Expected: the subscription reports the drop (a DbErr from on_change, or a Remove per key), so a copy built
+// from on_change matches the tree named "t" (the gxi: the copy "holds what the tree holds once the deliveries catch up").
+// Observed: (error:`DbErr("Collection [116] does not exist"), null, [`Insert("a", 1)]): after the drop the copy still
+// holds a=1 while tree "t" does not (get "a" is null), the re-created tree's insert of "b" is never heard, and
+// on_change never fires again or errors.
+let db = db::open("/tmp/db2-drop.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "t")$;
+let sub = db::subscription::new(t);
+let i1 = db::insert(t, sub ~ "a", 1)$;
+let d = db::drop_tree(db, sys::time::timer(duration:200.ms, false) ~ "t")$;
+let t2: db::Tree<string, i64> = db::tree(db, d ~ "t")$;
+let i2 = db::insert(t2, t2 ~ "b", 2)$;
+let i3 = db::insert(t, i2 ~ "c", 3);
+let ch = db::subscription::on_change(sub);
+let all = never();
+all <- ch;
+let st = db::get(t2, sys::time::timer(duration:500.ms, false) ~ "a");
+sys::exit(sys::time::after_idle(duration:800.ms, i3) ~ 0);
+(i3, st, all)

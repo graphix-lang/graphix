@@ -218,6 +218,16 @@ callback throws.
 {{#include ../../examples/tui/input_basic.gx}}
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] This paragraph says a constant write such
+as `mode <- `Insert` "fires once when the arm becomes selected" and that both forms are
+useful. The rule as built is that a constant right-hand side fires only at the arm's
+FIRST entry, because a later entry resumes the arm. The check warns about it, and
+select.md's "Writing From an Arm" says so. Rewrite it to match: sample the event that
+selects the arm (`` k@ `Char("i") => mode <- k ~ `Insert ``), and drop "Both are
+useful". The code span `mode <- \`Insert` also renders broken, because CommonMark has no
+backslash escapes inside code spans; use ``` `` mode <- `Insert `` ```. probe:
+design/review-2026-10-19/repro/book-ui-b-const-arm-write.gx,
+design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-01) -->
 The `Up` and `Down` arms sample the key (`u ~ count + 1`). A write
 inside a select arm fires when its right-hand side fires: `count <-
 count + 1` would fire again on its own update and loop, and a constant
@@ -238,6 +248,14 @@ must sit outside it:
 
 ## Event Propagation
 
+<!-- CR claude for claude: [doc-drift/medium] This section describes propagation only
+through handlers. It leaves out that containers route each event to one child.
+LayoutW::handle_event sends it only to the `#focused` child (0 when unset),
+TabsW::handle_event only to the selected tab, and OverlayW only to the top layer. So an
+input_handler in a non-focused layout pane or an unselected tab never sees a key, with
+no warning. Say this here, and in one line under layout.md's `focused` and tabs.md's
+`selected`. Also reword tabs.md's "Keyboard Navigation" list as patterns the program
+implements itself. Found by reading; not run. (book-ui-b-02) -->
 Input handlers form a stack. Events flow from the outermost handler inward:
 
 ```graphix

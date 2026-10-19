@@ -1,0 +1,15 @@
+// Title: a script-level `type ErrChain` replaces core's as the type of every caught error.
+// Command: timeout -s KILL 10 graphix --no-cache design/review-2026-10-19/repro/t-typ-mod-errchain-shadowed.gx
+// Expected: refused (`r.ori` is core's Ori struct, `r.ori + 1` is a type error), as it is when
+//           the same text compiles inside a module (graphix-fuzz wraps it in `mod test` and refuses
+//           "cannot compute { parent: [null, Ori], .. } + i64").
+// Observed: accepted, prints (1, 0): `c.ori` is typed i64 and `c.pos` string while the values
+//           are core's structs.
+type ErrChain<'a> = {cause: i64, error: 'a, ori: i64, pos: string};
+let r = never();
+{
+  catch(e) r <- e.0;
+  error(`A(1))?
+};
+let f = |c: ErrChain<`A(i64)>| -> i64 c.ori * 2 + str::len(c.pos);
+(r.ori + 1, f(r))

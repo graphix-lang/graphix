@@ -1,0 +1,16 @@
+// Title: rep_collision reports a growing typedef as a runtime-form collision.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-grows-reported-as-collision.gx
+// Expected: either accepted (N<i64> and N<string> are told apart by the
+// first tuple element) or refused for the real reason, as
+// Indiscernible::Grows words it: "N .. whose parameters grow as it recurses,
+// so whether its members have distinct runtime forms can't be decided".
+// Observed: "this pattern can't tell N<Array<Array<Array<Array<Array<i64>>>>>>
+// from N<Array<Array<Array<Array<Array<string>>>>>>: both have the same
+// runtime form; wrap them in distinct variants"
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let x: [N<i64>, N<string>] = null;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select x {
+  N<i64> as n => 1,
+  _ => 0
+}

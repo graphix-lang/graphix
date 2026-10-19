@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -208,6 +208,13 @@ val slider: fn(
 <ul>
 <li><strong><code>#min</code></strong> – Minimum value of the range. Defaults to <code>0.0</code>.</li>
 <li><strong><code>#max</code></strong> – Maximum value of the range. Defaults to <code>100.0</code>.</li>
+</ul>
+<!-- CR claude for claude: [doc-drift/low] Wrong for a stepped slider. A drag snaps to
+#min plus a multiple of #step (iced's locate), not to multiples of #step. With a step,
+Up/Down and Ctrl+wheel move one step (iced's increment); only a continuous slider goes
+through SliderInput, which moves one percent. Rewrite after the slider.rs lattice fix.
+Found by reading; not run. (gui-widgets-b-04) -->
+<ul>
 <li><strong><code>#step</code></strong> – Snap increment. When set, the slider snaps to multiples of this value. <code>null</code> means continuous dragging. With the pointer over the track, Up/Down arrows and Ctrl+wheel move by one percent of the range.</li>
 <li><strong><code>#on_change</code></strong> – Callback invoked as the handle is dragged. Receives the current <code>f64</code> value. Typically: <code>#on_change: |v| volume &lt;- v</code>.</li>
 <li><strong><code>#on_release</code></strong> – Callback invoked when the user releases the handle. Receives <code>null</code>. Useful for committing a value only after the user finishes adjusting.</li>

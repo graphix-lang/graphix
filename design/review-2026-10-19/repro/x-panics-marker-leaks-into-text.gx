@@ -1,0 +1,14 @@
+// Title: netidx's Display prints a tuple/struct/variant's kind marker as
+// `abstract:<base64>`: str::sprintf's %s output and str::parse's error text.
+// Command: timeout -s KILL 60 graphix --no-cache x-panics-marker-leaks-into-text.gx
+// Expected: ("(1, `A(2), {x: 3})", error:`ParseError("can't cast 256 to u8: ..."))
+//   (the value in Graphix notation, the cast's message without its variant wrapper)
+// Observed: ("[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1, [abstract:EnwukQtE2EoTn2Uo4FoXw40C,
+//   \"A\", i64:2], [abstract:EnwukQtE2EoTn2Uo4FoXw40B, [\"x\", i64:3]]]",
+//   error:`ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\",
+//   \"can't cast 256 to u8: no primitive conversion\"]"))
+let v: Any = (1, `A(2), {x: 3});
+let d = str::sprintf("%s", v);
+let p: Result<u8, `ParseError(string)> = str::parse("256");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(d, p)

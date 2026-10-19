@@ -38,6 +38,29 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // any other key type stores each value tagged by its type and
 // self-delimiting.
 
+// CR claude for eric: [bug/medium] Keys arrive stripped: a bare variant is a String and
+// a payload variant an Array, and the tagged encoding orders by type first. So a tree
+// keyed by [`Z(i64), `A] puts `Z(1) before `A, although `A < `Z(1) in the language and
+// the gxi promises the language's order for first/last/get_lt/get_gt/cursor::range.
+// Encode variant keys tag first whatever their payload (for example from the marked
+// key), or change the documented order. probe:
+// design/review-2026-10-19/repro/x-kind-markers-db-variant-key-order.sh
+// (x-kind-markers-03)
+// CR claude for eric: [bug/high] Keys reach this function in data form (the tree
+// builtins list them in DATA_ARGS), and data form drops the kind markers. So members of
+// a union key type that share a data form become one key: `A and "A", (1, 2) and [<1,
+// 2>], a struct and its array of pairs. Inserting `A overwrites "A", and a tuple key
+// reads back as a list. The markers are gone too, so a bare variant (String tag) sorts
+// after every payload variant (Array tag): first() returns `B(1) although `A < `B(1).
+// That breaks the order mod.gxi promises for first/last/get_lt/get_gt/range. A cursor
+// prefix of `A also matches `AB, though cursor.gxi says other keys match exactly. Fix:
+// encode from the language form, with a tag byte per kind marker, and decode back to
+// it. Then drop the keys from DATA_ARGS, bump META_VERSION, and pin
+// variant/tuple/list/struct keys against Value::cmp. The other option is to refuse such
+// key types at db::tree. Values in these unions lose the same way, through json too.
+// probe: design/review-2026-10-19/repro/http-sqlite-db1-db-key-data-form.gx,
+// design/review-2026-10-19/repro/http-sqlite-db1-db-key-tuple-as-list.gx
+// (http-sqlite-db1-01)
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {

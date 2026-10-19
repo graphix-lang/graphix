@@ -1,0 +1,17 @@
+// Title: a whitelist sandbox keeps a loaded body from the loader's own
+// values (super::, package::, a super glob); no test pins it
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/tests-modules-image-sandbox-reaches-parent.gx
+// Expected: the three whitelisted loads refused ("super::y not defined",
+//   "package::y not defined", "y not defined"); the blacklist load, which
+//   only removes sys, reads super::y (null status).
+// Observed (HEAD 9445a1d21): exactly that. No fixture in
+//   stdlib/graphix-tests/src/lang/modules.rs or graphix-shell/tests/sandbox_whitelist.rs
+//   checks the refusals, so a resolver change that lets a sandboxed body read
+//   the loader's bindings passes the gate.
+let y = 41;
+let s1 = mod a dynamic { sandbox whitelist [core]; sig { val v: i64 }; source "let v = super::y + 1" };
+let s2 = mod b dynamic { sandbox whitelist [core]; sig { val v: i64 }; source "let v = package::y + 1" };
+let s3 = mod c dynamic { sandbox whitelist [core]; sig { val v: i64 }; source "use super::*; let v = y + 1" };
+let s4 = mod d dynamic { sandbox blacklist [sys]; sig { val v: i64 }; source "let v = super::y + 1" };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(s1, s2, s3, s4)

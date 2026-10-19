@@ -287,6 +287,13 @@ pub(super) fn gen_module(
         // `via`. Both enter the main vocabulary as T -> i64 fns.
         if chance(rng, 0.6) {
             let override_default = chance(rng, 0.5);
+            // CR claude for claude: [test-gap/low] `Tr` is only implemented for this
+            // module's abstract T and T2. No impl generic over a constructor (`impl<'a:
+            // Tr> Tr for Array<'a>`), no impl for a primitive or structural type, and
+            // no nested dispatch (Array<Array<i64>>) is ever generated. Add those impls
+            // and register `via` at i64, Array<i64> and Array<Array<i64>>. probe:
+            // design/review-2026-10-19/repro/fuzz-gen-b-trait-generic-impl.gx agrees
+            // with hand-computed values. (fuzz-gen-b-05)
             let decl = "trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };\n";
             let tw = if override_default {
                 format!("; let tw = |t| {un_body} * i64:2")

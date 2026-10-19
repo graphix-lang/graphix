@@ -179,6 +179,12 @@ run!(err_as_dyncall_arg, ERR_DYNCALL_ARG, |v: Result<&Value>| {
 
 // Interpolating a non-scalar part (`Nullable<string>` from an index)
 // node-walks the interpolation instead of crashing.
+// CR claude for claude: [doc-drift/low] The comment above is wrong twice. `words[0]` is
+// a Result, not a `Nullable<string>`, and the interpolation does not node-walk:
+// `#[native]` on it builds. CLAUDE.md lists interpolation of every part kind as fused.
+// Reword the comment to the Result-part case and put `#[native]` on the interpolation,
+// so the fixture pins that it fuses rather than only that something in the block did.
+// Checked with --expand and graphix-fuzz run. (tests-lib-b1-05)
 const INTERP_NONSCALAR: &str =
     "{ let words = [\"alpha\", \"beta\"]; \"first=[words[0]]\" }";
 run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {

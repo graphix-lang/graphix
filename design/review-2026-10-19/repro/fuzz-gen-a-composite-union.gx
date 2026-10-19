@@ -1,0 +1,14 @@
+// Title: a select over a union of composite forms (array, tuple, struct, list, variant), a shape the generator never draws
+// Command: timeout -s KILL 170 graphix-fuzz check fuzz-gen-a-composite-union.gx
+// Expected and observed: AGREE, [2, 7, 30, 102, -1]. The program is valid and checkable;
+// GenType has no union member besides Nullable(scalar) and Variant, so no generated
+// program reaches it.
+let f = |v: [Array<i64>, (i64, i64), {x: i64, y: i64}, List<i64>, `A(i64, i64)]| -> i64 select v {
+  Array<i64> as a => array::len(a),
+  (i64, i64) as (p, q) => p + q,
+  {x, y} => x * y,
+  List<i64> as l => list::len(l) + i64:100,
+  `A(p, q) => p - q
+};
+let xs: Array<[Array<i64>, (i64, i64), {x: i64, y: i64}, List<i64>, `A(i64, i64)]> = [[i64:1, i64:2], (i64:3, i64:4), {x: i64:5, y: i64:6}, [<i64:7, i64:8>], `A(i64:9, i64:10)];
+array::map(xs, |v| f(v))

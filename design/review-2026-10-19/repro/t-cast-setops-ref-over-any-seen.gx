@@ -1,0 +1,16 @@
+// Title: ref_over_any's seen set ignores params and is never popped, so the
+// second Box<_> of a tuple escapes the "reference under Any" refusal.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-ref-over-any-seen.gx
+// Expected: refused at the arm, as `(Box<&i64>, Box<i64>) as y` is
+// ("this pattern can't tell what the reference in .. refers to where the
+// scrutinee may hold Any").
+// Observed: accepted; the arm matches a &string as &i64 and `*(y.1.v) + 1`
+// logs an arith error parsing "hi" as a number.
+type Box<'a> = {v: 'a};
+let s = "hi";
+let x: (Box<Any>, Box<Any>) = ({v: 1}, {v: &s});
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select x {
+  (Box<i64>, Box<&i64>) as y => *(y.1.v) + 1,
+  _ => 0
+}

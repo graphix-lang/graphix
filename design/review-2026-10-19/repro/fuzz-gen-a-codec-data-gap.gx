@@ -1,0 +1,15 @@
+// Title: the codec round trip never draws List, duration, datetime or bytes, though json and pack round-trip them
+// Command: timeout -s KILL 30 graphix --no-cache fuzz-gen-a-codec-data-gap.gx
+// Expected: every line reads back its value (the generator's `data` refuses these types).
+// Observed: [<1, 2>] 2020-01-01 00:00:00 UTC 1.5s aGVsbG8= [<1, 2>] 1.5s aGVsbG8= 2020-01-01 00:00:00 UTC {x: [<1>]}
+let a: List<i64> = json::read(json::write_str([<i64:1, i64:2>])$)$;
+let b: datetime = json::read(json::write_str(datetime:"2020-01-01T00:00:00Z")$)$;
+let c: duration = json::read(json::write_str(duration:1.5s)$)$;
+let d: bytes = json::read(json::write_str(bytes:aGVsbG8=)$)$;
+let e: List<i64> = pack::read(pack::write_bytes([<i64:1, i64:2>])$)$;
+let f: duration = pack::read(pack::write_bytes(duration:1.5s)$)$;
+let g: bytes = pack::read(pack::write_bytes(bytes:aGVsbG8=)$)$;
+let h: datetime = pack::read(pack::write_bytes(datetime:"2020-01-01T00:00:00Z")$)$;
+let i: {x: List<i64>} = toml::read(toml::write_str({x: [<i64:1>]})$)$;
+println("[a] [b] [c] [d] [e] [f] [g] [h] [i]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

@@ -282,6 +282,12 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     shared_var(&root, &pre, types, cap, &mut out);
     labels(&root, &pre, types, cap, &mut out);
     widen_consumer(&root, &pre, types, cap, &mut out);
+    // CR claude for claude: [test-gap/medium] The hop shares `Family::WidenConsumer`
+    // with `widen_consumer`, which runs first and fills the per-family cap whenever a
+    // subject has 3 direct sites, so the hop's mutants are always dropped below. Its
+    // pin (`{ let a = 1; let w = a; let z = w + 2; z }`) passes on the direct site
+    // alone. Give the hop its own family and id, and pin that id at the let. probe:
+    // design/review-2026-10-19/repro/fuzz-mutate-hop-starved.gx (fuzz-mutate-04)
     widen_through_let(&root, &pre, types, cap, &mut out);
     variant_widen(&root, &pre, types, cap, &mut out);
     retype(&root, &pre, types, cap, &mut out);
@@ -396,6 +402,14 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
             matches!(&s.kind, ExprKind::Connect { name, deref: true, .. }
                 if name.to_string() == *r.name)
         });
+        // CR claude for claude: [bug/medium] A statement between `let r = &mut x` and
+        // the write that needs `r` writable (`let y = f(r)` with `f: |p: &mut i64|`) is
+        // refused first, and correctly. The only expected site is the write, so the
+        // lane records a false MISPLACED. Add every statement in `later[..w]` that
+        // mentions `r` to the expected spans (as `affected_stmts` does for retype), or
+        // skip the site when one does. probe:
+        // design/review-2026-10-19/repro/fuzz-mutate-ref-write-misplaced.gx
+        // (fuzz-mutate-01)
         if let Some(w) = writer
             && writes < cap
             && !later[..w].iter().any(|s| typemorph::binds_after(s, &r.name))
@@ -492,6 +506,11 @@ fn abstract_widen(
 /// Does `e` bind a name its surroundings see: a dynamic module outside
 /// any block or lambda of its own? Under a select arm the name would be
 /// scoped.
+// CR claude for claude: [structure/low] The doc says a select arm scopes the name, but
+// the code descends into arms and guards via `for_each_child`. `typemorph::leaks_binds`
+// answers the same question and stops at the scrutinee. Delete this and call
+// `typemorph::leaks_binds` (made pub(crate)) so the scoping rule lives in one place.
+// Found by reading; not run. (fuzz-mutate-06)
 fn binds_outward(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Module { .. } => true,
@@ -848,6 +867,14 @@ fn shared_var(
             ((a + 1)..params.len()).find(|b| same(params[a], params[*b])).map(|b| (a, b))
         });
         let Some((a, b)) = pair else { continue };
+        // CR claude for claude: [bug/medium] The map's type for the first argument is
+        // what the base resolved. For a `let z = never()` that is the type this very
+        // call decided, so it is not a fixed type the call must meet. `g(z, "tm")` is
+        // then a valid program and gets reported as a LEAK. Skip the site when
+        // `open_init` holds for this argument, using its enclosing top-level statement,
+        // as `retype` and `references` do. probe:
+        // design/review-2026-10-19/repro/fuzz-mutate-shared-var-open-leak.gx
+        // (fuzz-mutate-02)
         let Some(t) = types.of(&ap.args[a].1).first() else { continue };
         if !concrete(t) || primitive(t).is_none() {
             continue;
@@ -1059,6 +1086,14 @@ fn widen_consumer(
     let consumer_callee = |f: &Expr| match &typemorph::unparen(f).kind {
         ExprKind::Ref { name } => {
             let name = name.to_string();
+            // CR claude for claude: [bug/medium] A module path is not always a rigid
+            // consumer. A subject's own `file-v1` module can define `let z = never();
+            // let f = |y| z <- y`, and `m0::f(<widened>)` then widens `z`, so the
+            // checker rightly accepts it and the lane reports a LEAK. The `untyped`
+            // scan only sees the body. Pass the aux module names into `probes` and
+            // treat `m::f` as a consumer only when `m` is not one of them. probe:
+            // design/review-2026-10-19/repro/fuzz-mutate-module-callee-leak.gx
+            // (fuzz-mutate-03)
             name.contains("::") || !untyped.contains(name.as_str())
         }
         _ => false,

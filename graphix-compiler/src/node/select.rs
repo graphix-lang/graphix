@@ -330,6 +330,26 @@ fn warn_birth_only<R: Rt, E: UserEvent>(
         // a handler's action runs on its errors, not at an entry
         NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
         NodeView::Connect(c) if reads_nothing(&c.node) => warn(&c.spec, "this write"),
+        // CR claude for eric: [bug/medium] This warns on every Async/Io builtin call
+        // over constants, but the standing interests re-attach or resume at a wake: net
+        // subscribe/list/publish/rpc, timers, watches. For those the warning is false,
+        // and its advice tells the user to rewrite correct code. A constant-path
+        // sys::net::subscribe in a re-entered arm warns, yet delivers at every entry. A
+        // constant `sys::time::timer(10.ms, true)` in an arm warns, yet keeps ticking
+        // after each re-entry. The builtin needs a fact of its own for this (e.g. a
+        // BuiltIn const saying it resumes at a wake) that this check consults. Effect
+        // does not carry it. probe:
+        // design/review-2026-10-19/repro/sys-net-birth-only-warning-subscribe.gx
+        // (sys-net-04)
+        // CR claude for claude: [bug/medium] Only a static builtin is classified here.
+        // A call to a user function that wraps an effect, with constant arguments, acts
+        // only at the arm's first entry exactly as `println("x")` does, but the check
+        // says nothing. CLAUDE.md promises a warning for an effect call reading no
+        // variable. Fix: when ctx.bind_to_lambda resolves the site's function to a
+        // non-builtin LambdaDef, warn when its definition's facts (LambdaDef::facts)
+        // are io or async. Add a warning pin. probe:
+        // design/review-2026-10-19/repro/c-select-seq-birth-warn-misses-lambda.gx
+        // (c-select-seq-02)
         NodeView::CallSite(cs)
             if cs.arg_nodes().all(|a| reads_nothing(a))
                 && super::callsite::static_builtin(ctx, cs).is_some_and(|b| {
@@ -504,6 +524,18 @@ impl Reach {
         };
         let informative = itype != Type::Primitive(BitFlags::empty());
         if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
+            // CR claude for claude: [bug/high] This settle copies a slice pattern's
+            // per-element Set of open cells into the scrutinee (Array<['a, 'b, 'b,
+            // ..]>), and PendingSettle::Told then reads those cells as foreign open
+            // members and refuses: "may share '_a's runtime form: annotate it". So `let
+            // is_empty = |a| select a { [] => true, [_, ..] => false }`, `|a| select a
+            // { [h, ..] => h, [] => never() }` and `|l| select l { [<h, t..>] => h,
+            // [<>] => 0 }` are all refused. Swapping the arms, or writing `a:
+            // Array<'e>`, makes them pass. Fix: settle against the predicates with each
+            // slice element Set collapsed to one cell (the per-element Set is for
+            // narrowing only), or have `told` skip cells the arm's own predicate holds.
+            // probe: design/review-2026-10-19/repro/c-pattern-generic-slice-refused.gx
+            // (c-pattern-03)
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();
@@ -539,6 +571,16 @@ impl Reach {
         checking: bool,
     ) -> Result<()> {
         let empty = Type::Primitive(BitFlags::empty());
+        // CR claude for claude: [readability/low] A structure arm with no type test
+        // over a union holding an open member (`(s, n)` over [(string, i64), 'a]) is
+        // counted as covering the whole scrutinee, so a following `_ => 0` is refused
+        // here as "unreachable arm". That arm is reachable, since 'a may be anything.
+        // Removing it, as the message invites, gives the real refusal ("this pattern
+        // tests for (string, i64) among 'a ... annotate it"). Do not let matches_every
+        // or the cover count a structure pattern as covering an open member, so the
+        // settle's refusal is the one reported. probe:
+        // design/review-2026-10-19/repro/x-rerun-6-unreachable-arm-open-member.gx
+        // (x-rerun-6-04)
         if checking && (self.wildcard || self.atype == empty) {
             bailat!(
                 site,
@@ -868,6 +910,15 @@ struct Leaf {
 
 /// The heads `t` admits when it is a finite set of them: `bool`, or a
 /// union of variants.
+// CR claude for claude: [bug/medium] The pool has no null head. heads gives no domain
+// for a position whose type holds null, and head_of ignores a `null` literal. So `P(`A)
+// => 1, `P(null) => 0` over `P([`A, null]) is refused as non-exhaustive, and so are
+// (`A, n) / (null, n) over ([`A, null], i64) and {a: null} beside {a: i64} as s. A
+// top-level null arm covers null, and CLAUDE.md says a null literal covers null, so
+// option payloads are the gap. Add Head::Null: head_of reads a null literal, and heads
+// admits null members next to bools or variants. probe:
+// design/review-2026-10-19/repro/x-typecheck-patterns-null-head-pool.gx
+// (x-typecheck-patterns-07)
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, t, &mut members)?;
@@ -1036,6 +1087,20 @@ impl Shape {
     /// The scrutinee's member of this shape: the type a complete pool
     /// group covers. A struct pattern names some of its fields, so it pools
     /// only where one member has them all.
+    // CR claude for claude: [bug/high] member returns the FIRST union member of the
+    // shape for Tuple, Variant and Abstract, whichever member the atom actually tests.
+    // LiteralPool::claim then pools the arm against that member and covers it when the
+    // group completes. Over [Box<bool>, Box<i64>], `Box(true) => 1, Box(false) => 2,
+    // Box<bool> as b => 3` is accepted, the group having covered Box<i64>, and Box(3)
+    // matches no arm at run time. Over [(bool, i64), ([`A, `B], string)], the arms
+    // `(`A, s)` and `(`B, s)` are pooled against (bool, i64), and PoolGroup::covers is
+    // vacuously true for an arm that matches none of that member's heads. So a live arm
+    // is refused as dead
+    // (design/review-2026-10-19/repro/x-typecheck-patterns-tuple-pool-member.gx).
+    // Choose the member the arm's narrowed predicate can match, and stay unpooled when
+    // several can, as Struct already does. probe:
+    // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-pool-member.gx
+    // (x-typecheck-patterns-03)
     fn member(&self, env: &Env, scrut: &Type) -> Result<Option<Type>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, scrut, &mut members)?;
@@ -1280,6 +1345,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // the binds by that shape, and no guard sees the value an earlier
         // arm claimed (`open` is the chain still running at arm `i`).
         // An arm's shape test, which the chain below reuses.
+        // CR claude for claude: [perf/low] This is sized by every arm, but only the
+        // guard pre-pass (arms up to the last guarded) fills it. A select with more
+        // than 16 arms heap-allocates it on every update, even with no guard, when it
+        // stays all None. Fix: size it `guarded.last().map_or(0, |l| l + 1)` and read
+        // it in the chain with `shaped.get(i).copied().flatten()`, falling back to
+        // shape_matches. Found by reading; not run. (c-select-seq-04)
         let mut shaped: SmallVec<[Option<bool>; 16]> = smallvec![None; arms.len()];
         let live = arg.value.as_ref().filter(|_| !arg.tag.is_bottom());
         let mut open = live.is_some();
@@ -1294,6 +1365,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 open &= reach.is_none();
                 continue;
             }
+            // CR claude for claude: [bug/high] The tentative bind takes the scrutinee's
+            // tag. In a re-match driven by an earlier arm's guard flip that tag is
+            // STALE. A guard the chain passed over when the scrutinee last fired then
+            // sees a new value with no fire, and dense_gate makes it ride the verdict
+            // it computed for an older value. In the probe, `x if x > 5` takes x = 0 on
+            // the node-walk ("big"), while the JIT says "other". `y if in2 && y > 5`
+            // fails the same way, because `y > 5` rides while `&&` recomputes. Fix:
+            // keep a bit per guarded arm, set when the scrutinee fires and the chain
+            // passes the arm by. While it is set, bind FIRED so the guard recomputes
+            // over the value it is given. Pin it in lang::select. probe:
+            // design/review-2026-10-19/repro/c-select-seq-stale-guard-rebind.gx
+            // (c-select-seq-01)
             let saved = reach.map(|v| pat.bind_tentative(ctx, v, arg_prod));
             if let Some(t) = pat.update(ctx) {
                 guard_tags.push((i, t));
@@ -1705,6 +1788,20 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                         &scrut,
                     ) {
                         Err(_) => *d = true,
+                        // CR claude for eric: [bug/medium] A partial struct pattern
+                        // that completes against no struct member keeps its inferred
+                        // predicate, the exact struct of the fields it names. Over Any
+                        // the arm `{a, ..}` therefore matches {a: 1} but not {a: 1, b:
+                        // 2} or {b: 2, a: 1}: the `..` is silently ignored, while one
+                        // level down (`({a, ..}, n)` over (Any, i64)) the same pattern
+                        // matches by name. An unannotated scrutinee is refused with
+                        // "non exhaustive struct matches require type annotations", but
+                        // Any passes. Either refuse a partial struct pattern that
+                        // nothing completed, here and after the deferred completion, or
+                        // make the top-level test match by name as the nested one does.
+                        // probe:
+                        // design/review-2026-10-19/repro/x-typecheck-patterns-partial-struct-over-any.gx
+                        // (x-typecheck-patterns-05)
                         Ok(None) => (),
                         Ok(Some(t)) => {
                             pat.structure_predicate.realign(&ctx.env, &t)?;

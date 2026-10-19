@@ -219,6 +219,12 @@ fn reduced_feature_build_drops_packages() {
     // present packages check; dropped packages fail to resolve their module
     assert!(check("use str;\nstr::len(\"hi\")\n"), "use str should check");
     assert!(check("use re;\nre::is_match(#pat:\"x\", \"x\")\n"), "use re should check");
+    // CR claude for claude: [test-gap/medium] Both negative checks are vacuous. A
+    // program that is only `use http` is refused by every build, the full one included
+    // ('a use declaration is not an expression'), so these asserts pass even if the
+    // feature drop did nothing. Write `use http;\n1\n` and `use sqlite;\n1\n`: the full
+    // binary accepts them (exit 0), so a refusal here means the package is gone. probe:
+    // design/review-2026-10-19/repro/package-vacuous-feature-drop-test.sh (package-04)
     assert!(!check("use http\n"), "use http should fail (feature dropped)");
     assert!(!check("use sqlite\n"), "use sqlite should fail (feature dropped)");
 }

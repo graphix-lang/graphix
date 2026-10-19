@@ -1,0 +1,15 @@
+// Title: a union cast of a held variant takes the first tagged member that
+// converts, not the member the value already inhabits; data composites
+// always take the first member that converts.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-union-cast-converts-held.gx
+// Expected: (`A(1.5, 2.5), (1.5, 2.5), (1.5, 2.5), `A(1.5, 2.5)): the held
+// variant is a value of `A(f64, f64), as the held tuple is of (f64, f64)
+// (Type::Set's "a member the value already inhabits wins"); the data reads
+// arguably the same (needs a ruling).
+// Observed: (`A(1, 2), (1.5, 2.5), (1, 2), `A(1, 2))
+let v: Any = `A(1.5, 2.5);
+let t: Any = (1.5, 2.5);
+let a: Result<[(i64, i64), (f64, f64)], [`JsonErr(string), `InvalidCast(string)]> = json::read(r"[1.5, 2.5]");
+let b: Result<[`A(i64, i64), `A(f64, f64)], [`JsonErr(string), `InvalidCast(string)]> = json::read(r#"["A", 1.5, 2.5]"#);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(cast<[`A(i64, i64), `A(f64, f64)]>(v), cast<[(i64, i64), (f64, f64)]>(t), a$, b$)

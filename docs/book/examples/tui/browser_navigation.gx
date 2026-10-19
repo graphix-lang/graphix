@@ -17,6 +17,12 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
     _ => `Continue
 });
 
+// CR claude for claude: [bug/low] The browser below gets `#size: {width: 80, height:
+// 24}`. browser.gx sizes its table from it (`row_slots = size.height - 1`), so this
+// lists at most 23 rows in any terminal. browser_basic.gx caps at 9 with its 40x10.
+// browser.gxi and the book say to pass the enclosing block's `#size` output. Do what
+// browser_commands.gx does: `let size: Size = never()` and `block(#size: &mut size,
+// ..)`. Found by reading; not run. (examples-tui-08)
 input_handler(
     #handle: &handle_event,
     &browser(

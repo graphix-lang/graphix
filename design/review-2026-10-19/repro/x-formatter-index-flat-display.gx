@@ -1,0 +1,24 @@
+let f = |a: Array<i64>, i: i64| {
+    let v = a[select i {
+        // first
+        0 => 0,
+        _ => i - 1
+    }];
+    v$
+};
+let m = {"k" => 1};
+let w = m{select 1 {
+    // key
+    1 => "k",
+    _ => "j"
+}};
+let long = [1, 2, 3][array::len([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]) - 19..];
+// Title: an index, map key or slice bound is printed flat through Display, ignoring layout
+// Command: graphix fmt --stdout x-formatter-index-flat-display.gx
+// Expected: the index expression laid out and indented like any child (comment
+//   lines indented, no trailing spaces, lines within 90 columns).
+// Observed: `a[select i { \n// first\n0 => 0, _ => i - 1 }]` with the comment
+//   at column 0 and a trailing space after `{`; the same for `m{..}`; for the
+//   slice, the source `[1, 2, 3]` is broken one element to a line while the
+//   suffix stays on one line past the 90-column width. The output reparses, so the guard passes.
+(f([1, 2], 1), w, long)

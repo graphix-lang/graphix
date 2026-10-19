@@ -1,0 +1,19 @@
+// A returned closure whose labeled default reads the enclosing function's
+// parameter: the check accepts, the build refuses with an internal
+// instance-typing error.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-default-reads-outer-param.gx  (exit 0)
+//   graphix --no-cache x-typecheck-generics-default-reads-outer-param.gx
+//   graphix-fuzz check x-typecheck-generics-default-reads-outer-param.gx
+// Expected: runs and prints [1, 2] (the closure's #d defaults to mk's z).
+//   It does when z is annotated (`|z: i64|`), or when mk calls g itself
+//   instead of returning it.
+// Observed: "in the instance of mk(1) at this call site: an instance at
+//   fn(z: i64) -> fn(?#d: _, x: i64) -> Array<[_, i64]> of a definition typed
+//   fn(z: _) -> fn(?#d: '_, x: '_) -> Array<['_, '_]>"; mk's definition
+//   settled z to ⊥ because only the nested default reads it.
+//   GRAPHIX_NO_SUBST=1: "type mismatch _ does not contain i64".
+//   graphix-fuzz check: DIVERGENCE (check accepted what the build refused).
+let mk = |z| { let g = |#d = z, x| [d, x]; g };
+let f = mk(1);
+f(2)

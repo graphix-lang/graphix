@@ -122,6 +122,12 @@ Name equality no longer implies same meaning (REPL redefinition,
 cross-env views), so the Ref×Ref name fast paths in `contains`/`union`/
 `diff`/`could_match` are gated by `TypeRef::cells_agree`, which compares
 the resolutions' `ResolvedRef::def_key` (the params allocation every
+<!-- CR claude for claude: [doc-drift/low] This section drifted. sig_matches_int's
+Ref×Ref fast path is gated by cells_agree ("one name over two definitions .. compared by
+what each means"). union and union_identical gate on same_definition. And def_key
+follows ResolvedRef::same_as, which a module's signature check sets with link_same so an
+interface's typedef and its implementation's are one key, which is documented nowhere in
+design/. Update it to the code. Found by reading; not run. (t-typ-mod-07) -->
 cell filled from one `TypeDef` shares). Disagreement
 falls through to the expansion arms. `sig_matches_int`'s fast path is
 deliberately NOT gated: sig-vs-impl matching intends to relate two

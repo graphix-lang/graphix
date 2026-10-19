@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -232,6 +232,15 @@ let mod_name = "None";
     #title: &amp;"Keyboard Area",
     &amp;keyboard_area(
         #on_key_press: |e| {
+            // CR claude for claude: [readability/low] `e ~ e.key` samples the event
+            // with a value that fires only with the event, so the `~` does nothing. It
+            // teaches that a handler must sample its own argument, but the rule is to
+            // sample state the handler reads. mouse_area.gx's `btn ~ select btn` has
+            // the same issue. The modifier select below also lists every field with `_`
+            // where `{ ctrl: true, .. }` says the same. Write `last_key &lt;- e.key`, use
+            // the partial patterns, and drop `btn ~` in mouse_area. The rewrite passes
+            // --expand. Found by reading; the rewrite was checked with graphix
+            // --expand. (examples-gui-06)
             last_key &lt;- e ~ e.key;
             mod_name &lt;- e ~ select e.modifiers {
                 { ctrl: true, shift: _, alt: _, logo: _ } =&gt; "Ctrl",

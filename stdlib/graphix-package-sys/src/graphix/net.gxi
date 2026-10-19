@@ -1,6 +1,13 @@
 type Table = { rows: Array<string>, columns: Array<string> };
 type RpcArg<'a> = { default: 'a, doc: string };
 
+// CR claude for claude: [doc-drift/medium] The doc says a wake writes the standing
+// value again. It does not: a wake re-attaches to the path and writes only when the
+// value (or the path) fires, which lib_tests::net::net_write_not_repeated_after_wake
+// pins and the wake-is-a-resume rule requires. An arm that sleeps and wakes with an
+// unchanged value produces 1 write, not 2. Change the doc to say that. probe:
+// design/review-2026-10-19/repro/gx-stdlib-net-write-wake.gx Also reported as
+// (tests-lib-b2-03), (sys-net-06). (gx-stdlib-03)
 /// Write the value to the specified path. When its arm wakes, write the
 /// standing value again.
 val write: fn<'a: Data>(path: string, value: 'a) -> Result<_, `WriteError(string)>;

@@ -1,0 +1,11 @@
+// json::read rounds every number outside i64/u64 through f64 before the cast to the target
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/small-pkgs-json-number-via-f64.gx
+// Expected: (error:`InvalidCast(..), error:`InvalidCast(..), 9007199254740993, 12345678901234567890.123456789)
+//   (-9223372036854775809 and -9223372036854776000 do not fit an i64; the text names the others exactly)
+// Observed: (-9223372036854775808, -9223372036854775808, 9007199254740992, 12345678901234567168.)
+let a: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read("-9223372036854775809");
+let b: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read("-9223372036854776000");
+let c: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read("9007199254740993.0");
+let d: Result<decimal, [`JsonErr(string), `InvalidCast(string)]> = json::read("12345678901234567890.123456789");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(a, b, c, d)

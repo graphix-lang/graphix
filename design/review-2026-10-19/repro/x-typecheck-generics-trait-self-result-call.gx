@@ -1,0 +1,19 @@
+// A call to a trait method that takes `self` only in its result passes the
+// check and is refused by the build.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-trait-self-result-call.gx  (exit 0)
+//   graphix --no-cache x-typecheck-generics-trait-self-result-call.gx
+//   graphix-fuzz check x-typecheck-generics-trait-self-result-call.gx
+// Expected: the check and the build agree (CLAUDE.md: such a method is
+//   never dispatched by a call, so `Mk::mk(1)` is refused by both).
+// Observed: --check exits 0; the run fails "Mk::mk called without its self
+//   argument"; graphix-fuzz check: DIVERGENCE — the check accepted what the
+//   build refused.
+trait Mk {
+  val mk: fn(x: i64) -> self
+};
+impl Mk for i64 {
+  let mk = |x| x
+};
+let a: i64 = Mk::mk(1);
+a

@@ -430,6 +430,18 @@ fn assertion_failure<R: Rt, E: UserEvent>(
                  iteration then keeps its own activation and the loop is not \
                  constant-space",
             ),
+            // CR claude for claude: [readability/medium] This message is given for
+            // every pure TailCalls body. But mark_recursion also lands there when the
+            // body's Io does not follow its formals (io_follows), and
+            // structural_tail_loop does when a handler-ful `?` does not
+            // (claims_no_site_memory). For those the message lists causes the body does
+            // not have (a labeled, variadic or opaque formal, a collection operation)
+            // and never names the println or the raise. Record why the loop was refused
+            // with the TailCalls verdict and name the Io call or `?` site in the
+            // message. attributes.rs has no fixture for either cause: add one each.
+            // probe:
+            // design/review-2026-10-19/repro/tests-lang-rest-a-tail-recursive-io-diagnostic.gx
+            // (tests-lang-rest-a-04)
             RecursionKind::TailCalls => Some(
                 "#[tail_recursive]: every recursive call is in tail position, but \
                  no loop is built — the loop rebinds positional formals of types \
@@ -1627,6 +1639,17 @@ pub(crate) fn fires_with<R: Rt, E: UserEvent>(
 /// ids it binds, and each reference's cell, which a reference (and a
 /// moving place its path) publishes in the cycle it fires for a later
 /// `*r` to read.
+// CR claude for claude: [bug/high] A reference made inside a callee's body is never
+// counted as a publication: `publishes` and the `cells` scan in `independent` walk only
+// the sibling's own tree (for_each_node, Refs::without_callees). A ByRef with a Channel
+// referent delivers its cell every cycle its value fires, so a later sibling that
+// dereferences a reference to that cell is forked as independent and reads the frozen
+// parent. Fix: have local_summary record that a ByRef was reached, join it through
+// instance_summaries, and treat a sibling or statement carrying it as a non-empty
+// publication for a later `reads.refs`, in `independent` and in `plan_runs`. probe:
+// design/review-2026-10-19/repro/c-analysis-branch-callee-ref-cell.gx (serial
+// deref=10..40, GRAPHIX_PAR=force deref=0, GRAPHIX_PAR_AUDIT=1 panics; #[parallel] on
+// the tuple is accepted). (c-analysis-branch-01)
 fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
     let mut refs = Refs::without_callees();
     n.refs(&mut refs);
@@ -1650,6 +1673,18 @@ fn publishes<R: Rt, E: UserEvent>(n: &Node<R, E>, published: &mut Vars) {
 /// one, to ask again once it is bound. A call site decides its arguments
 /// again at each bind (`CallSite::clear_prepared_bind`), a collection its
 /// slots once they are bound to a new callback (`update_slots`).
+// CR claude for claude: [bug/high] A verdict this returns while a dynamic call is bound
+// to a pure function outlives the call's rebind: local_summary counts a call with no
+// static target as its current instance, and ForkSite::decide_siblings keeps the answer
+// forever. Only a call's own arguments and a slot site decide again at a rebind, so a
+// tuple, an operator or an enclosing call over `h(..)` keeps forking after `h` becomes
+// a function that calls a queuefn wrapper, and the queue sees the calls out of order.
+// Fix: count a call with no static target as opaque here, as parallel_eval.md §3.2 says
+// (the slot site's own slot calls excepted, since SlotSite redecides), or make a rebind
+// invalidate the verdicts of the fork sites above it. probe:
+// design/review-2026-10-19/repro/c-analysis-branch-stale-verdict-after-rebind.gx
+// (serial order 41,42,43,44; GRAPHIX_PAR=force 44,41,42,43, varying).
+// (c-analysis-branch-02)
 pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ctx: &CompileCtx<R, E>,
@@ -1712,6 +1747,18 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // reaches what one publishes: with no reference made before the last
     // sibling and none read through or opaque, the ordered calls decide,
     // and no sibling's reads need collecting.
+    // CR claude for claude: [perf/medium] [perf/medium] The first-update cost that
+    // x-perf-compile-03 describes is not confined to deep chains. A left-associated
+    // operator run `f(x) + g0(x) + ... + gK(x)` nests K fork sites, each with f(x) in
+    // its left operand, so `accesses` collects f's whole reachable static graph K
+    // times. That cost compounds through every caller. With 40 functions of 40-term
+    // sums (about 1600 instances, depth 40), the first value takes 1.09 s under the
+    // default GRAPHIX_PAR=auto against 0.24 s off. Depth 25 x 160 terms: 5.4 s against
+    // 0.41 s (debug, --no-fusion). This raises the priority of deciding these sites
+    // once from analysis-time summaries, as the open CR proposes. Until then, a site
+    // whose operand is a fork site of the same kind can reuse that child's summary.
+    // probe: design/review-2026-10-19/repro/x-perf-compile-par-auto-operator-runs.gx
+    // (x-perf-compile-03) (x-perf-compile-02)
     let flags = accesses(children.clone(), ctx, Detail::Flags);
     let mut cells = Vars::default();
     let n = flags.len();
@@ -1891,6 +1938,18 @@ fn plan_machines<R: Rt, E: UserEvent>(
                 written.union(&s.writes);
             });
             for (id, c) in caps.iter() {
+                // CR claude for eric: [risk/medium] A write through a reference never
+                // makes a seqq capture live (Vars::names skips reference targets on
+                // purpose). A body doing `*r <- a + 1` with `r = &mut a` reads `a` from
+                // the enqueue-time snapshot on every run, so three queued requests all
+                // write 1: a ends at 1 while `direct <- direct + 1` beside it reaches
+                // 3. That is the read-modify-write loss live captures exist to prevent
+                // (seq_blocks.md §8). The summaries already count a deref write as
+                // every variable for step timing. Either count it here too (every
+                // capture live once a step writes through a reference), or document
+                // that such a body reads its enqueue-time value. probe:
+                // design/review-2026-10-19/repro/x-engine-seq-errors-seqq-ref-write-stale-capture.gx
+                // (x-engine-seq-errors-04)
                 let live = written.names(&c.live_id);
                 c.is_live.store(live, Ordering::Relaxed);
                 if live {

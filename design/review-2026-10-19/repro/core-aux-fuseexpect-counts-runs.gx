@@ -1,0 +1,16 @@
+// core-aux: run!'s FuseExpect judges kernel RUNS sampled after the first value, not fused regions
+// Command: timeout -s KILL 120 /home/eric/tmp/review-2026-10-19/bin/graphix-fuzz run core-aux-fuseexpect-counts-runs.gx
+// Observed: "fusion: attempted=6 fused=1": the program builds one fused region
+//   (`f`'s call in the select arm), but the first value of the result is 0,
+//   produced 500 ms before the region first runs.
+// As a run! fixture (`let result = { .. }`) annotated `FuseExpect::None`, its
+//   `jit` test passes: run_mode reads Control::invocations() right after the
+//   first update, when no kernel has run, so check_fuse_expectation sees
+//   fusion == 0. Annotated `FuseExpect::Jit`, it fails. Expected: the
+//   annotation is judged by whether a region fused (FusionStats::fused), as
+//   FuseExpect's doc ("produces no fused kernel at all") and CLAUDE.md
+//   ("asserts WHETHER anything fuses") say.
+let t = sys::time::timer(duration:500.ms, false);
+let f = |v: i64| -> i64 v * 3 + 1;
+let r = select t { _ => f(cast<i64>(t)$) };
+any(0, r)

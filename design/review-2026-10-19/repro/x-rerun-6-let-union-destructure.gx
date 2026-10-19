@@ -1,0 +1,18 @@
+// x-rerun-6 (x-typecheck-patterns-02 still reproduces at the let site): an
+// irrefutable tuple or struct `let` over a union of same-shaped members is
+// refused, while the same pattern as a select arm is accepted and runs.
+// Bind::compile checks the let's shape with `ptyp.any_as_tvar().contains(typ)`,
+// which binds the pattern's cells to the first member, instead of narrowing
+// each cell to the union of its parts over every member (Type::narrow_pattern,
+// which the select arm uses since the x-typecheck-patterns-02 fix).
+// command: graphix --no-cache x-rerun-6-let-union-destructure.gx
+// expected: ("1 s", "s 1"), as `select v { (x, y) => "[x] [y]" }` prints
+// observed (HEAD 9445a1d21): refused, "refutable patterns are not allowed in
+//   let: (i64, string) matches only part of [(i64, string), (string, i64)]";
+//   the same for `let {x, y} = v` over [{x: i64, y: string}, {x: string, y: i64}]
+let f = |v: [(i64, string), (string, i64)]| {
+  let (x, y) = v;
+  "[x] [y]"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(f((1, "s")), f(("s", 1)))

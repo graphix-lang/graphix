@@ -88,6 +88,17 @@ impl<'a> Completer<'a> {
             .filter(|(pos, end, _)| *pos <= cursor && cursor <= *end)
             .max_by_key(|(pos, end, _)| (*pos, Reverse(*end)));
         let floor = around.map(|(pos, _, _)| pos).unwrap_or_default();
+        // CR claude for claude: [bug/medium] An entry the parser did not write (every
+        // seq-desugared expr) has end (0,0), so it passes `*end <= cursor` wherever it
+        // stands, even after the cursor, and is taken as the statement before the
+        // cursor. Its scope then hides every block local above a later `seq` in the
+        // same function: no `inner_local` at `let r = { let inner_local = q + 1;
+        // inner_local }` followed by `seq q { .. }`, and nothing at `l.` in
+        // netidx-admin's tui/local.gx. Make ScopeMapEntry::end an Option (as
+        // ExprTypeSite::end is), push `spec.end.get()` in compile_inner, and skip
+        // end-less entries here and in `defining`. probe:
+        // design/review-2026-10-19/repro/x-lsp-probe-seq-hides-block-locals.py
+        // (x-lsp-probe-01)
         let before = entries()
             .filter(|(pos, end, _)| {
                 floor <= *pos && *end <= cursor && Some(*pos) != around.map(|a| a.0)
@@ -317,6 +328,14 @@ impl<'a> Completer<'a> {
         let part = typed_path(&typed.path);
         // the env is the last check's, which holds every binding of this file
         let defining = self.defining();
+        // CR claude for claude: [bug/low] In a module with an interface, the env's
+        // binding for a name is the interface's `val` (ori is the .gxi), so in_file is
+        // false and this filter never applies. Inside `let f = |..| { .. }` completion
+        // then offers `f`, which the check refuses there ("f not defined"). Map a sig
+        // bind to its implementation through ide.sig_links before testing the file and
+        // position. probe:
+        // design/review-2026-10-19/repro/x-lsp-probe-own-name-via-interface.py
+        // (x-lsp-probe-06)
         let unbound = |b: &Bind| {
             in_file(&b.ori, self.file) && (zero_based(b.pos) > self.cursor || defining(b))
         };

@@ -122,6 +122,18 @@ parser! {
                 attempt(string("\"\"\"")),
                 string("\"\"\""),
                 (
+                    // CR claude for eric: [bug/medium] A string that spans lines keeps
+                    // the `\r` of every CRLF line ending, in all three forms: a plain
+                    // string (`chunk_part`), a template (`triple_run`) and a raw string
+                    // (`raw_string`). Only this opener newline is CRLF-aware. So the
+                    // same program computes different strings from an LF file and a
+                    // CRLF file: `"""\nab\ncd"""` has length 5 vs 6. A Windows checkout
+                    // with core.autocrlf changes the program's values. Decide the rule:
+                    // either read CRLF as LF before parsing (as rustc does), or fold
+                    // `\r\n` to `\n` in each string parser. Then pin both endings.
+                    // probe:
+                    // design/review-2026-10-19/repro/t-parser-a-crlf-string-values.sh
+                    // (t-parser-a-01)
                     optional(attempt(string("\r\n")).or(string("\n"))),
                     many(choice((
                         splice_part(),

@@ -1,0 +1,15 @@
+// Title: `c ~ 5` keeps standing (and re-delivers with its tuple) after its trigger `c`
+// went bottom, while the sampler organic_firing.md calls equivalent,
+// `select c { _ => 5 }`, goes bottom with it (as once(c) and every dense_gate! node do).
+// Command: timeout -s KILL 30 graphix --no-cache tests-lib-b1-sample-rides-bottom-trigger.gx
+//   (same with --no-fusion; same for `c ~! 5`)
+// Expected (R1/R3 of design/dense_delivery.md, "bottom in => bottom out"): (0, 5) only,
+//   as `(y, select c { _ => 5 })` gives.
+// Observed: (0, 5) then (1, 5): the sample rides its last value through the bottom trigger.
+let t = 0;
+t <- sys::time::timer(duration:20.ms, false) ~ 1;
+let c = select t { 0 => 7, _ => never() };
+let y = 0;
+y <- sys::time::timer(duration:80.ms, false) ~ 1;
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(y, c ~ 5)

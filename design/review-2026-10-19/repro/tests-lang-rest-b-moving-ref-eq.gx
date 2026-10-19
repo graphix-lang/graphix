@@ -1,0 +1,17 @@
+// Title: no pin for "a moving reference compares by where it points now"
+//        and "paths are compared as written" (design/place_references.md).
+// Command: timeout -s KILL 180 graphix-fuzz run tests-lang-rest-b-moving-ref-eq.gx
+// Expected (and observed today, both engines):
+//   Trace([0:true 1:true 2:true 3:false 4:false]) for `n ~ (r == s)`;
+//   `&a[-1] == &a[1]` is false.
+// This is the behaviour a pin should hold; byref_eq_compares_targets
+// compares only fixed places.
+let n = 0;
+n <- select n { k if k < 4 => k + 1, _ => never() };
+let a = [1, 2];
+let i = 0;
+i <- select n { 2 => 1, _ => never() };
+let r = &a[i];
+let s = &a[0];
+let neg = &a[-1] == &a[1];
+n ~ ((r == s) && !neg)

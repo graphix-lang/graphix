@@ -240,6 +240,15 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         tv.with_value(|v| {
             let [disc, payload] = match (p, v) {
                 // A narrow Value's upper payload bytes are padding.
+                // CR claude for claude: [readability/low] The comment above is wrong:
+                // pack_value_to_u64 returns value_words' payload, which sign- or
+                // zero-extends narrow scalars, so no byte is padding.
+                // pack_value_to_u64's doc in emit/jit.rs says a None makes the caller
+                // substitute a tainted placeholder, but this arm panics. It also
+                // accepts Z32/Z64/V32/V64 for the fixed-width prim, so a varint in an
+                // i64/u64 slot would be relabeled rather than reported by `mismatch`.
+                // Drop the comment, fix that doc, and test the exact Value variant
+                // here. Found by reading; not run. (f-kernel-05)
                 (ParamKind::Scalar(prim), v) => match pack_value_to_u64(v, *prim) {
                     Some(payload) => [prim_to_value_disc(*prim) as u64, payload],
                     None => mismatch(v),
@@ -352,6 +361,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // limits. Readdressed to eric so the two are ruled together; once ruled, the
         // change is the gate edit described here plus the design/async_sleep_outputs.md
         // paragraph.
+        // CR claude for eric: [perf/low] The two CRs above (tests-lang-rest-b-04,
+        // f-kernel-03) cite a probe that walk pruning now hides. Its kernel's statement
+        // is never marked, so the walk skips it: 0.15 s, against 3.0 s with
+        // GRAPHIX_PRUNE=off. The cost remains wherever the walk reaches the statement.
+        // With count(n) in the same tuple, the 300k-slot bottom map is invoked 100
+        // times with fired=[false], taking 2-3 s against 0.15 s. Rule on the gate with
+        // this probe. probe:
+        // design/review-2026-10-19/repro/x-rerun-4-bottom-kernel-walked.gx
+        // (x-rerun-4-05)
         if !(any_updated
             || any_bottom
             || ctx.event.init()

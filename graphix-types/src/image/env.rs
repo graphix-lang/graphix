@@ -256,6 +256,15 @@ pub fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
         traits: nested_decode(buf)?,
         ..Env::default()
     };
+    // CR claude for claude: [perf/medium] This loop walks every typedef of every
+    // environment snapshot decoded, and takes the global ABSTRACT_NAMES lock for each
+    // abstract one. lexical_decode runs per definition at restore, per module and per
+    // materialized instance, and each snapshot holds every earlier typedef, so a warm
+    // start costs typedefs x definitions. Measured warm ImageDefs with N typedefs
+    // placed before vs after N lambdas: 60 vs 42 ms at N=1500, 170 vs 68 ms at N=3000.
+    // Fix: name the type in the typedefs map's pair decode, which runs once per
+    // distinct map node (nodes are shared image objects), and delete this loop. probe:
+    // design/review-2026-10-19/repro/t-image-lexical-naming-quadratic.sh (t-image-01)
     for (_, defs) in env.typedefs.iter() {
         for (name, td) in defs.iter() {
             if let crate::typ::Type::Abstract { id, .. } = td.def.typ() {

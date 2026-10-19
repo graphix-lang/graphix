@@ -1,0 +1,17 @@
+// sys-io: Read on a child's stdin Pipe and Write on stdin type-check, then fail at run time
+// run: timeout -s KILL 30 graphix --check sys-io-direction-less-stdio-pipe.gx   (exit 0)
+//      timeout -s KILL 30 graphix --no-cache sys-io-direction-less-stdio-pipe.gx
+// expected: the check refuses both calls (no Read impl for a write-only handle, no
+//   Write impl for a read-only one)
+// observed: the check passes; the run prints
+//   (error:`IOError("read failed: cannot read from write-only stream"),
+//    error:`IOError("write failed: cannot write to read-only stream"))
+use sys::io::{Read, Write};
+let c = sys::process::spawn(sys::process::options(
+  #args: ["-c", "cat"],
+  #stdio: sys::process::stdio(#stdin: `Pipe, #stdout: `Pipe),
+  "/bin/sh"))$;
+let a = Read::read(c.stdin$, u64:10);
+let b = Write::write(sys::io::stdin(null), buffer::from_string("x"));
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+(a, b)

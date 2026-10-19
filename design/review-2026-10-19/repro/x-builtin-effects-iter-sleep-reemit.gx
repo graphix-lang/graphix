@@ -1,0 +1,14 @@
+// Title: iter and range keep their last delivery across an arm's sleep, so the wake re-emits it as a new event
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/x-builtin-effects-iter-sleep-reemit.gx
+// Expected (design/async_sleep_outputs.md bullet: an event source, `iter`/`range` deliveries included,
+//   pauses and "its output is the last event, which does not survive the sleep"): (1, 10), (2, 11), (3, 12) and nothing at the wake
+// Observed: (1, 10, ..) (2, 11, ..) (3, 12, ..) then (3, 12, 200742437.ns): the wake at 200 ms re-emits 3 and 12
+//   (the same doc's audit table says range/iter "keep the output", which is what the code does)
+let on = true;
+on <- sys::time::timer(duration:60.ms, false) ~ false;
+on <- sys::time::timer(duration:200.ms, false) ~ true;
+let r = select on { true => array::iter([1, 2, 3]), false => never() };
+let q = select on { true => range(10, 13), false => never() };
+sys::exit(sys::time::timer(duration:500.ms, false) ~ 0);
+let t0 = sys::time::now(true);
+(r, q, sys::time::diff(sys::time::now((r, q)), t0))

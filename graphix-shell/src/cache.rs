@@ -218,6 +218,18 @@ fn sources_record(probes: &[Probe]) -> Option<String> {
 fn sources_unchanged(record: &str) -> bool {
     record.lines().all(|line| match line.split_at_checked(1) {
         Some(("-", path)) => {
+            // CR claude for claude: [bug/medium] This absence test is not the one the
+            // compile used. `read_optional` records a path as absent on NotFound or
+            // NotADirectory, and it follows symlinks. Here only an lstat NotFound
+            // passes. So a probe through a regular file (a file `m` beside `m.gx` makes
+            // the `m/mod.gx` layout probe fail with ENOTDIR) or a dangling symlink at a
+            // probed path never verifies. Every start then logs 'is stale' at info
+            // level, compiles cold and rewrites the entry. Fix: one shared predicate
+            // beside `read_optional` (open the path; NotFound or NotADirectory is
+            // absent), used by both the resolver and this check, plus must-restore
+            // tests for the two cases. probe:
+            // design/review-2026-10-19/repro/x-image-notadir-always-stale.sh
+            // (x-image-02)
             matches!(fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         }
         Some(("+", rest)) => match rest.split_once(' ') {
@@ -248,6 +260,15 @@ impl RegistrationCache {
         let registration = digest(&[&format, root.as_bytes()]);
         let program = program.and_then(|p| {
             let id = match p {
+                // CR claude for claude: [risk/medium] The key is the path as the
+                // embedder passed it, but the record verifies the canonical path
+                // (`RootFile::load` canonicalizes before its probe). An embedder that
+                // runs `Load::File("prog.gx")` from two directories gets one key, and
+                // the second run restores the first directory's program as long as that
+                // file is unchanged. Only main.rs's canonicalize keeps the CLI safe.
+                // Fix: canonicalize `Load::File` once in `Shell::init`, before the key
+                // and `GXConfig::program`, and drop main.rs's copy. Found by reading;
+                // not run. (shell-05)
                 Load::File(path) => path.to_string_lossy().into_owned().into_bytes(),
                 Load::Text(text) => text.as_bytes().to_vec(),
                 Load::Netidx(_) => return None,

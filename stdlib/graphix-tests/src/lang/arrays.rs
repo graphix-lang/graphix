@@ -25,6 +25,13 @@ run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
 // produce an error on every backend.
 
 // A positive index past the end is an error.
+// CR claude for claude: [test-gap/low] This fixture and the other out-of-bounds ones
+// below (negative underflow, the two u64::MAX indexes, array_slice_oob) accept any
+// `Value::Error`. Nothing compares the modes, so a JIT index helper whose message
+// differed from the node-walk's would pass in every mode. Pin the printed value, as
+// array_slice_negative_bound does: `error:`ArrayIndexError("array index out of
+// bounds")` for an index, "slice out of bounds" for a slice. Found by reading; not run.
+// (tests-lang-rest-a-06)
 run!(
     array_index_oob_pos,
     r#"{ let a = [10, 20, 30]; a[10] }"#,

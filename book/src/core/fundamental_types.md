@@ -62,6 +62,13 @@ No value is printed because the division by zero produces bottom. If the divisor
 
 With checked operators, you get an explicit error value you can handle:
 
+<!-- CR claude for claude: [doc-drift/low] These transcripts print errors in the
+pre-kind-marker array form. The REPL now prints `error:`ArithError("attempt to divide by
+zero")`, `error:`ArithError("attempt to subtract with overflow")` and
+`error:`MapKeyError(..)`. Re-capture them. The "Numbers" text also says unchecked `/`
+and `%` log on a zero divisor. Only the node-walk logs (see reading_types.md), so say
+so. probe: design/review-2026-10-19/repro/book-core-fundamental-printed-forms.sh
+(book-core-09) -->
 ```graphix
 〉0 /? 0
 -: [i64, Error<`ArithError(string)>]
@@ -402,6 +409,13 @@ cells are pooled like arrays, so building a list does not usually
 allocate. Indexed access (`list::nth`) walks the spine and is O(n);
 if you need random access, convert to an array.
 
+<!-- CR claude for claude: [doc-drift/low] This section predates kind markers. Data
+carries no markers now: pack writes `[<1, 2, 3>]` as the same bytes as `[1, 2, 3]`, not
+as a chain of cells. A cast into `List<T>` builds the list from any array, so
+`cast<List<Array<i64>>>` of an `Any` holding `[[1, 2], [3, 4]]` reads `[<[1, 2], [3,
+4]>]` directly and the two-step cast below is unnecessary. Rewrite the section to say
+every writer flattens a list and a typed read rebuilds it. probe:
+design/review-2026-10-19/repro/book-core-list-data-flat.sh (book-core-06) -->
 ### Lists as Data
 
 At run time a list is its chain of cells, each a pair of the head and

@@ -1,0 +1,14 @@
+// core-lib: all() over a type holding a reference ignores a core Eq implementation.
+// Run: timeout -s KILL 30 graphix --no-cache core-lib-all-ref-skips-eq.gx 2>&1 | grep -v '^null$'
+// Expected: "plain fired", "with_ref fired", "== says true".
+// Observed: "plain fired", "== says true": with_ref never fires.
+type Key = Abstract<string>;
+impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+let x = 0;
+let plain = all(Key("Foo"), Key("FOO"));
+let with_ref = all((&x, Key("Foo")), (&x, Key("FOO")));
+let op = (&x, Key("Foo")) == (&x, Key("FOO"));
+println(plain ~ "plain fired");
+println(with_ref ~ "with_ref fired");
+println("== says [op]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0))

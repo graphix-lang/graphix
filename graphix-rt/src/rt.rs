@@ -101,6 +101,21 @@ impl<T> Waiting<T> {
 
     fn pop(&mut self, id: &BindId) -> (T, Via) {
         let q = self.by_id.get_mut(id).expect("a waiting variable");
+        // CR claude for claude: [perf/medium] `remove(0)` shifts the whole FIFO, and a
+        // variable drains one write per cycle, so n writes queued on one variable cost
+        // O(n^2). range(0, n) queues n at once: 40000 takes 2.2 s, 80000 7.8 s, 160000
+        // 32 s. Fix: hold each variable's writes in a VecDeque (take only reads the
+        // front), or in a SmallVec with a head index. probe:
+        // design/review-2026-10-19/repro/rt-waiting-fifo-quadratic.sh (rt-04)
+        // CR claude for claude: [perf/high] remove(0) shifts the whole queue, so
+        // draining a variable with n waiting writes costs O(n^2). array::iter and
+        // map::iter queue every element on one variable (core Iter::update calls
+        // set_var per element), so iterating 80000 elements takes 9.5 s, against 1.3 s
+        // through iterq, which queues one at a time. A burst of subscription updates to
+        // one path pays the same. Fix: keep the inline single write and move to a
+        // VecDeque once a second write queues, or keep a head index and compact past
+        // half. probe: design/review-2026-10-19/repro/x-perf-runtime-iter-quadratic.sh
+        // (x-perf-runtime-01)
         let r = q.remove(0);
         if q.is_empty() {
             self.by_id.remove(id);
@@ -288,11 +303,55 @@ impl<X: GXExt> Rt for GXRt<X> {
         }
     }
 
+    // CR claude for claude: [perf/medium] ref_var and unref_var search the id's reader
+    // Vec linearly. With pruning a Reader includes the boundary, so the N slots of a
+    // map whose callback reads one outer variable are N distinct entries. Building or
+    // deleting those slots is then O(N^2): `array::map(xs, |x| x + y)` over
+    // 32k/64k/128k slots takes 1.1/3.1/12.2 s (debug, --no-fusion), against 0.6/1.1/2.5
+    // s for `x + 1`. Fix: hold each id's readers in a map keyed by Reader (an IndexMap
+    // if mark order matters) so registration is O(1). probe:
+    // design/review-2026-10-19/repro/x-prune-reader-scan-quadratic.sh (x-prune-02)
+    // CR claude for claude: [perf/medium] A variable's readers are a SmallVec that
+    // ref_var and unref_var scan linearly. Each slot instance of a collection callback
+    // is a boundary of its own, so a variable every slot reads has N distinct readers,
+    // and registering them through ExecCtx::apply_deferred costs O(N^2), as does
+    // tearing them down. `array::map(array::init(N, |i| i), |x| x + n)` takes 1.4s,
+    // 4.3s and 13.9s at N = 40k, 80k and 160k (--no-fusion), against 0.6s, 1.2s and
+    // 2.8s for `x + 1`. A non-fusing callback with fusion on shows the same curve
+    // (`once(x) + n`: 2.1s at 40k, 7.5s at 80k). Fix: key the readers by Reader
+    // (`AHashMap<Reader, u32>` per id) so registration is O(1); optionally pass
+    // apply_deferred's count in one call. probe:
+    // design/review-2026-10-19/repro/c-lib-readers-quadratic.sh Also reported as
+    // (rt-05). (c-lib-01)
     fn ref_var(&mut self, id: BindId, ref_by: Reader) {
         if dbg_vars() {
             eprintln!("REF_VAR {id:?} by {ref_by:?}");
         }
+        // CR claude for claude: [perf/medium] Since walk pruning, a Reader names its
+        // boundary, so every collection slot, activation or statement reading one
+        // variable is a reader of its own. This list grows with them, and both this
+        // `find` and unref_var's `position` are linear. Registering (or deleting) N
+        // slots whose callback reads an outer variable is therefore O(N^2). A map over
+        // 128000 elements reading `t` starts in 18.0 s against 3.5 s for one reading
+        // only its element (64000: 5.9 vs 2.0 s). Key the readers by Reader, which
+        // already hashes by pointer: `IntMap<BindId, AHashMap<Reader, u32>>`, or keep
+        // the SmallVec only while it is small. In wake_readers and notify_set, schedule
+        // each distinct root once rather than once per reader. probe:
+        // design/review-2026-10-19/repro/c-prune-wake-shared-reader-quadratic.sh
+        // (c-prune-wake-01)
         let readers = self.by_ref.entry(id).or_default();
+        // CR claude for claude: [perf/medium] This linear search, and unref_var's
+        // position search, made registration quadratic once a Reader carried its
+        // boundary. Every collection slot and activation is a boundary, so a variable
+        // read inside n slots has n entries, and each slot's registration scans them
+        // all. With `k` read 8 times per slot, `array::map(.., |x| uniq(x) + k ..)`
+        // costs +144/+458/+1756 ms over the same map reading a constant at
+        // n=5000/10000/20000. A list rebuilt per keystroke pays it at every rebuild.
+        // Fix: move to a HashMap<Reader, u32> past a few entries (Reader already hashes
+        // by root and boundary pointer), and let ref_var take a count so apply_deferred
+        // stops calling it once per counted reference. probe:
+        // design/review-2026-10-19/repro/x-perf-runtime-ref-var-quadratic.sh
+        // (x-perf-runtime-03)
         match readers.iter_mut().find(|(e, _)| *e == ref_by) {
             Some((_, n)) => *n += 1,
             None => readers.push((ref_by, 1)),

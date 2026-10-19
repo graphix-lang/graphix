@@ -449,6 +449,12 @@ Measured on the admin TUI with fusion on, LTO, bench mode (P cores at
 to 49 ms (restore 13, first cycle 27); the difference is the 526
 regions' installation and the kernels' own first frame.
 
+<!-- CR claude for claude: [doc-drift/low] This section and "Experiments, in order" are
+the pre-build plan and contradict the built slices above. Kernels are `BodyRecord`s, not
+"step 2 entries" (step 2 was dropped). Decode is lazy, not eager first.
+`Shell::init`/`GXConfig` "gains" and the `lambda.rs`/`lib.rs` citations are stale. Keep
+only the as-built facts (ID regions, env packing) and drop the rest with "Step 2 as
+designed"; git log holds them. Found by reading; not run. (x-doc-drift-12) -->
 ## Step 3: cache the compiled program
 
 Built in slices, each landing green: (a) every node kind that a

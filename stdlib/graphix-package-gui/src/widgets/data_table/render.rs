@@ -644,6 +644,13 @@ impl<X: GXExt> DataTableW<X> {
                 tog.into()
             }
             ColumnType::Combo { choices } => {
+                // CR claude for claude: [perf/low] Every drawn Combo cell allocates a
+                // Vec<String> of labels, a selected String and a label->id hash map on
+                // every frame, though the choices are fixed per column. PickList takes
+                // borrowed options and selection: keep the labels as ArcStr in
+                // ColumnType::Combo, pass &labels[..] with selected Option<&ArcStr>,
+                // and map the picked label to its id by a linear search over the
+                // borrowed choices. Found by reading; not run. (gui-datatable-04)
                 let options: Vec<String> =
                     choices.iter().map(|(_, label)| label.to_string()).collect();
                 let selected = choices
@@ -689,6 +696,12 @@ impl<X: GXExt> DataTableW<X> {
                 let val: f64 = text.parse().unwrap_or(*min);
                 if let (Some(cid), Some(cp)) = (callback_id, &cell_path) {
                     let path_val = Value::String(cp.clone());
+                    // CR claude for claude: [bug/low] The decrement is clamped only to
+                    // `min` and the increment only to `max`. A cell whose value lies
+                    // outside [min, max] (a publisher can write anything) therefore
+                    // sends an out-of-range on_edit: at 100 with max 64, "-" sends 99.
+                    // data_table.md promises the clamped value. Clamp both to `[*min,
+                    // *max]`. Found by reading; not run. (book-ui-b-06)
                     let dec_val = (val - increment).max(*min);
                     let inc_val = (val + increment).min(*max);
                     let path_dec = path_val.clone();

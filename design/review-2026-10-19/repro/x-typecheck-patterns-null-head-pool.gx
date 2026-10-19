@@ -1,0 +1,12 @@
+// Title: a null literal inside a composite pattern never pools, so option payload arms are refused
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --check x-typecheck-patterns-null-head-pool.gx
+// Expected: accepted; running it prints [1, 0, 5, 0]
+// Observed: refused, "missing match cases: no arm covers `P([null, `A])".
+//   The same for ([`A, null], i64) with (`A, n) / (null, n), and for
+//   {a: [i64, null]} with {a: null} / {a: i64} as s. A top-level `null` arm
+//   covers null (Reach::arm), but the literal pool's Head has only Bool and Tag,
+//   and `heads` gives no domain for a position whose type holds null.
+let f = |x: `P([`A, null])| select x { `P(`A) => 1, `P(null) => 0 };
+let g = |x: ([`A, null], i64)| select x { (`A, n) => n, (null, n) => 0 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[f(`P(`A)), f(`P(null)), g((`A, 5)), g((null, 2))]

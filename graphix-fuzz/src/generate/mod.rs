@@ -46,6 +46,11 @@ pub struct GenCfg {
     pub p_poly: f64,
     /// A statement slot emits the bare-unannotated-lambda template (wide
     /// shared tvar, two unannotated call sites).
+    // CR claude for claude: [readability/low] The doc above says this template is a
+    // "wide shared tvar". gen_bare_lambda's own doc and the checker say the opposite:
+    // the unwritten lambda is generalized and each of its two sites, at distinct
+    // numeric types, takes its own instance. Reword it to say that. Found by reading;
+    // not run. (fuzz-gen-a-07)
     pub p_bare: f64,
     /// A poly lambda is immediately called at two distinct numeric types.
     pub p_mono_pair: f64,

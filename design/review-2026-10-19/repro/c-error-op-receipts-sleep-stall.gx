@@ -1,0 +1,24 @@
+// Title: a catch that sleeps with a delivery in flight miscounts its receipts;
+// the covering seq machine's nested-error count never drains and the run stalls.
+// Command: timeout -s KILL 120 graphix-fuzz run c-error-op-receipts-sleep-stall.gx
+// Expected: done becomes 12 the cycle after t reaches 12, as it does when the
+//   arm never sleeps (guard `t >= i64:1`) or raises once per entry.
+// Observed (every engine, cold and warm): done stays 0 forever; the step's
+//   SeqGuard sees has_nested_errors() at t=12 and never passes the value.
+{
+let t = i64:0;
+let n = i64:0;
+t <- select t { t if t < i64:14 => t + i64:1, _ => never() };
+let g = |k: i64| -> i64 select t {
+    t if (t % i64:3 == i64:1) || (t >= i64:7) => {
+        catch(e) n <- e ~ n + i64:1;
+        let a = select t % i64:3 { i64:1 => error(`A(t))?, _ => i64:0 };
+        let b = select t % i64:3 { i64:1 => error(`B(t))?, _ => i64:0 };
+        select t { i64:12 => t, _ => never() }
+    },
+    _ => never()
+};
+let done = i64:0;
+let s = seq { let v = g(i64:0); done <- v };
+(t, done, n)
+}

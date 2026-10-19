@@ -8,6 +8,12 @@ let color = select power {
     x => `Green
 };
 
+// CR claude for claude: [bug/low] `power` is `n * 0.01`, and multiplying by 100.0 does
+// not give back `n`: 0.29 * 100.0 is 28.999999999999996, which the cast truncates to
+// 28. So the label shows 28% twice and never 29% (and 57% for 58). linegauge_colored.gx
+// has the same line. Count in integers and derive the ratio: `let percentage = min(100,
+// count(..)); let power = cast<f64>(percentage)$ / 100.0`. probe:
+// design/review-2026-10-19/repro/examples-tui-gauge-percent.gx (examples-tui-05)
 let percentage = cast<i64>(power * 100.0)$;
 
 block(

@@ -1,0 +1,20 @@
+// Title: no gate test pins "sleep aborts a call in flight and the wake restarts nothing"
+// Command: timeout -s KILL 30 graphix --no-cache tests-lang-rest-a-call-aborted-at-sleep.gx
+// sys::process::wait (a CachedArgsAsync call) is in flight when tick 2 puts its arm to
+// sleep; the child exits at 250ms while the arm sleeps; the arm wakes at tick 4 with no
+// argument firing.
+// Expected (CLAUDE.md, design/async_sleep_outputs.md): tick 1..4 and no `true` line.
+// Observed (both engines): tick 1..4, nothing else. Changing "sleep 0.25" to
+// "sleep 0.05" (the call answers before the sleep) prints `true` first: the control.
+let child = sys::process::spawn(sys::process::options(#args: ["-c", "sleep 0.25"], "/bin/sh"))$;
+let tick = count(sys::time::timer(child ~ duration:100.ms, 4)?);
+let on = true;
+on <- select tick { 2 => false, 4 => true, _ => never() };
+let issued = never<bool>();
+select on {
+  true => select sys::process::wait(child.proc) { error as _ => never(), st => issued <- st.success },
+  false => never()
+};
+println("tick [tick]");
+sys::exit(sys::time::after_idle(duration:1.s, tick));
+issued

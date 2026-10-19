@@ -1,0 +1,30 @@
+// Title: checking a value against a chain of union typedefs under a declared
+// variable doubles at every level: set_commit repeats each admitted member's
+// probe when its flags are RigidCheck alone (`flags.is_empty()` tests for a
+// probe where `!flags.contains(Commit)` is meant), and Ref pairs have no memo.
+// Command: time timeout -s KILL 60 graphix --no-cache --check t-contains-rigid-union-chain.gx
+// Expected: linear in the chain (n=8 checks in 0.11 s).
+// Observed (debug build): n=16 0.28 s, n=18 0.77 s, n=20 2.6 s, n=22 10.2 s.
+type T0<'a> = ['a, null];
+type T1<'a> = [T0<'a>, `X1];
+type T2<'a> = [T1<'a>, `X2];
+type T3<'a> = [T2<'a>, `X3];
+type T4<'a> = [T3<'a>, `X4];
+type T5<'a> = [T4<'a>, `X5];
+type T6<'a> = [T5<'a>, `X6];
+type T7<'a> = [T6<'a>, `X7];
+type T8<'a> = [T7<'a>, `X8];
+type T9<'a> = [T8<'a>, `X9];
+type T10<'a> = [T9<'a>, `X10];
+type T11<'a> = [T10<'a>, `X11];
+type T12<'a> = [T11<'a>, `X12];
+type T13<'a> = [T12<'a>, `X13];
+type T14<'a> = [T13<'a>, `X14];
+type T15<'a> = [T14<'a>, `X15];
+type T16<'a> = [T15<'a>, `X16];
+type T17<'a> = [T16<'a>, `X17];
+type T18<'a> = [T17<'a>, `X18];
+type T19<'a> = [T18<'a>, `X19];
+type T20<'a> = [T19<'a>, `X20];
+let f = 'a: Any |v: 'a| -> T20<'a> v;
+f(1)

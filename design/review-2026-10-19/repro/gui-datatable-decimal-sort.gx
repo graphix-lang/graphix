@@ -1,0 +1,29 @@
+// gui-datatable-decimal-sort: data_table sorts decimal cells by their text.
+//
+// Run by hand (opens a window):
+//   graphix design/review-2026-10-19/repro/gui-datatable-decimal-sort.gx
+// Checked only (no display in the review sandbox):
+//   graphix --check design/review-2026-10-19/repro/gui-datatable-decimal-sort.gx
+// Expected (ascending by "amount", numbers in value order): c (2.0), b (9.5), a (10.25)
+// Observed by reading SortKey::of_value: decimals fall to the Text arm, so
+//   the order is a ("10.25"), c ("2.0"), b ("9.5") -- byte order of the text.
+use gui::{window, data_table::{data_table, text_column}};
+
+let amounts: Map<string, Any> = {
+    "a" => decimal:10.25,
+    "b" => decimal:9.5,
+    "c" => decimal:2.0
+};
+
+let tbl = {
+    rows: ["a", "b", "c"],
+    columns: [text_column(#name: "amount", #source: &amounts)]
+};
+
+[&window(
+    #title: &"decimal sort",
+    &data_table(
+        #sort_by: &[{ column: "amount", direction: `Ascending }],
+        #table: &tbl
+    )
+)]

@@ -39,6 +39,17 @@ impl<X: GXExt> BarProps<X> {
             bar = bar.value_style(s.0);
         }
         if let Some(Some(tv)) = &self.text_value.t {
+            // CR claude for claude: [bug/medium] A horizontal chart whose full-length
+            // bar carries a non-ASCII text_value longer than the bar area crashes debug
+            // builds. ratatui's Bar::render_value_with_different_styles splits the text
+            // at a byte boundary past bar_length and computes `area.width as usize -
+            // first.len()`, which underflows. Release builds wrap and misplace the
+            // overflow part instead. For Direction::Horizontal, cut text_value at the
+            // last char boundary at or below the bar area's width in bytes: rect.width
+            // minus the widest bar label minus one margin column, as render_horizontal
+            // computes it. probe:
+            // design/review-2026-10-19/repro/tui-widgets-hbar-text-value.gx
+            // (tui-widgets-03)
             bar = bar.text_value(tv.to_string());
         }
         bar

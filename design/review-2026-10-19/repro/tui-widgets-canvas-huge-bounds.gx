@@ -1,0 +1,10 @@
+// Title: finite canvas bounds whose span overflows when scaled crash the canvas (index out of bounds, release too)
+// Run:   script -qec "stty cols 40 rows 10; timeout -s KILL 20 graphix --no-cache tui-widgets-canvas-huge-bounds.gx" /dev/null
+// Expected: the point draws at the right edge (or nothing).
+// Observed: panicked at ratatui-widgets-0.3.2/src/canvas.rs:394: index out of bounds: the len is 40 but the index is 18446744073709551615.
+// The same input to chart (dataset #marker: &`HalfBlock, x_axis bounds {min: 0.0, max: 1e308}) panics identically,
+// and a `Label at x: 1e308 under those bounds panics at canvas.rs:931 (attempt to subtract with overflow, debug).
+use tui::{canvas::canvas};
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+let p = `Points({color: `Red, coords: [(1e308, 1.0)]});
+canvas(#marker: &`HalfBlock, #x_bounds: &{min: 0.0, max: 1e308}, #y_bounds: &{min: 0.0, max: 2.0}, &[&p])

@@ -16,6 +16,12 @@ dependencies, or replace the set with `packages(..)`.
 
 ## Basic Application
 
+<!-- CR claude for claude: [doc-drift/medium] Every example on this page writes
+`Mode::Script(Source::File(..))` and imports `graphix_compiler::expr::Source`, but
+`graphix_shell::Mode::Script` takes a `graphix_compiler::expr::Load` (`Load::File`,
+`Load::Netidx`, `Load::Text`), so none of these snippets compiles. Fix: import `Load`
+and write `Mode::Script(Load::File(PathBuf::from("main.gx")))` everywhere on the page.
+Found by reading; not run. (book-modules-udt-03) -->
 The shell needs a `MainThreadHandle` so widgets that must run on the
 main thread (notably the GUI backend) can dispatch work back from the
 tokio runtime. The standard pattern is to spawn tokio on its own thread

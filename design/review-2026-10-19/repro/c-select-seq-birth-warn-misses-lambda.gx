@@ -1,0 +1,19 @@
+// The arm-birth warning sees only builtin calls: a user function that
+// wraps an effect, called with constant arguments in an arm, acts only at
+// the arm's first entry with no warning.
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/c-select-seq-birth-warn-misses-lambda.gx
+// Expected: a WARNING at `say("saved")` ("this call reads no variable, so
+// it acts only at this arm's first entry ..."), as `println("saved")` in
+// the same place gets.
+// Observed: no warning; "note: saved" prints once although the arm is
+// entered at n = 0, 2 and 4.
+let clock = sys::time::timer(duration:10.ms, 4);
+let n = 0;
+n <- clock ~ n + 1;
+let say = |m: string| println("note: [m]");
+let r = select n % 2 {
+  0 => { say("saved"); n },
+  _ => -1
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+r

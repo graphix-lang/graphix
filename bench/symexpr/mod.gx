@@ -27,6 +27,17 @@ let rec deriv = |e: Expr| -> Expr
     `Mul(a, b) => `Add(`Mul(deriv(a), b), `Mul(a, deriv(b)))
   };
 
+// CR claude for eric: [doc-drift/medium] simplify fuses now. `#[native] simplify(..)`
+// builds, GXDBG_NATIVE_ALL=1 on bench/symbolic.gx prints no failure, and symbolic takes
+// about 0.02 s under the JIT against about 22 s in the node-walk (debug build). This
+// file's header, bench/README.md (the 'every bench but four' paragraph, the symbolic
+// rows at 3.73 s and 1.5x, the shapes table) and par_symbolic's header ('simplify
+// node-walks even with fusion on, so the map's slots fork in both modes') all say it
+// node-walks. Under par.sh, par_symbolic now times a fused 32-slot kernel loop forked
+// into chunks in milliseconds, not forked node-walked slots. Decide what par_symbolic
+// should measure: add it to par.sh's --no-fusion list next to par_wide, or drop it.
+// Then fix the comments and re-run both tables. probe:
+// design/review-2026-10-19/repro/examples-rest-simplify-fuses.gx (examples-rest-02)
 let rec simplify = |e: Expr| -> Expr
   select e {
     `Num(x) => `Num(x),

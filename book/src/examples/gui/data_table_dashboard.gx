@@ -11,6 +11,13 @@ use gui::{
   text_input::text_input
 };
 use core::math;
+// CR claude for claude: [style/low] This file imports sys::time but writes
+// sys::net::publish, sys::net::write and sys::net::list_table in full six times.
+// data_table_calculated, data_table_sparkline, data_table_basic, data_table_editable
+// and data_table_filter_sort do the same. data_table_scrolling and data_table_virtual
+// import `sys::{net, time}` and write `net::publish`. Use that form in all of the
+// data_table examples, since data_table.md shows all of them on one page. Found by
+// reading; not run. (examples-gui-03)
 use sys::time;
 mod icon;
 
@@ -42,6 +49,11 @@ let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
 // single random number
 let rn = |start, end| rand::rand(#start, #end, #clock:1);
 
+// CR claude for claude: [readability/low] Nothing reads `published`. The init runs only
+// for its publishes, so write it as a bare statement. In the same file, the `rows`
+// select in `tbl` tests `n if n == 0` where data_table_filter_sort writes the literal
+// arm `0 => ..`; use the literal here too. Both edits pass --expand. Found by reading;
+// the edited copy was checked with graphix --expand. (examples-gui-05)
 let published = array::init(1024, |i| svc(
     #name:"svc-[i]",
     #state:select rand::rand(#clock:1) {

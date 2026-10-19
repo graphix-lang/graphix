@@ -1,0 +1,26 @@
+// A second sleep of an already-sleeping let (an enclosing select's deselect
+// sleeps every arm, Select::sleep) moves Bind::slept_at forward, so a write
+// that landed between the two sleeps is never re-raised at the wake.
+// run: timeout -s KILL 10 graphix --no-cache c-bind-reraise-resleep.gx | grep -v null
+// The inner arm sleeps at n=2, the write *h <- 100 lands after n=3, the outer
+// arm sleeps at n=4 (re-sleeping the inner arm), both wake at n=6.
+// expected: n=6 inner=(100, 2)   (count(x) sees the re-raised write; the same
+//   program with the outer select always true prints this)
+// observed: n=6 inner=(100, 1)
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let si = select n { 0 => true, 1 => true, k if k >= 6 => true, _ => false };
+let so = select n { 4 => false, 5 => false, _ => true };
+let holder: [&mut i64, null] = null;
+let inner = select so {
+  true => select si {
+    true => { let x = 0; holder <- &mut x; (x, count(x)) },
+    false => (-1, -1)
+  },
+  false => (-2, -2)
+};
+let h = holder$;
+*h <- select n { 3 => n ~ 100, _ => never() };
+sys::exit(select n { 8 => n, _ => never() });
+println("n=[n] inner=[inner]")

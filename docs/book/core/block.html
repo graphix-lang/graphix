@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -181,6 +181,12 @@ separated, meaning every expression except the last one must end in a <code>;</c
 it is illegal for a block to have just one expression (it will not parse).</p>
 <p>You can use blocks to hide intermediate variables from outer scopes, and to
 group code together in a logical way.</p>
+<!-- CR claude for claude: [test-gap/low] This fence is a program the text says will not
+compile, but it is untagged, so examples_compile only parses it and never checks that
+the check refuses it. Tag it ```` ```graphix,refused ````, and likewise the refused
+programs in let_binds.md (`let y: string = x`), select.md (the `f64 as n`, guarded `i64`
+and `Wrong fences) and use.md (the block-local `map`). Each is refused today; found by
+running --check on each fence. (book-core-10) -->
 <pre><code class="language-graphix">let important_thing = {
   let x = 0;
   let y = x + 1;

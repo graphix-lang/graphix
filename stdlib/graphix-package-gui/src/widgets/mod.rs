@@ -498,6 +498,11 @@ impl<T: PartialEq> Echoes<T> {
             return false;
         }
         shell.call_handled = true;
+        // CR claude for claude: [readability/low] call_answered is an async fn that
+        // never awaits (an argument check and a channel send), so this block_on only
+        // makes the GUI thread look as if it waits on the runtime. Make
+        // Callable::call_answered and call_unchecked plain fns in graphix-rt and call
+        // it directly. Found by reading; not run. (gui-widgets-a-06)
         match futures::executor::block_on(f.call_answered(args.clone())) {
             Ok(()) => {
                 self.0.push_back((f.answer, Some(value)));
@@ -722,6 +727,17 @@ macro_rules! flex_widget {
                     w = w.$align_set(a.0);
                 }
                 for (_, child) in &self.children.ws {
+                    // CR claude for eric: [bug/medium] Row and Column pass their
+                    // children's FillPortion weights to iced's flex layout, which sums
+                    // them in a u16 (iced_core layout/flex.rs). Two children at
+                    // `FillPortion(40000) panic a debug build ('attempt to add with
+                    // overflow'), and in release the wrapped sum can reach 0 and the
+                    // fill share divides by it. LengthV accepts any u16 weight, so a
+                    // program reaches this with two containers. Decide between patching
+                    // iced to a u32 sum and bounding the weights (per child in LengthV,
+                    // per row here). probe:
+                    // design/review-2026-10-19/repro/gui-widgets-a-fill-portion-overflow.rs
+                    // (gui-widgets-a-02)
                     w = w.push(child.view());
                 }
                 w.into()

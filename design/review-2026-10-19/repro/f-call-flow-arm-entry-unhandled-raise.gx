@@ -1,0 +1,10 @@
+// Title: a fused select arm never reports a constant handler-less `?` at its first entry
+// Command: graphix --no-cache f-call-flow-arm-entry-unhandled-raise.gx  (and with --no-fusion)
+// Expected (as --no-fusion prints): "unhandled error ... `E" once, when x = 2 first enters
+//   the third arm (its first entry is a Step: the constant error fires), beside 1, 5, 2, 2.
+// Observed: the fused run prints 1, 5, 2, 2 and no "unhandled error" line.
+let k = 0;
+k <- select k < 3 { true => k + 1, false => never() };
+let h = |x: i64| -> i64 select x { 0 => 1, 1 => 5, _ => { let e: Result<i64, `E> = error(`E); e?; 2 } };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+h(k)

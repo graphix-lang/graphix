@@ -237,6 +237,14 @@ async fn first_values(rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>) -> Vec<Val
 /// A program of the node kinds package modules never produce at top
 /// level: select with guards, catch with a connect, sampling, seq,
 /// place references, slices, maps, defaults, casts, any.
+// CR claude for claude: [doc-drift/low] design/program_image.md says
+// program_image_restores restores a program of every node kind. This program holds no
+// connect through a reference (`*r <- v`), no path place (`&arr[1]`, `&s.f`), no
+// variant with a payload and no list. The last two matter because of the kind markers,
+// which only an image decodes. They all restore today, but a broken codec for any of
+// them passes image.rs. Add them to PROGRAM and its expected tuple. probe:
+// design/review-2026-10-19/repro/tests-modules-image-image-kinds-unpinned.sh
+// (tests-modules-image-07)
 const PROGRAM: &str = r#"
 type P = {x: i64, y: i64};
 let base = 10;
@@ -332,6 +340,18 @@ async fn session_with(
     })?
     .flags(CFlag::FusionDisabled.into())
     .program(Load::Text(program.into()));
+    // CR claude for claude: [test-gap/low] The warm run gets the program's source as
+    // well as the image, and cold_and_warm asserts only `restored`, which says the
+    // registration read. An image holding no program at all passes: the warm runtime
+    // compiles the source cold, and the values match. So none of the tests on this path
+    // shows that the program it checks was restored. Take the warm program from the
+    // image alone, as program_image_restores_kernels does, and fail if `rt.program()`
+    // is None. Keep the source fallback only for
+    // an_instance_outside_the_heap_is_refused. Giving this function the flags and
+    // resolvers as parameters would also fold in the hand-built cold/warm pairs below.
+    // probe:
+    // design/review-2026-10-19/repro/tests-modules-image-warm-program-not-checked.rs
+    // (tests-modules-image-04)
     let cfg = match image {
         None => cfg.registration(RegistrationImage::save(reg_tx)).program_image(prog_tx),
         Some(image) => {
@@ -805,6 +825,12 @@ async fn program_image_restores_builtins() -> Result<()> {
 /// `mod` is reachable from a sibling module as `package::m`, on the
 /// script path as in check mode.
 #[tokio::test]
+// CR claude for claude: [readability/low] This is not an image test. It restores
+// nothing, the registration image it saves goes to a receiver that is dropped, and the
+// "as in check mode" its doc claims is not checked here.
+// graphix-shell/tests/script_scope.rs already pins `package::` from a script's top
+// level under both the check and the run. Move it to modules.rs as a run! fixture
+// without the save, or delete it. Found by reading; not run. (tests-modules-image-11)
 async fn program_package_root_is_the_script() -> Result<()> {
     let table = ahash::AHashMap::from_iter([
         (

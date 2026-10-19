@@ -1,0 +1,23 @@
+// x-rerun-2: a raising http::serve handler's 500 body prints the raised value with
+// netidx's Display, so since kind markers it carries the raw marker abstracts.
+// Command: timeout -s KILL 60 graphix --no-cache x-rerun-2-http-500-markers.gx
+// Expected: no marker in the body (a generic 500 per http-sqlite-db1-03's proposal,
+//   or at least the data form sys::net::rpc's RpcError reply carries).
+// Observed (HEAD 9445a1d21): 500 [abstract:EnwukQtE2EoTn2Uo4FoXw40B, ["cause", null],
+//   ["error", [abstract:EnwukQtE2EoTn2Uo4FoXw40C, "Internal", "x"]], ...]
+let server = {
+    catch(e) println("handler raised [e]");
+    http::serve(
+        #addr: "127.0.0.1:0",
+        #handler: |req| select req.path {
+            "/raise" => error(`Internal("x"))?,
+            _ => {body: "ok", headers: [], status: u16:200, url: ""}
+        }
+    )$
+};
+let addr = http::server_addr(server);
+let client = http::default_client(addr)$;
+let a = http::get(client, "http://[addr]/raise")$;
+println("[a.status] [a.body]");
+sys::exit(sys::time::after_idle(duration:300.ms, a ~ 0));
+a.status

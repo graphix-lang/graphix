@@ -1,0 +1,19 @@
+// Title: a calendar given fewer rows than its month needs draws its remaining weeks over the widgets below it
+// Run:   script -qec "stty cols 40 rows 12; timeout -s KILL 20 graphix --no-cache tui-widgets-calendar-overdraw.gx" /dev/null > out.txt
+//        then cut out.txt at the first ESC[?1049l and render it: python3 tui-widgets-vt.py out-cut.txt 40 12
+// Expected: rows 0-2 hold the calendar (header + 2 weeks), row 3 on holds only "below".
+// Observed (rows 0-6):
+//               August 2026
+//                     1
+//   2  3  4  5  6  7  8
+// below0 11 12 13 14 15
+//  16 17 18 19 20 21 22
+//  23 24 25 26 27 28 29
+//  30 31
+use tui::{style, layout::{child, layout}, text::text, calendar::{calendar, date}};
+sys::exit(sys::time::after_idle(duration:3.s, 0));
+let cal = calendar(#show_month: &style(), &date(2026, 8, 15));
+layout(#direction: &`Vertical, &[
+  child(#constraint: `Length(3), cal),
+  child(#constraint: `Fill(1), text(&"below"))
+])

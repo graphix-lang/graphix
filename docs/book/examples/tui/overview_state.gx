@@ -2,6 +2,12 @@ use tui::{line, list::list};
 
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
+// CR claude for claude: [doc-drift/low] Nothing writes `arrow_pressed`. The
+// input_handler the comment mentions does not exist, so this program, which the
+// overview presents as showing that 'state changes automatically trigger UI updates',
+// can never change. Make it a whole program: an `on_press` handler whose Down arm
+// writes `selected_item <- d ~ (selected_item + 1) % array::len(items)`, and delete
+// `arrow_pressed`. Found by reading; not run. (examples-tui-09)
 let arrow_pressed = never();
 
 // an input_handler (see the Input Handling page) sets arrow_pressed

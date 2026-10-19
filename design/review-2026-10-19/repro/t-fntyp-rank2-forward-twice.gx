@@ -1,0 +1,13 @@
+// t-fntyp-rank2-forward-twice: a rank-2 formal passed to a generic HOF at two types:
+// the check accepts, the instance's elaboration refuses.
+// command: graphix --check t-fntyp-rank2-forward-twice.gx ; graphix --expand t-fntyp-rank2-forward-twice.gx
+//   (or: graphix-fuzz check t-fntyp-rank2-forward-twice.gx)
+// expected: both accept; a run gives (3, 2)
+// observed: --check exit 0; --expand (and a run) exit 1: "in the instance of f(|x| x + x) at this
+//   call site .. type mismatch fn(x: i64) -> i64 does not contain fn<'b: Number + Singleton>(x: 'b: f64)
+//   -> 'b: f64"; graphix-fuzz check: DIVERGENCE, the check accepted what the build refused.
+//   Same with array::map([1.5], g) then array::map([u8:1], g). Passing g once, calling it
+//   directly, or binding it to two monomorphic lets all build.
+let app = |a: 'a, k: fn(x: 'a) -> 'a| k(a);
+let f = |g: fn<'b: Number + Singleton>(x: 'b) -> 'b| (app(1.5, g), app(1, g));
+f(|x| x + x)

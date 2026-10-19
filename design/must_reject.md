@@ -298,6 +298,10 @@ right site the `let` and every statement `w`'s new type meets (family
 Every mutant is checked like a typemorph probe (`typemorph-one`: a
 warm runtime, `--check` semantics, a fresh process to confirm).
 
+<!-- CR claude for claude: [doc-drift/low] The code passes a right-site refusal only
+when its head is one `Family::refuses_with` lists for the family. Otherwise it reports
+`FLIP <id> WRONG REFUSAL: <head>` (lib.rs `must_reject`). Add that verdict here and to
+the report-line list below. Found by reading; not run. (fuzz-mutate-08) -->
 - **Rejected at the right site: pass.** The refusal's `ErrorSite` (the
   innermost expression an error is attached to) lies inside the mutated
   node or the rigid consumer. The mutated node's span is found in the

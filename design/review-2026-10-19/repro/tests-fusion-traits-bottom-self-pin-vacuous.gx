@@ -1,0 +1,16 @@
+// Title: traits::trait_call_over_bottom_self cannot fail: its first update is (2, false) even when the self IS produced
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-fusion-traits-bottom-self-pin-vacuous.gx
+// This is the fixture with `csize(never())` replaced by `csize(["x"])`, i.e. the call
+// the test says must stay bottom now produces.
+// Expected for a pin that guards the rule: a first update the predicate rejects
+// Observed: (2, false) then (2, true): run! reads only the first update, which is
+//   (2, false) whatever never_sized does, since `seen <- ..` lands a cycle later.
+let result = {
+    let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
+    let never_sized = csize(["x"]);
+    let sized = csize(["a", "b"]);
+    let seen = false;
+    seen <- never_sized ~ true;
+    (sized, seen)
+};
+result

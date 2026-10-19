@@ -1,0 +1,10 @@
+// Title: a function TYPE with two labeled arguments of one name is accepted,
+// though no call can satisfy it; the lambda form is refused.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --check design/review-2026-10-19/repro/t-parser-b-fntype-dup-labels.gx
+// Expected: refused at the type, as `|#a: i64, #a: string| a` is
+// ("arguments must have unique names").
+// Observed: the type is accepted; the call `g(#a: 1)` is refused with
+// "type mismatch string does not contain i64" (and `g(#a: 1, #a: "x")` with
+// "duplicate argument #a"): the parameter can never be called.
+let f = |g: fn(#a: i64, #a: string) -> string| g(#a: 1);
+f(|#a: i64, #b: string| b)

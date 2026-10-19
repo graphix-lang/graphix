@@ -139,6 +139,14 @@ impl fmt::Display for Rendered<'_> {
                         if j > 0 {
                             f.write_str(" ")?;
                         }
+                        // CR claude for claude: [readability/low] netidx's Display
+                        // prints each composite's kind marker as abstract:<base64>, so
+                        // a DIVERGENCE report shows abstract:EnwukQtE2EoTn2Uo4FoXw40A
+                        // where (1, 2) or `A(1) belongs and reaches the 2048-byte clip
+                        // sooner. Print the value with
+                        // graphix_compiler::typ::NakedPrefix, which renders marked
+                        // values in Graphix syntax. probe: graphix-fuzz run on any
+                        // program whose value is a tuple. (x-kind-markers-08)
                         write!(f, "{o}:{v}")?;
                     }
                     f.write_str(if e.capped { " …capped]" } else { "]" })?;
@@ -187,6 +195,15 @@ pub enum Containment {
 /// (`<abstract#12>` -> `<abstract#N>`) and generated scope ids
 /// (`#do123` -> `#doN`) so fresh-counter drift between
 /// two independent compiles neither hides nor fakes a diagnostic difference.
+// CR claude for claude: [test-gap/low] A refusal inside a seq step prints the
+// lowering's generated names (`seqv<ExprId>_..`), and their ids differ between the
+// reference and its rerun. Nothing here strips them, so every refused seq program is
+// dropped as NONDETERMINISTIC/UNSURE instead of verdict 'reject', including typemorph's
+// must-reject mutants of seq bodies. Normalize the `seq<word><digits>` names from
+// expr/seq.rs here, or settle tests-seq-08 with a `#` prefix that the `#name<digits>`
+// rule below already strips. probe:
+// design/review-2026-10-19/repro/x-engine-seq-errors-seq-refusal-nondeterministic.gx
+// (x-engine-seq-errors-05)
 fn normalize_diag(s: &str) -> String {
     let s = {
         let mut out = String::with_capacity(s.len());
@@ -254,6 +271,20 @@ impl Outcome {
             // counter drift); RuntimeErr messages are mode-dependent
             (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
+            // CR claude for eric: [risk/medium] Any two timeouts agree here, but a
+            // node-walk ActivationBudget/StackBudget beside a JIT Deadline is not a
+            // race between two descents. The JIT's native tail loop counts no
+            // activations, so for any recursion deeper than the budget the node-walk
+            // aborts whether or not the program terminates. A JIT loop that fails to
+            // exit on a deep but bounded recursion therefore gives (ActivationBudget,
+            // Deadline). That is the shape of a genuinely unbounded program, which
+            // check reports as AGREE (contained), and regress's manifest then trusts.
+            // Decide whether that pair is Unsure rather than contained, and whether to
+            // rerun the node-walk once at slow_budget with
+            // Control::set_activation_budget raised, counting a trace there as a
+            // divergence. probe:
+            // design/review-2026-10-19/repro/fuzz-lib-a-budget-vs-deadline.sh
+            // (fuzz-lib-a-03)
             (Timeout(_), Timeout(_)) => true,
             _ => false,
         }
@@ -821,6 +852,19 @@ async fn drive_inner(
                 // The embedder timeline has cycles between building the
                 // callable and the first dispatch; back-to-back dispatch
                 // would let a reference delivered at init reach the instance.
+                // CR claude for eric: [test-gap/medium] These gap compiles' events land
+                // in the first dispatch epoch's segment, so Epoch::anchor anchors that
+                // epoch at a gap compile, and its offsets count control cycles and vary
+                // per run (4-6 for the same program). Later dispatch epochs anchor at
+                // their own dispatch and agree exactly across all eight dispatch runs.
+                // This noise is why Strength::of holds EngineDispatch and the Dispatch
+                // sessions at Final strength, which misses extra and missing fires
+                // inside an epoch on the route every GUI handler takes. Take and
+                // discard one trace_wait_idle segment after the gap compiles. Then
+                // decide whether the same-route dispatch pairs go back to Exact at the
+                // Exact tier (Pair::Route alone needs Final). probe:
+                // design/review-2026-10-19/repro/fuzz-lib-a-dispatch-gap-anchor.sh
+                // (fuzz-lib-a-04)
                 for _ in 0..3 {
                     step_or_timeout!(
                         ctx.rt.compile(ArcStr::from("i64:0")),
@@ -850,6 +894,14 @@ async fn drive_inner(
     trace.canonicalize_refs(&compiled.env, typ);
     // Exact tier only. The runtime runs on past a capped trace, so the
     // capture stops at the last segment's cycle.
+    // CR claude for eric: [test-gap/low] Prints are captured only at the Exact tier, so
+    // a program with any sys::/http::/json::read marker has its print output (fused Io
+    // calls included) compared nowhere. Trace::agrees_final already compares prints as
+    // a per-epoch multiset without offsets, so capturing them for FinalValues too costs
+    // nothing new, and the settle loop already waits out late replies for values.
+    // Decide whether FinalValues programs capture prints (`tier !=
+    // OracleTier::Excluded`). probe:
+    // design/review-2026-10-19/repro/fuzz-lib-a-finalvalues-prints.sh (fuzz-lib-a-05)
     if tier == OracleTier::Exact {
         let mut lines = Vec::new();
         for (epoch, seg) in segs.iter().enumerate() {
@@ -1677,6 +1729,18 @@ pub async fn check_verdict(
         }
         match o.settle(pair).await {
             Settled::Agree => (),
+            // CR claude for eric: [test-gap/medium] A drop here ends the whole check,
+            // so any program whose engine pair drops (CONTAINED, JIT ASSERTION, SLOW,
+            // NONDETERMINISTIC) never runs its groups 1-3. The JIT's cold and warm
+            // image sessions and the forked runs are never made. For a deep tail
+            // recursion (node-walk ActivationBudget beside a JIT trace), the native
+            // loop kernel's image round trip and its parallel run are never fuzzed.
+            // Each later pair runs its own ladder, so a drop says nothing about them.
+            // Record the drop, continue with the remaining pairs, and return Unsure at
+            // the end only if none diverged (and update graphix_fuzz.md's 'A drop ends
+            // the check unsure'). probe:
+            // design/review-2026-10-19/repro/fuzz-lib-a-drop-ends-check.sh
+            // (fuzz-lib-a-01)
             Settled::Drop => return (None, Verdict::Unsure),
             Settled::Diverge(reference, tested) => {
                 let d =
@@ -1791,6 +1855,17 @@ fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
     }
     if sessions {
         for &route in session_routes(code) {
+            // CR claude for claude: [test-gap/low] Image sessions are compared only at
+            // Interp and Jit, which run ParMode::Off, and the forked pairs run with no
+            // cache. So no lane fuzzes a warm start under forked evaluation, which is
+            // the shell's default: GRAPHIX_PAR=auto with a restored program. There
+            // `CallSite::materialize` decodes an imaged instance inside a forked
+            // branch, under the SharedDecoder lock, installing kernels and applying
+            // deferred references in a branch view. A by-hand sweep of the corpus at
+            // GRAPHIX_PAR=force agreed, so this is a missing gate, not a known
+            // divergence. Fix: add Pair::Warm at a forked mode (Par or JitPar) against
+            // the serial cold run, sampled like the other sessions. Found by reading;
+            // not run. (x-image-04)
             for mode in [Mode::Interp, Mode::Jit] {
                 out.extend([Pair::Cold(mode, route), Pair::Warm(mode, route)]);
             }
@@ -2888,6 +2963,13 @@ pub async fn minimize(
             break; // every subject is at a fixpoint
         }
     }
+    // CR claude for claude: [risk/low] This text may never have been judged. The body
+    // and each section are reprinted from their ASTs, and a section's shrink stores
+    // render_items(&reduced) even when nothing hit. When the last lap lands nothing,
+    // the result is a canonical reprint (comments dropped) that no check saw, and the
+    // campaign records it as the minimized reproducer. Fix: keep the last text that hit
+    // (initially `code`), updated wherever `progress` is called, and return it. Found
+    // by reading; not run. (fuzz-lib-b-06)
     (reattach(sched.render(&files::render(&current.to_string(), &files))), calls)
 }
 
@@ -3548,6 +3630,21 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
         };
         let trusted = match v {
             Verdict::Ran | Verdict::Excluded => true,
+            // CR claude for eric: [test-gap/high] A recorded `reject` is trusted on its
+            // class alone. Nothing records or compares which refusal a reject pin gets,
+            // so a pin refused for the wrong reason stays green. Today 2 of the 79
+            // reject pins pass on a parse error: nested-bind-stmt-dead-elim-aug2026/05
+            // has a bare `never`, and rec-rtype-writeback-aug2026/00 has a trailing `//
+            // minimized:` comment, although its header says it runs. 14 more pass on
+            // the let/typedef value-position rule instead of the bug their headers
+            // document (e.g. refparam-occurs-aug2026/00, annotation-names-sep2026/00).
+            // Fix: store the normalized innermost cause (tm_error_head) in the manifest
+            // row of a reject pin and compare it in outcome_mismatches, and make a
+            // parse error a regression for any pin. The Containment kind of a contained
+            // pin needs the same. Each of the 16 pins needs a decision: restore its
+            // subject, or drop it. probe:
+            // design/review-2026-10-19/repro/fuzz-lib-b-reject-pin-reasons.sh
+            // (fuzz-lib-b-01)
             Verdict::Contained | Verdict::Rejected => {
                 !bless && recorded.get(entries[i].0) == Some(&v)
             }
@@ -4007,6 +4104,13 @@ impl Corpus {
             }
             None => format!("// mutant:\n{prog}"),
         };
+        // CR claude for claude: [bug/low] A crash file has no `// key:` line, so
+        // Corpus::load never counts its class. After a restart on the same corpus dir,
+        // every crash class gets three fresh minimizations, and possibly three more
+        // files, contrary to the `keys` doc and design/graphix_fuzz.md ("keys of
+        // findings on disk count"). Fix: take the class as a parameter and write
+        // `{KEY_LINE}{escape_line(class)}` here, as Corpus::record does. Found by
+        // reading; not run. (fuzz-lib-b-04)
         let body = format!(
             "// CRASH: child {status}\n\
              // do not promote to findings/ until fixed (regress runs in-process)\n\
@@ -4781,6 +4885,13 @@ async fn check_child(
     if serial {
         env.push(("GRAPHIX_FUZZ_SERIAL_RUNS", "1"));
     }
+    // CR claude for claude: [bug/low] `timeout` sizes only this deadline. The check-one
+    // child checks at campaign_timeout() whatever it is given, and so does run-one in
+    // died(). `graphix-fuzz minimize` therefore judges every candidate at 3 s although
+    // it builds Judge::Isolated(timeout()) (10 s), so a finding that `check` reports at
+    // 10 s can minimize to AGREE. Fix: pass the budget in argv (milliseconds, as
+    // typemorph-one does) and use it in both children. Found by reading; not run.
+    // (fuzz-lib-b-07)
     let c = run_child("check-one", &[], &env, prog, true, deadline).await;
     let res = match (c.status, c.verdict) {
         (None, _) => PoolResult::Crash("HANG (outer deadline)".into()),
@@ -4922,6 +5033,14 @@ async fn minimize_isolated(
 ) -> (Option<String>, Duration) {
     // worst case the whole budget is bottom programs sleeping the
     // per-mode timeout
+    // CR claude for claude: [perf/low] The comment above undercounts the worst case. A
+    // candidate with a one-sided Timeout pays settle's slow_budget remake (at least 60
+    // s) plus a slow-budget rerun of the reference, so a timeout-kind finding gets
+    // about 8 of its 80 checks in 540 s. Under Judge::Isolated, one candidate that
+    // wedges its check-one child waits out check_deadline (about 1000 s), past this
+    // whole deadline. Fix: size this from the finding's per-check worst case, or have
+    // the minimizer treat a candidate that times out at the plain budget as a miss.
+    // Found by reading; not run. (fuzz-lib-b-05)
     let deadline = Deadline::Fixed(
         timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60),
     );
@@ -5223,6 +5342,17 @@ async fn derive_suspect(
         }
         PoolResult::Crash(status) => {
             tally.crashes.fetch_add(1, Relaxed);
+            // CR claude for claude: [bug/medium] This class cannot tell crashes apart.
+            // crash_class keeps the wait status and the last two stderr lines, which
+            // for a Rust panic are the message and the `note:` line. The `panicked at
+            // file:line` line is dropped. A hang is always "HANG (outer deadline)", and
+            // a silent SIGSEGV is the bare signal. With MINIMIZE_PER_KEY = 3, every
+            // unwrap-on-None panic from any site, every hang and every silent JIT
+            // SIGSEGV each get three files per campaign, and every later one, whatever
+            // its cause, is counted as known and dropped. Fix: put the panic location
+            // in the key (collapse digits in the message only). For a status with no
+            // words, key on the program's crash_key. Found by reading; not run.
+            // (fuzz-lib-b-02)
             let class = crash_class(&status);
             if !corpus.claim(&class) {
                 tally.known.fetch_add(1, Relaxed);
@@ -5277,6 +5407,15 @@ async fn confirm_typeflip(
     let (r, cpu) = typemorph_child(prog, timeout).await;
     let (flips, confirmed) = match r {
         Ok(rep) => match tm_flips(&rep) {
+            // CR claude for claude: [bug/medium] Not every suspect reaching this arm
+            // flipped in its batch child. When a typemorph gen-batch child dies,
+            // order_result also hands back every subject left without a verdict. Those
+            // that do not flip here get recorded as an "unconfirmed: fresh-process
+            // flap": a typeflip file and a TYPEFLIP line for a program that never
+            // flipped. Since that class is then seen, a real flap is never recorded
+            // after it. Fix: have OrderResult mark which suspects came from a P line,
+            // and record the flap only for those. An unresolved subject with no flips
+            // is no finding. Found by reading; not run. (fuzz-lib-b-03)
             f if f.is_empty() => (
                 vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
                 false,

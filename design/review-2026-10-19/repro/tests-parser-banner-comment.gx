@@ -1,0 +1,8 @@
+//////////////////////////////////////
+// Title: a `////` banner line in a .gx file is refused as a doc comment
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --check tests-parser-banner-comment.gx
+// Expected: four or more slashes read as a plain comment (Rust's rule), so this checks.
+// Observed: "`///` is a doc comment, legal only in a .gxi interface file" at line 1;
+//   in a .gxi the same line is taken as a doc line whose text starts with "/".
+let x = 1;
+x

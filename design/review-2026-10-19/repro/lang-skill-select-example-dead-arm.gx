@@ -1,0 +1,8 @@
+// lang-skill: SKILL.md's Select example writes the slice ladder
+// `[] => 0, [a, b] => a + b, [h, rest..] => h, [a, ..] => a`; the last arm is dead after
+// `[h, rest..]`, and the same section says a select must have no dead arms.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --check lang-skill-select-example-dead-arm.gx
+// Expected (the skill's example): accepted.
+// Observed: "unreachable arm: the earlier arms already cover the whole scrutinee".
+let arr = [1, 2, 3];
+select arr { [] => 0, [a, b] => a + b, [h, rest..] => h, [a, ..] => a }

@@ -1,0 +1,14 @@
+// x-rerun-1: array::group emits an empty group when its predicate fires with no element pending
+// (variant of collections-str-03, the same answer handling in Group::update)
+// command: timeout -s KILL 30 graphix --no-cache x-rerun-1-group-empty.gx   (same with --no-fusion)
+// expected: no output (no element has arrived when `gate` turns true, so f has answered
+//   nothing about any element; at 50ms 7 is buffered and f, which does not read it, never answers)
+// observed: [] -- the fire of `gate` at 20ms is taken as an answer for an empty buffer.
+// A constant predicate shows the same: `array::group(count(timer), |n, v| true)` prints [].
+let x: i64 = never();
+x <- sys::time::after_idle(duration:50.ms, 7);
+let gate = false;
+gate <- sys::time::after_idle(duration:20.ms, true);
+let g = array::group(x, |n, v| gate);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+g

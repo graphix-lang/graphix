@@ -1,0 +1,15 @@
+{
+let step = 0;
+step <- select step {
+  s if s < 4 => s + 1,
+  _ => never()
+};
+let xs: Array<i64> = [];
+xs <- step ~ array::push(xs, step);
+let f = |x: i64| -> i64 seq {
+  let a = x + 1;
+  a * 2
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+array::map(xs, |x| f(x))
+}

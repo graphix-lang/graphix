@@ -331,6 +331,11 @@ macro_rules! db_event_accessor {
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
                 let top_id = ExprId::decode(buf)?;
                 let cached = CachedVals::image_decode(buf)?;
+                // CR claude for claude: [dead/low] bind_id is Some only when `cached`
+                // holds a SubscriptionValue, which is impl_no_pack, so an image with a
+                // bind id is never written. This field and the record_ref below can
+                // never fire. Remove bind_id from the accessor's codec: decode it as
+                // None and drop the branch. Found by reading; not run. (db2-04)
                 let bind_id = <Option<BindId>>::decode(buf)?;
                 let data = <Option<Type>>::decode(buf)?;
                 if let Some(bid) = bind_id {

@@ -124,6 +124,18 @@ async fn select_restarts_timer(mode: Mode) -> Result<()> {
 
 // A slept arm's call in flight is aborted: tick 2 deselects the arm 150ms
 // before tick 1's reply is due, so only tick 4's reply lands.
+// CR claude for claude: [test-gap/medium] after_idle is an event source, not a call: a
+// sleep pauses its pending wait and the wake resumes it
+// (design/async_sleep_outputs.md). Here tick fires at the wake, and that fire restarts
+// the wait whatever the sleep did. So [4] holds whether a slept wait is aborted,
+// resumed or kept, and the comment above describes neither rule. Two rules are
+// unpinned. First, a pending wait resumes at a wake its argument does not fire (repro
+// prints 7 after tick 4). Second, a CachedArgsAsync call in flight is aborted at the
+// sleep and not restarted at the wake:
+// design/review-2026-10-19/repro/tests-lang-rest-a-call-aborted-at-sleep.gx,
+// sys::process::wait. Add both as modes! fixtures and correct this comment. probe:
+// design/review-2026-10-19/repro/tests-lang-rest-a-idle-wait-resumes.gx
+// (tests-lang-rest-a-02)
 async fn select_aborts_slept_call(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 4)?);
@@ -217,6 +229,25 @@ modes!(line_reader_rewake);
 
 // An async builtin is issued again, so it answers again: a woken count
 // over a call that only stands would show nothing.
+// CR claude for claude: [test-gap/medium] This pin cannot fail for the reason its
+// comments give. n reaches 2 because the select emits its arm's standing value when
+// `on` delivers; is_file is not reissued, and r stays 1. A constant arm body gives the
+// same [0, 1, 2]. The comments ('restarts each builtin', 'issued again') state the
+// opposite of CLAUDE.md, which says the wake restarts nothing. Assert that (n, r) ends
+// at (2, 1), rename the test to say the call is not reissued, and rewrite the group
+// comment to the rule. probe:
+// design/review-2026-10-19/repro/tests-lib-a-wake-reissue-test-vacuous.gx
+// (tests-lib-a-02)
+// CR claude for claude: [doc-drift/medium] This test's name, its comment ("An async
+// builtin is issued again, so it answers again") and the section header above ("A woken
+// arm restarts each builtin over its present arguments") state the rule CLAUDE.md
+// replaced: a wake is a resume, it issues no call, and a call's result survives the
+// sleep. The expected [0, 1, 2] holds only because is_file is NOT issued again. count
+// stays 1, and the select's re-entry delivers that standing 1; a re-issue would give
+// [0, 1, 2, 3]. Rename it (wake_keeps_a_calls_result) and rewrite both comments to say
+// what it pins. probe:
+// design/review-2026-10-19/repro/tests-lang-rest-a-wake-keeps-call-result.gx
+// (tests-lang-rest-a-01)
 async fn wake_reissues_standing_async(mode: Mode) -> Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("f"), "")?;

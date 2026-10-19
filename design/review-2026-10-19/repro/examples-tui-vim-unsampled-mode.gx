@@ -1,0 +1,23 @@
+// Title: input_vim's handler reads `mode` unsampled, so it re-runs on the stale key after every mode switch
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/examples-tui-vim-unsampled-mode.gx
+// Expected: one "key .. -> .." line per key (the handler answers each event once)
+// Observed: `Char("i") and `Esc each print twice ("key `Esc -> `Stop" then "key `Esc -> `Continue"):
+//   the mode write lands next cycle, the scrutinee `(mode, k.code)` fires on it with the old key,
+//   and the select runs a second arm. The handler is the one in book/src/examples/tui/input_vim.gx
+//   with a key stream in place of the terminal.
+type Mode = [`Normal, `Insert];
+let mode: Mode = `Normal;
+let text = "";
+let handle = |k: {code: [`Char(string), `Esc]}| select (mode, k.code) {
+  (`Normal, `Char("i")) => { mode <- k ~ `Insert; `Stop },
+  (`Insert, `Esc) => { mode <- k ~ `Normal; `Stop },
+  (`Insert, `Char(c)) => { text <- k ~ "[text][c]"; `Stop },
+  _ => `Continue
+};
+let keys = [`Char("i"), `Char("a"), `Esc, `Char("i"), `Char("b"), `Esc, `Char("x")];
+let n = count(sys::time::timer(duration:50.ms, 7));
+let ev = {code: keys[n - 1]$};
+let r = handle(ev);
+println("key [ev.code] -> [r]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+"[mode]: [text]"

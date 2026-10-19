@@ -92,6 +92,10 @@ val fract: fn(x: f64) -> f64;
 /// Absolute value.
 val abs: fn(x: f64) -> f64;
 
+// CR claude for claude: [doc-drift/low] The doc promises -1.0, 0.0 or 1.0. The builtin
+// is f64::signum: signum(0.0) is 1 and signum(-0.0) is -1, never 0. Document the zero
+// cases, or return 0.0 for zero if that is the intent. probe:
+// design/review-2026-10-19/repro/gx-stdlib-signum-zero.gx (gx-stdlib-05)
 /// Sign: -1.0, 0.0, or 1.0. NaN if `x` is NaN.
 val signum: fn(x: f64) -> f64;
 

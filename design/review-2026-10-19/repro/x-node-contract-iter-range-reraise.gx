@@ -1,0 +1,16 @@
+// array::iter and range keep their last element across a sleep, so the
+// arm's re-entry re-raises it as a new event; every other event source
+// (timer, after_idle, subscribe, watch ...) clears its output at sleep.
+// Run: timeout -s KILL 30 graphix --no-cache x-node-contract-iter-range-reraise.gx
+// Expected (design/async_sleep_outputs.md: an event source's output is the
+// last event and does not survive the sleep): 1, 2, 3 and nothing at the wake
+// Observed: 1, 2, 3, 3 -- the second 3 is the phantom re-raise at the wake
+// (100 ms later). Same with `range(1, 9)$` in place of array::iter.
+// A timer in the same position (repeat 3) prints one tick per fire and none at
+// the wake.
+let on = true;
+let v = select on { true => array::iter([1, 2, 3, 4, 5, 6, 7, 8]), false => never() };
+on <- once(select v { 3 => false, _ => never() });
+on <- sys::time::timer(duration:100.ms, false) ~ true;
+sys::exit(sys::time::after_idle(duration:300.ms, v));
+v

@@ -87,6 +87,16 @@
 ;;; ---- Regex-based fallback mode ----
 
 (defvar graphix-font-lock-keywords
+  ;; CR claude for claude: [bug/low] This fallback list lacks never, pub, trait, impl,
+  ;; mut, val, for and flush. ide/editors/vscode/syntaxes/graphix.tmLanguage.json and
+  ;; ide/editors/vim/syntax/graphix.vim lack the same words plus try and abort, and they
+  ;; list `where`, which is not a Graphix word. VS Code has no other highlighter, so
+  ;; trait/impl/never/abort show uncolored there. Bring all three to
+  ;; book/theme/graphix-highlight.js's KEYWORDS. Then add a tree_sitter_compat test that
+  ;; include_str!s each file and asserts it names every Construct word of
+  ;; parser::KEYWORDS plus val with as throws for abort flush, so the lists are gated
+  ;; like the queries. probe:
+  ;; design/review-2026-10-19/repro/ide-tooling-regex-keyword-drift.sh (ide-tooling-05)
   (let ((keywords '("let" "rec" "mod" "use" "type" "fn" "select" "if" "try"
                      "catch" "cast" "any" "with" "throws" "as"
                      "seq" "seqq" "until" "abort"))

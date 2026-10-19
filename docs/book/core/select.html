@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -201,7 +201,12 @@ selected is chosen as the one and only selected arm.</p>
 <p>The code on the right side of the selected arm is the only code that is
 evaluated by select, all other code is “asleep”, it will not be evaluated
 until it is selected (and if it has netidx subscriptions or published values
-they will be unsubscribed and unpublished until it is selected again).</p>
+they will be unsubscribed and unpublished until it is selected again).
+Sleep is a pause: when the arm is selected again it resumes where it
+stood. Its counters, <code>once</code>s and queues keep their state, a call it made
+is not made again, and the only events it sees are the ones that fired
+while it slept, each once, at its current value. The first time an arm
+is selected is its birth: its constants fire then, and only then.</p>
 <p>Like every other expression, a select updates whenever any of its inputs
 update: a new value of the argument, a new value read by a guard, or a new
 value produced by the selected arm’s body all cause the select to produce its
@@ -222,6 +227,14 @@ select x {
 <p>This program will print 42, 15, 7 and then wait. The compiler will check that
 you have handled all the possible cases. If we remove the null case from this
 select we will get a compile error.</p>
+<!-- CR claude for claude: [doc-drift/low] These transcripts quote diagnostics the
+checker no longer prints. Removing the null arm now gives `missing match cases: no arm
+covers null`, the guarded `i64` case gives `no arm covers i64`, and the `Wrong arm gives
+`unreachable arm: the earlier arms already cover the whole scrutinee, unused match
+cases`. The paragraph after this block explains the old type-set message. Re-capture all
+three and rewrite that paragraph (error.md's "Checked Errors" transcript is stale the
+same way). probe: design/review-2026-10-19/repro/book-core-select-diagnostics.sh
+(book-core-08) -->
 <pre><code>$ graphix test.gx
 Error: in file "test.gx"
 
@@ -499,6 +512,12 @@ the arm and delivers its bindings.</p>
 </code></pre>
 <pre><code>$ graphix or.gx
 5
+&lt;!-- CR claude for claude: [doc-drift/low] The checker does not require a name to have
+the same type in every alternative. It types the name as the union, as CLAUDE.md and
+this page's "Matching Structure" section say: `` `A(n) | `B(n) `` over `` [`A(i64),
+`B(string)] `` is accepted with `n: [i64, string]`. Keep "same names" and replace "same
+types" with the union rule. probe:
+design/review-2026-10-19/repro/book-core-or-pattern-types.gx (book-core-07) --&gt;
 </code></pre>
 <p>The rules are the orthodox ones:</p>
 <ul>
@@ -569,12 +588,14 @@ how we would do something with every element of an array (see <code>array::map</
 <h3 id="writing-from-an-arm"><a class="header" href="#writing-from-an-arm">Writing From an Arm</a></h3>
 <p>A connect inside an arm is an ordinary node of that arm: it fires
 when its right-hand side fires. Sample the event when the write
-should run on every delivery into the arm; a constant right-hand
-side fires when the constant does (init, or the arm’s wake).</p>
+should run on every delivery into the arm. A constant right-hand side
+fires when the constant does, at the arm’s first entry and never
+again, so the check warns of it; the same goes for a call with an
+effect whose arguments are all constants, and a <code>seq</code> with no trigger.</p>
 <pre><code class="language-graphix">select k.code {
   kk@ `Up =&gt; sel &lt;- kk ~ (sel - 1),
   kk@ `Down =&gt; sel &lt;- kk ~ (sel + 1),
-  `Enter =&gt; screen &lt;- `Pick,
+  kk@ `Enter =&gt; screen &lt;- kk ~ `Pick,
   _ =&gt; never()
 }
 </code></pre>

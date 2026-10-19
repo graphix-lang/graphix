@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -187,6 +187,13 @@ Graphix’s traits are Rust’s, spelled in Graphix.</p>
     val twice: fn(self) -&gt; string = |s| "[show(s)] [show(s)]"
 };
 </code></pre>
+<!-- CR claude for claude: [doc-drift/low] This paragraph says every method has a
+positional `self` parameter. A method that names `self` only in its result is accepted,
+as is its impl (core's `Cast::from_value` is one), but every call to it is refused with
+"called without its self argument". Fix: state that rule (`self` only in the result is
+legal, and no call dispatches such a method) so the error has an explanation. probe:
+design/review-2026-10-19/repro/book-modules-udt-trait-no-self.gx (book-modules-udt-08)
+-->
 <p>Each item is a <code>val</code> with a function type. The type <code>self</code> is the
 receiver — the type implementing the trait — and every method has a
 positional <code>self</code> parameter, written bare: <code>fn(self, n: u64) -&gt; bytes</code>
@@ -229,6 +236,15 @@ that the implementation provides the impl (see below).</p>
 <p>The head’s type variables are declared in <code>impl&lt;..&gt;</code> with their
 bounds; every one must occur in the target. <code>Array&lt;i64&gt;</code> then
 implements <code>Show</code> exactly when <code>i64</code> does.</p>
+<!-- CR claude for claude: [doc-drift/low] These rules say an alias or variant may be
+implemented only in the trait's own package and that unions are never targets.
+`node::traits::check_target` exempts a constructor trait's named head: the name's
+package (or the trait's) suffices, even for a union alias. That is why `impl Collection
+for L<'_>`, shown in implementing Collection and examples/collection/cons_list.gx,
+compiles in a script, while `impl Display for L<i64>` is refused. Fix: state the
+constructor-trait rule here. probe:
+design/review-2026-10-19/repro/book-modules-udt-ctor-trait-orphan.gx
+(book-modules-udt-07) -->
 <h3 id="where-an-impl-may-be-written"><a class="header" href="#where-an-impl-may-be-written">Where an impl may be written</a></h3>
 <p>Implementations are global facts: once the module holding one loads,
 the impl applies everywhere the trait is used. To keep that coherent,

@@ -85,6 +85,29 @@ impl InputReader {
     ) -> Result<Signal> {
         match output {
             Output::Custom(cdc) => match (&mut cdc.stop).await {
+                // CR claude for claude: [bug/medium] A display that ended normally
+                // (tui::exit, or the user closing a GUI's last window) is reported as
+                // Ctrl-C, and since the Ctrl-C exit-code fix a script then exits 130,
+                // the SIGINT status. In the REPL it also interrupts the runtime. Give
+                // this case its own Signal: in a script, break with `Ok(None)` (exit
+                // 0); in the REPL, clear the output without interrupting. probe:
+                // design/review-2026-10-19/repro/gui-core-display-stop-exits-130.gx
+                // (exits 130). (gui-core-02)
+                // CR claude for eric: [bug/high] A display's `Ok(())` stop is read as
+                // Ctrl-C, so a script whose TUI quits through `tui::exit` exits 130,
+                // the SIGINT status, as if it had been interrupted. Every TUI app's
+                // normal quit key (input_basic.gx, netidx-admin's `q`) now ends the
+                // process unsuccessfully, so `graphix app.gx && next` never runs
+                // `next`. Found by reading: the GUI's `finish(event_loop, Ok(()))` when
+                // the last window closes takes this same arm. The TUI sends the same
+                // `Ok(())` for a Ctrl-C keypress (`Screen::event`) and for `tui::exit`
+                // (`TuiControl::request_exit`), so this arm cannot tell them apart.
+                // Decide what status a program-requested stop should have (0 seems
+                // right). Then make `Stop` carry the reason (e.g. `Ended::{Interrupted,
+                // Requested}`), map Requested to a successful end in script mode, and
+                // pin it beside interrupt_wedge.rs's Ctrl-C status test. probe:
+                // design/review-2026-10-19/repro/tui-core-exit-status-130.gx Also
+                // reported as (x-rerun-5-02). (tui-core-01)
                 Ok(Ok(())) => Ok(Signal::CtrlC),
                 Ok(Err(e)) => Err(e.context("the display failed")),
                 Err(_) => bail!("the display died"),

@@ -1,0 +1,21 @@
+// A guard that reads the scrutinee VARIABLE, not the arm's bind, runs on the
+// values an earlier arm claimed and raises on them; the pin
+// guard_below_the_claim_never_sees_the_value covers only the bind form
+// (`n if check(n)?`), where nothing is raised.
+// run: timeout -s KILL 5 graphix --no-cache tests-select-guard-reads-claimed-scrutinee.gx
+//      (same with --no-fusion)
+// expected (if "an earlier arm that claims the value keeps it from every guard
+// below" holds for this spelling too): caught stays 0
+// observed: caught counts every x = -1 that arm 0 claimed:
+//   (0, "neg", 0) (1, "zero", 1) (2, "pos", 1) (3, "neg", 1) (4, "zero", 2)
+//   (5, "pos", 2) (6, "neg", 2) (6, "neg", 3)
+let step = 0;
+step <- select step { n if n < 6 => n + 1, _ => never() };
+let x = step % 3 - 1;
+let caught = 0;
+let check = |n: i64| select n { k if k < 0 => error(`Neg(k)), k => k > 0 };
+let r = {
+  catch(e) caught <- e ~ caught + 1;
+  select x { -1 => "neg", _ if check(x)? => "pos", _ => "zero" }
+};
+(step, r, caught)

@@ -351,6 +351,11 @@ The strict tuple includes the entry clock, so present standing inputs
 produce a fresh tuple on entry; `~!` is the strict sample so an entry
 that finds an input bottom clears the previous snapshot without
 banking a trigger, and `once` supplies the readiness event when the
+<!-- CR claude for claude: [doc-drift/low] Stale against the wake-is-a-resume rule.
+Once::sleep is a no-op and Once::reborn clears its admission, so `once` resets at the
+step's entry for a run (View::Step), not on sleep. Likewise §5's "its constant trigger
+fires at the arm's wake" should say it fires at the step's entry: constants stand under
+View::Wake. Found by reading; not run. (tests-seq-05) -->
 missing inputs arrive (it resets its admission on sleep). All
 arguments, constants and labeled arguments included, come from one
 snapshot. Inline lambda arguments stay at the call site, sampled with
@@ -379,6 +384,12 @@ than only when a catch-up fire happens to deliver it.
 
 The machine keeps one step awake. A step enters when `pc` fires its
 label (the start event, a `try` jump, a next-cycle boundary), and is
+<!-- CR claude for claude: [doc-drift/low] Stale: evaluate() in node/seq_machine.rs
+enters a step under View::Step, a birth for the run (constants fire, builtins reborn),
+not the wake view, and since no-partial-rebirth a wake fires no constant. §5's 'its
+constant trigger fires at the arm's wake' and the seq_machine.rs module doc ('wakes it
+under the wake view') say the same wrong thing. Reword all three to the Step entry.
+Found by reading; not run. (x-engine-seq-errors-06) -->
 updated under the wake view with `Select`'s catch-up
 (`node/wake.rs::TrackedFires`: one fire bit per step-body input per
 machine, consumed by whichever step reads it, so a fire while a step

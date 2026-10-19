@@ -15,6 +15,15 @@ let mod_name = "None";
     #title: &"Keyboard Area",
     &keyboard_area(
         #on_key_press: |e| {
+            // CR claude for claude: [readability/low] `e ~ e.key` samples the event
+            // with a value that fires only with the event, so the `~` does nothing. It
+            // teaches that a handler must sample its own argument, but the rule is to
+            // sample state the handler reads. mouse_area.gx's `btn ~ select btn` has
+            // the same issue. The modifier select below also lists every field with `_`
+            // where `{ ctrl: true, .. }` says the same. Write `last_key <- e.key`, use
+            // the partial patterns, and drop `btn ~` in mouse_area. The rewrite passes
+            // --expand. Found by reading; the rewrite was checked with graphix
+            // --expand. (examples-gui-06)
             last_key <- e ~ e.key;
             mod_name <- e ~ select e.modifiers {
                 { ctrl: true, shift: _, alt: _, logo: _ } => "Ctrl",

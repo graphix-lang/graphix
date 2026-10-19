@@ -2,6 +2,13 @@ use anyhow::Result;
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;
 
+// CR claude for claude: [structure/low] Most fixtures above db_float_keys_order take
+// their result apart by hand: nested match/panic ladders and per-field matches! that
+// check keys but not values (db_first_last, db_pop_min_max, db_get_lt_gt). The
+// `arr`/`s` helpers further down already let one assert_eq! state the whole expected
+// value. Move them up and rewrite each expect as a single assert_eq!: about 500 fewer
+// lines, full coverage of each result, and a failure that prints both values. Found by
+// reading; not run. (tests-lib-a-05)
 fn assert_tree_type(v: &Value, expected_key: &str, expected_val: &str) {
     let ty = match v {
         Value::Array(a) => a,

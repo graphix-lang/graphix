@@ -1,0 +1,6 @@
+// math::signum doc says the sign is -1.0, 0.0 or 1.0; it is never 0.0 (f64::signum).
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/gx-stdlib-signum-zero.gx
+// Expected (per math.gxi): (0, 0, 1)
+// Observed: (1, -1, 1)
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(math::signum(0.0), math::signum(-0.0), math::signum(2.5))

@@ -1,0 +1,15 @@
+// The same hole as x-typecheck-generics-rank2-lambda-literal.gx, through a
+// typedef of the quantified type: here the build accepts as well, and the
+// program fails at run time.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-rank2-lambda-literal-typedef.gx  (exit 0)
+//   timeout -s KILL 5 graphix --no-cache x-typecheck-generics-rank2-lambda-literal-typedef.gx
+// Expected: refused at `app(|x| x * x)`: g may be called at string.
+// Observed: compiles and runs; the call is bottom forever, logging
+//   `g("a"): binding the callee failed: a run-time bind at g("a") did not
+//   type: an instance at fn(x: string) -> string of a definition typed
+//   fn(x: '_ within [i64, string] & [u8, .., decimal] & Singleton) ..`.
+//   graphix-fuzz check AGREEs (both engines fail the same way).
+type F = fn<'b: [i64, string]>(x: 'b) -> 'b;
+let app = |g: F| g("a");
+app(|x| x * x)

@@ -1,0 +1,13 @@
+// A recursive call that omits a labeled default never fuses.
+// Command: graphix --no-cache --expand c-callsite-omitted-default-selfcall-defuses.gx
+// Expected: compiles (the same program with `f(#k: k, m - i64:1)` in the
+//   recursive arm compiles: the call is #[native]).
+// Observed: "#[native] expression did not fully fuse to native code:
+//   - emit_clif: builtin call site `f(m - 1)` not discovered — doesn't fuse".
+// Cause: CallSite::resolve_static holds DefaultInCheck guards for the outer
+// site's omitted labels across the whole bind_instance, so the body's
+// self-call (omitting the same label) returns early, gets no static_target,
+// and is neither a recursion edge nor a self-call to fusion.
+let rec f = |#k: i64 = i64:1, n: i64| -> i64 select n { m if m <= i64:0 => i64:0, m => m * k + f(m - i64:1) };
+let g = |x: i64| -> i64 #[native] f(#k: i64:2, x);
+g(i64:5)

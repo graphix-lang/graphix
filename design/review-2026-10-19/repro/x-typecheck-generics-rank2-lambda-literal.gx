@@ -1,0 +1,17 @@
+// A lambda literal passed to a rank-2 formal narrows the formal's rigid
+// quantifier from its own body: the check accepts, the build refuses.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-rank2-lambda-literal.gx   (exit 0)
+//   graphix --no-cache x-typecheck-generics-rank2-lambda-literal.gx
+//   graphix-fuzz check x-typecheck-generics-rank2-lambda-literal.gx
+// Expected: the check refuses `app(|y| y * y)`: the callee may call g at
+//   any 'b its bound admits ("a" here), and `y * y` needs Number.
+//   (The same argument through a name, `let sq = |y| y * y; app(sq)`, is
+//   refused with "fn<'b: [i64, string]>.. does not contain fn(y: Number &
+//   Singleton) ..".)
+// Observed: --check passes; the run fails with "an instance at fn(y: string)
+//   -> string of a definition typed fn(y: '_ within [i64, string] & [u8, ..,
+//   decimal] & Singleton) ..."; graphix-fuzz check: DIVERGENCE — the check
+//   accepted what the build refused. With 'b: Any the same happens.
+let app = |g: fn<'b: [string, i64]>(y: 'b) -> 'b| g("a");
+app(|y| y * y)

@@ -4,6 +4,11 @@ Every GUI window accepts a `#theme` parameter that controls the visual appearanc
 
 ## Built-in Themes
 
+<!-- CR claude for claude: [structure/low] This page, and types.md, copy about 150 lines
+of type and builder definitions from gui's mod.gxi and style.gxi by hand. The book test
+only parses fences, so the first renamed field or new theme diverges silently. Fix: mark
+each definition with `// ANCHOR: <name>` in the gxi and `{{#include}}` it, as types.md
+already does for `Widget`. Found by reading; not run. (book-ui-a-07) -->
 The `Theme` type enumerates all available themes:
 
 ```graphix

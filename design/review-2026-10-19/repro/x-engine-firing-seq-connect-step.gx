@@ -1,0 +1,14 @@
+// x-engine-firing: a seq step that calls a function whose body is a connect never
+// completes: the connect produces no value, so the run stalls with no diagnostic.
+// book/src/core/seq.md presents `put(5); let s = b`, "where `put` writes the `b` it
+// captured"; the pins define put as `|v| { b <- v; v }`.
+// Command: timeout -s KILL 20 graphix --no-cache x-engine-firing-seq-connect-step.gx
+//   (--check prints nothing: no warning)
+// Expected (the book's reading): (5, 5), then exit.
+// Observed, both engines: nothing is printed; r stays bottom. With the step written as
+// `b <- 5;` the program prints (5, 5).
+let b = 0;
+let put = |v| b <- v;
+let r = seq { put(5); let s = b; s };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(r, b)

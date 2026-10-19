@@ -108,6 +108,15 @@ impl<X: GXExt> ResolvedWindow<X> {
 
 /// The pointer as iced sees it after `ev`: where it last moved, and
 /// unavailable once it has left the window.
+// CR claude for claude: [bug/medium] Touch events never move the tracked cursor, so a
+// tap on a button, checkbox or slider does nothing. iced's widgets act on FingerPressed
+// only when cursor.is_over(bounds), and the cursor stays Unavailable or wherever the
+// mouse last was. iced's own winit shell takes the cursor position from touch locations
+// too. Fix: also set Cursor::Available(position) on Event::Touch
+// FingerPressed/FingerMoved/FingerLifted/FingerLost. Then add an InteractionHarness pin
+// that taps a button and expects one Call (frame_test's touch pin checks only the
+// conversion). probe: design/review-2026-10-19/repro/tests-gui-b-touch-taps-ignored.rs
+// (a click gives 1 call, a tap gives 0). (tests-gui-b-01)
 pub fn track_cursor(cursor: &mut mouse::Cursor, ev: &iced_core::Event) {
     match ev {
         iced_core::Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -121,6 +130,12 @@ pub fn track_cursor(cursor: &mut mouse::Cursor, ev: &iced_core::Event) {
 }
 
 /// Per-window state tracking.
+// CR claude for claude: [structure/low] This struct repeats ResolvedWindow's seven
+// fields. into_tracked and handle_update's recompile copy them one by one, and the
+// decode-icon-or-warn closure is written twice. Hold `props: ResolvedWindow<X>` here so
+// a recompile is one assignment, and make icon decoding one function both sites call.
+// The window's refs could then also be tested without an OS window. Found by reading;
+// not run. (gui-core-07)
 pub struct TrackedWindow<X: GXExt> {
     pub window_ref: Ref<X>,
     pub gx: GXHandle<X>,
@@ -157,6 +172,14 @@ impl<X: GXExt> TrackedWindow<X> {
         v: &Value,
     ) -> Result<()> {
         if id == self.window_ref.id && self.window_ref.last.as_ref() != Some(v) {
+            // CR claude for claude: [bug/medium] `last` is recorded before
+            // ResolvedWindow::compile. When the compile fails (for example, the new
+            // window's content is a text whose size is 0 at that moment), the window
+            // keeps the old window's refs but `last` already equals the new value, so a
+            // later delivery of the same value is skipped and never retried.
+            // Child::update and Children::update set `last` only after a successful
+            // compile, and reconcile_test.rs pins that. Move this assignment below the
+            // compile. Found by reading; not run. (gui-core-01)
             self.window_ref.last = Some(v.clone());
             let resolved = rt
                 .block_on(ResolvedWindow::compile(self.gx.clone(), v.clone()))

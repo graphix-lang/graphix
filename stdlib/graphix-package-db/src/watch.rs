@@ -35,6 +35,17 @@ impl Watches {
         prefix: &[u8],
         tx: mpsc::UnboundedSender<Change>,
     ) -> Registered {
+        // CR claude for eric: [perf/medium] This exclusive lock is taken on the runtime
+        // thread (DbSubscribe::update -> spawn_watch). It waits for every write in
+        // flight on the tree, and watch::write holds the lock for the whole sled
+        // operation: an apply_batch, a commit's transaction, an import. A subscription
+        // made during a 100k-entry db::batch stopped a 5 ms ticker for 409 ms, the
+        // whole batch. Registered::drop blocks a tokio worker the same way. The fix is
+        // a choice. Register without blocking: keep the list behind its own short
+        // mutex, and have writers that saw no watch record their changes anyway. Or
+        // register on a blocking thread and fire the subscription once registered,
+        // giving up "registered in the cycle the subscription fires". probe:
+        // design/review-2026-10-19/repro/db2-subscribe-blocks-runtime.gx (db2-01)
         self.0.write().push(Watch { prefix: prefix.into(), tx: tx.clone() });
         Registered { watches: self.clone(), tx }
     }

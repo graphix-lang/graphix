@@ -1,0 +1,10 @@
+// x-rerun-4: t-fntyp-10 no longer reproduces, but its CR (graphix-types/src/typ/normalize.rs,
+// "Two function types merge only when identical") is still in the tree. d99f80510
+// (x-typecheck-generics-06) made array, list and map literals and any() union their
+// elements as select arms do; lang::functions::gathered_functions_meet pins it.
+// Command: graphix --no-cache x-rerun-4-fntyp10-fixed.gx
+// Expected and observed: [5, 10] (both element orders work; the 2026-10-12 repro
+//   t-fntyp-10.gx prints [10, 5]).
+let fs = [|x| x, |x: i64| x * 2];
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::map(fs, |f| f(5))

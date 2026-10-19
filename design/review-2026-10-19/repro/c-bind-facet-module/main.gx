@@ -1,0 +1,17 @@
+// A destructuring let in module m whose sibling `a` is written from outside
+// the module: Bind::compile grouped a and b as facets of one input because
+// no writer of `a` was known when m compiled, so a select arm reading both
+// gets a phantom catch-up fire of `b` (TrackedFires::deliver) at EVERY write of a.
+// run: timeout -s KILL 10 graphix --no-cache main.gx | grep -v null
+// expected (b never fires after birth; the same program with the let in
+//   this file prints this):  0 (1, 1) 0 (11, 1) 1 (21, 1) ... 4 (41, 1) ...
+// observed (node-walk and JIT):  0 (1, 1) 0 (11, 2) 1 (21, 3) ... 4 (41, 4) 4 (51, 5) ...
+mod m;
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+m::a <- n ~ m::a + 10;
+let sel = select n { 2 => false, 3 => false, _ => true };
+let out = select sel { true => (m::a, count(m::b)), false => (-1, -1) };
+sys::exit(select n { 6 => n, _ => never() });
+println("[n] [out]")

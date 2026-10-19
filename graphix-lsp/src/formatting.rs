@@ -20,6 +20,13 @@ fn edits(
         return Ok(vec![]);
     }
     let last_line = text.rsplit('\n').next().unwrap_or("");
+    // CR claude for claude: [bug/low] The range end counts only '\n' line breaks, but
+    // LSP also treats a lone "\r" as a break, and the parser accepts a file whose lines
+    // end in lone CRs. For `let x = 1;\rlet y = 2;\rx + y\r` the edit ends at {line: 0,
+    // character: 30}. A client clamps that to the end of line 0, replaces only the
+    // first line, and leaves the old lines after the formatted text. Fix: count "\r\n",
+    // "\r" and "\n" as LSP does when finding the last line and its number. probe:
+    // design/review-2026-10-19/repro/x-formatter-lsp-lone-cr-range.py (x-formatter-04)
     let line = text.matches('\n').count() as u32;
     let end = char_col_to_position(last_line, line, last_line.chars().count(), encoding);
     let range = Range { start: Position { line: 0, character: 0 }, end };

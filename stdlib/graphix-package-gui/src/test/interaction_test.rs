@@ -518,6 +518,12 @@ async fn mouse_area_on_move_produces_call() -> Result<()> {
     let initial = h.watch("test::moved").await?;
     assert_eq!(initial, Value::Bool(false));
     // Only cursor motion after the on_enter arm reaches on_move.
+    // CR claude for claude: [readability/low] The comment above is wrong for this
+    // program. It sets no on_enter, and iced's mouse_area publishes on_move on the
+    // first hovered motion when on_enter is None. Only an area with on_enter swallows
+    // the entering motion. Delete the comment and this move, or add #on_enter if the
+    // enter-then-move order is what should be pinned. Found by reading (iced_widget
+    // 0.14.2 mouse_area::update); not run. (tests-gui-b-03)
     h.move_cursor(Point::new(5.0, 5.0));
     let msgs = h.move_cursor(WIDGET_HIT);
     h.dispatch_calls(&msgs).await?;
@@ -806,6 +812,10 @@ async fn text_editor_keeps_its_cursor_through_echoes() -> Result<()> {
     for c in ["a", "b", "c"] {
         h.live(&[char_key(c)]).await?;
     }
+    // CR claude for claude: [style/low] This hand-parses the struct layout, which only
+    // rep.rs may know. It works because the kind marker in element 0 is not an Array.
+    // Read the field as key_names does: rep::struct_fields, then
+    // rep::field_named(fields, "text"). Found by reading; not run. (tests-gui-b-08)
     let text = match h.get_watched("test::doc") {
         Some(Value::Array(fields)) => fields.iter().find_map(|f| match f {
             Value::Array(kv) if kv[0] == Value::from("text") => Some(kv[1].clone()),
@@ -862,6 +872,10 @@ async fn a_radio_without_its_value_selects_nothing() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
+    // CR claude for claude: [test-gap/low] A missed click also produces no Call, so
+    // this passes even if the radio is not there. RadioW::view publishes Nop for a
+    // click on a value-less radio. Assert msgs is exactly [Message::Nop]. Found by
+    // reading; not run. (tests-gui-b-09)
     assert!(!msgs.iter().any(|m| matches!(m, super::Message::Call(..))), "{msgs:?}");
     Ok(())
 }
@@ -1223,6 +1237,12 @@ async fn handler_presence_changes_request_a_frame() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] The final assertion cannot fail. The handler
+// writes "" on every edit, so doc is "" after 'y' whether 'y' was inserted into the
+// cleared editor, dropped, or appended to the stale "abcdefx". Only a panic is caught.
+// Assert instead that the 'y' frame's call carries "y": process_events, then
+// expect_call_with_args(.. == "y"), then apply. Found by reading; not run.
+// (tests-gui-b-02)
 async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
     let code = format_compact!(
         "{IMPORTS}; let doc = \"abcdef\"; let result = text_editor(#on_edit: |s| doc <- s ~ \"\", &doc)"

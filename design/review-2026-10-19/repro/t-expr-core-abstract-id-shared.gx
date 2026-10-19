@@ -1,0 +1,26 @@
+// Two distinct dynamic modules named `m`, in different blocks, mint ONE abstract type.
+// The second module's `get` accepts the first module's `T` value: the nominal
+// abstraction of `type T = Abstract<i64>` leaks between unrelated modules
+// (AbstractId::declared drops the `#do..` block components when the last scope
+// component is the module name).
+// command: graphix --no-cache t-expr-core-abstract-id-shared.gx
+// expected: refused at `m::get(a)` (a's type is the first module's T, not the second's)
+// observed: --check passes; the run prints 42 (the second module's get read the first's value)
+let a = {
+  let s = mod m dynamic {
+    sandbox unrestricted;
+    sig { type T = Abstract<i64>; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
+    source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0"
+  };
+  select s { error as e => never(dbg(e)), null as _ => m::mk(41) }
+};
+let b = {
+  let s = mod m dynamic {
+    sandbox unrestricted;
+    sig { type T = Abstract<i64>; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
+    source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x * 1000); let get = |t: T| -> i64 t.0 + 1"
+  };
+  select s { error as e => never(dbg(e)), null as _ => m::get(a) }
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+b

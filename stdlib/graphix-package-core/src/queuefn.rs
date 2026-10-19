@@ -138,6 +138,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     // a released call delivering to these binds this cycle runs
                     // first, and this one the next
                     // a released entry delivers this cycle to the site's binds
+                    // CR claude for claude: [readability/low] The two comment lines
+                    // above say the same thing twice in different words. Keep one, e.g.
+                    // 'a release delivering to these bindings this cycle goes first;
+                    // this call lands next cycle'. Found by reading; not run.
+                    // (core-aux-06)
                     let released = self
                         .call
                         .args()
@@ -197,6 +202,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
 
     /// The site's queued calls go with its sleep: a release to a sleeping
     /// site would run nothing.
+    // CR claude for eric: [bug/medium] Dropping the site's queued calls at sleep loses
+    // calls the program made just because the caller's arm paused: the later triggers
+    // only bank credit. Under the rule that a wake resumes and never rebirths, a pause
+    // should keep them. The doc's premise that a release to a sleeping site runs
+    // nothing no longer holds either, since wake catch-up re-raises a binding written
+    // while asleep. Decide whether a pop may target a sleeping site (catch-up delivers
+    // its last release) or skips it until the wake, then keep the entries here and
+    // update queuefn_sleeping_site_drops_its_calls. probe:
+    // design/review-2026-10-19/repro/core-aux-queuefn-site-sleep-drops.gx (core-aux-02)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.sleep(ctx);
         let count_write = {
@@ -477,9 +491,40 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         }
     }
 
+    // CR claude for eric: [bug/medium] This sleep is still the old arm-rewake restart:
+    // it clears the shared queue and resets pop_count to 1, and WrapperApply::sleep
+    // drops its site's queued calls. A call queued before the sleep never answers, and
+    // a #trigger credit banked before it is lost. The wake-is-a-resume rule (CLAUDE.md;
+    // design/async_sleep_outputs.md: a queue keeps its contents and credits) keeps
+    // both, as core `queue` and `iterq` do. design/queue_fn.md still documents the
+    // restart. Decide whether queuefn pauses like `queue`. If it does, keep the state
+    // across sleep, add `reborn` on QueueFn and WrapperApply for a seq step's next run,
+    // and update queue_fn.md. If it does not, record the exception in CLAUDE.md and
+    // async_sleep_outputs.md. probe:
+    // design/review-2026-10-19/repro/x-node-contract-queuefn-sleep-reset.gx
+    // (x-node-contract-02)
+    // CR claude for claude: [bug/medium] This sleep is a rebirth: it clears the queue
+    // and sets pop_count back to 1. When the arm wakes, the next call runs at once with
+    // no #trigger. In the probe, #trigger never fires, yet q(7) runs at the wake (r =
+    // 70 at 150 ms). CLAUDE.md says sleep is pause, not reset (a queue's contents and
+    // credits survive), and state starts afresh only in Apply::reborn. QueueFn has no
+    // reborn. Fix: move these two resets into a QueueFn::reborn and leave sleep a
+    // pause, as Queue and IterQ now do. probe:
+    // design/review-2026-10-19/repro/x-builtin-effects-queuefn-sleep-reset.gx
+    // (x-builtin-effects-03)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let w = {
             let mut s = self.state.lock();
+            // CR claude for claude: [bug/high] A sleep here is a rebirth: it drops the
+            // queued calls and restores the initial credit, so after the arm wakes the
+            // next wrapper call runs with no `#trigger`. This contradicts the rule that
+            // a wake resumes and never rebirths, which `queue`/`iterq` follow: they
+            // keep contents and credits at sleep and reset only in `Apply::reborn`.
+            // Fix: keep `queue` and `pop_count` in `sleep` and move this reset (plus
+            // the `#count` write) into a new `reborn`. Also add queuefn to
+            // design/async_sleep_outputs.md's audit table and pin it. probe:
+            // design/review-2026-10-19/repro/core-aux-queuefn-sleep-resets.gx Also
+            // reported as (tests-lib-a-01), (x-doc-drift-01). (core-aux-01)
             s.queue.clear();
             s.pop_count = 1;
             s.count_write()

@@ -1,0 +1,17 @@
+// Title: restart_builtins_go_bottom_with_their_input / rand_picks_go_bottom_with_their_input
+// (stdlib/graphix-tests/src/lib_tests/bottom.rs) cannot catch one builtin regressing:
+// the tuple is bottom when ANY element is, so one correctly-bottoming element hides the rest.
+// Here `c` stands in for a builtin that wrongly keeps riding its last value after x goes.
+// Command: timeout -s KILL 30 graphix --no-cache tests-lib-b1-bottom-tuple-vacuous.gx
+// Expected if the test could see `c`: a value carrying y = 1 (as `(y, c)` alone gives:
+//   (0, 0) (0, 1) (1, 1)).
+// Observed: (0, 7, 0) then (0, 7, 1), nothing with y = 1: once(x) bottoming masks `c` riding.
+let t = 0;
+t <- sys::time::timer(duration:20.ms, false) ~ 1;
+let x = select t { 0 => 7, _ => never() };
+let y = 0;
+y <- sys::time::timer(duration:80.ms, false) ~ 1;
+let c = 0;
+c <- x ~ c + 1;
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(y, once(x), c)

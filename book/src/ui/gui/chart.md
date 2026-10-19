@@ -235,6 +235,12 @@ Used with the chart `#projection` parameter for 3D charts:
 - **label_size** — Font size for axis labels. Must be finite, positive and at most 4096 pixels.
 - **x_label_area_size** — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.
 - **x_labels** — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.
+<!-- CR claude for claude: [doc-drift/low] "0 draws bold lines only" holds only for a
+numeric x axis. `configure_mesh` clamps the value with `ticks(n, x_min_lines)`, and
+`x_min_lines` is 1 for the datetime axis and for the bar chart's category axis, so 0
+still draws a light line there. Fix: document the floor, or remove it if plotters no
+longer needs it for those coordinate types. Found by reading; not run. (book-ui-a-06)
+-->
 - **x_light_lines** — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.
 - **y_label_area_size** — Width of the y-axis label area in pixels. Increase to prevent label clipping.
 - **y_labels** — Number of y-axis tick labels; a bold grid line is drawn at each. Defaults to 11.

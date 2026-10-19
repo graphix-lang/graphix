@@ -1,0 +1,17 @@
+// Title: the rank-2 escape check misses an environment cell a lambda nested
+// in the argument writes; the check accepts, the build refuses as untypeable.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --check tests-types-rank2-escape-nested-lambda.gx
+//   then:  timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-types-rank2-escape-nested-lambda.gx
+// Expected: both refuse at `h(g)`: "the argument is not polymorphic in 'b"
+//   (as they do when g is |x| { st <- x; x }, without the inner k)
+// Observed: --check accepts (st is then annotated Array<bool> though it receives
+//   1 and "s"); the build refuses: "in the instance of h(g) at this call site:
+//   an instance at fn(f: fn(x: Array<bool>) -> Array<bool>) -> (i64, string) of a
+//   definition typed fn(f: fn<'b: Any>(x: 'b) -> 'b) -> (i64, string)".
+//   Without the `let q` line, the program runs and st holds 1, then "s".
+let st = never();
+let g = |x| { let k = |y| { st <- y; y }; k(x) };
+let h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+let (a, b) = h(g);
+let q: Array<bool> = st;
+q

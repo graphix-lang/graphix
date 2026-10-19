@@ -1,0 +1,9 @@
+// Title: str::parse wraps a failed cast's error by Display-ing the raw marked variant,
+// so a kind marker (an abstract id) leaks into the program-visible ParseError text.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/x-engine-collections-parse-marker-leak.gx
+// Expected: error:`ParseError("can't cast 256 to u8: no primitive conversion") (or the
+//   InvalidCast's message in some marker-free form)
+// Observed: error:`ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast 256 to u8: no primitive conversion\"]")
+//   (same text from the node-walk and the JIT; graphix-fuzz check AGREEs on it)
+let x: Result<u8, `ParseError(string)> = str::parse("256");
+x

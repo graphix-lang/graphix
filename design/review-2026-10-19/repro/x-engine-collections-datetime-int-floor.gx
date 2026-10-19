@@ -1,0 +1,7 @@
+// Title: cast<i64> of a pre-1970 datetime with a fractional second floors (-1) where the
+// cast rule drops the fraction (0), so it disagrees with the same cast through f64.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/x-engine-collections-datetime-int-floor.gx
+// Expected: (0, -0.5, 0)
+// Observed: (-1, -0.5, 0)
+let t = datetime:"1969-12-31T23:59:59.5Z";
+(cast<i64>(t), cast<f64>(t), cast<i64>(cast<f64>(t)$))

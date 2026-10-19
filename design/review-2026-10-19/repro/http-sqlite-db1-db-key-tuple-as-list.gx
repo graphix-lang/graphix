@@ -1,0 +1,21 @@
+// Title: db keys in data form: a tuple key reads back as a list, and composite keys
+// sort apart from array::sort (the language's order).
+// Command: rm -rf /home/eric/tmp/review-2026-10-19/review/work/http-sqlite-db1/db_l1 &&
+//   timeout -s KILL 30 graphix --no-cache http-sqlite-db1-db-key-tuple-as-list.gx
+// Expected: the cursor yields the keys in array::sort's order, the tuples as tuples:
+//   [(0, 9), (1, 2), {a: 0, b: "y"}, {a: 1, b: "x"}, `A(1), `A(3), `B, [<>], [<0, 5>], [<1>], [<1, 2>]]
+// Observed: [[<>], [<0, 5>], [<0, 9>], [<1>], [<1, 2>], {a: 0, b: "y"}, {a: 1, b: "x"}, `A(1), `A(3), `B]
+//   (the tuple (0, 9) comes back as the list [<0, 9>]; (1, 2) and [<1, 2>] are one key)
+type K = [List<i64>, (i64, i64), {a: i64, b: string}, `A(i64), `B];
+let ks: Array<K> = [[<1>], [<1, 2>], [<0, 5>], [<>], (1, 2), (0, 9), {a: 1, b: "x"}, {a: 0, b: "y"}, `A(3), `B, `A(1)];
+let dir = "/home/eric/tmp/review-2026-10-19/review/work/http-sqlite-db1/db_l1";
+let r = seq {
+  let db = db::open(dir)?;
+  let t: db::Tree<K, i64> = db::tree(db, "t")?;
+  let b = db::batch(t, array::map(ks, |k| `Insert(k, 0)))?;
+  let c = db::cursor::new(t);
+  let p = db::cursor::read_many(c, 100)?;
+  array::map(p, |(k, _)| k)
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(r, array::sort(ks))

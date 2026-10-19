@@ -142,6 +142,11 @@ pub(crate) unsafe fn run(
     let find = kind & FIND != 0;
     let root = kind & ROOT != 0;
     let mode = |l: &ParLoan| if root { l.mode } else { l.body_mode };
+    // CR claude for claude: [structure/low] This filter repeats ProbePlan::of's Serial
+    // cases (Off, fewer than 2 slots), and the Serial arm below is unreachable! as a
+    // result. A new serial case in ProbePlan::of would panic here. Keep only the
+    // value-hook test in the filter and route ProbePlan::Serial to in_order. Found by
+    // reading; not run. (f-kernel-07)
     let loan = PAR_LOAN.with(|c| c.get()).filter(|l| {
         mode(l) != ParMode::Off && len >= 2 && !abstract_value::value_hooks_loaned()
     });
@@ -195,6 +200,19 @@ pub(crate) unsafe fn run(
             };
             // the probed slots run as one, at least a batch of them, so a
             // run's fixed costs spread over them
+            // CR claude for claude: [perf/high] A settled site asks for one probe
+            // (ProbeSite::probes returns 1), but this widens it to PROBE_BATCH, so
+            // every run of a loop whose slots pay for a fork executes 16 slots in order
+            // before forking the rest. A 32-slot loop of heavy slots stays half serial
+            // forever: about 3.8 s under Auto against 0.95 s under Force, and the trace
+            // shows '32 slots, 16 probed' on every run. Cheap loops, which the batch
+            // was added for, are already in LoopSite's untimed stretch. So either time
+            // the forked Runs on their workers and probe in order only while unsettled,
+            // or keep the batch only while the estimate is below T / PROBE_BATCH.
+            // Update design/parallel_eval.md §10, which does not mention the batch.
+            // probe:
+            // design/review-2026-10-19/repro/c-cost-misc-kernel-loop-probe-batch.gx
+            // (c-cost-misc-01)
             let k = match k {
                 0 => 0,
                 k => k.max(cost::PROBE_BATCH).min(len - at),

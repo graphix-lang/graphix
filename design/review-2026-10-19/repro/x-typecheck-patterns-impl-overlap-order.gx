@@ -1,0 +1,17 @@
+// Title: overlapping trait impl heads are accepted when the bound that makes them overlap is satisfied later
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-impl-overlap-order.gx
+// Expected: refused, "conflicting implementation: T is already implemented for
+//   Array<'a>" (design/traits.md section 4: two heads that unify within the
+//   package are refused, no specialization), as it is when `impl T for i64`
+//   comes first, or when the generic head has no bound.
+// Observed: accepted; prints 1 -- T::m([1]) dispatches to the generic impl and
+//   the specific `impl T for Array<i64>` is silently never used.
+// Cause: Env::heads_overlap tests containment with the heads' bounds kept, so
+//   Array<'a: T> vs Array<i64> asks whether i64: T against the impl table as it
+//   stands at the second impl's registration.
+trait T { val m: fn(self) -> i64 };
+impl<'a: T> T for Array<'a> { let m = |x| 1 };
+impl T for Array<i64> { let m = |x| 2 };
+impl T for i64 { let m = |x| 3 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+T::m([1])

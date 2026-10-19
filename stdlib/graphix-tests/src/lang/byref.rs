@@ -467,6 +467,12 @@ run!(place_index_is_an_integer, PLACE_INDEX_IS_AN_INTEGER, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 /// A composed place's cell, which an embedder reads, holds its element.
+// CR claude for claude: [structure/low] The loop below re-implements
+// testing::next_update without its deadline. If the reference is never delivered, which
+// is the regression this test guards, the test hangs `cargo test` instead of failing.
+// Use `testing::next_update(&mut rx, id, deadline)` with a few seconds' deadline, and
+// the current_thread flavor the rest of the file uses. Found by reading; not run.
+// (tests-lang-rest-b-04)
 #[tokio::test(flavor = "multi_thread")]
 async fn place_through_deref_mirror() -> Result<()> {
     use graphix_compiler::Rt;
@@ -648,6 +654,14 @@ const BYREF_EQ_COMPARES_TARGETS: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] design/place_references.md says a moving
+// reference compares by where it points now, and that paths are compared as written
+// (`&a[-1]` differs from `&a[1]`). This fixture compares only fixed places, so caching
+// a comparison's targets at its first update, or normalizing paths, would pass. Add a
+// modes! twin that moves `i` under `n ~ (&a[i] == &a[0])` and pins [true, true, true,
+// false, false]. Add `&a[-1] == &a[1]` (false) here. Both engines answer correctly
+// today. probe: design/review-2026-10-19/repro/tests-lang-rest-b-moving-ref-eq.gx
+// (tests-lang-rest-b-02)
 run!(byref_eq_compares_targets, BYREF_EQ_COMPARES_TARGETS, |v: Result<&Value>| {
     let want = [true, true, true, false, true, true, false, false, true, false, true, true, false];
     match v {
@@ -659,6 +673,12 @@ run!(byref_eq_compares_targets, BYREF_EQ_COMPARES_TARGETS, |v: Result<&Value>| {
 // References have no order: a reference's value is its cell, numbered in
 // whatever order compiling made it. The orderings, sorting, `min`/`max`
 // and map keys refuse them, a generic definition's at the call.
+// CR claude for claude: [test-gap/low] testing::eval builds in Mode::Jit only and never
+// runs the check. These Ordered refusals belong to the check, and a check that accepts
+// what the build refuses is the type-system bug run!'s interp mode exists to catch. As
+// written, a regression where `graphix --check` and the LSP accept `&x < &y` passes
+// here. Make the six programs run! fixtures with refused("no order"); FuseExpect::None.
+// Found by reading; not run (the check refuses all six today). (tests-lang-rest-b-03)
 #[tokio::test(flavor = "current_thread")]
 async fn byref_ordering_refused() -> Result<()> {
     for src in [

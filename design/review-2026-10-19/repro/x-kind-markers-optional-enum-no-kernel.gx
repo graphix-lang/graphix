@@ -1,0 +1,10 @@
+// Title: an optional enum ([`A, `B, null]) or a struct beside a variant has no
+// kernel encoding, so a function returning one never fuses.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/x-kind-markers-optional-enum-no-kernel.gx
+// Expected: (`A, `B(1), {x: 0})
+// Observed: refused: "#[native] expression did not fully fuse to native code:
+//           - a region of type [null, `A, `B] has no kernel return"
+let a = |n: i64| -> [`A, `B, null] #[native] select n { 0 => `A, 1 => `B, _ => null };
+let b = |n: i64| -> [`A, `B(i64), null] #[native] select n { 0 => `A, 1 => `B(n), _ => null };
+let c = |n: i64| -> [{x: i64}, `N] #[native] select n { 0 => {x: n}, _ => `N };
+(a(0), b(1), c(0))

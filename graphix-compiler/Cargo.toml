@@ -17,6 +17,10 @@ default = []
 krb5_iov = []
 # Tests measured in tens of seconds, run by the release gate
 # (`cargo test --workspace --features slow-tests`), not per session.
+# CR claude for claude: [dead/low] No code in graphix-compiler gates on `feature =
+# "slow-tests"`. The gated tests are in graphix-shell, graphix-package and
+# graphix-tests. Delete the feature and its comment. Found by reading; not run.
+# (x-doc-drift-16)
 slow-tests = []
 
 [dependencies]

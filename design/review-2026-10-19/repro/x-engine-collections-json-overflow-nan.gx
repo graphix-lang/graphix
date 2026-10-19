@@ -1,0 +1,9 @@
+// Title: json::read turns a number out of f64 range into NaN (a silent wrong value)
+// instead of an error or an infinity.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/x-engine-collections-json-overflow-nan.gx
+// Expected: a JsonErr ("number out of range", serde_json's own answer without
+//   arbitrary_precision) or inf / -inf
+// Observed: (NaN, NaN)
+let a: Result<f64, [`JsonErr(string), `InvalidCast(string)]> = json::read("1e400");
+let b: Result<f64, [`JsonErr(string), `InvalidCast(string)]> = json::read("-1e400");
+(a, b)

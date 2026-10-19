@@ -214,6 +214,13 @@ $ test.gx
 "baz2"
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] This example no longer works. The `_`
+arm's `clock <- null` and `sum <- 0` are constants, which fire only at the arm's first
+entry (a wake resumes). The queue is never clocked again and `once(sum)` keeps its
+state, so the program prints 5, 5, not 5, 3, 2, and the check warns on both writes.
+Rewrite it under the resume rule: sample the event that selects the arm, or use a `seqq`
+over `a`. Or drop the section in favour of `array::fold`. probe:
+design/review-2026-10-19/repro/book-core-fixed-len.gx (book-core-03) -->
 ### Fixing Our Contrived Len
 
 Advice about not using <- in iteration aside, if you understand cycles

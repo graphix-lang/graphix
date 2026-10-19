@@ -141,6 +141,29 @@ impl ModuleResolver for NetidxResolver {
             })();
             match layouts.and_then(|layouts| choose_layout(name, layouts)) {
                 Err(e) => Resolution::Broken(e),
+                // CR claude for claude: [bug/medium] A miss on netidx records no probe,
+                // so the shell's program entry is written as though netidx had never
+                // been asked. With GRAPHIX_MODPATH='netidx:/mods' ahead of a directory
+                // holding m.gx, the entry's record lists only file probes. Once
+                // /mods/m.gx is published, a cold run compiles netidx's m but a warm
+                // start restores the file's. Fix: push `Probe::Netidx` for every path
+                // fetched here, absent ones included, so `sources_record` refuses the
+                // entry, and document on `ModuleResolver::resolve` that a miss must be
+                // recorded too. probe:
+                // design/review-2026-10-19/repro/shell-netidx-absent-probe.sh
+                // (shell-02)
+                // CR claude for claude: [bug/high] A probe is recorded only when netidx
+                // HAS the module. When netidx lacks it, this returns TryNextMethod with
+                // no Probe::Netidx. A later file resolver then supplies the module, and
+                // sources_record writes a program image entry that netidx can later
+                // shadow without anyone noticing. With
+                // GRAPHIX_MODPATH="netidx:/mods,<dir>", once /mods/foo.gx is published
+                // a warm start still runs <dir>/foo.gx while --no-cache runs the netidx
+                // one. Push a Probe::Netidx for every path fetched, found or absent (in
+                // `found`), so no program entry is written for a resolution that
+                // consulted netidx. probe:
+                // design/review-2026-10-19/repro/sys-net-netidx-absent-probe.sh
+                // (sys-net-01)
                 Ok(None) => Resolution::TryNextMethod,
                 Ok(Some(((impl_path, text), intf))) => {
                     // no file vouches for a module read from netidx

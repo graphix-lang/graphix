@@ -177,6 +177,12 @@ impl<'a> Query<'a> {
         // The path `name`, written at `pos`, when the cursor is on one of its
         // segments: the written path, and how many segments follow the one
         // under the cursor.
+        // CR claude for claude: [structure/low] This walks the written path's `::`
+        // segments with `at += len + 2`, which is Query::segments' walk again. It also
+        // formats every reference's path before the in_file/line test. Reuse
+        // Self::segments after an in_file and line check: find the covering (at, len),
+        // take the segment by index and derive `after` from it, so target() and
+        // references() share one segment rule. Found by reading; not run. (lsp-05)
         let on = |ori: &Origin, pos: SourcePosition, name: &ModPath| {
             let written = format_compact!("{name}");
             let start = zero_based(pos);
@@ -297,6 +303,13 @@ impl<'a> Query<'a> {
             Target::Type(scope, name) => {
                 let td = self.typedef(&scope, &name)?;
                 markdown(
+                    // CR claude for claude: [readability/low] The parameters are
+                    // dropped: hover on `Pair<i64>`, where `type Pair<'a> = { left: 'a,
+                    // right: 'a }`, shows `type Pair = { left: 'a, right: 'a }` with a
+                    // free 'a, and bounds are lost too. Print `td.params()` with their
+                    // bounds between the name and `=`, and use the same rendering for a
+                    // type's detail in Completer::imports. Found by probing the server
+                    // (hover on a parameterized typedef). (x-lsp-probe-07)
                     &format_compact!("type {written} = {}", td.typ()),
                     td.doc.as_ref(),
                 )

@@ -1,0 +1,10 @@
+// array::sort / list::sort with #numeric: true misorder integers above 2^53: every key is cast to f64
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache collections-str-numeric-sort-precision.gx
+// expected: ([9007199254740992, 9007199254740993], ["9007199254740992", "9007199254740993"])
+// observed: ([9007199254740993, 9007199254740992], ["9007199254740993", "9007199254740992"])
+//   (plain array::sort of the same i64s is correct)
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(
+  array::sort(#numeric: true, [9007199254740993, 9007199254740992]),
+  array::sort(#numeric: true, ["9007199254740993", "9007199254740992"])
+)

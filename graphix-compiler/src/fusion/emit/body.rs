@@ -332,6 +332,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// Nonzero on an init view (`I64`): the `event.init()` word from wire
     /// slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]), or in a loop body that
     /// or the slot's first iteration, as a new slot is a new instance.
+    // CR claude for claude: [doc-drift/low] The doc above says this is the
+    // `event.init()` word, but FusedKernel::update packs `ctx_word(ctx.event.born(),
+    // wake)`. Under a plain Wake (init() but not born()) the flag is 0. The
+    // CTX_WIRE_SLOTS doc in kernel_abi.rs still says "bit 0 = init (the forced view,
+    // wakes included)". The JIT's init is the node-walk's born() (constants fire), and
+    // LoopFrame::run already calls it `born`. Rename init_flag/CtxWord::init/ctx_word's
+    // `init`/SlotView::init to born and fix both docs. Found by reading; not run.
+    // (f-scaffold-body-03)
     pub fn init_flag(&self) -> ClifValue {
         self.env.slot.map_or(self.ctx.init_flag, |s| s.init)
     }
@@ -412,6 +420,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             Channel::State => StateWord::Sure(addr),
             Channel::Site => StateWord::Guarded { base, addr },
         };
+        // CR claude for claude: [structure/low] This trap makes every site-channel
+        // claim assert a non-null base, which is the contract kernel_instance_state.md
+        // states and the callers keep. The null-guard paths are therefore dead:
+        // StateWord::Guarded/with_addr, null_guarded, SlotTable::guarded, the `live`
+        // selects in call::claim_callee_block and emit_site_block, and the Guarded arm
+        // of emit_slot_truncates. They still emit a branch and a merge block per use,
+        // e.g. first_use on a callee loop's slot word, per call per iteration.
+        // SlotFlags::new also re-traps a word claim_word already trapped. Keep the
+        // trap, make StateWord a plain address, and fix the CTX_WIRE_SLOTS doc ("Every
+        // consumer null-guards it"). Found by reading; not run. (f-scaffold-body-01)
         word.required_addr(self);
         word
     }
@@ -496,6 +514,18 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let mut pending: Vec<TruncRec> = Vec::new();
         for id in sites {
             let (anchor, word) = self.claim_anchor(n_dirs as u32, None);
+            // CR claude for claude: [perf/low] This record lands in the new frame's own
+            // pending list, so emit_slot_truncates re-ensures the leaf in the loop's
+            // exit block with the same len and valid the preheader just used: n_dirs +
+            // 1 no-op helper calls per state site per loop run (per outer slot when
+            // nested). The record only matters at the enclosing loops' exits, whose
+            // zero-length epochs skip this preheader. The callee_table record below has
+            // the same problem, and emit_outlined repeats the leaf ensure too. Append
+            // both to the enclosing frame's pending (drop them at depth 0), and keep
+            // claim_callee_block's in-body fallback records in the current frame.
+            // probe: design/review-2026-10-19/repro/f-scaffold-body-exit-reensure.gx
+            // (dumped CLIF shows two graphix_slot_state_table calls with identical
+            // arguments) (f-scaffold-body-02)
             pending.push(TruncRec {
                 anchor,
                 n_dirs: n_dirs as u32,

@@ -1,5 +1,10 @@
 # The List Widget
 
+<!-- CR claude for claude: [doc-drift/low] The list widget has no keyboard navigation.
+ListW implements no handle_event, so the program must drive `#selected` from an
+input_handler, as list_interactive.gx does. Say so, and note that a render moves the
+offset to keep `selected` visible, so `#scroll` is overridden while the selection is
+outside it. Found by reading; not run. (book-ui-b-08) -->
 The `list` widget displays a scrollable, selectable list of items with keyboard navigation support. It's perfect for menus, file browsers, option selectors, and any interface that requires choosing from a list of items.
 
 ## Interface

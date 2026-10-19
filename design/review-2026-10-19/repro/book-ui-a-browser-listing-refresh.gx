@@ -1,0 +1,14 @@
+// Title: browser.md says the listing is fetched once per path change; it re-lists every second
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/book-ui-a-browser-listing-refresh.gx
+// tui::browser lists through sys::net::list_table(path), whose #update defaults to
+// sys::time::timer(1, true). A child published 1.5 s later appears with no change of path.
+// Expected per browser.md: one listing, ["/local/bookuia_q7/a"], until the path changes.
+// Observed:
+//   ["/local/bookuia_q7/a"]
+//   ["/local/bookuia_q7/a", "/local/bookuia_q7/b"]
+use sys::net;
+let t = sys::time::timer(duration:1.5s, false);
+net::publish("/local/bookuia_q7/a", 1);
+net::publish(t ~ "/local/bookuia_q7/b", 2);
+sys::exit(sys::time::timer(duration:4.s, false) ~ 0);
+(net::list_table("/local/bookuia_q7")$).rows

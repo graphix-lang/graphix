@@ -1,0 +1,19 @@
+// Title: a subject whose body is a statement sequence (no enclosing `{ }`)
+// gets no typemorph or must-reject probe: both parse the body with
+// `parse_one`, which takes one expression. The base is checked (accepted)
+// and nothing else, and NOPARSE stays 0, so the loss is silent.
+// (Copied from graphix-fuzz/findings/narrow-index-operand-verifier-aug2026.)
+// Command:
+//   graphix-fuzz typemorph-one /abs/path/verdict.txt 5000 < fuzz-mutate-bare-body-no-probes.gx
+//   cat /abs/path/verdict.txt
+// Expected: PROBE/REJECT lines, as for the same body inside `{ .. }`.
+// Observed:
+//   BASE accept
+//   NOPARSE 0
+let result = {
+  let a = [i64:1, i64:2, i64:3];
+  let i = u8:1;
+  let s = a[i..];
+  s
+};
+println("[result]")

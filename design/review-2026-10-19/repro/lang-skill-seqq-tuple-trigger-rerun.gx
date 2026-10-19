@@ -1,0 +1,17 @@
+// lang-skill: SKILL.md recommends gating a seq on a nullable with `seqq let (dir, b) = (d$, edit)`.
+// The tuple fires when EITHER part fires, so every change of d re-runs the save with the
+// last edit (the skill's own "an effect with several inputs samples the WHOLE input" rule).
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache lang-skill-seqq-tuple-trigger-rerun.gx
+// Expected (a save per edit): "save edit1 to dirA", "save edit2 to dirB".
+// Observed: also "save edit1 to dirB" when d moves. `seqq let (dir, b) = edit ~ (d$, edit)` gives
+//   exactly the two saves.
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let d: [string, null] = null;
+d <- select n { 3 => "dirA", 6 => "dirB", _ => never() };
+let edit = never();
+edit <- select n { 1 => "edit1", 8 => "edit2", _ => never() };
+let runs = seqq let (dir, b) = (d$, edit) { println("save [b] to [dir]") };
+sys::exit(select n { 11 => 0, _ => never() });
+runs

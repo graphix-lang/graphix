@@ -1,0 +1,13 @@
+// Title: gauge_threshold / linegauge_colored label truncates power * 100.0 and skips percentages
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/examples-tui-gauge-percent.gx
+// Expected: no output lines before the final value (the label equals the count for every tick)
+// Observed: "count 29: label 28%" and "count 58: label 57%" (0.29 * 100.0 = 28.999999999999996,
+//   and cast<i64> drops the fraction), so the label shows 28% twice and never 29%.
+// The power/percentage lines are copied from book/src/examples/tui/gauge_threshold.gx with
+// the timer sped up.
+let n = count(sys::time::timer(duration:1.ms, 60));
+let power = min(1., cast<f64>(n)$ * 0.01);
+let percentage = cast<i64>(power * 100.0)$;
+select n == percentage { false => println("count [n]: label [percentage]%"), true => never() };
+sys::exit(sys::time::after_idle(duration:500.ms, n));
+percentage

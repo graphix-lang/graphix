@@ -1,0 +1,16 @@
+// sys::net::publish's #on_write argument type is not Concrete-bounded, so a
+// remote write is fed to it uncast: a function-typed parameter panics the runtime.
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/gx-stdlib-on-write-unbounded.gx
+// Expected: the check refuses `fn(x: i64) -> i64` as on_write's argument type
+//   (it is read from the network), as subscribe/call refuse a non-Concrete target.
+// Observed: check passes; at run time
+//   panicked at graphix-compiler/src/node/callsite.rs: value I64(5) is not a function
+//   Error: graphix runtime is dead
+// With `|v: &i64|` instead, v holds the plain i64 5 (dbg prints 5, `*v` is bottom).
+let got: [i64, null] = null;
+let p = "/local/review/onwrite_fn";
+sys::net::publish(#on_write: |f: fn(x: i64) -> i64| got <- f(41), p, 0);
+let ready: i64 = once(sys::net::subscribe(p)$);
+sys::net::write(p, ready ~ 5);
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+got

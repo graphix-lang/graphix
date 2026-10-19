@@ -93,6 +93,12 @@ Will create a new struct with all the same fields as `s` except `bar` which will
 
 Notice that the type printed is the full type of the struct, this is because of structural typing.
 
+<!-- CR claude for claude: [doc-drift/low] This section says a struct is a sorted array
+of `[name, value]` pairs. Since kind markers, its runtime form is an array whose element
+0 is the `#struct` marker (graphix-types rep.rs), followed by the sorted pairs. The bare
+pair array is only the data form that writers emit and `cast`/reads accept. Fix:
+describe the marked value form, the unmarked data form, and how cast and the writers
+convert between them. Found by reading; not run. (book-modules-udt-11) -->
 ## Implementation
 
 Structs are implemented as a sorted array of pairs, the field name being the

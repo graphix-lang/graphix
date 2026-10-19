@@ -1,0 +1,15 @@
+// Title: a value-shaped argument into a composite slot of a native tail loop aborts the process
+// Command: graphix --no-cache f-call-flow-value-arg-tail-rebind.gx
+// Expected (as --no-fusion prints): 0, 2, 2, then the divide-by-zero diagnostic and 2 (twice), exit 0
+// Observed: 0, 2, 2, then "graphix: zero ValArray bits — JIT codegen bug" from
+//   graphix_valarray_drop and abort: flow.rs emit_self_tail_call rebinds the Array formal
+//   to the bottom select's (Null|TAINT, 0) placeholder.
+let n = 0;
+let t = sys::time::timer(duration:50.ms, 4);
+n <- t ~ n + 1;
+let rec f = |a: Array<[i64, string]>, k: i64| -> i64 select k {
+  0 => array::len(a),
+  k => f(select 6 / (k - 3) { 1 => [1], _ => ["x", "y"] }, k - 1)
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+f([], n)

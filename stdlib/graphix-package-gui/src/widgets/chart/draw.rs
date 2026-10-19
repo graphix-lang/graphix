@@ -128,6 +128,12 @@ fn ticks(n: i64, min: usize) -> usize {
 }
 
 fn stroke(style: &SeriesStyleV) -> u32 {
+    // CR claude for claude: [bug/low] `as u32` truncates. A stroke_width of 0.5 becomes
+    // 0, iced strokes a 0-wide path, and the line vanishes. marker_size, scatter's
+    // point_size and the error-bar caps do the same, so #point_size: 0.5 draws no
+    // scatter points, and 2.7 draws as 2. Fix: one helper for every pixel size that
+    // rounds a positive value and keeps it at least 1 (0 for non-positive or NaN).
+    // Found by reading; not run. (gui-chart-07)
     style.stroke_width.unwrap_or(2.0) as u32
 }
 
@@ -179,6 +185,11 @@ fn draw_legend<'a, DB: DrawingBackend + 'a, CT: CoordTranslate, X: GXExt>(
     cs: Option<&ChartStyleV>,
     label_sz: f64,
 ) {
+    // CR claude for claude: [bug/low] This counts labels of datasets that are not
+    // drawn, e.g. a labelled series with no data yet beside an unlabelled one. plotters
+    // then draws the legend's background and border with no entries: an empty box in
+    // the corner. Fix: count only drawn datasets, `ds.mode() == Some(w.mode) &&
+    // ds.label().is_some()`. Found by reading; not run. (gui-chart-08)
     if !w.datasets.iter().any(|ds| ds.label().is_some()) {
         return;
     }
@@ -260,6 +271,14 @@ where
     DB: DrawingBackend,
     C: Ranged + ValueFormatter<C::ValueType>,
 {
+    // CR claude for claude: [bug/medium] The y axis and a numeric x axis keep plotters'
+    // default f64 formatter: at most 5 decimals and no scientific notation. Every tick
+    // of a 0..2e-6 range reads "0.0", a view zoomed under about 1e-5 repeats its
+    // labels, and values around 1e20 print 21 digits. label_areas also sizes the axis
+    // from a different `{:.prec$}` format. Fix: set a y (and numeric x) label formatter
+    // whose precision comes from log10 of the tick step, with scientific notation for
+    // large or small magnitudes, and have label_areas measure with that same function.
+    // probe: design/review-2026-10-19/repro/gui-chart-tick-labels.rs (gui-chart-05)
     let mut mesh_cfg = chart.configure_mesh();
     if let Some(formatter) = x_formatter {
         mesh_cfg.x_label_formatter(formatter);
@@ -454,6 +473,14 @@ fn draw_xy<'a, DB, C, X>(
                     .stroke_width(stroke(style));
                 let caps = style.point_size.map_or(stroke(style), |p| p as u32);
                 let y = |v: f64| view.clamp_y(v);
+                // CR claude for claude: [bug/low] Only x is filtered here; min/avg/max
+                // are clamped. A bar wholly above or below the view collapses onto the
+                // edge, and plotters' ErrorBar still draws both caps and the avg circle
+                // there. A bar that crosses the edge shows a cap at the clamp line,
+                // which looks like a real min/max, and an out-of-view avg shows as a
+                // dot on the edge. Fix: skip bars whose [min, max] misses view.y, draw
+                // no cap on a clamped end, and draw the avg marker only when it is in
+                // view. Found by reading; not run. (gui-chart-06)
                 let bars =
                     d.pts.iter().filter(|p| view.contains_x(p.x) && p.is_finite()).map(
                         |p| {
@@ -559,6 +586,12 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
         if self.cached_view.replace(Some(view)) != Some(view) {
             self.cache.clear();
         }
+        // CR claude for claude: [structure/low] This closure runs about 400 lines, with
+        // the Bar, Pie and 3D drawers inline (3D nests 8 deep). The pie caption bug
+        // hides here. Move each arm into a fn beside draw_xy_chart (draw_bar_chart,
+        // draw_pie_chart, draw_3d_chart) with the same bool-returning shape, leaving
+        // only the fill, the caption and the mode match here. Found by reading; not
+        // run. (gui-chart-09)
         let chart_geom = self.cache.draw(renderer, bounds.size(), |frame| {
             self.plot_info.set(None);
             let w = frame.width() as u32;
@@ -713,6 +746,16 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     let Some((_, pie_data, pie_style)) = first_pie(&self.datasets) else {
                         return;
                     };
+                    // CR claude for claude: [bug/medium] A pie chart never shows its
+                    // title. `builder.caption` above only takes effect inside
+                    // `build_cartesian_2d/3d`, and this arm never builds; it draws on
+                    // `root`. Yet `title_h` still reserves space, so the pie sits
+                    // off-centre under a blank band (see
+                    // book/src/ui/gui/media/chart_pie.png: its #title "Programming
+                    // Languages" is missing). Fix: take the area below the caption with
+                    // `root.titled(t, text_style(..))`, draw the pie on that area and
+                    // centre it from that area's size; pin it with a screenshot test.
+                    // Found by reading; not run. (gui-chart-01)
                     let title_h = match title {
                         Some(t) => estimate_text(t, title_size).1 + margin as u32,
                         None => 0,
@@ -959,6 +1002,14 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
             }
         });
         let mut result = vec![chart_geom];
+        // CR claude for claude: [bug/medium] This draws a snap that was computed at the
+        // last CursorMoved. A data update, a wheel zoom, a drag or a resize changes the
+        // plot without recomputing it, so the highlight and the value go stale. Resting
+        // the cursor on book/src/examples/gui/chart.gx's streaming series shows an old
+        // value over an empty spot. Fix: compute the tooltip here from the `cursor`
+        // argument against the fresh plot_info (find_nearest_point), and let
+        // CursorMoved keep only the (dataset, index) hit it needs to decide on a
+        // redraw. Found by reading; not run. (gui-chart-03)
         if let Some(snap) = state.snap_point.as_ref().filter(|_| state.owns(self)) {
             let overlay = iced_canvas::Cache::new();
             let geom = overlay.draw(renderer, bounds.size(), |frame| {

@@ -900,6 +900,15 @@ async fn main() -> Result<()> {
                 corpus.len(),
                 stats.novel
             );
+            // CR claude for claude: [bug/low] This `std::process::exit(1)`, and the
+            // identical one in the `soak` arm, skip `drop(cwd_guard)`.
+            // fuzz/generate/soak are in-process subcommands, so their sandbox tempdir,
+            // and whatever the regression gate's pins wrote into it, is left in $TMPDIR
+            // on every finite run that records a finding or a regression. The other
+            // arms drop the guard by hand, six copies of the same two lines. Fix:
+            // return `Result<ExitCode>` from `main` and let every arm yield its code,
+            // so the guard drops on one return path and the copies go. Found by
+            // reading; not run. (fuzz-main-aux-03)
             if new > 0 || regressions > 0 {
                 std::process::exit(1);
             }

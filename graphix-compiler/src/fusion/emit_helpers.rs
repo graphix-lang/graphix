@@ -541,6 +541,13 @@ safe fn graphix_select_no_match() {
     static SAID: AtomicBool = AtomicBool::new(false);
     if !SAID.swap(true, Relaxed) {
         crate::node::error::report_coverage_hole(&"a fused select matched no arm");
+    // CR claude for claude: [dead/low] This arm is dead. report_coverage_hole already
+    // aborts on the first call when GRAPHIX_ABORT_ON_NO_MATCH is set, and the flag is a
+    // cached constant, so no later call reaches here with it set. Delete it. Also, this
+    // helper reports once per process, while the node-walk's Select reports once per
+    // select (logged_no_match), so a second hole in fused code goes unreported. A
+    // per-site flag word in the kernel record would match the node-walk. Found by
+    // reading; not run. (f-helpers-04)
     } else if crate::dbgenv::graphix_abort_on_no_match() {
         std::process::abort()
     }
@@ -982,6 +989,16 @@ safe fn graphix_value_cmp(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) 
 }
 
 /// Value equality; borrows both operands.
+// CR claude for claude: [bug/high] A fused kernel calls this, graphix_value_cmp, the
+// interpolation's Display push and the map-key helpers on tainted operands. While an
+// input is absent, the kernel builds the abstract value from its placeholder and the
+// user's Eq/Ord/Display implementation runs on it: `K(clock) == K(1)` with a
+// println-ing eq prints `eq 0 1` at init under the JIT only. A stateful fmt makes the
+// engines diverge (interp "1#1" vs jit "1#2"). Skip the dispatch when either operand's
+// disc has TAINT (branch at emission or return early here; the disc already carries the
+// taint), and pin it with a printing impl over a late input in traits.rs. probe:
+// design/review-2026-10-19/repro/tests-fusion-traits-hook-runs-on-placeholder.gx
+// (tests-fusion-traits-01)
 safe fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> u8 {
     guard_panic(0, || l.with_value(|a| r.with_value(|b| (a == b) as u8)))
 }
@@ -991,6 +1008,13 @@ safe fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -
 safe fn graphix_bytes_index(v: ManuallyDrop<TagValue>, i: i64) -> TagValue {
     TagValue::fired(v.with_value(|v| match v {
         Value::Bytes(b) => bytes_index(b, i),
+        // CR claude for claude: [risk/low] This fallback builds an error with a plain
+        // string payload, which Error<`ArrayIndexError(string)> does not admit. The
+        // node-walk's ArrayRef::update answers the same case with err!(ERR_TAG,
+        // "expected an array"). The arm is unreachable while emit_array_ref_node calls
+        // this helper only for a static bytes source, so either make it unreachable!()
+        // or share the node-walk's arm, so the two engines cannot drift. Found by
+        // reading; not run. (f-helpers-03)
         _ => Value::error("ArrayIndexError: expected bytes"),
     }))
 }
@@ -1021,6 +1045,18 @@ unsafe fn graphix_value_is_str(v: ManuallyDrop<TagValue>, lit: *const arcstr::Ar
 /// in `StructurePattern::is_match`, arity selects the representation
 /// (`String(tag)` at 0, else an array of arity + 1 with the tag at
 /// slot 0); the tag alone does not discriminate `` [`A, `A(i64)] ``.
+// CR claude for claude: [doc-drift/low] The doc above describes the pre-marker layout:
+// a bare variant as String(tag) and the tag at slot 0. A variant is now a marked array
+// with its tag at rep::VARIANT_TAG, and this body asks rep::is_variant. Reduce the doc
+// to what the helper guarantees: a borrowed tag-and-arity test through rep::is_variant.
+// Found by reading; not run. (f-select-10)
+// CR claude for claude: [doc-drift/low] The doc above describes the pre-marker layout:
+// `String(tag)` at arity 0, else the tag at slot 0. Every variant, bare included, is
+// now a marked array that rep::is_variant reads. variant_payload_read's doc says the
+// same stale thing ("slot 0 is the tag"), although its payload_idx is the 0-based
+// payload position rep::payload takes and emit_variant_cond passes. Reduce both docs to
+// what holds: tag and arity through rep::is_variant, and payload index 0 = first
+// payload. Found by reading; not run. Also reported as (t-rep-07). (f-helpers-02)
 unsafe fn graphix_variant_tag_eq(
     v: ManuallyDrop<TagValue>,
     expected: *const arcstr::ArcStr,
@@ -1271,6 +1307,25 @@ unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
 /// its entries in written order, a later key replacing an earlier one as
 /// the node-walk's literal does; consumes the buf. Key order is a core
 /// trait's under the kernel's loaned hooks.
+// CR claude for claude: [risk/low] This helper orders keys through the loaned core Ord
+// hooks, which run Graphix code, but it does not wrap that work in guard_panic.
+// graphix_string_buf_push_value (Display hooks through TVal) has the same gap. A panic
+// in hook code therefore cannot unwind through the extern "C" helper and aborts the
+// process. The guarded helpers (graphix_valarray_into_cmap, graphix_value_cmp,
+// graphix_value_eq, graphix_map_ref) instead record it, and FusedKernel::update resumes
+// it so that only the runtime dies. Fix: wrap the insert loop here, and the write! in
+// graphix_string_buf_push_value, in guard_panic. Extend rust_panics_in_a_kernel with a
+// map literal keyed by K and an interpolated K. Today that test covers only ==. Found
+// by reading; not run. (x-unsafe-01)
+// CR claude for claude: [risk/low] This helper runs Graphix code: insert_cow orders
+// keys through the loaned core Ord hooks. Unlike graphix_value_cmp, graphix_map_ref and
+// graphix_valarray_into_cmap, it does not run under guard_panic, so a panic in a hook
+// unwinds into the extern "C" frame and aborts the process instead of being resumed by
+// FusedKernel::update. graphix_string_buf_push_value (the Display hooks, through TVal)
+// and graphix_swallowed_error (the error print) have the same gap. Wrap the insert loop
+// in guard_panic(TagValue::phantom(), ..), the write in push_value and the report in
+// swallowed_error in guard_panic((), ..). Found by reading; a probe confirmed that a
+// user Ord impl runs here for a fused map literal with abstract keys. (f-helpers-01)
 unsafe fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
     let mut m = netidx_value::Map::new();
     let mut entries = unsafe { (*buf).drain(..) };
@@ -2009,6 +2064,19 @@ thread_local! {
 /// Take the panic a fast fn raised in a chunk run on this thread.
 /// A thread-local's value set aside and put back when this drops, an
 /// unwind included.
+// CR claude for claude: [structure/low] This duplicates graphix_types::Restore field
+// for field (`set` is its `replace`). stack::with_control and
+// abstract_value::with_value_hooks each hand-roll a one-type copy of the same guard.
+// Delete this one and use graphix_types::Restore here and in par_loop.rs and kernel.rs,
+// and use it in those two functions too: one guard for one invariant. The first line of
+// the doc above ('Take the panic a fast fn raised...') belongs to no item here; delete
+// it. Found by reading; not run. (t-misc-02)
+// CR claude for claude: [readability/low] The first line of this doc ("Take the panic a
+// fast fn raised in a chunk run on this thread.") belongs to no item here; Restore only
+// sets a thread-local aside and puts it back. Delete it. Similarly, payload_of carries
+// abstract_payload_read's doc ("a non-abstract value reads as the shape's placeholder")
+// above its own; move that line to abstract_payload_read. Found by reading; not run.
+// (f-helpers-05)
 pub(crate) struct Restore<T: Copy + 'static> {
     key: &'static std::thread::LocalKey<Cell<T>>,
     prev: T,

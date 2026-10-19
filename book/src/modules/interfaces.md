@@ -318,6 +318,12 @@ let sign = |c: Counter| -> i64 select c {
 }
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] `T({ x.0 with a: 1 })` on the next line
+does not parse. The parser refuses it with "a functional update's source is a name or
+parenthesized"; `T({ (x.0) with a: 1 })` works. It is inline prose, so the book-fence
+parse test never sees it. Fix: write `T({ (x.0) with a: 1 })`. probe:
+design/review-2026-10-19/repro/book-modules-udt-abstract-update.gx (book-modules-udt-06)
+-->
 The payload keeps its shape: for `Abstract<{ a: i64, b: string }>`,
 `x.0.a` reads a field and `T({ x.0 with a: 1 })` updates one.
 

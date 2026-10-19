@@ -176,6 +176,13 @@ pub(crate) fn reuse<R: Rt, E: UserEvent>(
         return refused("its callees or raises differ");
     };
     let top = ctx.fusion.top_id.unwrap_or(node.spec().id);
+    // CR claude for claude: [structure/low] This repeats build_region's tail: the
+    // feeder top, a genn::reference per input, FusedKernel::new. It also reruns
+    // analysis::region_facts for every slot, though the prototype's kernel has the same
+    // facts. Keep `facts` in SharedRegion (RegionFacts is Copy) and have one
+    // fusion/mod.rs function build the kernel node for both paths, so the
+    // feeder-registration rule lives in one place. Found by reading; not run.
+    // (f-kernel-06)
     let feeders: Box<[Node<R, E>]> = inputs
         .iter()
         .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), top))

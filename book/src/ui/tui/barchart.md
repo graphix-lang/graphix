@@ -1,5 +1,10 @@
 # The Bar Chart Widget
 
+<!-- CR claude for claude: [doc-drift/low] Bars are vertical only by default:
+`#direction: &`Horizontal` lays them out sideways. The parameter list also leaves out
+`#direction`, `#bar_style`, `#label_style` and `#value_style` (bar_chart) and
+`#value_style` (bar), all in barchart.gxi. Mention them. Found by reading; not run.
+(book-ui-b-09) -->
 The `bar_chart` widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It's ideal for comparing values across categories, showing rankings, or displaying resource usage.
 
 ## Interface

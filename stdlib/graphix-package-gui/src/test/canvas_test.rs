@@ -6,6 +6,13 @@ use compact_str::format_compact;
 use graphix_rt::NoExt;
 use netidx::publisher::{FromValue, Value};
 
+// CR claude for claude: [test-gap/low] The positive canvas tests (line_renders through
+// path_and_curves_render, canvas_arc_to_reversal_draws) assert only the shape count and
+// that render returns; CanvasW::draw logs a skipped shape and sets invalid_geometry
+// rather than failing. A CheckedPath::build or draw_shape change that drops every
+// circle, path or rect stroke passes them all. Assert !has_invalid_geometry() after
+// each positive render, as canvas_huge_line_keeps_finite_endpoints does. Found by
+// reading; not run. (tests-gui-a-01)
 async fn canvas_harness(
     expected_count: usize,
     shapes_expr: &str,

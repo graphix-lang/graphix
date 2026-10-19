@@ -1,0 +1,7 @@
+// Title: #[parallel] with two arguments is told it takes no arguments
+// Command: graphix --check c-data-map-parallel-two-args.gx
+// Expected: a refusal saying #[parallel] takes one positive integer literal (its grain)
+// Observed: "#[parallel] takes no arguments here"
+let x = 1;
+let y = #[parallel(2, 3)] (x + 1, x + 2);
+y

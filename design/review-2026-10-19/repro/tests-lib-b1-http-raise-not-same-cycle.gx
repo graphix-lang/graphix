@@ -1,0 +1,24 @@
+// Title: http_raises_answer_their_own_requests (stdlib/graphix-tests/src/lib_tests/http.rs)
+// no longer builds the case it was written for: request instances run concurrently, so
+// /b raises at ~100 ms and /a at ~300 ms, never in one cycle, and each request has its own
+// ErrorRelay; Receipts::take's one-delivery-a-cycle rule is never exercised.
+// Command: timeout -s KILL 30 graphix --no-cache tests-lib-b1-http-raise-not-same-cycle.gx
+// Expected for the pinned scenario: b's error delivered in the cycle a was answered.
+// Observed: (a.body, ~302 ms, b.body, ~102 ms); the bodies also carry the kind
+// markers (abstract:...) of the ErrChain struct (see the open CR http-sqlite-db1-03).
+let handler = |req: http::Request| {
+    let late = sys::time::after_idle(duration:300.ms, req.path);
+    let p = select req.path { "/a" => late, p => p };
+    let e: Result<string, `Bad(string)> = error(`Bad(p));
+    { body: e?, headers: [], status: u16:200, url: "" }
+};
+let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+let addr = http::server_addr(server);
+let client = http::default_client(server)$;
+let t0 = sys::time::now(client);
+let a = http::request(client, "http://[addr]/a")$;
+let b = http::request(sys::time::after_idle(duration:100.ms, client), "http://[addr]/b")$;
+let ta = sys::time::diff(sys::time::now(a), t0);
+let tb = sys::time::diff(sys::time::now(b), t0);
+sys::exit(sys::time::after_idle(duration:800.ms, client) ~ 0);
+(a.body, ta, b.body, tb)

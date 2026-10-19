@@ -1,0 +1,22 @@
+// lang/async_restart.rs wake_reissues_standing_async passes for a reason its comment denies
+// cmd: timeout -s KILL 30 graphix --no-cache [--no-fusion] tests-lib-a-wake-reissue-test-vacuous.gx
+// (n, r): n counts r's fires as the pin does; r is the count of is_file answers
+// expected per the pin's comment ("an async builtin is issued again"): r reaches 2
+// observed: (0, 1) (1, 1) (1, 1) (2, 1) in both engines: r stays 1, is_file is NOT reissued
+// (CLAUDE.md: the wake restarts nothing); n reaches 2 only because the select emits its
+// arm's standing value when its scrutinee `on` delivers; replacing the arm body by
+// `path` alone also gives n = 0, 1, 2
+let path = "/etc/passwd";
+let on = true;
+let r = select on { true => count(sys::fs::is_file(path)$), false => never() };
+let n = 0;
+n <- r ~ n + 1;
+let t = 0;
+t <- select on {
+    false => select t { x if x < 3 => x + 1, _ => never() },
+    true => never()
+};
+on <- select n { 1 => false, _ => never() };
+on <- select t { 3 => true, _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(n, r)

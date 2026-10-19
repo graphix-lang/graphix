@@ -1,0 +1,15 @@
+// Title: graphix-fuzz calls a refused seq program NONDETERMINISTIC: the
+// refusal names the lowering's generated binding (`seqv<ExprId>`), whose
+// id differs between the reference and its rerun, and normalize_diag
+// strips only `#name<digits>`, `'_<digits>` and `<abstract#<digits>`.
+// Command: graphix-fuzz check x-engine-seq-errors-seq-refusal-nondeterministic.gx
+// Expected: AGREE (reject)
+// Observed: NONDETERMINISTIC ... first: ... `let [h, ..] = seqv4611686018427390..`
+//           rerun: ... `seqv4611686018427392..`; UNSURE
+{
+  let r = seq {
+    let [h, ..] = [1, 2];
+    h
+  };
+  r
+}

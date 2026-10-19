@@ -1,0 +1,24 @@
+// find_fold does not measure Collection's find default: the default folds `Found(x) | null
+// Command: for i in 1 2 3; do timeout -s KILL 60 graphix --no-cache examples-rest-find-default-shape.gx;
+//            timeout -s KILL 60 graphix --no-cache bench/collection/find_fold.gx; done
+// This program is find_fold with its fold replaced by the body of `find`'s default in
+// stdlib/graphix-package-core/src/graphix/mod.gxi.
+// Expected (bench/collection/README.md): find_fold is the trait default's body shape.
+// Observed (debug build, GRAPHIX_PAR=auto): find_default ~0.007 s, find_fold ~0.075 s,
+//   the same answer: the bench times a (done, acc) tuple shape the default no longer has,
+//   ten times slower than the default itself.
+let n = 500000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(src);
+let seed = cast<i64>(t0)$;
+let target = seed % n;
+let init: [`Found(i64), null] = null;
+let found = array::fold(src, init, |acc, x| select acc {
+    null as _ => select x == target { true => `Found(x), false => null },
+    found => found
+});
+let result = select found { `Found(x) => x, null as _ => null };
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("find_default n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

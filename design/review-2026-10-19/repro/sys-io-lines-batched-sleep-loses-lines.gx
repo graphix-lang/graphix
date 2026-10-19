@@ -1,0 +1,25 @@
+// sys-io: lines_batched drops every line its reader reads while the arm sleeps
+// run: timeout -s KILL 30 graphix --no-cache sys-io-lines-batched-sleep-loses-lines.gx
+// The child prints 1..8, one line per 200ms; the arm holding the reader sleeps
+// from 500ms to 1100ms.
+// expected: the last line printed is ["1", "2", "3", "4", "5", "6", "7", "8"], as with
+//   `[Lines::lines(out)$]` in place of `Lines::lines_batched(out)$` (that form loses nothing)
+// observed: ["1", "2", "3", "7", "8"] -- lines 4, 5, 6 were read and delivered to a
+//   sleeping node and are gone
+use sys::io::Lines;
+let c = sys::process::spawn(sys::process::options(
+  #args: ["-c", "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.2; done"],
+  #stdio: sys::process::stdio(#stdout: `Pipe),
+  "/bin/sh"))$;
+let out = c.stdout$;
+let on = true;
+on <- sys::time::timer(duration:500.ms, false) ~ false;
+on <- sys::time::timer(duration:1100.ms, false) ~ true;
+let got = select on {
+  true => Lines::lines_batched(out)$,
+  false => never()
+};
+let seen: Array<string> = [];
+seen <- got ~ array::concat(seen, got);
+sys::exit(sys::time::timer(duration:2500.ms, false) ~ 0);
+seen

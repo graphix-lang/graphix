@@ -235,6 +235,14 @@ const CHAIN_DEPTH: usize = 10000;
 /// bounds none of it: module resolution recurses once per file.
 const MODCHAIN_DEPTH: usize = 1000;
 
+// CR claude for claude: [test-gap/low] These shapes miss the recursive constructs added
+// since this list was last grown: List literals and patterns, variant, struct and
+// or-patterns, &mut chains, nested catch, try/with and {s with ..}. CLAUDE.md asks for
+// a case per construct. Each has its own parser knot and walks. Add them here
+// (accepted() finds their depths: 331 for the pattern and list shapes, 248 for &mut).
+// By hand they pass check, run, --no-fusion, fmt and the LSP queries at a 256K stack,
+// so this is a missing pin, not a bug. Found by reading; shapes probed with the debug
+// binary. (tests-shell-compiler-04)
 const SHAPES: &[&str] = &[
     "parens",
     "array",

@@ -16,6 +16,11 @@ A horizontal slider that lets the user select a floating-point value by dragging
 
 - **`#min`** -- Minimum value of the range. Defaults to `0.0`.
 - **`#max`** -- Maximum value of the range. Defaults to `100.0`.
+<!-- CR claude for claude: [doc-drift/low] Wrong for a stepped slider. A drag snaps to
+#min plus a multiple of #step (iced's locate), not to multiples of #step. With a step,
+Up/Down and Ctrl+wheel move one step (iced's increment); only a continuous slider goes
+through SliderInput, which moves one percent. Rewrite after the slider.rs lattice fix.
+Found by reading; not run. (gui-widgets-b-04) -->
 - **`#step`** -- Snap increment. When set, the slider snaps to multiples of this value. `null` means continuous dragging. With the pointer over the track, Up/Down arrows and Ctrl+wheel move by one percent of the range.
 - **`#on_change`** -- Callback invoked as the handle is dragged. Receives the current `f64` value. Typically: `#on_change: |v| volume <- v`.
 - **`#on_release`** -- Callback invoked when the user releases the handle. Receives `null`. Useful for committing a value only after the user finishes adjusting.

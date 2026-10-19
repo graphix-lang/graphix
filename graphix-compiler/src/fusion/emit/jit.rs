@@ -564,11 +564,32 @@ impl Generation {
 
     /// Install a record's function, its thunk, its chunks and its
     /// callees (once per record) and return the function's id.
+    // CR claude for claude: [bug/high] load recurses through every callee record, and
+    // each chunk's callees, with no stack::ensure_sufficient. Its depth is therefore
+    // the program's static call-chain depth. A chain of 4800 lambdas, each calling the
+    // one before, fuses and then aborts the whole process here at link ("stack
+    // overflow, aborting", rc 134). --no-fusion prints the value, and 3200 lambdas link
+    // fine. Guard the recursion with stack::ensure_sufficient, or install the records
+    // in an explicit post-order walk. record_encode and record_decode in
+    // fusion/emit/record.rs recurse through callees the same way and need the same
+    // guard; that part was found by reading, because the compile aborts before an image
+    // is written. probe: design/review-2026-10-19/repro/x-rerun-6-jit-load-overflow.sh
+    // (x-rerun-6-01)
     fn load(&mut self, rec: &Arc<BodyRecord>) -> Result<FuncId> {
         let key = Arc::as_ptr(rec) as usize;
         if let Some((id, _)) = self.loaded.get(&key) {
             return Ok(*id);
         }
+        // CR claude for claude: [bug/medium] load recurses once per level of the record
+        // tree: callees, and chunks' callees. That depth is the program's static
+        // call-chain length inside one region, and nothing guards it. The link runs on
+        // a 2 MiB tokio worker, so a chain of 6000 lambda definitions (f_i calls
+        // f_{i-1}) aborts the process with a stack overflow; the node-walk runs the
+        // same program. Make the install a postorder walk with an explicit stack, as
+        // def_order does, or wrap the recursion in crate::stack::ensure_sufficient.
+        // record_encode and record_decode in record.rs recurse over callees the same
+        // way. Add a deep-callee-chain case to graphix-shell/tests/deep_nesting.rs.
+        // probe: design/review-2026-10-19/repro/f-jit-load-stack-overflow.sh (f-jit-01)
         let callees: SmallVec<[FuncId; 8]> =
             rec.callees.iter().map(|c| self.load(c)).collect::<Result<_>>()?;
         let id = self.declare_record(rec)?;
@@ -1683,6 +1704,18 @@ fn compile_region_inner(
     // never cached.
     let layout_id =
         em.caches.intern_layout(callees.iter().map(|(key, _)| *key).collect());
+    // CR claude for eric: [perf/medium] Any body that calls another kernel is keyed by
+    // this region's layout, the interned ordered callee list. Regions with different
+    // callee lists therefore never share it, and the identical body is emitted,
+    // compiled, installed and imaged once per such region. The probe compiles `outer`
+    // 10 times for one KernelSig, against once for the leaf `inner`. The key's reason
+    // (DynCall bases making sibling FuncIds region-dependent, 685a35c89) is gone: Names
+    // mints one FuncId per cache entry, and publish_site_block_words already holds
+    // every build of a body to one layout. Keying bodies by KernelKey alone would
+    // delete layout_ids/intern_layout and join's layout remap. If the layout still
+    // guards something (a cached body binding other callees?), name it in the CacheKey
+    // doc, whose FuncId reason is stale. probe:
+    // design/review-2026-10-19/repro/f-jit-layout-recompile.gx (f-jit-02)
     let layout_of = |key: KernelKey| -> u32 {
         let ext_sites = emitters.get(&key).is_some_and(|e| {
             e.spec

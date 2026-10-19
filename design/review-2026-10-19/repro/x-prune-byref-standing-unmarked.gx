@@ -1,0 +1,22 @@
+// Title: a reference cell refreshed at a select arm's wake (ByRef stands its
+// quiet production with store_insert_standing) marks no reader, so a Deref in
+// a clean inner boundary keeps riding the referent's old value.
+// Command: GRAPHIX_PRUNE=on  graphix --no-cache --no-fusion x-prune-byref-standing-unmarked.gx
+//      vs  GRAPHIX_PRUNE=off graphix --no-cache --no-fusion x-prune-byref-standing-unmarked.gx
+//      (or graphix-fuzz check: "DIVERGENCE — walk pruning bug";
+//       GRAPHIX_PRUNE=audit panics at `*holder`: I64(2) -> I64(4))
+// Expected (unpruned, the reference): at clk=6 arm 0 wakes with n=3, its
+//   cell stands n+1=4, so the row reads (6, 3, 0, 4, 4).
+// Observed (pruned): (6, 3, 0, 2, 2): both reads ride the value from before
+//   the arm slept; they catch up only at the next fire of n.
+let clk = array::iter(array::init(10, |i| i));
+let n = 0;
+n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+let sel = 0;
+sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+let r = select sel { 0 => &(n + 1), _ => &(n + 100) };
+let holder = once(r);
+let k = 0;
+let a = clk ~ { let u = 1; *holder };
+let b = clk ~ select k { 0 => *holder, _ => -1 };
+(clk, n, sel, a, b)

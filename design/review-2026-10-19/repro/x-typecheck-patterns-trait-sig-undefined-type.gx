@@ -1,0 +1,9 @@
+// Title: a trait method signature naming an undefined type passes the check until something uses it
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --check x-typecheck-patterns-trait-sig-undefined-type.gx
+// Expected: refused, "undefined type Nope at line 6..." (every type name a
+//   definition writes must name something by the check's end, as a typedef
+//   body's, a lambda's annotation or a never<Nope>() in an uncalled lambda are).
+// Observed: exit 0 (and the program runs). Adding `impl Q for i64 { let q = |x| x }`
+//   and a call makes the check refuse "undefined type Nope".
+trait Q { val q: fn(self) -> Nope };
+1

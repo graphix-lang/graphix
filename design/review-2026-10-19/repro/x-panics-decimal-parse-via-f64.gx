@@ -1,0 +1,15 @@
+// Title: a string read as decimal goes through f64: digits are lost, and an
+// integer past i64 does not parse at all; json's decimal round trip is lossy.
+// Command: timeout -s KILL 60 graphix --no-cache x-panics-decimal-parse-via-f64.gx
+// Expected: ("[\"1.23456789012345678901234567\",\"12345678901234567890.5\"]",
+//   (1.23456789012345678901234567, 12345678901234567890.5),
+//   12345678901234567890, 0.30000000000000000000000001)
+// Observed: ("[\"1.23456789012345678901234567\",\"12345678901234567890.5\"]",
+//   (1.234567890123457, 12345678901234567168.),
+//   error:`ParseError("cannot parse \"12345678901234567890\" as decimal"), 0.3)
+let s = json::write_str((decimal:1.23456789012345678901234567, decimal:12345678901234567890.5))$;
+let back: Result<(decimal, decimal), [`JsonErr(string), `InvalidCast(string)]> = json::read(s);
+let p: Result<decimal, `ParseError(string)> = str::parse("12345678901234567890");
+let c = cast<decimal>("0.30000000000000000000000001");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(s, back, p, c)

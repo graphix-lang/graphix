@@ -1,0 +1,14 @@
+// Title: must-reject family 4 (widen-consumer) treats every module-path
+// callee as a rigid consumer, but an aux module's unannotated parameter can
+// be a cell shared with module state (`|y| z <- y`), which the call widens.
+// Command:
+//   graphix-fuzz typemorph-one /abs/path/verdict.txt 5000 < fuzz-mutate-module-callee-leak.gx
+//   cat /abs/path/verdict.txt
+// Expected: no widen-consumer site at `m0::f(..)`.
+// Observed:
+//   FLIP widen-consumer#2 LEAK: accepted at call
+//   MUTANT { let r = m0::f(select 1 == 1 { true => 1, false => "tm" }); r }
+{ let r = m0::f(i64:1); r }
+// file-v1: m0.gx
+let z = never();
+let f = |y| z <- y;

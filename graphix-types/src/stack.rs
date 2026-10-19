@@ -118,6 +118,13 @@ pub fn activation_born() -> Option<usize> {
 /// [`Control::activation_died`] for the runtime whose cycle runs on this
 /// thread, when it is the one `charged` names.
 #[doc(hidden)]
+// CR claude for claude: [dead/low] The identity check here is vacuous. The only caller,
+// record_self_blocks(-1), passes current_control() itself, and record_self_blocks(1)
+// discards activation_born's charge, so a kernel block is never released against what
+// it was charged to. Delete this function, have record_self_blocks release on
+// current_control() directly, and either record a charge per block as GXLambda does or
+// say in one line that blocks are born and freed in one runtime's cycle. Found by
+// reading; not run. (t-misc-04)
 pub fn activation_died(charged: Option<usize>) {
     if let Some(p) = current_control()
         && charged == Some(p as usize)
@@ -306,6 +313,13 @@ pub enum ParMode {
 impl ParMode {
     /// `GRAPHIX_PAR` (`off`, `auto` or `force`), else `Auto`.
     pub fn from_env() -> Self {
+        // CR claude for claude: [risk/low] An unrecognised GRAPHIX_PAR value is
+        // silently Auto, and an unrecognised GRAPHIX_PRUNE value (PruneMode::from_env)
+        // is silently On. `GRAPHIX_PAR=Force` forks nothing and `GRAPHIX_PRUNE=Audit`
+        // audits nothing, so a debugging run with a mistyped knob looks clean. Match
+        // case-insensitively, and log and eprintln any other value as DEFAULT_BUDGET
+        // does for GRAPHIX_STACK_BUDGET before falling back. probe:
+        // design/review-2026-10-19/repro/t-misc-env-mode-typo.sh (t-misc-01)
         static MODE: LazyLock<ParMode> =
             LazyLock::new(|| match std::env::var("GRAPHIX_PAR").as_deref() {
                 Ok("force") => ParMode::Force,
@@ -584,6 +598,20 @@ pub(crate) fn current_stack_budget() -> usize {
 /// containment); a no-op with no runtime on this thread.
 /// Abort the running cycle's runtime by its stack budget; whether this
 /// call stopped it (a cycle runs, and nothing had aborted it yet).
+// CR claude for claude: [readability/low] This function has two doc summaries stacked
+// on each other. Keep one: it aborts the running cycle's runtime by its stack budget
+// and returns whether this call stopped it (false with no runtime on this thread). The
+// SAFETY comments here and in `current_stack_budget` say 'see `graphix_interrupted`', a
+// helper in graphix-compiler; the invariant is the one stated at `interrupted` in this
+// file, so point there. Found by reading; not run. (x-stack-04)
+// CR claude for claude: [readability/low] Two doc comments are stacked here and say
+// different things; keep the second. The SAFETY notes in this function and in
+// current_stack_budget point at `graphix_interrupted`, a JIT helper in graphix-compiler
+// with no SAFETY argument; the argument is in `interrupted` above. The
+// `budget_aborted()` read followed by `abort_budget` is a check-then-act that
+// activation_born repeats. Have abort_budget return whether this call set the cause
+// (fetch_update already has the previous flags) and use that in both places. Found by
+// reading; not run. (t-misc-03)
 pub(crate) fn abort_current_control_budget() -> bool {
     CURRENT.with(|c| {
         let p = c.get();

@@ -1,0 +1,15 @@
+// Title: sys::net::publish's #on_write handler with an inferred (non-concrete) argument type never sees a composite write
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/x-builtin-effects-publish-onwrite-open.gx
+// Expected: (42, 42) at the end (both handlers take the write of (41, "x")), or a check error
+//   asking to annotate the first handler's argument (as subscribe's 'a: Concrete does)
+// Observed: (0, 0) then (0, 42): the handler whose argument is inferred as (i64, '_) gets the
+//   unmarked data array, its `let (a, b) = v` never matches, and the write is lost silently
+let got = 0;
+let got2 = 0;
+let p = sys::net::publish(#on_write: |v| { let (a, b) = v; got <- a + 1; never() }, "/local/rv/x", 0);
+let p2 = sys::net::publish(#on_write: |v: (i64, string)| { let (a, b) = v; got2 <- a + 1; never() }, "/local/rv/y", 0);
+let t = sys::time::timer(duration:200.ms, false);
+let w = sys::net::write("/local/rv/x", t ~ (41, "x"));
+let w2 = sys::net::write("/local/rv/y", t ~ (41, "x"));
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+(got, got2)

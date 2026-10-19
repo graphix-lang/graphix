@@ -1,0 +1,14 @@
+// A window size above 65535 physical pixels panics winit on X11.
+// SizeV::from_value (stdlib/graphix-package-gui/src/types.rs) only refuses NaN and
+// infinities; ResolvedWindow::window_attrs hands the size to winit, whose X11
+// backend converts it with `dimensions.0.try_into().unwrap()` (u32 -> u16) in
+// winit-0.30.13 src/platform_impl/linux/x11/window.rs (create_window).
+// Run (on an X11 session; NOT run in the review sandbox, which has no display):
+//   env -u WAYLAND_DISPLAY timeout -s KILL 30 graphix --no-cache gui-core-x11-window-size-panic.gx
+// Expected: the size refused as an update/compile error ("a window size must be ...").
+// Observed by reading: a panic on the main thread inside the event loop, ending the process.
+use gui::{window, text::text};
+
+let size = {width: 70000.0, height: 600.0};
+
+[&window(#title: &"too wide", #size: &mut size, &text(&"x"))]

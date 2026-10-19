@@ -1,0 +1,16 @@
+// Title: a netidx write reaches #on_write uncast when the handler's argument
+// type is not concrete; a write of the wrong shape panics the runtime.
+// Command: timeout -s KILL 60 graphix --no-cache x-panics-on-write-uncast.gx
+// Expected: the write answered with an error (as a value the handler cannot
+//   take is when the type is concrete), or the program refused at check
+//   time; the runtime keeps running and the program exits 0 after 1 s.
+// Observed: thread 'tokio-rt-worker' panicked at
+//   graphix-compiler/src/node/callsite.rs: value I64(42) is not a function
+//   Error: graphix runtime is dead   (exit status 1)
+// The write here comes from the same program; any netidx client that can
+// write the path does the same.
+let got = never();
+let p = sys::net::publish(#on_write: |f: fn(x: i64) -> i64| got <- f(1), "/t/fn", 0);
+let w = sys::net::write("/t/fn", 42);
+sys::exit(sys::time::after_idle(duration:1.s, 0));
+got

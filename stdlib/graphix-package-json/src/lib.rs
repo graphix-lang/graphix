@@ -62,10 +62,28 @@ impl<'de> Deserialize<'de> for JsonKey {
 const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
 /// A number as the first of i64, u64 and f64 that holds it.
+// CR claude for eric: [bug/medium] Every number that is not an i64 or u64 becomes an
+// f64 here, before the target cast sees it. The exact text is in hand
+// (arbitrary_precision is on through rust_decimal), but the rounding still decides the
+// answer. json::read("-9223372036854775809") as i64 is -9223372036854775808 instead of
+// an InvalidCast, "9007199254740993.0" as i64 is 9007199254740992, and
+// "12345678901234567890.123456789" as decimal is 12345678901234567168. Proposed: use
+// F64 only when the f64 names the text exactly, else Value::Decimal when Decimal holds
+// it exactly, else F64. Then an integer target refuses what does not fit and a decimal
+// target reads exactly. The JsonValue doc ("the first of i64, u64 and f64 that holds
+// it") says the same. Needs your ruling on untyped readers seeing a decimal. probe:
+// design/review-2026-10-19/repro/small-pkgs-json-number-via-f64.gx (small-pkgs-02)
 fn number(n: serde_json::Number) -> Value {
     match (n.as_i64(), n.as_u64()) {
         (Some(i), _) => Value::I64(i),
         (None, Some(u)) => Value::U64(u),
+        // CR claude for claude: [bug/medium] With arbitrary_precision on, as_f64 is
+        // None for a number out of f64 range, so json::read("1e400") (and "-1e400")
+        // succeeds with NaN, a value the input never held. Return a JsonErr ("number
+        // out of range", serde_json's own answer) through de::Error::custom, or parse
+        // to ±inf with f64::from_str, and pin it. probe:
+        // design/review-2026-10-19/repro/x-engine-collections-json-overflow-nan.gx Also
+        // reported as (x-panics-06). (x-engine-collections-05)
         (None, None) => Value::F64(n.as_f64().unwrap_or(f64::NAN)),
     }
 }
@@ -116,6 +134,14 @@ impl<'de> Visitor<'de> for JsonVisitor {
         while let Some(JsonKey(k)) = a.next_key()? {
             // serde_json's arbitrary_precision (on wherever a crate in the
             // build asks for it) hands a number over as a one-entry map
+            // CR claude for eric: [bug/low] A real object whose first key is the token
+            // reads as a number: {"$serde_json::private::Number": "123"} is 123 as i64
+            // and an InvalidCast as Map<string, string>. arbitrary_precision is on only
+            // because rust_decimal's serde-with-arbitrary-precision unifies it into the
+            // build. Decide whether to keep it (and the exact number text it gives
+            // `number`) and document the ambiguity, or to drop it. probe:
+            // design/review-2026-10-19/repro/small-pkgs-json-number-token.gx
+            // (small-pkgs-07)
             if pairs.is_empty() && &*k == NUMBER_TOKEN {
                 let n: CompactString = a.next_value()?;
                 return n
@@ -196,6 +222,15 @@ impl Serialize for JsonView<'_> {
                 }
                 seq.end()
             }
+            // CR claude for claude: [bug/low] A bytes leaf is written as a JSON array
+            // (serialize_leaf's collect_seq), but the depth gate above counts it as no
+            // container. Bytes nested under 127 arrays is written as 128 nested arrays,
+            // which json::read refuses ("recursion limit exceeded"), so the
+            // write-what-reads-back rule fails for bytes. Count a Value::Bytes leaf as
+            // one more level in the gate and add a bytes case to
+            // the_deepest_written_value_reads_back. probe:
+            // design/review-2026-10-19/repro/x-rerun-3-json-bytes-depth.gx
+            // (x-rerun-3-03)
             Shape::Leaf => serialize_leaf(self.value, s),
         }
     }

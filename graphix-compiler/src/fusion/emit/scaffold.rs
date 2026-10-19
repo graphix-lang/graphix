@@ -532,6 +532,12 @@ impl SlotFlags {
     /// slot fired, or the source fired empty, against the prev-length
     /// word at `addr` (stored `len + 1`; 0 = no previous observation);
     /// and whether the source's fire is one that made it.
+    // CR claude for claude: [doc-drift/low] The doc's last clause ("and whether the
+    // source's fire is one that made it") describes a second return value that went
+    // away with the WAKE bit. The function returns one value, and the doc leaves out
+    // the PassThrough term (filter/find fire on any source fire). `addr` is always
+    // self.word. Fix the doc and drop the parameter. Found by reading; not run.
+    // (f-scaffold-body-04)
     fn exact_stale(
         &self,
         cx: &mut BodyCx,
@@ -1172,6 +1178,11 @@ where
         cx,
         |cx, i| {
             // a new slot's acc is delivered: the chain as it stands, fired
+            // CR claude for claude: [structure/low] This block (a new slot's acc is
+            // delivered fired) is repeated verbatim in emit_fold_fields_loop over
+            // `carry`. A change to the rule in one fold shape would silently miss the
+            // other. Extract one helper over the disc Variable and call it from both
+            // bind closures. Found by reading; not run. (f-scaffold-body-06)
             if let Some(s) = cx.env.slot {
                 let d = cx.b.use_var(acc_disc_var);
                 let fired = cx.b.ins().band_imm(d, !STALE);
@@ -1227,6 +1238,10 @@ pub(crate) enum AccNames {
     Fields(Vec<(BindId, usize)>),
 }
 
+// CR claude for claude: [readability/low] This function's doc ("[`emit_fold_loop`] for
+// an acc that is a tuple of scalars ...") sits above `enum AccNames`, stacked on
+// AccNames' own doc line. So AccNames hovers as a loop emitter and this function has no
+// doc. Move those four lines down here. Found by reading; not run. (f-scaffold-body-05)
 pub(crate) fn emit_fold_fields_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,

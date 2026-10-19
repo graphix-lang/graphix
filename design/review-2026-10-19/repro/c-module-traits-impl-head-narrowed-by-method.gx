@@ -1,0 +1,18 @@
+// Title: an annotated impl method narrows the impl's generic head instead
+//   of being refused: `impl<'a> Display for Box<'a>` with a method written
+//   for Box<i64> is accepted and silently serves Box<i64> alone.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/c-module-traits-impl-head-narrowed-by-method.gx
+// Expected: refused at the impl ("method fmt of impl Display for Box<'a> ...
+//   does not implement the declared ..."), as the unannotated `|b| "[b.0 + 1]"`
+//   is refused.
+// Observed: "n=42 Box(\"str\") Box(1.5)": the method's annotation bound the
+//   head's 'a to i64 (the Bind check runs before Impl::typecheck0's own
+//   check, which then compares against the narrowed head and passes); a
+//   Box<string> prints structurally, and with a non-core trait
+//   `Show::show(Box("s"))` fails at the call with "Box<'_> does not
+//   implement Show".
+type Box<'a> = Abstract<'a>;
+impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
+let s = Box("str");
+let t: Box<f64> = Box(1.5);
+"[Box(41)] [s] [t]"

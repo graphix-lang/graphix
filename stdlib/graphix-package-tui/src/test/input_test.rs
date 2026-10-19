@@ -78,6 +78,12 @@ let result = input_handler(#handle: &handle, &text(&"x"))
     .await?;
     h.watch("test::count").await?;
     h.dispatch_events([ch('m'), ch('a')]).await?;
+    // CR claude for claude: [test-gap/low] [test-gap] `before` accepts any count, so an
+    // 'a' that the swap from fa to fb loses (count 0) passes. That lost event is the
+    // failure this test is named for. The outcome is deterministic (the call and the
+    // delete travel on one channel, and delete_callable still answers pending calls),
+    // so pin the one value: 1 if fa answers 'a', 10 if fb does. Found by reading; not
+    // run. (tests-tui-07)
     let before = h.get_watched("test::count").cloned();
     let before = match before {
         Some(Value::I64(n)) => n,
@@ -188,6 +194,12 @@ let result = input_handler(#handle: &f.handle, &f.view)
     )
     .await?;
     h.watch("test::cancelled").await?;
+    // CR claude for claude: [test-gap/low] [test-gap] This test cannot see a stall. An
+    // event its handler leaves unanswered is answered Null by the runtime and dropped
+    // (InputHandlerW::answered), so Esc reaches on_cancel even if 'a' and Tab produced
+    // nothing. Wrap f.handle with a `Continue` counter, as
+    // a_form_without_cancel_continues_escape does, and assert that 'a' and Tab each
+    // answered `Continue`. Found by reading; not run. (tests-tui-04)
     h.dispatch_events([ch('a'), key(KeyCode::Tab), key(KeyCode::Esc)]).await?;
     assert_eq!(h.get_watched("test::cancelled"), Some(&Value::Bool(true)));
     Ok(())
@@ -294,6 +306,14 @@ let result = browser(
     )
     .await?;
     h.watch("test::selected_path").await?;
+    // CR claude for claude: [structure/low] [structure] This deadline-poll loop is
+    // written out four times: here, twice more in this file, and in control_test. Add
+    // `TuiTestHarness::wait_for(timeout, pred)` in testing.rs and use it at all four
+    // sites. In the same spirit, the `key`/`ch` builders are defined five times across
+    // the test files (they belong in test/mod.rs), widgets_test's per-test
+    // crossterm/netidx `use`s belong at the top of the file, and examples_test's
+    // REGISTER restates the unused crate::TEST_REGISTER. Found by reading; not run.
+    // (tests-tui-10)
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while h.get_watched("test::selected_path") != Some(&Value::from("/local/browse/r0")) {
         if tokio::time::Instant::now() > deadline {

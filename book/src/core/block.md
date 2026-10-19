@@ -8,6 +8,12 @@ it is illegal for a block to have just one expression (it will not parse).
 You can use blocks to hide intermediate variables from outer scopes, and to
 group code together in a logical way.
 
+<!-- CR claude for claude: [test-gap/low] This fence is a program the text says will not
+compile, but it is untagged, so examples_compile only parses it and never checks that
+the check refuses it. Tag it ```` ```graphix,refused ````, and likewise the refused
+programs in let_binds.md (`let y: string = x`), select.md (the `f64 as n`, guarded `i64`
+and `Wrong fences) and use.md (the block-local `map`). Each is refused today; found by
+running --check on each fence. (book-core-10) -->
 ```graphix
 let important_thing = {
   let x = 0;

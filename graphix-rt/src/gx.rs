@@ -51,6 +51,10 @@ use crate::{
 static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
     std::sync::LazyLock::new(|| Pool::new(4, 8192));
 
+// CR claude for claude: [style/low] This duplicates GXHandle::set_many's function-local
+// SETS pool: same shape, different caps (64/64 here, 16/8192 there), both feeding
+// EmbedderWrite::Set. Keep one crate-level pool with one cap. Found by reading; not
+// run. (rt-08)
 static SETS: std::sync::LazyLock<Pool<Vec<(BindId, Value)>>> =
     std::sync::LazyLock::new(|| Pool::new(64, 64));
 
@@ -599,6 +603,17 @@ impl<X: GXExt> GX<X> {
     }
 
     /// Readers of `id` update this cycle.
+    // CR claude for eric: [perf/low] A delivery costs O(readers of the id), not
+    // O(boundaries that run). Each Reader costs an `updated` entry and a mark, even one
+    // already stamped or asleep, and notify_set and mark_readers do the same. Every seq
+    // step reads the machine's pc (`seqpc ~! v` in --expand), so each step transition
+    // walks all S steps' readers: a seq of S cycle-separated steps costs 18.7 us a step
+    // at S=400 and 58.3 at S=3200 (O(S^2) per run). 1600 idle arms reading a ticking
+    // variable add about 7 ns each to every cycle. Two decisions: group readers by root
+    // so `updated` is touched once per root, and decide whether the seq lowering needs
+    // every step to register a read of pc. probe:
+    // design/review-2026-10-19/repro/x-perf-runtime-seq-pc-readers.sh
+    // (x-perf-runtime-04)
     fn wake_readers(&mut self, id: &BindId) {
         let cycle = self.ctx.rt.cycle;
         if let Some(readers) = self.ctx.rt.by_ref.get(id) {
@@ -738,6 +753,18 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
+                // CR claude for claude: [bug/high] An embedder write is never checked
+                // against its binding's type, though Callable::call checks its
+                // arguments. A string set into an `i64` binding that feeds a fused
+                // kernel makes FusedKernel::stage panic, and the runtime dies. The
+                // node-walk interpreter just drops the update, so the engines diverge,
+                // and a safe public API (GXHandle::set, set_many, set_deref, Ref::set,
+                // TRef::set) crashes the runtime. Fix: here and for SetMany and
+                // SetDeref, test the value with `is_a` against the binding's type in
+                // `ctx.env.by_id` (for a set_deref, the referent's type), and refuse,
+                // logging, a write that fails, as call_callable does. probe:
+                // design/review-2026-10-19/repro/rt-runtime-api.rs
+                // (a_wrong_typed_set_jit) (rt-01)
                 ToGX::Set { id, v } => {
                     let mut one = SETS.take();
                     one.push((id, v));
@@ -922,6 +949,16 @@ impl<X: GXExt> GX<X> {
             .iter()
             .zip(nodes.drain(..))
             .map(|(e, n)| {
+                // CR claude for claude: [bug/medium] `is_output` reads the compiled
+                // node's spec, and a `use` compiles to a `Nop` whose spec is the shared
+                // `NOP` expression, so a REPL `use` line counts as output. The shell
+                // prints `-: _` and waits on it, and every line typed after it is
+                // ignored until Ctrl-C (`use array::len` then `len([1, 2])` prints only
+                // `-: _`). The script path (`load_exprs`) already decides from the
+                // source expression. Fix: `is_output_kind(&e.kind)` here, and delete
+                // `is_output`. probe:
+                // design/review-2026-10-19/repro/book-core-repl-use-is-output.sh
+                // (book-core-01)
                 let output = is_output(&n);
                 let typ = n.typ().clone();
                 self.ctx.rt.updated.insert(e.id, true);
@@ -981,6 +1018,10 @@ impl<X: GXExt> GX<X> {
     }
 
     /// Like `check`, but also returns the (post-resolve) Expr tree.
+    // CR claude for claude: [dead/low] check is the only caller and discards the Expr
+    // tree this builds, so `Arc::from_iter(exprs)` copies the statements for nothing.
+    // Fold this into check and return CheckResult directly. Found by reading; not run.
+    // (rt-09)
     async fn check_inner(
         &mut self,
         source: &Load,
@@ -1071,6 +1112,14 @@ impl<X: GXExt> GX<X> {
                     .map(|n| nodes.push(n))
                 }
             };
+            // CR claude for eric: [bug/medium] Only the check warns on unused imports;
+            // `load_program`, the run's compile, has no such pass. Under `-W error`,
+            // `graphix --check f.gx` refuses `use array::map;` unused while `graphix
+            // f.gx` runs it without a word, so the check no longer predicts the build.
+            // Either do this pass where both paths share it (after `compile_script`, in
+            // both `check_inner` and `load_program`), or rule that unused imports are a
+            // check-only lint that WarningsAreErrors leaves alone. probe:
+            // design/review-2026-10-19/repro/shell-werror-check-vs-run.sh (shell-03)
             let res = res.and_then(|()| {
                 self.ctx.env.unused_imports_since(&env).try_for_each(|(key, e)| {
                     let mut end = e.name_at;
@@ -1405,6 +1454,16 @@ impl<X: GXExt> GX<X> {
                     custom_tasks.extend(joined(up));
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
+                // CR claude for claude: [bug/medium] When a watch's sender drops while
+                // the loop waits here, SelectAll removes the finished stream inside its
+                // poll and returns Pending, because the keepalive stream is still
+                // there. This branch never completes, so `settled` (GXRt::outstanding,
+                // which counts `watches.len()`) is not recomputed, and a pending
+                // wait_settled hangs until some unrelated event. The same applies to
+                // var_watches below. Fix: poll each SelectAll through a poll_fn that
+                // returns Ready(None) when its len dropped during the poll, so the loop
+                // comes round. probe: design/review-2026-10-19/repro/rt-runtime-api.rs
+                // (settles_when_a_watch_ends) (rt-02)
                 up = self.ctx.rt.watches.next() => {
                     if let Some(mut up) = up {
                         for v in up.drain(..) {

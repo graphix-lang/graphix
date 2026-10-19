@@ -404,6 +404,20 @@ pub use memo::FastMemo;
 
 /// A map key as a text format (JSON, TOML, a template's data) writes it:
 /// a string bare, any other value in its naked form.
+// CR claude for claude: [perf/low] A string key is copied into a String here and then
+// copied again by ArcStr::from at both callers in shape() and untyped_shape(). That is
+// two allocations per map entry where cloning the key's ArcStr costs none. Return
+// ArcStr: clone a string key, format the naked form of any other, and drop the
+// ArcStr::from wrappers. Found by reading; not run. (core-lib-08)
+// CR claude for claude: [bug/medium] A datetime key is written in its Naked display
+// ("2020-01-01 00:00:00 UTC") and a duration key as "1.5s". The casts that json::read
+// and toml::read apply to keys refuse both, so a Map<datetime, _> or Map<duration, _>
+// that json::write_str or toml::write_str writes does not read back. Values of those
+// types are written as RFC3339 and as seconds, which do read back. Write the key in the
+// text serialize_leaf gives the value (to_rfc3339; seconds for a duration), so the
+// duplicate-key checks compare what the reader will see. probe:
+// design/review-2026-10-19/repro/x-rerun-3-json-datetime-key-roundtrip.gx
+// (x-rerun-3-01)
 pub fn map_key(k: &Value) -> String {
     match k {
         Value::String(s) => s.to_string(),
@@ -440,9 +454,30 @@ pub fn f32_as_written(n: f32) -> f64 {
 /// abstract value.
 /// Where the type says nothing (`None`, `Any`, an open variable), a
 /// non-empty array of `(string, _)` pairs in key order reads as an object.
+// CR claude for claude: [bug/high] `shape` reads the value after to_data has stripped
+// its markers. So the Set arm's member_of picks a union member by data form, and the
+// List arm (list::is_list on a flat array) never matches. json/toml/hbs then write `{a:
+// 1}` typed [{a: i64}, Array<(string, i64)>] as [["a",1]], which reads back as the
+// array member. They write a tuple of pairs under a nullable as an object, and the
+// arrays of pairs inside a List<Array<(string, i64)>> as objects. Fix: compute the
+// shape from the marked value (convert abstracts only) and strip at the leaves, so
+// markers decide members and lists exactly. probe:
+// design/review-2026-10-19/repro/x-kind-markers-json-union-member.gx
+// (x-kind-markers-01)
 pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
     let typed = t.and_then(|t| constructor(env, t));
     match (typed.as_ref(), v) {
+        // CR claude for claude: [bug/medium] shape runs on to_data's output, which has
+        // no kind markers, but typ::member_of's has_form reads tuples, structs and
+        // variants by their marker. So a union member written inline ([{a:
+        // Array<(string, i64)>, b: i64}, null]) admits nothing, and untyped_shape's
+        // pair sniff decides instead. Here json::write_str writes field a, an
+        // Array<(string, i64)>, as the object {"k":1}. A member named through a typedef
+        // escapes only because has_form passes Type::Ref. json, toml and hbs all share
+        // this. Fix: pick the member with the data-aware readers
+        // (rep::read_struct/read_tuple/read_variant), or choose it on the value before
+        // stripping, and pin an inline-struct union in a writer test. probe:
+        // design/review-2026-10-19/repro/t-rep-json-union-member-shape.gx (t-rep-03)
         (Some(Type::Set(ts)), v) => {
             shape(env, graphix_compiler::typ::member_of(env, ts, v).map(|i| &ts[i]), v)
         }
@@ -815,6 +850,18 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
         self.var.release(ctx)
     }
 
+    // CR claude for eric: [bug/medium] This sleep (and range's Seq::sleep) remints the
+    // delivery id but keeps `out`. A re-entered arm therefore emits the last element
+    // again as a fired value. design/async_sleep_outputs.md lists iter/range deliveries
+    // as an event source whose output does not survive the sleep for exactly this
+    // reason, but its audit table says they keep the output. In the probe the re-raised
+    // 11 sends the arm back to sleep, and the program flips forever: about 490k values
+    // in 3 s from the CLI. Decide the class. As an event source, clear `out` here as
+    // Timer::sleep does and fix the table. As state (the restart builtins re-show their
+    // value, pinned by wake_resumes_quietly), fix the bullet. Pin the re-entry either
+    // way. probe: design/review-2026-10-19/repro/x-engine-firing-reentry-reraise.gx
+    // Also reported as (x-node-contract-04), (x-builtin-effects-05).
+    // (x-engine-firing-02)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.var.remint(ctx);
     }
@@ -1222,6 +1269,10 @@ impl CachedVals {
 
     /// True if any arg slot holds a taint no clean production has
     /// overwritten since.
+    // CR claude for claude: [dead/low] No caller anywhere, in the workspace or in
+    // netidx-admin, and neither has CachedVals::flat_iter. any_tainted also overlaps
+    // any_bottom, the one the wrapper uses. Delete both. Found by reading; not run.
+    // (core-lib-07)
     pub fn any_tainted(&self) -> bool {
         self.slots.iter().any(|(_, t)| t.is_bottom())
     }
@@ -1402,6 +1453,17 @@ pub fn sort_values(
             let mut keyed: LPooled<Vec<(Value, Value)>> = buf
                 .iter()
                 .map(|v| {
+                    // CR claude for claude: [bug/medium] Every numeric key goes through
+                    // f64, so integers above 2^53 (and numeric strings holding them)
+                    // become equal keys, and the stable sort keeps their input order.
+                    // `array::sort(#numeric: true, [9007199254740993,
+                    // 9007199254740992])` returns them unsorted, though the plain sort
+                    // orders them, and list::sort shares this code. Key a number as
+                    // itself and a string as its parsed i64/u64 (else f64), and compare
+                    // integer pairs exactly (as i128), using f64 only when one side is
+                    // a float. probe:
+                    // design/review-2026-10-19/repro/collections-str-numeric-sort-precision.gx
+                    // (collections-str-03)
                     (v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone()), v.clone())
                 })
                 .collect();
@@ -2083,6 +2145,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
         Ok(Box::new(FilterErr::default()))
     }
 
+    // CR claude for eric: [structure/low] filter_err holds no cross-invocation state.
+    // CLAUDE.md and design/strict_fusion.md name it, with divide and opt's
+    // short-circuits, as a partial-delivery producer classified
+    // Effect::Stateless(None). No builtin is classified Stateless(None): divide is
+    // Stateless(Some), and this and opt's OrElse are Sync. Either make this
+    // Stateless(None), as the docs say, or drop the Option from Effect::Stateless and
+    // correct both docs. As it stands, the payload has a variant nothing uses. Found by
+    // reading; not run. (core-lib-04)
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_filter_err";
 
@@ -2206,6 +2276,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 /// Set the count `#n` gives take and skip: a fired `#n` restarts it, and
 /// a standing one seeds a count not running (after a sleep, or at a birth
 /// whose fire a sibling consumed), so a level `#n` survives a sleep.
+// CR claude for claude: [readability/low] The comment above is stale. Sleep no longer
+// clears the count (Counted::sleep does nothing; only Counted::reborn sets it to None),
+// so a standing #n seeds nothing after a sleep and 'survives a sleep' describes the old
+// reset. Name the cases that remain: a rebirth (a seq step's next run) and a birth
+// whose fire a sibling consumed. Found by reading; not run. (core-lib-06)
 fn seed_count(n: &TagValue, left: &mut Option<usize>) {
     if let Some(tv) = seam_value(n)
         && (tv.is_fired() || left.is_none())
@@ -2349,6 +2424,13 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
         let Some(t) = &self.refs else { return fast_eval(ctx, fc_all, from) };
         let mut vs = from.values();
         let hd = vs.next()??;
+        // CR claude for claude: [bug/low] These comparisons run outside
+        // coretraits::with_hooks, so an abstract type's core Eq implementation is
+        // ignored whenever the argument type also holds a reference. all((&x,
+        // Key("Foo")), (&x, Key("FOO"))) never fires, while == on the same tuples is
+        // true and all() without the reference fires. Rewrite the arguments first, then
+        // compare under with_hooks, as Uniq::update does. probe:
+        // design/review-2026-10-19/repro/core-lib-all-ref-skips-eq.gx (core-lib-03)
         let named = ctx.ref_targets(t, hd);
         for v in vs {
             if ctx.ref_targets(t, v?) != named {
@@ -2576,6 +2658,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
 impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.pred.image_encode(buf)?;
+        // CR claude for claude: [structure/low] [structure] `pending` exists only after
+        // a cycle, and CLAUDE.md says such state refuses the write with NOT_QUIESCENT,
+        // as Group and IterQ do. Here, in Queue (triggered/queue/pushed) and in sys net
+        // Write (its queued values), it is written and decoded instead. Refuse when it
+        // is set, write nothing, start it empty on decode, and bump
+        // REGISTRATION_FORMAT. Found by reading; not run. (x-dup-04)
         self.pending.encode(buf)
     }
 
@@ -2906,6 +2994,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
     ) -> &TagValue {
         let invocation = self.args.update(ctx, from);
         // a bottomed argument bottoms the invocation and issues nothing
+        // CR claude for claude: [bug/medium] A bottom argument returns here before this
+        // cycle's element is read from ctx.event.variables. Every element of an earlier
+        // range that arrives while an argument is bottom is lost. range(0, j)$ where j
+        // goes bottom after the first element delivers only 0, while array::iter over
+        // the same source delivers all five. bottom_of states the rule: an emission
+        // owed to an earlier input still delivers. Read the delivery first and set the
+        // bottom only when none arrived, as Iter::update does. probe:
+        // design/review-2026-10-19/repro/core-lib-range-bottom-drops.gx (core-lib-01)
         if let Invocation::Bottom { fresh } = invocation {
             return self.out.set_bottom(fresh);
         }
@@ -3120,8 +3216,41 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         }
     }
 
+    // CR claude for eric: [bug/medium] A sleep while an emission is pending
+    // (Run::Pending) releases the timer and resets to Run::Idle, so the held value is
+    // never delivered. Nothing restarts it at the wake, because the input's fire was
+    // already seen. In the probe x stands at 2 and the throttle shows 0 for the rest of
+    // the run; without the sleep it reaches 2 after the rate. This breaks throttle's
+    // own contract ("the most recent update will always be delivered") and
+    // design/async_sleep_outputs.md's rule that an event source's pending wait resumes
+    // at the wake, though that doc's audit table records the cancel. `out` is also
+    // kept, so the re-entry re-emits the old value as a fresh one. Fix: do what
+    // AfterIdle does. At sleep, remember `last`, set a slept flag and clear `out`; at
+    // the next update run maybe_schedule!(last). Then fix the table and pin it. probe:
+    // design/review-2026-10-19/repro/x-engine-firing-throttle-sleep.gx
+    // (x-engine-firing-01)
+    // CR claude for eric: [bug/medium] Throttle's sleep cancels the pending emission
+    // and keeps `out`. At the wake, the select re-emits the stale last value as a new
+    // event, and the held latest value is never delivered. The probe shows (0, 6us)
+    // then (0, 301 ms), and the held 3 is lost; after_idle in the same arm delivers (3,
+    // 503 ms). design/async_sleep_outputs.md contradicts itself here: its rule bullet
+    // makes throttle's pending emission a pausing event source whose output does not
+    // survive, while its audit table says the emission is cancelled. throttle's doc
+    // promises that the latest update is always delivered. If the bullet is the rule:
+    // clear out at sleep, remember the pending value (a slept flag, as AfterIdle has),
+    // and re-arm its timer at the next update. Then fix the table row. probe:
+    // design/review-2026-10-19/repro/x-builtin-effects-throttle-sleep.gx
+    // (x-builtin-effects-04)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
+        // CR claude for claude: [bug/medium] Going to Idle at sleep forgets `last`, the
+        // time of the last emission, so the first fire after a wake emits at once. A
+        // throttle whose arm toggles therefore exceeds its #rate: with #rate 10 s and
+        // two sleeps, it emits three times in about 200 ms. Sleep is a pause: keep the
+        // window by turning Pending { last, .. } and Open { last } into Open { last }
+        // after releasing the timer, and the next fire waits out the rest of `wait`.
+        // probe: design/review-2026-10-19/repro/core-lib-throttle-sleep-resets-rate.gx
+        // (core-lib-02)
         self.run = Run::Idle;
     }
 
@@ -3279,6 +3408,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
             Some(t) => ctx.ref_targets(t, &v),
             None => v.clone(),
         };
+        // CR claude for eric: [perf/low] This compares a collection element by element
+        // even when it is the same allocation as the last one: netidx-value's
+        // ValArray::eq has no pointer shortcut. So `uniq(t ~ rows)` over a stale
+        // 100000-element array costs 0.33 ms per fire. A same-allocation fast path
+        // (here, or in ValArray/Map eq) makes it O(1). It is sound only if every Eq
+        // impl is reflexive, which a user Eq on an abstract type need not be, so that
+        // needs a ruling. probe:
+        // design/review-2026-10-19/repro/x-perf-runtime-uniq-same-array.sh
+        // (x-perf-runtime-05)
         let changed = coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref());
         if changed {
             *last = Some(cmp);

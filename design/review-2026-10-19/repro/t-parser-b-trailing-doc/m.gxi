@@ -1,0 +1,2 @@
+val x: i64; /// trailing doc
+val y: i64

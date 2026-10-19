@@ -1,0 +1,21 @@
+// A write to an arm-local that lands in the cycle its arm goes to sleep is
+// never re-raised at the wake (Bind::reraise_writes_while_asleep compares
+// `stamp > slept_at`, and both are the landing cycle), so nothing the arm
+// derives from it sees the new value.
+// run: timeout -s KILL 10 graphix --no-cache tests-select-reraise-last-awake-write.gx
+//      (same with --no-fusion; graphix-fuzz check says AGREE: both engines wrong)
+// expected (CLAUDE.md: a `let` re-raises, fired, a write that landed while it slept):
+//   (10, 0) (-1, 10) (11, 10) (-1, 11) (12, 11) (-1, 12)
+// observed: `out` never moves past 10 though `s` reads 11 and 12:
+//   (10, 0) (-1, 10) (11, 10) (-1, 10) (12, 10) (-1, 10)
+// contrast: a second write in the same arm, which lands a cycle after the
+// sleep (writes to one variable in one cycle queue one per cycle), IS
+// re-raised; only the write that lands in the sleep cycle is lost.
+let x = array::iter([1, 2, 3, 4, 5, 6]);
+let m = x % 2;
+let out = 0;
+let r = select m {
+  0 => -1,
+  _ => { let s = 10; s <- (x ~ s) + 1; out <- s; s }
+};
+(r, out)

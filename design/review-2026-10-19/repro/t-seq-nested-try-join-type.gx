@@ -1,0 +1,18 @@
+// Title: a `let` annotation on a try's value does not reach a try nested as the last
+//   statement of its body, so a union-valued nested try is refused.
+// cmd: timeout -s KILL 10 graphix --no-cache --check t-seq-nested-try-join-type.gx
+// expected: accepted, as the flat `let v: [i64, string] = try { 4 } with(e) { "inner" }` is
+//   (the annotation passes to the try's join cell)
+// observed: "type mismatch i64 does not contain string" at `seqj… <- seqv…`: the inner
+//   try's join cell is unannotated (Machine::lower_try takes a join type only from a
+//   Write::Let sink), so its first writer fixes it to i64.
+let t = 1;
+let r = seq t {
+    let v: [i64, string] = try {
+        try { 4 } with(e) { "inner" }
+    } with(e) {
+        5
+    };
+    v
+};
+r

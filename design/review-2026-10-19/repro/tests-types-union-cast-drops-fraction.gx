@@ -1,0 +1,19 @@
+// Title: a cast to a numeric union drops a string's fraction to take an
+// integer member, though a float member holds it; str::parse disagrees.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-types-union-cast-drops-fraction.gx
+// Expected: ["f64 3.5", "f64 3.5", "f32 3.5", "f64 3.5"] (each target has a member
+//   that holds 3.5 exactly; str::parse to the same type answers f64 3.5)
+// Observed: ["i64 3", "i8 3", "u8 3", "f64 3.5"]
+// Reads take the same path: json::read(r#"{"x": "3.5"}"#) into {x: [i64, f64]}
+//   gives i64 3, toml::read(r#"x = "3.5""#) into {x: Number} gives i8 3.
+let k = |v: Any| select v {
+  i64 as n => "i64 [n]",
+  i8 as n => "i8 [n]",
+  u8 as n => "u8 [n]",
+  f32 as n => "f32 [n]",
+  f64 as n => "f64 [n]",
+  _ => "other"
+};
+let p: Result<[i64, f64], `ParseError(string)> = str::parse("3.5");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[k(cast<[i64, f64]>("3.5")$), k(cast<Number>("3.5")$), k(cast<[u8, f32]>(f64:3.5)$), k(p$)]

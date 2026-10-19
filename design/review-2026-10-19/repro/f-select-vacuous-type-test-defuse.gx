@@ -1,0 +1,21 @@
+// f-select: an explicit type test that the scrutinee's static type already
+// proves de-fuses the select for every non-scalar scrutinee. emit_arm_cond
+// short-circuits only a scalar scrutinee whose prim equals the predicate.
+// command: graphix-fuzz run design/review-2026-10-19/repro/f-select-vacuous-type-test-defuse.gx
+// expected: f, g and h fuse (the test is statically true)
+// observed: values agree; fusion reports "type predicate Array<i64> not lowerable",
+//   "type predicate (i64, string) not lowerable",
+//   "type predicate string over scrutinee string not lowerable"
+{
+  let f = |a: Array<i64>| select a {
+      Array<i64> as [h, ..] => h,
+      _ => 0
+  };
+  let g = |t: (i64, string)| select t {
+      (i64, string) as (n, _) => n
+  };
+  let h = |s: string| select s {
+      string as x => str::len(x)
+  };
+  (f([1]), f([]), g((2, "x")), h("abc"))
+}

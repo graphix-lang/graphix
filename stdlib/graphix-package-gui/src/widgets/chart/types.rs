@@ -258,6 +258,11 @@ impl FromValue for SurfaceData {
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub struct SeriesStyleV {
     pub color: Option<ChartColor>,
+    // CR claude for claude: [style/low] The style labels here, in BarStyleV,
+    // CandlestickStyleV and SurfaceStyleV, are `Option<String>`: each style refire
+    // copies the Value's ArcStr into a fresh String. Use `Option<ArcStr>`. SurfaceData
+    // below is a plain `Vec<Vec<..>>` while every other data type is LPooled; pool it
+    // as `LPooled<Vec<LPooled<Vec<..>>>>`. Found by reading; not run. (gui-chart-10)
     pub label: Option<String>,
     pub stroke_width: Option<f64>,
     pub point_size: Option<f64>,

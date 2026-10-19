@@ -1,0 +1,10 @@
+// t-print: head_fits lays a select's scrutinee out in full to measure the first line, then
+// the real layout lays it out again: each nested `select f(|v| select ..)` doubles the work.
+// command: time graphix fmt --stdout t-print-exp-scrutinee.gx
+// expected: time near-linear in depth (18 levels, 20 lines)
+// observed (debug binary): depth 10 0.04 s, 14 0.12 s, 16 0.31 s, this file (18) 1.1 s;
+//   a block scrutinee (`select { let x = select {..} {..}; x } {..}`) at depth 20: 6.7 s;
+//   `seq f(|v| seq f(..) {1; 2}) {1; 2}` (the Seq arm t-print-02 added) depth 18: 1.2 s.
+let f = |g| g(1);
+let r = select f(|v17| select f(|v16| select f(|v15| select f(|v14| select f(|v13| select f(|v12| select f(|v11| select f(|v10| select f(|v9| select f(|v8| select f(|v7| select f(|v6| select f(|v5| select f(|v4| select f(|v3| select f(|v2| select f(|v1| select f(|v0| 0) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 };
+r

@@ -1,0 +1,26 @@
+// Title: sys::net::rpc's #f and sys::net::publish's #on_write read their
+// argument from data with no Concrete bound: the check accepts a reference
+// argument type, which the run time then cannot build.
+// Command:
+//   graphix --check tests-lib-b2-net-callback-reads-a-reference.gx   (exit 0)
+//   graphix --no-cache tests-lib-b2-net-callback-reads-a-reference.gx (kill after ~2 s)
+// Expected: the check refuses both callbacks, as it refuses
+//   `let v: &i64 = sys::net::subscribe(p)$` ("does not contain ... within
+//   Concrete & NoError"): a reference can't be read from data.
+// Observed: accepted; the run prints
+//   (error:`PublishRpcError("rpc #spec does not fit #f's argument &i64:
+//   [abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast null to
+//   &i64: a reference can't be read from data\"]"), 0)
+//   i.e. the rpc never publishes (and its message shows the raw kind
+//   marker), and the on_write callback never runs: 0 of 1 writes seen,
+//   nothing logged, the writer never answered.
+let result = {
+  let rpc = sys::net::rpc(#path: "/local/review_b2/rpc_ref", #doc: "d", #spec: null, #f: |a: &i64| *a + 1);
+  let p = "/local/review_b2/onwrite_ref";
+  let seen = 0;
+  sys::net::publish(#on_write: |v: &i64| seen <- v ~ seen + 1, p, 0);
+  let s: i64 = sys::net::subscribe(p)$;
+  sys::net::write(p, once(s + 1));
+  sys::time::after_idle(duration:500.ms, rpc) ~ (rpc, seen)
+};
+result

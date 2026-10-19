@@ -1,0 +1,26 @@
+// Title: a call compiled after a dynamic module's first load is statically
+//   bound to that load's lambda and ignores every reload.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/c-module-traits-dyn-reload-static-binding.gx
+// Expected: last line "null 203 [200, 201, 202]" (after the reload at 0.3s
+//   every call of foo::f is the second source's).
+// Observed: "null 203 [100, 101, 102]": the top-level call, compiled before
+//   the load (dynamic dispatch), follows the reload; the array::map slots,
+//   bound at run time after the first load, stay on the first load's f.
+//   Same with --no-fusion.
+let one = "let f = |x: i64| x + 100";
+let two = "let f = |x: i64| x + 200";
+let source = one;
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val f: fn(x: i64) -> i64 };
+    source source
+};
+let n = 1;
+n <- sys::time::timer(duration:0.1s, false) ~ 3;
+source <- sys::time::timer(duration:0.3s, false) ~ two;
+let xs = select status {
+    error as e => never(dbg(e)),
+    null as _ => array::map(array::init(n, |i| i), |i| foo::f(i))
+};
+sys::exit(sys::time::timer(duration:0.6s, false) ~ 0);
+"[status] [foo::f(n)] [xs]"

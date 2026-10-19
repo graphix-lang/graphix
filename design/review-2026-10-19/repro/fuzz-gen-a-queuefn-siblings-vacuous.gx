@@ -1,0 +1,22 @@
+// Title: gen_queuefn_siblings cannot observe call order; its 3-call form is bottom forever
+// Command: timeout -s KILL 120 graphix-fuzz run fuzz-gen-a-queuefn-siblings-vacuous.gx
+// Expected (for a useful template): each sibling call's outcome observable on its own,
+//   so a reordered call shows as a different call left queued.
+// Observed: `r3` (the template's shape: three calls in one array, trigger fires once)
+//   never fires, so neither `r3` nor anything reading it prints; `r2` (two calls)
+//   prints (8, 9) whatever the order the pure wrapped fn ran in. Bound one by one
+//   (a, b, c), the queued call is visible: stdout is "a 8", "b 9", c never prints.
+let qg = queuefn(#trigger: i64:2, |x: i64| -> i64 x + i64:7);
+let r3 = [qg(i64:1), qg(i64:2), qg(i64:3)];
+println("r3 [r3]");
+let qf = queuefn(#trigger: i64:2, |x: i64| -> i64 x + i64:7);
+let r2 = (qf(i64:1), qf(i64:2));
+println("r2 [r2]");
+let qh = queuefn(#trigger: i64:2, |x: i64| -> i64 x + i64:7);
+let a = qh(i64:1);
+let b = qh(i64:2);
+let c = qh(i64:3);
+println("a [a]");
+println("b [b]");
+println("c [c]");
+i64:0

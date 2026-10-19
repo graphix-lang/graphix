@@ -1110,6 +1110,12 @@ let result = data_table(
 /// `columns: []` plus virtual columns renders in Table mode, not Value
 /// mode.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [doc-drift/low] The doc speaks of '`columns: []` plus virtual
+// columns', but columns holds one stored text_column; the API has one `source` per
+// column. The default_value_* tests and default_value_reactive_via_connect's doc and
+// 'required to reproduce' comment also name the removed default_value API and an old
+// bug. Rename them after the stored-source behaviour they check and drop the history.
+// Found by reading; not run. (tests-gui-a-07)
 async fn virtual_columns_prevent_value_mode() -> Result<()> {
     let code = r#"
 
@@ -1219,6 +1225,12 @@ let result = data_table(
 
 /// A uniform string default propagates to every grid cell.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [structure/low] Duplicate tests: this one repeats
+// default_value_uniform; on_activate_fires_on_name_click is contained in
+// name_click_activate_only; virtual_column repeats default_value_per_row with one extra
+// column; sparkline_decimation_caps_length repeats types.rs
+// sparkline_bursts_retain_a_bounded_history step for step. Delete one of each pair.
+// Found by reading; not run. (tests-gui-a-05)
 async fn default_value_uniform_string() -> Result<()> {
     let code = r#"
 
@@ -1701,6 +1713,13 @@ async fn settle(
     h.wait_until(|h| pred(h), std::time::Duration::from_secs(5), why).await
 }
 
+// CR claude for claude: [structure/low] named_key and char_key repeat the KeyPressed
+// literal that test/mod.rs builds in type_text, press_key and press_ctrl and
+// interaction_test builds in char_key; left_click repeats InteractionHarness::click.
+// set_var below is also written inline in widgets_test reacts and
+// bad_sizes_and_coordinates_are_refused and in five tests here. Move these to
+// test/mod.rs (set_var on GuiTestHarness or testing::Fixture) and call them. Found by
+// reading; not run. (tests-gui-a-06)
 fn named_key(named: iced_core::keyboard::key::Named) -> Event {
     use iced_core::keyboard;
     Event::Keyboard(keyboard::Event::KeyPressed {
@@ -1966,6 +1985,10 @@ let result = data_table(
     })])
     .await?;
     let (wheeled, _) = h.inner.dt().dt_first_cell();
+    // CR claude for claude: [test-gap/low] `>=` passes when the wheel notch is dropped
+    // entirely (first_row unchanged); from row keyed > 20 of 100 a notch down must move
+    // the view, so the assertion should be `wheeled > keyed`. Found by reading; not
+    // run. (tests-gui-a-03)
     assert!(wheeled >= keyed, "a notch down from row {keyed} went to row {wheeled}");
     Ok(())
 }
@@ -2092,6 +2115,11 @@ let result = data_table(#selection: &sel, #table: &tbl)
     };
     set_var(&h, "test::sel", sel(&["/l/t/a/b/c0"])).await?;
     settle(&mut h, "the scroll to /l/t/a/b", |h| h.dt().dt_first_cell().0 == 21).await?;
+    // CR claude for claude: [test-gap/low] The loop lists the visible selection
+    // (/l/t/a/b/c0) first, so an ensure_selection_visible that only consults the first
+    // selected cell also keeps the view at 21 and passes. Listing the off-screen
+    // /l/t/x{k}/c0 first is what pins 'any selected cell on screen keeps the view'.
+    // Found by reading; not run. (tests-gui-a-02)
     for k in 1..9 {
         let other = format!("/l/t/x{k}/c0");
         set_var(&h, "test::sel", sel(&["/l/t/a/b/c0", &other])).await?;
@@ -2106,6 +2134,10 @@ let result = data_table(#selection: &sel, #table: &tbl)
 
 /// Decimation keeps a one-sample spike wherever it falls in its run.
 #[test]
+// CR claude for claude: [test-gap/low] Only a positive spike is planted, so
+// decimate_sparkline keeping the run's first point instead of its minimum still passes,
+// though its doc promises valleys survive. Add the same loop with a -100 dip. Found by
+// reading; not run. (tests-gui-a-04)
 fn sparkline_decimation_keeps_spikes() {
     use crate::widgets::data_table::decimate_sparkline;
     use std::{

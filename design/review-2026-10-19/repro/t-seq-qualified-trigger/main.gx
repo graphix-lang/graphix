@@ -1,0 +1,20 @@
+// Title: a seq triggered on a module-qualified variable does not snapshot it.
+// cmd: timeout -s KILL 30 graphix --no-cache main.gx   (from this directory)
+// expected: "qualified: started 0" (the run started on m::t = 0, and a bare-variable
+//   trigger's reads see the value the run started with), as "simple: started 0" does
+// observed: "qualified: started 3": the body read m::t live 70 ms later.
+//   trigger_snapshot keys the snapshot on simple_ref_name, so `seq m::t` and a body
+//   read of `m::t` under `seq t` (with `use m::t`) are not snapshotted.
+mod m;
+let a = seq m::t {
+    let w = sys::time::timer(duration:70.ms, false);
+    "qualified: started [m::t]"
+};
+use m::t;
+let b = seq t {
+    let w = sys::time::timer(duration:70.ms, false);
+    "simple: started [t]"
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+println(a);
+println(b)

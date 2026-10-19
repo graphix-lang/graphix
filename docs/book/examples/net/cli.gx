@@ -21,11 +21,11 @@ let cli: args::ParseResult = select args::parse(
     Error<'e> as e => select e.0 {
         `ArgHelp(text) => {
             println(text);
-            sys::exit(0)
+            sys::exit(text ~ 0)
         },
         `ArgError(text) => {
             println(text);
-            sys::exit(2)
+            sys::exit(text ~ 2)
         }
     }
 };

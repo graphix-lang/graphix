@@ -41,6 +41,12 @@ fn shows(h: &mut TuiTestHarness, text: &str) -> Result<bool> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+// CR claude for claude: [test-gap/low] [test-gap] An example whose root never produces
+// renders an all-blank buffer without error, so it passes here. examples_compile.rs
+// already builds every example, so the render is the only thing this test adds, and it
+// checks nothing about it. Require at least one non-blank cell after the drain, and
+// list explicitly any example that legitimately starts blank. Found by reading; not
+// run. (tests-tui-09)
 async fn every_example_renders() -> Result<()> {
     let mut names = vec![];
     for e in fs::read_dir(examples_dir())? {
@@ -87,6 +93,12 @@ async fn scroll_paragraph_pages() -> Result<()> {
     assert!(shows(&mut h, "Line 100")?);
     h.dispatch_event(key(KeyCode::PageUp)).await?;
     assert!(shows(&mut h, "Line 90")?);
+    // CR claude for claude: [test-gap/low] [test-gap] The assertion after this key
+    // holds before the key is sent. At position 89 (after PageUp) the view already
+    // shows Line 90..Line 100, so `shows("Line 100")` cannot see PageDown. Add
+    // `!shows(&mut h, "Line 90")?`, since position 99 shows only Line 100.
+    // scroll_list_follows_the_selection's "Item 16" check has the same problem: that
+    // item is visible at scroll 0. Found by reading; not run. (tests-tui-03)
     h.dispatch_event(key(KeyCode::PageDown)).await?;
     assert!(shows(&mut h, "Line 100")?);
     Ok(())
@@ -185,6 +197,17 @@ async fn tabs_navigation_moves() -> Result<()> {
     h.drain().await?;
     assert!(shows(&mut h, "Overview")?);
     h.dispatch_event(key(KeyCode::Right)).await?;
+    // CR claude for claude: [test-gap/low] [test-gap] This assertion is vacuous:
+    // "Items" is a tab title in the tab bar, so it is on screen before Right is
+    // pressed. Check the body row instead. Inside the block, row 2 should read
+    // "│Overview" before the key and "│Items" after it. Found by reading; not run.
+    // (tests-tui-02)
+    // CR claude for claude: [test-gap/medium] This cannot fail. "Items" is a tab title
+    // and is always in the tab bar, so the test passes with the Right arm deleted.
+    // block_focus_tabs below has the same problem: "Block 2" is a pane title, and two
+    // Tabs return focus to pane 0. Assert on the content row under the tab bar here. In
+    // block_focus_tabs, press Tab once and compare the two panes' border cell fg via
+    // `h.render()?`. Found by reading; not run. (examples-tui-04)
     assert!(shows(&mut h, "Items")?);
     Ok(())
 }
@@ -195,6 +218,12 @@ async fn block_focus_tabs() -> Result<()> {
     h.drain().await?;
     h.dispatch_event(key(KeyCode::Tab)).await?;
     h.dispatch_event(key(KeyCode::Tab)).await?;
+    // CR claude for claude: [test-gap/medium] [test-gap] This test is vacuous. "Block
+    // 2" is pane 2's title, so it is on screen whatever the focus, and two Tabs take
+    // block_focus.gx's `focused` from 0 to 1 and back to 0. The only visible sign of
+    // focus is the border colour. Send one Tab, check that pane 2's border cell
+    // (buffer[(40, 0)].fg) is Red and pane 1's is Yellow, then send a second Tab and
+    // check that they swap back. Found by reading; not run. (tests-tui-01)
     assert!(shows(&mut h, "Block 2")?);
     Ok(())
 }

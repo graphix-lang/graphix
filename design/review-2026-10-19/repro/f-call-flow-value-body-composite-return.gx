@@ -1,0 +1,13 @@
+// Title: a value-shaped body under a composite kernel return aborts the process
+// Command: graphix --no-cache f-call-flow-value-body-composite-return.gx
+// Expected (as --no-fusion prints): 1, 2, then nothing (k = 2 takes the never() arm) and exit 0
+// Observed: 1, 2, then "graphix: zero ValArray bits — JIT codegen bug" from
+//   graphix_valarray_drop and abort: body.rs emit_return_from_node returns the bottom
+//   select's (Null|TAINT, 0) placeholder as the kernel's Array result.
+let n = 0;
+let t = sys::time::timer(duration:50.ms, 3);
+n <- t ~ n + 1;
+let f = |k: i64| -> Array<[i64, string]> select k { 0 => [1], 1 => ["x", "y"], _ => never() };
+let g = |k: i64| array::len(f(k));
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+g(n)

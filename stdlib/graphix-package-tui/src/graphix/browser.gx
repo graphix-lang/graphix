@@ -88,6 +88,17 @@ let browser = |
         })
     };
     let visible_columns: Array<string> = uniq(visible_columns);
+    // CR claude for claude: [bug/medium] `selected` is never clamped to the visible
+    // window. After the window shrinks (a terminal resize changes `#size`) or fewer
+    // columns fit, `row_path` is null and `cell_path` bottoms, so `*selected_path`
+    // keeps naming a cell that is no longer selected. Up and Left then walk back
+    // through invisible indices one press at a time. The table gets the same unclamped
+    // `#selected_cell`, and ratatui clamps it to the last row, so a row is highlighted
+    // while `#selected_row` says null; browser.gxi says null only while the listing is
+    // empty. Derive one clamped selection (x within 1 ..= len(visible_columns), y
+    // within 0 .. len(visible_rows)) and read it in row_path, cell_path, the cursor
+    // arms and the table. probe:
+    // design/review-2026-10-19/repro/gx-ui-browser-selection-unclamped.gx (gx-ui-02)
     let row_path: [string, null] = select visible_rows[selected.y] {
         error as _ => null,
         r => r
@@ -155,6 +166,16 @@ let browser = |
             0 => cell(#style:header_style, line(s)),
             _ => cell(line(s))
         })));
+    // CR claude for claude: [bug/high] Each scroll arm writes `viewport <- uniq(e ~ {
+    // viewport with .. })`. `uniq` compares with its own last output, not with the
+    // current `viewport`, and keeps that state while its arm sleeps. So once another
+    // arm (or `restart`) has moved the viewport, a scroll back to a value this arm
+    // wrote before is dropped. Repro: press Up at the top (a no-op scroll), Down past
+    // the last visible row, then Up at the top: the window never returns to row 0. Drop
+    // the `uniq` from the four scroll writes; a no-op edge press then costs one
+    // recompute, and `uniq(row) ~ "#SUB"` already keeps that from flickering. Pin a
+    // down-then-up case next to a_browser_scroll_keeps_the_rows_that_stay. probe:
+    // design/review-2026-10-19/repro/gx-ui-browser-uniq-scroll.gx (gx-ui-01)
     select cursor {
         `Left(n) => select n ~ selected.x {
             e if e <= 1 =>

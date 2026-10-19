@@ -1,0 +1,12 @@
+// Title: a loop's own slot tables are ensured twice per run (preheader and exit)
+// Command: GRAPHIX_DUMP_CLIF=1 timeout -s KILL 60 graphix-fuzz run f-scaffold-body-exit-reensure.gx 2>&1 | grep -n "call fn3"
+// Expected: one graphix_slot_state_table call for the first-call word table of `g(x)` per kernel run.
+// Observed (HEAD 9445a1d21): two calls with identical arguments in the fold kernel, one in the
+//   preheader (v36 = call fn3(v29, v10, v34, v35, v31)) and one in the loop exit block
+//   (v118 = call fn3(v115, v116, v113, v117, v114), v115 = v1+8, v116 = len*1, v113 = valid).
+{
+  let g = |v: i64| v + 1;
+  let t = array::iter([1, 2, 3]);
+  let src = array::init(t, |i| i);
+  array::fold(src, 0, |acc, x| acc + g(x))
+}

@@ -1,0 +1,25 @@
+// Title: tui::browser keeps a selection past the end of the visible window after the window
+// shrinks; #selected_row reports null though the listing has rows, and Up must walk back
+// through the invisible rows before anything is selected again.
+// Run: timeout -s KILL 30 graphix --no-cache gx-ui-browser-selection-unclamped.gx
+// 12 rows, height 8 (7 row slots); Down x6 selects the 7th visible row; the size then
+// shrinks to height 4 (3 slots), as a terminal resize does; then Up x3.
+// Expected: the selection stays on a visible row (clamped to the window) and sel names it;
+// browser.gxi says the outputs are null only while the listing is empty.
+// Observed: "7 h=4 sel=null" and sel stays null through all three Ups (selected.y walks 6,5,4,3,
+// every one past the 3-row window).
+use tui::{Tui, browser::{MoveCursor, browser}};
+let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k]", k));
+let path = sys::time::after_idle(duration:200.ms, "/local/ring");
+let cur: MoveCursor = never();
+let size = {width: 40, height: 8};
+let sel: [string, null] = never();
+let b: Tui = browser(#size: size, #cursor: cur, #selected_row: &mut sel, path);
+let script: Array<MoveCursor> = [`Down(1), `Down(1), `Down(1), `Down(1), `Down(1), `Down(1), `Up(1), `Up(1), `Up(1)];
+let tick = sys::time::timer(duration:300.ms, true);
+let i = 0;
+i <- tick ~ i + 1;
+cur <- (tick ~ script[i])$;
+size <- select i { 7 => i ~ {width: 40, height: 4}, _ => never() };
+sys::exit(sys::time::timer(duration:4.s, false) ~ 0);
+uniq("[i] h=[size.height] sel=[sel]")

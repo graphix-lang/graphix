@@ -1,0 +1,12 @@
+// Title: a map casts to the primitive `array` (as [[k, v], ..]) but not to
+// Array<(K, V)>, and an array of pairs casts to Map<K, V>; CLAUDE.md lists
+// neither crossing among the casts that leave a value's runtime class.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-map-array-class.gx
+// Expected: one rule for both targets (both read a map as its pairs, or
+// neither), written in CLAUDE.md.
+// Observed: ({"a" => 1, "b" => 2}, [["x", 1]], error:`InvalidCast("can't cast
+// {\"x\" => 1} to Array<(string, i64)>: not an array"), [("x", 1)])
+let a = [("a", 1), ("b", 2)];
+let m: Map<string, i64> = {"x" => 1};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(cast<Map<string, i64>>(a), cast<array>(m), cast<Array<(string, i64)>>(m), cast<Array<(string, i64)>>(cast<array>(m)$))

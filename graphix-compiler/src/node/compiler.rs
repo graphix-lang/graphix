@@ -89,6 +89,12 @@ fn fork_kind(spec: &Expr, attr: &crate::expr::Attr) -> Result<Option<ForkKind>> 
             }
             _ => bailat!(spec, "#[parallel(grain)] takes a positive integer literal"),
         },
+        // CR claude for claude: [readability/low] `#[parallel(2, 3)]` lands here and is
+        // told "#[parallel] takes no arguments here", but #[parallel] takes one
+        // argument, its grain. Give parallel its own message ("at most one argument, a
+        // positive integer literal") and keep this one for #[serial]. probe:
+        // design/review-2026-10-19/repro/c-data-map-parallel-two-args.gx
+        // (c-data-map-04)
         _ if ForkKind::of(&attr.name, None).is_some() => {
             bailat!(spec, "#[{}] takes no arguments here", attr.name)
         }
@@ -605,6 +611,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
 /// `lower`'s rewrite of `spec`, once per definition body: every compile of
 /// the body takes the first compile's, so its expression ids are the ones
 /// the check's table has rows for.
+// CR claude for claude: [readability/low] The doc block above this fn opens with six
+// lines describing eta_dispatcher ("A trait method named as a value ...") and then
+// describes `lowering`. eta_dispatcher, below, has no doc. Move those six lines onto
+// eta_dispatcher. Found by reading; not run. (c-data-map-05)
 pub(super) fn lowering<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     spec: &Expr,

@@ -1,0 +1,33 @@
+// Title: a core-trait (Display) implementation loaded by a dynamic module is never replaced on reload
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-fusion-traits-dynamic-core-impl-reload.gx
+// Expected: (1, "one1") then, after the reload to `two`, (2, "two1")
+// Observed: (1, "one1") then (2, "one1"): the module reloaded (status fired again) but
+//   interpolation still dispatches to the first implementation; --no-fusion gives the same.
+//   The user-trait twin (traits::trait_dynamic_impl_reload) does switch to "two".
+let one = """
+    type Counter = Abstract<i64>;
+    impl Display for Counter { let fmt = |c| "one[c.0]" };
+    let make = |x| Counter(x)
+""";
+let two = """
+    type Counter = Abstract<i64>;
+    impl Display for Counter { let fmt = |c| "two[c.0]" };
+    let make = |x| Counter(x)
+""";
+let source = one;
+source <- sys::time::timer(duration:200.ms, false) ~ two;
+sys::net::publish("/local/review_dyn_core_reload", source)?;
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig {
+        type Counter;
+        impl Display for Counter;
+        val make: fn(x: i64) -> Counter
+    };
+    source sys::net::subscribe("/local/review_dyn_core_reload")?
+};
+let shown = select status {
+    error as e => never(dbg(e)),
+    null as _ => "[foo::make(1)]"
+};
+(count(status), shown)

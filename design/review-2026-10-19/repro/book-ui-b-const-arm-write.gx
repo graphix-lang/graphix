@@ -1,0 +1,17 @@
+// book/src/ui/tui/input.md says a constant write in an arm
+// (`mode <- `Insert`) "fires once when the arm becomes selected" and is
+// useful. It fires only at the arm's FIRST entry, and the check warns.
+// Run: timeout -s KILL 30 graphix --no-cache book-ui-b-const-arm-write.gx
+// Expected per input.md: the write lands after n=2 and after n=4, so the
+// lines for n=3 and n=5 both show `Insert.
+// Observed: the WARNING "acts only at this arm's first entry", then
+// n=3 shows `Insert but n=5 shows `Normal (the second entry writes nothing).
+let clock = sys::time::timer(duration:50.ms, 5);
+let n = count(clock);
+let mode: [`Insert, `Normal] = `Normal;
+select n % 2 {
+  0 => mode <- `Insert,
+  _ => mode <- clock ~ `Normal
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+println(n ~ "n=[n] mode before this tick's writes land: [mode]")

@@ -396,6 +396,18 @@ bool_op!(And, &&);
 bool_op!(Or, ||);
 
 #[derive(Debug)]
+// CR claude for claude: [structure/low] [structure] Not and Neg below are the same node
+// twice: same fields, same image codec, child walk, sleep, fuse and dense_gate update.
+// They differ only in the value fn, the type rule and the emit fn. Make one Unary node
+// with an `op: UnaryOp { Not, Neg }` that picks those three, and keep NodeView::Not/Neg
+// by matching on op in view(). Found by reading; not run. (x-dup-06)
+// CR claude for claude: [structure/low] Not and Neg hand-write the struct, compile,
+// image codec, children, sleep, fuse and view that binary_node! already generates for
+// the binary operators. That is about 200 lines kept in step by hand, and they have
+// already drifted: Not has no typecheck0_instance, while Neg writes its own settle.
+// Give binary_node! a one-child form (or a unary_node! sibling written the same way)
+// and keep only update, emit_clif and typecheck_own here, with Neg passing `settles:
+// true`. Found by reading; not run. (c-error-op-03)
 pub struct Not<R: Rt, E: UserEvent> {
     pub(crate) spec: Arc<Expr>,
     pub typ: Type,

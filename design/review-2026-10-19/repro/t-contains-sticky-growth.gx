@@ -1,0 +1,12 @@
+// Title: a plain mismatch is reported as a growing-parameter refusal: a probe
+// of the distribution law hit MAX_GROWTH, and ContainsHist::grew stays set for
+// the rest of the walk.
+// Command: timeout -s KILL 60 graphix --check t-contains-sticky-growth.gx
+// Expected: "type mismatch N<f64> does not contain N<i64>" (position 0 alone,
+// f64 vs i64, refutes the tuple member).
+// Observed: "cannot compare two instances of N: its parameters grow at every
+// level of its recursion, so no comparison ends"
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let x: N<i64> = null;
+let y: N<f64> = x;
+y

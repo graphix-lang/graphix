@@ -1,0 +1,13 @@
+// Title: json writer loses a union member's type once markers are stripped
+// Command: timeout -s KILL 30 graphix --no-cache t-rep-json-union-member-shape.gx
+// Expected: ("{\"a\":[[\"k\",1]],\"b\":7}", ...): field a is Array<(string, i64)>, an array
+//   (the same value typed by a named struct `type T = {..}; [T, null]` writes this).
+// Observed: ("{\"a\":{\"k\":1},\"b\":7}", {a: [("k", 1)], b: 7})
+//   graphix_package_core::shape picks the union member with tval::member_of,
+//   whose has_form reads markers strictly; to_data already stripped them, no
+//   member admits the data, and the untyped sniff writes the pairs as an object.
+let opt: [{a: Array<(string, i64)>, b: i64}, null] = {a: [("k", 1)], b: 7};
+let j = json::write_str(opt)$;
+let r: Result<[{a: Array<(string, i64)>, b: i64}, null], [`InvalidCast(string), `JsonErr(string)]> = json::read(j);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(j, r)

@@ -1,0 +1,15 @@
+// Title: str::parse cannot read back what Graphix prints for a tuple, a struct or a variant
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/x-builtin-effects-parse-printed-forms.gx
+// Expected: pt = (1, "a"), ps = {x: 1}, pv = `B(3): parse reads the text "[t]" prints, as json::read reads what json::write_str writes
+// Observed: ("(1, \"a\")", "{x: 1}", "`B(3)", error:`ParseError("cannot parse \"(1, \\\"a\\\")\" as (i64, string)"),
+//   error:`ParseError("cannot parse \"{x: 1}\" as { x: i64 }"), error:`ParseError("cannot parse \"`B(3)\" as [`A, `B(i64)]"), (1, "a"))
+//   str::parse parses netidx value-literal syntax ("[1, \"a\"]", "\"hello\"", datetime:"...") and only then casts
+let t = (1, "a");
+let s = {x: 1};
+let v: [`A, `B(i64)] = `B(3);
+let pt: Result<(i64, string), `ParseError(string)> = str::parse("[t]");
+let ps: Result<{x: i64}, `ParseError(string)> = str::parse("[s]");
+let pv: Result<[`A, `B(i64)], `ParseError(string)> = str::parse("[v]");
+let pj: Result<(i64, string), [`JsonErr(string), `InvalidCast(string)]> = json::read(json::write_str(t)$);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+("[t]", "[s]", "[v]", pt, ps, pv, pj)

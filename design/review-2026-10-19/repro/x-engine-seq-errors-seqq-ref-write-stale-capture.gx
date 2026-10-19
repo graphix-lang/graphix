@@ -1,0 +1,21 @@
+// Title: a seqq body that writes a variable through a reference reads the
+// variable from its enqueue-time snapshot, so read-modify-write through a
+// reference loses updates across queued requests; a direct `<-` does not.
+// Command: graphix-fuzz run x-engine-seq-errors-seqq-ref-write-stale-capture.gx
+// Expected (three requests, each adds 1, as `direct` does): a 3
+// Observed (both engines, every mode, AGREE): a 1, res (0, 3): every run
+// read `a` as 0, the value it had when the three requests queued.
+// schedule-v1: cap=128 events=1024; in0=i64:1; in0=i64:2; in3=bool:true
+{
+  let a = 0;
+  let r = &mut a;
+  let direct = 0;
+  let res = seqq let t = in0 {
+    until in3;
+    *r <- a + 1;
+    direct <- direct + 1;
+    (a, direct)
+  };
+  println("res [res] a [a] direct [direct]");
+  res
+}

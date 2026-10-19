@@ -1,0 +1,26 @@
+// Title: publish's #on_write hands a written value to the callback UNCAST
+// when the callback's argument type is not castable (a function, a
+// reference, a type holding ⊥); the check accepts it. A function-typed
+// argument then panics the runtime on the first write from any netidx
+// client.
+// Command:
+//   graphix --check tests-lib-b2-on-write-raw-value-crash.gx    (exit 0)
+//   graphix --no-cache tests-lib-b2-on-write-raw-value-crash.gx (also --no-fusion)
+// Expected: the check refuses `#on_write: |f: fn(x: i64) -> i64| ..` (a
+//   value read from data can't be a function: 'a: Concrete), or at worst
+//   the write is answered with an InvalidCast error.
+// Observed (both engines):
+//   thread 'tokio-rt-worker' panicked at graphix-compiler/src/node/callsite.rs:2418:13:
+//   value I64(5) is not a function
+//   Error: graphix runtime is dead
+// With `|v: &i64| seen <- "[v]"` the callback receives the raw i64 and
+// prints "1": a value of type &i64 that is no reference.
+let result = {
+  let p = "/local/review_b2/onwrite_fn";
+  let seen = 0;
+  sys::net::publish(#on_write: |f: fn(x: i64) -> i64| seen <- f(1), p, 0);
+  let s: i64 = sys::net::subscribe(p)$;
+  sys::net::write(p, once(s + 5));
+  seen
+};
+result

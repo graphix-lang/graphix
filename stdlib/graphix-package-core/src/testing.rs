@@ -56,6 +56,16 @@ pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
                  region ran without entering its JIT wrapper; investigate.",
             );
         }
+        // CR claude for claude: [test-gap/medium] This judges kernel RUNS counted up to
+        // the moment run_mode reads `Control::invocations()` after the first value, not
+        // whether anything fused. A fixture whose fused region first runs after its
+        // first value passes `FuseExpect::None` and fails `FuseExpect::Jit`, and the
+        // count also depends on how many cycles ran during the `observed()` await.
+        // Judge both annotations by `FusionStats::fused` read after compile_result,
+        // which counts only the fixture since the root compiles with fusion off, and
+        // keep `jit > 0` as a secondary check. Found by reading; graphix-fuzz run on
+        // design/review-2026-10-19/repro/core-aux-fuseexpect-counts-runs.gx shows
+        // fused=1 with a first value from before the region runs. (core-aux-03)
         FuseExpect::None => {
             assert!(
                 fusion == 0,
@@ -149,6 +159,14 @@ pub enum Mode {
 }
 
 impl Mode {
+    // CR claude for eric: [test-gap/medium] Every run!, run_with_tempdir!, collect and
+    // eval_modes fixture runs pruned, and graphix-fuzz's oracle_tier excludes every
+    // sys::time, sys::net, process or listener program from value comparison,
+    // Pair::Prune included. So walk pruning across sleep and wake of event sources has
+    // no differential check anywhere. Under debug_assertions, consider giving Interp
+    // PruneMode::Audit, which panics where a skip would change a production, or add
+    // Mode::Unpruned to run!. A manual sweep of the 71 async lib_tests fixtures under
+    // GRAPHIX_PRUNE=audit, in both engines, finds nothing today. (tests-lib-b2-05)
     pub const ALL: [Mode; 4] = [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar];
 
     pub fn flags(self) -> BitFlags<CFlag> {
@@ -163,9 +181,28 @@ impl Mode {
     }
 
     /// Whether the runtime skips clean boundaries.
+    // CR claude for claude: [test-gap/medium] Every run! mode runs pruned with the
+    // audit off, and Mode::Unpruned is not in Mode::ALL. So the gate never checks that
+    // pruning changes nothing; only lang::prune's walk count touches it. A missed mark
+    // that alters an intermediate cycle passes every fixture: the standing-write hole
+    // in RtView::store_insert_standing is one, and GRAPHIX_PRUNE=audit catches it
+    // immediately. Fix: default Interp and Par to PruneMode::Audit here when
+    // GRAPHIX_PRUNE is unset (it walks everything, so it costs what Off does), and
+    // correct design/walk_pruning.md "Verifying it", which says the gate already
+    // audits. Found by reading; not run. (x-prune-03)
     pub fn prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
+            // CR claude for claude: [test-gap/low] No run! fixture ever runs the prune
+            // audit. design/walk_pruning.md says the plain gate runs it for the lang
+            // and lib_tests fixtures, but this returns On unless GRAPHIX_PRUNE is set.
+            // The only pruning pin is a walk count,
+            // lang::prune::idle_map_beside_a_ticking_counter. So a dropped mark (for
+            // example ErrorHandler::handled's mark_pollers) fails the gate only if some
+            // predicate happens to depend on the missed walk. Return PruneMode::Audit
+            // for Mode::Interp when GRAPHIX_PRUNE is unset, so every node-walk fixture
+            // checks marks, or correct the design doc. Found by reading; not run.
+            // (c-prune-wake-03)
             _ => PruneMode::from_env(),
         }
     }
@@ -250,6 +287,9 @@ pub fn verdicts_agree(
 /// The next update of `id`, failing at `deadline`.
 /// `v` as a test reads it: written as data ([`rep::strip`]), so a
 /// tuple, struct or variant is the array a writer writes.
+// CR claude for claude: [readability/low] The first line of this doc ('The next update
+// of `id`, failing at `deadline`.') is left over from next_update and describes nothing
+// here; delete it. Found by reading; not run. (core-aux-05)
 pub fn data(v: Value) -> Value {
     rep::strip(&v).unwrap_or(v)
 }

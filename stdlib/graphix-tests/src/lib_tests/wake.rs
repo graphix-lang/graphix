@@ -67,6 +67,13 @@ async fn wake_recompute_table() -> Result<()> {
                             }
                         }
                     }
+                    // CR claude for claude: [test-gap/low] The loop returns at the
+                    // first 62, so a phantom re-fire that delivers a second 62 in a
+                    // later cycle passes. The doc comment's '63 a phantom re-fire'
+                    // cannot occur: n is 20, so the arm computes 62 either way. After
+                    // the last set, wait_idle, drain, and assert exactly [43, 2, 21,
+                    // 62]. Fix the comment. Found by reading; not run.
+                    // (tests-lib-b2-06)
                     if seen.last() == Some(&62) {
                         assert_eq!(
                             seen,

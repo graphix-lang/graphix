@@ -1,0 +1,25 @@
+// Title: a seq nested in a select arm (or any sub-expression) of a seq step
+// answers with its previous run's result and never runs again.
+// Command: timeout -s KILL 20 graphix --no-cache tests-seq-nested-seq-in-expr-stale.gx
+// (same with --no-fusion, and with GRAPHIX_PRUNE=off)
+// Expected (design/seq_blocks.md §5 "A nested seq is a step that produces
+// later": it starts at every entry and the step completes only on this
+// run's production):
+//   inner 0
+//   0
+//   inner 100
+//   100
+// Observed:
+//   inner 0
+//   0
+//   0
+// The same stale 0 comes from `seq { k } + 0`, `f(seq { k })` and
+// `(seq { k }, 1).0` in place of the select; `let r = seq { k }` alone
+// gives 0 then 100.
+let step = 0;
+step <- select step { n if n < 90 => n + 1, _ => never() };
+let go = select step { 1 => 1, 30 => 1, _ => never() };
+let k = 0;
+k <- select step { 15 => 100, _ => never() };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+seq go { let r = select go { 1 => seq { println("inner"); k }, _ => 6 }; r }

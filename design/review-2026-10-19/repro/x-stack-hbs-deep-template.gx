@@ -1,0 +1,13 @@
+// A template string built at run time with 10000 nested `{{#if}}` blocks aborts the process.
+// run: timeout -s KILL 60 graphix --no-cache x-stack-hbs-deep-template.gx
+// expected: an `HbsErr` value ("nests too deep"), as json/toml/re/str::parse refuse deep input
+// observed: "fatal runtime error: stack overflow, aborting", exit 134. gdb: the recursion is
+//   handlebars' pest grammar (template -> helper_block -> template ...) under
+//   Registry::register_template_string, called from graphix_package_hbs::build_registry.
+//   Depth 1000 renders fine.
+let o = str::concat(array::init(10000, |i| "{{#if a}}"));
+let c = str::concat(array::init(10000, |i| "{{/if}}"));
+let t = "[o]x[c]";
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let r = hbs::render(t, {a: true});
+select r { error as e => "[e]", s => "[str::len(s)]" }

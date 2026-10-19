@@ -712,6 +712,14 @@ run!(
 
 // An abstract type with a throwing function whose `?` is caught by the
 // enclosing catch.
+// CR claude for claude: [test-gap/low] This fixture and abstract_type_in_throws never
+// raise: `[t.0.value + 41][0]` is in bounds, the catch handler is dead, and the result
+// is the success value. Nothing in the tree pins an error raised through an interface
+// `val .. throws` reaching the caller's catch. Nothing pins an implementation that
+// throws more than its val declares being refused. Index out of range here, observe the
+// catch (`caught <- ..`, pin -1), and add a refused("in throws clause") fixture. probe:
+// design/review-2026-10-19/repro/tests-modules-image-interface-throws.sh
+// (tests-modules-image-05)
 run!(
     abstract_type_with_throws_clause,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -1025,6 +1033,11 @@ run!(
 
 // An error in an interface item carries the item's position and file.
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [structure/low] This test repeats modules.rs's compile_error
+// helper line for line: the VFS table, TestCtx::start with a VfsResolver, then
+// compiling `{ mod test; test::result }` for its error. Move compile_error into
+// graphix_package_core::testing beside `refusal`, and call it from both files. Found by
+// reading; not run. (tests-modules-image-10)
 async fn interface_error_is_placed() -> Result<()> {
     use graphix_compiler::expr::{ParserContext, Source};
     let tbl = ahash::AHashMap::from_iter(
@@ -1368,6 +1381,13 @@ run!(
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
 ; FuseExpect::None);
 
+// CR claude for claude: [test-gap/low] The comment above says a declared inner bound
+// holds at the call, but this fixture calls only `m::f([1])`, which passes with or
+// without `'b: Int`. Pin the refusal too: `m::f([1.5])` is refused today ("unbound
+// within Int"), and nothing would notice if the interface's inner bound were lost at
+// the call. probe:
+// design/review-2026-10-19/repro/tests-modules-image-bound-inside-bound-call.sh
+// (tests-modules-image-08)
 run!(
     a_declared_bound_inside_a_bound_holds,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1)]),

@@ -1,0 +1,20 @@
+// queuefn restarts at an arm's wake, against "a wake is a resume, never a rebirth"
+// Command: timeout -s KILL 30 graphix --no-cache --no-fusion x-doc-drift-queuefn-sleep-restarts.gx
+// Expected (state survives sleep, CLAUDE.md "Sleep is pause"): the first entry runs
+//   qf(0) immediately (pop_count 1); later entries queue (the trigger never fires):
+//   0 -1 -1 -1 -1 -1 -1 -1 -1
+// Observed: QueueFn::sleep clears the queue and resets pop_count to 1, so every
+//   re-entry runs one invocation at once: 0 -1 20 -1 40 -1 60 -1 80
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let t = sys::time::timer(duration:20.ms, 8);
+let n = 0;
+n <- t ~ n + 1;
+let s = select n % 2 { 0 => `A, _ => `B };
+let trig: Any = never();
+select s {
+  `A => {
+    let qf = queuefn(#trigger: trig, |x: i64| -> i64 x * 10);
+    qf(n)
+  },
+  `B => 0 - 1
+}

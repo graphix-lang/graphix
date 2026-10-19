@@ -544,6 +544,18 @@ fn cell_constraints_ok(
     t: &Type,
 ) -> Result<bool> {
     for c in tv.cell_constraints().iter() {
+        // CR claude for claude: [bug/medium] The conjunct probe ignores the decision's
+        // flags, so a declared (rigid) variable in the type being bound is treated as
+        // open. For a predicate, trait or non-exact conjunct this probe is the whole
+        // check: commit_cell_constraints skips traits and commit_parts leaves
+        // non-structured parts. A call g(x, 5) with x: 'a binds 'd: ['c, null] to i64.
+        // A union [i64, 'a] passes a 'c: Sz bound, because trait_contains' TVar arm
+        // says true for a rigid cell without RigidCheck. --check and the LSP accept
+        // both, and the build refuses them with the internal 'an instance at .. of a
+        // definition typed ..' error. Pass the decision's flags in and probe with
+        // guide(flags) at every caller. probe:
+        // design/review-2026-10-19/repro/t-contains-conjunct-rigid.gx and
+        // t-contains-conjunct-rigid-trait.gx (t-contains-02)
         if !c.contains_int(BitFlags::empty(), env, hist, t)? {
             return Ok(false);
         }
@@ -1339,6 +1351,20 @@ impl Type {
                             _ => unreachable!("a definition key is a reference's"),
                         };
                         if !commit {
+                            // CR claude for claude: [bug/low] grew stays set for the
+                            // rest of the walk, and check_contains turns any later
+                            // refusal into growth_error. `let y: N<f64> = x` with x:
+                            // N<i64>, where `type N<'a> = [null, ('a, N<Array<'a>>)]`,
+                            // is refused with 'its parameters grow' although f64 vs i64
+                            // at position 0 decides it. The growth comes from
+                            // set_covers_by_distribution_inner running with a single
+                            // candidate. With one candidate the law only repeats the
+                            // direct containment set_commit refused, so return false
+                            // there when fewer than two candidates share t's head. Also
+                            // restore grew after a guiding probe whose false verdict
+                            // the walk overrides. probe:
+                            // design/review-2026-10-19/repro/t-contains-sticky-growth.gx
+                            // (t-contains-05)
                             hist.grew = Some(name);
                             return Ok(false);
                         }
@@ -2019,6 +2045,16 @@ impl Type {
         for m in members {
             if m.contains_int(probe, env, hist, t)? {
                 admitted = true;
+                // CR claude for claude: [perf/medium] Under flags == RigidCheck,
+                // guide(flags) is flags, so this repeats the probe it just ran. A Ref
+                // or TVar pair has no probe memo, so every level of nested union
+                // typedefs doubles. Checking `'a: Any |v: 'a| -> T20<'a> v` over a
+                // 20-deep chain `type Ti<'a> = [T(i-1)<'a>, `Xi]` takes 2.6 s, and 22
+                // deep takes 10.2 s. Test `!flags.contains(ContainsFlags::Commit)`
+                // here, in place_members' covering loop and at the distribution law's
+                // `flags.is_empty()` return. probe:
+                // design/review-2026-10-19/repro/t-contains-rigid-union-chain.gx
+                // (t-contains-04)
                 if flags.is_empty() || m.contains_int(flags, env, hist, t)? {
                     return Ok(Some(true));
                 }
@@ -2089,6 +2125,17 @@ impl Type {
             Type::Variant(_, args, _) => targs.extend(args.iter().cloned()),
             Type::Tuple(args) => targs.extend(args.iter().cloned()),
             Type::Struct(flds) => targs.extend(flds.iter().map(|(_, t, _)| t.clone())),
+            // CR claude for claude: [bug/medium] Error is a one-argument product head,
+            // but it is missing here and from the candidate match below. So
+            // `[Error<i64>, Error<string>] ⊇ Error<[i64, string]>` is refused, while
+            // the variant form `[`A(i64), `A(string)] ⊇ `A([i64, string])` passes.
+            // Type::union merges two error members into exactly that Error<[..]>, so
+            // `let e: [Error<i64>, Error<string>] = select b { true => error(1), false
+            // => error("x") }` is refused. Add `Type::Error(p)` as a single-position
+            // head in both matches, and pin it next to the variant distribution pin.
+            // probe:
+            // design/review-2026-10-19/repro/c-data-map-error-union-distribution.gx
+            // (c-data-map-03)
             _ => return Ok(false),
         }
         let mut cands: LPooled<Vec<LPooled<Vec<Type>>>> = LPooled::take();
@@ -2210,6 +2257,18 @@ impl Type {
             for m in members.iter() {
                 let mut picked: SmallVec<[usize; 8]> = SmallVec::new();
                 for (i, c) in cands.iter().enumerate() {
+                    // CR claude for claude: [bug/high] This probe runs with empty
+                    // flags, so a declared (rigid) variable in a candidate admits
+                    // anything. The has_free guard in set_covers_by_distribution_inner
+                    // lets such candidates through, and this verdict is final. Inside
+                    // `'a: Any |x: [`A, `B], y: 'a| -> [(`A, 'a), (`B, i64)] (x, 5)`
+                    // the split accepts (`A, 5) as (`A, 'a). The call f(`A, "hello")
+                    // then yields a [(`A, string), ..] that holds an i64, and a select
+                    // over it reports a coverage hole at run time. Probe with
+                    // ContainsFlags::RigidCheck here, as the caller's full-position
+                    // test does. probe:
+                    // design/review-2026-10-19/repro/t-contains-distribution-rigid.gx
+                    // (t-contains-01)
                     if c[0].contains_int(BitFlags::empty(), env, hist, m)? {
                         picked.push(i)
                     }
@@ -2621,6 +2680,17 @@ pub(super) fn find_impl_with(
 ) -> Result<Option<Arc<ImplDef>>> {
     let Some(list) = env.impls_all(trait_id) else { return Ok(None) };
     // An open cell inside `t` could still become anything.
+    // CR claude for eric: [bug/medium] has_unbound counts declared (rigid) cells, so a
+    // generic head never matches a self type with a variable inside it. `impl<'b: Show>
+    // Show for Array<'b>` does not apply to Array<'a> in `'a: Show |x: Array<'a>|
+    // Show::show(x)`, the shape of Rust's `fn f<A: Show>(x: Vec<A>)`. It does not apply
+    // to `|x| Show::show([x])` either, while `|x| Show::show(x)` called with [1]
+    // dispatches. design/traits.md writes this rule down, but it contradicts its own
+    // 'an open self type inside a gate is left for the instances'. Decide: a rigid
+    // interior cell is a constant (test has_free, so the head unifies and the bound
+    // discharges through the rigid cell's conjuncts), and an open interior cell inside
+    // a gate is either left for the instances or stays refused. probe:
+    // design/review-2026-10-19/repro/t-contains-impl-open-interior.gx (t-contains-03)
     if t.has_unbound() {
         return Ok(None);
     }

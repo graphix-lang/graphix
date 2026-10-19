@@ -1,0 +1,17 @@
+// Title: a block's runs never fork: ForkSite::plan forks only an Independent site, and
+// Block::update_forking never decides its run sites, so they stay Undecided.
+// Command (repeat; any GRAPHIX_PAR mode that forks):
+//   GRAPHIX_PAR=force graphix --no-cache --no-fusion design/review-2026-10-19/repro/x-parallel-block-runs-never-fork.gx
+// Expected: `let a` and `let b` are one run (b reads nothing a publishes), so under force they
+//   fork and the cheap "B" prints before the slow "A ..." (as the tuple twin below does:
+//   `let r = (println("A [#[serial] sum(20000, 0)]"), println("B"))` prints B first).
+// Observed: "A 200010000" then "B" in every run, under force, under auto, and with #[parallel]
+//   on the block (which the check accepts, though nothing forks).
+let rec sum = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => sum(n - 1, acc + n) };
+let r = #[parallel] {
+  let a = println("A [#[serial] sum(20000, 0)]");
+  let b = println("B");
+  (a, b)
+};
+sys::exit(r ~ 0);
+r

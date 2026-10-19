@@ -1,0 +1,21 @@
+// Title: select_aborts_slept_call cannot tell a resumed idle wait from an aborted one
+// Command: timeout -s KILL 30 graphix --no-cache tests-lang-rest-a-idle-wait-resumes.gx
+// The arm is woken at tick 4 WITHOUT the wait's argument firing (v is a let that stands),
+// so the only way a reply lands is the pending wait resuming, as
+// design/async_sleep_outputs.md says it does.
+// Expected (design): tick 1..4, then 7 after the wake.
+// Observed (both engines): tick 1, tick 2, tick 3, tick 4, 7 -- the wait resumes.
+// In async_restart.rs::select_aborts_slept_call the arm's argument (tick) fires at the
+// wake, which restarts the wait whatever sleep did, so that test passes whether a slept
+// wait is aborted or resumed; this program is the pin it lacks.
+let tick = count(sys::time::timer(duration:100.ms, 4)?);
+let v = 7;
+let on = select tick { 1 | 4 => true, _ => false };
+let issued = never<i64>();
+select on {
+  true => select sys::time::after_idle(duration:250.ms, v) { reply => issued <- reply },
+  false => never()
+};
+println("tick [tick]");
+sys::exit(sys::time::after_idle(duration:1.s, tick));
+issued

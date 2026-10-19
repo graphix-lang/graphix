@@ -1,0 +1,12 @@
+// A custom display's normal stop (tui::exit, or closing a GUI's last window)
+// makes a script exit 130, the SIGINT status.
+// Run (a TUI needs a terminal; `script` gives it a pty):
+//   timeout -s KILL 30 script -qec "graphix --no-cache gui-core-display-stop-exits-130.gx" /dev/null; echo $?
+// Expected: 0 (the program asked to end; the display's Stop said Ok).
+// Observed: 130. graphix-shell/src/input.rs maps a display's `Ok(Ok(()))` stop to
+// Signal::CtrlC, which the script arm turns into `Some(128 + 2)`. The GUI sends the
+// same Ok on the last window's CloseRequested (event_loop.rs `finish(event_loop, Ok(()))`).
+use tui::{paragraph::paragraph};
+
+tui::exit(sys::time::timer(duration:300.ms, false));
+paragraph(&"bye")

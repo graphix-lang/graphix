@@ -1,0 +1,20 @@
+// Title: a block whose last statement is a `let` is typed as the bound
+// value but never produces; the same body as a seq produces it.
+// Command:
+//   timeout -s KILL 10 graphix --no-cache design/review-2026-10-19/repro/c-node-mod-block-ending-in-let.gx
+// Expected: either the check refuses `{ ..; let b = a + 1 }` as a value (as
+//   it refuses a trailing catch), or the block's value is b: [2, 2].
+// Observed: the check accepts it typed i64 (`let r: string = {..}` is
+//   refused with "string does not contain i64"); the program prints nothing
+//   and exits (r never produces, so [r, q] never does); `q`, the same body
+//   as a seq, is 2. graphix-fuzz check: AGREE (both engines print nothing).
+let r = {
+  let a = 1;
+  let b = a + 1
+};
+let q = seq {
+  let a = 1;
+  let b = a + 1
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+[r, q]

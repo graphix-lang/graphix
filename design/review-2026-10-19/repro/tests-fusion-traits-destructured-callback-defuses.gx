@@ -1,0 +1,14 @@
+// Title: a collection callback whose formal is a struct or nested-tuple pattern never fuses; #[native] reports an internal "undefined local"
+// Command: /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --expand tests-fusion-traits-destructured-callback-defuses.gx
+// Expected: builds (each loop is one native kernel, as `|(a, b)|` over a flat tuple and a
+//   `let {a, b} = r` inside the body both are), or a #[native] refusal naming the destructured formal
+// Observed: "#[native] expression did not fully fuse to native code:
+//   - emit_clif: undefined local `a` (BindId(..))" for the struct pattern; the same for
+//   `|((a, b), c)|` over a map and for a fold accumulator `|((n, m), k), x|`.
+//   Without #[native] each loop silently node-walks (graphix-fuzz run: failed .. undefined local `a`).
+let rows = [{a: 1, b: 2}, {a: 3, b: 4}];
+let nested = [((1, 2), 5), ((3, 4), 6)];
+let s = #[native] array::map(rows, |{a, b}| a + b);
+let t = #[native] array::map(nested, |((a, b), c)| a + b + c);
+let u = #[native] array::fold([1, 2, 3], ((0, 1), 2), |((n, m), k), x| ((n + x, m), k));
+(s, t, u)

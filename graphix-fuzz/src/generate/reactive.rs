@@ -513,6 +513,11 @@ fn sample_chain(
 /// Sync builtin, keeps the select on the node-walk and restarts in its own
 /// sleep. The live arm's builtin variant carries a per-epoch bottoming
 /// arg.
+// CR claude for claude: [doc-drift/low] The doc above says the `once(...)` arm
+// "restarts in its own sleep". A wake is a resume: `once` keeps its latch across the
+// sleep and the re-selected arm re-emits its standing value, in both engines. Reword
+// the doc to describe resume. probe:
+// design/review-2026-10-19/repro/fuzz-gen-b-once-resume.gx (fuzz-gen-b-07)
 fn slept_arm(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -579,6 +584,10 @@ fn slept_arm(
 /// and an unchanged source need not re-fire downstream.
 /// A clock `k` that `input` restarts at 0 and that then counts itself up
 /// to `n`, a cycle a step.
+// CR claude for claude: [readability/low] The doc above this function starts with
+// dyn_reload's description (the hot-reloading dynamic module), so burst_clock carries
+// two unrelated paragraphs and dyn_reload has none. Move that paragraph to `fn
+// dyn_reload`. Found by reading; not run. (fuzz-gen-b-09)
 fn burst_clock(k: &str, input: &str, n: i64) -> [String; 2] {
     [
         format!("let {k} = {input} ~ i64:0"),
@@ -876,6 +885,13 @@ fn ceremony(
     let done = ctx.fresh();
     let kw = if queued { "seqq" } else { "seq" };
     let clauses = &head[trigger.len()..];
+    // CR claude for claude: [test-gap/low] Every generated machine is the flat
+    // triggered form. No ceremony draws a triggerless `seq { .. }`, a seq used as a
+    // step (a nested machine the outer step waits for), or a destructuring trigger
+    // `seqq let (x, y) = (..)`, so those step and plan rules have no generated
+    // coverage. Sometimes nest a triggerless seq as a step's value and sometimes bind
+    // the trigger as a tuple pattern. probe:
+    // design/review-2026-10-19/repro/fuzz-gen-b-seq-shapes.gx agrees. (fuzz-gen-b-04)
     let seq_over = |trig: &str| {
         let bind = bound.as_ref().map(|tv| format!("let {tv} = ")).unwrap_or_default();
         format!("{kw} {bind}{trig}{clauses} {{ {} }}", body.join("; "))
@@ -962,6 +978,12 @@ mod test {
 
     /// Every generated wrapper parses back through the schedule format.
     #[test]
+    // CR claude for claude: [test-gap/low] Schedule::parse returns a default schedule
+    // for text with no `schedule-v1` header. So this test passes for every
+    // callable-form program (gen_callable_ceremony and the twins' callable half),
+    // whatever their `callable-v1` header says. Parse those with
+    // callable::CallSpec::parse and require Some, and require a schedule header on the
+    // rest. Found by reading; not run. (fuzz-gen-b-06)
     fn wrappers_parse() {
         let mut rng = Rng::new(7);
         for _ in 0..200 {

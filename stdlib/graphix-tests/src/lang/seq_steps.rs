@@ -25,6 +25,15 @@ async fn closure_write_is_seen(mode: Mode) -> Result<()> {
 
 // So is a callee's write through a reference that reached it through a
 // variable, not a `&` written in the seq.
+// CR claude for claude: [test-gap/low] Two seq rules have no pin. One is CLAUDE.md's "a
+// call with no static target counts as every variable": only the reference half and the
+// static-callee half are tested here. The other is design/seq_blocks.md §5's "a run
+// whose last write targets its own trigger ... starts the next run";
+// seq_let::trigger_writes_reach_the_variable deliberately avoids it. Add `let f =
+// select k { 1 => |v| { b <- v; v }, _ => |v| v }; seq { f(5); let s = b; s }` with its
+// seqq twin, both answering 5, and `let t = 0; seq t { t <- t + 1 }`, which counts t up
+// to 5. probe: ran both with the review binary; both behave as the rules say today.
+// (tests-seq-03)
 async fn ref_write_through_a_variable_is_seen(mode: Mode) -> Result<()> {
     let code = r#"{
         let c = 0;
@@ -157,6 +166,14 @@ async fn try_sees_the_write_before_it(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// CR claude for claude: [test-gap/medium] Nothing in lang/seq*.rs pins that a restart
+// builtin in a step is reborn at each run (CLAUDE.md: entering a step is its birth for
+// the run). Emptying Count::reborn, Counted::reborn, Uniq::reborn, Hold::reborn or
+// Throttle::reborn would still pass. Add a fixture firing `request` at steps 1 and 20
+// over the body `let c = count(request); let t = take(#n: 1, request); let u =
+// uniq(request ~ k); let h = hold(#clock: request, request); (c, t, u, h)` with `let k
+// = 5`. It should answer (1, 1, 5, 1) then (1, 2, 5, 2), which both engines do today.
+// probe: ran that fixture with the review binary. (tests-seq-02)
 modes!(
     closure_write_is_seen,
     ref_write_through_a_variable_is_seen,

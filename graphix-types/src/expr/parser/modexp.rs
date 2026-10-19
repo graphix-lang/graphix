@@ -211,6 +211,15 @@ parser! {
             paths.push((path, rename));
             paths
         };
+        // CR claude for claude: [bug/medium] Every arm of this choice starts with
+        // spaces(), and use_intro consumes only one space(). After `use` followed by
+        // two spaces, or by a newline and an indent, the first arm's sptoken('{')
+        // consumes the whitespace and fails committed, so the path arm is never tried:
+        // `use\n array::map;` fails with "Expected whitespace or `{`". sandbox() has
+        // the same shape (`sandbox whitelist [core]` fails). Fix: hoist spaces() in
+        // front of the choice in both places, with plain token/string arms. probe:
+        // design/review-2026-10-19/repro/t-parser-b-use-leading-space.sh
+        // (t-parser-b-02)
         grow(choice((
             between(
                 sptoken('{'),

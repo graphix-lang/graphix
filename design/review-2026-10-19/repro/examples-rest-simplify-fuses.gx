@@ -1,0 +1,31 @@
+// bench/symexpr's simplify fuses now; symexpr, symbolic, par_symbolic and bench/README.md say it node-walks
+// Command: timeout -s KILL 60 graphix --no-cache --expand examples-rest-simplify-fuses.gx
+//   (and: GXDBG_NATIVE_ALL=1 graphix --no-cache bench/symbolic.gx prints no fusion failure;
+//    graphix --no-cache bench/symbolic.gx: elapsed ~0.02 s JIT against ~22 s --no-fusion on
+//    the debug build, where bench/README.md reports 3.73 s against 5.77 s.)
+// Expected (the comments): `#[native] simplify(..)` is refused, simplify node-walks.
+// Observed: the build accepts it: simplify fuses.
+type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
+let rec simplify = |e: Expr| -> Expr
+  select e {
+    `Num(x) => `Num(x),
+    `Var => `Var,
+    `Add(a, b) => select (simplify(a), simplify(b)) {
+      (`Num(x), `Num(y)) => `Num(x + y),
+      (`Num(x), sb) if x == 0.0 => sb,
+      (sa, `Num(y)) if y == 0.0 => sa,
+      (sa, sb) => `Add(sa, sb)
+    },
+    `Mul(a, b) => select (simplify(a), simplify(b)) {
+      (`Num(x), `Num(y)) => `Num(x * y),
+      (`Num(x), _) if x == 0.0 => `Num(0.0),
+      (_, `Num(y)) if y == 0.0 => `Num(0.0),
+      (`Num(x), sb) if x == 1.0 => sb,
+      (sa, `Num(y)) if y == 1.0 => sa,
+      (sa, sb) => `Mul(sa, sb)
+    }
+  };
+let e: Expr = `Mul(`Add(`Var, `Num(0.0)), `Num(1.0));
+let s = #[native] simplify(e);
+println("[s]");
+sys::exit(s ~ 0)

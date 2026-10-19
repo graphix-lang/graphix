@@ -160,6 +160,15 @@ impl<X: GXExt> DatasetW<X> {
                 !(pair[1].0 - pair[0].0).is_finite()
                     || !(pair[1].1 - pair[0].1).is_finite()
             });
+        // CR claude for eric: [bug/low] [bug/low] When any adjacent pair's difference
+        // overflows, the whole Line dataset is dropped, so one outlier near ±f64::MAX
+        // erases every finite segment on screen. canvas drops only the offending shape,
+        // and a scatter keeps its finite points. overflowing_chart_line_is_empty uses
+        // two points, so it cannot tell "drop the segment" from "drop the series".
+        // Decide the rule: clamp coordinates to the axis bounds widened by one span, or
+        // split the series at the overflowing pair. Compute it in set_data rather than
+        // rescanning on every draw, and add a test with finite points on both sides of
+        // the outlier. Found by reading; not run. (tests-tui-08)
         let data = if overflow { &[][..] } else { &self.data };
         let mut ds = Dataset::default().data(data);
         if let Some(Some(LineV(l))) = &p.name.t {

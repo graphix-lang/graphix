@@ -57,6 +57,18 @@ fn collect(mut input: PipeReader, stop: PipeReader) -> Result<HeldOutput> {
     let mut remaining = None;
     let mut chunk = [0; 4096];
     loop {
+        // CR claude for claude: [bug/medium] After the stop, the reader drains what is
+        // buffered and returns, which drops the pipe's read end. A child spawned while
+        // stderr was held (sys::process inherits stderr by default) keeps the write
+        // end. After a `tui::suspend` or a `Live::recover`, both of which drop this
+        // capture while the program runs on, the child's next stderr write fails with
+        // EPIPE and SIGPIPE kills it. Fix: keep one pipe and one reader for the life of
+        // the process. Switch the reader between holding (while a Live has the
+        // terminal) and forwarding to the restored stderr (between displays), and have
+        // re-holding dup2 the same writer back onto fd 2. Never close the read end.
+        // probe: design/review-2026-10-19/repro/tui-core-suspend-sigpipes-children.gx
+        // (the child dies of a signal; with SIGPIPE trapped, its `echo >&2` returns 1).
+        // (tui-core-03)
         if remaining == Some(0) {
             return Ok(output);
         }

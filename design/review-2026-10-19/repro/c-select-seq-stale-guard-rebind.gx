@@ -1,0 +1,11 @@
+// A guard re-bound to a new scrutinee value under a STALE tag rides the
+// answer it computed over an older value (node-walk only).
+// Run: graphix-fuzz check design/review-2026-10-19/repro/c-select-seq-stale-guard-rebind.gx
+// Epochs: in0=10 (arm 1, guard x > 5 computed over 10), in0=0 (arm 0
+// claims; arm 1's guard is not reached), in1=false (arm 0's consulted
+// guard flips; the chain reaches arm 1 with x = 0 bound STALE).
+// Expected (both engines): last epoch "other" (0 > 5 is false).
+// Observed: DIVERGENCE: interp "big" (the guard rides `true` computed for
+// x = 10), jit "other".
+// schedule-v1: cap=64 events=512; in0=i64:10 in1=bool:true; in0=i64:0; in1=bool:false
+select in0 { 0 if in1 => "zero-g", x if x > 5 => "big", _ => "other" }

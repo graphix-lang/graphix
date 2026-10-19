@@ -65,6 +65,17 @@ use std::{
 };
 use triomphe::Arc as TArc;
 
+// CR claude for claude: [bug/high] DEFAULTS_IN_CHECK is thread state, but
+// resolve_static holds its guards across bind_instance, whose statement elaboration
+// blocks in a rayon join (check_in_tasks). A job stolen there, often a sibling
+// statement calling the same definition with the same omitted label, sees the pair 'in
+// progress' and leaves its site dynamic. So `#[native] f(i)` over a multi-statement `f`
+// with a defaulted label fails at random (about 5 builds in 12), and without
+// `#[native]` fusion and fork plans vary from run to run. a8b168951 set the other
+// compile thread-locals aside for stolen jobs, but not this one. Keep the stack in the
+// CompileCtx beside resolving_lambdas (forked with it), or set it aside wherever
+// TaskContext is entered. probe:
+// design/review-2026-10-19/repro/x-parallel-default-in-check-tls.gx (x-parallel-02)
 thread_local! {
     /// The (definition, label) defaults this thread is checking, innermost
     /// last.
@@ -468,6 +479,11 @@ fn printed_deref(t: &Type) -> String {
 /// site, the last one's type wins. A definition restored from an image
 /// has none until its first site rebuilds it.
 
+// CR claude for claude: [readability/low] The doc block above this function describes a
+// builtin re-check that no longer exists, so compile_apply_args reads as something it
+// is not; delete it. Similarly, the first sentence of the free checked_default's doc
+// ("Collect every `Type::Fn` arm reachable in `t`") belongs to collect_fn_arms, which
+// has no doc; move it there. Found by reading; not run. (c-callsite-06)
 fn compile_apply_args<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -579,6 +595,36 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
+        // CR claude for claude: [bug/medium] A lambda literal escapes the rank-2 gate
+        // (a new aspect of x-typecheck-generics-02). pre_unify_arg merges the literal's
+        // parameter cells with the formal's rigid quantifier cells, and the body check
+        // then adds Number and Singleton to the quantifier's own cell.
+        // check_contains_rigid ends up comparing that cell with itself, and
+        // quantifier_admits never runs. So `app(|y| y * y)` passes the check where app
+        // takes `g: fn<'b: [string, i64]>(..)` and calls g("a"), and the build refuses
+        // the instance. Through `type F = fn<'b: ..>(..)` the program compiles, and
+        // g("a") fails its run-time bind and stays bottom. The same lambda passed by
+        // name is refused. Fix: record the gates' conjuncts before pre_unify_arg, and
+        // after typecheck0 refuse any new non-predicate conjunct they do not imply.
+        // probe:
+        // design/review-2026-10-19/repro/x-typecheck-generics-rank2-lambda-literal.gx
+        // and
+        // design/review-2026-10-19/repro/x-typecheck-generics-rank2-lambda-literal-typedef.gx
+        // (x-typecheck-generics-02)
+        // CR claude for eric: [bug/high] A rank-2 quantifier is rigid here, yet the
+        // argument's body still adds bounds to it. `x * x` adds Singleton, `x < y` adds
+        // Ordered, and a writer adds Data. The callee was checked against the declared
+        // bound alone, so `apply = |f: fn<'b: Number>(x: 'b) -> 'b| { let n: Number =
+        // 2.5; f(n) }; apply(|x| x * x)` passes the check and the build refuses it with
+        // the untypeable-instance message. The Ordered variant (f(&a, &a)) and the Data
+        // variant fail the same way. A declared `'a: Number + Singleton` function is
+        // accepted where rank2_refuses_narrower_bound refuses `'a: Int`. Proposed rule:
+        // a quantifier keeps exactly its declared bounds, so the argument must fit
+        // them, and the formal must say `'b: Number + Singleton`.
+        // NESTED_QUANTIFIER_SQUARE and NESTED_QUANTIFIER_TWO_TYPES pin the accepting
+        // behaviour and would change. probe:
+        // design/review-2026-10-19/repro/tests-types-rank2-singleton.gx
+        // (tests-types-02)
         Some((formal, _rigid)) => {
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
@@ -656,6 +702,18 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
 /// cell at the top level or another definition's, never one the
 /// lambdas `value` holds own nor a quantifier a function type in `value`
 /// binds. Such a value is not general in that cell.
+// CR claude for claude: [bug/high] The escape test only walks cells reachable from the
+// argument's type. In `|x| { let k = |y| { st <- y; y }; k(x) }` the outer `st` cell is
+// bound to k's cell, so walking from g's signature never reaches it. As a result,
+// `h(g)` with `h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"))` passes the check, `let
+// q: Array<bool> = st` checks, and the build then refuses with the untypeable-instance
+// message. Without a reader, st receives 1 and then "s" at run time. The direct `{ st
+// <- x; x }` form is refused. Fix: also test the argument's captured environment (the
+// types of the outer bindings it and its nested lambdas read or write), or check
+// whether any foreign cell's binding chain reaches a quantified cell, and pin the
+// nested form beside NESTED_QUANTIFIER_ENV_CELL. probe:
+// design/review-2026-10-19/repro/tests-types-rank2-escape-nested-lambda.gx
+// (tests-types-01)
 pub(crate) fn carried_out(
     quantified: &[(ArcStr, usize)],
     value: &Type,
@@ -1363,6 +1421,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(())
     }
 
+    // CR claude for claude: [structure/low] checked_default_at has one caller,
+    // CallSite::checked_default, and both only forward: two layers over the free
+    // checked_default. Delete this method and call the free function from
+    // CallSite::checked_default with self.top_id and self.ftype. Found by reading; not
+    // run. (c-callsite-07)
     #[allow(clippy::too_many_arguments)]
     fn checked_default_at(
         &self,
@@ -1853,6 +1916,21 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // a site its own omitted default's elaboration reaches stays
         // dynamic: elaborating it would elaborate that default again
+        // CR claude for claude: [bug/medium] These guards live until resolve_static
+        // returns, so they are held across the whole bind_instance, including the
+        // instance body's typecheck1. A recursive call in the body that omits the same
+        // label then returns here, before the self-call branch. It gets no
+        // static_target, stays DynamicUnbound, and fusion refuses it. `#[native] f(#k:
+        // 2, x)` over `f(m - 1)` is refused ("builtin call site `f(m - 1)` not
+        // discovered"), while `f(#k: k, m - 1)` fuses. Fix: hold the guards only around
+        // compiling and elaborating this site's defaults (prepare_bind and
+        // typecheck_static_defaults), and drop them before the body's typecheck1.
+        // fn_arg_identity compounds it: it keys data arguments as (key, None), so a
+        // call that passes a data label and one that omits it get different identities.
+        // The body's call then builds a second instance instead of a self-call. Leave
+        // None sources out of the identity. probe:
+        // design/review-2026-10-19/repro/c-callsite-omitted-default-selfcall-defuses.gx
+        // (c-callsite-02)
         let mut elaborating: SmallVec<[DefaultInCheck; 2]> = SmallVec::new();
         for label in self.omitted_labels(def) {
             match DefaultInCheck::enter(def.id, &label) {
@@ -2263,6 +2341,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             {
                 Keep::Nothing
             }
+            // CR claude for claude: [dead/low] Keep::Defaults makes update_args clone
+            // every quiet default production into `prods` each cycle, and nothing can
+            // read them. A bound dynamic site is only fresh again through bind, whose
+            // clear_prepared_bind drops the default arguments and recompiles them under
+            // fresh BindIds, so the kept ids never match in the replay. The only live
+            // part of this variant is the replay's store read for given arguments. Fix:
+            // rename it to say that (read given arguments from the store), and keep no
+            // productions for it. Found by reading; not run. (c-callsite-05)
             Callee::DynamicBound { .. } => Keep::Defaults,
             _ => Keep::Every,
         };
@@ -2668,6 +2754,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // body decodes, as a cold compile's registrations do; the site holds
         // them until the body decodes and registers its own (recorded, so a
         // failed read unwinds them)
+        // CR claude for eric: [perf/medium] Every imaged site flattens and registers
+        // its whole subtree's reads here (ImagedRefs::flat, recomputed per site).
+        // materialize releases them, and each imaged site in the decoded body then
+        // registers its own subtree again. A call chain of depth N costs O(N^2) at its
+        // first dispatch, and a warm start is slower than compiling. Measured on a
+        // debug build with --no-fusion: a 2000-function chain takes 0.85 s cold and
+        // 3.36 s warm; 4000 takes 2.66 s cold and 14.7 s warm. Commit 966be26bf had
+        // this chain at 75 ms warm before walk pruning removed its in_instance rule.
+        // Fix: memoize the flat reads per instance in the shared table, and pass the
+        // outer site's held set down at materialize instead of re-registering whole
+        // subtrees per level; the right shape depends on how readers must sit per
+        // boundary. The `held` field's doc still describes the old rule. probe:
+        // design/review-2026-10-19/repro/c-callsite-warm-chain-quadratic.sh
+        // (c-callsite-04)
         if let Callee::Imaged { instance, refs, .. } = &site.callee {
             let held: Box<[BindId]> =
                 refs.flat(*instance).refed.iter().copied().collect();
@@ -2756,6 +2856,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
         }
     }
 
+    // CR claude for claude: [bug/medium] A lowered union-self trait call answers spec()
+    // with the lowering's spec, so the attribute walk never finds the decorated call.
+    // `let r = #[native] Show::show(one)` over `[i64, string]` is refused with
+    // 'attribute in a position the fusion pass cannot check — put the decorated
+    // expression in its own statement', yet it is already its own statement, and the
+    // same dispatch fuses as the body of `f` under `#[native] f(one)`. Keep the call's
+    // own spec beside the lowered node and return it here, which also makes errors
+    // inside the lowering name the user's call, and pin #[native] on a primitive-union
+    // dispatch in traits.rs. probe:
+    // design/review-2026-10-19/repro/tests-fusion-traits-native-on-union-dispatch.gx
+    // (tests-fusion-traits-05)
     fn spec(&self) -> &Expr {
         match self {
             Self::Call(c) => c.spec(),
@@ -2972,6 +3083,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.ftype.as_ref().unwrap()
             }
         };
+        // CR claude for claude: [bug/medium] Widening is not order-independent for an
+        // argument whose own type is an open cell. That argument is checked against
+        // whatever the site's cell holds at that moment, and binds its own cell to it.
+        // A later wider argument widens only the site's cell. With `pick(x: 'a, y: 'a,
+        // z: 'a)` and `v: [i64, null]`, `let h = |z| pick(i64:1, z, v); h(null)` is
+        // refused ("i64 does not contain null"), while `pick(v, z, i64:1)` types z as
+        // [i64, null] and runs. CLAUDE.md promises the widest argument whatever the
+        // order. Fix: in a fresh instance, defer an argument with unbound cells whose
+        // formal holds a widenable cell to the deferred pass, as misfit defers an
+        // incomparable one, so it is checked after every concrete argument has widened.
+        // probe: design/review-2026-10-19/repro/c-callsite-widening-order-open-arg.sh
+        // (c-callsite-03)
         let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {

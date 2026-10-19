@@ -1,0 +1,19 @@
+// Title: must-reject family 9a (ref-write) reports a false MISPLACED when a
+// statement between `let r = &mut x` and the `*r <- ..` write needs `&mut`.
+// Command (verdict lines go to the file named first):
+//   graphix-fuzz typemorph-one /abs/path/verdict.txt 5000 < fuzz-mutate-ref-write-misplaced.gx
+//   cat /abs/path/verdict.txt
+// Expected: REJECT ref-write#2 ok (or no ref-write site: the mutation's
+//   argument does not hold here).
+// Observed:
+//   FLIP ref-write#2 MISPLACED: N: type mismatch &mut iN does not contain &iN
+//   MUTANT { let x = 1; let f = |p: &mut i64| -> i64 *p; let r = &x; let y = f(r); *r <- 5; x + y }
+// The checker is right: `f(r)` is the first use that needs `&mut`.
+{
+  let x = i64:1;
+  let f = |p: &mut i64| -> i64 *p;
+  let r = &mut x;
+  let y = f(r);
+  *r <- i64:5;
+  x + y
+}

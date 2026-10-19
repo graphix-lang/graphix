@@ -1,0 +1,11 @@
+// Title: select.md says or-alternatives must bind each name at one type; the checker unions them
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/book-core-or-pattern-types.gx
+// Expected (book/src/core/select.md, Or Patterns: "each name must have exactly the same type
+//   in every alternative"): refused, n is i64 in one alternative and string in the other.
+// Observed: accepted, n is [i64, string]; prints "1" then "x". This is the rule CLAUDE.md states
+//   ("a shared name is the union of the alternatives' types"); the book bullet is stale.
+let v: [`A(i64), `B(string)] = `A(1);
+v <- `B("x");
+select v {
+  `A(n) | `B(n) => "[n]"
+}

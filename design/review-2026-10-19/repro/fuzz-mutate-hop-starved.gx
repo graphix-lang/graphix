@@ -1,0 +1,15 @@
+// Title: family 4's one-hop mutation (`widen_through_let`) never survives
+// the per-family cap when the body has TM_CAP (3) direct consumer sites.
+// Command:
+//   graphix-fuzz typemorph-one /abs/path/verdict.txt 5000 < fuzz-mutate-hop-starved.gx
+//   grep widen-consumer /abs/path/verdict.txt
+// Expected: a widen-consumer probe at a `let` statement (site 1 for `w` or
+//   3 for `s`: the hop).
+// Observed: REJECT widen-consumer#8, #4, #14 only (the three direct
+//   operators); dropping the last line's array leaves `w + 1` alone and
+//   the hop (widen-consumer#1) appears.
+{
+  let w = i64:5;
+  let s = w + i64:1;
+  [s * i64:2, s - i64:3, s / i64:4]
+}

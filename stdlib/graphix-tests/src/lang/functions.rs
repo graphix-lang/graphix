@@ -15,6 +15,12 @@ const LAMBDA: &str = r#"
 }
 "#;
 
+// CR claude for claude: [structure/low] The 'value equals X' predicate is written three
+// ways in this file (match with `_ => false` 59 times, matches!, format!("{}",
+// v.unwrap()) == ..), and `_ => false` appears about 300 times across lang tests. The
+// unwrap form panics on a refusal instead of failing the predicate. Add `is(Value)` and
+// `prints(&str)` beside testing::refused and use them where a predicate only compares
+// one value. Found by reading; not run. (tests-functions-07)
 run!(lambda, LAMBDA, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
@@ -998,6 +1004,17 @@ const HOF_SLOT_CALLEE_FIRST_CALL: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/medium] This test and its two siblings
+// (hof_slot_nested_prev_len, hof_slot_constant_fires) read `raised` at the cycle
+// count(n) reaches 4. The catch handler's event fires at most once per cycle and later
+// raises queue, so `raised` is 3 there whether each new slot raises once or every slot
+// raises every cycle. They pin the under-fire half of 'a loop slot's first iteration is
+// an init view' and miss the over-fire half: a lost first-call or prev-length word that
+// makes old slots re-fire. Fix: assert the settled total, which is 4, for example
+// through dense_deltas::run_delta under modes!(), or by selecting `raised` at an
+// after_idle point. probe:
+// design/review-2026-10-19/repro/tests-functions-hof-slot-overfire-unobserved.sh
+// (tests-functions-01)
 run!(hof_slot_callee_first_call, HOF_SLOT_CALLEE_FIRST_CALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
 }; FuseExpect::Jit);
@@ -1906,6 +1923,14 @@ run!(cps_wrapper_recursion, CPS_WRAPPER_RECURSION, |v: Result<&Value>| matches!(
 
 // An instantiation snapshots its def's LambdaIds: calls to a returned
 // lambda resolve statically (the fn-valued `let` node-walks).
+// CR claude for claude: [doc-drift/low] The comment above says calls to a returned
+// lambda resolve statically. They do not: try_static_resolve reads only bind_to_lambda,
+// and GXDBG_RESOLVE prints `RESOLVE add1(2) ... b2l=false`. The value 33 is the same
+// under dynamic dispatch, so the test pins only the value. Rewrite the comment to say
+// what it pins (a returned lambda called through an alias and directly, dispatched at
+// run time) or drop the test. probe:
+// design/review-2026-10-19/repro/tests-functions-returned-lambda-dynamic.sh
+// (tests-functions-03)
 const RETURNED_LAMBDA_RESOLVES: &str = r#"
 {
   let mk = |x: i64| |y: i64| x + y;
@@ -2228,6 +2253,12 @@ run!(
 );
 
 // No argument holds the others: refused, in either order.
+// CR claude for claude: [test-gap/low] This and the four widening refusals around it
+// match only "does not contain", which nearly every type error contains. A refusal for
+// an unrelated reason (say, of `&null` as `&[u64, null]`) would pass and leave
+// callsite.rs::Widening unpinned. Pin each fixture's own mismatch, e.g. "'a: `A does
+// not contain `B" here, "&'a: u64 does not contain &[u64, null]" for the reference
+// case. Messages checked with graphix --check. (tests-functions-05)
 run!(
     no_widest_arg_refused,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; (f(`A, `B), f(`B, `A)) }"#,
@@ -2649,6 +2680,11 @@ run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, |v: Result<&Value>| matches!(v,
 // fresh callee's first dispatch: an arm's first selection and a rebind
 // each sample it. A stale default would give [0] and [10] on both
 // engines alike.
+// CR claude for claude: [readability/low] The first two lines of the comment above ('A
+// fresh bind runs each omitted default once: a counting default ... reads 1 in every
+// slot') describe default_runs_once_per_bind below, not this test, and run into this
+// test's own comment as if they were one claim. Move them to sit above const
+// DEFAULT_RUNS_ONCE_PER_BIND. Found by reading; not run. (tests-functions-06)
 async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
     let code = r#"{
         let d = 5;
@@ -2905,6 +2941,15 @@ const ORDERED_SLOTS_AFTER_A_CALLBACK_CHANGE: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] The queuefn banks two pops (clk fires at n = 1
+// and 2) before g2 is chosen, so three slots run at once in the change cycle. Their
+// `got <- x ~ array::push(got, x)` writes all start from the same `got` and replace one
+// another. `got` starts at 303: the calls of 'the cycle it changes' are never recorded,
+// and running them out of slot order would still pass. Fix: trigger the queuefn only
+// once g2 is chosen (`#trigger: select n { k if k >= 3 => clk, _ => never() }`) or
+// record `(q(x) ~ n, x)` pairs, then assert that `got` starts at 300. probe:
+// design/review-2026-10-19/repro/tests-functions-ordered-slots-lost-records.gx
+// (tests-functions-02)
 run!(ordered_slots_after_a_callback_change, ORDERED_SLOTS_AFTER_A_CALLBACK_CHANGE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; FuseExpect::Jit);
@@ -3092,6 +3137,12 @@ async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
 
 /// A fused non-tail recursion counts its kernel blocks.
 #[tokio::test(flavor = "multi_thread")]
+// CR claude for claude: [test-gap/low] Nothing checks that this recursion fused. If it
+// de-fuses, the node-walk's call counting stops it and the test passes as a copy of
+// activation_budget_stops_a_runaway_recursion, so the kernel blocks' budget accounting
+// goes unpinned. Assert in budget_stops that ctx.fusion_stats() shows a fused region
+// when fusion is on, or write #[native] on the call. Found by reading; not run.
+// (tests-functions-04)
 async fn activation_budget_stops_a_fused_runaway_recursion() -> anyhow::Result<()> {
     budget_stops(
         Default::default(),

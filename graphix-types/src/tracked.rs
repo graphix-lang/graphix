@@ -185,6 +185,20 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             self.map = map;
             self.generation = generation;
             if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
+                // CR claude for claude: [perf/low] [perf/low] A static bind runs in a
+                // forked task, and a nested bind forks inside it. Every join copies
+                // what the child accumulated: this `touched` list, and in
+                // `CompileCtx::join` also pending_refs, pending_settles and discarded.
+                // Since the child already holds what its own descendants joined into
+                // it, a resolution chain of depth d copies its whole subtree at every
+                // level: O(depth x instances). TaskJoin per call is 45 / 85 / 165 us at
+                // chain length 800 / 1600 / 3200 (debug). Fix: for accumulators whose
+                // order does not matter (touched keys, pending_refs, discarded), keep
+                // the larger collection and extend it with the smaller (swap first).
+                // For pending_settles, push the child's Vec as one chunk and flatten
+                // once where the frame drains. probe:
+                // design/review-2026-10-19/repro/x-perf-compile-nested-task-join.sh
+                // (x-perf-compile-03)
                 mine.extend(theirs.drain(..))
             }
             return;
@@ -195,6 +209,15 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
             return;
         };
         for k in touched.drain(..) {
+            // CR claude for eric: [risk/medium] The only guard against a fork
+            // overwriting a sibling's write is this debug_assert. In a release build
+            // the loop below keeps the later-joined value, so a registry with an
+            // aggregate value (Env::impls holds one Vec per trait) silently loses the
+            // other task's registration; check_sig's Cast re-registration in sibling
+            // module tasks is one live case. Either make the check an assert! in
+            // release (one comparison per written key) or key Env::impls by
+            // implementation so that independent registrations never share a key. Found
+            // by reading; not run. (t-env-02)
             debug_assert!(
                 base.as_ref().is_none_or(|base| match (self.map.get(&k), base.get(&k)) {
                     (None, None) => true,
@@ -217,6 +240,14 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug + SameValue> TrackedMap<K, V
 
 /// A [`Set`] with fork and join.
 #[derive(Clone, Debug)]
+// CR claude for claude: [structure/medium] [structure] TrackedSet copies all of
+// TrackedMap (touch, insert, remove, retain, clear, fork, join), but its join lacks the
+// map's debug_assert against replacing a write made since the fork. A fork's removal of
+// a key the parent inserted after the fork (connect_targets, poly_binds and
+// package_roots all see removals) is dropped silently, even in debug. imhm::Set is a
+// Map<K, ()>. Make this a wrapper over TrackedMap<K, ()> (same_by_eq!(())) so the set
+// inherits the check, and add a set twin of join_reports_a_conflicting_write. Found by
+// reading; not run. (x-dup-02)
 pub struct TrackedSet<K: Hash + Eq + Clone + Debug> {
     set: Set<K>,
     touched: Option<LPooled<Vec<K>>>,

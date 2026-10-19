@@ -1,0 +1,15 @@
+// Title: a native tail loop reports a constant handler-less `?` (or `$`) only at its entry depth
+// Command: graphix --no-cache f-call-flow-tail-loop-unhandled-raise.gx 2>&1 | grep -c "unhandled error"
+//   and the same with --no-fusion.
+// Expected: 6 in both (the node-walk reports at each newly reached leaf activation, k = 0..5).
+// Observed: fused 1, --no-fusion 6. With `e$` the "ignored error" warnings (RUST_LOG=warn
+//   --log-dir) count 1 vs 6. With a non-tail self-call (`f(n - 1, a + n) + 0`) both report 6.
+let k = 0;
+k <- select k < 5 { true => k + 1, false => never() };
+let g = |m: i64| -> i64 { let e: Result<i64, `E> = error(`E); e?; m };
+let rec f = |n: i64, acc: i64| -> i64 select (n, acc) {
+  (0, a) => g(a),
+  (n, a) => f(n - 1, a + n)
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+f(k, 0)

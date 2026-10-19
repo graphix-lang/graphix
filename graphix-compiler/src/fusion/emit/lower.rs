@@ -190,6 +190,15 @@ pub(super) fn compile_into_function<'a>(
         callee_layouts,
     };
     // A wedged native loop aborts on interrupt; the kernel keeps its last result.
+    // CR claude for claude: [perf/low] The tail loop's head calls `graphix_interrupted`
+    // (an out-of-line helper: a TLS read plus an atomic load) on every iteration. In
+    // the CLIF of `sum(n - 1, acc + n)`, `call fn2()` sits at the loop head beside
+    // about 30 ALU instructions, and 50M iterations take about 178 ms. Scaffold loops
+    // poll every POLL_EVERY slots through `emit_interrupt_check_every`. Carry an
+    // iteration counter Variable from the entry block and poll only when it crosses a
+    // multiple of POLL_EVERY, so the native loop pays the helper once per 64
+    // iterations. probe: GRAPHIX_DUMP_CLIF=1 on a two-formal sum loop; not A/B timed.
+    // (f-call-flow-03)
     if loop_head.is_some() {
         emit_interrupt_check(b, &mut env, &lower)?;
     }

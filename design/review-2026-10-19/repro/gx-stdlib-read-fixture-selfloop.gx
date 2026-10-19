@@ -1,0 +1,43 @@
+// The `Mem` reader in graphix-tests lang::traits graphix_defined_read_exact is a
+// self-loop: `*cell <- take ~ b[take..]$` re-fires on its own write, so it hands out a
+// byte every cycle whether or not `read` was called, and spins writing the empty
+// buffer once drained. Over it, a read_exact that never re-issues `read` (the
+// `want <-` line deleted, below) still produces "hello" first, so the pin cannot
+// catch a broken re-arm.
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/gx-stdlib-read-fixture-selfloop.gx
+// Expected (for a pin that tests re-arming): something other than "hello".
+// Observed: "hello" first, then "hell ", "hellw", ... (the reader keeps draining).
+use sys::io::Read;
+type Mem = Abstract<&mut bytes>;
+impl Read for Mem {
+    let read = |s, n| {
+        let cell = s.0;
+        let b = *cell;
+        let take = select buffer::len(b) == u64:0 {
+            true => u64:0,
+            false => u64:1
+        };
+        *cell <- take ~ b[take..]$;
+        b[..take]$
+    }
+};
+let read_exact_no_rearm = |s: Mem, n: u64| {
+    let want: u64 = (s, n) ~ n;
+    let acc: bytes = (s, n) ~ buffer::from_string("");
+    let chunk = Read::read(s, want);
+    select chunk {
+        error as _ => filter_err(chunk),
+        bytes as b => select b ~ (buffer::len(b) == u64:0 || buffer::len(acc) + buffer::len(b) >= n) {
+            true => b ~ buffer::concat(acc, b),
+            false => {
+                acc <- b ~ buffer::concat(acc, b);
+                never()
+            }
+        }
+    }
+};
+let src = buffer::from_string("hello world");
+let m = Mem(&mut src);
+let result = buffer::to_string(read_exact_no_rearm(m, u64:5)?)?;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+result

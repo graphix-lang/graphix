@@ -1,0 +1,35 @@
+// Title: a core-trait hook site built before a dynamic module reload keeps
+//   calling the first load's implementation after the reload.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/c-module-traits-dyn-reload-stale-core-hook.gx
+// Expected: "null one" then, after the reload at 0.2s, "null two".
+// Observed: "null one" twice (the reload re-fires `c`, but printing it still
+//   runs the first source's `fmt`). Printing only after the reload (no hook
+//   site built before it) prints "two", so the stale part is the cached site
+//   in CoreHookSites, whose `impls_version` does not change on a reload.
+let one = "
+    type Counter = Abstract<i64>;
+    impl Display for Counter { let fmt = |c| \"one\" };
+    let make = |x| Counter(x)
+";
+let two = "
+    type Counter = Abstract<i64>;
+    impl Display for Counter { let fmt = |c| \"two\" };
+    let make = |x| Counter(x)
+";
+let source = one;
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig {
+        type Counter;
+        impl Display for Counter;
+        val make: fn(x: i64) -> Counter
+    };
+    source source
+};
+let c = select status {
+    error as e => never(dbg(e)),
+    null as _ => foo::make(1)
+};
+source <- sys::time::timer(duration:0.2s, false) ~ two;
+sys::exit(sys::time::timer(duration:0.6s, false) ~ 0);
+"[status] [c]"

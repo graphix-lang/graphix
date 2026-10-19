@@ -1,0 +1,7 @@
+// A literal keyword used as a value gets the "reserved word" note when a
+// typo follows it directly.
+// command: graphix --check design/review-2026-10-19/repro/t-parser-a-literal-reserved-note.gx
+// expected: the parse error at the `]` with no note (or an "unclosed `(`" note),
+//   as `let a = (1 + false]` reports
+// observed: note: at line: 7, column: 13: `false` is a reserved word and cannot be used as a name
+let a = (1, false]

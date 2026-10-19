@@ -1,0 +1,10 @@
+// Server for http-sqlite-db1-accept-spin.py (run that, not this): an http::serve
+// that exits by itself after 10 s.
+let srv = http::serve(#addr: "127.0.0.1:47391", #handler: |req: http::Request| {
+  body: "ok",
+  headers: [],
+  status: u16:200,
+  url: ""
+})$;
+sys::exit(sys::time::timer(duration:10.s, false) ~ 0);
+http::server_addr(srv)

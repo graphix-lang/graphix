@@ -1,0 +1,14 @@
+// Title: a connect whose value is a try is refused when its two branches have different
+//   types that the target's type admits.
+// cmd: timeout -s KILL 10 graphix --no-cache --check t-seq-connect-try-join-type.gx
+// expected: accepted (`x: [i64, string]` takes either branch's value)
+// observed: "type mismatch i64 does not contain string" at `seqj… <- seqv…`: the try's
+//   join cell is an unannotated `let seqj = never()` that its first writer types, and
+//   Machine::lower_try passes no type for a Write::Connect sink.
+let t = 1;
+let x: [i64, string] = 0;
+let r = seq t {
+    x <- try { 4 } with(e) { "fallback" };
+    x
+};
+r

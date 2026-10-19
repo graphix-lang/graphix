@@ -129,6 +129,16 @@ fn bound_partials(t: &mut Template, block: &TemplateElement) {
     }
 }
 
+// CR claude for claude: [bug/medium] Only partial expansions are bounded
+// (MAX_PARTIAL_DEPTH); block nesting is not. Handlebars compiles iteratively, but the
+// template clone here, bound_partials, Template's drop and render all recurse per
+// level. 3000 nested `{{#if}}` blocks abort the process with a stack overflow, even
+// when the condition is false and render enters only the outer block. So do two
+// partials that include each other with 12 nested blocks each, before the 128-partial
+// cap answers. Scan each template's and partial's text for block depth before compiling
+// it, and answer HbsErr past a cap. Then count blocks as well as partials in the depth
+// helper (or lower MAX_PARTIAL_DEPTH) so cap × depth fits the stack. probe:
+// design/review-2026-10-19/repro/x-panics-hbs-nesting-stack-overflow.gx (x-panics-03)
 fn build_registry(
     strict: bool,
     env: &Env,

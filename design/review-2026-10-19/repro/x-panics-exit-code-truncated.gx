@@ -1,0 +1,6 @@
+// Title: sys::exit truncates its i64 code: exit(256) reports success.
+// Command: timeout -s KILL 30 graphix --no-cache x-panics-exit-code-truncated.gx; echo $?
+// Expected: a nonzero exit status (256 is no status a process can return).
+// Observed: 0
+sys::exit(sys::time::after_idle(duration:50.ms, 256));
+0

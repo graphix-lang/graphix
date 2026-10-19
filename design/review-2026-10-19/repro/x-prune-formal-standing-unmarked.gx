@@ -1,0 +1,18 @@
+// Title: a callee's formals refreshed at its wake (publish_production
+// QuietAtRoot::Stand -> store_insert_standing) mark no reader, so a closure
+// that escaped the instance and reads the formal from a clean boundary rides
+// the old value. Same root cause as x-prune-byref-standing-unmarked.gx.
+// Command: GRAPHIX_PRUNE=on vs off: graphix --no-cache --no-fusion x-prune-formal-standing-unmarked.gx
+// Expected (unpruned): (6, 3, 0, 3) — arm 0 wakes with n=3, mk's x stands 3.
+// Observed (pruned):   (6, 3, 0, 1).
+let clk = array::iter(array::init(10, |i| i));
+let n = 0;
+n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+let sel = 0;
+sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+let mk = |x: i64| |y: i64| { let z = y; x };
+let g = select sel { 0 => mk(n), _ => mk(n + 100) };
+let h = once(g);
+let k = 0;
+let a = clk ~ select k { 0 => h(1), _ => -1 };
+(clk, n, sel, a)

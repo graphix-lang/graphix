@@ -1,0 +1,34 @@
+// Title: subscribing to a tree while a large write is in flight freezes the runtime thread
+// Command: rm -rf /tmp/db2-stall.db; timeout -s KILL 170 graphix --no-cache db2-subscribe-blocks-runtime.gx
+// Expected: (batch time, max tick gap) with the gap near the 5 ms timer period (the batch runs on a blocking thread).
+// Observed (debug build): (451984954.ns, 408897231.ns): the 5 ms ticker stops for ~409 ms, the whole sled
+// apply_batch, because Watches::add takes the tree's RwLock exclusively on the runtime thread
+// (DbSubscribe::update -> watch -> spawn_watch) and waits for the in-flight write's shared hold.
+// Replacing the sub lines with `let sub = 0;` gives a max gap of ~30 ms.
+let db = db::open("/tmp/db2-stall.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "t")$;
+let ops = array::init(100000, |i| `Insert("k[i]", i));
+let go = sys::time::timer(duration:1000.ms, false);
+let b = db::batch(t, go ~ ops)$;
+let st = sys::time::now(go);
+let en = sys::time::now(b);
+let sub1 = db::subscription::new(sys::time::timer(duration:1040.ms, false) ~ t);
+let sub2 = db::subscription::new(sys::time::timer(duration:1080.ms, false) ~ t);
+let sub3 = db::subscription::new(sys::time::timer(duration:1120.ms, false) ~ t);
+let sub4 = db::subscription::new(sys::time::timer(duration:1160.ms, false) ~ t);
+let sub5 = db::subscription::new(sys::time::timer(duration:1200.ms, false) ~ t);
+let sub6 = db::subscription::new(sys::time::timer(duration:1240.ms, false) ~ t);
+let sub7 = db::subscription::new(sys::time::timer(duration:1280.ms, false) ~ t);
+let sub8 = db::subscription::new(sys::time::timer(duration:1320.ms, false) ~ t);
+let sub9 = db::subscription::new(sys::time::timer(duration:1360.ms, false) ~ t);
+let sub10 = db::subscription::new(sys::time::timer(duration:1400.ms, false) ~ t);
+let sub11 = db::subscription::new(sys::time::timer(duration:1440.ms, false) ~ t);
+let tick = sys::time::timer(duration:5.ms, true);
+let last = sys::time::now(tick);
+let prev = never();
+let gap = duration:0.s;
+let g = sys::time::diff(last, prev);
+gap <- select g > gap { true => g, false => never() };
+prev <- last;
+sys::exit(sys::time::after_idle(duration:1500.ms, b) ~ 0);
+(sys::time::diff(en, st), gap)

@@ -1,0 +1,25 @@
+// A let's wake re-raise is published to every reader, though a reader outside
+// the sleeping arm (here through an escaped &mut reference) already saw the
+// write live: Bind::reraise_writes_while_asleep assumes every reader slept.
+// run: timeout -s KILL 10 graphix --no-cache c-bind-reraise-escaped-ref.gx | grep -v null
+// The write *h <- 100 lands at n=3 while the arm holding `let x` sleeps
+// (n = 2..4); count(*h) outside counts it live (count=2).
+// expected: count stays 2 at the wake (n=5): nothing was written.
+// observed (node-walk and JIT, pruned and unpruned):
+//   n=3 inner=-1 deref=100 count=2
+//   n=4 inner=-1 deref=100 count=2
+//   n=5 inner=100 deref=100 count=3   <- phantom fire of *h at the wake
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let sel = select n { 2 => false, 3 => false, 4 => false, _ => true };
+let holder: [&mut i64, null] = null;
+let inner = select sel {
+  true => { let x = 0; holder <- &mut x; x },
+  false => -1
+};
+let h = holder$;
+*h <- select n { 3 => n ~ 100, _ => never() };
+let c = count(*h);
+sys::exit(select n { 7 => n, _ => never() });
+println("n=[n] inner=[inner] deref=[*h] count=[c]")

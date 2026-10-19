@@ -285,6 +285,14 @@ where
     I::Range: Range,
 {
     attempt(
+        // CR claude for eric: [readability/low] Any third slash makes a doc comment
+        // here, so a `////...` banner line in a .gx is refused ("`///` is a doc
+        // comment, legal only in a .gxi interface file"), and in a .gxi it becomes a
+        // doc starting with `/`. Rust treats four or more slashes as a plain comment.
+        // Decide whether a doc is exactly `///` not followed by `/` (then test for that
+        // here and in doc_comment) or whether the refusal stands. Found by running
+        // `graphix --check` on a file starting with `//////`. Also reported as
+        // (tests-parser-04). (t-parser-b-07)
         (position(), string("//"), optional(attempt(token('/'))))
             .then(move |(pos, _, doc)| match doc {
                 None if !grow::starts_line(pos) => {
@@ -411,6 +419,13 @@ where
     space().with(spaces())
 }
 
+// CR claude for claude: [bug/medium] A `///` line is taken as a doc wherever it stands,
+// so in a .gxi `val x: i64; /// trailing doc` (or the same after a trait method) is
+// accepted, and the doc becomes the NEXT item's: fmt prints it above `val y` and the
+// LSP shows it on y. A trailing `//` is refused by comment_line's grow::starts_line
+// check. Fix: record position() before each `///` here and refuse one that does not
+// start its line, with the same note comment_line gives. probe:
+// design/review-2026-10-19/repro/t-parser-b-trailing-doc.sh (t-parser-b-01)
 fn doc_comment<I>() -> impl Parser<I, Output = Doc>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -762,6 +777,15 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    // CR claude for claude: [bug/low] Every expression that starts with `true`, `false`
+    // or `null` is first probed here as a connect target. spmodpath's `fname()` then
+    // notes "`false` is a reserved word and cannot be used as a name", and
+    // `Reason::explains` applies that note to a failure just past the word. So `let a =
+    // (1, false]` blames the literal instead of the bracket. Read the target with
+    // `fname_noting(false)` segments: a word that really is misused as a name is still
+    // noted by `reference()` in the arith alternative. probe:
+    // design/review-2026-10-19/repro/t-parser-a-literal-reserved-note.gx
+    // (t-parser-a-05)
     (position(), optional(token('*')), spmodpath().skip(spstring("<-")), expr()).map(
         |(pos, deref, name, e)| {
             ExprKind::Connect { name, value: Arc::new(e), deref: deref.is_some() }
@@ -795,6 +819,14 @@ where
                 finite::<I>(pos, v).map(|v| ExprKind::Constant(v).to_expr(pos))
             }),
         ))
+        // CR claude for claude: [bug/low] An integer literal out of its type's range
+        // gets no reason. `u8:256` reports "could not continue past this point" with no
+        // note, and `99999999999999999999` reports "Unexpected invalid signed integer"
+        // with a list of ~35 expected tokens. A float out of range is told why
+        // (`finite`). Add a note arm beside duration_unit_note that recognizes
+        // `[type:]-?digits` and says which type the value does not fit. probe:
+        // design/review-2026-10-19/repro/t-parser-a-int-overflow-diag.gx
+        // (t-parser-a-06)
         .or(grow(duration_unit_note()))
 }
 
@@ -936,6 +968,12 @@ where
 }
 
 /// A seq statement: an expression, or `until e`, with what stands above it.
+// CR claude for claude: [structure/low] This duplicates expr(): expr() already reads
+// the leading decorations, has until_expr among its choices, and decorates and ends the
+// result. Use `expr()` directly in seq_stmts and delete this function. Also drop
+// graphix-compiler/tests/expr_spans.rs's `Until` special case, whose comment ("no
+// expression parse reads" until) is false: `[until x, 2]` parses. Found by reading; the
+// expression form of `until` was checked with graphix fmt. (t-parser-a-07)
 fn seq_body_item<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1233,6 +1271,16 @@ where
         attempt(spaces1().with(string("with")).skip(space()))
             .with(struct_fields())
             .map(Tail::With),
+        // CR claude for eric: [bug/medium] A trailing `;` before `}` parses as an empty
+        // last statement, a NoOp. So `{ e; }` gets past the two-expression rule that
+        // refuses `{ e }`, and the block's value becomes a ⊥ Nop. The checker accepts
+        // it against any declared return type, and at run time it never produces. A seq
+        // body drops the same NoOp, so `seq { e; }` yields e. book/src/core/block.md
+        // says a one-expression block will not parse. Either refuse the empty last
+        // position here with a reason naming the stray `;`, or drop it as seq lowering
+        // does, and pin the choice beside parser/test.rs a_refusal_says_why. probe:
+        // design/review-2026-10-19/repro/tests-parser-trailing-semicolon-block.gx
+        // (tests-parser-01)
         semisep()
             .with(sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
                 ExprKind::NoOp.to_expr(pos).ending(pos)
@@ -1258,6 +1306,17 @@ where
         }
     }
     choice((
+        // CR claude for claude: [bug/low] When this attempt fails after the struct's
+        // first field, the error is reported at the end of the previous field value, as
+        // "the parser could not continue past this point" with no note: `{ a: 2, b c }`
+        // and `{ a: 2, type }` both point at the `,` before the bad field. The furthest
+        // point only advances at grow knots, the separator's note does not explain that
+        // earlier position, and struct_fields refuses the reserved shorthand with
+        // `because`, which notes no reason. Use grow::refuse for the shorthand, make
+        // each field a grow knot (or note the furthest point after it), and add these
+        // cases to parser/test.rs separator_notes_only_where_an_item_follows. probe:
+        // design/review-2026-10-19/repro/tests-parser-struct-literal-diagnostics.sh
+        // (tests-parser-02)
         attempt(structure()),
         (
             position(),
@@ -1405,6 +1464,18 @@ where
                 spaces().with(choice((
                     attempt(
                         (position(), token('_'))
+                            // CR claude for claude: [bug/medium] `with(_ : T)` is
+                            // refused: when a space follows `_`, `sptoken(')')`
+                            // consumes it and then fails at `:`. That is a committed
+                            // error, so `sptoken(':')` is never tried, and `name()`
+                            // cannot read `_`. `with(e : T)` and `with(_: T)` parse.
+                            // Fix: `attempt((position(),
+                            // token('_').skip(not_prefix())))` and let the following
+                            // parsers read `:`/`)`. Note too that `catch(_)` is refused
+                            // (catch_stmt's `spname()`). If it should be legal, give
+                            // both handler binders this one parser. probe:
+                            // design/review-2026-10-19/repro/t-parser-a-try-with-underscore-space.gx
+                            // (t-parser-a-02)
                             .skip(look_ahead(choice((sptoken(')'), sptoken(':'))))),
                     )
                     .map(|(pos, _)| Name::written(literal!("_"), pos)),
@@ -1521,6 +1592,13 @@ where
 /// The length of the `#!` line a program text may start with, its
 /// newline excluded; 0 when there is none. Every reader of a program
 /// skips it.
+// CR claude for claude: [bug/medium] A UTF-8 byte-order mark (U+FEFF) at the start of a
+// .gx or .gxi file is a parse error at 1:1 that prints the invisible character
+// ("Unexpected `﻿`"). Every reader skips the `#!` line through this function, but
+// nothing skips a BOM, and Windows editors write one. Fix: count a leading U+FEFF here
+// too, so every reader skips it; or refuse it with a note that names it. probe:
+// design/review-2026-10-19/repro/t-parser-a-bom.sh Also reported as (x-formatter-05).
+// (t-parser-a-03)
 pub fn shebang_len(text: &str) -> usize {
     match text.starts_with("#!") {
         true => text.find('\n').unwrap_or(text.len()),

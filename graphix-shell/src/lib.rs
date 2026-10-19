@@ -53,6 +53,13 @@ fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
     let attempted = after.attempted - base.attempted;
     let fused = after.fused - base.fused;
     let failed = &after.failed[base.failed.len()..];
+    // CR claude for claude: [readability/low] `failed.len()` counts blockers (the
+    // profile includes discovery-time rejections such as a builtin with no fast-call
+    // entry), not attempted regions that failed. A small array::map script prints "2 of
+    // 3 attempted regions fused, 2 blocked", which does not add up. Print the region
+    // line without it, and title the per-reason list as blockers, or print `attempted -
+    // fused` as the failed regions. Found while probing; output from `graphix
+    // --no-cache --fusion-stats` on a map script. (shell-06)
     eprintln!(
         "fusion: {fused} of {attempted} attempted regions fused, {} blocked",
         failed.len()
@@ -367,6 +374,12 @@ impl<X: GXExt> Shell<X> {
             }
             _ => (),
         }
+        // CR claude for claude: [bug/medium] A `netidx:` script gets no argv[0]: only
+        // `Load::File` and the embedded main program name themselves here. `graphix
+        // netidx:/apps/p.gx one two` gives `sys::args()` ["one", "two"], and
+        // `args::parse` (clap) eats `one` as the binary name, against sys's documented
+        // "argv[0] names the program". Fix: push `netidx:{path}` for `Load::Netidx`
+        // too. Found by reading; not run. (shell-04)
         if let Mode::Script(Load::File(p)) | Mode::Check(Load::File(p)) = &self.mode {
             args.push(ArcStr::from(p.display().to_string().as_str()));
         }
@@ -606,6 +619,17 @@ impl<X: GXExt> Shell<X> {
         }
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
+        // CR claude for claude: [bug/high] `--warm` runs the program's first cycle.
+        // `init` has already called `GXConfig::start`, which runs the runtime loop, so
+        // the program's init effects happen (a println, a file write) and this branch
+        // waits for the first cycle to finish (10 s for a 100000-activation first
+        // cycle, even with every entry cached). The images were taken before any cycle,
+        // so the cycle buys nothing. Fix: build the runtime without its run loop for
+        // CacheMode::Warm (a GXConfig option that stops after `GX::new` and reports the
+        // program's compile result). Add a test that `--warm` over a file-writing
+        // program writes the entry and not the file; nothing tests `--warm` today.
+        // probe: design/review-2026-10-19/repro/shell-warm-runs-effects.sh Also
+        // reported as (x-image-01). (shell-01)
         if self.cache == CacheMode::Warm {
             if let Mode::Script(_) = &self.mode {
                 gx.program().await?;
@@ -664,6 +688,14 @@ impl<X: GXExt> Shell<X> {
                     Err(_) => exit_open = false,
                 },
                 batch = from_gx.recv() => match batch {
+                    // CR claude for claude: [risk/low] This return skips
+                    // `output.clear()`. A GUI's event loop runs on the main thread
+                    // inside main's `f()`, so when the runtime dies with a window up,
+                    // the process does not exit: the window stays frozen until the user
+                    // closes it, and only then is the error printed. Break out of the
+                    // loop instead (`break 'repl Err(..)`) so the common exit path
+                    // clears the display. Found by reading; the TUI analogue of a
+                    // runtime panic was run and reaches this arm. (gui-core-06)
                     None => return Err(gx.stopped("graphix runtime is dead")),
                     Some(mut batch) => {
                         let shown =
@@ -705,6 +737,25 @@ impl<X: GXExt> Shell<X> {
                                             .with_deref(|t| t.cloned())
                                             .unwrap_or_else(|| e.typ.clone());
                                         format_with_flags(
+                                            // CR claude for eric: [bug/medium] Without
+                                            // `DerefTVars`, the REPL's type line prints
+                                            // inferred variables by name and never
+                                            // shows their bindings: `[1, 2]` shows `-:
+                                            // Array<'_7721>`, `{"a" => 1}` shows `-:
+                                            // Map<'_7721, '_7722>`, `error(`Foo)` shows
+                                            // `-: Error<'a>`. The book's transcripts
+                                            // (getting_started, fundamental_types,
+                                            // reading_types "Auto Parameters",
+                                            // polymorphism, recursion) show and explain
+                                            // the deref'd readout (`'a: unbound: Number
+                                            // + Singleton`, `Array<'a: i64>`). Decide
+                                            // which readout the REPL prints. Then
+                                            // either restore `PrintFlag::DerefTVars |
+                                            // PrintFlag::ReplacePrims` here, or resolve
+                                            // bound variables before printing and
+                                            // rewrite those book sections. probe:
+                                            // design/review-2026-10-19/repro/book-core-repl-type-display.sh
+                                            // (book-core-02)
                                             PrintFlag::ReplacePrims,
                                             || println!("-: {}", typ)
                                         );

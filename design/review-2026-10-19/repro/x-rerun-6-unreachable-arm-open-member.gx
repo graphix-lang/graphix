@@ -1,0 +1,16 @@
+// x-rerun-6 (variant of x-typecheck-patterns-04): a structure pattern over a
+// union with an open member, followed by a catch-all, is refused with
+// "unreachable arm" at the catch-all, which is reachable ('a may be anything).
+// Removing the catch-all, as the message invites, gives the right refusal:
+// "this pattern tests for (string, i64) among 'a ...: annotate it".
+// command: graphix --check x-rerun-6-unreachable-arm-open-member.gx
+// expected: the "annotate it" refusal at the `(s, n)` pattern, as without the
+//   `_ => 0` arm and as with `(string, i64) as (s, n)`
+// observed (HEAD 9445a1d21): "unreachable arm: the earlier arms already cover
+//   the whole scrutinee, unused match cases" at `_ => 0`; the same for
+//   `{a} => a, _ => 0` over [{a: i64}, 'b]
+let g = |x: [(string, i64), 'a]| select x {
+  (s, n) => n + str::len(s),
+  _ => 0
+};
+g(`A(41))

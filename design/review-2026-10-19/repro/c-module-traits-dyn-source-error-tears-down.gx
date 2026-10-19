@@ -1,0 +1,20 @@
+// Title: an error from a dynamic module's source tears down the running body
+//   (Module::update calls clear_compiled before it looks at the value), so
+//   the interface vals stop following their implementation.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/c-module-traits-dyn-source-error-tears-down.gx
+// Expected (if a source error should only report, keeping the last good
+//   load): last line "5 50".
+// Observed: status `DynamicLoadError("unexpected error:`E")` and "5 0": the
+//   write to foo::x after the error never reaches a body (there is none).
+let one = "let x = 0; let y = x * 10";
+let src0: [string, Error<`E>] = one;
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val x: i64; val y: i64 };
+    source src0
+};
+src0 <- sys::time::timer(duration:0.1s, false) ~ error(`E);
+foo::x <- sys::time::timer(duration:0.2s, false) ~ 5;
+println("[status]");
+sys::exit(sys::time::timer(duration:0.4s, false) ~ 0);
+"[foo::x] [foo::y]"

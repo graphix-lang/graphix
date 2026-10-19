@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -212,6 +212,15 @@ val browser: fn(
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
+<!-- CR claude for claude: [doc-drift/medium] This contradicts the code and browser.gxi.
+The browser lists through `net::list_table(path)`, whose `#update` defaults to
+`sys::time::timer(1, true)`, so the listing refreshes about once a second as well as on
+a path change. A row published later appears within a second with no change of path.
+Fix: say what browser.gxi says. While here, line 3's "tree structure" should be "a table
+of one level's children", and `#rate` (the subscription throttle), `#flex` and the three
+style parameters need bullets. probe:
+design/review-2026-10-19/repro/book-ui-a-browser-listing-refresh.gx Also reported as
+(gx-ui-04). (book-ui-a-01) -->
 <ul>
 <li><strong>path</strong> - The netidx path whose children are listed. The listing is fetched once each time <code>path</code> changes, so rows published later appear when the path next changes</li>
 <li><strong>cursor</strong> - Programmatic cursor movement: <code>Left(n)</code>, <code>Right(n)</code>, <code>Up(n)</code>, <code>Down(n)</code></li>
@@ -253,6 +262,12 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
     _ =&gt; `Continue
 });
 
+// CR claude for claude: [bug/low] The browser below gets `#size: {width: 80, height:
+// 24}`. browser.gx sizes its table from it (`row_slots = size.height - 1`), so this
+// lists at most 23 rows in any terminal. browser_basic.gx caps at 9 with its 40x10.
+// browser.gxi and the book say to pass the enclosing block's `#size` output. Do what
+// browser_commands.gx does: `let size: Size = never()` and `block(#size: &amp;mut size,
+// ..)`. Found by reading; not run. (examples-tui-08)
 input_handler(
     #handle: &amp;handle_event,
     &amp;browser(
@@ -292,6 +307,12 @@ let run_command = |c: string, path: string| {
             let v: Primitive = str::parse(v)?;
             sys::net::write(path, v)?
         },
+        // CR claude for claude: [bug/low] `s` is the 2-character prefix, so `:quit`
+        // reports `invalid command qu`. The catch above also writes `"[e]"`, which
+        // prints the whole ErrChain struct, source path and position included, into the
+        // bottom title. Use `[c]` here and `"[e.error]"` in the catch. probe:
+        // design/review-2026-10-19/repro/examples-tui-browser-cmd-error.sh
+        // (examples-tui-06)
         s =&gt; error("invalid command [s]")?
     }
 };
@@ -321,10 +342,10 @@ let handle_normal_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
             `Stop
         }
     },
-    `Char(":") =&gt; {
-        command &lt;- "";
-        command_error &lt;- "";
-        command_mode &lt;- true;
+    k@ `Char(":") =&gt; {
+        command &lt;- k ~ "";
+        command_error &lt;- k ~ "";
+        command_mode &lt;- k ~ true;
         `Stop
     },
     _ =&gt; `Continue
@@ -336,7 +357,7 @@ let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
         `Stop
     },
     x@ `Enter =&gt; {
-        command_mode &lt;- false;
+        command_mode &lt;- x ~ false;
         run_command(x ~! command, (x ~! selected_path)$);
         `Stop
     },
@@ -345,8 +366,8 @@ let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
         command &lt;- e ~ str::sub(#start:0, #len, command)$;
         `Stop
     },
-    `Esc =&gt; {
-        command_mode &lt;- false;
+    k@ `Esc =&gt; {
+        command_mode &lt;- k ~ false;
         `Stop
     },
     _ =&gt; `Continue

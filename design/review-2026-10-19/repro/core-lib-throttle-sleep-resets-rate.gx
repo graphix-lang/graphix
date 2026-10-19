@@ -1,0 +1,12 @@
+// core-lib: throttle forgets its last emission time when its arm sleeps.
+// Run: timeout -s KILL 30 graphix --no-cache core-lib-throttle-sleep-resets-rate.gx 2>&1 | grep -v '^null$'
+// Expected: at most one emission from the throttle arm in the ~250 ms the program
+// runs (#rate is 10 s; sleep is a pause, not a reset).
+// Observed: th=0, th=5, th=9: each re-entry emits at once.
+let clock = sys::time::timer(duration:20.ms, 12);
+let n = 0;
+n <- clock ~ n + 1;
+let on = uniq(select n { 3 => false, 4 => false, 7 => false, 8 => false, _ => true });
+let th = select on { true => throttle(#rate: duration:10.s, n), false => -1 };
+println(th ~ "th=[th] n=[n]");
+sys::exit(filter(n, |x| x >= 12))

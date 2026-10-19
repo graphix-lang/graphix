@@ -76,6 +76,13 @@ pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
+    // CR claude for claude: [perf/low] Until the calibration lands, every Auto plan at
+    // every fork site (each operator, call and constructor, each update) runs a getenv
+    // under std's environment lock, then a STARTED.swap that every pool worker also
+    // hits. A program's first cycle runs inside that window, and the window grows when
+    // the pool is busy. Read GRAPHIX_PAR_T once into a LazyLock, and load STARTED
+    // before swapping it (or use a Once), so the pending path is one atomic load. Found
+    // by reading; not run. (c-cost-misc-02)
     if let Some(t) = std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok()) {
         fix_calibration(t);
         return CALIBRATION.get();
@@ -142,6 +149,12 @@ fn calibrate() -> Calibration {
     }
     wakes.sort_unstable();
     // contention only adds to a wake: the lower quartile is the pool's
+    // CR claude for claude: [risk/low] This floor is in raw ticks. On x86's GHz TSC it
+    // never binds, but CNTVCT_EL0 runs at 24 MHz on Apple M1-M3 (54 MHz on a Pi 5),
+    // where 4096 ticks is 76-171 us. On those hosts Auto refuses any fork under about 2
+    // x 171 us, well above 4 x the measured wake. Bucketing does not need the floor
+    // (fix_calibration(1) runs with shift 0), so drop it, or floor T in time through
+    // CNTFRQ_EL0. Found by reading; not run. (c-cost-misc-03)
     let t = (wakes[wakes.len() / 4] * T_PER_WAKE).max(1 << T_BUCKET);
     if crate::dbgenv::graphix_dbg_par() {
         eprintln!("PAR calibrated: wakes {wakes:?} ticks, T = {t}");
@@ -265,6 +278,18 @@ enum Siblings {
 }
 
 impl Siblings {
+    // CR claude for claude: [perf/medium] `None` (the verdict rests on a call not bound
+    // yet) becomes Undecided, so decide_siblings calls analysis::independent again at
+    // every update for as long as that call stays unbound, which for a nullable
+    // callback that stays null, or a call in an arm never taken, is forever. That costs
+    // a static-graph walk plus summaries over everything the siblings reach on every
+    // cycle. fork_instances keeps `independent = None` the same way. Fix: hold such a
+    // site serial and decide again only when a call under it binds (a bind generation
+    // the site compares), not at every update. A new aspect of (x-perf-compile-03).
+    // probe:
+    // design/review-2026-10-19/repro/c-analysis-branch-unbound-sibling-redecides.gx
+    // (3000 cycles: off 0.69 s, auto 1.78 s; bound g 0.77 s; 600-function chain: off
+    // 1.76 s, auto 9.0 s). (c-analysis-branch-03)
     fn of(independent: Option<bool>) -> Self {
         match independent {
             None => Siblings::Undecided,
@@ -315,6 +340,34 @@ impl ForkSite {
         n: usize,
         independent: impl FnOnce() -> Option<bool>,
     ) {
+        // CR claude for claude: [perf/medium] An Undecided verdict is asked for again
+        // at every update. When it rests on a call that never binds (an arm never
+        // taken, a callback that never arrives), the site rebuilds the static call
+        // graph and every instance summary below it each cycle, forever.
+        // SlotSite::decide_siblings and fork_instances' `independent` do the same. A
+        // 4-slot map whose callback holds such an arm runs twice as slow under auto as
+        // under off, and the twin without the dynamic call runs the same in both.
+        // Re-decide only when a run-time bind happened since the last answer (a bind
+        // counter on Control), or settle the verdict as Dependent until that call site
+        // binds. probe:
+        // design/review-2026-10-19/repro/x-parallel-undecided-reanalyzed-every-cycle.gx
+        // (x-parallel-03)
+        // CR claude for claude: [perf/high] A new aspect of x-perf-compile-03. In a
+        // recursion, every activation's fork site is still Undecided after its first
+        // update, because its callee is not bound yet. The next update that reaches the
+        // chain then runs `independent()` at all N sites at once, each walking the
+        // graph below it. Under the default Auto mode, the update after an argument
+        // changes in a node-walked recursion therefore grows about 8x per doubling of
+        // depth: 0.39/1.34/9.2 s at depth 1000/2000/4000 against 0.20/0.28/0.42 s with
+        // GRAPHIX_PAR=off, and over 40 s at 8000. Nothing ever forks here
+        // (GRAPHIX_PAR_T fixed huge), and the third update costs 15 ms. Force stays
+        // linear only because it turns Off past MAX_FORK_DEPTH.
+        // interrupted_recursion_rides_* re-runs this shape at depth 15000 and
+        // interrupts it, so no test sees the cost. Decide these sites at analysis, or
+        // give a run-time instance its definition's verdict, as x-perf-compile-03
+        // proposes. probe:
+        // design/review-2026-10-19/repro/tests-lib-b1-recursion-rerun-auto-cliff.sh
+        // (tests-lib-b1-01)
         if self.1 == Siblings::Undecided && n >= 2 && ctx.fork_mode() != ParMode::Off {
             self.1 = Siblings::of(independent())
         }

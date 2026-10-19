@@ -296,6 +296,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // CR claude for eric: [bug/medium] Clearing the output here, as every event
+        // source's sleep does, makes the source bottom at the wake. A bottomed argument
+        // bottoms its consumer, so state built on the event is hidden until the next
+        // event. In the probe, count(timer) in a woken arm shows nothing for three
+        // outer ticks though it kept its 2. count(x) over a variable shows its count at
+        // a re-entry, as wake_resumes_quietly pins. A UI arm showing count(tick) or
+        // hold(#clock: tick, v) blanks for up to a period at every re-entry.
+        // wake_resumes_standing_timers relies on this: it counts count(timer)'s fires,
+        // and a count shown at the re-entry would add one. Rule on what a woken event
+        // source reads as to its consumers: absent without bottom (no fire), or bottom
+        // as now, documented in design/async_sleep_outputs.md. Then pin count(timer) at
+        // a re-entry. probe:
+        // design/review-2026-10-19/repro/x-engine-firing-event-clear-bottoms-consumer.gx
+        // (x-engine-firing-03)
         self.out = TagValue::phantom();
         self.slept = true;
         self.stop(ctx)

@@ -87,6 +87,12 @@ run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::None);
 
+// CR claude for claude: [structure/low] DYNAMIC_MODULE3 to DYNAMIC_MODULE8 and
+// DYNAMIC_MODULE_BLACKLIST_ROOT are seven copies of one 25-line program. They differ
+// only in the sandbox clause, one sig item and one source line, and the numbered names
+// do not say what each pins. Build them with one function taking those three strings:
+// run! takes any expression result_text can borrow. Name each case by its rule, e.g.
+// blacklisted_publish_refused. Found by reading; not run. (tests-modules-image-09)
 const DYNAMIC_MODULE3: &str = r#"
 {
     let source = "
@@ -174,6 +180,15 @@ const DYNAMIC_MODULE5: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/medium] No test pins that a whitelist sandbox keeps a
+// loaded body from the loader's own bindings. Today `super::y`, `package::y` and `use
+// super::*; y` are each refused under `sandbox whitelist [core]`, while `blacklist
+// [sys]` allows `super::y`. Only unlisted packages are pinned here, and
+// graphix-shell/tests/sandbox_whitelist.rs pins only what a whitelist grants. A
+// resolver change that lets sandboxed source reach the program's state would pass the
+// gate. Add a fixture pinning the three refusals and the blacklist case. probe:
+// design/review-2026-10-19/repro/tests-modules-image-sandbox-reaches-parent.gx
+// (tests-modules-image-02)
 run!(dynamic_module5, DYNAMIC_MODULE5, load_refused("no module `net` in `sys`"); FuseExpect::Jit);
 
 const DYNAMIC_MODULE6: &str = r#"
@@ -921,6 +936,16 @@ run!(reload_changes_a_representation, RELOAD_CHANGES_A_REPRESENTATION,
 
 // `use super::*` from a block-level module takes a name shadowed across
 // the block chain innermost-first, as `use super::x` does.
+// CR claude for claude: [test-gap/medium] design/module_system.md's resolution rules
+// have no pin in any test. These are: a value bound after the `mod` that imports it is
+// refused (`top not defined`), two explicit imports of one name are refused, a `use`
+// colliding with a same-scope declaration is refused, `pub use` is refused, `super`
+// above the root is refused, a .gxi `use` is not a re-export (`m::U` is undefined
+// outside), and `let array = ..` leaves `array::len` working. All of them hold today,
+// but a change to the import table that breaks any one passes the gate. Add a fixture
+// per rule here with the exact message. probe:
+// design/review-2026-10-19/repro/tests-modules-image-module-rules-unpinned.sh
+// (tests-modules-image-01)
 run!(
     glob_super_takes_the_innermost,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),

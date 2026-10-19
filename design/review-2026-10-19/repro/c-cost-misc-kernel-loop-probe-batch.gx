@@ -1,0 +1,17 @@
+// A settled kernel loop site still runs PROBE_BATCH (16) slots in order on every run
+// Command (from this directory):
+//   GRAPHIX_DBG_PAR=1 timeout -s KILL 60 graphix --no-cache c-cost-misc-kernel-loop-probe-batch.gx 2>&1 | grep PAR | sort | uniq -c
+//   and wall time under GRAPHIX_PAR=auto vs GRAPHIX_PAR=force (debug build, 16 cores)
+// Expected: once the site has settled on slots this expensive (each well above T), a run
+//   probes at most one slot in order and forks the rest; Auto lands near Force.
+// Observed: every one of the 30 runs prints "PAR kernel loop: 32 slots, 16 probed, 16 ranges":
+//   half of each loop runs serially forever. Wall: off 6.4 s, auto 3.8-3.9 s, force 0.93-0.99 s.
+let rec spin = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => spin(n - 1, acc + n) };
+let work = |xs: Array<i64>| -> Array<i64> array::map(xs, |x| spin(x, 0));
+let clock = sys::time::timer(duration:1.ms, true);
+let k = 0;
+k <- clock ~ k + 1;
+let xs = array::init(32, |i| 2000000 + i + k);
+let r = work(xs);
+sys::exit(select k { 30 => 0, _ => never() });
+array::len(r)

@@ -1,0 +1,24 @@
+// Title: a write landing in the cycle its `let`'s arm is put to sleep is
+//   never re-raised at the wake; one landing a cycle later is.
+// Command: graphix --no-cache --no-fusion design/review-2026-10-19/repro/c-prune-wake-reraise-sleep-cycle.gx
+//   (the JIT prints the same)
+// At step 2 arm `A is entered and `k <- step ~ k + 1` queues k = 1, which
+// lands at step 3, the cycle `A is deselected, before any of `A's readers
+// ran. No reader saw that fire.
+// Expected (CLAUDE.md: a `let` re-raises a write that landed while it
+//   slept, "a fire no reader saw"): at the wake (step 5) count(k) sees k's
+//   fire: "5 (1, 2)".
+// Observed: "5 (1, 1)". With a second writer (`k <- step ~ k + 10`, whose
+//   write queues behind and lands at step 4, after the sleep) the wake
+//   prints "5 (10, 2)": the later write is re-raised, the first is lost.
+//   Bind::reraise_writes_while_asleep takes only `stamp > slept_at`, and
+//   `slept_at` is the sleep's own cycle.
+let step = 0;
+step <- select step { s if s < 9 => s + 1, _ => never() };
+let scrut = select step { 2 | 5 | 6 | 7 => `A, _ => `B };
+let r = select scrut {
+  `A => { let k = 0; k <- step ~ k + 1; let c = count(k); (k, c) },
+  `B => (-1, -1)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println("[step] [r]")

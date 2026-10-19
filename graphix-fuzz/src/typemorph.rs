@@ -93,6 +93,11 @@ const TYP: &str = "Tm__0";
 /// their printed form failed to re-parse.
 /// Whether `body` already holds a name the mutations write (`tm__0`,
 /// `Tm__1`, `` `TmSame ``): a mutant's would shadow it or meet it.
+// CR claude for claude: [readability/low] The first doc paragraph above belongs to
+// `probes`, which has no doc. `TmSame` is written by no mutation any more, while
+// `mustreject::same_form` binds `tm_ref`, which this list does not reserve. Move the
+// paragraph to `probes`, drop `TmSame`, and rename `same_form`'s binder to `tm__ref` so
+// the `tm__` marker covers it. Found by reading; not run. (fuzz-mutate-07)
 pub(crate) fn holds_synthetic(body: &str) -> bool {
     ["tm__", "Tm__", "TmSame"].iter().any(|n| body.contains(n))
 }

@@ -1,0 +1,15 @@
+// Title: string -> number reads go through the value-literal parser: str::parse cannot
+// read a u64 above i64::MAX, and neither str::parse nor cast<f64> reads an integer
+// string above i64::MAX or the "inf" that cast<string> writes for an infinite f64.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
+// Expected: (18446744073709551615, 9223372036854775808, 18446744073709551615, 9223372036854775808, inf)
+// Observed: (error:`ParseError("cannot parse \"18446744073709551615\" as u64"),
+//            error:`ParseError("cannot parse \"9223372036854775808\" as f64"),
+//            18446744073709551615,
+//            error:`InvalidCast("can't cast \"9223372036854775808\" to f64: no primitive conversion"),
+//            error:`InvalidCast("can't cast \"inf\" to f64: no primitive conversion"))
+let big = cast<string>(u64:18446744073709551615)$;
+let a: Result<u64, `ParseError(string)> = str::parse(big);
+let b: Result<f64, `ParseError(string)> = str::parse("9223372036854775808");
+let inf = cast<string>(1.0 / 0.0)$;
+(a, b, cast<u64>(big), cast<f64>("9223372036854775808"), cast<f64>(inf))

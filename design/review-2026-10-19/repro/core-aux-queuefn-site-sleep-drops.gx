@@ -1,0 +1,19 @@
+// core-aux: a queuefn wrapper call site drops its queued calls when its arm sleeps
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache core-aux-queuefn-site-sleep-drops.gx
+// qf(10) runs on the initial credit; qf(20), qf(30) queue. The site's arm
+// sleeps at n=5 and wakes at n=6; #trigger fires at n=7 and n=8.
+// Expected (sleep is pause): 200 and 300 appear after n=7 and n=8, as they do
+//   when the arm never sleeps (change `5 => 1` to `500 => 1`).
+// Observed: 100 ... -1, then 100 forever: WrapperApply::sleep removed the
+//   site's queue entries, and the two triggers only banked credit.
+let t = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- t ~ n + 1;
+let trig = select n { 7 => n, 8 => n, _ => never() };
+let qf = queuefn(#trigger: trig, |x: i64| -> i64 x * 10);
+let sel = select n { 5 => 1, k => k * 0 };
+let x = never();
+x <- select n { 1 => 10, 2 => 20, 3 => 30, _ => never() };
+let out = select sel { 0 => qf(x), _ => -1 };
+sys::exit(select n { 10 => 0, _ => never() });
+out

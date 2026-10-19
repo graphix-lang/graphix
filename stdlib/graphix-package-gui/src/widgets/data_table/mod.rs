@@ -355,6 +355,14 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 c.ref_width = v.clone().cast_to::<f64>().ok().map(|w| w as f32);
                 changed = true;
             }
+            // CR claude for claude: [bug/low] This branch changes c.on_resize, which
+            // decides whether render_with_size draws the header's resize handle
+            // (is_fixed = ref_width set and on_resize absent), but it never sets
+            // `changed`. A pinned column whose on_resize goes null -> fn shows no
+            // handle, and fn -> null leaves a dead one, until something else redraws.
+            // Set `changed` when the callable's presence changes, as the width_ref
+            // branch and Handler::update do. Found by reading; not run.
+            // (gui-datatable-02)
             if let Some(r) = c.on_resize_ref.as_mut()
                 && r.id == id
             {
@@ -373,6 +381,14 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             }
             reconcile = true;
         }
+        // CR claude for claude: [bug/low] push_defaults_to_sparklines adds a point to
+        // every virtual or stored-source cell of every sparkline column. It runs here
+        // on any column's source fire, any sort_by change and any table update, not
+        // only when that sparkline's own source gives a new value, as the interface doc
+        // says. A sort click turns a one-point virtual sparkline into a flat chart, and
+        // a busy calculated column costs rows x sparkline columns pushes per fire. Push
+        // only the fired column's defaults, and seed only cells with no history on a
+        // table update. Found by reading; not run. (gui-datatable-03)
         if reconcile || source_fired {
             self.push_defaults_to_sparklines();
         }

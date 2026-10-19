@@ -1,0 +1,14 @@
+// Title: the distribution law's position split (covers_by_parts) probes with
+// empty flags, so a declared (rigid) 'a in a candidate admits anything.
+// Command: timeout -s KILL 30 graphix --no-cache t-contains-distribution-rigid.gx
+// Expected: the check refuses f's body: (`A, 5) is no (`A, 'a) for arbitrary 'a.
+// Observed: --check passes; the run logs
+//   select r { .. }: no arm matches [.., [.., "A"], i64:5]: a coverage hole in the check
+// r is typed [(`A, string), (`B, i64)] and holds (`A, 5).
+let f = 'a: Any |x: [`A, `B], y: 'a| -> [(`A, 'a), (`B, i64)] (x, 5);
+let r = f(`A, "hello");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select r {
+    (`A, s) => str::len(s),
+    (`B, n) => n
+}

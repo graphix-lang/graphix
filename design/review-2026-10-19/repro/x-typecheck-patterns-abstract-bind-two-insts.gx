@@ -1,0 +1,16 @@
+// Title: an inferred `Box(b)` arm over two instantiations of one abstract matches neither
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-abstract-bind-two-insts.gx
+// Expected: ["box true", "box 3", "other"] (b is typed [bool, i64], so the check
+//   says the arm admits both members), or a refusal like the written-union form's
+//   "Box(..) patterns can't match [Box<i64>, Box<bool>]: test the tag first".
+// Observed: ["other", "other", "other"] in every engine (graphix-fuzz run agrees):
+//   the arm's runtime predicate is Box<[bool, i64]>, and the invariant parameter
+//   test in Type::is_a matches neither Box<bool> nor Box<i64>.
+//   Without the `_` arm the check refuses "no arm covers [Box<i64>, Box<bool>]".
+type Box<'a> = Abstract<'a>;
+let f = |x: [Box<bool>, Box<i64>, null]| select x {
+    Box(b) => "box [b]",
+    _ => "other"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[f(Box(true)), f(Box(3)), f(null)]

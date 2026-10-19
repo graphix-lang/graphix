@@ -57,6 +57,15 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
             && let Some(opts) = &self.p.options.t
             && self.state.options() != opts.0.as_slice()
         {
+            // CR claude for claude: [bug/medium] New options rebuild the iced State
+            // from the options alone. That resets the text the user is typing (iced
+            // keeps it in State's private value), so the input empties and Enter picks
+            // the first unfiltered option: after typing "ban" with [apple, banana,
+            // cherry], adding "date" makes Enter choose "apple". Track the typed text
+            // through ComboBox::on_input as a message to this widget and rebuild with
+            // State::with_selection(options, Some(&typed)). probe:
+            // design/review-2026-10-19/repro/gui-widgets-a-combo-box-typing-lost.rs
+            // (gui-widgets-a-01)
             self.state = Self::state(&self.p);
         }
         self.on_select

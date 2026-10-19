@@ -106,6 +106,13 @@ Styles are commonly used with `Span` and `Line` types to create styled text.
 
 ### Spans
 
+<!-- CR claude for claude: [structure/low] The type blocks on this page are hand copies
+of tui/mod.gxi and have drifted. `val span` takes `content: string` in the gxi, not `s`,
+and `val line` takes `spans`, not `v`. input.md copies input_handler.gxi the same way,
+and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
+(MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
+and `\{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
+reading; not run. (book-ui-b-05) -->
 A `Span` is a piece of text with a single style:
 
 ```graphix

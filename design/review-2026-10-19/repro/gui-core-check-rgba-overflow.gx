@@ -1,0 +1,11 @@
+// check_rgba (stdlib/graphix-package-gui/src/types.rs) computes width * height * 4
+// in u64, which overflows for two large u32 dimensions.
+// Run: env -u WAYLAND_DISPLAY -u DISPLAY timeout -s KILL 30 graphix --no-cache gui-core-check-rgba-overflow.gx
+// Expected: error:`ClipboardError("an RGBA image of 2147483648 x 2147483648 needs ... bytes, not 3")
+// Observed (debug build): thread 'tokio-rt-worker' panicked at types.rs: attempt to multiply
+//   with overflow; "Error: runtime did not respond", exit 1.
+// In a release build the product wraps: 4 * 2^31 * 2^31 = 2^64 = 0, so an image of
+// 2147483648 x 2147483648 with EMPTY pixels passes the check (here 3 bytes fail it).
+let w = gui::clipboard::write_image({width: u32:2147483648, height: u32:2147483648, pixels: bytes:AAAA});
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+w

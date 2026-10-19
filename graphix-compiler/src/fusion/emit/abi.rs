@@ -201,6 +201,13 @@ pub(crate) enum OwnedKind {
     Value,
 }
 
+// CR claude for claude: [structure/low] OwnedKind::of restates LocalKind::of's AbiKind
+// table minus scalars, and LocalKind::owned is its inverse, so a new AbiKind or
+// ParamKind variant is classified in three parallel matches that can drift. Its one
+// caller (select.rs) can be `LocalKind::of(k).and_then(|l| l.owned().ok())`. Making
+// owned return Option avoids building an anyhow error only to discard it. Merge
+// LocalKind's three impl blocks into one after the enum. Found by reading; not run.
+// (f-jit-03)
 impl OwnedKind {
     /// The owned kind of a value of ABI kind `k`; `None` for a scalar and
     /// for a shape with no local.

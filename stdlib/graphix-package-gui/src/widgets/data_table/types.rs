@@ -268,6 +268,11 @@ fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
 
 /// Strip null bytes so a user column name cannot collide with the
 /// `ROW_NAME_SENTINEL_KEY` / `VALUE_COL_KEY` sentinels.
+// CR claude for claude: [doc-drift/low] The doc above names ROW_NAME_SENTINEL_KEY,
+// which does not exist (the key is ROW_NAME_KEY). It also omits the rule this function
+// mostly enforces: a name must be exactly one nonempty path component, or it is
+// refused. Reword it to say both. ColumnState's doc ('filled in by apply_table') should
+// name compile_column_refs. Found by reading. (gui-datatable-05)
 fn sanitize_col_name(raw: ArcStr) -> Option<ArcStr> {
     let name = if raw.contains('\0') {
         let cleaned: CompactString = raw.chars().filter(|ch| *ch != '\0').collect();

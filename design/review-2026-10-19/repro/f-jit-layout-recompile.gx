@@ -1,0 +1,36 @@
+// Title: a callee body with a call of its own is compiled once per region callee list
+// Command: GRAPHIX_DUMP_CLIF=1 graphix --no-cache f-jit-layout-recompile.gx 2>&1 >/dev/null | grep '^;; clif' | awk '{print $3}' | sort | uniq -c
+// Expected: `outer` compiled once (one KernelSig, `GRAPHIX_DBG_KERNELS=1` prints `KERNEL BUILT outer` once), like the leaf `inner`.
+// Observed: `10 outer` and `1 inner`: each region's callee list differs (leaf0..leaf9), so CacheKey's layout
+// differs and the identical `outer` body is emitted, compiled, installed and imaged ten times.
+let inner = |x: i64| x * x + 1;
+let outer = |x: i64| inner(x) + inner(x + 1);
+let leaf0 = |x: i64| x * 2;
+let leaf1 = |x: i64| x * 3;
+let leaf2 = |x: i64| x * 4;
+let leaf3 = |x: i64| x * 5;
+let leaf4 = |x: i64| x * 6;
+let leaf5 = |x: i64| x * 7;
+let leaf6 = |x: i64| x * 8;
+let leaf7 = |x: i64| x * 9;
+let leaf8 = |x: i64| x * 10;
+let leaf9 = |x: i64| x * 11;
+let g = |a: i64| {
+  let r0 = outer(a) + leaf0(a);
+  let r1 = outer(a) + leaf1(a);
+  let r2 = outer(a) + leaf2(a);
+  let r3 = outer(a) + leaf3(a);
+  let r4 = outer(a) + leaf4(a);
+  let r5 = outer(a) + leaf5(a);
+  let r6 = outer(a) + leaf6(a);
+  let r7 = outer(a) + leaf7(a);
+  let r8 = outer(a) + leaf8(a);
+  let r9 = outer(a) + leaf9(a);
+  let c = count(a);
+  [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, c]
+};
+let n = 0;
+let t = sys::time::timer(duration:5.ms, 2);
+n <- t ~ n + 1;
+sys::exit(sys::time::after_idle(duration:200.ms, n ~ 0));
+g(n)

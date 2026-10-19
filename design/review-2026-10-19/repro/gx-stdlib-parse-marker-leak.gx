@@ -1,0 +1,11 @@
+// str::parse folds a failed cast into `ParseError with the raw Display of the cast's
+// error value, a marked variant, so the message carries the kind marker.
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/gx-stdlib-parse-marker-leak.gx
+// Expected: error:`ParseError("can't cast error:\"boom\" to i64: an error is not data")
+//   (the InvalidCast message, as json::read reports a failed cast)
+// Observed (b likewise: "[abstract:..., \"InvalidCast\", \"can't cast 300 to u8: ...\"]"):
+// Observed: error:`ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast ...\"]")
+let a: Result<Array<i64>, `ParseError(string)> = str::parse(r#"[1, error:"boom"]"#);
+let b: Result<u8, `ParseError(string)> = str::parse("300");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(a, b)

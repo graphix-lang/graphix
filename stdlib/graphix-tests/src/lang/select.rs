@@ -1429,6 +1429,14 @@ run!(wake_spent_directly, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "b"), 
 // An arm-local `<-` target persists across the arm's sleep: a wake
 // resumes the arm, so the written 11 survives.
 // findings/arm-local-bind-aug2026/
+// CR claude for claude: [test-gap/low] This pin reads `s` only as the arm's value, and
+// the select emits that on its scrutinee delivery at the wake anyway. So it passes
+// whether or not the write that landed while the arm slept is re-raised: deleting
+// Bind::reraise_writes_while_asleep leaves it green, and it is green today while that
+// re-raise is lost. Return `(s, count(s))` (or `out <- s`) so the fire itself is
+// pinned: count 1, 2, 3 at the three entries. probe:
+// design/review-2026-10-19/repro/tests-select-reraise-last-awake-write.gx
+// (tests-select-04)
 const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -3980,6 +3988,15 @@ run!(
 // A guard sees the scrutinee's value only where the chain reaches its
 // arm: an earlier arm that claims the value keeps it from every guard
 // below, so `check(-1)?` never runs and never raises.
+// CR claude for eric: [risk/low] This pin holds only for the bind spelling. With the
+// guard written over the scrutinee variable, `_ if check(x)?`, the guard still ticks
+// every cycle, so check(-1)? runs on every -1 that arm 0 claimed and raises to the
+// catch: caught ends at 3 instead of 0, on both engines. The two spellings mean the
+// same thing to a reader but differ here. Rule whether a guard below a claiming arm may
+// raise in that cycle; then either change the guard's evaluation or narrow this comment
+// and pin the variable spelling too. probe:
+// design/review-2026-10-19/repro/tests-select-guard-reads-claimed-scrutinee.gx
+// (tests-select-05)
 run!(guard_below_the_claim_never_sees_the_value, r#"{
   let step = 0;
   step <- select step { n if n < 6 => n + 1, _ => never() };

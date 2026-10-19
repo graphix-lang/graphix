@@ -1,0 +1,25 @@
+// A fork site keeps its independence verdict after a dynamic call among its siblings
+// rebinds to a function that calls an ordered builtin (queuefn).
+// Run:
+//   GRAPHIX_PAR=off   graphix --no-cache c-analysis-branch-stale-verdict-after-rebind.gx
+//   GRAPHIX_PAR=force graphix --no-cache c-analysis-branch-stale-verdict-after-rebind.gx
+// Expected (serial, every mode): (null, [34, 41, 42, 43, 44, 51, 52, ...]): the queue
+// sees each cycle's four calls in field order.
+// Observed under force (node-walk and JIT): (1, [34, 44, 41, 42, 43, 53, 51, 52, 54, ...]),
+// the order varying run to run: the tuple's ForkSite decided Independent while `h` was
+// the pure g1 and never decides again once `h` is g2.
+let clk = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let got: Array<i64> = [];
+let q = queuefn(#trigger: clk, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+let g1 = |x: i64| -> i64 x;
+let g2 = |x: i64| -> i64 q(x);
+let h = select n { k if k < 3 => g1, _ => g2 };
+let t = (h(n * 10 + 1), h(n * 10 + 2), h(n * 10 + 3), h(n * 10 + 4));
+let bad = select n {
+  k if k > 30 => array::find(array::init(array::len(got) - 1, |j| j), |j| got[j + 1]$ < got[j]$),
+  _ => never()
+};
+sys::exit(select n { k if k > 31 => n ~ 0, _ => never() });
+(bad, got)

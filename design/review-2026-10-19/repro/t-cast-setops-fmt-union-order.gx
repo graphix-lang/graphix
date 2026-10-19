@@ -1,0 +1,10 @@
+// Title: under AsWritten the formatter moves every union member without a
+// recorded position (array, tuple, struct, map, fn ...) ahead of the
+// variants, not only the primitives.
+// Command: graphix fmt --stdout t-cast-setops-fmt-union-order.gx
+// Expected (CLAUDE.md: "primitives in a union print first, in canonical
+// order"): type T = [string, `Zed, Array<i64>, `Alpha(i64), { x: i64 }, (i64, i64)];
+// Observed: type T = [string, Array<i64>, (i64, i64), { x: i64 }, `Zed, `Alpha(i64)];
+type T = [`Zed, Array<i64>, `Alpha(i64), {x: i64}, string, (i64, i64)];
+let x: T = `Zed;
+x

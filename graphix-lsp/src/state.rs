@@ -33,6 +33,12 @@ pub struct Document {
     /// under it.
     pub uri: Uri,
     pub version: i32,
+    // CR claude for claude: [perf/low] An open buffer is immutable and shared by the
+    // overrides, the symbol parses and parse_interface, yet it is a String copied into
+    // a fresh ArcStr on every didChange (set_document) and again on every
+    // documentSymbol/workspace symbol request. Make it an ArcStr converted once in
+    // set_document, and hand clones to the overrides and the parses. Found by reading;
+    // not run. (lsp-06)
     pub text: String,
 }
 
@@ -168,6 +174,23 @@ impl ServerState {
         self.documents.keys().flat_map(|p| self.roots_of(p)).collect()
     }
 
+    // CR claude for claude: [bug/medium] Opening a document can change the roots of
+    // another one: opening an unsaved `api.gx` moves `api.gxi` off its lone-interface
+    // root. This function never retires the old root, so its last error stays published
+    // on `api.gxi` after the interface is fixed, through every later edit. Closing an
+    // unsaved `api.gx` has the reverse problem: the lone `.gxi` root becomes live again
+    // and nothing checks it. Mark dirty every live root missing from `self.roots`, call
+    // `retire()`, and return its Diagnostics here as close_document does. probe:
+    // design/review-2026-10-19/repro/x-lsp-probe-lone-gxi-stale-error.py
+    // (x-lsp-probe-02)
+    // CR claude for claude: [bug/medium] Opening a `.gx` changes which roots are live:
+    // roots_of makes an open `.gxi` a root of its own only while its `.gx` is unknown,
+    // and an open document makes it known. But set_document never calls retire(). The
+    // lone-interface root lives on with its error, and fixing the interface in the
+    // buffer dirties only the `.gx` root, so the stale parse error stays on api.gxi
+    // until a save. Fix: return `self.retire()` from didOpen/didChange as didClose
+    // already does, and pin the sequence in graphix-shell/tests/lsp. probe:
+    // design/review-2026-10-19/repro/lsp-stale-interface-root.py (lsp-01)
     pub fn set_document(&mut self, uri: Uri, text: String, version: i32) {
         self.last_active = Some(uri.clone());
         let Some(path) = uri_to_path(&uri) else { return };

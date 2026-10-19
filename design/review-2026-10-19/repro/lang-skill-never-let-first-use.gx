@@ -1,0 +1,12 @@
+// lang-skill: SKILL.md (Standard library) says "an unannotated `let` over `never()` takes its
+// type from its writers"; it takes it from its FIRST USE, a reader or a writer (CLAUDE.md), and a
+// later writer must fit that. The same paragraph says `is_err` gates a stream; it is
+// fn(e: Any) -> bool and fires on every value (the last expression prints false).
+// Command: timeout -s KILL 10 graphix --no-cache --check lang-skill-never-let-first-use.gx
+// Expected per the skill: go typed i64 by its writer, the program accepted.
+// Observed: "go is string, inferred from an earlier use, and cannot hold i64; declare
+//   go: [i64, string] where it is bound".
+let go = never();
+let y = str::len(go);
+go <- 1;
+(y, is_err(5))

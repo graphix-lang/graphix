@@ -256,6 +256,14 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
                 let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
                 (is_zero, cx.b.ins().bor(is_zero, is_neg1))
             }
+            // CR claude for claude: [test-gap/low] Nothing pins this arm's per-width
+            // `min` for i8, i16 or i32. The only narrow MIN/-1 fixture is errors.rs
+            // rem8, which takes the Mod arm, and the unchecked-division pins in
+            // lib_tests/arith.rs are i64 and not #[native]. If `min` were collapsed to
+            // i64::MIN, `i8:-128 / i8:-1` in a kernel would reach sdiv and SIGFPE the
+            // process, and no test would fail. Add a FuseExpect::Jit fixture that
+            // divides a dynamic MIN by a dynamic -1 under #[native] for i8, i16 and i32
+            // and expects bottom. Found by reading; not run. (f-nodes-scalar-02)
             (true, _) => {
                 let min: i64 = match prim {
                     PrimType::I8 => i8::MIN as i64,
@@ -360,6 +368,16 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 /// node-walk's `Value::checked_*` core. The result is a Value: the
 /// scalar, or the catchable `ArithError` (Nullable wire shape) — never
 /// bottom.
+// CR claude for claude: [perf/medium] Checked arithmetic on a register scalar goes
+// through graphix_value_checked_<op> every time. Each op widens both operands to Value
+// words, calls a helper that runs `arith()` on cloned Values, and gets a TagValue pair
+// back. A fused 3M-element fold with `+?`/`*?` runs about 8x slower than the same fold
+// with `+`/`*` (92 ms vs 13 ms, both #[native]). Emit the success path inline:
+// Cranelift's sadd/uadd/ssub/usub/smul/umul_overflow for add/sub/mul, and
+// emit_arith_node's zero and MIN/-1 tests for div/mod. Call one cold helper only to
+// build the ArithError. Keep the Value helpers for decimal and varints. probe:
+// design/review-2026-10-19/repro/f-nodes-scalar-checked-arith-helper.sh
+// (f-nodes-scalar-01)
 pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: ArithOp,
@@ -746,6 +764,13 @@ pub(crate) fn call_result_needs_value_widening(
 /// Compile one producer field and emit its `graphix_value_buf_push_*`
 /// call into `buf`; returns the field's disc. The Node twin of
 /// `scaffold::push_field`.
+// CR claude for claude: [structure/low] This repeats scaffold::push_field's helper
+// table: the scalar push, owned/borrowed array and value pushes, push_string, the null
+// push, and the pair vs one-word call form. Only the kind's source differs. Freeze the
+// field's type with freeze_node_typ, emit the field, then call
+// `scaffold::push_field(cx, buf, cv, &frozen, node_composite_source(field))` and return
+// `cv.disc`, so the producer helpers are chosen in one place. Found by reading; not
+// run. (f-nodes-scalar-03)
 fn emit_push_field_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     buf: ClifValue,
@@ -958,6 +983,15 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
             }
             // a kept field's `[name, value]` pair is the source's, shared
             None => {
+                // CR claude for claude: [readability/low] A struct's [name, value] pair
+                // is an unmarked plain array, but this types it as a Tuple, which under
+                // the kind markers is a marked array with elements from
+                // rep::TUPLE_BASE. The type only picks the array read, the Array
+                // placeholder and the array push, and Type::Array picks the same three.
+                // Building and resolving a Tuple per kept field therefore costs an
+                // allocation and misleads any kind-aware code added later. Build one
+                // Type::Array for the pair before the loop and reuse it. Found by
+                // reading; not run. (f-nodes-scalar-04)
                 let pair = Type::Tuple(triomphe::Arc::from_iter([
                     Type::Primitive(netidx_value::Typ::String.into()),
                     resolve_node_typ(cx.ctx, field_typ),

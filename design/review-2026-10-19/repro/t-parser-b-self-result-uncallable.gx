@@ -1,0 +1,13 @@
+// Title: a user trait method whose only `self` is its result is accepted at
+// the declaration and the impl, but no call can ever reach it.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/t-parser-b-self-result-uncallable.gx
+// Expected: either the trait declaration is refused ("a trait method takes a
+// `self` parameter"), or the call resolves by the annotated result and prints 3.
+// Observed: the trait and impl check; the call is refused:
+// "Mk::mk called without its self argument" (the same from a default body).
+trait Mk { val mk: fn(x: i64) -> self };
+type C = Abstract<i64>;
+impl Mk for C { let mk = |x| C(x) };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let c: C = Mk::mk(3);
+c.0

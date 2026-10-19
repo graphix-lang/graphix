@@ -1,0 +1,12 @@
+// f-select: design/list_native.md says "@-binds on list arms de-fuse"; they fuse
+// (emit_list_pattern_cond binds `all` as a Value clone).
+// command: graphix-fuzz run design/review-2026-10-19/repro/f-select-list-at-bind-fuses.gx
+// expected (per the doc): a fusion failure for f
+// observed: no failure line for f; all modes print ["x2", "e0"]
+{
+  let f = |l: List<string>| select l {
+      all@ [<h, rest..>] => "[h][list::len(all)]",
+      a@ [<>] => "e[list::len(a)]"
+  };
+  (f([<"x", "y">]), f([<>]))
+}

@@ -312,6 +312,16 @@ struct BoundsV {
     min: f64,
 }
 
+// CR claude for claude: [bug/medium] Finite bounds whose span overflows when ratatui
+// scales it crash the display. Painter::get_point computes (x - left) * (res - 1) /
+// width; with bounds {min: 0.0, max: 1e308} that is inf, cast to usize::MAX, and the
+// HalfBlock grid indexes pixels[y][x] directly: index out of bounds, release builds
+// too. A canvas `Label at the same x underflows `canvas_area.right() - x` (debug).
+// Chart axes reach the same path. Read bounds whose span cannot be scaled as the empty
+// range, as non-finite bounds already are: require ((max - min) *
+// 262144.0).is_finite(), which covers u16::MAX cells times 4 dots. Every coordinate
+// get_point or the label pass scales then stays in range. probe:
+// design/review-2026-10-19/repro/tui-widgets-canvas-huge-bounds.gx (tui-widgets-01)
 impl FromValue for BoundsV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
@@ -481,6 +491,16 @@ fn update_children<'a>(
 type TuiW = Box<dyn TuiWidget + Send + Sync + 'static>;
 type CompRes = Pin<Box<dyn Future<Output = Result<TuiW>> + Send + Sync + 'static>>;
 
+// CR claude for claude: [bug/medium] A widget tree nested about 135 deep (debug build)
+// overflows the tokio worker's stack, and the process dies with SIGSEGV. The cause is
+// that `compile` -> `ChildW::compile` -> `compile` is an async recursion whose polls
+// nest, two frames a level, with no stack guard, and `TuiWidget::draw`/`handle_update`
+// recurse the same way. A recursive tree or outline view built from data reaches this.
+// Fix: poll the boxed future through `ensure_sufficient` (a small Future wrapper around
+// the `Box::pin` here) and guard the draw/update recursion too, or refuse a tree past a
+// fixed depth with an error. The gui's `widgets::compile`/`Child::compile` has the same
+// shape (found by reading). probe:
+// design/review-2026-10-19/repro/x-stack-tui-deep-widget.gx (x-stack-01)
 fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompRes {
     Box::pin(async move {
         let Some((s, [v])) = rep::variant(&source) else {
@@ -566,6 +586,15 @@ impl<X: GXExt> ChildW<X> {
 }
 
 /// `f` over each element of the array `v`, together.
+// CR claude for claude: [perf/medium] This recompiles every element each time the
+// caller's list ref fires, and a ref fires on every production, whether or not the
+// value changed. `TableW::set_rows` uses it for `&Array<&Row>`: the browser's `rows =
+// array::map(cells, |row| &tui::table::row(..))` fires whenever any visible cell
+// changes. Each live update then recompiles every visible row ref: one runtime round
+// trip, one node created and one deleted per row. Chart datasets, bar-chart groups and
+// canvas shapes go through here too. `reconcile` below already keeps the elements whose
+// source value is unchanged. Move these callers to it (they would hold `Vec<(Value,
+// T)>`) and delete this helper. Found by reading; not run. (tui-core-04)
 async fn compile_each<T, F: Future<Output = Result<T>>>(
     v: Value,
     f: impl FnMut(Value) -> F,
@@ -576,6 +605,14 @@ async fn compile_each<T, F: Future<Output = Result<T>>>(
 
 /// Make `items` follow `sources`, keeping each item whose source is
 /// unchanged and compiling the others together.
+// CR claude for claude: [structure/medium] [structure] This is a second implementation
+// of the GUI's widgets::reconcile, with a weaker rule. It keeps a child only when the
+// value at the same index is unchanged. The GUI's keep_equal keeps any child whose
+// value is still in the list, wherever it moved. So inserting a layout/overlay/tabs
+// child at the front recompiles every later child: their refs are rebuilt, and
+// Rust-side widget state such as a list's ListState offset is lost. The GUI keeps those
+// children. Move keep_equal + reconcile into graphix-rt (both packages depend on it
+// already) and delete this copy. Found by reading; not run. (x-dup-01)
 async fn reconcile<T, F: Future<Output = Result<T>>>(
     items: &mut Vec<(Value, T)>,
     sources: impl IntoIterator<Item = Value>,
@@ -1233,6 +1270,21 @@ async fn display<X: GXExt>(
                     {
                         set_mouse(*v)
                     }
+                    // CR claude for claude: [bug/high] This arm awaits the widget
+                    // rebuild, which makes compile round trips to the runtime, and the
+                    // loop reads no terminal input until it returns. If the runtime is
+                    // busy in the cycle after the rebuild (a long or non-terminating
+                    // computation), a Ctrl-C typed then is never read. Raw mode
+                    // disables ISIG, so no SIGINT is raised either, and the program
+                    // cannot be stopped from its own terminal. The liveness check and
+                    // suspend requests stall the same way. Fix: keep reading the
+                    // terminal while an update is in flight. For example, use a nested
+                    // select over the update future and `term.next()` that calls
+                    // `control.finish(Ok(()))` on Ctrl-C and queues other events to
+                    // dispatch after the update. probe:
+                    // design/review-2026-10-19/repro/tui-core-ctrl-c-unread-during-rebuild.gx
+                    // (still running 15 s after the Ctrl-C; without the rebuild it
+                    // exits 130 at once). (tui-core-02)
                     if let Err(e) = screen.update(id, v).await {
                         error!("error handling update {e:?}")
                     }

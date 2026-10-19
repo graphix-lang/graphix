@@ -1,0 +1,40 @@
+// While the display rebuilds a widget it awaits the runtime, and reads no
+// terminal input: a Ctrl-C typed then is never seen. Raw mode disables
+// ISIG, so no SIGINT is raised either, and the program cannot be stopped
+// from its own terminal.
+// Pressing x switches the body (a widget rebuild: compile round trips to
+// the runtime) and, one cycle later, starts a computation that does not
+// end (spin(-1)). Ctrl-C is typed 2 s later.
+// Command (from the repo root):
+//   timeout -s KILL 60 python3 design/review-2026-10-19/repro/tui-core-ptyrun.py \
+//     15 '3=x;5=\x03' graphix --no-cache design/review-2026-10-19/repro/tui-core-ctrl-c-unread-during-rebuild.gx
+// Expected: EXIT 130 within a second of the Ctrl-C, terminal restored.
+// Observed: STILL RUNNING after 15 s; ICANON False ECHO False (raw), the
+// alternate screen never left. Deleting the line `screen <- x ~ 1;`
+// (no rebuild) gives EXIT 130 at 5.3 s.
+use tui::{
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph
+};
+let rec spin = |n: i64| -> i64 select n {
+  0 => 0,
+  n => spin(n - 1)
+};
+let screen = 0;
+let arm = never();
+let go = never();
+go <- arm ~ true;
+let handle = |e: Event| on_press(e, |k| select k.code {
+  x@ `Char("x") => {
+    screen <- x ~ 1;
+    arm <- x ~ true;
+    `Stop
+  },
+  _ => `Continue
+});
+let body = select screen {
+  0 => paragraph(&"zero"),
+  _ => paragraph(&"one")
+};
+let r = spin(go ~ (0 - 1));
+input_handler(#handle: &handle, &body)

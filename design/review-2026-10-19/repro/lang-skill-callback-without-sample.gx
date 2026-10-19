@@ -1,0 +1,12 @@
+// lang-skill: SKILL.md "Sample state you read in a handler": "Without `~` the callback captures
+// the initial value." A callback body that does not read its argument is not tied to the call:
+// `|c| n <- n + 1` is the self-loop counter, running from the instance's birth with no call at all.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache lang-skill-callback-without-sample.gx
+// Expected per the skill: 0 (the callback is never called).
+// Observed: 0 1 2 ... ~40 until the exit fires; with `n <- c ~ n + 1` it prints 0.
+let n = 0;
+let on_press = |c| n <- n + 1;
+let no_click: null = never();
+on_press(no_click);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+n

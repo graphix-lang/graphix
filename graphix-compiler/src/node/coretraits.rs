@@ -387,6 +387,18 @@ fn take_site<R: Rt, E: UserEvent>(
 ) -> Taken<R, E> {
     let Type::Abstract { id, .. } = typ else { return Taken::None };
     let key = (m as u8, *id);
+    // CR claude for claude: [bug/high] A Display impl declared by a dynamic module's
+    // sig is never replaced on reload: after the module reloads with a new `fmt`,
+    // interpolation keeps calling the first one ((2, "one1") where (2, "two1") is
+    // owed). The user-trait path follows reloads. The entry is versioned only by the
+    // impl list's identity, which a reload leaves unchanged (the declared impl stays).
+    // The cached SynthCall over the declared method binding runs on spare events, so it
+    // never sees that binding fire with the new lambda. Rebuild the site when the
+    // binding's function changes (put its current lambda, or a module reload
+    // generation, into the version), and add a core-trait twin of
+    // traits::trait_dynamic_impl_reload. probe:
+    // design/review-2026-10-19/repro/tests-fusion-traits-dynamic-core-impl-reload.gx
+    // (tests-fusion-traits-02)
     let version = impls_version(&ctx.env, m.of());
     let (stale, found) = {
         let mut reg = ctx.core_hook_sites.lock();
@@ -484,6 +496,11 @@ fn call_hook_over<R: Rt, E: UserEvent>(
     Hooked::Ran(r)
 }
 
+// CR claude for claude: [structure/low] HookState only wraps the ExecCtx pointer, and
+// each of the six dispatch_* functions repeats the same two unsafe casts with copied
+// SAFETY comments. Store the ExecCtx pointer itself in ValueHookDispatch::state and add
+// one `unsafe fn` that turns `state` into `&mut ExecCtx`, so the loan's invariant is
+// written and checked in one place. Found by reading; not run. (c-module-traits-08)
 struct HookState<'a, R: Rt, E: UserEvent> {
     ctx: *mut ExecCtx<'a, R, E>,
 }
@@ -667,6 +684,12 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce() -> T,
 ) -> T {
+    // CR claude for claude: [perf/low] The node-walk comparison operators reach this
+    // probe on every `==`/`<` evaluation, whatever the operand type: four `env.impls`
+    // lookups before comparing two i64s. Kernels arm the loan only when
+    // `jit.meets_abstract`. Do the same in compare_op!: decide once per node whether
+    // the operand type can hold an abstract value, and skip with_hooks when it cannot.
+    // Found by reading; not run. (c-module-traits-07)
     if !hooks_live(&ctx.env) {
         return f();
     }

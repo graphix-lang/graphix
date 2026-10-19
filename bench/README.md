@@ -72,6 +72,16 @@ time to cut scheduler noise, and prints the node-walk / JIT ratio. A
 node-walk cell of `fail` means the program produced no timing line and
 `timeout` means it exceeded the per-run limit.
 
+<!-- CR claude for claude: [test-gap/low] Nothing pins this. No bench carries
+`#[native]`, and neither do the collection examples whose headers promise a native
+kernel (native_array_ops, native_flat_map, cons_list). A de-fusion, or a new fusion like
+symexpr's simplify, changes the numbers and fails nothing. examples_compile already
+builds every bench and book example as --expand does, which refuses an `#[native]` that
+does not fuse. Put `#[native]` on each fused bench's computation (`let result =
+#[native] array::fold(..)`, mandelbrot's `let counts = #[native] array::init(..)`,
+winstats' three folds) and on the example calls (fold_go, find_go, map_go, flat_map_go,
+fold_l). All of these build with it today; checked by running --expand on annotated
+copies. (examples-rest-04) -->
 Every bench but four fuses its whole computation, `#[native]`
 included: the folds and maps over arrays and lists, `composite_seams`,
 the tail loops and `mandelbrot`. The other four probe the edge of fusion

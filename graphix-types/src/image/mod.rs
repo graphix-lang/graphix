@@ -270,6 +270,15 @@ impl ImageEncoder {
     /// Append the definitions to `buf`, the image, and return each
     /// one's offset in it by ordinal, for the trailer; `u64::MAX` for
     /// an object measured and never written.
+    // CR claude for claude: [structure/low] `next_ordinal` duplicates `offsets.len()`
+    // until this drain, which leaves the counter and the tables as they were. An object
+    // first seen afterwards gets ordinal N while offsets has length 1, so
+    // object_encode's `e.offsets[ord]` panics, and its definition would never be
+    // appended anyway. write_registration still encodes the instance table inside the
+    // session after finish; it is safe only because InstanceRefs holds ids. Fix: take
+    // the ordinal from `offsets.len()`, keep the offsets here instead of draining them,
+    // and refuse new ordinals once finished (InvalidFormat). Found by reading; not run.
+    // (t-image-03)
     pub fn finish(&mut self, buf: &mut ImageBuf) -> Vec<u64> {
         let base = buf.len() as u64;
         buf.put_slice(&self.defs.0);
@@ -951,6 +960,12 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
 /// parent chain is written first, so ids are completion order. Outside
 /// a session every origin is written in full. (`Arc<Origin>` cannot
 /// carry the impl itself: the orphan rule.)
+// CR claude for claude: [doc-drift/low] The doc above describes the old inline format.
+// Ordinals are assigned at first sight, not in completion order. Outside a session an
+// origin is not written in full: object_len returns 0 and object_encode refuses with
+// InvalidFormat. Rewrite it as: an image object keyed by address, its parent a
+// reference, with no encoding outside a session. Found by reading; not run.
+// (t-image-04)
 pub(crate) fn origin_len(ori: &Arc<Origin>) -> usize {
     let key = Arc::as_ptr(ori) as usize;
     object_len(&key, |k| (*k, ori.clone()), |e| &mut e.origins)
@@ -1075,6 +1090,12 @@ pub fn decode_at<T>(
     .ok_or(PackError::InvalidFormat)?;
     // The session's decoder holds the image, and nothing replaces it
     // while the session is installed.
+    // CR claude for claude: [style/low] This rebuilds the image from a raw pointer and
+    // length. That is sound only while nothing replaces or drops the decoder's image
+    // during `full`. The image is a bytes::Bytes: return `d.image.clone()` from the
+    // decoding closure above (one refcount bump per definition) and decode from `&mut
+    // &image[at..]`. That deletes the unsafe block and the invariant it relies on.
+    // Found by reading; not run. (x-unsafe-02)
     let image = unsafe { std::slice::from_raw_parts(image.0, image.1) };
     let r = crate::stack::ensure_sufficient(|| full(&mut &image[at..]));
     decoding(|d| {
@@ -1378,6 +1399,15 @@ pub(crate) fn fntype_len(t: &FnType) -> usize {
     )
 }
 
+// CR claude for claude: [risk/low] A function type's key holds `lambda_ids.addr()`, but
+// the fntypes table pins nothing (content_owned) and the definition writes only
+// `own()`. A bare FnType dropped after its encode frees that address. A later one of
+// the same shape, whose LambdaIds lands there, then shares the first's definition and
+// decodes with the first's lambda id. Type keys avoid this because every leaf address
+// is pinned once written; KeyedNode's doc gives 'normalized constraints built on the
+// fly' as the reason, which shape_encode no longer does. Fix: key `fntypes` with a
+// `LambdaIds` pin (owned returns `t.lambda_ids.clone()`), and restate KeyedNode's doc
+// as the invariant. Found by reading; not run. (t-image-02)
 pub(crate) fn fntype_encode<B: BufMut>(
     t: &FnType,
     buf: &mut B,

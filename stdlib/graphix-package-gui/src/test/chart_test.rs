@@ -213,6 +213,12 @@ async fn dark_background_label_colors() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] This test, dark_background_label_colors and
+// series_style_stroke_width still assert only that a plot area was recorded. They pass
+// with the legend colors, label/title colors or stroke width ignored. tests-gui-b-05
+// fixed background and mesh only. Use screenshot() and color_pixels as background_color
+// does: a distinctive legend background, label color and line color, and more line
+// pixels at stroke 4 than at stroke 1. Found by reading; not run. (tests-gui-b-05)
 async fn legend_style() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
@@ -259,6 +265,12 @@ async fn mesh_style_3d() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [dead/low] Obsolete. The geometry cache and plot_info moved
+// from ChartState onto ChartW, so two harnesses never share a cache, and a default
+// ChartState with no owner draws the default view. This can fail only through
+// compute_ranges (covered by ranges_cover_the_data). The swap it names is pinned by
+// kept_charts_keep_their_own_cache. Delete it. Found by reading; not run.
+// (tests-gui-b-04)
 async fn fresh_chart_redraws_an_inherited_cache() -> Result<()> {
     let tall = chart_harness(r#"&[line(&[(1.0, 1000.0), (2.0, 2000.0)])]"#).await?;
     let short = chart_harness(r#"&[line(&[(1.0, 1.0), (2.0, 2.0)])]"#).await?;

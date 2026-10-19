@@ -1,0 +1,7 @@
+// str::parse's ParseError message prints the cast error's kind marker
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache collections-str-parse-error-marker.gx
+// expected: error:`ParseError("can't cast 300 to u8: no primitive conversion")
+// observed: error:`ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast 300 to u8: no primitive conversion\"]")
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let a: Result<u8, `ParseError(string)> = str::parse("300");
+a

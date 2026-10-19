@@ -84,6 +84,11 @@ pub(crate) fn of_exprs(exprs: &[graphix_compiler::expr::Expr]) -> Vec<Symbol> {
 
 /// The top-level declarations of a `.gx` or `.gxi` text; none when it
 /// does not parse.
+// CR claude for claude: [structure/low] This is workspace::summarize again minus the
+// `mod` names: same shebang strip, Origin, .gx/.gxi dispatch and of_exprs/of_sig. Two
+// copies of the per-file summary can drift between document and workspace symbols.
+// Delete it and call `summarize(path, kind, text).1`, with the FileKind derived from
+// the extension in one place that scan shares. Found by reading; not run. (lsp-04)
 fn declared(path: &Path, text: ArcStr) -> Vec<Symbol> {
     let text = parser::without_shebang(&text);
     let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };

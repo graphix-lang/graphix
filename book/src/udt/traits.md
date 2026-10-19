@@ -16,6 +16,13 @@ trait Show {
 };
 ```
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says every method has a
+positional `self` parameter. A method that names `self` only in its result is accepted,
+as is its impl (core's `Cast::from_value` is one), but every call to it is refused with
+"called without its self argument". Fix: state that rule (`self` only in the result is
+legal, and no call dispatches such a method) so the error has an explanation. probe:
+design/review-2026-10-19/repro/book-modules-udt-trait-no-self.gx (book-modules-udt-08)
+-->
 Each item is a `val` with a function type. The type `self` is the
 receiver — the type implementing the trait — and every method has a
 positional `self` parameter, written bare: `fn(self, n: u64) -> bytes`
@@ -70,6 +77,15 @@ The head's type variables are declared in `impl<..>` with their
 bounds; every one must occur in the target. `Array<i64>` then
 implements `Show` exactly when `i64` does.
 
+<!-- CR claude for claude: [doc-drift/low] These rules say an alias or variant may be
+implemented only in the trait's own package and that unions are never targets.
+`node::traits::check_target` exempts a constructor trait's named head: the name's
+package (or the trait's) suffices, even for a union alias. That is why `impl Collection
+for L<'_>`, shown in implementing Collection and examples/collection/cons_list.gx,
+compiles in a script, while `impl Display for L<i64>` is refused. Fix: state the
+constructor-trait rule here. probe:
+design/review-2026-10-19/repro/book-modules-udt-ctor-trait-orphan.gx
+(book-modules-udt-07) -->
 ### Where an impl may be written
 
 Implementations are global facts: once the module holding one loads,

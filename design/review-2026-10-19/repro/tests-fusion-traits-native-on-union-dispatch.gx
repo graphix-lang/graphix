@@ -1,0 +1,13 @@
+// Title: #[native] on a union-self trait call is refused as "a position the fusion pass cannot check"
+// Command: /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --expand tests-fusion-traits-native-on-union-dispatch.gx
+// Expected: builds: the call is a let initializer (its own statement), and the same
+//   dispatch fuses under #[native] when it is the body of `f` (`#[native] f(one)` builds)
+// Observed: "attribute in a position the fusion pass cannot check — put the decorated
+//   expression in its own statement (or a select arm)"; a non-union self
+//   (`let one: i64 = 1`) builds. Over `[A, B]` abstracts the same message.
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |a| "i[a]" };
+impl Show for string { let show = |b| "s[b]" };
+let one: [i64, string] = "q";
+let r = #[native] Show::show(one);
+r

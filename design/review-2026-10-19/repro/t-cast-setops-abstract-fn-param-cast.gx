@@ -1,0 +1,14 @@
+// Title: a cast to an abstract whose params hold a function is accepted, and
+// the runtime cast wraps any lambda whatever its signature.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-abstract-fn-param-cast.gx
+// Expected: refused by the check, as `cast<fn(x: string) -> string>(..)` is
+// ("can't cast a value to a function"), or an InvalidCast at run time.
+// Observed: accepted; b is a Box<fn(x: string) -> string> holding
+// |x: i64| x + 1, and the call logs "binding the callee failed: a run-time
+// bind at b.0("hello") did not type".
+type Box<'a> = Abstract<'a>;
+impl<'a> Cast for Box<'a> {};
+let a: Any = Box(|x: i64| x + 1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let b = cast<Box<fn(x: string) -> string>>(a)$;
+str::len(b.0("hello"))

@@ -180,6 +180,12 @@ alone is 3.6KB under LTO) where a native kernel's is words, so a depth
 only the kernel reaches says nothing about either engine's answer. A
 pin that must run in both engines picks a depth both finish.
 
+<!-- CR claude for claude: [doc-drift/low] comparisons() also owes Pair::Prune
+(Mode::Unpruned vs the pruned node-walk, made with the engines in group 0), and Pair has
+an Accepted finding. Neither this paragraph's order nor section 6's Pair list mentions
+them, and the doc nowhere describes the walk-pruning axis. Add the prune pair after the
+forked runs with one sentence and a pointer to design/walk_pruning.md, and add Prune and
+Accepted to section 6's list. Found by reading; not run. (fuzz-lib-a-06) -->
 **One list of comparisons** (`comparisons`): each is a `Pair` naming
 its reference and tested runs, held at one `Strength` (`Strength::of`:
 `Exact`, `Final` where a dispatch route's cycle offsets enter or the
@@ -251,6 +257,9 @@ the dispatch route compared at final-values strength like its engine
 pair. `GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every
 Nth batched subject; the individual path always runs them.
 
+<!-- CR claude for claude: [doc-drift/low] The prune axis is missing from this doc:
+`Pair::Prune` compares the pruned node-walk with `Mode::Unpruned` (PruneMode::Off). Add
+a paragraph next to this one. Found by reading; not run. (x-doc-drift-15) -->
 **Forked runs** (`Pair::Par`): each engine runs again forked and is
 compared with the serial node-walk: the node-walk with every fork point
 forked (`ParMode::Force`), the JIT in the default mode (`ParMode::Auto`)

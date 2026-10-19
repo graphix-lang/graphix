@@ -1,0 +1,9 @@
+// Title: a core-trait implementation that bottoms through a never() arm is refused as async
+// Command: /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --expand tests-fusion-traits-never-arm-core-impl-refused.gx
+// Expected: builds; design/traits.md's bottom-key rule exists for a bottoming implementation,
+//   and the same impl written with `(i64:1 /? x.0)$` (traits::core_bottom_key_rule) builds
+// Observed: "#[sync]: this function is async — its body reaches an async builtin or an async callee"
+//   (never() is classified ASYNC by the effect analysis: open CR f-select-05)
+type T = Abstract<i64>;
+impl Eq for T { let eq = |a, b| select a.0 { 0 => never(), n => n == b.0 } };
+T(1) == T(1)

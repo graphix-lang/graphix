@@ -1,0 +1,21 @@
+// Title: tui::form drops pasted text: its handle routes every event through
+// input_handler::on_press, which answers `Continue to a `Paste without calling the key
+// callback, so the focused line editor (whose line_edit::step does handle `Paste) never
+// sees it. The TUI enables bracketed paste, so a terminal paste arrives as one `Paste event.
+// Run: timeout -s KILL 30 graphix --no-cache gx-ui-form-drops-paste.gx
+// Expected: "event 0: `Stop" and the submitted values ["https://example.com"].
+// Observed: "event 0: `Continue" and the submit prints [""].
+use tui::{form::form, input_handler::Event};
+let out: Array<string> = [];
+let f = form(#title: "t", #on_submit: |v| { out <- v; null }, [{label: "url", value: ""}]);
+let script: Array<Event> = [
+  `Paste("https://example.com"),
+  `Key({code: `Enter, kind: `Press, modifiers: [], state: []})
+];
+let tick = sys::time::timer(duration:100.ms, true);
+let i = 0;
+i <- tick ~ i + 1;
+let r = f.handle((tick ~ script[i])$);
+sys::exit(sys::time::timer(duration:600.ms, false) ~ 0);
+println("event [i]: [r]");
+out

@@ -84,6 +84,10 @@ The `canvas` widget provides a low-level drawing surface for custom graphics. Yo
 
 ## Coordinate System
 
+<!-- CR claude for claude: [doc-drift/low] The bottom-left corner is (x_bounds.min,
+y_bounds.min), not (0, 0). This page's own canvas_plot example uses y bounds -1..1,
+which puts (0, 0) at mid-left. State the corners in terms of the bounds. Found by
+reading; not run. (book-ui-b-07) -->
 - Origin (0, 0) is at the bottom-left
 - X increases to the right
 - Y increases upward

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -388,6 +388,16 @@ let handle = |e: Event| on_press(e, |k| select k.code {
 
 input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[count]"))
 </code></pre>
+<!-- CR claude for claude: [doc-drift/medium] This paragraph says a constant write such
+as `mode <- `Insert` "fires once when the arm becomes selected" and that both forms are
+useful. The rule as built is that a constant right-hand side fires only at the arm's
+FIRST entry, because a later entry resumes the arm. The check warns about it, and
+select.md's "Writing From an Arm" says so. Rewrite it to match: sample the event that
+selects the arm (`` k@ `Char("i") => mode <- k ~ `Insert ``), and drop "Both are
+useful". The code span `mode <- \`Insert` also renders broken, because CommonMark has no
+backslash escapes inside code spans; use ``` `` mode <- `Insert `` ```. probe:
+design/review-2026-10-19/repro/book-ui-b-const-arm-write.gx,
+design/review-2026-10-19/repro/book-ui-b-code-span-backticks.sh (book-ui-b-01) -->
 <p>The <code>Up</code> and <code>Down</code> arms sample the key (<code>u ~ count + 1</code>). A write
 inside a select arm fires when its right-hand side fires: <code>count &lt;- count + 1</code> would fire again on its own update and loop, and a constant
 such as <code>mode &lt;- \</code>Insert` fires once when the arm becomes selected
@@ -439,6 +449,14 @@ input_handler(
 )
 </code></pre>
 <h2 id="event-propagation"><a class="header" href="#event-propagation">Event Propagation</a></h2>
+<!-- CR claude for claude: [doc-drift/medium] This section describes propagation only
+through handlers. It leaves out that containers route each event to one child.
+LayoutW::handle_event sends it only to the `#focused` child (0 when unset),
+TabsW::handle_event only to the selected tab, and OverlayW only to the top layer. So an
+input_handler in a non-focused layout pane or an unselected tab never sees a key, with
+no warning. Say this here, and in one line under layout.md's `focused` and tabs.md's
+`selected`. Also reword tabs.md's "Keyboard Navigation" list as patterns the program
+implements itself. Found by reading; not run. (book-ui-b-02) -->
 <p>Input handlers form a stack. Events flow from the outermost handler inward:</p>
 <pre><code class="language-graphix">use tui::{
   input_handler::{Event, input_handler, on_press},
@@ -597,6 +615,12 @@ type Mode = [`Normal, `Insert];
 let mode: Mode = `Normal;
 let text = "";
 
+// CR claude for claude: [readability/low] `mode` is read unsampled. When a key writes
+// it, the write lands next cycle, the scrutinee fires again with the previous key, and
+// a second arm runs (Esc answers `Stop` and then `Continue`). Nothing breaks today only
+// because every arm samples `k`, but this is the book's showcase of the pattern. Write
+// `select (k ~ mode, k.code)`, as browser_commands does with `k ~ command_mode`. probe:
+// design/review-2026-10-19/repro/examples-tui-vim-unsampled-mode.gx (examples-tui-07)
 let handle = |e: Event| on_press(e, |k| select (mode, k.code) {
   (`Normal, `Char("i")) =&gt; {
     mode &lt;- k ~ `Insert;

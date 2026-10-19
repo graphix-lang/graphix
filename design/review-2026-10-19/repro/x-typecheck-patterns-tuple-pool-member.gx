@@ -1,0 +1,17 @@
+// Title: the literal pool reads a union's FIRST same-arity tuple member, refusing a live arm as dead
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --check x-typecheck-patterns-tuple-pool-member.gx
+// Expected: accepted (the four arms cover both members exactly); running it
+//   prints ["t", "f", "a", "b"], as the same arms in the other order do.
+// Observed: refused at the (`B, s) arm: "unreachable arm: every combination of
+//   heads it matches is covered by earlier arms". LiteralPool::claim pools the
+//   `A/`B arms against Shape::member = (bool, i64), whose head domain at
+//   position 0 is {true, false}; an arm matching no combination there is
+//   "covered" vacuously (PoolGroup::covers over an empty filter).
+let f = |x: [(bool, i64), ([`A, `B], string)]| select x {
+    (`A, s) => "a",
+    (`B, s) => "b",
+    (true, n) => "t",
+    (false, n) => "f"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[f((true, 1)), f((false, 1)), f((`A, "s")), f((`B, "s"))]

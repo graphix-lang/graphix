@@ -21,6 +21,12 @@ let run_command = |c: string, path: string| {
             let v: Primitive = str::parse(v)?;
             sys::net::write(path, v)?
         },
+        // CR claude for claude: [bug/low] `s` is the 2-character prefix, so `:quit`
+        // reports `invalid command qu`. The catch above also writes `"[e]"`, which
+        // prints the whole ErrChain struct, source path and position included, into the
+        // bottom title. Use `[c]` here and `"[e.error]"` in the catch. probe:
+        // design/review-2026-10-19/repro/examples-tui-browser-cmd-error.sh
+        // (examples-tui-06)
         s => error("invalid command [s]")?
     }
 };

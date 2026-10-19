@@ -21,6 +21,12 @@ let base = "/local/graphix/data_table_scrolling";
 // Drive every metric off one clock so all rows update in lockstep.
 let tick = time::timer(duration:2.s, true);
 
+// CR claude for claude: [readability/low] The `f64:` prefix is redundant on a float
+// literal (`0.` is already f64). It appears 14 times in this file and also in
+// data_table_virtual, data_table_editable and data_table_dashboard, while
+// data_table_sparkline writes plain `30.0`. Remove them all; with the prefixes
+// stripped, all four files still pass --expand. Found by reading; the stripped files
+// were checked with graphix --expand. (examples-gui-04)
 let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
 let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
 let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);

@@ -1,0 +1,8 @@
+// pack::read ignores bytes after the first value; json::read and toml::read refuse trailing input
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/small-pkgs-pack-trailing-bytes.gx
+// Expected: (BgAAAAAAAAAq, error:`PackErr(..trailing..))
+// Observed: (BgAAAAAAAAAq, 42)
+let w = pack::write_bytes(42)$;
+let a: Result<i64, [`PackErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array([u8:6, u8:0, u8:0, u8:0, u8:0, u8:0, u8:0, u8:0, u8:42, u8:99, u8:99, u8:99]));
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(w, a)

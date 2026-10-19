@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-344897c7.js";
+            window.path_to_searchindex_js = "searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -193,6 +193,12 @@ const(2) ──&gt; + &lt;── const(2)
 <p>The semantics of simple examples like this aren’t noticibly different
 from a normal programming language. However a more complex example
 such as,</p>
+<!-- CR claude for claude: [doc-drift/low] This program prints `100null`, not `100`.
+`print` adds no newline, and the shell prints the program's value (print's null) after
+it. The `?` also prints "error raised by ? will not be caught" on the reader's first
+program. Make the last expression `x * 10` and use `$`. connect.md's `print(x)` examples
+have the same `null` suffix. probe:
+design/review-2026-10-19/repro/book-core-intro-print.gx (book-core-11) -->
 <pre><code class="language-graphix">let x: i64 = sys::net::subscribe("/foo")?;
 print(x * 10)
 </code></pre>

@@ -292,6 +292,19 @@ impl<'a, R: Rt> RtView<'a, R> {
         self.mark_readers(id)
     }
 
+    // CR claude for claude: [bug/high] A standing insert changes what read_var reports
+    // as Standing, which a Cycle-view Ref or Deref takes as its value, but it marks no
+    // reader. A pruned walk skips such a reader and rides the old value. ByRef::publish
+    // refreshes a reference cell standing at an arm's wake, and publish_production
+    // (QuietAtRoot::Stand) refreshes a callee's formals standing at its wake. Readers
+    // of either in a clean boundary diverge from the unpruned walk: `*holder` reads 2
+    // pruned vs 4 unpruned, and an escaped closure's formal reads 1 vs 3. Both engines
+    // show it, serial and forked; the fuzzer and GRAPHIX_PRUNE=audit both flag it. Fix:
+    // call `self.mark_readers(id)` here as store_insert does (optionally only when the
+    // value changes), widen the CLAUDE.md walk-pruning rule to standing writes, and pin
+    // both repros in lang::prune. probe:
+    // design/review-2026-10-19/repro/x-prune-byref-standing-unmarked.gx,
+    // design/review-2026-10-19/repro/x-prune-formal-standing-unmarked.gx (x-prune-01)
     pub fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
         match self {
             Self::Root(r) => r.store_insert_standing(id, tv),
@@ -418,6 +431,10 @@ const SHRINK_FLOOR: usize = 1024;
 /// through unless the branch wrote them or removed them (`removed`). A
 /// root map has no parent and no removals.
 /// What a layer held for an id before a [`Layered::put`].
+// CR claude for claude: [readability/low] The doc lines above ("A map a branch writes
+// over its parent's ...") describe `Layered`, but they sit on `Prior`, so rustdoc shows
+// them here and `Layered` has no doc at all. Move them down above `pub struct
+// Layered<V>`. Found by reading; not run. (c-analysis-branch-06)
 pub(crate) enum Prior<V> {
     /// Its own entry.
     Own(V),
@@ -483,6 +500,14 @@ impl<V: Clone> Layered<V> {
 
     /// Set `id`, returning what it held.
     #[inline]
+    // CR claude for claude: [perf/low] On a miss in its own map a forked layer walks
+    // the whole parent chain and clones the parent's value only to return it, and every
+    // delivery a branch makes (deliver, publish, Bind::publish, publish_production)
+    // discards that result. Only `put` needs a prior, and it already computes `own` and
+    // `inherited` before inserting. Fix: return only the layer's own prior here,
+    // clearing the tombstone as now, and let `put` decide Inherited from its own
+    // `inherited` plus `parent.contains_key`. Found by reading; not run.
+    // (c-analysis-branch-05)
     pub fn insert(&mut self, id: BindId, v: V) -> Option<V> {
         match self.map.insert(id, v) {
             Some(prev) => Some(prev),
@@ -1039,6 +1064,14 @@ pub(crate) fn compile_each<R, E, P, F>(
     P: Send,
     F: Fn(&mut CompileCtx<R, E>, P) + Sync,
 {
+    // CR claude for claude: [risk/low] `ctx.cx.fork()` goes through CxView's Deref, not
+    // ExecCtx's DerefMut, so the tasks inherit CompileCtx::boundary as it was last
+    // synced rather than the walk's current ExecCtx::boundary. A slot instance body
+    // built in a task then gets a Prune whose parent may be another statement's
+    // boundary, and marks from inside the slot miss the enclosing statement. Today the
+    // only caller is masked: take_source's Slot::new deref_muts (and so syncs) just
+    // before build_fresh. Fix: fork from the synced compile view (`let cx: &mut
+    // CompileCtx<R, E> = ctx; cx.fork()`). Found by reading; not run. (c-lib-02)
     let mut tasks: Vec<(CompileCtx<R, E>, Option<P>)> =
         parts.into_iter().map(|p| (ctx.cx.fork(), Some(p))).collect();
     let control = ctx.control;
@@ -1081,6 +1114,14 @@ where
     let (ra, rb) = on_pool(control, || {
         rayon::join(
             || {
+                // CR claude for claude: [risk/low] The left side of the join skips
+                // `live.cx.enter()`. When fork_join is entered from the runtime thread,
+                // on_pool installs this closure on a pool worker, which may be blocked
+                // inside another compile's join. The left branch's run-time binds then
+                // take that compile's level and foreign-write record. That is the
+                // stolen-job leak the TaskContext rule closes for every other pool job.
+                // Run the left side through as_part as the right side does, or enter
+                // the context in on_pool. Found by reading; not run. (x-parallel-04)
                 let _part = live.part();
                 a(&mut shared.ctx(&mut left))
             },
@@ -1217,6 +1258,16 @@ impl Drop for Live {
 /// Run `f`, a fork's parallel part, on the evaluation pool: entered here
 /// from the runtime's own thread, so a cycle's serial work stays there,
 /// and joined in place by a fork already on the pool.
+// CR claude for claude: [risk/medium] `install` here enters the control and tokio but
+// not the caller's tvar::TaskContext, and fork_join's left closure relies on it: only
+// its right side goes through `as_part`. An installed job can be taken by a worker
+// blocked in another runtime's compile join (check_in_tasks, fuse_each), so a runtime
+// bind made by the left operand (a recursive activation in `f(n - 1) + f(n - 2)`)
+// creates cells under that compile's task and level and records its writes as that
+// task's foreign writes. That is the failure the stolen-job context fix closed for
+// every other pool job. Fix: capture TaskContext::current() before `install` and enter
+// it inside, or run fork_join's left side through `as_part`. Found by reading; not run.
+// Also reported as (x-concurrency-02). (c-analysis-branch-04)
 pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
     let pool = eval_pool();
     if pool.current_thread_index().is_some() {

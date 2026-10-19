@@ -1,0 +1,10 @@
+// Title: json::read turns a number past f64's range into NaN.
+// Command: timeout -s KILL 60 graphix --no-cache x-panics-json-overflow-nan.gx
+// Expected: a JsonErr (serde_json's "number out of range", which is what a
+//   build without serde_json's arbitrary_precision answers), or +-inf.
+// Observed: (NaN, [NaN, 0, NaN])
+type E = [`JsonErr(string), `InvalidCast(string)];
+let a: Result<f64, E> = json::read("1e400");
+let b: Result<Array<f64>, E> = json::read(r"[-1e400, 1e-400, 1.7976931348623157e309]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(a, b)

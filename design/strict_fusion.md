@@ -70,6 +70,13 @@ argument.
 ## The admission predicate
 
 A builtin's one classification is `const EFFECT: Effect` with
+<!-- CR claude for claude: [doc-drift/low] `Effect` has four variants;
+`Io(Option<IoCall>)` is missing here. The paragraph's reason why an effect is never
+Stateless ("re-entered as a birth, where a standing message reads fired") predates "a
+wake is a resume": a sleep-free arm is slept at re-entry and reads standing values
+stale. Restate it as built (an `Io` call's wake recompute goes through
+`EvalCached::quiet` and performs nothing). Found by reading; not run. (x-doc-drift-05)
+-->
 `Effect::{Async, Sync, Stateless(Option<FastCall>)}` (`effects.rs`).
 The five knobs it replaced (`EFFECT`/`STATELESS`/`SLEEP_RESTARTS`/
 `FASTCALL`/`FASTCALL_TYPED`) had to be set together and a fast fn was
@@ -81,6 +88,11 @@ pure builtins that can never be fast fns, the partial-delivery
 producers (opt's short-circuits, `divide`, `filter_err`), whose result
 depends on which args arrived while a fast fn sees every arg present.
 An effect is never `Stateless`: an arm holding only stateless calls
+<!-- CR claude for claude: [doc-drift/low] Stale: no arm is re-entered as a birth. A
+wake is a resume (CLAUDE.md, design/wake_catchup.md): a skipped arm is slept at its
+re-entry and reads standing values stale. Give the reason an effect is never Stateless
+in those terms, which is that an Io arm sleeps and its wake does not run it again. Found
+by reading; not run. (core-lib-05) -->
 skips sleep and is re-entered as a birth, where a standing message
 reads fired and would print again. Effects are `Effect::Io` (above;
 `exit` has no `IoCall`), and `now`, which keeps its last reading, is

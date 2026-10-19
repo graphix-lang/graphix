@@ -178,6 +178,15 @@ impl TxnState {
 
     /// Drop each of `created` that is still empty and has no types: a
     /// program that opened it outside the transaction stored its types.
+    // CR claude for claude: [risk/low] is_empty, meta.get and drop_tree are three steps
+    // under `creating`, but two writers can reach the just-created tree without that
+    // lock. One is a commit whose transaction opened the name with txn::tree during
+    // this commit (Target::Tree, no creates, so no lock). The other is import_data,
+    // which never takes `creating`. If either commits between the checks and drop_tree,
+    // its successful write is dropped, which breaks the "nothing else has claimed"
+    // promise on Database::creating. Take db.creating in every commit and in
+    // import_data. Commits already serialize on sled's global transaction lock, so this
+    // costs little. Found by reading; not run. (db2-03)
     fn drop_unclaimed(&self, created: &[ArcStr]) -> Result<()> {
         let meta = self.db.open_tree(META_TREE)?;
         for name in created {

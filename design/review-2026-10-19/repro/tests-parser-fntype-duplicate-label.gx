@@ -1,0 +1,10 @@
+// Title: a function type with two labeled arguments of one name is accepted
+// Command: timeout -s KILL 20 /home/eric/tmp/review-2026-10-19/bin/graphix --check tests-parser-fntype-duplicate-label.gx
+// Expected: a parse refusal at the type, as `{a: i64, a: string}` gets
+//   ("struct field names must be unique") and `|#a, #a| a` gets ("arguments
+//   must have unique names").
+// Observed: the type parses and checks; `h(#a: 1)` is then held to the SECOND
+//   `#a` and fails with "type mismatch string does not contain i64", an error
+//   that blames the call instead of the malformed type.
+let g = |h: fn(#a: i64, #a: string) -> i64| h(#a: 1);
+g(|#a: i64| a)

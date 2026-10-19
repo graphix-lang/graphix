@@ -1,0 +1,16 @@
+// Title: a fused kernel runs a user's Eq/Display implementation on a bottom placeholder
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-fusion-traits-hook-runs-on-placeholder.gx
+//          timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --no-fusion tests-fusion-traits-hook-runs-on-placeholder.gx
+// Expected (the node-walk): "eq 1 1", "fmt 1", ... : an implementation runs only on values that exist
+// Observed fused: "eq 0 1" and "fmt 0" print first, at init, while `clock` has not produced:
+//   the kernel calls graphix_value_eq / the interpolation's Display hook on the tainted
+//   placeholder. With `fmt = |k| "[k.0]#[count(k)]"` instead of println the extra
+//   dispatch changes the program's value: graphix-fuzz check reports
+//   DIVERGENCE interp "1#1" vs jit "1#2".
+type K = Abstract<i64>;
+impl Eq for K { let eq = |a, b| { println("eq [a.0] [b.0]"); a.0 == b.0 } };
+impl Display for K { let fmt = |k| { println("fmt [k.0]"); "K[k.0]" } };
+let clock = array::iter([1, 2]);
+let e = K(clock) == K(1);
+let s = "[K(clock)]";
+(e, s)

@@ -1,0 +1,19 @@
+// x-rerun-4: tests-lang-rest-b-04 (open CR in fusion/kernel.rs) with a statement
+// walk pruning cannot skip. The CR's own probe (tests-lang-rest-b-05.gx in the
+// 2026-10-12 repros) now runs in 0.15 s: its kernel sits in a statement nothing
+// marks, so the pruned walk never reaches it (GRAPHIX_PRUNE=off: 3.0 s).
+// Here `count(n)` keeps the statement walked every cycle while the map's
+// kernel has no fired feeder.
+// Command: time GRAPHIX_PAR=off graphix --no-cache x-rerun-4-bottom-kernel-walked.gx
+// Expected: about the 0.15 s the same program takes with `x * 10` in place of
+//   `r$ * 10` (no bottom slot).
+// Observed: 2-3 s (debug build), printing nothing (the result is bottom); GRAPHIX_DBG_INVOKE=1 shows the map's region
+//   invoked 100 times with fired=[false].
+let n = 0;
+let src = array::init(300000, |i| i);
+n <- select n { k if k < 100 => k + 1, _ => never() };
+sys::exit(select n { 100 => 0, _ => never() });
+(count(n), array::len(array::map(src, |x| {
+    let r: [i64, Error<`Bad(i64)>] = select x % 3 { 0 => error(`Bad(x)), _ => x };
+    r$ * 10
+})))

@@ -1,0 +1,14 @@
+// Title: a trait declared in a function body, instantiated by two statements, panics the compile (debug)
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-local-trait-fork-panic.gx
+// Expected: [1, 2] (`--check` accepts it)
+// Observed (debug build):
+//   panicked at graphix-types/src/tracked.rs:198:13: a fork's write to
+//   ModPath(Path("/#fn../#do../#trait..")) would replace a write made since the fork
+//   (TrackedMap<ModPath, ScopeNames>::join <- check_in_tasks <- typecheck1_statements):
+//   both statements' elaboration tasks register the trait's scope at the same
+//   def-minted path.
+let mk = |x: i64| { trait L { val l: fn(self) -> i64 = |s| 7 }; x };
+let a = mk(1);
+let b = mk(2);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[a, b]

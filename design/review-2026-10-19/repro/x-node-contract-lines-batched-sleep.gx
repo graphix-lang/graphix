@@ -1,0 +1,34 @@
+// Lines::lines_batched drops every batch its reader delivers while the arm
+// holding it sleeps; Lines::lines in the same position loses nothing.
+// Run (unix): timeout -s KILL 30 graphix --no-cache x-node-contract-lines-batched-sleep.gx
+// Expected (design/async_sleep_outputs.md, Line reader identity: the reader is
+// kept across the sleep so no bytes are lost; the wake reads on):
+//   "lines: 1,...,10" and "batched: 1,...,10"
+// Observed: "lines: 1,2,3,4,5,6,7,8,9,10" and "batched: 1,2,3,8,9,10" -- the
+// lines read while the arm slept (120 ms .. 350 ms) are consumed from the pipe
+// and delivered to nobody.
+use sys::io::Lines;
+let mk = |n: i64| {
+  let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "for i in 1 2 3 4 5 6 7 8 9 10; do echo $i; sleep 0.05; done"],
+    #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+    #kill_on_drop: true,
+    "/bin/sh"
+  ))$;
+  child.stdout$
+};
+let on = true;
+on <- sys::time::timer(duration:120.ms, false) ~ false;
+on <- sys::time::timer(duration:350.ms, false) ~ true;
+let p1 = mk(1);
+let p2 = mk(2);
+let u = select on { true => Lines::lines(p1)$, false => never() };
+let b = select on { true => Lines::lines_batched(p2)$, false => never() };
+let su = [];
+su <- array::push(u ~ su, u);
+let sb = [];
+sb <- array::concat(b ~ sb, b);
+sys::exit(sys::time::after_idle(duration:800.ms, any(u ~ 0, b ~ 0)));
+let js = str::join(#sep: ",", su);
+let jb = str::join(#sep: ",", sb);
+any(js ~ "lines: [js]", jb ~ "batched: [jb]")

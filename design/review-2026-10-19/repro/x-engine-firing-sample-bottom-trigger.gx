@@ -1,0 +1,15 @@
+// schedule-v1: cap=64 events=512; in0=i64:4 in1=i64:2 in2=i64:7 in3=i64:1; in1=i64:0; in3=i64:2; in0=i64:6; in3=i64:3; in1=i64:3
+// x-engine-firing: `t ~ v` and `t ~! v` ride their last sample while the trigger t is
+// bottom, where design/dense_delivery.md R3 has consuming a bottom bottom the production
+// (the designated rides are the select scrutinee, a guard's truth and `~`'s ARGUMENT).
+// Command: graphix-fuzz run x-engine-firing-sample-bottom-trigger.gx
+// (replace `~` with `~!` for the strict form: same trace)
+// in1 (z) is 0 in epochs 2-5, so the trigger a / z is bottom there.
+// Expected (R3): the tuple is bottom in epochs 2-5; w's fires at epochs 3 and 5 show
+// nothing: [] ; [0:(7, 1)] ; [] ; [] ; [] ; [] ; [0:(7, 3)]
+// Observed, both engines, every session:
+//   [] ; [0:(7, 1)] ; [] ; [0:(7, 2)] ; [] ; [0:(7, 3)] ; [0:(7, 3)]
+{
+let f = |a, z, v, w| ((a / z) ~ v, w);
+f(in0, in1, in2, in3)
+}

@@ -1,0 +1,33 @@
+// Title: no generator draws a union of composite kinds or a type test over one
+// Command: graphix-fuzz run fuzz-gen-b-kind-union-probe.gx   (and: graphix-fuzz check ...)
+// Expected: the shape the kind-marker change made legal (Array vs tuple vs
+//   List vs struct vs variant vs string vs bare variant in one union, told
+//   apart by type-test arms, compared with ==) compiles and agrees.
+// Observed: AGREE (trace), fused=25; the right class per epoch (12, 22, 32,
+//   46, 58, 61, 70). The generator emits none of this: see
+//   fuzz-gen-b-kind-union-gap.sh (0 composite type tests in 6000 programs).
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:4; in0=i64:5; in0=i64:6; in0=i64:0
+{
+  type U = [Array<i64>, (i64, i64), List<i64>, {a: i64, b: i64}, `A(i64, i64), string, `S];
+  let pick = |n: i64| -> U select n {
+    i64:0 => [n, n],
+    i64:1 => (n, n),
+    i64:2 => [<n, n>],
+    i64:3 => {a: n, b: n},
+    i64:4 => `A(n, n),
+    i64:5 => "S",
+    _ => `S
+  };
+  let cls = |v: U| -> i64 select v {
+    Array<i64> as a => i64:10 + array::len(a),
+    (i64, i64) as (x, y) => i64:20 + x + y,
+    List<i64> as l => i64:30 + list::len(l),
+    {a: i64, b: i64} as {a, b} => i64:40 + a + b,
+    `A(x, y) => i64:50 + x + y,
+    string as s => i64:60 + str::len(s),
+    `S => i64:70
+  };
+  let r = cls(pick(in0));
+  let e = pick(in0) == pick(in0 + i64:1);
+  (r, e)
+}

@@ -1,0 +1,14 @@
+// c-lambda: a type variable written in a nested lambda is a fresh quantifier,
+// not the enclosing definition's variable of the same name.
+//
+// Command: graphix --no-cache c-lambda-nested-tvar-scope.gx
+// Expected (the reading the signature invites): `x: 'a` is `k`'s 'a, so
+//   `g("s")` with `g = mk(1)` is refused (string is not i64).
+// Observed: accepted, prints ["s", 1]. The inner `'a` is a second variable;
+//   the printed type of `mk` is
+//   fn<'a: Number>(k: 'a) -> fn(x: 'a) -> Array<['a, 'a]>, which names the
+//   two variables identically, and `|x: 'a| x + k` in the body is refused
+//   with "cannot compute 'a: unbound + 'a: unbound".
+let mk = 'a: Number |k: 'a| |x: 'a| [x, k];
+let g = mk(1);
+g("s")

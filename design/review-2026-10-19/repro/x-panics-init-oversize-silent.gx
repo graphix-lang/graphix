@@ -1,0 +1,10 @@
+// Title: array::init past MAX_ARRAY_INIT_LEN bottoms without a word: its
+// diagnostic is logged under the default target, which the shell filters out.
+// Command: timeout -s KILL 30 graphix --no-cache x-panics-init-oversize-silent.gx
+// Expected: "collection init size 4611686018427387904 exceeds the 16777216
+//   element limit" on stderr, as buffer::encode's oversize Pad reports its
+//   limit (under FAILURE_TARGET).
+// Observed: no output at all; the program exits 0.
+let a = array::init(4611686018427387904, |i| i);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::len(a)

@@ -1,0 +1,22 @@
+// x-image: a restored nested definition misses its seq lowering and is re-checked at every runtime bind
+//
+// Run (fresh cache dir C; the first run is cold and writes the program entry, the second restores it):
+//   XDG_CACHE_HOME=C GRAPHIX_DBG_BIND=1 graphix x-image-nested-lowering-miss.gx > cold.txt 2>&1
+//   XDG_CACHE_HOME=C GRAPHIX_DBG_BIND=1 graphix x-image-nested-lowering-miss.gx > warm.txt 2>&1
+//   awk '/^\[200\]$/{f=1;next} f' cold.txt | grep -c 'SET-T \[`Idle'
+//   awk '/^\[200\]$/{f=1;next} f' warm.txt | grep -c 'SET-T \[`Idle'
+// Expected: 0 and 0 (each runtime-bound instance of f, one per new array slot, takes its
+//   seq's lowering from the definition's share and its types from the definition's table).
+// Observed (HEAD 9445a1d21): 0 cold, 8 warm: in the warm run every new slot's instance of
+//   f desugars the seq again with fresh ids and fully re-checks the machine
+//   (the `[`Idle, `S0, `S1]` pc checks, `x + k`). The values agree.
+// Control: the same program with f at top level (no enclosing #fn/#do scope) shows 0 and 0.
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 1;
+n <- clk ~ n + 1;
+let mk = |k: i64, xs: Array<i64>| -> Array<i64> {
+  let f = |x: i64| -> i64 seq { let a = x + k; a * 2 };
+  array::map(xs, |x| f(x))
+};
+sys::exit(select n { m if m >= 5 => clk ~ 0, _ => never() });
+mk(100, array::init(n, |i| i))

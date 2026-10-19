@@ -1,6 +1,12 @@
 // `seq let pat = e { .. }`: the trigger's value named for the body.
 
 use anyhow::Result;
+// CR claude for claude: [style/low] Import grouping: this file writes
+// `super::dense_deltas::run_delta` and `graphix_package_core::testing::as_i64s` out in
+// full three times each, and imports Mode and eval on separate lines. Write `use
+// super::dense_deltas::run_delta; use graphix_package_core::testing::{Mode, as_i64s,
+// eval};`. seq_abort.rs, seq_errors.rs, seq_try.rs and seqq.rs split the same testing
+// import over two lines. Found by reading; not run. (tests-seq-06)
 use graphix_package_core::testing::Mode;
 use graphix_package_core::testing::eval;
 use netidx::publisher::Value;

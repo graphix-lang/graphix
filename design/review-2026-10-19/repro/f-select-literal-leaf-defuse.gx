@@ -1,0 +1,37 @@
+// f-select: a string, null or union-typed scalar literal at a tuple/struct/array
+// leaf de-fuses the whole select (emit_composite_pattern_cond accepts only a
+// literal whose prim is the leaf's exact static type), while the same literal
+// at the top level (emit_structure_cond) or in a variant payload
+// (emit_variant_cond) fuses.
+// command: graphix-fuzz run design/review-2026-10-19/repro/f-select-literal-leaf-defuse.gx
+// expected: f, g and k fuse (no failure lines), as h (a bool leaf) does
+// observed: values agree, but fusion reports
+//   "non-scalar literal pattern leaf String("quit")" (f),
+//   "non-scalar literal pattern leaf Null" (g),
+//   "literal pattern leaf prim I64 doesn't match the leaf's static type" (k),
+//   "nested pattern over a leaf of shape Some(Value) not lowerable" (l: a list
+//   pattern at a tuple leaf)
+{
+  let f = |s: string, n: i64| select (s, n) {
+      ("quit", _) => 0,
+      (_, 0) => 1,
+      (_, m) => m
+  };
+  let g = |s: [string, null], n: i64| select (s, n) {
+      (null, _) => 0,
+      (_, m) => m
+  };
+  let h = |s: bool, n: i64| select (s, n) {
+      (true, x) => x,
+      (false, m) => m + 1
+  };
+  let k = |s: [i64, null], n: i64| select (s, n) {
+      (0, _) => 0,
+      (_, m) => m
+  };
+  let l = |xs: List<i64>, n: i64| select (xs, n) {
+      ([<x, ..>], 0) => x,
+      (_, m) => m
+  };
+  (l([<3>], 0), l([<>], 2), f("quit", 3), f("a", 0), f("b", 5), g(null, 2), g("x", 2), h(true, 1), h(false, 1), k(0, 4), k(null, 4))
+}

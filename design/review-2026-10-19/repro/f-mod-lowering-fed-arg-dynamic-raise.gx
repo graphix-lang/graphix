@@ -1,0 +1,21 @@
+// Title: a fed argument whose raise comes through a dynamic call reaches the
+//   handler ahead of a fused earlier argument's raise (JIT != node-walk).
+// Command: graphix-fuzz check f-mod-lowering-fed-arg-dynamic-raise.gx
+//   (or GRAPHIX_PAR=off graphix --no-cache [--no-fusion] this file)
+// Expected (node-walk, argument order): ["fused", "fed", "fused", "fed", "fused", "fed"]
+// Observed (JIT, `count(g(n))` fed by try_fuse_feeding_args):
+//   ["fed", "fused", "fed", "fused", "fed", "fused"]
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+let f = |a: i64, b: i64| a + b;
+let n = 0;
+n <- select n { k if k < 2 => k + 1, _ => never() };
+let g = select n {
+  0 => |x: i64| -> i64 (x %? 0)?,
+  _ => |x: i64| -> i64 (x %? 0)?
+};
+let log: Array<string> = [];
+let r = {
+  catch(e) log <- e ~ array::push(log, select "[e]" { s if str::contains(#part: "remainder", s) => "fed", _ => "fused" });
+  f((n /? 0)?, count(g(n)))
+};
+log

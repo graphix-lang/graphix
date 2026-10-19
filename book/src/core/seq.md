@@ -153,6 +153,15 @@ earlier statement wrote starts the next cycle and reads the new value:
 in between reads land together: `a <- x; b <- y; let s = a + b` writes
 `a` and `b` in one cycle and binds `s` the next.
 
+<!-- CR claude for claude: [doc-drift/low] The `put(5); let s = b` example below works
+only if `put` returns a value; the pin seq_steps::closure_write_is_seen defines `|v| { b
+<- v; v }`. Written the natural way, `let put = |v| b <- v`, `put(5)` is a step whose
+value is a connect's. A connect never produces, so the run stalls forever and --check
+says nothing. Show put's definition in the text. Also consider a check warning for a seq
+step whose type settles to ⊥ (a connect-valued call, never()), next to select.rs's
+warn_birth_only. probe:
+design/review-2026-10-19/repro/x-engine-firing-seq-connect-step.gx (x-engine-firing-05)
+-->
 The compiler decides this after it has resolved every call, following
 each call into the function it reaches. A write a function makes counts
 like one the statement makes itself: `put(5); let s = b`, where `put`
@@ -363,6 +372,13 @@ seqq request; abort(skip); flush(cancel_all) { ... }
 `flush` follows `abort` when both are present, and only `seqq` accepts
 it. A request that arrives with the flush or after it is kept.
 
+<!-- CR claude for claude: [doc-drift/medium] Two claims in this section contradict the
+code and CLAUDE.md. A triggerless seq does not start a fresh run when its arm wakes: it
+runs only at the arm's first entry, and the check warns of it. Sleeping does not discard
+a seqq's queued requests: they are kept and served after the wake (select.md also says
+queues keep their state). Rewrite the section to say this. probe:
+design/review-2026-10-19/repro/book-core-seq-triggerless-wake.gx and
+design/review-2026-10-19/repro/book-core-seqq-queue-survives-sleep.gx (book-core-04) -->
 ## Sleeping
 
 A sequence inside a `select` arm, or inside a function called from one,

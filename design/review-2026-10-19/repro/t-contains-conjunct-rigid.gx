@@ -1,0 +1,14 @@
+// Title: a cell's conjuncts are probed with empty flags (cell_constraints_ok),
+// so a declared (rigid) variable inside a conjunct admits anything.
+// Command: timeout -s KILL 30 graphix --check t-contains-conjunct-rigid.gx
+//          timeout -s KILL 30 graphix --no-cache t-contains-conjunct-rigid.gx
+// Expected: the check refuses g(x, 5) in f: 'd must stay within ['a, null] for
+// every 'a, and i64 is not (g("s", 5) at top level is refused: "'d: unbound
+// within [null, 'c: string] does not contain i64").
+// Observed: --check exits 0; the build refuses with the internal "an instance at
+// fn(x: string, y: i64) -> [null, string] of a definition typed .." error.
+let g = 'c: Any, 'd: ['c, null] |x: 'c, y: 'd| -> ['c, null] y;
+let f = 'a: Any |x: 'a| -> ['a, null] g(x, 5);
+let r = f("s");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select r { null => 0, s => str::len(s) }

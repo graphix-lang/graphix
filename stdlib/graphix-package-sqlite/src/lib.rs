@@ -26,6 +26,12 @@ graphix_package_core::impl_abstract_arc!(
     static CONNECTION_WRAPPER = "sqlite::Connection"
 );
 
+// CR claude for claude: [structure/low] This repeats
+// CachedVals::abstract_arg::<ConnectionValue>, and SqliteOpenEv/SqliteCloseEv each
+// re-spell with_conn's spawn_blocking await and "spawn_blocking failed" error. Close
+// words the closed state differently from with_conn. Use abstract_arg here, and have
+// with_conn hand its closure the Option<Connection> so close is `take()` through it;
+// open can share one blocking helper. Found by reading; not run. (http-sqlite-db1-05)
 fn get_conn_arc(cached: &CachedVals, idx: usize) -> Option<Conn> {
     match cached.value(idx)? {
         Value::Abstract(a) => {

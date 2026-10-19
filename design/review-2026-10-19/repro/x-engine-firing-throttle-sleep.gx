@@ -1,0 +1,20 @@
+// x-engine-firing: a throttle whose arm sleeps with an emission pending loses it,
+// and its output then stands at a value its input left, forever.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache x-engine-firing-throttle-sleep.gx
+//   (same with --no-fusion)
+// x goes 0, 1, 2 at n = 0..2 (30 ms apart) and then stays 2. The throttle (rate 1 s)
+// emits 0 and holds 2 for its timer. The arm sleeps at n = 4 and wakes at n = 6.
+// Expected (throttle's doc: "the most recent update will always be delivered"; a
+// pending wait of an event source resumes at the wake): out reaches 2 by about n = 34.
+// Observed, both engines: (6, 2, 0) at the wake (the kept 0 re-raised) and then
+// (70, 2, 0) at the exit: the 2 is never delivered. With the sleep removed
+// (k >= 400) the same program prints (32, 2, 2).
+let clk = sys::time::timer(duration:30.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let x = uniq(min(n, 2));
+let on = uniq(select n { k if (k >= 4) && (k < 6) => false, _ => true });
+let out = select on { true => throttle(#rate: duration:1.s, x), false => -1 };
+sys::exit(select n { 70 => 0, _ => never() });
+(n, x, out)

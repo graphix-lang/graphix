@@ -1,0 +1,12 @@
+// Title: a top-level partial struct pattern over Any matches only a struct with exactly the named fields
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-partial-struct-over-any.gx
+// Expected: ["st 1", "st 1", "st 1", "o"] (`{a, ..}` is any struct with an `a`,
+//   as it is one level down: `({a, ..}, n)` over (Any, i64) matches {a: 1, b: 2}),
+//   or a refusal like the unannotated case's "non exhaustive struct matches
+//   require type annotations".
+// Observed: ["st 1", "o", "o", "o"]: the check accepts; the arm's predicate is
+//   never completed against a struct member (Any has none), so its runtime test
+//   is the exact struct {a: Any}.
+let f = |x: Any| select x { {a, ..} => "st [a]", _ => "o" };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[f({a: 1}), f({a: 1, b: 2}), f({b: 2, a: 1}), f(3)]

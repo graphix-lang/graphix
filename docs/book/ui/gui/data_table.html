@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -247,6 +247,12 @@ type ColumnType = [
 ///   ever subscribe.
 type Source = [`Netidx([null, string, Map&lt;string, Any&gt;]), string, Map&lt;string, Any&gt;];
 
+// CR claude for eric: [structure/low] `on_resize` is the one GUI callback a caller must
+// pass by reference (`#on_resize: &amp;|w| ..`). Every other callback, including this
+// struct's on_edit/on_click, is a plain `[fn, null]` that the builder wraps itself
+// (`on_select: &amp;on_select` in data_table). Take `#on_resize: [fn(width: f64) -&gt; Any,
+// null] = null` in the column builders and store `on_resize: &amp;on_resize`; the Rust side
+// still reads a ref. Found by reading; not run. (gx-ui-06)
 type ColumnSpec = {
     name: string,
     typ: ColumnType,
@@ -1072,6 +1078,13 @@ selection echoed in the footer.</p>
   text_input::text_input
 };
 use core::math;
+// CR claude for claude: [style/low] This file imports sys::time but writes
+// sys::net::publish, sys::net::write and sys::net::list_table in full six times.
+// data_table_calculated, data_table_sparkline, data_table_basic, data_table_editable
+// and data_table_filter_sort do the same. data_table_scrolling and data_table_virtual
+// import `sys::{net, time}` and write `net::publish`. Use that form in all of the
+// data_table examples, since data_table.md shows all of them on one page. Found by
+// reading; not run. (examples-gui-03)
 use sys::time;
 mod icon;
 
@@ -1103,6 +1116,11 @@ let svc = |#state:State, #cpu:f64, #uptime:f64, #name:string| {
 // single random number
 let rn = |start, end| rand::rand(#start, #end, #clock:1);
 
+// CR claude for claude: [readability/low] Nothing reads `published`. The init runs only
+// for its publishes, so write it as a bare statement. In the same file, the `rows`
+// select in `tbl` tests `n if n == 0` where data_table_filter_sort writes the literal
+// arm `0 =&gt; ..`; use the literal here too. Both edits pass --expand. Found by reading;
+// the edited copy was checked with graphix --expand. (examples-gui-05)
 let published = array::init(1024, |i| svc(
     #name:"svc-[i]",
     #state:select rand::rand(#clock:1) {
@@ -1267,6 +1285,12 @@ let base = "/local/graphix/data_table_scrolling";
 // Drive every metric off one clock so all rows update in lockstep.
 let tick = time::timer(duration:2.s, true);
 
+// CR claude for claude: [readability/low] The `f64:` prefix is redundant on a float
+// literal (`0.` is already f64). It appears 14 times in this file and also in
+// data_table_virtual, data_table_editable and data_table_dashboard, while
+// data_table_sparkline writes plain `30.0`. Remove them all; with the prefixes
+// stripped, all four files still pass --expand. Found by reading; the stripped files
+// were checked with graphix --expand. (examples-gui-04)
 let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
 let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
 let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
@@ -1331,6 +1355,9 @@ widgets, no netidx subscriptions.</li>
 <li><a href="../../stdlib/sys/net.html"><code>sys::net</code></a> – the <code>Table</code> record and
 <code>list_table</code> helper consumed by <code>#table</code>.</li>
 </ul>
+<!-- CR claude for claude: [readability/low] This paragraph is about keyboard navigation
+but sits after See Also, at the end of the page. Move it into the Keyboard Navigation
+section. Found by reading; not run. (book-ui-b-10) -->
 <p>With multiple selected cells, keyboard navigation starts at the first valid
 cell in the program’s selection array. If none of the selected cells is fully
 visible, the table scrolls to that first cell.</p>

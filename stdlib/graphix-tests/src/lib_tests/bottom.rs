@@ -184,6 +184,22 @@ async fn strict_sample(mode: Mode) -> Result<()> {
                 (Tag::STALE, Tag::FIRED, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::STALE, Tag::STALE, 11, Tag::STALE_BOTTOM, 0),
                 (Tag::FIRED, Tag::STALE, 11, Tag::FIRED, 11),
+                // CR claude for eric: [bug/medium] This row pins `~` (and `~!`) keeping
+                // its last value when its trigger goes bottom: Sample::update rides on
+                // a trigger that is not fired, and a bottom trigger counts as not
+                // fired. Everywhere else bottom in is bottom out (dense_delivery.md
+                // R1/R3). The designated rides list `~`'s argument, not its trigger.
+                // `select c { _ => 5 }`, which organic_firing.md calls the same
+                // sampler, goes bottom with c, and so do once(c) and the other restart
+                // builtins. Observable: `(y, c ~ 5)` keeps delivering after c went
+                // bottom, while `(y, select c { _ => 5 })` does not. Rule which is
+                // intended. Either the sample goes bottom with its trigger
+                // (Sample::update sets the resident bottom when the trigger's tag is
+                // bottom, under both bankings, and this row expects bottom), or the
+                // trigger joins the designated rides in dense_delivery.md and
+                // CLAUDE.md. probe:
+                // design/review-2026-10-19/repro/tests-lib-b1-sample-rides-bottom-trigger.gx
+                // (tests-lib-b1-02)
                 (Tag::FRESH_BOTTOM, Tag::FIRED, 13, Tag::STALE, 11),
                 (Tag::FIRED, Tag::STALE, 13, Tag::FIRED, 13),
             ]
@@ -328,6 +344,13 @@ async fn rand_picks_go_bottom_with_their_input() -> Result<()> {
 /// The restart and iteration builtins go bottom with their input instead
 /// of re-delivering their last value: once `x` is gone the tuple holding
 /// them delivers nothing, so no value carries `y`'s later 1.
+// CR claude for claude: [test-gap/medium] This test, and
+// rand_picks_go_bottom_with_their_input above, cannot catch one builtin regressing. A
+// tuple is bottom when any element is, so as long as one of the eleven still goes
+// bottom with x, no tuple carries y = 1. Making count, or rand::pick, ride its last
+// value passes both tests. Run `(y, <builtin>)` for each builtin in its own collect and
+// assert each one. probe:
+// design/review-2026-10-19/repro/tests-lib-b1-bottom-tuple-vacuous.gx (tests-lib-b1-03)
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_builtins_go_bottom_with_their_input() -> Result<()> {
     const CODE: &str = r#"{

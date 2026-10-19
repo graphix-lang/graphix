@@ -1,0 +1,14 @@
+// Title: array::filter and array::find fire when their source fires with the
+// same length, though no callback slot fires (MapOp::reads_elements); the
+// firing rule in design/collection_intrinsics.md and CLAUDE.md omits this case.
+// Command: graphix --no-cache c-collection-filter-fires-on-moved-source.gx
+//   (graphix-fuzz check on it prints AGREE: both engines fire)
+// Expected by the documented rule ("a loop fires iff resized or a slot
+// fired; a same-length refresh with a quiet body does not fire"): filter
+// and find print once. Observed (correctly, since the result reads the
+// elements): every source fire prints, e.g. ([3, 4], [0, 0], 3) at n=1.
+let n = 0;
+n <- select n { k if k < 4 => k + 1, _ => never() };
+let xs = select n { 0 => [1, 2], 1 => [3, 4], 2 => [3, 4], _ => [5, 6] };
+let f = |xs: Array<i64>| (array::filter(xs, |x| true), array::map(xs, |x| 0), array::find(xs, |x| true));
+f(xs)

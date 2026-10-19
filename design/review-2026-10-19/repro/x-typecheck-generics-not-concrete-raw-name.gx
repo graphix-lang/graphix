@@ -1,0 +1,8 @@
+// The "must be fully known" refusal prints a minted cell's raw name.
+// Command: graphix --no-cache --check x-typecheck-generics-not-concrete-raw-name.gx
+// Expected: a short name, as every other diagnostic prints ('_7726).
+// Observed: "the type '_4611686018427395646 must be fully known here, a
+//   type-directed operation reads it: annotate it".
+let rd = |s: string| -> 'a json::read(s)$;
+let g = |s| { let v = rd(s); [v] };
+g("1")

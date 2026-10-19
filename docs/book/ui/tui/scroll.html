@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -310,6 +310,14 @@ let items = array::init(30, |i| line("Item [i + 1]"));
 let last = array::len(items) - 1;
 let selected = 0;
 let scroll_pos = 0;
+// CR claude for claude: [bug/medium] `visible` is a constant, but ratatui scrolls the
+// list by its real height. Below 10 rows the list moves while the thumb stays put.
+// Above 10 rows the example scrolls although the selection fits. The list also sets no
+// highlight, so the selection cannot be seen. Fix: `let size: Size = never(); let
+// visible = size.height;`, pass `#size: &amp;mut size` to the scrollbar, and add
+// `#highlight_style` to the list. Then fix scroll_list_follows_the_selection in
+// examples_test, which pins the over-scroll at 24 rows. probe:
+// design/review-2026-10-19/repro/examples-tui-list-overscroll.sh (examples-tui-02)
 let visible = 10;
 
 // Auto-scroll to keep selection visible

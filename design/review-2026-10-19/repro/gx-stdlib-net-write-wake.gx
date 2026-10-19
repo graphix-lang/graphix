@@ -1,0 +1,20 @@
+// net.gxi says sys::net::write, "When its arm wakes, write the standing value again".
+// The arm below sleeps at 100 ms and wakes at 200 ms with the value unchanged.
+// Run: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/gx-stdlib-net-write-wake.gx
+// Expected (per net.gxi): 2 (the first entry's write, then the wake's)
+// Observed: 1 (a wake writes nothing until the value fires; graphix-tests pins this
+//   as lib_tests::net::net_write_not_repeated_after_wake)
+let path = "/local/review/standing_write";
+let value = 42;
+let writes = 0;
+sys::net::publish(#on_write: |v: i64| writes <- v ~ writes + 1, path, 0);
+let ready: i64 = once(sys::net::subscribe(path)$);
+let on = ready ~ true;
+on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
+on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
+select on {
+    true => sys::net::write(path, value),
+    false => never()
+};
+sys::exit(sys::time::after_idle(duration:500.ms, ready));
+sys::time::after_idle(duration:400.ms, ready) ~ writes

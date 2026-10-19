@@ -1,0 +1,17 @@
+// x-rerun-3: json/toml write a datetime or duration map key in a form their reads refuse (small-pkgs-05 variant)
+// command: graphix --no-cache design/review-2026-10-19/repro/x-rerun-3-json-datetime-key-roundtrip.gx
+// expected (CLAUDE.md: what the json and toml writers emit reads back into its type):
+//   the datetime key written as RFC3339 ("2020-01-01T00:00:00+00:00") and the duration key as
+//   seconds ("1.5"), as serialize_leaf writes such values; both reads give the maps back
+// observed: ("{\"2020-01-01 00:00:00 UTC\":1}", error:`InvalidCast("can't cast \"2020-01-01 00:00:00 UTC\"
+//   to datetime: no primitive conversion"), "{\"1.5s\":1}", error:`InvalidCast("can't cast \"1.5s\" to
+//   duration: no primitive conversion"), "[d]\n\"2020-01-01 00:00:00 UTC\" = 1\n")
+type E = [`JsonErr(string), `InvalidCast(string)];
+let m: Map<datetime, i64> = {datetime:"2020-01-01T00:00:00Z" => 1};
+let s = json::write_str(m)$;
+let r: Result<Map<datetime, i64>, E> = json::read(s);
+let v: Map<duration, i64> = {duration:1.5s => 1};
+let sv = json::write_str(v)$;
+let rv: Result<Map<duration, i64>, E> = json::read(sv);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(s, r, sv, rv, toml::write_str({d: m}))

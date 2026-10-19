@@ -1,0 +1,16 @@
+// Title: a function declaring an abstract type, called from two statements, panics the compile (debug)
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-local-abstract-fork-panic.gx
+// Expected: [B(1), B(2)] (`--check` accepts it; `[mk(1), mk(2)]` in one statement runs fine)
+// Observed (debug build, fusion on or off):
+//   thread 'tokio-rt-worker' panicked at graphix-types/src/tracked.rs:198:13:
+//   a fork's write to AbstractId(..) would replace a write made since the fork
+//   Error: loading initial modules  Caused by: channel closed
+//   Backtrace: TrackedMap::join <- Env::join <- CompileCtx::join <- check_in_tasks
+//   <- typecheck1_statements: each statement's elaboration task compiles an
+//   instance of mk, whose `type B` re-registers B's AbstractRep with a fresh Arc
+//   (Env::deftype inserts unconditionally), and the joins see two writes.
+let mk = |x: i64| { type B = Abstract<i64>; B(x) };
+let a = mk(1);
+let b = mk(2);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[a, b]

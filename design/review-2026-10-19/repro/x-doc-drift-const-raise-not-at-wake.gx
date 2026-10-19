@@ -1,0 +1,21 @@
+// lowering::arm_raise_blocker's doc, design/strict_fusion.md and CLAUDE.md say a constant
+// fires at an arm's wake, so `error(`E)?` in an arm raises at every entry. Since "a wake
+// is a resume" a constant stands at a wake: it raises at the first entry only.
+// Command: timeout -s KILL 30 graphix --no-cache x-doc-drift-const-raise-not-at-wake.gx
+//   (same with --no-fusion)
+// Doc predicts errs counting each `A entry: 0 1 2 3 (or more)
+// Observed (both engines): 0 1
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let t = sys::time::timer(duration:20.ms, 6);
+let n = 0;
+n <- t ~ n + 1;
+let errs = 0;
+let s = select n % 2 { 0 => `A, _ => `B };
+let r = {
+  catch(e) errs <- e ~ errs + 1;
+  select s {
+    `A => error(`E)?,
+    `B => 2
+  }
+};
+errs

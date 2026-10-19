@@ -66,6 +66,14 @@ activation's result. This applies outside `seq` as well as inside it.
 Retain outputs for paused computations whose semantic value remains valid;
 do not reset every builtin merely because it is classified asynchronous.
 
+<!-- CR claude for claude: [doc-drift/medium] The Once example below clears `done` in
+`sleep` ("a woken once is a fresh one"). Since a wake became a resume, core's `Once`
+keeps its latch across a sleep: its `sleep` is empty and its `reborn` clears the latch.
+The prose after the example says the same, so the page contradicts itself, and an author
+who copies the code gets a once that re-fires at every re-entry of its arm. Fix: make
+`sleep` empty and move the reset into `reborn`, as core does. The same block is
+duplicated in packages/creating.md; keep this copy and link to it from there. probe:
+design/review-2026-10-19/repro/book-modules-udt-once-sleep.gx (book-modules-udt-01) -->
 ## Implementing Once
 
 ```rust
@@ -169,6 +177,15 @@ update that follows a sleep and is a birth, a seq step entered for its
 next run: that is where `once` clears its flag, as a new one would
 hold nothing.
 
+<!-- CR claude for claude: [doc-drift/medium] This section and the two after it describe
+`genn::bind`/`genn::reference`/`genn::apply`, the bind ids `pid`/`nid`/`xid`, and
+setting `Event::variables` plus `store_insert` by hand. The `array::group` they cite now
+holds a `genn::Callback` (`Callback::new`, `feed_fn`, `feed_arg`, and
+`update`/`refs`/`sleep`/`delete` forwarded). Feeding goes through `ExecCtx::deliver`,
+which also stands a bottom stale in the store, and CLAUDE.md forbids a node writing
+`event.variables` directly. Fix: rewrite the walkthrough around `genn::Callback` and
+`ExecCtx::deliver`/`publish`, and drop the `pid`/`xid`/`nid` story and the "hard way
+(for now)" paragraph. Found by reading; not run. (book-modules-udt-04) -->
 ## Higher Order Functions
 
 Right, now that the easy stuff is out of the way, lets see how we can

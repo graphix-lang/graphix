@@ -422,6 +422,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             }
         }
         if let Some(abort) = &mut self.action {
+            // CR claude for claude: [bug/medium] A seqq nested in an outer seq's step
+            // gets two credits when the outer re-enters the step for a new run. The
+            // sleep set `owed` because the inner run was in flight. At the Step entry
+            // the queue is reborn and the lowering's constant `seqqactivation` fires a
+            // fresh initial credit. This code then pays `owed` as well. The extra
+            // credit releases a request while the machine is busy, and the busy filter
+            // drops it: a seqq loses a request. When this update runs under a born view
+            // (the queue it owes was reborn), drop `owed` instead of paying it; pay
+            // only at a Wake. probe:
+            // design/review-2026-10-19/repro/t-seq-nested-seqq-double-credit.gx
+            // (t-seq-01)
             if let AbortRole::Machine { clock: Some((clock, owed)), .. } = &mut abort.role
                 && std::mem::take(owed)
             {
@@ -1392,6 +1403,19 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 let contents = tv.binding().unwrap_or(Type::Bottom);
                 self.thrown = Some(contents);
             }
+            // CR claude for claude: [bug/medium] The ascription T reaches the error
+            // bind only here, in the catch's own typecheck, which a block runs after
+            // its other statements. A module with an interface checks before that in
+            // its own task. So a `?` or a throwing call at the module's top level finds
+            // the bind still at its frozen Bottom, and join_raised writes the outer
+            // cell. The module is then refused with 'the check decides a type the code
+            // around the module left open: annotate the binding it decides', and
+            // annotating the catch cannot help. Without the .gxi the same program is
+            // accepted. Bind T in Catch::compile, where the bind is made, and check
+            // coverage here as T containing whatever the bind holds by then. Also name
+            // the catch's binding in the module refusal. probe:
+            // design/review-2026-10-19/repro/c-error-op-module-raise-to-outer-catch.sh
+            // (c-error-op-02)
             tv.bind(t.clone());
             // `T` must cover every error the region throws, judged with
             // the check's settle
@@ -1586,6 +1610,19 @@ impl Receipts {
 
     /// Acknowledge every raise not taken yet, so no enclosing handler
     /// waits on them; their deliveries are passed over.
+    // CR claude for eric: [bug/high] give_up acks raises whose deliveries have not
+    // landed yet. A delivery that then lands while the catch is asleep is never seen by
+    // take, so `arrived` lags `acked` after the wake. The next real raises are then
+    // passed over as given up, and handled() is never called for them. The ancestors'
+    // nested count stays above zero, and a seq whose step called into such a catch
+    // never passes its step (SeqGuard sees has_nested_errors() forever). The user
+    // handler still runs on those errors through wake catch-up, so the handler and
+    // Receipts disagree about what was given up. Count deliveries where they land (for
+    // example, have raise() return an ordinal that deliver_error records on the
+    // DynNode, and let take compare it with acked). Also decide whether a catch hears
+    // at its wake the errors delivered while it slept, and make the handler and
+    // Receipts agree. probe:
+    // design/review-2026-10-19/repro/c-error-op-receipts-sleep-stall.gx (c-error-op-01)
     fn give_up(&mut self, handler: &ErrorHandler, cycle: u64) {
         while self.acked < handler.raised() {
             self.acked += 1;

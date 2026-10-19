@@ -1,0 +1,18 @@
+// Title: an abstract constructor pattern takes its type parameters from its payload, so it never matches
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-abstract-payload-params.gx
+// Expected: [0, 1, 1, 2] -- Box(null) is 0, Box(5) is 1; Box(`A) is 1, Box(`B) is 2.
+// Observed: g is refused: "unreachable arm: the earlier arms already cover the
+//   whole scrutinee" at Box(`B). With g removed, f prints [1, 1]: the arm
+//   Box(null) never matches Box(null). And `|x: Box<[`A, `B]>| select x
+//   { Box(`A) => 1 }` is accepted and matches neither Box(`A) nor Box(`B)
+//   ("no arm matches ..: a coverage hole in the check").
+// Cause: the arm's predicate is Box<null> / Box<`A> (params from the payload
+//   pattern), and the run-time test (Type::is_a, Abstract arm) compares
+//   parameters invariantly with the value's [i64, null] / [`A, `B]. The same
+//   root with an irrefutable payload over two instantiations:
+//   design/review-2026-10-19/repro/x-typecheck-patterns-abstract-bind-two-insts.gx
+type Box<'a> = Abstract<'a>;
+let f = |x: Box<[i64, null]>| select x { Box(null) => 0, Box(n) => 1 };
+let g = |x: Box<[`A, `B]>| select x { Box(`A) => 1, Box(`B) => 2 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[f(Box(null)), f(Box(5)), g(Box(`A)), g(Box(`B))]

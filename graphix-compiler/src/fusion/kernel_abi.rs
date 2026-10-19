@@ -161,6 +161,12 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 /// A union with its primitives, unions of them and typedefs naming them
 /// (`Number = [Int, Real]`) folded into the one primitive set they are,
 /// beside its other members; `None` when that changes nothing.
+// CR claude for claude: [readability/low] The doc above merges abi_kind's contract
+// ('The top-level AbiKind of a Type ...') into primitive_union's, and abi_kind itself
+// has no doc. That Set rule is also out of date: abi_kind_d accepts a union of
+// composites as Value and folds primitive unions through this function. Move the first
+// paragraph to abi_kind and list the Set cases it accepts. Found by reading; not run.
+// (f-kernel-03)
 fn primitive_union(members: &[Type]) -> Option<Type> {
     fn bits(t: &Type, depth: usize, acc: &mut BitFlags<Typ>) -> bool {
         if depth > MAX_FREEZE_EXPANSIONS {
@@ -287,6 +293,15 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             if let Some(succ) = option_result_success(members) {
                 return abi_kind_d(succ, seen).map(|_| AbiKind::Nullable);
             }
+            // CR claude for claude: [perf/medium] A union not covered by these three
+            // rules has no kernel encoding: [`A, `B, null] (an optional enum), [`A,
+            // `B(i64), null], [{x: i64}, `N], [List<i64>, Array<i64>]. Every function
+            // returning or taking one node-walks. With kind markers the value tells all
+            // these members apart (graphix_value_is_a), so: let a null or error member
+            // beside any encodable rest be Nullable, and let a union of any marked
+            // kinds and arrays ride as Value, with #[native] pins. probe:
+            // design/review-2026-10-19/repro/x-kind-markers-optional-enum-no-kernel.gx
+            // (x-kind-markers-06)
             let all_variants = members
                 .iter()
                 .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _, _)))));
@@ -526,6 +541,11 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
             Type::Map { .. } => Ok(resolved.clone()),
             Type::Error(_) => Ok(resolved.clone()),
             Type::Primitive(p) => {
+                // CR claude for claude: [dead/low] This five-way single-primitive test
+                // returns Ok(Type::Primitive(*p)), which is exactly what the
+                // fallthrough below returns for any non-empty set, so it decides
+                // nothing. Delete it and keep the empty-set refusal and the return.
+                // Found by reading; not run. (f-kernel-04)
                 if is_single_prim(resolved, Typ::String)
                     || is_single_prim(resolved, Typ::Null)
                     || is_single_prim(resolved, Typ::DateTime)
@@ -657,6 +677,16 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
             // A recurring ref becomes the opaque leaf, built on the outer
             // (cell-filled) occurrence with its params frozen so the
             // leaf stays TVar-free.
+            // CR claude for claude: [perf/medium] Each occurrence of a ref is expanded
+            // and frozen again, so a typedef chain where each names the next twice (T_i
+            // = [null, (T_i+1, T_i+1)]) costs 2^n per freeze. A 22-level chain takes
+            // 15.7 s to start with fusion on and 0.12 s with --no-fusion, all of it in
+            // phase Freeze. The checker's decide_once was made linear on this shape;
+            // this walk was not. Memoize within the walk: keep each ref's frozen result
+            // with the ancestor keys it cut at, and reuse it wherever those keys are on
+            // the current path. probe:
+            // design/review-2026-10-19/repro/x-rerun-3-freeze-dag-exponential.gx
+            // (x-rerun-3-02)
             Type::Ref(tr) => {
                 if let Some(outer) = Seen::find(seen, tr) {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
@@ -820,6 +850,13 @@ pub enum ParamKind {
         fields: Vec<(ArcStr, Type)>,
     },
     /// Runtime index 0 is the tag string; payloads start at index 1.
+    // CR claude for claude: [doc-drift/low] The doc above says runtime index 0 is the
+    // tag and payloads start at index 1. Under kind markers element 0 is the Variant
+    // marker, the tag is at rep::VARIANT_TAG (1) and the payload follows it
+    // (rep::make_variant, rep::variant). graphix_variant_tag_eq's doc in
+    // emit_helpers.rs still describes the old `String(tag)` / tag-at-slot-0 forms too.
+    // Point both docs at rep instead of giving indices. Found by reading; not run.
+    // (f-kernel-01)
     Variant {
         cases: Vec<(ArcStr, Vec<Type>)>,
     },
@@ -971,6 +1008,17 @@ pub struct SiteLeaf {
 /// and supplied by each caller from its own storage (a self-call's is a
 /// per-activation child block); 0 for region parents and callees that
 /// claim nothing. Every consumer null-guards it.
+// CR claude for claude: [readability/low] The doc above describes bit 0 as "init (the
+// forced view, wakes included)" and names `wake_init`. The caller builds it as
+// `ctx_word(ctx.event.born(), wake)`, so bit 0 is `View::born` and a wake never sets
+// it. Fix the doc, and rename `ctx_word`'s `init` parameter and `CTX_INIT` to born so a
+// reader cannot take it for any init view. Found by reading; not run. (x-doc-drift-14)
+// CR claude for claude: [doc-drift/low] The slot 0 doc above is stale.
+// FusedKernel::update sets bit 0 from ctx.event.born() (Birth or Step), so a Wake runs
+// with bit 0 clear, not 'wakes included'. `wake_init` no longer exists. Document bit 0
+// as born (constants fire) and bit 1 as 'standing values read stale' (Wake, Step or the
+// kernel's slept bit), and say bit0 & !bit1 is a Birth. Found by reading; not run.
+// (f-kernel-02)
 pub(crate) const CTX_WIRE_SLOTS: usize = 3;
 
 /// The context word's init bit (slot 0).

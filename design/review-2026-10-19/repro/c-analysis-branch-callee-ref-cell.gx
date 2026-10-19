@@ -1,0 +1,18 @@
+// A reference made in a callee body is a publication analysis::independent never sees.
+// Run:
+//   GRAPHIX_PAR=off   graphix --no-cache --no-fusion c-analysis-branch-callee-ref-cell.gx
+//   GRAPHIX_PAR=force graphix --no-cache --no-fusion c-analysis-branch-callee-ref-cell.gx
+// Expected (serial, both modes): n=1 deref=10, n=2 deref=20, n=3 deref=30, n=4 deref=40
+// Observed under force (node-walk and JIT alike): n=1 deref=0 .. n=4 deref=0;
+// with GRAPHIX_PAR_AUDIT=1 the join panics: "a forked branch read BindId(..), which its
+// left sibling published in the same cycle". Putting #[parallel] on the tuple is accepted.
+let clock = sys::time::timer(duration:50.ms, 4);
+let n = 0;
+n <- clock ~ n + 1;
+let mk = || -> &i64 &(n * 10);
+let saved: [&i64, null] = null;
+let pair = (mk(), select saved { null as _ => -1, r => *r });
+saved <- once(pair.0);
+println("n=[n] deref=[pair.1]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

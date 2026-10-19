@@ -1,0 +1,13 @@
+// Title: a read-only reference test over a writable reference is refused as
+// a runtime-form collision: Type::diff keeps &mut i64 after an &i64 arm.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-diff-ref-mutability.gx
+// Expected: 1 (&mut i64 is an &i64, and the runtime test takes any reference)
+// Observed: refused: "this pattern can't tell &i64 from &mut i64: both have
+// the same runtime form; wrap them in distinct variants"
+let x = 1;
+let o: [&mut i64, null] = &mut x;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select o {
+  &i64 as r => *r,
+  null => 0
+}

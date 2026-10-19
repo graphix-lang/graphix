@@ -1,0 +1,11 @@
+// x-rerun-6 (x-rerun-1-11 still reproduces in part): a builtin handed to a
+// collection HOF now names its argument `collection_element`, but still
+// reports the position 1:1, which is in no file: Callback::slot_arg builds
+// the slot's argument with SourcePosition::default() and genn::SYNTHETIC.
+// command: graphix --no-cache x-rerun-6-builtin-callback-position.gx
+// expected: a position in this file (the `dbg` argument or the array::map
+//   call), as `array::map([1, 2, 3], |x| dbg(x))` reports `line: 2, column: 39`
+// observed (HEAD 9445a1d21): `line: 1, column: 1 dbg(collection_element): 1`
+//   (and 2, 3), both engines
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::map([1, 2, 3], dbg)

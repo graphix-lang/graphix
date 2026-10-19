@@ -20,6 +20,15 @@ fn data_to_value(cell: &Data) -> Value {
         Data::Float(f) => Value::F64(*f),
         Data::String(s) => Value::String(ArcStr::from(s.as_str())),
         Data::Bool(b) => Value::Bool(*b),
+        // CR claude for claude: [bug/medium] A duration-formatted cell ([h]:mm:ss,
+        // which calamine marks with is_duration()) goes through as_datetime too. A
+        // 36-hour cell reads as 1900-01-01 12:00:00 UTC instead of 36.h, even though
+        // the row type admits duration. ods time values (DurationIso) come back as raw
+        // "PT.." strings. Map is_duration() cells to Value::Duration (as_f64() days in
+        // seconds, F64 when negative or non-finite), parse DurationIso with
+        // as_duration, and pin a duration cell and a date cell (no xls pin reads either
+        // today). probe: design/review-2026-10-19/repro/small-pkgs-xls-duration.sh
+        // (small-pkgs-04)
         Data::DateTime(edt) => match edt.as_datetime() {
             Some(ndt) => Value::DateTime(TArc::new(ndt.and_utc())),
             None => Value::F64(edt.as_f64()),
@@ -102,6 +111,18 @@ fn check_ods<RS: Read + Seek>(rs: RS) -> Result<(), String> {
             }
         };
         match e.name().as_ref() {
+            // CR claude for claude: [bug/high] check_ods counts XML that calamine never
+            // reads. A `<table:table/>` or a `<table:table-row></table:table-row>`
+            // inside a cell resets the counts here (`table` is replaced, or `row` is
+            // replaced). calamine's read_row skips a cell's content with
+            // read_to_end_into, so it still expands every row. As a result 2000 rows
+            // that reach XFD pass the bound, and an 8000-row file of 10 KB OOM-kills
+            // the runtime from xls::sheets. Fix: skip a non-empty cell's content to its
+            // End as calamine does; reset `table` only on a `table:table` Start outside
+            // a table and end it at the first `table:table` End, as read_table does.
+            // Add a pin with a nested table in each far row. probe:
+            // design/review-2026-10-19/repro/small-pkgs-ods-nested-table.sh
+            // (small-pkgs-01)
             b"table:table" => table = OdsTable::default(),
             b"table:table-row" => {
                 let r = OdsRow {

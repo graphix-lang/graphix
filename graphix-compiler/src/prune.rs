@@ -18,6 +18,17 @@ pub struct Boundary {
     stamp: AtomicU64,
     /// Holds the boundary dirty in every cycle while above zero: a node
     /// inside it that must run again although nothing it reads arrives.
+    // CR claude for claude: [dead/low] Nothing calls BoundaryRef::hold or release in
+    // graphix or netidx, so `sticky` is always 0, yet `marked` loads it on every
+    // boundary check. Delete the field and both methods, and have `marked` compare the
+    // stamp only. Add the mechanism back with its first user and a pin if a retrying
+    // node ever needs it. Found by reading; not run. (x-prune-04)
+    // CR claude for claude: [dead/low] Nothing calls `hold`, `release` or
+    // `BoundaryRef::parent`, here or in ../netidx, and walk_pruning.md's As-built
+    // section says nothing needed sticky. `marked` still loads this counter on every
+    // check of an unstamped boundary, the skip path. Delete sticky, hold, release and
+    // parent, and let `marked` compare the stamp alone. Found by reading; not run.
+    // (c-prune-wake-04)
     sticky: AtomicU32,
 }
 

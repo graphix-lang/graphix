@@ -1,0 +1,16 @@
+// Title: == of a [&T, Array<u64>] union says a reference equals an array of numbers
+// Command: timeout -s KILL 120 graphix --no-cache t-rep-ref-eq-array-collision.gx
+// Expected: [] (a reference and an array never share a runtime form, so never compare equal)
+// Observed: [4145] (some k; the exact value depends on how many binds the
+//   compile minted): ExecCtx::ref_targets rewrites the reference into the
+//   plain array [U64(root bind id), steps..] before the value comparison,
+//   and an array holding that number compares equal to it.
+let x = 1;
+let a: [&i64, Array<u64>] = &x;
+let base = cast<u64>(4611686018427387904)$;
+let hits = array::filter(array::init(200000, |k| k), |k| {
+  let b: [&i64, Array<u64>] = [base + cast<u64>(k)$];
+  a == b
+});
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+hits

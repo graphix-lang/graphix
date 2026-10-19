@@ -204,6 +204,15 @@ fn trigger_snapshot(
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
             // the abort clause reads the run's trigger too
+            // CR claude for claude: [bug/medium] Only a trigger spelled as a simple
+            // name is snapshotted, and only reads with that exact spelling are
+            // redirected. So `seq m::t { .. m::t .. }`, or `use m::t; seq t { .. m::t
+            // .. }`, reads the variable live: a busy-dropped trigger changes what the
+            // running body sees. desugar_queued's trigger_name has the same gap for
+            // `until` and the abort/flush clauses. Resolve the trigger with
+            // env.lookup_bind and redirect every Ref that resolves to the same BindId,
+            // keying the snapshot by the binding rather than the spelling. probe:
+            // design/review-2026-10-19/repro/t-seq-qualified-trigger/main.gx (t-seq-02)
             if let Some(n) = simple_ref_name(e)
                 && (reads_name(body, &n)
                     || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), &n)))
@@ -436,6 +445,19 @@ fn run_events(
 /// when a run starts and asleep between runs, and only its fires after
 /// the entry cycle count. What stands at entry, and the fires it missed
 /// asleep, belong to no run.
+// CR claude for claude: [bug/high] The abort and flush event lowers to a select arm on
+// `seqedge`. Since a wake is a resume, every run after the first wakes that arm instead
+// of giving it a birth. A `sys::time::timer(d, false)` in `abort(..)` is therefore
+// never started again. Once it has fired, Timer's `left` is 0 and the paused run never
+// re-arms, so the documented per-run budget (seq_blocks.md §9, book seq.md, skill)
+// aborts one run and then no run ever again. The next run that overruns wedges the seq,
+// and every later trigger is busy-dropped. The check even warns 'acts only at this
+// arm's first entry' about the user's abort clause. Fix: give the clause a birth at
+// each run's entry (View::Step with reborn, as a step's entry gets), and make the pin
+// seq_abort::abort_timer_starts_with_the_run abort an earlier run with the timer too.
+// It passes today only because its run 1 ends before its timer fires. probe:
+// design/review-2026-10-19/repro/x-engine-seq-errors-abort-timer-budget-first-run-only.gx
+// (x-engine-seq-errors-01)
 fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
     let pos = e.pos;
     let live = select(
@@ -511,6 +533,15 @@ fn fn_names(
 }
 
 /// Whether a binding is a function: a trait method, or of a function type.
+// CR claude for claude: [perf/medium] Asked at lowering time, before the check, this is
+// false for an unannotated function parameter. fn_names then moves such a parameter
+// into the issue tuple, and desugar_queued captures it into the request, so
+// `array::map(xs, f)` in a seq inside `|f, t| ..` cannot resolve its callback and
+// node-walks (fused=2), while the annotated `|f: fn(x: i64) -> i64, t|` fuses
+// (fused=4). Keep an argument bare when the callee's declared parameter type at that
+// position is a function (known at lowering for builtins and lambda lets), as an inline
+// lambda is kept. probe: design/review-2026-10-19/repro/t-seq-fn-param-defuses.sh
+// (t-seq-05)
 fn is_function(env: &Env, bind: &crate::env::Bind) -> bool {
     env.trait_methods.get(&bind.id).is_some()
         || bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
@@ -870,6 +901,16 @@ impl Machine<'_> {
         self.decls.push(let_bind(pos, &e_cell, None, never(pos)));
         let join = (!sink.is_empty()).then(|| {
             let cell = ArcStr::from(format_compact!("seqj{}", spec.id.inner()).as_str());
+            // CR claude for claude: [bug/medium] Only a Write::Let sink gives the join
+            // cell a type. A try nested as the last statement of an annotated `let v:
+            // [i64, string] = try { .. }` body gets an untyped join cell, so does `x <-
+            // try { .. }` with `x: [i64, string]`. The first writer then fixes the
+            // cell's type and a with body of the other member is refused ('i64 does not
+            // contain string'). Carry the type in Write::Join from the enclosing join
+            // cell; for a connect, have both bodies' last steps write the target
+            // directly. probe:
+            // design/review-2026-10-19/repro/t-seq-nested-try-join-type.gx and
+            // design/review-2026-10-19/repro/t-seq-connect-try-join-type.gx (t-seq-04)
             let typ = match sink.first() {
                 Some(Write::Let { typ, .. }) => typ.clone(),
                 _ => None,
@@ -1046,6 +1087,12 @@ impl Machine<'_> {
             }
         };
         body.push(value);
+        // CR claude for claude: [bug/medium] The lowered block drops the block's
+        // decorations. `let x = #[native] { .. }` or `#[sync] { .. }` in a seq is
+        // accepted unchecked, while the same code outside a seq is refused. Refuse a
+        // block that carries attributes, as lower_try does, or put spec.dec on the
+        // lowered block so the compiler judges it. probe:
+        // design/review-2026-10-19/repro/t-seq-block-attr-dropped.gx (t-seq-03)
         Ok(block(pos, body.drain(..)))
     }
 }
@@ -1102,6 +1149,18 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         LPooled::<IndexMap<ArcStr, (Expr, ArcStr, BindId)>>::take(),
         |caps, stmt| {
             stmt.fold(caps, &mut |mut caps, e| {
+                // CR claude for eric: [bug/medium] Captures are only the names the body
+                // reads directly; a function the body calls reads the same variable
+                // live. So one seqq run sees two worlds. With `let g = |k| k + x`, a
+                // run computes `let a = x` from its enqueue-time snapshot while `g(0)`
+                // reads x as it stands, giving r (0, 200), (100, 200), (200, 200) for x
+                // enqueued at 0, 100, 200. That contradicts 'seqq reads the world once
+                // per run' (skill, seq_blocks.md §8). Decide whether the snapshot
+                // covers a callee's free reads (the instance summaries already name
+                // them) or whether the docs should say captures are syntactic and
+                // closures read live. probe:
+                // design/review-2026-10-19/repro/x-engine-seq-errors-seqq-closure-reads-live.gx
+                // (x-engine-seq-errors-03)
                 if let ExprKind::Ref { name }
                 | ExprKind::Connect { name, deref: true, .. } = &e.kind
                     && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
@@ -1494,6 +1553,15 @@ fn inline_lambda(mut e: &Expr) -> bool {
 /// One call issued per entry over a snapshot of the arguments taken on
 /// the entry event; only the call's own fired production is this
 /// invocation's answer. A nullary call is a level read at entry.
+// CR claude for eric: [risk/medium] A call is issued once per entry over the entry
+// snapshot, even a pure one in a select guard or scrutinee. A step that filters on it,
+// `select x { v if big(v) => v, _ => never() }` or `select big(x) { true => x, false =>
+// never() }`, decides on x as it stood at entry and waits forever. The same step with
+// `v > 2` written inline tracks x and completes, so wrapping an expression in a
+// function changes whether a seq progresses. Decide whether that is the rule: document
+// it as a trap, re-snapshot a call whose arguments fire before its step completes, or
+// treat Stateless calls as levels. probe:
+// design/review-2026-10-19/repro/t-seq-call-over-level-stalls.gx (t-seq-07)
 fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let pc = issue.pc;
     if call.args.is_empty() {
@@ -1506,6 +1574,13 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, issue: Issue) -> Expr {
     let issued = format_compact!("seqissued{}", spec.id.inner());
     let mut args: LPooled<Vec<Expr>> = LPooled::take();
     args.reserve(call.args.len() + 1);
+    // CR claude for claude: [perf/low] Every issue tuple, and `any(pc, once(args))`,
+    // carries pc, whose type is the set of all step labels. Each call site therefore
+    // costs the check O(steps): 250/500/1000 call steps check in 0.25/1.07/7.1 s
+    // (debug), against 0.07/0.10/0.13 s for constant writes. The tuple only needs an
+    // entry clock: `pc ~! true` (still a free read of pc, typed bool) in place of pc
+    // keeps the type constant-size. probe:
+    // design/review-2026-10-19/repro/t-seq-issue-tuple-check-cost.sh (t-seq-06)
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
         // a function stays at the call site, where the call resolves it: a
@@ -1647,6 +1722,19 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         // the trigger is the outer step's, issued with it; the clauses
         // and the body belong to the inner machine's own runs
+        // CR claude for claude: [bug/high] Under Rewrite::Issue a nested seq is rebuilt
+        // here with no completion guard, unlike issue_call's guarded call. Inside a
+        // select arm, an operand, a call argument or a tuple, the step fires at entry
+        // with the nested seq's standing result from the previous run and completes on
+        // it. The step then sleeps before the inner machine's start lands, so the inner
+        // run never happens. `seq go { let r = select go { 1 => seq { println("inner");
+        // k }, _ => 6 }; r }` prints `inner 0, 0, 0` instead of `inner 0, 0, inner 100,
+        // 100`, in both engines. Only a nested seq that is the step's whole value is
+        // guarded, by issue_expr, and that is the only form
+        // lang::seq::seq_nested_reentry pins. Fix: wrap the rebuilt seq in `guard(..)`
+        // when the mode is Issue, and pin the arm and call-argument forms. probe:
+        // design/review-2026-10-19/repro/tests-seq-nested-seq-in-expr-stale.gx
+        // (tests-seq-01)
         ExprKind::Seq(s) => {
             let SeqExpr { kind, trigger, abort, body } = &**s;
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));

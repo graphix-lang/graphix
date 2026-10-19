@@ -1,0 +1,39 @@
+// x-rerun-2: fusion's "no kernel return" refusal prints the region's type in full,
+// so a shared variant DAG (each level's payload is the level below, twice) costs
+// 2^n time and memory at fusion (f-mod-lowering-02 regressed differently).
+// Command: timeout -s KILL 100 graphix --no-cache x-rerun-2-variant-dag-refusal-oom.gx
+// Expected: prints 1 promptly, as `--no-fusion` does (0.2 s).
+// Observed (debug, HEAD 9445a1d21): "[probe] OOM-KILLED" past 6 GB after ~45 s.
+//   At 20/22/23/24 levels: 0.37/0.83/1.45/2.78 s, all in Phase::ReturnType;
+//   GXDBG_FREEZE_RET=1 shows the printed type at 9 * 2^n bytes (16 levels: 590 KB).
+let x0 = 1;
+let x1 = `A(x0, x0);
+let x2 = `A(x1, x1);
+let x3 = `A(x2, x2);
+let x4 = `A(x3, x3);
+let x5 = `A(x4, x4);
+let x6 = `A(x5, x5);
+let x7 = `A(x6, x6);
+let x8 = `A(x7, x7);
+let x9 = `A(x8, x8);
+let x10 = `A(x9, x9);
+let x11 = `A(x10, x10);
+let x12 = `A(x11, x11);
+let x13 = `A(x12, x12);
+let x14 = `A(x13, x13);
+let x15 = `A(x14, x14);
+let x16 = `A(x15, x15);
+let x17 = `A(x16, x16);
+let x18 = `A(x17, x17);
+let x19 = `A(x18, x18);
+let x20 = `A(x19, x19);
+let x21 = `A(x20, x20);
+let x22 = `A(x21, x21);
+let x23 = `A(x22, x22);
+let x24 = `A(x23, x23);
+let x25 = `A(x24, x24);
+let x26 = `A(x25, x25);
+let x27 = `A(x26, x26);
+let x28 = `A(x27, x27);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+1

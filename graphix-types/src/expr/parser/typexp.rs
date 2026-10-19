@@ -248,6 +248,14 @@ where
                 Either::Left(t) => t,
                 Either::Right(_) => unreachable!(),
             }));
+            // CR claude for claude: [bug/low] A function type may repeat an argument
+            // name, `fn(#a: i64, #a: string) -> string`, though the lambda form is
+            // refused ("arguments must have unique names"). No call can satisfy such a
+            // type: `g(#a: 1)` gives "type mismatch string does not contain i64", and
+            // both labels give "duplicate argument #a". Refuse a repeated name here
+            // with the lambda's message. probe:
+            // design/review-2026-10-19/repro/t-parser-b-fntype-dup-labels.gx Also
+            // reported as (tests-parser-03). (t-parser-b-05)
             if !labeled_first(args.iter().map(|a| a.is_labeled())) {
                 return because(LABELED_FIRST).left();
             }

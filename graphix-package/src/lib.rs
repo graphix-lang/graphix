@@ -223,6 +223,17 @@ struct Skel {
 
 static SKEL: Skel = Skel {
     cargo_toml: include_str!("skel/Cargo.toml.hbs"),
+    // CR claude for claude: [bug/medium] The skeleton's ExampleBuiltin (skel/lib.rs)
+    // answers `TagView::Stale(_) => self.out.ride()` over a phantom default, so every
+    // package made by `graphix package create` gets a builtin that produces bottom
+    // where its argument first arrives stale. That happens at an arm's first entry when
+    // another arm already consumed the input's fire bit. With an empty `sleep`, it also
+    // rides a stale value after a wake. CachedArgs::update_inner computes a STALE value
+    // in both cases. Fix: have the skeleton compute on a Stale arg when `out` holds no
+    // value or a sleep happened, or drop the raw example and keep the EvalCached one.
+    // Also list `Io` in the skeleton's Effect comment. probe:
+    // design/review-2026-10-19/repro/package-skel-stale-entry.gx (is_err in the same
+    // position, Tag(32) stale; the skeleton has no such path) (package-01)
     lib_rs: include_str!("skel/lib.rs"),
     build_rs: include_str!("skel/build.rs"),
     mod_gx: include_str!("skel/mod.gx"),
@@ -1429,6 +1440,17 @@ impl GraphixPM {
         packages: &mut Packages,
     ) -> Result<()> {
         let root = self.install_root()?;
+        // CR claude for claude: [bug/medium] Nothing keeps the record's `removed` set
+        // disjoint from what the build compiles. add_packages and apply_selection move
+        // only the named package into `installed`, and Cargo features pull its closure
+        // in. After `remove str --yes` (which cascades gui), a later `add gui` compiles
+        // and registers str while `list` shows it as removed. `remove str` then says
+        // 'already removed' and cannot cascade to gui. External packages' own
+        // graphix-package-* deps are compiled and registered the same way. Fix: here,
+        // after reconcile, read feature_edges from the source manifest and move every
+        // removed name an installed package's feature depends on into `installed`, with
+        // a note. That is the add-side twin of the removal cascade. Found by reading;
+        // not run. (package-02)
         reconcile(source_dir, packages).await?;
         packages.enforce_invariants();
         let plan = packages.build_plan();
@@ -1446,6 +1468,16 @@ impl GraphixPM {
         let _ = fs::copy(&self.exe, self.exe.with_file_name(&backup_name)).await;
         // Stdlib packages are selected by Cargo feature; `core` is always compiled.
         println!("Building graphix with updated packages (this may take a while)...");
+        // CR claude for eric: [risk/medium] `cargo install` without --locked ignores
+        // the source's Cargo.lock (cargo-install(1)), so every add, remove or update
+        // re-resolves the whole dependency tree to the newest semver-compatible
+        // releases. A broken upstream patch release then makes every package operation
+        // fail, and the installed shell differs from the tested lock. build_embedding
+        // builds the same source with `cargo build`, which keeps the lock and adds only
+        // the new deps. Options: build with `cargo build --release` in source_dir and
+        // copy the binary over self.exe (one build path for both commands), or accept
+        // the drift. --locked alone fails once an external dep is added. Found by
+        // reading; not run. (package-03)
         let mut cmd = Command::new(&self.cargo);
         cmd.arg("install")
             .arg("--root")
@@ -1795,6 +1827,14 @@ impl GraphixPM {
             Some(_) => Some(Saved::take(&source_dir).await?),
             None => None,
         };
+        // CR claude for claude: [risk/low] When ctrl_c wins this select, the build
+        // future is dropped, but build_embedding's cargo Command lacks kill_on_drop, so
+        // tokio leaves the child running. A SIGINT sent to graphix alone (kill -INT, a
+        // supervisor) restores the override's manifest and lockfile while cargo keeps
+        // building in the caller's tree. Only a terminal Ctrl-C reaches cargo too,
+        // through the process group. Fix: `.kill_on_drop(true)` on the cargo Command in
+        // build_embedding (and in install_from_source). Found by reading; not run.
+        // (package-05)
         let built = tokio::select! {
             built = self.build_embedding(&source_dir, &external, &features, crate_name) => built,
             _ = tokio::signal::ctrl_c() => Err(anyhow!("interrupted")),
@@ -1875,6 +1915,12 @@ impl GraphixPM {
         // New stdlib packages only ship with a shell bump, so only unpack the
         // latest source to enumerate them when a bump is available.
         let shell_bump = version_gt(&latest, &current);
+        // CR claude for claude: [perf/low] With a shell bump the plan is never empty,
+        // so without --yes on a non-TTY the bail below is certain. Yet update first
+        // wipes the build dir, unpacks or downloads the whole latest source, and
+        // queries crates.io for every external package. Refuse here when `shell_bump &&
+        // !assume_yes && !stdin.is_terminal()`, and keep the later check for an
+        // externals-only plan. Found by reading; not run. (package-06)
         let (latest_src, stdlib_latest) = if shell_bump {
             let s = self.prepare_source(&latest).await?;
             let set = stdlib_packages_in_source(&s).await?;

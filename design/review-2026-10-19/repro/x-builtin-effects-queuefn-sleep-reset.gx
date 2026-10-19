@@ -1,0 +1,22 @@
+// Title: queuefn's sleep clears its queue and resets its credit to 1, so a woken arm runs a call no trigger released
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/x-builtin-effects-queuefn-sleep-reset.gx
+// Setup: #trigger never fires. q(0) runs at birth (the initial credit); q(1), q(2) queue; the arm sleeps
+//   at 50 ms and wakes at 150 ms, when n (now 7) is re-raised.
+// Expected (CLAUDE.md: sleep is pause, not reset; a queue's contents and credits survive; state starts
+//   afresh only at a rebirth): (0, ..) and nothing more, since no trigger ever releases a queued call
+// Observed: (0, 4670.ns) then (70, 150677265.ns): QueueFn::sleep set pop_count back to 1 and cleared the
+//   queue, so q(7) ran at the wake without a trigger
+let n = 0;
+let clk = sys::time::timer(duration:20.ms, 12);
+n <- clk ~ n + 1;
+let trig = never();
+let on = true;
+on <- sys::time::timer(duration:50.ms, false) ~ false;
+on <- sys::time::timer(duration:150.ms, false) ~ true;
+let r = select on {
+    true => { let q = queuefn(#trigger: trig, |x: i64| x * 10); q(n) },
+    false => never()
+};
+sys::exit(sys::time::timer(duration:400.ms, false) ~ 0);
+let t0 = sys::time::now(true);
+(r, sys::time::diff(sys::time::now(r), t0))

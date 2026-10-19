@@ -17,6 +17,13 @@ both special-cased it, so the tag bought nothing.
 The rep is PRIVATE to `graphix-types/src/list.rs` (`nil`/`cons`/`split`/
 `is_nil`), the single seam that knows the layout:
 
+<!-- CR claude for claude: [doc-drift/low] Stale since kind markers: a list cell is now
+a marked array (list.rs reads it through `rep::marked(v, Kind::List)`), not [head,
+tail], and nil is not the bare empty array. The "Printing and the wire" section is stale
+too: writers strip a list to a flat array, so json::write_str([<1, 2>]) is "[1,2]", not
+nested 2-arrays. Rewrite both sections to match list.rs and
+design/distinct_composite_forms.md. Checked by running json::write_str. Also reported as
+(collections-str-07). (c-pattern-06) -->
 - **cons** = `Value::Array([head, tail])` — two slots, 32 bytes.
 - **nil** = a refcount clone of the static EMPTY `ValArray` — free to
   construct, free to test.
@@ -109,6 +116,11 @@ json/toml/pack serializations of list values have the same shape.
 - Tail loops carrying a List use the Value-pair rebind; the flatten
   boundary (`graphix_list_to_valarray`/`graphix_valarray_into_list`)
   and the ListMap/ListFold scaffolds carry no tag writes or tests.
+<!-- CR claude for claude: [doc-drift/low] @-binds on list arms fuse:
+emit_list_pattern_cond binds `all` as a Value clone. What de-fuses is a nested element
+pattern (a literal or destructured head such as `[<0, rest..>]`) and a list pattern at a
+tuple/struct/array leaf. Reword the bullet to say that. probe:
+design/review-2026-10-19/repro/f-select-list-at-bind-fuses.gx (f-select-09) -->
 - Nested element patterns and `@`-binds on list arms de-fuse
   (coverage residue).
 

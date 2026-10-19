@@ -1,0 +1,13 @@
+// Title: a write through a reference whose type is a union naming a
+// reference typedef is refused as "not a reference".
+// Command:
+//   timeout -s KILL 10 graphix --check design/review-2026-10-19/repro/c-node-mod-write-through-aliased-ref-union.gx
+// Expected: accepted, as `let r: [&mut i64, &mut i64] = &mut a; *r <- 10` is,
+//   and as `let r: Cell = &mut a; *r <- 10` is.
+// Observed: can't write through [Cell, &mut i64]: not a reference
+type Cell = &mut i64;
+type Opt = [Cell, &mut i64];
+let a = 1;
+let r: Opt = &mut a;
+*r <- 10;
+a

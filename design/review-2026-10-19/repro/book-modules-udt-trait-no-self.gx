@@ -1,0 +1,15 @@
+// Title: udt/traits.md says every trait method has a positional `self`; a method without one is accepted but uncallable
+// Command: graphix --no-cache book-modules-udt-trait-no-self.gx
+// Expected (traits.md "Declaring a Trait"): the trait declaration refused, since `zero`
+//   has no `self` parameter; or, if such a method is legal (core's Cast::from_value is
+//   one), the book saying so and what it is for.
+// Observed: the trait and impl are accepted; the call is refused at the end with
+//   "Z::zero called without its self argument".
+trait Z {
+    val zero: fn(x: i64) -> self;
+    val get: fn(self) -> i64
+};
+type C = Abstract<i64>;
+impl Z for C { let zero = |x| C(x); let get = |c| c.0 };
+let c: C = Z::zero(3);
+Z::get(c)

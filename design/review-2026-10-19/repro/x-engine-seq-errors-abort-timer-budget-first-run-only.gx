@@ -1,0 +1,23 @@
+// Title: `abort(sys::time::timer(d, false))`, documented as a budget per
+// run, aborts only the first run: the abort clause's select arm is woken
+// (a resume) at every later run, so its timer is not started again, the
+// run is never aborted and every later trigger is busy-dropped.
+// Command: timeout -s KILL 30 graphix --no-cache x-engine-seq-errors-abort-timer-budget-first-run-only.gx
+//          (same with --no-fusion)
+// Expected (each run aborted 100ms after it starts, a trigger every 300ms):
+//   run 0, run 1, run 2, run 3, run 4, run 5, run 6, then exit
+// Observed: WARNING ... this call reads no variable, so it acts only at this
+//   arm's first entry ... ; run 0; run 1; then the exit at n = 6 (the
+//   second run never ends, so triggers 2..6 are dropped). With
+//   abort(sys::time::after_idle(duration:100.ms, x)) all seven runs print.
+let clock = sys::time::timer(duration:300.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let stop = false;
+let r = seq let x = n; abort(sys::time::timer(duration:100.ms, false)) {
+  println("run [x]");
+  until stop;
+  x
+};
+sys::exit(select n { 6 => n ~ 0, _ => never() });
+r

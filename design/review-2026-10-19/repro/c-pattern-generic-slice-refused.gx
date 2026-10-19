@@ -1,0 +1,14 @@
+// Title: an unannotated generic function over an array or list with a
+// rest pattern is refused by the open-member rule.
+// Command: graphix --check c-pattern-generic-slice-refused.gx
+// Expected: accepted (each function alone, too).
+// Observed: each of the three is refused alone (the check stops at the
+// first): "this pattern tests for Array<[['_a, '_b], ['_a, '_b, '_b]]>
+// among Array<['_a, '_b, '_b, '_b, '_b]>, but a type variable there
+// isn't known here and may share '_a's runtime form: annotate it". The same function
+// is accepted with `a: Array<'e>` written, or with its arms swapped
+// (`[_, ..] => false, [] => true`).
+let is_empty = |a| select a { [] => true, [_, ..] => false };
+let first = |a| select a { [h, ..] => h, [] => never() };
+let head = |l| select l { [<h, t..>] => h, [<>] => 0 };
+(is_empty([1, 2]), first([1, 2]), head([<1>]))

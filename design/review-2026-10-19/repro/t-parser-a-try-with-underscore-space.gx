@@ -1,0 +1,8 @@
+// try/with refuses `_` followed by a space before its `:` annotation
+// command: graphix --check design/review-2026-10-19/repro/t-parser-a-try-with-underscore-space.gx
+// expected: accepted, as `with(e : Any)` and `with(_: Any)` are
+// observed: Parse error at line 7, column 34: Unexpected `:` / Unexpected `_`
+//   Expected whitespace, `)` or whitespaces
+let t = sys::time::timer(duration:10.ms, false);
+let a = seq t { try { 1 } with(_ : Any) { 2 } };
+a

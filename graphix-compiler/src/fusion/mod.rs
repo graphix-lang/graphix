@@ -916,6 +916,20 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                 );
                 enqueue.push((g.body(), ptr));
             }
+            // CR claude for claude: [bug/critical] Sites are keyed by ExprId, but
+            // for_each_emitted_node descends into inline callback bodies, and two
+            // instances of one callback (e.g. `array::map(xs_i64, g)` and
+            // `array::map(ys_u64, g)` in one region) share every ExprId. The second
+            // instance's kernel overwrites the first, and emission then calls one
+            // kernel from both instances. Result: a silent wrong answer (u64::MAX < 0
+            // is true), or, with f64 against i64, a Cranelift verifier panic at link
+            // that kills the runtime. walk_node_for_builtin_calls keys apply_sites the
+            // same way. Key sites by the call node's identity (or by instance plus
+            // ExprId) and look them up that way at emission; at minimum, refuse the
+            // region when an ExprId already maps to another kernel. probe:
+            // design/review-2026-10-19/repro/f-mod-lowering-site-id-collision-wrong.gx,
+            // design/review-2026-10-19/repro/f-mod-lowering-site-id-collision-panic.gx
+            // (f-mod-lowering-01)
             local_sites.insert(n.spec().id, cached);
         });
         match target {
@@ -981,6 +995,16 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     // A feeder runs before the kernel, so a fed argument's raise would
     // reach its handler ahead of a fused earlier argument's: then nothing
     // is fed.
+    // CR claude for claude: [bug/medium] This test sees a raise only through statically
+    // resolved lambdas, so a fed argument that raises through a dynamic call (a
+    // select-chosen function value) counts as raise-free. It is then fed, and its raise
+    // reaches the handler before an earlier fused argument's: `f((n /? 0)?,
+    // count(g(n)))` logs fed before fused in the JIT and fused before fed in the
+    // node-walk. Count any call with no static target (resolved_apply() None, not a
+    // builtin) as raising, and share one helper with arm_raise_blocker's identical
+    // closure. probe:
+    // design/review-2026-10-19/repro/f-mod-lowering-fed-arg-dynamic-raise.gx
+    // (f-mod-lowering-03)
     let raises = |n: &Node<R, E>| {
         let mut any = false;
         for_each_reachable_node(n, &mut |n| {
@@ -1290,6 +1314,18 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             })
             .ok();
         }
+        // CR claude for claude: [bug/high] f-mod-lowering-02 has regressed and is now
+        // worse. This reason prints the region's whole type, and the printer walks the
+        // type as a tree. A type that shares its parts (`let x2 = `A(x1, x1)`, or `(x1,
+        // x1)`) prints at 9*2^n bytes, even when unfolds_past has already judged the
+        // type too big to freeze. The 28-level chain is OOM-killed past 6 GB (it took
+        // 9-14 s at review time); --no-fusion takes 0.2 s. frozen_or_blocked in
+        // lowering.rs formats the same way. Fix: record a fixed reason, keep the type
+        // (or the spec) in FusionFailure, and render it only when a #[native] or
+        // GXDBG_NATIVE_ALL reports the failure. Alternatively, bound the rendering.
+        // Then pin a shared tuple chain through try_fuse. probe:
+        // design/review-2026-10-19/repro/x-rerun-2-variant-dag-refusal-oom.gx
+        // (x-rerun-2-01)
         let reason = format_with_flags(PrintFlag::DerefTVars, || {
             format_compact!("a region of type {} has no kernel return", node.typ())
         });
@@ -1505,6 +1541,11 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
 /// a bare binding read forwards an input and a constant holds its value,
 /// neither computing anything.
 /// Whether `node`, under any parentheses, is a constant.
+// CR claude for claude: [readability/low] The first paragraph of this doc ('A region
+// root must emit a value...') describes region_is_candidate, not is_constant. Likewise,
+// the first line of asserted_native's doc ('Does the subtree call a lambda or run a
+// collection operation...') belongs to calls_a_function. Move each paragraph onto the
+// function it describes. Found by reading; not run. (f-mod-lowering-04)
 pub(crate) fn is_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {

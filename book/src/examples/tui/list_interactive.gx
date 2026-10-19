@@ -16,6 +16,13 @@ let scroll_pos = 0;
 let visible = 5;
 
 // Auto-scroll to keep selection visible
+// CR claude for claude: [bug/medium] This hand-kept scroll offset uses the constant
+// `visible = 5`, not the list's real height. In a 9-row terminal, End scrolls Apple and
+// Banana off and leaves two blank rows, although all 7 items fit. With no `#scroll`,
+// ratatui's ListState already keeps the selection visible at any size (see the doc on
+// ListW's `state`). Delete `scroll_pos`, `visible`, this connect and `#scroll:
+// &scroll_pos`. probe: design/review-2026-10-19/repro/examples-tui-list-overscroll.sh
+// (examples-tui-01)
 scroll_pos <- select selected {
     s if s < scroll_pos => s,
     s if s > (scroll_pos + visible - 1) => s - visible + 1,

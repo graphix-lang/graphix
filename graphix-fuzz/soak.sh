@@ -215,6 +215,12 @@ start() {
     # The WHOLE box: one pool, so the 8x oversubscription is claimed once.
     workers=${2:-$(( $(ncpu) * 8 ))}
     seed=${3:-$(date +%s)}
+    # CR claude for claude: [structure/low] The default mix is written here, in
+    # fleet.sh's `MIX` and in main.rs `DEFAULT_MIX`. Because this script always passes a
+    # mix, `DEFAULT_MIX` never governs a launched campaign, and retuning it does nothing
+    # on the fleet. Keep the binary's constant as the only default: pass the mix
+    # argument only when one was given here, and only when FLEET_MIX is set in fleet.sh.
+    # Found by reading; not run. (fuzz-main-aux-07)
     mix=${4:-50:25:25:10}
     [[ $workers =~ ^[1-9][0-9]*$ ]] || {
         echo "workers must be positive" >&2
@@ -286,6 +292,15 @@ start() {
         cargo build --profile soak -p graphix-fuzz --manifest-path "$repo/Cargo.toml"
         binary="$build/soak/graphix-fuzz"
     fi
+    # CR claude for eric: [perf/low] This gate runs the whole regression corpus. The
+    # soak launched below then runs `print_regression` again with the same binary
+    # (main.rs `soak` arm) before it hunts, and `wait_for_gate` waits for that second
+    # run. Every launch pays the gate twice, at 4x on scale-4 boxes. wait_for_gate's
+    # comment calls the second run 'the full regression gate', but it has no fusecheck
+    # and ignores outcome mismatches. Choose one gate: skip the soak's in-process run
+    # when soak.sh already gated (an env flag), or drop this line and make the soak's
+    # gate run fusecheck and stop on mismatches. Found by reading; not run.
+    # (fuzz-main-aux-05)
     "$binary" regress
 
     mkdir -p "$dir/state" "$dir/corpus"

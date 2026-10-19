@@ -139,6 +139,12 @@ let handle = |e: string| -> i64 select active {
 let result = submitted
 "#;
 
+// CR claude for claude: [readability/low] The `B arm is entered here for the first
+// time, which CLAUDE.md calls a Step, not a Wake. The name and the doc comment ('wakes
+// an arm for the first time') present it as wake coverage, and a regression in wake
+// handling would leave it green. Rename it to say first entry, or add a real wake: flip
+// back to `A, then to `B again, and assert the count does not move. Found by reading;
+// not run. (tests-lib-a-04)
 async fn arm_wake_delivers_standing_args_stale(mode: Mode) -> Result<()> {
     let mut f = Fixture::new(PHANTOM, mode).await?;
     // route to `A, deliver one real event, then flip to `B with no new

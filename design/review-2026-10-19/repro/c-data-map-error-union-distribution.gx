@@ -1,0 +1,8 @@
+// Title: a written union of errors does not contain the error a union of errors merges to
+// Command: graphix --check c-data-map-error-union-distribution.gx
+// Expected: accepted (Error<[i64, string]> holds exactly error(i64) or error(string),
+//   as [`A(i64), `A(string)] accepts `A([i64, string]) and the tuple form is accepted too)
+// Observed: type mismatch [Error<i64>, Error<string>] does not contain Error<[i64, string]>
+let b = true;
+let e: [Error<i64>, Error<string>] = select b { true => error(1), false => error("x") };
+e

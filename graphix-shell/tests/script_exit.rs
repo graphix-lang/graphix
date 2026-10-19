@@ -29,6 +29,14 @@ fn exit_prints_its_own_cycle() {
         "let r = 42;\nsys::exit(r ~ 0);\nr\n",
         "let x = sys::time::after_idle(duration:50.ms, 42);\nsys::exit(x ~ 0);\nx\n",
     ] {
+        // CR claude for claude: [test-gap/low] Every iteration makes a fresh cache, so
+        // all runs here are cold, though the file's doc promises 'on a cold cache as on
+        // a warm one' (a_stopped_runtime_says_why has the same shape). A warm start
+        // that exits before printing its exit cycle would pass. Make the cache once per
+        // program, outside the loop, so the first run writes the images and the rest
+        // restore them, and assert the restore from the graphix_shell::cache log as
+        // jit_arena_rotation does. Found by reading; warm runs checked by hand.
+        // (tests-shell-compiler-02)
         for _ in 0..5 {
             // a fresh cache each time: the first run stores its images
             let cache = tempfile::tempdir().expect("tempdir");

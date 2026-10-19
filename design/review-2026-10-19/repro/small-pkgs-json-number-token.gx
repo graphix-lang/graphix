@@ -1,0 +1,8 @@
+// json::read reads a user object whose only key is serde_json's private number token as a number
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/small-pkgs-json-number-token.gx
+// Expected: (error:`InvalidCast(..), {"$serde_json::private::Number" => "123"})
+// Observed: (123, error:`InvalidCast("can't cast 123 to Map<string, string>: not a map"))
+let a: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read(r#"{"$serde_json::private::Number": "123"}"#);
+let b: Result<Map<string, string>, [`JsonErr(string), `InvalidCast(string)]> = json::read(r#"{"$serde_json::private::Number": "123"}"#);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(a, b)

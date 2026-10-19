@@ -1,0 +1,11 @@
+// str::parse reads the text as a netidx literal before casting, so a plain string or an RFC3339 datetime fails while cast<T> of the same string succeeds, and a string target loses the text
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache collections-str-parse-not-cast.gx
+// expected (one reading): ("4.20", "007", "abc", 2020-01-01 00:00:00 UTC, 2020-01-01 00:00:00 UTC)
+// observed: ("4.2", "7", error:`ParseError("cannot parse \"abc\" as string"),
+//            error:`ParseError("cannot parse \"2020-01-01T00:00:00Z\" as datetime"), 2020-01-01 00:00:00 UTC)
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let a: Result<string, `ParseError(string)> = str::parse("4.20");
+let b: Result<string, `ParseError(string)> = str::parse("007");
+let c: Result<string, `ParseError(string)> = str::parse("abc");
+let d: Result<datetime, `ParseError(string)> = str::parse("2020-01-01T00:00:00Z");
+(a, b, c, d, cast<datetime>("2020-01-01T00:00:00Z"))

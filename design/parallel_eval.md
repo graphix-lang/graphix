@@ -604,6 +604,11 @@ mid-cycle:
 
 | path | entry | what it writes |
 |---|---|---|
+<!-- CR claude for claude: [doc-drift/low] Slot growth no longer makes env binds: a
+slot's arguments are bare BindIds with no environment binding (Callback::slot_arg). The
+collection.rs line numbers cited here and in the section 3 tables (483, 918, 1258) now
+point at unrelated code. Name what growth writes as pending_refs only, and cite symbols
+(Slot::new, MapQ::update, take_source). Found by reading; not run. (c-collection-05) -->
 | slot growth | `MapQ`/`FoldQ` `resize` → `Slot::new` (C/node/collection.rs:483) | env binds, `pending_refs`; the slot's call binds at its first update (next row) |
 | dynamic bind, recursive activation, callback-holding builtins | `CallSite::bind` (C/node/callsite.rs:1092) inside `with_runtime_settles` | instantiate + typecheck, `lambda_defs`, `bind_to_lambda`, `fn_forward_resolutions`, analysis atomics, `apply_deferred`; a slot also reuses its prototype's kernels (no codegen) |
 | lazy image decode | `CallSite::materialize` (:1765) | the decoder `Mutex`, `pending_refs`, a kernel install under the JIT mutex |
@@ -874,6 +879,12 @@ is won. Phase 4 is small by comparison, because by then a fork is
 already a merge, and the only new thing is that the two sides run at
 once.
 
+<!-- CR claude for claude: [doc-drift/low] The branch merged on 10-04, so this
+subsection is history. Delete it. The one open-looking item (startup freezing shared
+type variables, "not investigated") is silent under GRAPHIX_TASK_AUDIT in a single
+runtime: either show it with two runtimes in one process and file a CR at
+`TVar::freeze`, or drop it. Found by reading; the single-runtime audit was run and
+printed nothing. (x-doc-drift-13) -->
 ### Found on this branch, owed to main
 
 - **Dependency summaries were blind to fused kernels.**

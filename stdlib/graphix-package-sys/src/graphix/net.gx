@@ -1,6 +1,16 @@
 let write = 'a: Data |path: string, value: 'a| -> Result<_, `WriteError(string)> 'sys_net_write;
 let subscribe = 'a: Concrete |path: string| -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]> 'sys_net_subscribe;
 let call = 'a: Data, 'b: Concrete |path: string, args: 'a| -> Result<'b, [`RpcError(string), `InvalidCast(string)]> 'sys_net_call;
+// CR claude for claude: [bug/medium] #f's argument type 'args is the target of a data
+// read: PublishRpc::arg casts each call's arguments to it. It has no `Concrete` bound,
+// so the check accepts `#f: |a: &i64| ..` and `#f: |a: fn(x: i64) -> i64| ..`. The
+// publish then always fails with PublishRpcError, and every call times out. Add `'args:
+// Concrete` here and in net.gxi, as `call` declares `'b: Concrete`. The PublishRpcError
+// message itself is built in PublishRpc::publish with a raw `{e}` of the error payload,
+// so it prints the variant's kind marker (`[abstract:Enwuk.., "InvalidCast", ..]`).
+// Print it with Naked, or print the InvalidCast message. probe:
+// design/review-2026-10-19/repro/tests-lib-b2-net-callback-reads-a-reference.gx
+// (tests-lib-b2-02)
 let rpc = 'spec: Data, 'result: Data |
     #path: string,
     #doc: string,
@@ -11,5 +21,24 @@ let list = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Array<string>, `ListError(string)> 'sys_net_list;
 let list_table = |#update: Any = sys::time::timer(1, true), path: string|
     -> Result<Table, `ListError(string)> 'sys_net_list_table;
+// CR claude for claude: [bug/medium] #on_write's argument `'a` has no Concrete bound,
+// and Publish::update casts a write only when extract_publish_cast_type finds the
+// handler's argument type concrete. Otherwise it passes the unmarked wire data. A
+// handler whose argument is inferred, such as `|v| { let (a, b) = v; .. }` as `(i64,
+// '_)`, gets `[41, "x"]` as a bare array, its destructure never matches, and the write
+// is lost with no error. Annotating `|v: (i64, string)|` makes it work. Fix: declare
+// `'a: Concrete` here and in net.gxi, as subscribe and call do, so the check asks for
+// the annotation. Check rpc's `#f` argument for the same gap. probe:
+// design/review-2026-10-19/repro/x-builtin-effects-publish-onwrite-open.gx
+// (x-builtin-effects-02)
+// CR claude for claude: [bug/high] on_write's argument type 'a has no bound, so the
+// checker accepts a handler that takes a function or a reference. Publish casts an
+// incoming write only when the type is concrete, otherwise it feeds the raw value. A
+// remote write of 5 to a handler `|f: fn(x: i64) -> i64|` then panics the runtime
+// ('value I64(5) is not a function'), and `|v: &i64|` gets a plain i64. Declare `'a:
+// Data` here and in net.gxi. It keeps the omitted `|v: Any|` default valid and refuses
+// fn and & arguments. Bound rpc's 'args the same way: today that hole is only caught at
+// publish. probe: design/review-2026-10-19/repro/gx-stdlib-on-write-unbounded.gx
+// (gx-stdlib-01)
 let publish = 'v: Data |#on_write: fn(v: 'a) -> _ throws 'e = |v: Any| never(v), path: string, v: 'v|
     -> Result<_, `PublishError(string)> throws 'e 'sys_net_publish

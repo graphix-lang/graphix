@@ -1,0 +1,8 @@
+// Title: "#[parallel] has nothing to run in parallel" is a refusal only a build makes
+// Command: graphix --check c-data-map-parallel-check-only.gx ; graphix --no-cache c-data-map-parallel-check-only.gx
+// Expected (per analysis::BUILD_ONLY_REFUSALS): the check accepts, the build refuses;
+//   CLAUDE.md's lists of build-only refusals name only #[native] and the def assertions
+// Observed: --check exits 0; the run refuses with "#[parallel] has nothing to run in parallel"
+let x = 1;
+let y = #[parallel] (x + 1);
+y

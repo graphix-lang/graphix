@@ -251,6 +251,16 @@ impl Trace {
     /// first shows it in (`&ref0`, `&ref1`, ..): a reference's value is
     /// its session's bind id, which differs between runs, while which
     /// values alias does not.
+    // CR claude for claude: [bug/medium] Choosing what to canonicalize from the static
+    // type misses every reference the type does not show. Type::holds_ref answers false
+    // at Type::Abstract and for Any, so `T(&x)` with `type T = Abstract<&i64>`, or `&x`
+    // returned through an Any-typed result, keeps its raw per-run cell. Every
+    // comparison of such a program then drops as NONDETERMINISTIC and is never
+    // compared. Recognize references by value instead: in normalize's walk, which
+    // already descends abstract payloads, replace each value with
+    // `graphix_types::reference::cell(v).is_some()` by `&refN`, numbered by first sight
+    // across the trace. Then delete this function. probe:
+    // design/review-2026-10-19/repro/fuzz-lib-a-abstract-ref-nondet.sh (fuzz-lib-a-02)
     pub fn canonicalize_refs(&mut self, env: &Env, typ: &graphix_compiler::typ::Type) {
         if !typ.holds_ref(env) {
             return;

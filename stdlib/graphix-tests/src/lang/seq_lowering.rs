@@ -12,6 +12,16 @@ async fn last(code: &str, mode: Mode) -> Result<Value> {
     Ok(values.last().cloned().expect("a value"))
 }
 
+// CR claude for claude: [test-gap/low] This helper and four hand-written copies of it
+// share one gap: seq.rs until_last_refused, seq_errors.rs seq_statement_refusals,
+// seq_try.rs refusals and seq_let.rs seq_let_binds_the_trigger. All go through
+// testing::eval, which builds under Mode::Jit only and never runs check_fixture, so
+// none of their ~27 refusals pins that the check refuses exactly when the build does. A
+// refusal that moved into elaboration would leave --check and the LSP accepting the
+// program while these tests stay green. Build this helper on testing::eval_modes, move
+// it to lang/mod.rs, use it from the other four, and drop the cases seq_errors and
+// seq_try both carry. probe: all 27 sources are refused by `graphix --check` today.
+// (tests-seq-04)
 async fn refused(src: &str, needle: &str) {
     match eval(src, crate::TEST_REGISTER).await {
         Err(e) => {

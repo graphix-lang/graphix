@@ -121,6 +121,12 @@ impl TVar {
         self.settle_bottom()
     }
 
+    // CR claude for claude: [readability/low] This and not_function print `self.name`
+    // raw, so a minted cell shows as '_4611686018427395646, where every other
+    // diagnostic shortens it with tvar::ShortName. Format the name through ShortName in
+    // both. probe:
+    // design/review-2026-10-19/repro/x-typecheck-generics-not-concrete-raw-name.gx
+    // (x-typecheck-generics-07)
     fn not_concrete(&self) -> anyhow::Error {
         anyhow::anyhow!(
             "the type '{} must be fully known here, a type-directed operation reads it: \
@@ -348,6 +354,18 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut IntSet<usize>)
 /// The cells `t` holds as positions, through bindings, never through
 /// conjuncts.
 #[doc(hidden)]
+// CR claude for claude: [perf/medium] This walk memoizes cells but not composite nodes.
+// Types are DAGs (`let x1 = (x0, x0)` shares one Arc), so it visits every path and
+// costs 2^depth. The same holds for Type::named_defs (DefTable::own_typedefs),
+// FnType::inner_quantifiers' go, ContainsHist::closed, and in tvar.rs open_beneath,
+// concrete_holds, require_concrete, require_data and tvar_occurrences. Also in tvar.rs,
+// instantiate_int and rename_int rebuild a bound cell's binding once per occurrence,
+// turning a DAG into a tree. A definition with 22 nested pair lets, called once, takes
+// 7 s to --check (x4 per 2 lets), and gdb samples sit in these walks. Fix: skip a
+// composite whose shared_identity() was already visited, as settle::reached does, and
+// memoize a bound cell's rewritten binding by cell address in
+// instantiate_int/rename_int. probe:
+// design/review-2026-10-19/repro/t-tvar-dag-walks-exponential.sh (t-tvar-02)
 pub fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {

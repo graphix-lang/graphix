@@ -1,0 +1,89 @@
+// Title: x-perf-compile-03 is not confined to deep call chains: an operator run over a
+// call makes each of its nested fork sites re-walk the callee's whole reachable graph.
+// 40 functions, each 'f{i-1}(x) + g0(x) + ... + g39(x)' (about 1600 instances, depth 40).
+// Command: GRAPHIX_PAR=auto vs GRAPHIX_PAR=off, timeout -s KILL 60 graphix --no-cache --no-fusion <this file>
+// Expected: first value at about the same time under auto and off.
+// Observed (debug build, HEAD 9445a1d21): auto 0.94 s, off 0.22 s; at depth 25 x 160 terms
+// (about 4000 instances) auto 5.4 s, off 0.41 s; depth 20 x 40: auto 0.32 s, off 0.17 s.
+sys::exit(sys::time::after_idle(duration:1.ms, 0));
+let g0 = |x: i64| -> i64 x + 0;
+let g1 = |x: i64| -> i64 x + 1;
+let g2 = |x: i64| -> i64 x + 2;
+let g3 = |x: i64| -> i64 x + 3;
+let g4 = |x: i64| -> i64 x + 4;
+let g5 = |x: i64| -> i64 x + 5;
+let g6 = |x: i64| -> i64 x + 6;
+let g7 = |x: i64| -> i64 x + 7;
+let g8 = |x: i64| -> i64 x + 8;
+let g9 = |x: i64| -> i64 x + 9;
+let g10 = |x: i64| -> i64 x + 10;
+let g11 = |x: i64| -> i64 x + 11;
+let g12 = |x: i64| -> i64 x + 12;
+let g13 = |x: i64| -> i64 x + 13;
+let g14 = |x: i64| -> i64 x + 14;
+let g15 = |x: i64| -> i64 x + 15;
+let g16 = |x: i64| -> i64 x + 16;
+let g17 = |x: i64| -> i64 x + 17;
+let g18 = |x: i64| -> i64 x + 18;
+let g19 = |x: i64| -> i64 x + 19;
+let g20 = |x: i64| -> i64 x + 20;
+let g21 = |x: i64| -> i64 x + 21;
+let g22 = |x: i64| -> i64 x + 22;
+let g23 = |x: i64| -> i64 x + 23;
+let g24 = |x: i64| -> i64 x + 24;
+let g25 = |x: i64| -> i64 x + 25;
+let g26 = |x: i64| -> i64 x + 26;
+let g27 = |x: i64| -> i64 x + 27;
+let g28 = |x: i64| -> i64 x + 28;
+let g29 = |x: i64| -> i64 x + 29;
+let g30 = |x: i64| -> i64 x + 30;
+let g31 = |x: i64| -> i64 x + 31;
+let g32 = |x: i64| -> i64 x + 32;
+let g33 = |x: i64| -> i64 x + 33;
+let g34 = |x: i64| -> i64 x + 34;
+let g35 = |x: i64| -> i64 x + 35;
+let g36 = |x: i64| -> i64 x + 36;
+let g37 = |x: i64| -> i64 x + 37;
+let g38 = |x: i64| -> i64 x + 38;
+let g39 = |x: i64| -> i64 x + 39;
+let f0 = |x: i64| -> i64 x;
+let f1 = |x: i64| -> i64 f0(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f2 = |x: i64| -> i64 f1(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f3 = |x: i64| -> i64 f2(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f4 = |x: i64| -> i64 f3(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f5 = |x: i64| -> i64 f4(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f6 = |x: i64| -> i64 f5(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f7 = |x: i64| -> i64 f6(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f8 = |x: i64| -> i64 f7(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f9 = |x: i64| -> i64 f8(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f10 = |x: i64| -> i64 f9(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f11 = |x: i64| -> i64 f10(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f12 = |x: i64| -> i64 f11(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f13 = |x: i64| -> i64 f12(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f14 = |x: i64| -> i64 f13(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f15 = |x: i64| -> i64 f14(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f16 = |x: i64| -> i64 f15(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f17 = |x: i64| -> i64 f16(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f18 = |x: i64| -> i64 f17(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f19 = |x: i64| -> i64 f18(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f20 = |x: i64| -> i64 f19(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f21 = |x: i64| -> i64 f20(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f22 = |x: i64| -> i64 f21(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f23 = |x: i64| -> i64 f22(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f24 = |x: i64| -> i64 f23(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f25 = |x: i64| -> i64 f24(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f26 = |x: i64| -> i64 f25(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f27 = |x: i64| -> i64 f26(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f28 = |x: i64| -> i64 f27(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f29 = |x: i64| -> i64 f28(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f30 = |x: i64| -> i64 f29(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f31 = |x: i64| -> i64 f30(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f32 = |x: i64| -> i64 f31(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f33 = |x: i64| -> i64 f32(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f34 = |x: i64| -> i64 f33(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f35 = |x: i64| -> i64 f34(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f36 = |x: i64| -> i64 f35(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f37 = |x: i64| -> i64 f36(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f38 = |x: i64| -> i64 f37(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+let f39 = |x: i64| -> i64 f38(x) + g0(x) + g1(x) + g2(x) + g3(x) + g4(x) + g5(x) + g6(x) + g7(x) + g8(x) + g9(x) + g10(x) + g11(x) + g12(x) + g13(x) + g14(x) + g15(x) + g16(x) + g17(x) + g18(x) + g19(x) + g20(x) + g21(x) + g22(x) + g23(x) + g24(x) + g25(x) + g26(x) + g27(x) + g28(x) + g29(x) + g30(x) + g31(x) + g32(x) + g33(x) + g34(x) + g35(x) + g36(x) + g37(x) + g38(x) + g39(x);
+f39(1)

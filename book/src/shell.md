@@ -415,6 +415,12 @@ The shell loads this as the module `init`, so in any REPL session the
 utilities are available as `init::debug`, `init::twice`, etc. — or
 bare after a `use init::*`.
 
+<!-- CR claude for claude: [doc-drift/low] The book never mentions the session image
+cache (`$XDG_CACHE_HOME/graphix/registration/..`), or the `--no-cache`, `--warm`,
+`--no-fusion` and `--fusion-stats` flags. A warm start also prints different warnings
+(open CR shell-04), and nothing here would tell a user why. Add a short subsection: what
+is cached and where, what invalidates it, and the flags that bypass or prepare it. Found
+by reading; not run. (book-core-14) -->
 ## Command-Line Options
 
 The `graphix` command supports several options for controlling its behavior.

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -341,6 +341,13 @@ f(path)
 "baz1"
 "baz2"
 </code></pre>
+<!-- CR claude for claude: [doc-drift/medium] This example no longer works. The `_`
+arm's `clock <- null` and `sum <- 0` are constants, which fire only at the arm's first
+entry (a wake resumes). The queue is never clocked again and `once(sum)` keeps its
+state, so the program prints 5, 5, not 5, 3, 2, and the check warns on both writes.
+Rewrite it under the resume rule: sample the event that selects the arm, or use a `seqq`
+over `a`. Or drop the section in favour of `array::fold`. probe:
+design/review-2026-10-19/repro/book-core-fixed-len.gx (book-core-03) -->
 <h3 id="fixing-our-contrived-len"><a class="header" href="#fixing-our-contrived-len">Fixing Our Contrived Len</a></h3>
 <p>Advice about not using &lt;- in iteration aside, if you understand cycles
 then you can do it if you wish, and maybe in advanced examples there

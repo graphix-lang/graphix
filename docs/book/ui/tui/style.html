@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -257,6 +257,13 @@ tui::style()
 <h2 id="spans-and-lines"><a class="header" href="#spans-and-lines">Spans and Lines</a></h2>
 <p>Styles are commonly used with <code>Span</code> and <code>Line</code> types to create styled text.</p>
 <h3 id="spans"><a class="header" href="#spans">Spans</a></h3>
+<!-- CR claude for claude: [structure/low] The type blocks on this page are hand copies
+of tui/mod.gxi and have drifted. `val span` takes `content: string` in the gxi, not `s`,
+and `val line` takes `spans`, not `v`. input.md copies input_handler.gxi the same way,
+and it shows `state: Array<KeyEventState>` without ever defining KeyEventState
+(MediaKeyCode and ModifierKeyCode are missing too). Put ANCHOR markers in the .gxi files
+and `{{#include ...gxi:anchor}}` them, as gui/overview.md does for `window`. Found by
+reading; not run. (book-ui-b-05) -->
 <p>A <code>Span</code> is a piece of text with a single style:</p>
 <pre><code class="language-graphix">type Span = {
   style: Style,

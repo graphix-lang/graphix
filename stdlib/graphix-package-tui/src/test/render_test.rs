@@ -251,6 +251,11 @@ let result = text(&"[tui::size.width]x[tui::size.height] [n]")
         crossterm::event::KeyModifiers::CONTROL,
     )))
     .await?;
+    // CR claude for claude: [test-gap/low] [test-gap] The doc says Ctrl-C stops the
+    // display instead of reaching it, but only the stop is checked. If Screen::event
+    // set tui::event before its is_ctrl_c return, `n` would count the Ctrl-C and this
+    // test would still pass. Add `h.assert_lines(&["12x1 2"])?` after the Ctrl-C. Found
+    // by reading; not run. (tests-tui-06)
     assert!(h.stopped());
     Ok(())
 }
@@ -265,6 +270,13 @@ async fn size_outputs_require_writable_references() -> Result<()> {
         "tui::layout::layout(&[tui::layout::child(#size: OUTPUT, #constraint: `Fill(1), w)])",
         "tui::overlay::overlay(#layers: &[tui::overlay::layer(#size: OUTPUT, w)], w)",
     ] {
+        // CR claude for claude: [test-gap/low] [test-gap] Both refused cases use `n:
+        // null`, so `&n` is refused for its pointee type and the read-only half of the
+        // rule is never tested on its own. If `#size` were loosened to a read-only
+        // reference, this test would still pass. Add `let n: tui::Size = never()` with
+        // `#size: &n` to the refused set, and match the mutability message ("&mut
+        // Size") rather than just "type". `graphix --check` refuses that program today
+        // for all five widgets. (tests-tui-05)
         for output in ["&n", "&mut n"] {
             let code = format_compact!(
                 "let n: null = null; let w = tui::text::text(&\"hello\"); let result = {}",

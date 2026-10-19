@@ -219,6 +219,15 @@ impl EvalCachedAsync for TlsAcceptEv {
                 Ok(None) => return errf!("TLSError", "no private key found in key PEM"),
                 Err(e) => return errf!("TLSError", "invalid key PEM: {e}"),
             };
+            // CR claude for claude: [perf/low] Every accept parses the cert and key PEM
+            // and builds a new ServerConfig. TlsConnectEv likewise builds a root store
+            // (the whole webpki set when ca_cert is null) and a ClientConfig on every
+            // connect. Besides the repeated work, rustls keeps its session cache and
+            // ticketer per config, so these sites never resume a session, and every
+            // reconnect pays a full handshake. Fix: build the Arc'd config in
+            // prepare_args (it has &mut self) when the cert, key or ca_cert value
+            // changes, keep it in the Ev beside Started, and pass the Arc in Args.
+            // Found by reading; not run. (sys-io-04)
             let config = match rustls::ServerConfig::builder()
                 .with_no_client_auth()
                 .with_single_cert(certs, key)

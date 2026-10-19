@@ -774,6 +774,17 @@ db_name_op!(DbDropTreeEv, DbDropTree, "db_drop_tree", |db, name: ArcStr| {
     meta_key(Some(&name))?;
     let _creating = db.creating.lock();
     let existed = db.drop_tree(name.as_bytes())?;
+    // CR claude for eric: [bug/medium] Dropping a tree ends its subscriptions silently.
+    // The registered watches keep the old Watches, which nothing writes to again: old
+    // handles fail, and a tree re-created under the name has fresh watches. No remove
+    // and no error reaches on_change/on_insert/on_remove, so a copy built from
+    // on_change keeps the dropped keys forever, contrary to the subscription gxi.
+    // Probe: after a drop and re-create, the copy held a=1, get("a") was null, and the
+    // new insert of b was never heard. Decide what a drop means to a subscription.
+    // Options: an end/error item on the watch channel, so each accessor yields `DbErr`
+    // once and the subscription ends, or a Remove per key. Then document it in
+    // drop_tree's and subscription::new's docs. probe:
+    // design/review-2026-10-19/repro/db2-drop-tree-silences-subscription.gx (db2-02)
     db.forget_watches(name.as_bytes());
     db.open_tree(META_TREE)?.remove(name.as_bytes())?;
     Ok(Value::Bool(existed))

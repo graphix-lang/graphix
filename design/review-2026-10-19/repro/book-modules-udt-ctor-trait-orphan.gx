@@ -1,0 +1,19 @@
+// Title: udt/traits.md's impl-placement rules omit the constructor-trait exception
+// Command: graphix --no-cache book-modules-udt-ctor-trait-orphan.gx
+// Expected (traits.md "Where an impl may be written": an alias or variant only in the
+//   trait's own package; unions are never targets): `impl Collection for L<'_>` refused,
+//   since L is a union alias and Collection is core's.
+// Observed: accepted and runs, printing 6 (node::traits::check_target returns early for a
+//   constructor trait's named head). The same head with a plain trait,
+//   `impl Display for L<i64>`, is refused: "a union is never an implementation target".
+//   collection.md and examples/collection/cons_list.gx rely on the accepted form.
+type L<'a> = [`C('a, L<'a>), `N];
+let rec fold_l = |l: L<'a>, acc: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e
+    select l { `N => acc, `C(x, rest) => fold_l(rest, f(acc, x), f) };
+impl Collection for L<'_> {
+    let fold = |l, init, f| fold_l(l, init, f);
+    let filter_map = |l, f| `N;
+    let flat_map = |l, f| `N
+};
+let l: L<i64> = `C(1, `C(2, `C(3, `N)));
+Collection::fold(l, 0, |a, x| a + x)

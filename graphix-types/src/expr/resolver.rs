@@ -370,6 +370,10 @@ pub fn choose_layout<P: fmt::Display, T>(
 /// for `mod.gx`.
 /// [`submodule_base`] of a file, by path operations: any encoding, the
 /// platform's separators.
+// CR claude for claude: [readability/low] The first paragraph of this doc states the
+// rule and belongs on submodule_base below, which is public, used by the netidx loader,
+// and has no doc. Move it there and keep only the "of a file, by path operations"
+// sentence here. Found by reading; not run. (t-format-resolver-05)
 pub fn file_submodule_base(path: &std::path::Path) -> PathBuf {
     match path.file_stem() {
         Some(stem) if stem == "mod" => {
@@ -401,6 +405,16 @@ fn resolve_from_vfs(
         packed: e.packed.clone(),
     };
     // a program's own `mod str` is its module, not the str package
+    // CR claude for eric: [bug/medium] This exception loads a script's own `mod map;`
+    // from map.gx, but the compile then refuses it with "duplicate module definition
+    // map" because the registered package already owns `/map`. So every package name is
+    // unusable as a root module, and the message blames a duplicate the user never
+    // wrote. Decide the rule: either a root module may shadow a package (then the
+    // compile must not count the package's scope as a prior definition), or the name is
+    // refused with a message that says it names a package (then this exception goes).
+    // The resolver test a_package_root_is_not_a_files_module pins resolution only.
+    // probe: design/review-2026-10-19/repro/t-format-resolver-package-named-module.sh
+    // (t-format-resolver-01)
     if matches!(parent.source, Source::File(_) | Source::Netidx(_))
         && scope.0 == Path::root()
         && r.packages.contains(&**name)
@@ -879,6 +893,14 @@ impl Expr {
         if !self.holds_unresolved() {
             return Ok(self.clone());
         }
+        // CR claude for claude: [bug/low] The chain starts empty, so the root file
+        // itself is never on it. A script's `mod main;` in main.gx loads main.gx again
+        // as module `main`, and the error is "module main::main could not be found:
+        // main/main.gx ..." instead of an import cycle. Seed the chain with
+        // self.ori.source when it is a file or a netidx path, and add the case to
+        // graphix-shell/tests/import_cycle.rs. probe:
+        // design/review-2026-10-19/repro/t-format-resolver-root-self-import.sh
+        // (t-format-resolver-03)
         let e = self.resolve_modules_int(scope, &None, &None, resolvers, probes).await?;
         Ok(e.unwrap_or_else(|| self.clone()))
     }

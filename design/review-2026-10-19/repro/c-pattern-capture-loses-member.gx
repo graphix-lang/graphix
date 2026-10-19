@@ -1,0 +1,14 @@
+// Title: a `name@` capture over a union of tuples or of arrays is typed
+// as the per-position union, so it no longer fits the scrutinee's type.
+// Command: graphix --check c-pattern-capture-loses-member.gx
+// Expected: accepted; `a` holds exactly the scrutinee's value, so it is
+// a U (as it is for `a@ `A(_)` over [`A(i64), `A(string)]).
+// Observed: "type mismatch U does not contain ([i64, string], [i64, string])".
+// The array form, `a@ [_, ..]` over [Array<i64>, Array<string>], is refused
+// the same way: "U does not contain Array<[i64, string]>".
+type U = [(i64, string), (string, i64)];
+let h = |u: U| 1;
+let f = |v: U| select v {
+  a@ (_, _) => h(a)
+};
+f(("a", 1))

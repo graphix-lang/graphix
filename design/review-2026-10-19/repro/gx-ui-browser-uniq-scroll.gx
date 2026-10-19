@@ -1,0 +1,30 @@
+// Title: tui::browser cannot scroll back to a viewport its scroll arm already wrote once.
+// browser.gx writes `viewport <- uniq(e ~ {...})` in each cursor arm; uniq compares with its
+// own last output, not with the current viewport, so after another arm moved the viewport a
+// scroll back to that earlier value is swallowed.
+// Run: timeout -s KILL 30 graphix --no-cache gx-ui-browser-uniq-scroll.gx
+// 12 published rows, a 3-row window. Script: Up (a no-op scroll at the top: the Up arm's uniq
+// now holds {x:0, y:0}), Down x3 (the third scrolls the window to start at r1), Up x4.
+// Expected: the first visible row goes r0 -> r1 -> r0 (as it does when the script starts
+// with Down instead of Up).
+// Observed: "4 r1" then r1 forever: the Up at the top computes {x:0, y:0}, equal to the Up
+// arm's uniq's last output, and is dropped. Prints the step and the first visible row.
+use tui::{Tui, browser::{MoveCursor, browser}};
+let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k]", k));
+let path = sys::time::after_idle(duration:200.ms, "/local/ring");
+let cur: MoveCursor = never();
+let b: Tui = browser(#rate: duration:10.ms, #size: {width: 40, height: 4}, #cursor: cur, path);
+let first = select b {
+  `Table(t) => {
+    let rows = *t.rows;
+    "[(*(rows[0]$)).cells[0]$.content.spans]"
+  },
+  _ => never()
+};
+let script: Array<MoveCursor> = [`Up(1), `Down(1), `Down(1), `Down(1), `Up(1), `Up(1), `Up(1), `Up(1)];
+let tick = sys::time::timer(duration:300.ms, true);
+let i = 0;
+i <- tick ~ i + 1;
+cur <- (tick ~ script[i])$;
+sys::exit(sys::time::timer(duration:4.s, false) ~ 0);
+uniq("[i] [first]")

@@ -170,10 +170,32 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// kernel derives its selection fresh every run and remembers neither,
 /// so the raise node-walks. `selects` are the region's selects in
 /// pre-order; one nested in another's arm is covered by the outer walk.
+// CR claude for claude: [doc-drift/low] The doc above says a constant fires at the
+// arm's wake. Since "a wake is a resume" it stands: a constant-derived raise happens at
+// the arm's first entry only (observed: one raise across three `A entries, both
+// engines). The blocker still holds for the missed-fire reason. Drop the constant
+// clause here, in design/strict_fusion.md ("The `?` delivery queue") and in CLAUDE.md's
+// strict-fusion paragraph. probe:
+// design/review-2026-10-19/repro/x-doc-drift-const-raise-not-at-wake.gx
+// (x-doc-drift-04)
 fn arm_raise_blocker<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     selects: &[&Node<R, E>],
 ) -> Option<FusionBlocker> {
+    // CR claude for eric: [bug/medium] Only handler-ful raises count here and in
+    // `claims_no_site_memory`. A handler-less `?` or a `$` over a constant error also
+    // owes its report to a birth or Step view a kernel lacks: a fused select arm never
+    // reports `e?` at the arm's first entry, and a native tail loop reports it at its
+    // entry depth only, not at each newly reached depth. The node-walk reports both, so
+    // a failure that `--no-fusion` prints is missing from the default run, against the
+    // rule that `$` and handler-less `?` log from both backends. The fuzzer cannot see
+    // this, because its oracle compares neither FAILURE_TARGET nor warn logs. Decide
+    // whether these reports are owed. If they are, gate a handler-less Qop whose
+    // operand does not follow the arm's entry binds (as `io_follows` does for Io) here,
+    // and on the formals in `claims_no_site_memory`. If they are not, say so in
+    // CLAUDE.md. probe:
+    // design/review-2026-10-19/repro/f-call-flow-arm-entry-unhandled-raise.gx (0 vs 1
+    // reports) and f-call-flow-tail-loop-unhandled-raise.gx (1 vs 6) (f-call-flow-02)
     let raises =
         |n: &Node<R, E>| matches!(n.view(), NodeView::Qop(q) if q.handler().is_some());
     let mut any = false;
@@ -1728,6 +1750,10 @@ pub(crate) fn is_map(t: &Type) -> bool {
 }
 
 /// A marshallable call return shape: every fusable shape but bare `Null`.
+// CR claude for claude: [doc-drift/low] The doc says 'every fusable shape but bare
+// Null', but the match accepts Null and Unit too, so this is `abi_kind(t).is_some()`.
+// Either reduce it to that and fix the doc, or restore the Null exclusion if it was
+// intended. Found by reading; not run. (f-mod-lowering-05)
 fn is_call_return_supported(t: &Type) -> bool {
     match abi_kind(t) {
         Some(

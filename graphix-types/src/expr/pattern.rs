@@ -169,6 +169,16 @@ impl StructurePattern {
             // select unifies through `Type::any_as_tvar` to narrow past it.
             Self::Ignore => Ok(Type::Any),
             Self::Bind(_) => Ok(Type::empty_tvar()),
+            // CR claude for claude: [bug/low] A pattern literal is typed by a second
+            // rule, here and in the compiler's Literal pattern compile
+            // (node/pattern.rs), not by node/compiler.rs::constant_type, which types
+            // expression literals. So `error:1` types as the primitive `error`: over
+            // [i64, Error<string>] the dead arm `error:1 => 1` is accepted where `1.5
+            // => 1` is refused. And `abstract:..` is accepted as a pattern although the
+            // expression form is refused ("an abstract value literal has no type").
+            // Fix: move constant_type into graphix-types and use it in both places.
+            // probe: design/review-2026-10-19/repro/t-parser-b-literal-pattern-type.sh
+            // (t-parser-b-03)
             Self::Literal(v, _) => Ok(Type::Primitive(Typ::get(v).into())),
             Self::Tuple { all: _, binds } => {
                 let a = binds

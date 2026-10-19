@@ -542,6 +542,18 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
                 modifiers,
                 ..
             }) => {
+                // CR claude for eric: [bug/medium] A shortcut fires here whatever has
+                // the keyboard focus. Nothing checks focus or capture, and iced's
+                // Column hands the key to every child, so a focused text_input or
+                // text_editor handles the same key too. menu::shortcut accepts a key
+                // with no modifier, so shortcut("/") or shortcut("n") fires on every
+                // "/" or "n" the user types into an input. The book example's
+                // Ctrl+V/C/Z run both the input's own paste/copy/undo and the menu
+                // action. Needs a precedence rule: at least refuse modifier-less (and
+                // Shift-only) shortcuts in menu::shortcut, and decide whether a focused
+                // text widget or the menu owns Ctrl+C/V/X/Z/A. No pin covers a shortcut
+                // beside a focused text widget. Found by reading; not run.
+                // (gui-widgets-b-01)
                 let items = self.descs.iter().flat_map(|m| m.items.iter());
                 if let Some(id) = shortcut_action(items, key, modified_key, *modifiers) {
                     state.open_menu = None;

@@ -1060,6 +1060,16 @@ fn native_residue<'a, R: Rt, E: UserEvent>(
     // parts fused is residue for its own reason.
     let before = report.len();
     fusion::for_each_node(node, &mut |n| {
+        // CR claude for claude: [bug/medium] failure_for_source returns the last
+        // failure recorded for a source, which need not come from this node's attempt.
+        // For a handler-ful `?` under a select arm, the select records the arm-raise
+        // blocker and then "a region of type _ has no kernel return" from a second
+        // attempt at an open type, and #[native] reports only the second. Report the
+        // failure of the attempt on the walked node, or every distinct failure of the
+        // source. Find out why the select is tried a second time. Make
+        // arm_input_raise_node_walks match the blocker's text. probe:
+        // design/review-2026-10-19/repro/x-rerun-4-native-misreports-arm-raise.gx
+        // (x-rerun-4-02)
         let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
             return;
         };
@@ -1418,6 +1428,10 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// The id of the concurrent compile task this one runs in
     /// ([`typ::tvar::InTask`]); 0 at the root.
     /// This task's share of the compile's profile ([`profile::Task`]).
+    // CR claude for claude: [readability/low] The first two doc lines above ("The id of
+    // the concurrent compile task this one runs in ...; 0 at the root") describe a
+    // field that is gone, not this profile share. Delete them. Found by reading; not
+    // run. (c-lib-05)
     profile: profile::Task,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
@@ -1702,6 +1716,19 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Whether `id` is a binding an earlier compile generalized: its
     /// check already made variables of a function it holds generic.
+    // CR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
+    // cells too, so this answers true for a rank-2 parameter, for a binding annotated
+    // with `type F = fn<'b: ..>(..)`, for a struct holding one, and for a lambda
+    // literal's parameter checked against one. The `&mut` check in Bind then refuses
+    // them with 'made generic by an earlier compile' when no such compile exists.
+    // Inside a definition only the build refuses, so --check passes and graphix-fuzz
+    // check reports DIVERGENCE. A write through such a reference is still checked
+    // against the quantified type, so nothing needs refusing. Skip the cells that are
+    // quantifiers of a function type the binding's type holds (carried_out's
+    // bound_quantifiers walk finds them). The Connect refusal for these bindings shows
+    // the same wrong message. probe:
+    // design/review-2026-10-19/repro/x-typecheck-generics-generalized-earlier-quantifier.gx
+    // (x-typecheck-generics-05)
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| {
             let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
@@ -1921,6 +1948,12 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// `f` under `view`, or under the stronger view already in force: a
     /// birth inside a wake stays a wake.
     #[inline]
+    // CR claude for claude: [doc-drift/low] The doc says a birth inside a wake "stays a
+    // wake". View::join makes it a Step, in which constants fire, as View::Step's own
+    // doc says. Event::init's doc ("standing values read as delivered: a birth or a
+    // wake") likewise contradicts View::Wake, where standing values read stale. Callers
+    // rely on `init() && !wake()`. Fix both docs to describe the join and the init/wake
+    // split. Found by reading; not run. (c-lib-04)
     pub fn under<T>(&mut self, view: View, f: impl FnOnce(&mut Self) -> T) -> T {
         let prev = self.event.view;
         self.event.view = prev.join(view);
@@ -1960,6 +1993,15 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
                     Step::Key(k) => k.clone(),
                 });
                 let target = std::iter::once(Value::U64(root.inner())).chain(steps);
+                // CR claude for claude: [bug/low] The comparison form of a reference is
+                // an unmarked array [U64(root), steps..], the runtime form of
+                // Array<u64>. Under a union [&i64, Array<u64>], which kind markers made
+                // legal, `&x == [root id]` is true. A reference must never equal an
+                // array. Rewrite the target into a value nothing else carries: for
+                // example a Rust-registered abstract in reference.rs holding (root,
+                // path), as rep's markers do for kinds. probe:
+                // design/review-2026-10-19/repro/t-rep-ref-eq-array-collision.gx
+                // (t-rep-04)
                 Value::Array(ValArray::from_iter(target))
             }
             None => r.clone(),
@@ -2090,6 +2132,11 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Apply to the runtime what compiling deferred: delete what it
     /// discarded, whose unreplayed references cancel, then register
     /// every reference it recorded.
+    // CR claude for claude: [doc-drift/low] The doc above says this deletes the
+    // discards first, "whose unreplayed references cancel", and registers afterwards.
+    // The body registers every pending reference first and then deletes the discards,
+    // so their unrefs reach the runtime. Reword the doc to state the order the code
+    // relies on. Found by reading; not run. (c-lib-03)
     pub fn apply_deferred(&mut self) {
         // through `Deref`: a branch view forks no compile for nothing
         if !self.deferred_pending() {

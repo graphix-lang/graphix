@@ -655,6 +655,16 @@ fn a_save_rechecks_only_what_it_changes() {
 /// A check that fails however it fails, a checker panic included,
 /// leaves the server checking every other file.
 #[test]
+// CR claude for claude: [test-gap/medium] This program no longer panics the checker:
+// since the genn arity fix it is an ordinary type error ('called with 2 arguments, but
+// its type fn() -> i64 takes 0'). So the test never reaches the panic path its comment
+// names. The catch_unwind in GX::check and the session restore after it are unpinned,
+// and removing them would pass the suite. Pin the recovery with a check that panics on
+// purpose: for example, a graphix-rt test whose ModuleResolver panics, which asserts
+// 'the check panicked' and then a clean second check on the same runtime. Then fix this
+// comment. probe:
+// design/review-2026-10-19/repro/tests-shell-compiler-lsp-panic-pin-vacuous.sh
+// (tests-shell-compiler-01)
 fn a_failed_check_leaves_the_server_running() {
     let mut c = Client::start(&[
         ("bad.gx", "let g = |a: i64, f: fn() -> i64| -> i64 'array_group;\n0\n"),
@@ -795,6 +805,10 @@ fn a_watched_change_rescans() {
 /// A parse error's message says what went wrong; its squiggle shows
 /// where, so no position or caret line rides in the text.
 #[test]
+// CR claude for claude: [readability/low] The first two doc lines above this test ('An
+// interface written before its implementation has its syntax checked..') describe
+// a_lone_interface_reports_its_parse_error, which has no doc of its own. Move them
+// there. Found by reading. (tests-shell-compiler-08)
 fn a_parse_error_is_published_without_its_snippet() {
     let mut c = Client::start(&[("main.gx", "let x = 1;\nlet y = ;\nx\n")]);
     c.open("main.gx");
@@ -806,6 +820,11 @@ fn a_parse_error_is_published_without_its_snippet() {
 }
 
 #[test]
+// CR claude for claude: [readability/low] This test's doc ("An interface written before
+// its implementation has its syntax checked, and a clean one publishes nothing.") is
+// stacked onto a_parse_error_is_published_without_its_snippet's doc further down, so
+// rustdoc attaches it to the wrong test. Move it above this test's #[test]. Found by
+// reading; not run. (lsp-07)
 fn a_lone_interface_reports_its_parse_error() {
     let mut c = Client::start(&[("api.gxi", "val x: i64 = ;\n")]);
     c.open("api.gxi");

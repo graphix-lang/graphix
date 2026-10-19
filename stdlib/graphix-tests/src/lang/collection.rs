@@ -405,6 +405,17 @@ const NESTED_SAME_INTRINSIC: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/medium] FuseExpect::Jit holds whenever any kernel
+// runs, and this program also fuses array::init as a region of its own. So this fixture
+// still passes if the nested fold it is about node-walks. Making the inner callback
+// unfusable (`a + (y ~ y)`) still reports fused=1. The same blind spot covers
+// nested_map_in_map, user_hof_nested, nested_mixed_types and filter_map_total_callback
+// here, and organic_deltas guard_fire_emits and tail_same_args_fires, whose `x % 2` /
+// `x / 3` fuse apart from the select under test. Put #[native] on each fixture's
+// subject (the outer fold, the filter_map, the select, the recursive call). All of them
+// build under #[native] today. probe:
+// design/review-2026-10-19/repro/tests-lang-rest-b-fuse-jit-blind.sh
+// (tests-lang-rest-b-01)
 run!(nested_same_intrinsic, NESTED_SAME_INTRINSIC, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(59900))

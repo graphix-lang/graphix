@@ -1,0 +1,26 @@
+// Title: wake_reissues_standing_async's comment and name contradict what it pins
+// Command: timeout -s KILL 30 graphix --no-cache tests-lang-rest-a-wake-keeps-call-result.gx
+//   (run from the repro directory; it reads its own path as the file is_file asks about)
+// Expected per async_restart.rs's comment ("an async builtin is issued again, so it
+//   answers again: a woken count over a call that only stands would show nothing"):
+//   r=1, then r=2 after the wake, and n reaching 3.
+// Observed (both engines, with and without --no-fusion): r=1 printed twice, n = 0, 1, 2 -- is_file is not issued again at the
+//   wake (count stays 1), and the woken count over the standing result does show: the
+//   select's re-entry delivers 1, so n becomes 2. This matches CLAUDE.md ("the wake
+//   restarts nothing ... a call's result survives the sleep"); only the test's comment
+//   and name are wrong.
+let path = "tests-lang-rest-a-wake-keeps-call-result.gx";
+let on = true;
+let r = select on { true => count(sys::fs::is_file(path)$), false => never() };
+let n = 0;
+n <- r ~ n + 1;
+let t = 0;
+t <- select on {
+    false => select t { x if x < 3 => x + 1, _ => never() },
+    true => never()
+};
+on <- select n { 1 => false, _ => never() };
+on <- select t { 3 => true, _ => never() };
+println("r=[r]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+n

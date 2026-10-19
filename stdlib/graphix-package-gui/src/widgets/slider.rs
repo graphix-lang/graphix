@@ -138,6 +138,16 @@ macro_rules! slider_widget {
                 }
                 slider_dim_set!($kind1, self, sl, $dim1);
                 slider_dim_set!($kind2, self, sl, $dim2);
+                // CR claude for claude: [bug/medium] A stepped slider reaches iced with
+                // its raw range and step. iced snaps a drag to min + k*step, but its
+                // ArrowUp/ArrowDown and Ctrl+wheel snap to (round(v/step) ± 1) * step,
+                // i.e. multiples of step from zero. So #min 0.5, #step 1.0 at 0.5 sends
+                // 2.0 on ArrowUp, and arrows never reach 1.5, a value dragging
+                // produces. Express a stepped slider in step counts instead: range
+                // 0..=floor((max-min)/step), step 1, value round((v-min)/step), mapped
+                // back to min + k*step in slider_change. Then both input paths share
+                // one lattice, and the normalized path stays for a non-finite count.
+                // Found by reading; not run. (gui-widgets-b-02)
                 if continuous {
                     Element::new(SliderInput {
                         content: sl,

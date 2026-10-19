@@ -1,0 +1,10 @@
+// A TUI widget tree nested ~140 deep overflows the stack while the tui package compiles it.
+// run (needs a pty): timeout -s KILL 60 script -qec "graphix --no-cache x-stack-tui-deep-widget.gx" /dev/null
+// expected: the nested blocks draw, and the program exits after 1 s (exit 130, as at depth 1..130)
+// observed: exit 134, SIGSEGV on a tokio worker in graphix_package_tui::compile ->
+//   ChildW::compile -> compile ... (gdb: ~2 frames per level, overflow at depth ~135 on the
+//   debug build).
+use tui::{block::block, paragraph::paragraph};
+let w = array::fold(array::init(140, |i| i), paragraph(&"x"), |acc, i| block(&acc));
+tui::exit(sys::time::after_idle(duration:1.s, null));
+w

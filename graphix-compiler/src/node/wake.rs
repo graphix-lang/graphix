@@ -230,6 +230,16 @@ impl TrackedFires {
         carried: Option<&IntSet<BindId>>,
     ) {
         let Self { all, pending, carried: carried_bits, per_arm, .. } = self;
+        // CR claude for claude: [perf/low] Walk pruning, now built, does not shrink
+        // this scan, contrary to the x-perf-runtime-03 note: a walked select still
+        // read_vars every input of every arm. Pruning does make a sound filter
+        // possible. In a Cycle view, an arm whose body Prune is not marked this cycle
+        // had none of its tracked inputs delivered, since every this-cycle write marks
+        // its readers' boundaries and their ancestors. Catch-up injections are unmarked
+        // but happen only under Wake or Step. Visit only the per_arm maps of dirty arms
+        // when the view is Cycle (any statement boundary of a seq step, the instance
+        // body for Absent), and scan everything under other views. Cites
+        // x-perf-runtime-03. Found by reading; not run. (c-prune-wake-06)
         for id in all.keys() {
             let carry = carried.is_some_and(|c| c.contains(id));
             if (carry || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))

@@ -15,6 +15,11 @@ use std::{
 
 /// Default [`max_nesting`]. Counted in parser recursion knots, not source
 /// constructs: one level of `(1 + …)` costs three.
+// CR claude for claude: [doc-drift/low] The doc above says one level of `(1 + …)` costs
+// three. It costs four: three knots plus the BinOp fold that arith counts through
+// `fold_fits`, so 248 levels pass the default and 249 are refused. Say the limit counts
+// knots and fold levels, at four per `(1 + …)`. probe: `(1 + ` nested 248 vs 249 deep,
+// run through graphix fmt. (t-parser-a-08)
 pub const DEFAULT_MAX_NESTING: usize = 1000;
 
 static MAX_NESTING: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_NESTING);

@@ -1,0 +1,9 @@
+// Title: intro.md's first reactive example prints "100null", not "100", and warns about its `?`
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache -n design/review-2026-10-19/repro/book-core-intro-print.gx
+// Expected (book/src/intro.md): 100 (then 50 when /foo changes)
+// Observed: "WARNING ... error raised by ? will not be caught", then "100null": `print` writes
+//   100 with no newline, and the shell prints the program's value, print's null, after it.
+//   The publish line below stands in for the netidx publisher the book assumes.
+let p = sys::net::publish("/foo", 10);
+let x: i64 = sys::net::subscribe("/foo")?;
+print(x * 10)

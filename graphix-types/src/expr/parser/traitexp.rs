@@ -53,6 +53,15 @@ where
                 let self_index = ft.args.iter().position(|a| {
                     matches!(&a.kind, FnArgKind::Positional { name: Some(n) } if &**n == "self")
                 });
+                // CR claude for eric: [bug/medium] Any trait may declare a method whose
+                // only `self` is its result, but only core Cast::from_value has a
+                // caller (the runtime). In a user trait (`val mk: fn(x: i64) -> self`)
+                // the trait and the impl check, then every call, a default body's
+                // included, is refused with "Mk::mk called without its self argument".
+                // Either refuse this form outside core traits at the declaration, or
+                // dispatch such a call on its expected result type. probe:
+                // design/review-2026-10-19/repro/t-parser-b-self-result-uncallable.gx
+                // (t-parser-b-04)
                 if self_index.is_none() && !ft.rtype.mentions_self() {
                     return refuse(
                         end,
@@ -120,6 +129,12 @@ where
                 sep_by1_tok(tvar_opt_bound(), csep(), token('>')),
             ),
         )),
+        // CR claude for claude: [structure/low] This position (named at_params, but it
+        // is where the trait path starts) is used to rebuild trait_at by adding each
+        // segment's length + 2, on the invariant that typath allows no space in a path.
+        // use_segment records each segment's position as parsed. Make typath return the
+        // per-segment WrittenPath with the ModPath and use it here: one way to locate
+        // path segments instead of two. Found by reading; not run. (t-parser-b-06)
         spaces().with(position()),
         typath(),
         spaces1().with(string("for")).with(spaces1()).with(typ()),

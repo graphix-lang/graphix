@@ -1,0 +1,10 @@
+// Formatter time is exponential in the nesting of a lambda whose body is a select over a
+// call taking a lambda (also the IIFE shape `(|x| (|x| ..)(1))(1)`).
+// run: timeout -s KILL 120 graphix fmt --stdout x-stack-fmt-exponential.gx
+// expected: prints the formatted file at once (it is 23 lines of input)
+// observed: depth 16 0.24 s, 18 0.88 s, 20 3.95 s, this file (22) ~15 s; each level ~2x
+//   (IIFE shape: depth 27 2.7 s, 28 15.8 s, 29 59 s). The LSP serves formatting from
+//   the same printer, so an editor's format-on-save hangs the server.
+let gg = |f| 1;
+let f = |a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(|a| select gg(1) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 }) { _ => 1 };
+1

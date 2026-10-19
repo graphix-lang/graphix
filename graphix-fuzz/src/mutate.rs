@@ -461,6 +461,13 @@ pub fn donor_pool(seeds: &[&str]) -> Vec<Expr> {
 }
 
 /// Parse an expression, or `None` if it doesn't parse.
+// CR claude for claude: [test-gap/medium] This takes one expression, but a subject body
+// may be a statement sequence (`Subject::parse` wraps it in a block).
+// `typemorph::probes`, `mustreject::probes`, `mutate_program` and `minimize` all parse
+// the body here, so such a subject (76 of 549 findings files) gets no probe, mutant or
+// minimization, and typemorph does not count it as NOPARSE. Add a `parse_body` that
+// returns the lone item or a Block of the items, and use it at those sites. probe:
+// design/review-2026-10-19/repro/fuzz-mutate-bare-body-no-probes.gx (fuzz-mutate-05)
 pub fn parse(s: &str) -> Option<Expr> {
     parse_one(s).ok()
 }

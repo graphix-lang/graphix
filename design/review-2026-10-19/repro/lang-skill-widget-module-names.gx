@@ -1,0 +1,8 @@
+// lang-skill: SKILL.md lists the tui widget `bar_chart` beside `block`, `list`, .. and says
+// "import each widget by name, `use tui::{block::block, list::list}`"; the module is `barchart`
+// (its function is `bar_chart`).
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --check lang-skill-widget-module-names.gx
+// Expected (the skill's naming): accepted.
+// Observed: "use: no module `tui::bar_chart` in scope"; `use tui::barchart::bar_chart` checks.
+use tui::bar_chart::bar_chart;
+bar_chart

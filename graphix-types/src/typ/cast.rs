@@ -282,6 +282,16 @@ impl Type {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
+            // CR claude for claude: [bug/medium] An abstract target passes the check
+            // whatever its params hold. With `type Box<'a> = Abstract<'a>; impl<'a>
+            // Cast for Box<'a> {}`, cast<Box<fn(x: string) -> string>> is accepted,
+            // though cast<fn(..)> is refused. The Representation path then wraps any
+            // lambda, because the Type::Fn arm of cast_inner takes every lambda, so the
+            // error surfaces only as a failed run-time bind at the call. Fix: refuse an
+            // abstract whose params hold a function or a reference (as data_holds
+            // does), and make the cast_inner Type::Fn arm an InvalidCast. probe:
+            // design/review-2026-10-19/repro/t-cast-setops-abstract-fn-param-cast.gx
+            // (t-cast-setops-06)
             Type::Abstract { .. } => Ok(()),
             Type::TVar(_) => match self.deref_cloned() {
                 Some(t) => t.check_cast_int(env, seen),
@@ -362,6 +372,18 @@ impl Type {
                     return false;
                 };
                 if let (Type::Ref(pt), Type::Ref(rt)) = (&p, &r) {
+                    // CR claude for claude: [bug/high] `seen` keys on the two
+                    // definitions alone, ignores their params, and is never popped. So
+                    // the second meeting of a (definition, definition) pair answers
+                    // false, whether it comes in a sibling branch or at other params.
+                    // Over `(Box<Any>, Box<Any>)` the arm `(Box<i64>, Box<&i64>) as y`
+                    // is accepted (the first Box pair consumed the key), and it then
+                    // reads a &string as &i64. The same arm with the components swapped
+                    // is refused. Fix: make `seen` a path (pop after the recursive
+                    // call) keyed on each side's full RefKey (definition plus params).
+                    // probe:
+                    // design/review-2026-10-19/repro/t-cast-setops-ref-over-any-seen.gx
+                    // (t-cast-setops-01)
                     let key = (pt.def_key().unwrap_or(0), rt.def_key().unwrap_or(0));
                     if seen.contains(&key) {
                         return false;
@@ -758,6 +780,15 @@ impl Type {
                                 None => out.push((k.clone(), v.clone())),
                             }
                         }
+                        // CR claude for eric: [bug/low] Keys that convert to the same
+                        // key collapse here, the last one winning, with no error.
+                        // cast<Map<i64, string>>({"1" => "a", "01" => "b", "1.5" =>
+                        // "c"}) is {1 => "b"}, and the array-of-pairs path below does
+                        // the same. Every other lossy cast is an InvalidCast. Proposed:
+                        // refuse when the rebuilt map has fewer entries than were cast.
+                        // probe:
+                        // design/review-2026-10-19/repro/t-cast-setops-map-key-merge.gx
+                        // (t-cast-setops-09)
                         Ok(changed.then(|| Value::Map(Map::from_iter(out.drain(..)))))
                     }
                     v if let Some(a) = rep::array_elems(v) => {
@@ -836,6 +867,18 @@ impl Type {
                     for (fname, ftyp, _) in ts.iter() {
                         match have.peek() {
                             Some((n, _)) if *n == fname => filled.extend(have.next()),
+                            // CR claude for claude: [bug/medium] The fill wants null
+                            // held unchanged (Ok(None)), so it refuses a field type
+                            // that admits null through a conversion. An example is an
+                            // abstract whose Cast reads null: `type Opt =
+                            // Abstract<[i64, null]>; impl Cast for Opt {}`. There
+                            // cast<{a: i64, o: Opt}>({a: 1}) is "struct size mismatch",
+                            // while {a: 1, o: null} and cast<Opt>(null) both read. It
+                            // also runs a user from_value as a throwaway probe. Fix:
+                            // fill on is_ok() and keep the probe's value for the field
+                            // instead of casting NULL again in cast_elts. probe:
+                            // design/review-2026-10-19/repro/t-cast-setops-struct-omitted-abstract-field.gx
+                            // (t-cast-setops-04)
                             _ if matches!(
                                 ftyp.cast_int(env, cx, None, &NULL),
                                 Ok(None)
@@ -974,9 +1017,32 @@ impl Type {
             // A member the value already inhabits wins; else the first
             // member of its own runtime class it converts to; else the
             // first member it converts to across classes.
+            // CR claude for eric: [bug/high] A union takes the first member that
+            // converts, and integer() drops a fraction, so an integer member always
+            // wins over a float member that holds the value exactly. cast<[i64,
+            // f64]>("3.5") is i64 3 and cast<Number>("3.5") is i8 3. A json or toml
+            // string field "3.5" read into [i64, f64] or Number loses the fraction the
+            // same way. str::parse("3.5") into [i64, f64] gives f64 3.5, so a read and
+            // a cast disagree. Proposed fix: prefer a member that holds the value
+            // exactly, and fall back to the fraction-dropping conversion only when none
+            // does. Also decide whether a fractional string converts to an integer at
+            // all (parse sends it through f64). CAST_TO_AN_INTEGER_IS_EXACT pins only
+            // integral inputs. probe:
+            // design/review-2026-10-19/repro/tests-types-union-cast-drops-fraction.gx
+            // (tests-types-03)
             Type::Set(ts) => {
                 // a member whose tag the value carries is its reading,
                 // whatever a tagless reading of an earlier member says
+                // CR claude for claude: [bug/medium] The tagged loop returns the first
+                // member whose cast succeeds, a conversion included. It never prefers
+                // the member the value already inhabits, which the untagged passes
+                // below do. A held `A(1.5, 2.5) cast to [`A(i64, i64), `A(f64, f64)]
+                // becomes `A(1, 2), while the tuple (1.5, 2.5) cast to [(i64, i64),
+                // (f64, f64)] stays as it is. Fix: return Ok(None) at the first tagged
+                // member that holds the value; otherwise return the first conversion
+                // after trying them all. probe:
+                // design/review-2026-10-19/repro/t-cast-setops-union-cast-converts-held.gx
+                // (t-cast-setops-02)
                 let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
                 if tagged.peek().is_some() {
                     let mut refused = None;
@@ -988,6 +1054,18 @@ impl Type {
                     }
                     return Err(refused.expect("a tagged member was tried"));
                 }
+                // CR claude for eric: [bug/medium] A data composite never holds a
+                // member as is: it is always rebuilt, so it never answers Ok(None). The
+                // first member whose element casts succeed therefore wins, truncating
+                // conversions included. json [1.5, 2.5] read as [(i64, i64), (f64,
+                // f64)] is (1, 2), and ["A", 1.5, 2.5] read as [`A(i64, i64), `A(f64,
+                // f64)] is `A(1, 2), while the scalar 1.5 read as [i64, f64] stays 1.5.
+                // Needs a ruling on whether a member "holds" data it truncates. One
+                // fix: before these passes, take the first member whose every leaf
+                // holds its value unconverted (a strict is_a over the data form).
+                // probe:
+                // design/review-2026-10-19/repro/t-cast-setops-union-cast-converts-held.gx
+                // (t-cast-setops-03)
                 let own: LPooled<Vec<bool>> =
                     ts.iter().map(|t| in_own_class(env, t, v)).collect();
                 let mut converted = None;
@@ -1533,6 +1611,15 @@ fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
         _ => None,
     };
     // a `NoError` cell is never an error, so it shares no error's form
+    // CR claude for claude: [bug/medium] This reads every open cell as any type except
+    // for NoError. A cell bounded to numbers ('a: Int, 'a: Number) cannot be an array,
+    // tuple, struct, variant, list, map or error, yet `'a: Int |x: ['a, Array<i64>]|
+    // select x { Array<i64> as a => .., _ => -1 }` is refused with "may share
+    // Array<i64>'s runtime form: annotate it", and it already is annotated. Exempt a
+    // cell whose constraints include a primitive set when `t` holds no primitive of
+    // that set. probe:
+    // design/review-2026-10-19/repro/x-kind-markers-open-member-ignores-bounds.sh
+    // (x-kind-markers-05)
     let shares = |cell: &super::TVar, t: &Type| {
         shares_form(env, t)
             && !(cell.cell_constraints().contains(&Type::NoError) && error_only(env, t))
@@ -1665,6 +1752,13 @@ fn ref_at(t: &Type) -> Option<At<Type>> {
     matches!(t, Type::Ref(_)).then(|| (t.clone(), (def_of(t), 0), size_of(t)))
 }
 
+// CR claude for claude: [dead/low] Only rep_collision's fallback calls this, with two
+// non-Ref heads its own arms did not take. So the walk never keys anything, the Set and
+// Error/Error branches are unreachable, and every ArrView pair that gets here fails its
+// length, name or tag test before `parts` recurses. What it decides is a primitive
+// against a head, two references, and two functions. Fix: make it a leaf match on those
+// three cases, delete arr_overlaps and ArrView, and drop the RepSeen argument. Found by
+// reading; not run. (t-cast-setops-10)
 fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
     ensure_sufficient(|| {
         walk(
@@ -1735,6 +1829,15 @@ fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
     }
 }
 
+// CR claude for claude: [readability/medium] On growth, the walk answers with the pair
+// it stopped at, and the select prints that as "can't tell A from B: both have the same
+// runtime form; wrap them in distinct variants". The real reason is undecidability.
+// Over [N<i64>, N<string>] with `type N<'a> = [null, ('a, N<Array<'a>>)]`, the user is
+// told N<Array^5<i64>> and N<Array^5<string>> share a form. Fix: return Indiscernible
+// (Pair or Grows) from here as rep_ambiguity does, and have the callers word Grows as
+// not_discernible does. probe:
+// design/review-2026-10-19/repro/t-cast-setops-grows-reported-as-collision.gx
+// (t-cast-setops-08)
 fn rep_collision(
     env: &Env,
     seen: &mut RepSeen,
@@ -2118,6 +2221,18 @@ fn own_class(v: &Value) -> BitFlags<Typ> {
 
 /// Whether `t` may read `v` without leaving `v`'s runtime class, which a
 /// union tries before any conversion across classes.
+// CR claude for eric: [bug/medium] Kind markers made unions like [(i64, i64),
+// Array<f64>], [{a: i64}, Array<(string, i64)>] and [string, `A] legal, but their
+// members share a data form once rep::strip writes them. This test reads the outer form
+// strictly, so an unmarked array is in the Array member's class only, and a string is
+// in the string member's class only. A tuple written by pack or json therefore reads
+// back as the array ((1, 2) -> [1, 2]), a struct as its pairs, and ("k", 1) of
+// [(string, i64), Array<string>] as ["k", "1"]. This breaks CLAUDE.md's rule that what
+// the writers emit reads back into its type. design/distinct_composite_forms.md calls
+// the string case intended. Choose one: refuse such unions under Data/Concrete, or have
+// the union read prefer the member that reads unmarked data exactly (tuple of that
+// arity, then struct, then array). Then fix the doc that loses. probe:
+// design/review-2026-10-19/repro/t-rep-union-data-roundtrip.gx (t-rep-01)
 fn in_own_class(env: &Env, t: &Type, v: &Value) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         None | Some(Type::Bottom) => true,
@@ -2155,6 +2270,15 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
             }
             Some(Value::Bytes(bytes::Bytes::copy_from_slice(&bytes).into()))
         }
+        // CR claude for eric: [doc-drift/low] The primitive `array` reads a map as its
+        // [k, v] pairs here, but Type::Array refuses a map ("not an array"), while
+        // Type::Map reads an array of pairs. CLAUDE.md's list of class-leaving casts
+        // names none of these, nor list-to-array. cast<array>(m) works and
+        // cast<Array<(string, i64)>>(m) fails. Needs a ruling: either a map reads as
+        // its pairs for both targets (add the arm to Type::Array) or for neither (drop
+        // Value::Map here). Then list the crossings in CLAUDE.md. probe:
+        // design/review-2026-10-19/repro/t-cast-setops-map-array-class.gx
+        // (t-cast-setops-11)
         (Value::Array(_) | Value::Map(_), Typ::Map | Typ::Array) => v.cast(t),
         (Value::String(s), t) => parse(s, t),
         (_, Typ::String) => printed(&v),
@@ -2166,6 +2290,16 @@ fn convert(v: Value, t: Typ) -> Option<Value> {
 }
 
 /// The string `s` read as the primitive `t`.
+// CR claude for claude: [bug/high] A decimal target is read through
+// `s.parse::<Value>()`, which makes an f64. str::parse::<decimal>,
+// cast<decimal>(string) and json::read of a decimal (the json writer writes decimals as
+// strings) are therefore only as exact as f64: "1.23456789012345678901234567" reads as
+// 1.234567890123457, "0.30000000000000000000000001" as 0.3, and "12345678901234567890"
+// does not parse at all. A decimal written by json::write_str does not read back as
+// itself. Give Typ::Decimal an exact branch like the integer one (`Decimal::from_str`,
+// then `from_scientific`) before the generic parse, and pin the json round trip. probe:
+// design/review-2026-10-19/repro/x-panics-decimal-parse-via-f64.gx Also reported as
+// (small-pkgs-03). (x-panics-01)
 fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if t == Typ::DateTime
         && let Ok(d) = chrono::DateTime::parse_from_rfc3339(s)
@@ -2180,6 +2314,23 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     if parses_to_collection(s) {
         return None;
     }
+    // CR claude for claude: [bug/medium] Float targets reach this value-literal parse,
+    // which reads a bare integer only as i64. The results:
+    // cast<f64>("9223372036854775808") is an InvalidCast; cast<f64>("inf") is refused,
+    // though `printed` writes an infinite f64 as "inf"; cast<f32>("+3") is refused
+    // while cast<i64>("+3") is 3; and cast<f64>("-0") is 0, the sign lost. Read float
+    // targets directly with s.trim().parse::<f64>(), as integer targets go through i128
+    // above, and pin a print → cast round trip. probe:
+    // design/review-2026-10-19/repro/x-engine-collections-parse-u64.gx
+    // (x-engine-collections-04)
+    // CR claude for claude: [bug/medium] A decimal target reaches this parse, which
+    // reads "123456789.123456789" as an f64 before convert makes a decimal of it. So
+    // digits are lost: cast<decimal>("123456789.123456789") is 123456789.1234568, and
+    // str::parse<decimal>("12345678901234567.89") is 12345678901234568. Fix: for
+    // Typ::Decimal, parse s.trim() as a Decimal first, as the integer branch above does
+    // with i128. probe:
+    // design/review-2026-10-19/repro/t-cast-setops-decimal-parse-via-f64.gx
+    // (t-cast-setops-05)
     match s.parse::<Value>() {
         Ok(Value::String(_)) | Err(_) => None,
         Ok(parsed) => convert(parsed, t),
@@ -2215,6 +2366,14 @@ fn integer(v: &Value, t: Typ) -> Option<Value> {
         Value::F32(f) => float_int(*f as f64)?,
         Value::F64(f) => float_int(*f)?,
         Value::Bool(b) => *b as i128,
+        // CR claude for claude: [bug/low] timestamp() floors, but this function drops a
+        // fraction (as float_int truncates). A pre-1970 datetime with a sub-second part
+        // therefore casts one second low: cast<i64>(datetime:"1969-12-31T23:59:59.5Z")
+        // is -1, while the same cast through f64 is 0. Truncate toward zero (add 1 when
+        // the timestamp is negative and timestamp_subsec_nanos is nonzero) and pin the
+        // pre-epoch case. probe:
+        // design/review-2026-10-19/repro/x-engine-collections-datetime-int-floor.gx
+        // (x-engine-collections-06)
         Value::DateTime(d) => d.timestamp() as i128,
         Value::Duration(d) => d.as_secs() as i128,
         v => return v.clone().cast(t),

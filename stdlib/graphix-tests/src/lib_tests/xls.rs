@@ -49,6 +49,12 @@ run_with_tempdir! {
         };
         assert_eq!(row0.len(), 2);
         // 42 may come back as Int or Float
+        // CR claude for claude: [test-gap/low] This match accepts I64 or F64 for a
+        // numeric cell, but the reader returns f64 (xls_read_pads_to_a1 pins `f64:1.`
+        // for an integer cell). run_with_tempdir compares no modes, so a mode returning
+        // i64 would pass. Pin F64(42.0) here and F64(-7.0) below. Also check row[0] in
+        // xls_read_mixed and the row count in xls_read_bools. Found by reading; not
+        // run. (tests-lib-b2-08)
         match &row0[0] {
             ::netidx::subscriber::Value::I64(42) => (),
             ::netidx::subscriber::Value::F64(f) if (*f - 42.0).abs() < 1e-10 => (),

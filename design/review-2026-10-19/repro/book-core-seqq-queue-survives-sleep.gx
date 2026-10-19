@@ -1,0 +1,16 @@
+// Title: seq.md "Sleeping": a seqq's queued requests survive its arm's sleep
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/book-core-seqq-queue-survives-sleep.gx
+// Expected (book/src/core/seq.md: "Sleeping the enclosing expression discards pending queued
+//   work"): requests 1, 2, 3 queued before the sleep at 50 ms are gone at the wake (300 ms).
+// Observed (both engines): -1, done 1, 1, done 2, 2, done 3, 3: the queue kept them, as
+//   CLAUDE.md says ("a `seqq`'s queue keeps its requests"); the book is stale.
+let sel = true;
+let req = 0;
+req <- sys::time::timer(duration:10.ms, 3) ~ (req + 1);
+sel <- sys::time::timer(duration:50.ms, false) ~ false;
+sel <- sys::time::timer(duration:300.ms, false) ~ true;
+sys::exit(sys::time::timer(duration:1.5s, false) ~ 0);
+select sel {
+  true => seqq req { let r = sys::time::after_idle(duration:100.ms, req); println("done [r]"); r },
+  false => -1
+}

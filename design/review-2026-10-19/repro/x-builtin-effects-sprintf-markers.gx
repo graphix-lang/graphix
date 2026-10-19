@@ -1,0 +1,10 @@
+// Title: str::sprintf prints composite arguments with their kind markers
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/x-builtin-effects-sprintf-markers.gx
+// Expected: ("(1, 2)|{x: 1}|`Foo", "(1, 2)|{x: 1}|`Foo") (or the data forms [1, 2] etc.), the same
+//   text interpolation gives, with no marker abstracts
+// Observed: ("(1, 2)|{x: 1}|`Foo", "[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1, i64:2]|
+//   [abstract:EnwukQtE2EoTn2Uo4FoXw40B, [\"x\", i64:1]]|[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"Foo\"]")
+let t = (1, 2);
+let s = {x: 1};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+("[t]|[s]|[`Foo]", str::sprintf("%s|%s|%s", t, s, `Foo))

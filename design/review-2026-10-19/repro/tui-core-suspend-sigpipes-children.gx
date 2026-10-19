@@ -1,0 +1,29 @@
+// A child spawned while the display holds stderr inherits the capture
+// pipe. A suspend (or a recover after a caught panic) drops that capture
+// and its reader closes the pipe's read end, so the child's next write to
+// stderr kills it with SIGPIPE.
+// The child is spawned at 0.5 s, the display is suspended at 1 s and
+// resumed at 1.5 s, and the child writes to stderr at 3.5 s.
+// Command (from the repo root):
+//   timeout -s KILL 60 python3 design/review-2026-10-19/repro/tui-core-ptyrun.py \
+//     20 '' graphix --no-cache design/review-2026-10-19/repro/tui-core-suspend-sigpipes-children.gx
+// Expected: EXIT 0 (the child's status code; LATE shown on the terminal).
+// Observed: EXIT 99 (the status has no code: the child died of a signal).
+// Deleting the line `sus <- t1 ~ true;` (no suspend) gives EXIT 0 and
+// LATE is replayed after the alternate screen is left.
+use tui::paragraph::paragraph;
+use sys::process::{options, spawn, wait};
+let t0 = sys::time::timer(duration:500.ms, false);
+let t1 = sys::time::timer(duration:1.s, false);
+let t2 = sys::time::timer(duration:1500.ms, false);
+let p = spawn(t0 ~ options(#args: ["-c", "sleep 3; echo LATE >&2; echo SURVIVED"], "sh"))$;
+let st = wait(p.proc)$;
+let sus = false;
+sus <- t1 ~ true;
+sus <- t2 ~ false;
+let r = tui::suspend(sus);
+sys::exit(select st.code {
+  i64 as c => c,
+  null => 99
+});
+paragraph(&"[r]")

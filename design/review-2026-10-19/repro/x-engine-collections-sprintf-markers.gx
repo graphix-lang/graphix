@@ -1,0 +1,7 @@
+// Title: str::sprintf prints a tuple, variant, struct or list argument with the raw
+// Value Display, so its kind markers (abstract ids) land in the result string.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/x-engine-collections-sprintf-markers.gx
+// Expected: ("(1, `A(2), [<3>]) 4", "(1, `A(2), [<3>]) 4")  (sprintf %s as interpolation prints it)
+// Observed: ("[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1, [abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"A\", i64:2], [abstract:EnwukQtE2EoTn2Uo4FoXw40D, i64:3, [abstract:EnwukQtE2EoTn2Uo4FoXw40D]]] 4", "(1, `A(2), [<3>]) 4")
+let v = (1, `A(2), [<3>]);
+(str::sprintf("%s %d", v, 4)$, "[v] 4")

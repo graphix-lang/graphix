@@ -1,0 +1,9 @@
+// Title: a map cast whose key conversion makes two keys one silently drops
+// entries.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-map-key-merge.gx
+// Expected: an InvalidCast (three keys read as one), as every other lossy
+// cast is.
+// Observed: {1 => "b"}
+let m: Any = {"1" => "a", "01" => "b", "1.5" => "c"};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+cast<Map<i64, string>>(m)

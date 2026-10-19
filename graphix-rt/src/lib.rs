@@ -81,6 +81,12 @@ pub trait GXExt: Default + fmt::Debug + Send + Sync + 'static {
     /// multiple calls to `do_cycle`, but it is not guaranteed that
     /// `update_sources` will not be called again before `is_ready`
     /// returns false.
+    // CR claude for eric: [risk/low] This adds to c-lib-05. A user event filled in here
+    // reaches no node. GX::do_cycle updates only the roots in `rt.updated`, which an
+    // extension cannot add to, so a cycle driven by is_ready runs nothing and
+    // Event::clear discards the event. If user events stay, do_cycle has to name the
+    // BindIds whose readers must wake (GX::wake_readers); otherwise delete the
+    // extension point along with UserEvent. Found by reading; not run. (rt-06)
     fn do_cycle(&mut self, event: &mut Event<Self::UserEvent>) -> Result<()>;
 
     /// Return true if there are events ready to deliver
@@ -476,6 +482,10 @@ enum ToGX<X: GXExt> {
         res: oneshot::Sender<Option<String>>,
     },
     /// Snapshot the compiler-env and runtime-ref registry sizes.
+    // CR claude for claude: [readability/low] The doc line above belongs to EnvStats,
+    // which has none. Program hands out the construction-time program root once
+    // (GXHandle::program). Move the line to EnvStats and give Program its own. Found by
+    // reading; not run. (rt-07)
     Program {
         res: oneshot::Sender<(Option<Result<ProgramRoot, String>>, Env)>,
     },
@@ -676,6 +686,15 @@ impl<X: GXExt> GXHandle<X> {
     /// Shut the runtime down, breaking any wedged loop first. Borrows
     /// `&self`, so it can be called while commands are in flight; pending
     /// commands resolve to errors. Dropping the last handle also does this.
+    // CR claude for claude: [bug/medium] abort only sets Control's flag. An idle run
+    // loop sees it only when some source next wakes the select!, so its claim that
+    // pending commands resolve to errors fails: a pending wait_settled hangs, and the
+    // runtime keeps every node, server, subscription and timer alive until then. Fix:
+    // share a tokio::sync::Notify between GXHandleInner and the run loop. abort
+    // notifies it, and the run loop's select! and do_cycle's send loop wait on it,
+    // which also retires the send loop's 100 ms poll. probe:
+    // design/review-2026-10-19/repro/rt-runtime-api.rs (abort_answers_a_pending_settle)
+    // (rt-03)
     pub fn abort(&self) {
         self.0.control.abort()
     }

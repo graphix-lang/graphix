@@ -1,0 +1,15 @@
+// Title: seq.md "Sleeping": a triggerless seq does not run again at its arm's wake
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/book-core-seq-triggerless-wake.gx
+// Expected (book/src/core/seq.md, Sleeping: "a `seq` without a trigger starts a fresh run there"):
+//   "run" printed twice, at 0 ms and again when the arm is reselected at 600 ms.
+// Observed (both engines): a check warning "this seq has no trigger, so it runs only at this
+//   arm's first entry", then run, 1, 0, 1: one run; the wake re-delivers the standing 1.
+//   The code follows CLAUDE.md ("a wake is a resume, never a rebirth"); the book is stale.
+let sel = true;
+sel <- sys::time::timer(duration:300.ms, false) ~ false;
+sel <- sys::time::timer(duration:600.ms, false) ~ true;
+sys::exit(sys::time::timer(duration:1.s, false) ~ 0);
+select sel {
+  true => seq { println("run"); 1 },
+  false => 0
+}

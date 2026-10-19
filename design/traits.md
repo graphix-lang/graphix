@@ -366,6 +366,12 @@ block that declared the trait has left the environment, checks the bound
 from the cell; `trait_of_ref` reads a filled cell and walks the table
 only for an empty one.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says the generated union
+select de-fuses ('coverage residue, FuseExpect::None'). A primitive-union dispatch fuses
+today (`#[native] f(one)` with `f = |x: [i64, string]| Show::show(x)` builds), and
+traits.rs annotates its four union-dispatch fixtures FuseExpect::Jit. Only a union of
+abstract types still de-fuses. Say that instead. Found by running the --expand probes.
+(tests-fusion-traits-09) -->
 **Dispatch** (`node/callsite.rs`): `try_static_resolve` finds no
 lambda behind a dispatcher `Ref` and calls `resolve_trait_call`: the
 instantiated signature's self-argument type, resolved and

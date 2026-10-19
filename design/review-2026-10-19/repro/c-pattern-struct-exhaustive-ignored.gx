@@ -1,0 +1,18 @@
+// Title: an exhaustive struct pattern `{x, y}` matches and covers a struct
+// with more fields, binding a field of the wrong member's type.
+// Command: graphix --no-cache c-pattern-struct-exhaustive-ignored.gx
+//   (and --no-fusion)
+// Expected: refused as not exhaustive (`{x, y}` names every field of
+// {x: i64, y: string} only, so {x, y, z} reaches past the arm), and with
+// a `_ => "other"` arm added: ("s!", "other").
+// Observed: the check accepts the select as exhaustive (and refuses the
+// `_` arm as unreachable); the node-walk prints ("s!", "42!") with y:
+// string holding 42; with fusion the kernel panics "kernel param `y`:
+// runtime I64(42) does not match the compiled String slot" and the
+// runtime dies. The abstract-payload form `W({x, y})` over
+// Abstract<[{x: i64, y: string}, {x: i64, y: i64, z: string}]> does the
+// same, and so does the or-arm in c-pattern-or-struct-field-count.gx.
+type U = [{x: i64, y: string}, {x: i64, y: i64, z: string}];
+let f = |w: U| select w { U as {x, y} => "[y]!" };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(f({x: 1, y: "s"}), f({x: 1, y: 42, z: "z"}))

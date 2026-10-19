@@ -1,0 +1,14 @@
+// Title: paragraph_log_viewer.gx appends the newest entry at the bottom of an unscrolled paragraph
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/book-ui-a-log-viewer-newest-hidden.gx
+// The example's window grows at the end (array::window appends) and its paragraph has the
+// default #scroll {x: 0, y: 0}, so a viewport of H lines shows entries[0..H]. Here H = 3:
+// once the log holds more than 3 entries, the visible lines stop changing and every new entry
+// is below the viewport.
+// Expected for a "live log viewer": the newest entry is visible.
+// Observed: the visible rows stay ["1", "2", "3"] while the log grows to 7 entries.
+let tick = sys::time::timer(duration:50.ms, true);
+let n = count(tick);
+let log = [];
+log <- array::window(#n: 100, n ~ log, "[n]");
+sys::exit(sys::time::timer(duration:400.ms, false) ~ 0);
+(array::len(log), log[0..3]$)

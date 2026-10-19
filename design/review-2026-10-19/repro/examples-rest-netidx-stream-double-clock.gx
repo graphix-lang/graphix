@@ -1,0 +1,42 @@
+// netidx_stream is not self-clocked: the destructured `variance` re-fires when `chk` lands
+// Command: timeout -s KILL 30 graphix --no-netidx --no-cache examples-rest-netidx-stream-double-clock.gx
+// (bench/netidx_stream.gx with n = 8, the tick value = 100 + idx, and winstats::stats inlined.)
+// Expected (the bench's own comment): idx advances once per tick received, so each line's
+//   idx is at most tick - 100 + 1.
+// Observed: "idx=2 tick=100 variance=0 chk=300 p=1": idx 2 is published before tick 101
+//   arrived; at the end p (the bench's `processed`) is 10 for 8 ticks. `let (variance, chk) = stats(..)` fires both names whenever
+//   the tuple fires, and the tuple fires twice per tick: when the inner variance fires and
+//   again when the inner chk lands a cycle later. Returning chk alone and clocking idx on
+//   `processed` (p > 0) gives one tick in flight and p = 8 at the end.
+let stats = |wsize: i64, tick: f64| -> (f64, f64) {
+  let win: Array<f64> = [];
+  win <- array::window(#n: wsize, tick ~ win, tick);
+  let w = select array::len(win) {
+    0 => never(),
+    _ => win
+  };
+  let len = cast<f64>(array::len(w))$;
+  let sum = array::fold(w, 0.0, |a, x| a + x);
+  let mean = sum / len;
+  let variance = array::fold(w, 0.0, |a, x| a + (x - mean) * (x - mean)) / len;
+  let lo = array::fold(w, 1.0e9, |a, x| select x < a { true => x, false => a });
+  let ema = 100.0;
+  ema <- tick ~ (ema * 0.9 + tick * 0.1);
+  let chk = 0.0;
+  chk <- variance ~ (chk + mean + variance + ema + lo);
+  (variance, chk)
+};
+let n = 8;
+let path = "/local/bench/stream/price";
+let idx = 0;
+let tick_out = 100.0 + cast<f64>(idx)$;
+sys::net::publish(path, tick_out)$;
+let tick: f64 = sys::net::subscribe(path)$;
+let (variance, chk) = stats(64, tick);
+idx <- select variance ~ idx {
+  i if i < n - 1 => i + 1,
+  _ => never()
+};
+let processed = count(chk) - 1;
+println("idx=[idx] tick=[tick] variance=[variance] chk=[chk] p=[processed]");
+sys::exit(sys::time::after_idle(duration:300.ms, chk ~ 0))

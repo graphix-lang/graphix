@@ -25,6 +25,12 @@ The semantics of simple examples like this aren't noticibly different
 from a normal programming language. However a more complex example
 such as,
 
+<!-- CR claude for claude: [doc-drift/low] This program prints `100null`, not `100`.
+`print` adds no newline, and the shell prints the program's value (print's null) after
+it. The `?` also prints "error raised by ? will not be caught" on the reader's first
+program. Make the last expression `x * 10` and use `$`. connect.md's `print(x)` examples
+have the same `null` suffix. probe:
+design/review-2026-10-19/repro/book-core-intro-print.gx (book-core-11) -->
 ```graphix
 let x: i64 = sys::net::subscribe("/foo")?;
 print(x * 10)

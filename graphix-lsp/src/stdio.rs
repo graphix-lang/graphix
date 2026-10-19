@@ -34,6 +34,14 @@ pub fn stdio() -> io::Result<(Connection, IoThreads)> {
     let (sender, from_server) = unbounded::<Message>();
     let reader = thread::Builder::new().name("lsp reader".into()).spawn(move || {
         let mut stdin = stdin().lock();
+        // CR claude for claude: [bug/low] A frame whose body is not a JSON-RPC message
+        // (`not json at all`, `[1,2,3]`) makes Message::read return InvalidData. The
+        // `?` ends the reader, and with it the server, which exits 1. The frame was
+        // already consumed, so the reader could answer with a -32700 parse error and go
+        // on: read the frame here, parse it with serde_json, and end the loop only on
+        // an I/O or framing error. probe:
+        // design/review-2026-10-19/repro/x-lsp-probe-malformed-json-exits.py
+        // (x-lsp-probe-05)
         while let Some(msg) = Message::read(&mut stdin)? {
             let exit = matches!(&msg, Message::Notification(n) if n.method == "exit");
             if to_server.send(msg).is_err() || exit {

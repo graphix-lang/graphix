@@ -1,0 +1,12 @@
+// Title: a call to a trait method whose self is only in its result passes --check, fails the build
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --check x-typecheck-patterns-self-result-call.gx
+//          timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-self-result-call.gx
+// Expected: both refuse "Zero::zero called without its self argument" (the check
+//   must refuse exactly when the build does; the LSP shares --check's path).
+// Observed: --check exits 0; the run fails at elaboration with
+//   "Zero::zero called without its self argument". The same holds for the value
+//   form `let g = Zero::zero; g(1)`.
+trait Zero { val zero: fn(x: i64) -> self };
+impl Zero for i64 { let zero = |x| x };
+let z: i64 = Zero::zero(1);
+z

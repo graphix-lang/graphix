@@ -1,0 +1,7 @@
+// Title: a string cast or parsed to decimal goes through f64 and loses digits.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-decimal-parse-via-f64.gx
+// Expected: (123456789.123456789, 0.30000000000000001, 12345678901234567.89)
+// Observed: (123456789.1234568, 0.3, 12345678901234568.)
+let d: decimal = str::parse("12345678901234567.89")$;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(cast<decimal>("123456789.123456789"), cast<decimal>("0.30000000000000001"), d)

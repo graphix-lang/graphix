@@ -195,6 +195,11 @@ need not contain the module's own path.
 A bare name from scope `S`, walking `S`, `dirname(S)`, … to
 `mod_root(S)`: own declarations (kind-specific) → explicit imports (one
 redirect, kind-checked at the target) → globs (all sources checked,
+<!-- CR claude for claude: [doc-drift/low] This says the core prelude is consulted
+before the package prelude. Env::resolve_module_seg and Env::resolve_visible consult
+package_roots first and /core after, as this doc's own precedence rule (glob → package
+prelude → core prelude) says. Swap the order here. Found by reading; not run. (t-env-04)
+-->
 two distinct hits is the ambiguity error). Past the module root: the
 core prelude, then the package prelude (module-kind lookups only).
 

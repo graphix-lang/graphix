@@ -161,6 +161,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     composite_plumbing!(Struct);
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        // CR claude for claude: [dead/low] Unreachable: struct_fields parses with
+        // sep_by1, so a struct literal has at least one field, `{}` is the empty Map,
+        // and nothing else builds an ExprKind::Struct. Delete this branch. Found by
+        // reading; not run. (c-data-map-06)
         if self.n.is_empty() {
             return super::produce_constant(ctx.event, &mut self.resident, || {
                 rep::structure_of_fields([])
@@ -1115,6 +1119,20 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         let top_id = self.spec.id;
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {
+                // CR claude for eric: [bug/high] Over a union of same-shaped structs,
+                // struct_field_type returns the union of the members' field types. That
+                // is a read type, and here it is used as the type a write must fit. `{s
+                // with a: k}` with s: [{a: i64, b: string}, {a: string, b: i64}] = {a:
+                // "y", b: 9} builds {a: k, b: 9}, which is in no member. The node-walk
+                // then hits a select coverage hole, and the fused JIT reads the i64 as
+                // a string ("!false"). Place::elem_type in bind.rs has the same defect
+                // for `&mut s.a` and `&mut t.0` (tuple_field_type). The array and map
+                // place steps already refuse a union source. Rule to decide: either a
+                // write must fit every member's field type (with keeps the source's
+                // type), or a `&mut` field step over a union is refused unless all
+                // members agree. Pin as must-reject. probe:
+                // design/review-2026-10-19/repro/c-data-map-union-field-write.sh
+                // (c-data-map-01)
                 let (i, typ) = struct_field_type(ctx, &styp, &rep.name)?;
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
                 if check {

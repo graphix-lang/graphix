@@ -1,0 +1,13 @@
+// Title: Singleton/OneNumber count a union's members without dedup: [i64, 'y:=i64] is
+//        read as two types, so a valid program passes --check and the build refuses it
+// Command: timeout -s KILL 30 graphix --check t-tvar-singleton-dup-members.gx      (exit 0)
+//          timeout -s KILL 30 graphix --no-cache t-tvar-singleton-dup-members.gx
+// Expected: both accept; the program prints 9 (h's x is [i64, i64], which is i64).
+// Observed: --check exits 0; the build refuses: "an instance at fn(x: [i64, i64]) ->
+//   [i64, i64] of a definition typed fn(x: '_N: unbound within [..numbers..] & Singleton)".
+//   UnionParts::member (graphix-types/src/typ/tvar.rs) counts i64 twice.
+//   The same happens with 'a: [Number, null] + OneNumber in place of h's inferred bound.
+let h = |x| x * x;
+let k = |b, y| h(select b { true => 1, false => y });
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+k(false, 3)

@@ -1,0 +1,21 @@
+// A write to an arm-local let that lands in the very cycle its arm is
+// deselected is never re-raised at the wake (Bind::reraise_writes_while_asleep
+// requires stamp > slept_at, and both are that cycle).
+// run: timeout -s KILL 30 graphix --no-cache c-bind-reraise-same-cycle.gx | grep -v null
+// The x <- write queued at n=2 lands in the cycle m becomes 2 and deselects the arm.
+// expected (wake catch-up re-raises the fire no reader saw, once):
+//   ... 4 4 (30, 4)  4 4 (40, 5) ...
+// observed (both engines, pruned and unpruned):
+//   ... 4 4 (30, 3)  4 4 (40, 4) ...  -- count never saw the 30
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let m = 0;
+m <- n;
+let sel = select m { 2 => false, 3 => false, _ => true };
+let out = select sel {
+  true => { let x = 0; x <- n ~ x + 10; (x, count(x)) },
+  false => (-1, -1)
+};
+sys::exit(select n { 6 => n, _ => never() });
+println("[n] [m] [out]")

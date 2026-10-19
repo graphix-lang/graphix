@@ -1,0 +1,15 @@
+// Title: an rpc keeps one handler instance per call that has not answered, unbounded
+// Run: sh design/review-2026-10-19/repro/x-security-rpc-unbounded.sh
+// Expected: memory bounded (a call nobody waits for, or past a cap, is dropped/refused).
+// Observed: VmRSS grows ~3.5 MB/s at 1000 calls/s (87 MB -> 180 MB in 25 s);
+//   the same program with `#f: |args: {a: i64}| -> i64 args.a` stays flat at 71-74 MB.
+let p = "/local/flood";
+sys::net::rpc(
+  #path: p,
+  #doc: "never answers",
+  #spec: {a: {default: 0, doc: "a"}},
+  #f: |args: {a: i64}| -> i64 never(args.a));
+let clk = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+sys::net::write(p, n)

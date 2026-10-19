@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-fa28cf06.js"></script>
@@ -188,6 +188,12 @@ add your own with <code>add_packages</code>, e.g.
 <code>.add_packages(graphix_package::packages!())</code> for your <code>graphix-package-*</code>
 dependencies, or replace the set with <code>packages(..)</code>.</p>
 <h2 id="basic-application"><a class="header" href="#basic-application">Basic Application</a></h2>
+<!-- CR claude for claude: [doc-drift/medium] Every example on this page writes
+`Mode::Script(Source::File(..))` and imports `graphix_compiler::expr::Source`, but
+`graphix_shell::Mode::Script` takes a `graphix_compiler::expr::Load` (`Load::File`,
+`Load::Netidx`, `Load::Text`), so none of these snippets compiles. Fix: import `Load`
+and write `Mode::Script(Load::File(PathBuf::from("main.gx")))` everywhere on the page.
+Found by reading; not run. (book-modules-udt-03) -->
 <p>The shell needs a <code>MainThreadHandle</code> so widgets that must run on the
 main thread (notably the GUI backend) can dispatch work back from the
 tokio runtime. The standard pattern is to spawn tokio on its own thread

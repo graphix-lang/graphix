@@ -353,6 +353,18 @@ impl StructPatternNode {
             out.push(Leaf { id: *id, typ: typ.clone(), fresh: false });
             return Ok(());
         }
+        // CR claude for eric: [bug/medium] A capture takes the narrowed predicate,
+        // whose cells hold the union of each position's parts over every member, so it
+        // loses which member it came from. `a@ (_, _)` over U = [(i64, string),
+        // (string, i64)] is ([i64, string], [i64, string]), and `h(a)` with `h: |u: U|`
+        // is refused ("U does not contain ([i64, string], [i64, string])"). `a@ [_,
+        // ..]` over [Array<i64>, Array<string>] is refused the same way, although the
+        // captured value is always a member of the scrutinee. Fix: type a whole bind as
+        // the union of the reaching members its position can match (bind_narrowed would
+        // take `reaching`), and keep the per-cell union for the plain binds. That
+        // refines the CLAUDE.md capture rule, so it needs your call. probe:
+        // design/review-2026-10-19/repro/c-pattern-capture-loses-member.gx
+        // (c-pattern-04)
         for id in self.whole_binds() {
             out.push(Leaf { id, typ: typ.normalize(), fresh: true })
         }
@@ -628,6 +640,15 @@ impl StructPatternNode {
         // under a written type, a constructor pattern at a union narrows to
         // the members it can match, as an arm narrows over its scrutinee;
         // its own test then decides them (`covers`)
+        // CR claude for claude: [bug/low] Slice and list patterns are missing from this
+        // list, so under a written union they never narrow to their member.
+        // compile_slice then refuses them: `T([x, ..])` over `type T =
+        // Abstract<[Array<i64>, null]>` fails with "slice patterns can't match [null,
+        // Array<i64>]", while `V((x, _))` over Abstract<[(i64, i64), null]> is
+        // accepted. The same refusal hits `[Array<i64>, null] as [x, ..]`. Fix: add
+        // StructurePattern::Slice, SlicePrefix and SliceSuffix here. probe:
+        // design/review-2026-10-19/repro/c-pattern-slice-under-written-union.gx
+        // (c-pattern-05)
         let constructor = matches!(
             spec,
             StructurePattern::Tuple { .. }
@@ -860,6 +881,22 @@ impl StructPatternNode {
                          cannot be destructured"
                     )
                 };
+                // CR claude for claude: [bug/high] An inferred abstract pattern takes
+                // its type parameters from its payload. For `type Box<'a> =
+                // Abstract<'a>` the payload compiles against the parameter cell itself,
+                // so `Box(null)` gets the predicate Box<null> and `Box(`A)` gets
+                // Box<`A>. Type::is_a compares abstract parameters invariantly, so
+                // neither arm ever matches a Box<[i64, null]> or a Box<[`A, `B]>.
+                // Box(null) runs the `Box(n)` arm. The exhaustive `Box(`A) => 1,
+                // Box(`B) => 2` is refused as an unreachable arm, and `Box(`A) => 1`
+                // alone is accepted with a coverage hole, because the pool reads this
+                // narrowed rep as its head domain. Parameters are invariant, so they
+                // must come from the reaching scrutinee member: compile the payload
+                // against the rep instantiated at that member's parameters, completing
+                // the predicate against the scrutinee first. The two-instantiation
+                // variant is the CR in TVar::narrow_per_member. probe:
+                // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-payload-params.gx
+                // (x-typecheck-patterns-01)
                 let (atyp, rep) = r.instantiate(id);
                 type_predicate.check_contains(&ctx.env, &atyp)?;
                 // the predicate is this abstract type, as a variant pattern's is
@@ -957,6 +994,12 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.ids_inner(f))
     }
 
+    // CR claude for claude: [structure/low] This repeats, arm by arm, the walk that
+    // whole_binds() and children() already give (fresh_ids is written over them), so a
+    // new pattern shape has to be taught to three walks that must agree. Write it as
+    // `Bind(id) => f(id)`, `Or { alts } => alts[0].ids(f)`, else whole_binds() then
+    // each child's ids. aux_types and typecheck0_rows both use this order, so changing
+    // it is safe. Found by reading; not run. (c-pattern-07)
     fn ids_inner<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
         match &self {
             Self::Abstract { all, bind, .. } => {
@@ -1206,6 +1249,22 @@ impl StructPatternNode {
             },
             // a field is the pair at its index naming it: a struct of
             // another shape that has the index fails
+            // CR claude for claude: [bug/critical] The struct test ignores whether the
+            // pattern is exhaustive. `{x, y}` matches here, and covers in covers_inner,
+            // a struct with more fields: `a.len() >= binds.len()`. Under a written
+            // union `[{x: i64, y: string}, {x: i64, y: i64, z: string}] as {x, y}`, the
+            // arm is judged exhaustive, y is typed string, and {x: 1, y: 42, z: "z"}
+            // binds 42 into it. The node-walk prints "42!", and the fused kernel panics
+            // ("runtime I64(42) does not match the compiled String slot"), taking the
+            // runtime down. An or-arm `{x, y} | {x, y: _, z: y}` does the same, since
+            // footprint calls the two members apart but this test does not. Fix: record
+            // the field count of the struct type the pattern was compiled or realigned
+            // against, require equality here, in bind_inner and in covers_inner, and
+            // make the JIT's composite cond (the Struct arm's `>=` in
+            // fusion/emit/select.rs) test equality too. probe:
+            // design/review-2026-10-19/repro/c-pattern-struct-exhaustive-ignored.gx,
+            // design/review-2026-10-19/repro/c-pattern-or-struct-field-count.gx
+            // (c-pattern-01)
             Self::Struct { all: _, binds } => match rep::struct_fields(v) {
                 Some(a) => {
                     a.len() >= binds.len()

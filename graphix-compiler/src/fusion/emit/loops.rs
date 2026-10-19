@@ -59,6 +59,17 @@ pub(crate) fn callback_param<R: Rt, E: UserEvent>(
     let Some(arg) = callback.args().get(index) else { return Ok(None) };
     Ok(match arg.tuple_leaves() {
         Some(binds) => Some(CallbackParam { name: fallback, id: None, binds }),
+        // CR claude for claude: [perf/medium] A destructuring formal other than a flat
+        // tuple (`|{a, b}|`, `|((a, b), c)|`, a fold acc `|((n, m), k), x|`) lands here
+        // as if it were a single name: id is None, there are no leaves, and the
+        // pattern's binds are never bound. The loop then fails with 'emit_clif:
+        // undefined local `a`': it silently node-walks, or under #[native] reports that
+        // internal message. Bind the general pattern's leaves (struct fields and nested
+        // positions, as select destructuring does), or at least return a
+        // fusion::blocker naming the destructured formal, and add #[native] pins for
+        // both shapes beside native_destructured_tuple_acc_folds. probe:
+        // design/review-2026-10-19/repro/tests-fusion-traits-destructured-callback-defuses.gx
+        // (tests-fusion-traits-04)
         None => match &callback.typ().args.get(index).map(|a| &a.kind) {
             Some(FnArgKind::Positional { name: Some(name) }) => Some(CallbackParam {
                 name: name.clone(),
@@ -490,6 +501,12 @@ pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
 /// A fold's acc carried one register per field: a tuple of scalars
 /// built by a tuple literal, its parameter destructured into names or
 /// one name read only field by field (`p.0`).
+// CR claude for claude: [readability/low] This doc opens with "The fold kind. A List-
+// or Map-valued accumulator ...", which describes `emit_fold_kind`; that function has
+// no doc. In scaffold.rs, `AccNames` carries `emit_fold_fields_loop`'s paragraph above
+// its own, and the function has none. In call.rs, `OwnedDrop` has two docs run
+// together. Move each paragraph to the item it describes. Found by reading; not run.
+// (f-call-flow-05)
 fn unpackable_acc<R: Rt, E: UserEvent>(
     cx: &BodyCx,
     acc_type: &Type,

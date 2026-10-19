@@ -1,0 +1,11 @@
+// Title: an option of a tuple or struct destructured by a select arm does not fuse
+// Command: timeout -s KILL 30 graphix --no-cache --expand fuzz-gen-a-option-tuple-defuse.gx
+// Expected: the three #[native] selects fuse, as `|v: [i64, null]| select v { null as _ => .., x => .. }`
+//   and `|v: (i64, i64)| select v { (x, y) => .. }` each do.
+// Observed: "#[native] expression did not fully fuse to native code: emit_clif: slice/tuple/struct
+//   select pattern over a non-composite scrutinee not lowerable" (each line alone fails the same
+//   way; with an explicit `(i64, i64) as (x, y)` arm: "type predicate (i64, i64) not lowerable").
+let f = |v: [(i64, string), null]| -> i64 #[native] select v { null as _ => i64:-1, (x, t) => x + str::len(t) };
+let g = |v: [(i64, i64), null]| -> i64 #[native] select v { null as _ => i64:-1, (x, y) => x + y };
+let h = |v: [{x: i64, y: i64}, null]| -> i64 #[native] select v { null as _ => i64:-1, {x, y} => x + y };
+(f((i64:7, "a")), f(null), g((i64:1, i64:2)), h({x: i64:1, y: i64:2}))

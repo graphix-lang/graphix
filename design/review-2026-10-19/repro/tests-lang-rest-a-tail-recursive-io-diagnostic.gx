@@ -1,0 +1,16 @@
+// Title: #[tail_recursive] names causes that do not apply when an Io call or a raise does not follow the formals
+// Command: timeout -s KILL 30 graphix --no-cache tests-lang-rest-a-tail-recursive-io-diagnostic.gx
+// Expected: a refusal that says the body's println (an Io call that does not follow the
+//   formals) keeps each depth its own activation.
+// Observed: "#[tail_recursive]: every recursive call is in tail position, but no loop is
+//   built — ... so with a labeled, variadic or opaque formal, or a body holding per-call
+//   memory (a collection operation, or a callee holding one), every call keeps its own
+//   activation" -- none of which this body has. Replacing the println with
+//   `error(`E)?;` under an enclosing catch gives the same message (the handler-ful raise
+//   does not follow the formals, lowering::claims_no_site_memory).
+#[tail_recursive]
+let rec f = |n: i64, acc: i64| -> i64 {
+  println("step");
+  select n { 0 => acc, _ => f(n - 1, acc + n) }
+};
+f(3, 0)

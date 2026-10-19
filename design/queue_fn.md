@@ -114,6 +114,13 @@ user asked for.
   recorded bind, so the call-site `pred` fires next cycle.
 - `#count` resolves the outer ByRef through `byref_chain` to its target
   bind and writes through that.
+<!-- CR claude for claude: [doc-drift/low] Stale. The wrapper holds a
+genn::Callback::through, not `pred` over an `Arc<[BindId]>`. `#count` is written through
+ExecCtx::write_target, not byref_chain. The same-cycle release rule (set_var when a
+release delivers to the site's bindings) is missing. This bullet states as intended the
+sleep reset that the wake-is-a-resume rule forbids. Rewrite the Implementation section
+from queuefn.rs once the sleep/reborn rule is settled, and drop the Status dates. Found
+by reading; not run. (core-aux-04) -->
 - `sleep` clears the queue and resets `pop_count` to 1 (the arm-rewake
   restart). The wrapper's `sleep` and `delete` forward to its `pred`
   and drop the site's queued entries, writing `#count` (a release to a

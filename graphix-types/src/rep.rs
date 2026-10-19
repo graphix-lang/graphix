@@ -374,7 +374,24 @@ pub fn strip(v: &Value) -> Option<Value> {
                     .map(|v| strip(&v).unwrap_or(v))
                     .collect(),
             )),
+            // CR claude for claude: [perf/low] The Array and Map arms below clone every
+            // element into a scratch Vec even when nothing changes, then drop it.
+            // to_data then walks the value a second time in rewrite_data. Each publish,
+            // pack or json write of a large unmarked array pays a full copy for
+            // nothing. Copy only from the first changed element (rewrite_data's
+            // pattern), or fold the strip into rewrite_data so a write walks once.
+            // Found by reading; not run. (x-kind-markers-07)
             None => match v {
+                // CR claude for claude: [perf/low] This arm (and the Map arm below)
+                // copies every element into a pooled Vec before it knows anything
+                // changed, and drops the copy when nothing was marked.
+                // abstract_value::rewrite then walks the stripped value again in
+                // rewrite_data, which already has the lazy pattern (copy a[..i] at the
+                // first change). Every writer pays this, sys::net publish once per
+                // update. Fix: merge strip into rewrite_data as one lazy walk that
+                // strips markers and converts abstracts, with a flag that skips the
+                // abstract conversion for testing::observed. Found by reading; not run.
+                // (t-rep-05)
                 Value::Array(a) => {
                     let mut changed = false;
                     let vs: LPooled<Vec<Value>> = a
@@ -389,6 +406,28 @@ pub fn strip(v: &Value) -> Option<Value> {
                         .collect();
                     changed.then(|| array(vs))
                 }
+                // CR claude for eric: [bug/medium] Stripping the keys can merge two of
+                // them. "A" and `A both become "A", and (1, 2) and [1, 2] both become
+                // [1, 2]. Map::from_iter then keeps one entry, so pack/json/toml/net/db
+                // writes of a Map<[string, `A], V> lose entries with no error. A db
+                // tree keyed by [string, `A] stores "A" and `A under one key: inserting
+                // `A replaces the value stored under "A". Decide: refuse such key types
+                // at the check (db keys are always data), or have to_data refuse a map
+                // whose stripped keys collide instead of dropping entries. probe:
+                // design/review-2026-10-19/repro/x-kind-markers-data-key-collision.sh
+                // (x-kind-markers-02)
+                // CR claude for claude: [bug/medium] Keys that differ in memory but
+                // share a data form ("A" and `A, [1, 2] and (1, 2)) strip to one key,
+                // and Map::from_iter keeps one entry without a word. Every writer goes
+                // through to_data, so json, pack, toml, hbs, sys::net and db silently
+                // drop an entry. json's duplicate-key guard never sees the collision,
+                // and the surviving key carries the other key's value.
+                // abstract_value::rewrite_data's Map arm has the same hole for abstract
+                // keys whose to_value results coincide. Fix: make this walk fallible
+                // and refuse when the rebuilt map is shorter than the source ("two keys
+                // write as the same data"), and add a writer pin. probe:
+                // design/review-2026-10-19/repro/t-rep-strip-map-key-collision.gx
+                // (t-rep-02)
                 Value::Map(m) => {
                     let mut changed = false;
                     let mut kvs: LPooled<Vec<(Value, Value)>> = m

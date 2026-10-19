@@ -1,0 +1,14 @@
+// core-lib: range drops the elements it owes once its arguments go bottom.
+// Run: timeout -s KILL 30 graphix --no-cache core-lib-range-bottom-drops.gx 2>&1 | grep -v '^null$'
+// Expected: range=0..range=4, as iter=0..iter=4 (an emission owed to an earlier
+// input still delivers: graphix-package-core bottom_of).
+// Observed: range=0 only; iter delivers all five. Same with --no-fusion.
+let go = 0;
+let j = select go { 0 => 5, _ => never() };
+let v = range(0, j)$;
+let a = select go { 0 => [0, 1, 2, 3, 4], _ => never() };
+let w = array::iter(a);
+go <- v ~ 1;
+println(v ~ "range=[v]");
+println(w ~ "iter=[w]");
+sys::exit(sys::time::after_idle(duration:300.ms, go))

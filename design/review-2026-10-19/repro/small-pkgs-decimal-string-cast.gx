@@ -1,0 +1,10 @@
+// A string cast or read to decimal parses through f64 and loses digits; json's decimal round trip with it
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/small-pkgs-decimal-string-cast.gx
+// Expected: (12345678901234567890.123456789, 12345678901234567890.123456789, 12345678901234567890.123456789)
+// Observed: (12345678901234567168., 12345678901234567168., 12345678901234567168.)
+let x = decimal:12345678901234567890.123456789;
+let a = cast<decimal>("12345678901234567890.123456789");
+let b: Result<decimal, `ParseError(string)> = str::parse("12345678901234567890.123456789");
+let c: Result<decimal, [`JsonErr(string), `InvalidCast(string)]> = json::read(json::write_str(x)$);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(a, b, c)

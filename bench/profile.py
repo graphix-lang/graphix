@@ -30,6 +30,19 @@ def read_profile(path):
             intervals.append(dict(thread=thread, **fields))
     for root in roots:
         measured = sum(p["self_ns"] for p in root["phases"].values())
+        # CR claude for eric: [bug/medium] This equality fails on the GRAPHIX_PROFILE
+        # log of every program, so profile.py and instances.py (which calls
+        # read_profile) both raise. profile::Task::join adds a compile task's self_ns
+        # into the joiner's metrics, but the joiner's clock also ran while the task
+        # executed on another thread. A Compile root of 15.8 ms reports 20.6 ms of self
+        # time, and Typecheck1 reports self_ns > total_ns. Same under GRAPHIX_PAR=off
+        # GRAPHIX_FUSE_SERIAL=1, since package registration checks modules in tasks.
+        # Decide what the table means: CPU time across threads (check >= here, print the
+        # excess, and count merged task time in Span's total_ns too), or wall time on
+        # the root's thread (Task::join reports task costs in their own column instead
+        # of self_ns). probe:
+        # design/review-2026-10-19/repro/ide-tooling-profile-accounting.sh
+        # (ide-tooling-02)
         if measured != root["duration_ns"]:
             raise ValueError(f"phase accounting mismatch in {path}: {root}")
     return dict(roots=sorted(roots, key=lambda r: r["start_ns"]), intervals=intervals)

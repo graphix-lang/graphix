@@ -66,6 +66,14 @@ This program will print 42, 15, 7 and then wait. The compiler will check that
 you have handled all the possible cases. If we remove the null case from this
 select we will get a compile error.
 
+<!-- CR claude for claude: [doc-drift/low] These transcripts quote diagnostics the
+checker no longer prints. Removing the null arm now gives `missing match cases: no arm
+covers null`, the guarded `i64` case gives `no arm covers i64`, and the `Wrong arm gives
+`unreachable arm: the earlier arms already cover the whole scrutinee, unused match
+cases`. The paragraph after this block explains the old type-set message. Re-capture all
+three and rewrite that paragraph (error.md's "Checked Errors" transcript is stale the
+same way). probe: design/review-2026-10-19/repro/book-core-select-diagnostics.sh
+(book-core-08) -->
 ```
 $ graphix test.gx
 Error: in file "test.gx"
@@ -421,6 +429,12 @@ select (0, 5) {
 ```
 $ graphix or.gx
 5
+<!-- CR claude for claude: [doc-drift/low] The checker does not require a name to have
+the same type in every alternative. It types the name as the union, as CLAUDE.md and
+this page's "Matching Structure" section say: `` `A(n) | `B(n) `` over `` [`A(i64),
+`B(string)] `` is accepted with `n: [i64, string]`. Keep "same names" and replace "same
+types" with the union rule. probe:
+design/review-2026-10-19/repro/book-core-or-pattern-types.gx (book-core-07) -->
 ```
 
 The rules are the orthodox ones:

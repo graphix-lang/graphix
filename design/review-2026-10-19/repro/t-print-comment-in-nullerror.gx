@@ -1,0 +1,16 @@
+// t-print: a comment on a postfix source changes program-visible NullError text.
+// command: graphix --no-cache t-print-comment-in-nullerror.gx
+// expected: error: `NullError("s.a") (as for the same program without the comment,
+//   whose `(s).a` parses to the identical tree)
+// observed: error: `NullError("(s).a")  -- prints_as_bare_postfix tests `dec.is_none()`,
+//   and a comment-only decoration is not printed outside the formatter.
+let s: {a: [i64, null]} = {a: null};
+let r = {
+    catch(e) println("[e]");
+    (
+        // c
+        s
+    ).a?
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+r

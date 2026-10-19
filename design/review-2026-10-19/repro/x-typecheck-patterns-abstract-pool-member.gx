@@ -1,0 +1,22 @@
+// Title: the literal pool reads an abstract payload's heads from the pattern's own type, not the scrutinee's
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache x-typecheck-patterns-abstract-pool-member.gx
+// Expected: refused by the check: "missing match cases" for f (Box(`B) is not
+//   covered) and for g (Box<i64> is not covered).
+// Observed: both accepted; at run time
+//   "select x { Box(`A) => 1 }: no arm matches abstract:..: a coverage hole in the check"
+//   "select x { Box(true) => 1, Box(false) => 2, Box<bool> as b => 3 }: no arm matches ..."
+//   and the program prints nothing (the array is bottom).
+// Cause: pooled_leaves reads the Abstract pattern node's `rep`, which the
+//   pattern's own payload inferred (`A, bool), so heads() sees a domain of {`A} /
+//   {true, false}; and Shape::member takes the FIRST union member with the
+//   abstract's id (Box<i64> for g), so the completed group covers it.
+//   Single-instantiation variant: `Box<[bool, i64]>` with Box(true) / Box(false).
+type Box<'a> = Abstract<'a>;
+let f = |x: Box<[`A, `B]>| select x { Box(`A) => 1 };
+let g = |x: [Box<bool>, Box<i64>]| select x {
+    Box(true) => 1,
+    Box(false) => 2,
+    Box<bool> as b => 3
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[f(Box(`A)), f(Box(`B)), g(Box(true)), g(Box(3))]

@@ -1,0 +1,20 @@
+// array::group has no Apply::reborn, so a seq step's next run inherits the
+// partial group the previous (aborted) run left behind.
+// Run: timeout -s KILL 30 graphix --no-cache x-node-contract-group-no-reborn.gx
+// Expected (CLAUDE.md: a builtin starts afresh where it is born again, a seq
+// step entered for its next run; count/queue/hold/take reset there): no output --
+// every run gives the group one element and is aborted 15 ms later, so no group
+// of three ever completes within a run.
+// Observed: [0, 1, 2], [3, 4, 5], [6, 7, 8] -- each group is assembled from three
+// separate runs. The same program with `count(s)` in place of the group prints 1
+// for every run.
+let clock = sys::time::timer(duration:40.ms, true);
+let step = 0;
+step <- clock ~ step + 1;
+let go = clock ~ step;
+let r = seq let s = go; abort(sys::time::after_idle(duration:15.ms, s)) {
+  let g = array::group(s, |n, v| n == 3);
+  g
+};
+sys::exit(select step { 10 => 0, _ => never() });
+r

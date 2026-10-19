@@ -390,6 +390,11 @@ pub(crate) enum TypeName {
 
 /// True if scope `s` is `prefix` itself or a path descendant of it.
 /// Where a scope is, for a message: the root is the top level.
+// CR claude for claude: [readability/low] The doc line "True if scope `s` is `prefix`
+// itself or a path descendant of it" above this function belongs to scope_is_under
+// below, which is left undocumented. Move it there. This function also spells out
+// compact_str::CompactString and compact_str::format_compact!, which the file already
+// imports. Found by reading; not run. (t-env-03)
 fn in_scope(scope: &ModPath) -> compact_str::CompactString {
     match &*scope.0 {
         "/" | "" => compact_str::CompactString::const_new("at the top level"),
@@ -1344,6 +1349,15 @@ impl Env {
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.
+    // CR claude for claude: [bug/medium] heads_overlap keeps the heads' bounds, so
+    // whether two impls conflict depends on which other impls are registered when the
+    // second one is. `impl<'a: T> T for Array<'a>` followed by `impl T for Array<i64>`
+    // is accepted when `impl T for i64` comes after them, and refused when it comes
+    // before. Once accepted, `T::m([1])` dispatches to the generic impl and the
+    // specific one is never used. traits.md says heads that unify are refused, with no
+    // specialization. Test overlap on copies whose cells carry no bound conjuncts.
+    // probe: design/review-2026-10-19/repro/x-typecheck-patterns-impl-overlap-order.gx
+    // (x-typecheck-patterns-06)
     pub(crate) fn heads_overlap(&self, a: &Type, b: &Type) -> Result<bool> {
         let a = a.reset_tvars();
         let b = b.reset_tvars();
@@ -1764,6 +1778,20 @@ impl Env {
                 rep: rep.clone(),
                 public,
             };
+            // CR claude for claude: [bug/medium] Every instance of a function body that
+            // declares an abstract type re-inserts its AbstractRep with a fresh Arc,
+            // even when the representation is unchanged. Two statements that call such
+            // a function elaborate in parallel compile tasks, and Env::join then sees
+            // two writes to one id: the debug build panics in TrackedMap::join with "a
+            // fork's write to AbstractId(..) would replace a write made since the
+            // fork". `--check` passes, and `cargo test` runs with these asserts on.
+            // Keep the existing entry when the check above found the representation
+            // unchanged (and publicity unchanged), so the second write is a no-op. A
+            // trait declared in a function body hits the same assert on Env::modules
+            // (design/review-2026-10-19/repro/x-typecheck-patterns-local-trait-fork-panic.gx);
+            // refuse a trait in a function body, as an impl there is refused. probe:
+            // design/review-2026-10-19/repro/x-typecheck-patterns-local-abstract-fork-panic.gx
+            // (x-typecheck-patterns-04)
             self.abstract_reps.insert(*id, Arc::new(r));
         }
         let def = std::sync::Arc::new(ResolvedRef::new(

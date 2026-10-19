@@ -244,6 +244,13 @@ async fn set_many_lands_in_one_cycle() -> Result<()> {
     let sy = find_bind_id(&m.env, "test::sy")?;
     let w = gx.compile(literal!("(test::sx, test::sy)")).await?;
     let wid = w.exprs.last().context("no expr")?.id;
+    // CR claude for claude: [risk/low] This test and its siblings in the file wait for
+    // the runtime with fixed sleeps: 300 ms here, 100 ms before each store_len reading
+    // and before the mistyped-call checks. On a loaded box the initial (0, 0) update
+    // can land after this drain, and the assert then fails with the engine right. Every
+    // run also pays the full sleeps. Use `gx.wait_idle().await?` before each
+    // measurement, and end the read loop at wait_idle instead of a 3 s deadline. Found
+    // by reading; not run. (tests-lib-b2-07)
     tokio::time::sleep(Duration::from_millis(300)).await;
     while rx.try_recv().is_ok() {}
     gx.set(sx, Value::I64(5))?;

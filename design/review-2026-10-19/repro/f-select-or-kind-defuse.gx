@@ -1,0 +1,23 @@
+// f-select: an or-arm whose shared name binds at a different ABI kind per
+// alternative de-fuses the whole select: emit_or_chain takes the done block's
+// layout (kinds) from alternative 0 and Errs on a mismatch. The shared name's
+// type is the union (design/or_patterns.md), which has a Value form.
+// command: graphix-fuzz run design/review-2026-10-19/repro/f-select-or-kind-defuse.gx
+// expected: f and g fuse as h does
+// observed: values agree; fusion reports
+//   "or-pattern alternative binds BindId(..) at a different kind" for f and g
+{
+  let f = |v: [`A(i64), `B(f64), `C]| select v {
+      `A(x) | `B(x) => "[x]",
+      `C => "c"
+  };
+  let g = |v: [`A(i64), `B(string), `C]| select v {
+      `A(x) | `B(x) => "[x]",
+      `C => "c"
+  };
+  let h = |v: [`A(i64), `B(i64), `C]| select v {
+      `A(x) | `B(x) => "[x]",
+      `C => "c"
+  };
+  (f(`A(1)), f(`B(2.5)), g(`B("s")), h(`B(3)), f(`C))
+}

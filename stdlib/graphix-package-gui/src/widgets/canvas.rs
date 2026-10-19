@@ -119,6 +119,14 @@ pub(crate) enum PathSegment {
     Close,
 }
 
+// CR claude for eric: [bug/medium] ShapeVec reads every shape through Finite, so one
+// NaN or infinite field in one shape refuses the whole update. The canvas then keeps
+// drawing its previous frame, and every update carrying that value is refused and
+// logged. CheckedPath already skips just a shape with non-finite geometry at draw time,
+// and the chart widget drops non-finite points. Choose one rule: skip the bad shape
+// (read plain numbers, check the remaining scalars in draw_shape) or drop it here while
+// reading. probe: design/review-2026-10-19/repro/gui-widgets-a-canvas-nan-freezes.rs
+// (gui-widgets-a-04)
 #[derive(Clone, Debug, FromValue)]
 #[value(shape = "graphix_compiler::rep::GraphixShape")]
 pub(crate) struct ShapeVec(pub Vec<CanvasShape>);

@@ -1,0 +1,15 @@
+// Title: one region holding two instances of a generic callback at different
+//   types calls the wrong lambda kernel: discover_lambda_calls keys call
+//   sites by ExprId, which the two callback instances share.
+// Command: graphix-fuzz check f-mod-lowering-site-id-collision-wrong.gx
+//   (or graphix --no-cache [--no-fusion] this file)
+// Expected (node-walk): ([true, false], [false, false])  -- u64::MAX < 0 is false
+// Observed (JIT): ([true, false], [true, false])         -- the u64 callback ran h's i64 kernel
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+let h = |a, b| a < b;
+let g = |x| h(x, x - x);
+let n = 0;
+n <- select n { k if k < 2 => k + 1, _ => never() };
+let xs: Array<i64> = [0 - 1, n];
+let ys: Array<u64> = [u64:18446744073709551615, cast<u64>(n)$];
+(array::map(xs, g), array::map(ys, g))

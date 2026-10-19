@@ -391,6 +391,17 @@ impl<B: BodyKind> EvalCachedAsync for HttpRequestEv<B> {
                 let resp = req
                     .send()
                     .await
+                    // CR claude for claude: [bug/medium] reqwest::Error's Display
+                    // leaves out its source chain, so this HTTPError never names the
+                    // cause. A refused connection and an unknown host both read "error
+                    // sending request for url (..)", and a malformed URL reads only
+                    // "builder error". The body-read error below, "failed to build
+                    // client" in HttpClientEv and serve_connection's log have the same
+                    // problem. Print the chain (anyhow::Error::from(e) with {:#}) from
+                    // one helper next to http_err, and use it at every reqwest/hyper
+                    // error site. probe:
+                    // design/review-2026-10-19/repro/http-sqlite-db1-http-error-cause.gx
+                    // (http-sqlite-db1-03)
                     .map_err(|e| http_err(format_args!("request failed: {e}")))?;
                 let status = resp.status().as_u16();
                 let url = ArcStr::from(resp.url().as_str());
@@ -477,6 +488,16 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     // request got which answer. probe:
     // design/review-2026-10-12/repro/http-sqlite-db1-03.gx Also reported as
     // (x-security-04). (http-sqlite-db1-03)
+    // CR claude for claude: [bug/low] This is a new aspect of http-sqlite-db1-03.
+    // text_response formats the raised value with netidx's Value Display, so since kind
+    // markers the 500 body carries the marker abstracts raw:
+    // `[abstract:EnwukQtE2EoTn2Uo4FoXw40B, ["cause", null], ["error",
+    // [abstract:EnwukQtE2EoTn2Uo4FoXw40C, "Internal", "x"]], ...]`. sys::net::rpc's
+    // reply to a raising handler goes through the data form and carries none. If the
+    // ruling above gives a generic body, this goes with it. Otherwise, write the error
+    // through abstract_value::to_data before formatting, and pin the body's text.
+    // probe: design/review-2026-10-19/repro/x-rerun-2-http-500-markers.gx
+    // (x-rerun-2-02)
     if let Value::Error(e) = v {
         return text_response(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
@@ -487,6 +508,12 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
         headers: ValArray,
         status: u16,
     }
+    // CR claude for eric: [readability/low] The handler's reply reads only body,
+    // headers and status, but serve's signature types the handler as returning the
+    // client's Response. So every handler must write a `url` the server throws away:
+    // all the graphix-tests http fixtures write `url: ""`, and leaving it out is a type
+    // error. Give serve its own reply type `{body, headers, status}` in mod.gxi. Found
+    // by running a handler without url (refused by the check). (http-sqlite-db1-04)
     let Fields { body, headers, status } = match v.clone().cast_to::<Fields>() {
         Ok(f) => f,
         Err(e) => {
@@ -729,6 +756,16 @@ async fn serve_loop(
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
             Err(e) => {
+                // CR claude for claude: [bug/medium] An accept error goes straight back
+                // into accept. A persistent error, such as EMFILE when the process is
+                // out of descriptors while clients wait in the backlog, then spins this
+                // loop at a full core and logs one error per iteration. Measured: with
+                // RLIMIT_NOFILE 64 and 150 waiting clients, the server burned 346 CPU
+                // ticks in 3 s; with a limit of 1024 it used 0. Sleep briefly (about
+                // 100 ms) after an accept error before retrying, without holding the
+                // permit. probe:
+                // design/review-2026-10-19/repro/http-sqlite-db1-accept-spin.py
+                // (http-sqlite-db1-02)
                 log::error!("HTTP accept error: {e}");
                 continue;
             }

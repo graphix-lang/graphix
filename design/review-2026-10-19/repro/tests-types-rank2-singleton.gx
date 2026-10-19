@@ -1,0 +1,19 @@
+// Title: a callback doing arithmetic is accepted for a rank-2 formal
+// fn<'b: Number>, though the callee may call it at a union; the build refuses.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --check tests-types-rank2-singleton.gx
+//   then:  timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-types-rank2-singleton.gx
+// Expected: both refuse `apply(|x| x * x)`: 'b is rigid and only Number, so
+//   `x * x` (which needs 'b: Number + Singleton) does not hold for every 'b
+// Observed: --check accepts; the build refuses with "in the instance of f(n)
+//   at this call site: an instance at fn(x: [Int, Real]) -> [Int, Real] of a
+//   definition typed fn(x: '_N: unbound within Number & Singleton) -> ..."
+// Related: `apply(sq)` with sq = 'a: Number + Singleton |x: 'a| -> 'a x * x
+//   is accepted too, though rank2_refuses_narrower_bound refuses 'a: Int.
+// The same for every bound a body adds: fn<'b: Any>(x: 'b, y: 'b) -> bool
+//   given |x, y| x < y (Ordered) and called at (&a, &a), or fn<'b: Any>(x: 'b)
+//   -> string given |x| json::write_str(x)$ (Data) and called at &a: the check
+//   accepts, the build refuses "an instance at fn(x: &i64, ..) of a definition
+//   typed fn(x: '_N: unbound within Any & Ordered, ..)".
+let apply = |f: fn<'b: Number>(x: 'b) -> 'b| { let n: Number = f64:2.5; f(n) };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+apply(|x| x * x)

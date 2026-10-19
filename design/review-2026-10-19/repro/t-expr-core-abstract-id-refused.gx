@@ -1,0 +1,25 @@
+// Two distinct dynamic modules named `m`, in different blocks, each declaring its own
+// `type T` with a different representation: the second is refused as a redefinition
+// of the first, though they are different modules in different scopes.
+// command: graphix --check t-expr-core-abstract-id-refused.gx
+// expected: accepted (each block's `m::T` is its own type)
+// observed: "T is already defined as Abstract<i64>: a value of it may still be held,
+//           so its representation cannot change" at the second module's sig
+let a = {
+  let s = mod m dynamic {
+    sandbox unrestricted;
+    sig { type T = Abstract<i64>; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
+    source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0"
+  };
+  select s { error as e => never(dbg(e)), null as _ => m::mk(41) }
+};
+let b = {
+  let s = mod m dynamic {
+    sandbox unrestricted;
+    sig { type T = Abstract<string>; val mk: fn(x: string) -> T; val get: fn(t: T) -> string };
+    source "type T = Abstract<string>; let mk = |x: string| -> T T(x); let get = |t: T| -> string t.0"
+  };
+  select s { error as e => never(dbg(e)), null as _ => m::get(a) }
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+str::len(b)

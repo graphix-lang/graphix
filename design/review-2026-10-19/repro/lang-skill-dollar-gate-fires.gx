@@ -1,0 +1,17 @@
+// lang-skill: SKILL.md says "`f(k ~ t, sel$)` is silent while sel is null, and so are
+// `k ~ sel$` ...; a call taking x$ does not fire and owes nothing when x returns".
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache lang-skill-dollar-gate-fires.gx
+// Expected per the skill: neither `direct` nor `call` fires (the key was pressed while sel was null).
+// Observed: dbg(direct): 7 when sel first arrives (banked like the skill's `let v = sel$` case),
+//   and dbg(call): ("t", 7) then ("t", 9): the call re-fires with the stale key at every arrival of sel.
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let k = select n { 2 => `K, _ => never() };
+let sel: [i64, null] = null;
+sel <- select n { 4 => 7, 6 => null, 8 => 9, _ => never() };
+let f = |key, s| (key, s);
+let direct = k ~ sel$;
+let call = f(k ~ "t", sel$);
+sys::exit(select n { 10 => 0, _ => never() });
+[select n { 10 => 0, _ => never() }, dbg(n), dbg(direct), dbg(call)]

@@ -1,0 +1,23 @@
+// Title: the birth-only arm warning fires on sys::net::subscribe with a constant
+//   path, though the subscription re-attaches and delivers at every arm entry.
+// Command: graphix --no-cache --no-netidx design/review-2026-10-19/repro/sys-net-birth-only-warning-subscribe.gx
+//   (or graphix --check ... for the warning alone)
+// Expected: no warning (the call acts at every entry: async_sleep_outputs.md's
+//   "re-attaches over standing args").
+// Observed: "WARNING at line 17 ...: this call reads no variable, so it acts only
+//   at this arm's first entry ..." and then seen grows [7], [7, 7], [7, 7, 7], ...:
+//   one delivery per entry of the arm.
+let x = 0;
+x <- sys::time::timer(duration:30.ms, true) ~ x + 1;
+sys::net::publish("/local/w1", 7);
+let on = select x % 4 { 1 => false, _ => true };
+let seen = [];
+seen <- select on {
+  true => {
+    let v: i64 = sys::net::subscribe("/local/w1")$;
+    v ~ array::push(seen, v)
+  },
+  false => never()
+};
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+seen

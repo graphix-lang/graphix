@@ -30,6 +30,11 @@ use triomphe::Arc;
 /// A seq's head up to its body: keyword, `let`, trigger and clauses, the
 /// trigger written by `trigger` (told whether it needs parentheses) and
 /// each clause's expression, between parentheses, by `clause`.
+// CR claude for claude: [readability/low] The first two doc lines above this function
+// describe write_seq_let (`let pattern[: type] = ` of a bound trigger), not
+// write_seq_head. Rustdoc merges them into this function's doc, and write_seq_let has
+// none. Move them above write_seq_let. pretty_scrutinee's doc is likewise two stacked
+// docs: merge them. Found by reading; not run. (t-print-08)
 fn write_seq_head<W: Write>(
     w: &mut W,
     s: &SeqExpr,
@@ -162,6 +167,16 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
             },
         }
     }
+    // CR claude for claude: [bug/medium] When the leftmost source is a struct literal,
+    // a functional update or a call of `flush`, this wraps the WHOLE trigger in parens.
+    // The parser keeps parens only when no postfix (or only `?`/`$`) follows them. So
+    // `seq ({a: 1}).a { .. }`, `seqq (flush)(1) { .. }` and `seq ({s with a: 2}).a + 1
+    // { .. }` all pass the check, but print as `seq ({ a: 1 }.a)` etc., reparse to an
+    // extra ExplicitParens, and `graphix fmt` refuses them ("the formatted text says
+    // something else"). Parenthesize the leftmost postfix source that leftmost() finds
+    // (`({ a: 1 }).a`, `(flush)(1)`), which reparses to the same tree, and wrap the
+    // whole trigger only when !reads_bare. probe:
+    // design/review-2026-10-19/repro/t-print-seq-trigger-parens.sh (t-print-01)
     let reads_as_body_or_clause = match leftmost(t, false) {
         _ if bound => false,
         (Expr { kind: Ref { name }, .. }, true) => &*name.0 == "/flush",
@@ -264,6 +279,13 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | ExplicitParens(_) => true,
         Module { value, .. } => matches!(&**value, ModuleKind::Dynamic { .. }),
         Variant { args, .. } => !args.is_empty(),
+        // CR claude for claude: [bug/low] The postfix accessors (StructRef, TupleRef,
+        // ArrayRef, ArraySlice, MapRef) have no arm here. So `let z = f(..).field` and
+        // `f(..)[0]` move under the head, while `let y = f(..)?` follows it.
+        // CLAUDE.md's layout rule (a value opening with a bracket whose first line fits
+        // follows its head) covers both. Recurse through bare_postfix_source here, and
+        // in head_min. probe: design/review-2026-10-19/repro/t-print-postfix-head.sh
+        // (t-print-05)
         Qop { arg: e, .. }
         | OrNever(e)
         | Rethrow(e)
@@ -297,6 +319,16 @@ fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
     let col = buf.col();
     let start = buf.mark();
     match e {
+        // CR claude for claude: [perf/medium] head_fits lays the scrutinee out in full
+        // here, then rolls it back. The real layout lays it out again, so a scrutinee
+        // that holds another select in a tail position (a lambda body, a let in a
+        // block) doubles the work at every level. The Seq arm (full trigger layout) and
+        // the non-Ref Apply arm (full callee layout) do the same. An 18-level `select
+        // f(|v| select ..) {..}` takes 1.1 s to format (debug build), and a
+        // block-scrutinee chain of 20 takes 6.7 s. Measure without laying out: the
+        // subexpression's flat form when it fits the room, else head_fits/head_min of
+        // its kind. probe: design/review-2026-10-19/repro/t-print-exp-scrutinee.gx
+        // (t-print-03)
         Select(se) => {
             pretty_scrutinee(buf, &se.arg)?;
             write!(buf, " {{")?;
@@ -386,6 +418,16 @@ fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
         let start = buf.mark();
         let col = buf.col();
         Bare(e).fmt_pretty_inner(buf)?;
+        // CR claude for claude: [bug/low] This fit check does not count the column of
+        // the `;` or `,` that follows, which fmt_flat does reserve. A hugged lone
+        // argument (`ffff([..])`, `` `Scatter3D({..}) ``) can therefore end exactly at
+        // the width and then take the separator one column past it: chart.gx's
+        // scatter3d formats to a 91-column line. Separately, the hug in
+        // ApplyExpr::fmt_pretty_inner never checks fit, so a chain of lone calls stays
+        // on one line at any width (136 columns at width 90). Fix: reserve the
+        // separator here (`<`), and hug only when the argument's head fits on the line.
+        // probe: design/review-2026-10-19/repro/x-formatter-hug-width-off-by-one.sh
+        // (x-formatter-03)
         if col + buf.first_line_width(start) <= buf.limit {
             return Ok(());
         }
@@ -1187,6 +1229,13 @@ impl PrettyDisplay for StructurePattern {
                 }
                 Ok(())
             }
+            // CR claude for claude: [structure/low] This repeats StructurePattern's
+            // flat Display in pattern.rs: the written-order sort under
+            // print_as_written() and the pun test (`P::Bind(n) if n.name == *name &&
+            // !is_reserved_binding`). A change to one copy makes the flat and laid-out
+            // forms of a pattern disagree. Move both into one pattern.rs helper that
+            // returns the fields in print order, with the pun decided, and call it from
+            // both impls. Found by reading; not run. (t-print-07)
             P::Struct { exhaustive, all: _, binds } => {
                 let mut written: SmallVec<[_; 16]> = binds.iter().collect();
                 if print_as_written() {
@@ -1326,6 +1375,18 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 /// decorations would otherwise stand above the whole chain.
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     use ExprKind::*;
+    // CR claude for claude: [bug/medium] A comment-only decoration is not printed
+    // outside the formatter, but this test still parenthesizes the source it decorates.
+    // So canonical, program-visible text depends on a comment: `(\n// c\ns\n).a?`
+    // raises NullError("(s).a"), while the same tree without the comment raises
+    // NullError("s.a"). The same `dec.is_some()` test sits in
+    // StructWithExpr::write_head's chain_on_name, the Neg arm,
+    // decorated/kind_decorated, pretty_tail, pretty_after and hugs_parens, and in
+    // write_doc_flat's comment check, which under canonical printing puts a `///` doc
+    // mid-line. In --expand, a commented seq step loses every flat form above it. Use
+    // one predicate everywhere: attrs non-empty, or comments non-empty under
+    // print_as_written(). probe:
+    // design/review-2026-10-19/repro/t-print-comment-in-nullerror.gx (t-print-02)
     e.dec.is_none()
         && matches!(
             &e.kind,
@@ -1791,6 +1852,27 @@ impl PrettyDisplay for ExprKind {
             TupleRef { source, field } => {
                 pretty_postfix(buf, source, &format_compact!(".{field}"))
             }
+            // CR claude for claude: [bug/low] The index (and a slice's bounds, a MapRef
+            // key, a Map literal's key in the Map arm, and the source
+            // StructWithExpr::write_head parenthesizes) goes through the flat Display
+            // even when it holds a comment or an attribute. `graphix fmt` then writes
+            // `a[{ \n// c\nlet i = 0; i }]`: the comment at column 0 and the block on
+            // one line. When the subexpression is decorated, lay it out (open bracket,
+            // nested fmt_pretty, close bracket) instead of formatting it into the
+            // suffix string. probe:
+            // design/review-2026-10-19/repro/t-print-decorated-suffix.sh (t-print-04)
+            // CR claude for claude: [bug/medium] The index (and a map key, slice
+            // bounds, map-literal keys, string splices) is printed by its flat Display,
+            // not laid out. A long index never breaks: browser.gx formats to a
+            // 92-column `structure.columns[slot_item(..)]$;` line. A decorated index
+            // prints its comments at column 0, with a trailing space after `{`:
+            // `a[select i { ` / `// first` / `0 => 0, _ => i - 1 }]`. The guard accepts
+            // this because it reparses. Fix: print source, `[`, the index through
+            // fmt_pretty nested one step, then `]` and the suffix; do the same for
+            // MapRef, ArraySlice and Map keys. For splices, refuse comments inside them
+            // or print them without comments. probe:
+            // design/review-2026-10-19/repro/x-formatter-index-flat-display.gx
+            // (x-formatter-02)
             ArrayRef { source, i } => {
                 pretty_postfix(buf, source, &format_compact!("[{i}]"))
             }
@@ -1855,6 +1937,13 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "{deref}{name} <-")?;
                 pretty_tail(buf, value)
             }
+            // CR claude for claude: [bug/low] A cast always breaks before its argument,
+            // so `cast<Array<i64>>([..])` prints `cast<..>(\n [\n ...\n ]\n)`. Every
+            // other lone-argument form (f([, T({, `Tag([, never(, any(, rethrow() hugs
+            // it, as CLAUDE.md's layout rule says. Write the argument as the Construct
+            // arm does: pretty_print_exprs(buf, std::slice::from_ref(&**expr), "(",
+            // ")", ",", true). probe:
+            // design/review-2026-10-19/repro/t-print-cast-hug.sh (t-print-06)
             TypeCast { expr, typ } => {
                 write!(buf, "cast<")?;
                 pretty_type(buf, typ)?;
@@ -2202,6 +2291,14 @@ impl<'a> StrPart<'a> {
     /// The parts of an interpolation. The parser reads the text between
     /// two splices as one constant, so a string constant after text, or
     /// alone, was spliced (`"a["b"]"`, `"["a"]"`) and prints as one.
+    // CR claude for claude: [bug/medium] The position guess is wrong whenever a spliced
+    // string constant does not directly follow text. `graphix fmt` rewrites
+    // `"a["b"]["q"]"` as `"a["b"]q"`: the author's splice silently becomes text. It
+    // refuses the legal `"[x][r"q"]"` as a "formatter bug", and LSP formatting errors
+    // on it too. Fix: have the parser mark text runs (e.g. a str_form marker set in
+    // interpolateexp.rs's Intp::Lit::to_expr) and print from that mark instead of from
+    // position. probe: design/review-2026-10-19/repro/tests-expr-splice-as-text.sh
+    // (tests-expr-02)
     fn of_all(args: &'a [Expr]) -> impl Iterator<Item = Self> + Clone {
         let lone = args.len() == 1;
         args.iter().scan(false, move |after_text, e| {

@@ -52,6 +52,11 @@ graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove);
 /// a search would compare keys outside the core-trait hooks, in an order
 /// other than the one a user `Ord` built the map in.
 #[derive(Debug)]
+// CR claude for claude: [readability/low] The doc above says the pairs are 'taken when
+// the map's turn comes', but cursor() runs when the map fires (IterQ::update queues
+// C::cursor(v) at once), copying every pair then. Say that the cursor copies the pairs
+// in key order on arrival so that stepping needs no key comparison outside the hooks.
+// Found by reading; not run. (collections-str-11)
 struct MapElems;
 
 impl graphix_package_core::Elements for MapElems {

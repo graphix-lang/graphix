@@ -261,6 +261,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         if self.cur.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
+        // CR claude for claude: [structure/low] [structure] `slept` is always false
+        // here: an image is taken before any cycle. Only this builtin and List, Publish
+        // and PublishRpc write it; Write, the watch/time builtins, http serve and db
+        // subscribe start it false. All eleven re-implement graphix_compiler's
+        // node::WakeBit as a raw bool. Make WakeBit pub, use it in each, and drop the
+        // four slept encodes/decodes (REGISTRATION_FORMAT bump). Found by reading; not
+        // run. (x-dup-03)
         self.slept.encode(buf)?;
         self.var.image_encode(buf)?;
         self.target.encode(buf)
@@ -514,6 +521,10 @@ impl RpcCall {
 }
 
 macro_rules! list {
+    // CR claude for claude: [dead/low] $typ is never used in the body, so the two
+    // signature strings passed for List and ListTable are dead, and they already differ
+    // from net.gxi. Remove the parameter and the arguments. Found by reading; not run.
+    // (sys-net-07)
     ($name:ident, $builtin:literal, $table:expr, $typ:literal) => {
         #[derive(Debug)]
         pub(crate) struct $name {
@@ -603,6 +614,17 @@ macro_rules! list {
                             "invalid path {requested}"
                         )));
                     };
+                    // CR claude for claude: [bug/medium] Each poll tick with an
+                    // unchanged path reissues the listing under the same id, and
+                    // NetState::spawn_request's replacement aborts the one in flight. A
+                    // listing slower than its #update period (default 1 s) therefore
+                    // never answers. With the resolver 0.3 s away each way, the
+                    // default-polled list answered 0 times in 11 s while the same list
+                    // on a 30 s trigger answered. Abort only on a path change, sleep or
+                    // delete. On a tick while a listing is in flight, let it finish and
+                    // owe at most one more listing (or drop the tick). probe:
+                    // design/review-2026-10-19/repro/sys-net-list-poll-starves.sh
+                    // (sys-net-02)
                     if trigger_fired || self.current.as_ref() != Some(&path) {
                         if self.current.as_ref() != Some(&path) {
                             self.remint(ctx);
@@ -650,6 +672,26 @@ list!(
     "fn(?#update:Any, string) -> Result<Table, `ListError(string)>"
 );
 
+// CR claude for claude: [bug/medium] publish's #on_write argument ('a in net.gxi) has
+// no Concrete bound, and this casts written values only when that type is concrete. An
+// open handler type such as `|v: Array<'b>|` therefore gets the data form uncast:
+// writing {a: 1, b: 2} gives array::len(v) = 2, and writing 5 hands an i64 to an
+// Array-typed handler. Bound it `'a: Concrete` as subscribe and call do, and cast
+// always (drop the `castable` filter), as PublishRpc::arg does. rpc's 'args needs the
+// same bound: `#f: |a: &i64| ..` passes the check and fails only at run time with
+// PublishRpcError. probe: design/review-2026-10-19/repro/sys-net-on-write-open-type.gx
+// (sys-net-03)
+// CR claude for claude: [bug/high] When the on_write callback's argument type is not
+// castable (a function, a reference, a type holding ⊥), cast_typ is None, and update
+// hands the written value to the callback uncast. The checker accepts such an
+// annotation because publish's `#on_write: fn(v: 'a)` in net.gx/net.gxi has no `'a:
+// Concrete` bound. So a remote write puts a value of the wrong runtime form into typed
+// code. With `|f: fn(x: i64) -> i64| seen <- f(1)` the first write panics the runtime
+// ('value I64(5) is not a function', both engines). With `|v: &i64|`, v is a plain i64.
+// Fix: add `'a: Concrete` to on_write's argument in net.gx and net.gxi. Then, here,
+// never feed an uncast value: cast, or answer the writer with InvalidCast. probe:
+// design/review-2026-10-19/repro/tests-lib-b2-on-write-raw-value-crash.gx
+// (tests-lib-b2-01)
 fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
     resolved?.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
@@ -811,6 +853,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                         Some(typ) => coretraits::with_display_hooks(ctx, |env| {
                             typ.cast_value(env, req.value.clone())
                         }),
+                        // CR claude for eric: [bug/medium] A remote write reaches the
+                        // handler raw whenever its argument type is not concrete,
+                        // because #on_write's 'a has no bound (subscribe's target has
+                        // `'a: Concrete`). A handler taking a function, a reference or
+                        // an open type therefore takes whatever any netidx client
+                        // writes. A non-function written to `|f: fn(x: i64) -> i64|
+                        // f(1)` hits CallSite's `value .. is not a function` panic and
+                        // kills the runtime ('graphix runtime is dead'). Other shapes
+                        // bottom silently. Decide the rule: bound on_write's argument
+                        // `'a: Concrete` so every write is cast, or refuse a write here
+                        // when cast_typ is None and the type is not Any. probe:
+                        // design/review-2026-10-19/repro/x-panics-on-write-uncast.gx
+                        // (x-panics-02)
                         None => req.value.clone(),
                     };
                     // a value the handler cannot take is the writer's error
@@ -875,6 +930,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 #[derive(Debug)]
 struct RpcReply(server::RpcCall);
 
+// CR claude for eric: [risk/medium] A published rpc keeps one handler instance for
+// every call f has not answered, with no limit and no way to drop one. RpcReply does
+// not implement Reply::abandoned, and Inbox and Handler's pending/running lists are
+// unbounded Vecs. The Inbox wakes the runtime outside the 100-deep rpcs channel, so
+// callers get no backpressure. Any netidx client allowed to write the rpc path can grow
+// the server's memory at will, even with writes that carry no reply channel and that
+// nobody waits for. In the probe, 1000 writes/s to an rpc whose f answers later grow
+// RSS ~3.5 MB/s (87 to 180 MB in 25 s); the same program answering at once stays at 72
+// MB. http::serve bounds the same exposure with max_connections. Decide the policy: a
+// #max_inflight that answers an RpcError past it, and dropping a call whose RpcCall has
+// no reply channel or whose client is gone (needs an accessor on netidx_protocols'
+// RpcReply). probe: design/review-2026-10-19/repro/x-security-rpc-unbounded.sh
+// (x-security-02)
 impl Reply for RpcReply {
     fn reply(mut self, v: Value) {
         self.0.reply.send(v)

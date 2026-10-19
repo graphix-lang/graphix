@@ -480,6 +480,17 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
             && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
             && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
     };
+    // CR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
+    // body is the interface's registered typedef, which Env::deftype already passed
+    // through rewrite_trait_args. impl_body here only went through scope_refs. A fn
+    // type with a trait-typed parameter (`type F = fn(x: Display) -> string`) therefore
+    // never compares equal, and one_type refuses it because the rewrite left an open
+    // quantifier. An interface and implementation with the identical line are refused
+    // with "signature mismatch in F, expected .. found .." printing the same text
+    // twice. Fix: rewrite impl_body with rewrite_trait_args(&ctx.env) as deftype does,
+    // or compare the two registered definitions. probe:
+    // design/review-2026-10-19/repro/t-typ-mod-sig-trait-param-typedef.sh
+    // (t-typ-mod-02)
     let same_body = sig_td.body == impl_body
         || match (&sig_td.body, &impl_body) {
             (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => one_type(t0, t1),
@@ -730,7 +741,36 @@ fn check_sig_items<R: Rt, E: UserEvent>(
                         }
                         // a method the implementation leaves out is the
                         // representation, which the declared impl must say
+                        // CR claude for claude: [bug/high] This re-registration runs in
+                        // check_sig, inside Module::typecheck0, so for a run of sibling
+                        // modules it runs in parallel compile tasks. Env::impls is
+                        // keyed by TraitId with the whole list as the value, so two
+                        // siblings that both leave Cast's to_value out write the same
+                        // key. The join then panics in debug (TrackedMap::join's
+                        // debug_assert), and in release one module's re-registration is
+                        // lost: its Cast impl keeps a to_value that nothing proxies.
+                        // design/parallel_compile.md says impls are registered before
+                        // any body runs. Move this unregister/register into
+                        // Module::compile_inner for a static body, after the body
+                        // compiles, and add a fixture with two sibling modules that
+                        // each declare `impl Cast for T;` and omit to_value. probe:
+                        // design/review-2026-10-19/repro/t-env-cast-repr-race.sh
+                        // (t-env-01)
                         if representation.len() < declared.methods.len() {
+                            // CR claude for claude: [bug/high] This narrowing rewrites
+                            // the global `impls` entry for the Cast trait during a
+                            // module's check, and sibling modules check in parallel
+                            // compile tasks. Two modules that each narrow a declared
+                            // `impl Cast for T;` write the same key, and
+                            // TrackedMap::join panics in debug ("a fork's write to
+                            // TraitId(..) would replace a write made since the fork").
+                            // In release the later join wins and puts back the other
+                            // module's unnarrowed declaration. Narrow the declaration
+                            // where the implementation registers, which is serial: in
+                            // Impl::compile, when register_impl returns the fulfilled
+                            // declaration. The check should only verify. probe:
+                            // design/review-2026-10-19/repro/c-module-traits-sibling-cast-narrowing.sh
+                            // (c-module-traits-01)
                             ctx.env.unregister_impl(&declared);
                             ctx.env.register_impl(Arc::new(ImplDef {
                                 methods: representation,
@@ -1146,6 +1186,21 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 .and_then(|()| crate::drain_pending_settles(ctx))
                 .and_then(|()| crate::check_pending_names(ctx))
                 .map_err(|e| crate::resite_pending_name(ctx, e))?;
+            // CR claude for claude: [bug/high] For a dynamic body this maps each
+            // interface binding to this load's LambdaDef. Every call compiled at run
+            // time afterwards (collection slots, activations, core-trait hook sites
+            // through SynthCall) binds statically to it and ignores later reloads.
+            // Repro: `array::map(.., |i| foo::f(i))` stays [100, 101, 102] after a
+            // reload to `x + 200`, while a top-level `foo::f(n)` gives 203. A Display
+            // hook site built before a reload keeps printing the old `fmt`, since
+            // impls_version does not change. A dynamic module's outer bindings are
+            // rewritten at run time and must dispatch dynamically: skip this for
+            // Body::Dynamic, or invalidate both bind_to_lambda and CoreHookSites on
+            // each reload. probe:
+            // design/review-2026-10-19/repro/c-module-traits-dyn-reload-static-binding.gx
+            // and
+            // design/review-2026-10-19/repro/c-module-traits-dyn-reload-stale-core-hook.gx
+            // (c-module-traits-02)
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
             crate::drain_pending_settles(ctx)?;
@@ -1286,6 +1341,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 let tag = tv.tag();
                 if !tag.triggers() {
                     None
+                // CR claude for claude: [bug/medium] Returning here skips the proxy
+                // copies and the body's update for the whole cycle, so everything the
+                // loaded body had that cycle is lost. A write to an interface val in
+                // the same cycle reaches the readers outside but never the body: the
+                // repro prints "t2: x=5 y=0" where it should print y=50. Keep the
+                // bottom resident but fall through as a non-triggering source does, so
+                // the body and the proxies still update. probe:
+                // design/review-2026-10-19/repro/c-module-traits-dyn-bottom-source-skips-body.gx
+                // (c-module-traits-03)
                 } else if tag.is_bottom() {
                     // a taint placeholder never compiles or tears down
                     return self
@@ -1298,6 +1362,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         };
         if let Some((v, tag)) = src {
             src_tag = tag;
+            // CR claude for eric: [bug/low] The body is torn down before the value is
+            // inspected. An error from the source, which typecheck0 accepts as `string
+            // | error`, unloads a working module: interface vals stop following their
+            // implementation ("5 0" in the repro) and the status reads "unexpected
+            // error". Decide whether a source error only reports and keeps the last
+            // good load: if so, clear only when a string is about to compile; if not,
+            // refuse an error-typed source or document the teardown. probe:
+            // design/review-2026-10-19/repro/c-module-traits-dyn-source-error-tears-down.gx
+            // (c-module-traits-06)
             self.clear_compiled(ctx);
             match v {
                 Value::String(s) => {
@@ -1348,6 +1421,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     ctx.event.variables.insert(*inner, tv);
                 }
             }
+            // CR claude for claude: [perf/medium] A module body updates its statements
+            // one after another: unlike Block::update_forking, it has no planned runs
+            // (analysis::plan_blocks plans only NodeView::Block), so parallel
+            // evaluation never forks a statement inside any module. Hold the body as a
+            // Block (module: true) child and update it between the proxy copies in and
+            // out. That gives modules the planned, imaged runs and removes this
+            // duplicate catch-ordered walk. Found by reading; not run.
+            // (c-module-traits-05)
             for i in super::evaluation_order(self.nodes.len(), &self.catches) {
                 let _ = self.nodes[i].update(ctx);
             }
@@ -1421,6 +1502,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 let writes = OwnWrites::enter(self.task);
                 let res = self.check_body(ctx).and_then(|()| {
                     if writes.foreign() {
+                        // CR claude for claude: [readability/medium] This refusal tells
+                        // the user to annotate the binding the module decides, but it
+                        // names neither that binding nor the place in the module that
+                        // decided it. OwnWrites records only a bool. A module that
+                        // decides `x` and one that decides `z` get identical errors at
+                        // `mod m`, so the user has to bisect the module body. Have
+                        // foreign_write keep the first foreign cell. Then name the
+                        // outer binding whose type holds it, with its position, and the
+                        // module expression whose check wrote it. probe:
+                        // design/review-2026-10-19/repro/tests-modules-image-left-open-names-nothing.sh
+                        // (tests-modules-image-03)
                         bail!(
                             "the check decides a type the code around the module \
                              left open: annotate the binding it decides"

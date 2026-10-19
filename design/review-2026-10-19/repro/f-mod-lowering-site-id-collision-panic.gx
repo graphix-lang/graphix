@@ -1,0 +1,14 @@
+// Title: the same ExprId collision with f64 vs i64 instances: the f64
+//   callback calls h's i64 kernel and the link fails Cranelift's verifier.
+// Command: graphix --no-cache f-mod-lowering-site-id-collision-panic.gx
+// Expected: ([2, 8, 0], [4.5, 12.5, 0]) and on (as with --no-fusion)
+// Observed: thread 'tokio-rt-worker' panicked at graphix-compiler/src/fusion/emit/jit.rs:
+//   the JIT could not link emitted code: compile: Verifier errors
+//   Error: loading initial modules / Caused by: channel closed
+let h = |x| x + x;
+let g = |x| h(x) * x;
+let n = 0;
+n <- select n { k if k < 2 => k + 1, _ => never() };
+let xs: Array<i64> = [1, 2, n];
+let ys: Array<f64> = [1.5, 2.5, cast<f64>(n)$];
+(array::map(xs, g), array::map(ys, g))

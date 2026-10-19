@@ -205,6 +205,15 @@ def copy_crate(src, dest):
     shutil.copytree(
         src,
         dest,
+        # CR claude for claude: [perf/low] copy_crate copies everything in the crate
+        # directory that is not one of these patterns, git-ignored files included.
+        # ide/tree-sitter-graphix is a workspace member, so its 28 MB node_modules (the
+        # tree-sitter CLI's native binary, with symlinks followed) ends up in
+        # vendor/tree-sitter-graphix-0.9.0: 35 MB for a crate of about 6 MB. Copy only
+        # the files `git -C <crate> ls-files` lists, which honors .gitignore for members
+        # and external crates alike, or at least add "node_modules" here. probe:
+        # design/review-2026-10-19/repro/ide-tooling-vendor-node-modules.py
+        # (ide-tooling-06)
         ignore=shutil.ignore_patterns(
             "target", ".#*", "#*#", "*~", ".DS_Store",
         ),

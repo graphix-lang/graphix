@@ -1,0 +1,17 @@
+// A rank-2 formal returned from its function, then annotated at one
+// instance, is accepted by the check and refused by the build.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-rank2-return-annot.gx  (exit 0)
+//   graphix --no-cache x-typecheck-generics-rank2-return-annot.gx
+//   graphix-fuzz check x-typecheck-generics-rank2-return-annot.gx
+// Expected: runs and prints 1 (h is an instance of the polymorphic g;
+//   without the annotation `let h = app(|x| x); (h(1), h("s"))` runs and
+//   prints (1, "s")).
+// Observed: the build refuses: "in the instance of app(|x| x) at this call
+//   site: an instance at fn(g: fn(y: i64) -> i64) -> fn(y: i64) -> i64 of a
+//   definition typed fn(g: fn<'b: Any>(y: 'b) -> 'b) -> fn<'b: Any>(y: 'b) ->
+//   'b"; graphix-fuzz check: DIVERGENCE — the check accepted what the build
+//   refused.
+let app = |g: fn<'b: Any>(y: 'b) -> 'b| g;
+let h: fn(y: i64) -> i64 = app(|x| x);
+h(1)

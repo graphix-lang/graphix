@@ -1,0 +1,15 @@
+// array::group keeps its buffered elements across seq runs: it has no Apply::reborn
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache collections-str-group-no-reborn.gx
+// Run 1 (k = 1) buffers [1] and is aborted; run 2 (k = 2) is a new birth of the step.
+// expected: nothing printed (each run's group holds one element, n == 1, so f answers false)
+// observed: [1, 2] (printed twice: println and the last expression): run 1's element joined run 2's group
+// compare: core `filter` (which has reborn) in the same shape forgets its pending value
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+let t = sys::time::timer(duration: 60.ms, 3);
+let k = count(t);
+let r = seq t; abort(sys::time::after_idle(duration: 20.ms, t)) {
+  let g = array::group(k, |n, v| n == 2);
+  g
+};
+println("[r]");
+r

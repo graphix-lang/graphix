@@ -227,6 +227,16 @@ impl Label {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// CR claude for claude: [test-gap/medium] The only unions here are Nullable (over a
+// scalar) and Variant. No generated program binds, passes or stores a Result, a
+// mixed-number union, or a union of composite kinds (array, tuple, struct, list,
+// variant). That last one is what the new kind markers and select type tests over
+// composites must keep apart, and the opaque two-word kernel ABI for unions is only
+// reached through shape templates consumed in place. Add a Union member drawn at a
+// small rate, annotated at every let and consumed by a select with one `T as x` arm per
+// member, and let Results sometimes reach a let or typed param before being consumed.
+// probe: design/review-2026-10-19/repro/fuzz-gen-a-composite-union.gx (a valid such
+// program; 0 Result-typed lets in 1000 generated programs) (fuzz-gen-a-02)
 pub enum GenType {
     Num(NumTy),
     Bool,
@@ -378,6 +388,12 @@ impl GenType {
 
     /// A value of this type prints the same in every engine and session:
     /// no function and no reference (a reference prints its session id).
+    // CR claude for claude: [doc-drift/low] The doc says a reference prints its session
+    // id. It prints `&ref`, the same in every engine and session. So observe()
+    // needlessly skips the `(r, other)` and `[r, r]` bindings that gen_ref_stmts makes,
+    // and the data beside the reference is never printed. Treat Ref as printable when
+    // its inner type is, and leave functions as the only exclusion. probe:
+    // design/review-2026-10-19/repro/fuzz-gen-b-ref-prints.gx (fuzz-gen-b-08)
     pub(super) fn printable(&self) -> bool {
         match self {
             GenType::Num(_)
@@ -544,6 +560,15 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Variant(tags)
 }
 
+// CR claude for claude: [test-gap/medium] No generator draws a union of different
+// composite kinds (array, tuple, List, struct, variant, string beside a bare variant)
+// or a type-test arm over one. The only unions are Nullable(scalar), tag unions and the
+// two shape templates, so the kind-marker runtime forms (rep.rs, Type::rep_collision)
+// are never told apart in a generated select, compared with ==, or used as a map key.
+// Add a draw or shape template that builds such a union and reads it with one type-test
+// arm per member, as in the probe. probe:
+// design/review-2026-10-19/repro/fuzz-gen-b-kind-union-gap.sh (0 composite type tests
+// in 6000 programs); fuzz-gen-b-kind-union-probe.gx agrees and fuses. (fuzz-gen-b-01)
 pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);

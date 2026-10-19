@@ -108,6 +108,13 @@ impl GuiTestHarness {
     /// is a Widget value.
     async fn new(code: &str) -> Result<Self> {
         let (f, initial_value) = Fixture::new(code, TEST_REGISTER, |_| ()).await?;
+        // CR claude for claude: [test-gap/low] The root is compiled once from result's
+        // first value, and drain passes later updates of result to a widget that
+        // ignores ids it did not compile. A fixture whose result changes silently keeps
+        // the old tree. A window's content is a &Widget Child that recompiles. Hold the
+        // root as a Child over a ref to test::result (compile_ref + Child::compile) so
+        // the harness rebuilds as a window does. Found by reading; not run.
+        // (tests-gui-b-06)
         let widget = widgets::compile(f.gx.clone(), initial_value)
             .await
             .context("compile widget tree")?;
@@ -357,6 +364,13 @@ impl HeadlessGpu {
 /// resulting `Message`s.
 struct InteractionHarness {
     inner: GuiTestHarness,
+    // CR claude for claude: [structure/low] This renderer duplicates inner's lazily
+    // built one, so a test that also calls inner.render() builds two wgpu Engines. The
+    // dark-theme frame call is written four times: GuiTestHarness::render,
+    // process_events, chart_test::screenshot and frame_test::draw. Give GuiTestHarness
+    // the renderer, cache, clipboard and cursor plus one frame(size, events) ->
+    // Vec<Message> and a screenshot(size), and have the four callers use them. Found by
+    // reading; not run. (tests-gui-b-07)
     renderer: widgets::Renderer,
     cache: user_interface::Cache,
     viewport: Size,

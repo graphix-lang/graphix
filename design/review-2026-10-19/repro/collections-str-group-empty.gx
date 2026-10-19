@@ -1,0 +1,11 @@
+// array::group emits an empty group when its predicate re-fires (on outer state) after a group was delivered
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache collections-str-group-empty.gx
+// expected: only [1, 2, 3] (each value prints twice: println and the last expression); no element is waiting when limit changes
+// observed: [1, 2, 3] [1, 2, 3] [] [] (an empty group delivered when limit changes)
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let limit = 3;
+let x = array::iter([1, 2, 3]);
+let g = array::group(x, |n, x| n >= limit);
+limit <- sys::time::timer(duration: 50.ms, false) ~ 1;
+println("[g]");
+g

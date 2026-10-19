@@ -1,0 +1,14 @@
+// Title: the package skeleton's raw builtin rides a phantom where its arg arrives stale
+// Command: GXDBG_CS=1 timeout -s KILL 30 graphix --no-cache --no-fusion design/review-2026-10-19/repro/package-skel-stale-entry.gx
+// The `true` arm's first entry delivers `x` STALE (argfired=false): the `false`
+// arm already consumed x's fire bit. is_err is a CachedArgs builtin, which
+// computes a stale value when it has none (CS-RES Tag(32)), so the select prints
+// `false` twice. The skeleton's ExampleBuiltin (graphix-package/src/skel/lib.rs),
+// with the same body as is_err, answers `TagView::Stale(_) => self.out.ride()` over
+// its default phantom: in its place the second `false` never prints.
+// Expected (any stateless builtin): false, false. Observed with is_err: false, false.
+let x = 5;
+let go = false;
+go <- sys::time::after_idle(duration:80.ms, true);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select go { true => is_err(x), false => is_err(x) }

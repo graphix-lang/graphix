@@ -1,0 +1,16 @@
+// Title: the book's `Once` example resets on sleep; core's `once` keeps its latch across an arm's sleep
+// Command: graphix --no-cache book-modules-udt-once-sleep.gx  (also with --no-fusion)
+// Expected (CLAUDE.md "Sleep is pause, not reset"; core `Once::sleep` is empty and
+//   `Once::reborn` clears the latch): the arm sleeps and wakes at n = 5 and 9, `once`
+//   fires once in all, so every line reads `once fired 1 time(s)`.
+// Observed: every line reads `once fired 1 time(s)`. The `Once` the book teaches
+//   (embedding/builtins.md, packages/creating.md) clears `done` in `sleep`, so the same
+//   program over it would count 2 at n = 5 and 3 at n = 9.
+let t = sys::time::timer(duration:30.ms, true);
+let n = count(t);
+let o = select n % 4 {
+    1 => count(once(n)),
+    _ => never()
+};
+println("once fired [o] time(s)");
+sys::exit(sys::time::after_idle(duration:200.ms, select n { 12 => 0, _ => never() }))

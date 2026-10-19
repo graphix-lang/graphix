@@ -1,0 +1,14 @@
+// Title: an attribute on a `{ .. }` statement or block value in a seq is silently dropped.
+// cmd: timeout -s KILL 30 graphix --no-cache --expand t-seq-block-attr-dropped.gx
+// expected: refused, as the same `let x = #[native] { .. }` is outside a seq:
+//   "#[native] expression did not fully fuse to native code: builtin `sys::time::now`
+//   has no fast-call entry" (and `#[sync] { .. }` outside a seq: "#[sync] annotates a
+//   function definition")
+// observed: exit 0, no error: Machine::lower_block builds the lowered block without the
+//   block's decorations, so the assertion is never checked.
+let t = 1;
+let r = seq t {
+    let x = #[native] { let y = sys::time::now(t); y };
+    x
+};
+r

@@ -1,0 +1,17 @@
+// The refusal of a write proposes a declaration that cannot be written and
+// would not compile: a union of two arrays of function types, with
+// inference variables in it.
+// Command: graphix --no-cache --check x-typecheck-generics-write-mismatch-fn-union.gx
+// Expected: a declaration that holds both writes, e.g.
+//   `declare fs: Array<fn(x: i64) -> i64 throws Error<ErrChain<`E>>>`, or no
+//   proposal (as for a bare function type).
+// Observed: "fs is Array<fn(x: i64) -> i64> and cannot hold Array<fn(x: i64)
+//   -> i64 throws Error<ErrChain<`E>>>; declare fs: [Array<fn(x: i64) -> i64>,
+//   Array<fn(x: '_7728) -> '_7729 throws '_7730>] where it is bound". Writing
+//   that declaration (with the variables filled in) is refused:
+//   "Array<'a: fn(x: i64) -> i64> does not contain [Array<..>, Array<..>]".
+//   A struct holding a function (`s: {f: fn(..)}`) gets the same proposal.
+let fs: Array<fn(x: i64) -> i64> = [|x| x];
+let t = sys::time::timer(duration:10.ms, false);
+fs <- t ~ [|x| { let r: i64 = error(`E)?; r + x }];
+array::map(fs, |f| f(1))

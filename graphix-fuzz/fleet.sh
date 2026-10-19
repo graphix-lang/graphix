@@ -78,6 +78,13 @@ asan_host() {
     [[ -n ${FLEET_ASAN:-} && ",${FLEET_ASAN}," == *",$1,"* ]]
 }
 
+# CR claude for claude: [doc-drift/low] The FLEET_ONLY comment above says it 'adds or
+# restarts a single box'. A restart under the same campaign name always fails: `soak.sh
+# start` exits with 'campaign directory already exists' when `~/tmp/target/fuzz/<camp>`
+# is present, and it is on any box that already ran the campaign. Either say that
+# FLEET_ONLY adds a box that has not run the campaign (a restart takes a new name), or
+# let `start` reuse a directory whose soak is not live. Found by reading; not run.
+# (fuzz-main-aux-06)
 skip_host() {
     [[ -n ${FLEET_ONLY:-} && $FLEET_ONLY != "$1" ]] && return 0
     [[ -n ${FLEET_EXCLUDE:-} && ",${FLEET_EXCLUDE}," == *",$1,"* ]] && return 0
@@ -227,6 +234,16 @@ sync_tree() {
 ($want -> $now) — the fleet would end half old, half new; commit and redeploy"
         if [[ $method == rsync ]]; then
             # graphix builds against the sibling netidx
+            # CR claude for claude: [risk/medium] washu-chan is an rsync host that
+            # reaches itself over ssh. This copy goes onto the session's own checkout,
+            # and ../netidx gets the same. From ~/proj/graphix it changes nothing. From
+            # any other checkout (a worktree, a copy; `local_fingerprint` already allows
+            # `$repo` to differ) it overwrites the live checkout with that tree and
+            # deletes its untracked files. `require_clean_inputs` checks only the source
+            # tree. Fix: skip the rsync, and keep the fingerprint check, when the host
+            # is the local machine (compare `ssh $name hostname` with `hostname`), or
+            # refuse to sync when `$repo` is not `$HOME/proj/graphix`. Found by reading;
+            # not run. (fuzz-main-aux-02)
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/" "$name:proj/graphix/"
             rsync -a --delete --exclude target --exclude .git \

@@ -1,0 +1,12 @@
+// Title: a trait method whose `self` is only its result: the check accepts a call, the build refuses it
+// Command: /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --check tests-fusion-traits-self-only-result-check-parity.gx
+//          /home/eric/tmp/review-2026-10-19/bin/graphix-fuzz check tests-fusion-traits-self-only-result-check-parity.gx
+// Expected: the check and the build agree (both refuse the call, or both accept it)
+// Observed: --check exits 0 with no diagnostic; the build (--expand / run) fails with
+//   "Mk::make called without its self argument"; graphix-fuzz check prints
+//   "DIVERGENCE — the check accepted what the build refused"
+trait Mk { val make: fn(x: i64) -> self };
+type C = Abstract<i64>;
+impl Mk for C { let make = |x| C(x) };
+let c: C = Mk::make(1);
+c.0

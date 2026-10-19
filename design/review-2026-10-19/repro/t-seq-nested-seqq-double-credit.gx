@@ -1,0 +1,31 @@
+// A seqq nested in an outer seq's step drops a queued request on the outer's next run.
+// cmd: timeout -s KILL 30 graphix --no-cache t-seq-nested-seqq-double-credit.gx
+// expected: within outer run 1, consecutive inner values (a seqq runs every request in order)
+// observed: "outer 1 inner 18", then "outer 1 inner 20" (timing may shift by one): the
+//   second request is released while
+//   the inner machine is busy and dropped by the busy filter. The outer run's first step
+//   ended while the inner run was in flight, so the machine's catch owes the queue a
+//   credit at its wake; the next outer run enters the step as a Step (a birth): the
+//   queue is reborn and `seqqactivation`, a constant, fires the fresh initial credit,
+//   and then the owed credit lands too: two credits for one run.
+// Same output with --no-fusion and GRAPHIX_PRUNE=off.
+let n = 0;
+let oclock = sys::time::timer(duration:400.ms, 1);
+n <- oclock ~ n + 1;
+let f = 0;
+let fclock = sys::time::timer(duration:20.ms, 30);
+f <- fclock ~ f + 1;
+let res = seq let k = n {
+    {
+        let v = seqq let j = f {
+            let w = sys::time::timer(duration:50.ms, false);
+            println("outer [k] inner [j]");
+            j
+        };
+        let w = sys::time::timer(duration:120.ms, false);
+        v
+    };
+    k
+};
+sys::exit(sys::time::after_idle(duration:700.ms, 0));
+res

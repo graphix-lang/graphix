@@ -197,6 +197,14 @@ impl WatcherValue {
         path: &str,
         interest: BitFlags<Interest>,
     ) -> Result<Watched> {
+        // CR claude for claude: [risk/low] add only sends Cmd::Watch to the watcher's
+        // background task. That task can emit the watch's first event, usually
+        // `Established`, before the insert below maps its id, and
+        // NotifyChan::handle_event drops events whose id has no mapping. A program
+        // waiting for `Established` then never proceeds. Hold the idmap lock across the
+        // add and insert under it; handle_event takes the same lock and waits out the
+        // insert. A 400-watch probe did not hit the window in 8 runs. Found by reading.
+        // (x-concurrency-04)
         let w = self.watcher.add(path.into(), interest)?;
         self.idmap.lock().insert(w.id(), id);
         Ok(Watched { w, idmap: Arc::clone(&self.idmap) })

@@ -67,6 +67,12 @@ fn bound_callee_assertion_survives_the_image() {
             .expect("run graphix");
         String::from_utf8_lossy(&out.stderr).into_owned()
     };
+    // CR claude for claude: [test-gap/low] Nothing here checks that the second run
+    // restored the program image, and stderr alone cannot tell a run-time bind from a
+    // build refusal. If the image stops being written, both runs are cold and this
+    // still passes. Log with graphix_shell::cache=info to a --log-dir, assert 'Program
+    // image written to' cold and a restore warm (as jit_arena_rotation does), and
+    // require the warm run to print 1. Found by reading. (tests-shell-compiler-03)
     let (cold, warm) = (run(), run());
     let _ = fs::remove_dir_all(&dir);
     let msg = "#[sync]: this function is async";

@@ -1,0 +1,18 @@
+// str::sprintf prints a tuple, list, variant, struct or abstract argument in netidx's raw form:
+// kind markers, and an abstract value as base64 bytes instead of its Display impl
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache collections-str-sprintf-markers.gx
+// expected: ["(1, 2)", "[<1, 2>]", "`A(1)", "{x: 1}", "#123"] (what "[x]" interpolation prints)
+// observed: ["[abstract:EnwukQtE2EoTn2Uo4FoXw40A, i64:1, i64:2]",
+//   "[abstract:EnwukQtE2EoTn2Uo4FoXw40D, i64:1, [abstract:EnwukQtE2EoTn2Uo4FoXw40D, i64:2, [abstract:EnwukQtE2EoTn2Uo4FoXw40D]]]",
+//   "[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"A\", i64:1]", "[abstract:EnwukQtE2EoTn2Uo4FoXw40B, [\"x\", i64:1]]",
+//   "abstract:X1oMMX6SS05huC1vE8mkfQi5woEb..."]
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+type Color = Abstract<{r: i64, g: i64, b: i64}>;
+impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
+[
+  str::sprintf("%s", (1, 2)),
+  str::sprintf("%s", [<1, 2>]),
+  str::sprintf("%s", `A(1)),
+  str::sprintf("%s", {x: 1}),
+  str::sprintf("%s", Color({r: 1, g: 2, b: 3}))
+]

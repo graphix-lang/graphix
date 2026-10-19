@@ -510,6 +510,12 @@ impl Type {
             // cell, unified), or merge unifies two function types whose only
             // differences are open cells. probe:
             // design/review-2026-10-12/repro/t-fntyp-10.gx. (t-fntyp-10)
+            // CR claude for claude: [doc-drift/low] The t-fntyp-10 CR just above no
+            // longer reproduces. Array, list and map literals and any() now join their
+            // elements as select arms do (d99f80510, x-typecheck-generics-06, pinned by
+            // lang::functions::gathered_functions_meet), so both element orders are
+            // callable. Delete that CR. probe:
+            // design/review-2026-10-19/repro/x-rerun-4-fntyp10-fixed.gx (x-rerun-4-04)
             (Type::Fn(_), Type::Fn(_)) => {
                 if union_identical(self, t) {
                     Some(self.clone())

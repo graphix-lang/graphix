@@ -81,6 +81,13 @@ impl FromValue for PaddingV {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SizeV(pub Size);
 
+// CR claude for claude: [bug/medium] A window size is only checked for finiteness.
+// winit's X11 create_window converts the physical size to u16 with
+// `try_into().unwrap()`, so `size: {width: 70000.0, ..}` panics the event loop on X11;
+// zero and negative sizes also reach winit. Refuse a dimension that is not positive or
+// exceeds a bound (e.g. 16384), so it becomes a logged error like NaN. Found by reading
+// winit-0.30.13 x11/window.rs; not run (no display). Program:
+// design/review-2026-10-19/repro/gui-core-x11-window-size-panic.gx (gui-core-04)
 impl FromValue for SizeV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
@@ -420,6 +427,13 @@ impl ImageSourceV {
         }
     }
 
+    // CR claude for claude: [risk/medium] Raster icons reach winit at native size.
+    // winit's X11 set_window_icon sends them as one ChangeProperty and calls
+    // `.expect("Failed to set icons")`, which panics when the request exceeds the
+    // server's maximum length (about 2048x2048 pixels with BIG-REQUESTS), so a
+    // high-resolution logo as the icon panics the event loop. Downscale raster icons to
+    // a fixed bound (e.g. 256x256) here, as the SVG path already renders at 32x32.
+    // Found by reading winit-0.30.13 x11/window.rs; not run. (gui-core-05)
     pub fn decode_icon(&self) -> Result<Option<winit::window::Icon>> {
         match self {
             Self::Path(p) if p.is_empty() => Ok(None),
@@ -457,6 +471,12 @@ impl ImageSourceV {
 /// An RGBA image's pixels are four bytes for every one of its width x
 /// height pixels.
 pub(crate) fn check_rgba(width: u32, height: u32, len: usize) -> Result<()> {
+    // CR claude for claude: [bug/medium] This product overflows u64 for large u32
+    // dimensions. A debug build panics here and the runtime dies
+    // (clipboard::write_image with 2147483648 x 2147483648). A release build wraps to
+    // 0, so that size with empty pixels passes and reaches the image widget, the window
+    // icon or arboard. Use checked_mul and refuse on overflow. probe:
+    // design/review-2026-10-19/repro/gui-core-check-rgba-overflow.gx (gui-core-03)
     let want = width as u64 * height as u64 * 4;
     if want != len as u64 {
         bail!("an RGBA image of {width} x {height} needs {want} bytes, not {len}")

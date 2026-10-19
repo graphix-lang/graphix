@@ -23,6 +23,14 @@ use nohash::IntSet;
 
 #[derive(Debug)]
 pub struct Prune<R: Rt, E: UserEvent> {
+    // CR claude for claude: [structure/low] Every constructor sets this to Some, yet it
+    // is an Option, and `clean` treats None as never dirty. A Prune built with no
+    // boundary (say from the root's `ctx.boundary`) would be updated once and then ride
+    // its resident in every ordinary cycle, silently. Make the field and `wrap`'s
+    // parameter a BoundaryRef, have `Prune::boundary` return one, and let `in_boundary`
+    // take `Option<&BoundaryRef>` (Prune passes `Some(&self.boundary)`,
+    // delete_discarded its stored Option's `as_ref()`). `clean` becomes
+    // `!ctx.rt.dirty(&self.boundary)`. Found by reading; not run. (c-prune-wake-05)
     boundary: Option<BoundaryRef>,
     child: Node<R, E>,
     resident: TagValue,

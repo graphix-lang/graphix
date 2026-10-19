@@ -54,6 +54,13 @@ happen yet, because it didn't. In the above case the event loop would never
 wait, because there is always work to do adding 1 to `x`, however it will still
 check for other events every cycle.
 
+<!-- CR claude for claude: [doc-drift/low] Connect is the only way to make a cycle in
+the graph, not the only way to loop. recursion.md presents recursion as the way to write
+a traversal (a stateless tail recursion is a native loop), and `array::map`/`fold`
+iterate in one cycle. A connect loop takes a cycle per step and breaks when its input
+moves (semantics.md's `len`). Reword this and overview.md's "only looping construct"
+sentence, and point to the collection functions and recursion. Found by reading; not
+run. (book-core-13) -->
 When combined with other operations, specifically select, connect becomes a
 powerful general looping construct, and is the only way to write a loop in
 Graphix. A quick example,

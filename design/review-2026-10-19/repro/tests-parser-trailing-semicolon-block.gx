@@ -1,0 +1,13 @@
+// Title: a trailing `;` in a block makes its value an invisible NoOp (bottom)
+// Command: timeout -s KILL 20 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-parser-trailing-semicolon-block.gx
+// Expected: a parse refusal ("a block must contain at least 2 expressions", as for
+//   `{ f(1) }`; book/src/core/block.md says a one-expression block will not parse),
+//   or the `;` ignored as a seq body ignores it, printing 2 then "seq 2".
+// Observed: --check passes (the ⊥ NoOp fits the declared `-> string` although the
+//   body computes an i64); the run prints only "seq 2": `f(1)` never produces.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let f = |x: i64| -> string { let y = x + 1; y; };
+let g = |x: i64| seq { let y = x + 1; y; };
+println(f(1));
+println("seq [g(1)]");
+null

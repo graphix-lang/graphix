@@ -1,0 +1,15 @@
+// sys-io: fs::fstat (and truncate) on a file ends its line reader for good
+// setup: seq 1 30000 > /tmp/sys-io-nums.txt
+// run: timeout -s KILL 30 graphix --no-cache sys-io-fstat-stops-lines.gx | tail -1
+// expected: (30000, "30000") -- what it prints with the `let st` line removed
+// observed: (12773, "12773") -- the fstat at 100ms took the whole stream, which
+//   stops the line reader (Halves::take sends stop_lines); nothing restarts it, so
+//   the remaining 17k lines are never delivered and no error says so
+use sys::io::Lines;
+let f = sys::fs::open(`Read, "/tmp/sys-io-nums.txt")$;
+let l = Lines::lines(f)$;
+let n = 0;
+n <- l ~ n + 1;
+let st = sys::fs::fstat(sys::time::timer(duration:100.ms, false) ~ f);
+sys::exit(sys::time::timer(duration:6.s, false) ~ 0);
+(n, l)

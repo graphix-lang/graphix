@@ -5,6 +5,14 @@ the runtime, module checks and fusion in parallel tasks, statement
 elaboration in parallel compile tasks, and instances typed by
 substitution. Open: the audits as fuzz findings, the instance cache and
 the per-unit image caches (Steps).
+<!-- CR claude for claude: [doc-drift/low] Stale names. `monomorphic_flat_map_twice` is
+now `written_callback_is_one_instance` / `unwritten_callback_is_generic`.
+`lambda::build_builtin_check` and the per-site builtin re-check were deleted
+(fd3f39aaf), so its task-rule bullet goes. `LambdaDef::seqs` is `LambdaDef::shared`
+(`BodyShared::lowerings`), here and in seq_blocks.md. Same kind of drift elsewhere:
+tvar_constraints.md's `UnionParts::rigid_pair` is `rigid_apart`, and
+type_copy_discipline.md's `Act::CellMerge` is `OpenPair::Merge`. Found by reading; not
+run. (x-doc-drift-11) -->
 Pins: `lang::functions::same_named_tvar_in_callback_arg`,
 `lang::functions::monomorphic_flat_map_twice`; the `GRAPHIX_ELAB_AUDIT`
 probe (`node/lambda.rs::elab_audit`) and `GRAPHIX_TASK_AUDIT`

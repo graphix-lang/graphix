@@ -99,6 +99,11 @@ SIGKILL could end the process. An embedder watchdog is buildable today
 into the engine, because a default timeout would be a credit system
 wearing a hat.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph and the activation-budget one
+below name `CtlFlag::Budget`, which no longer exists. A budget abort sets
+CtlFlag::StackBudget or CtlFlag::ActivationBudget beside Abort (Control::abort_budget,
+read back by Control::aborted_by). Update both, and design/recursive_activations.md,
+which repeats it. Found by reading; not run. (rt-10) -->
 The memory twin is the stack budget (`GRAPHIX_STACK_BUDGET` /
 `set_stack_budget`, unlimited by default): a recursion that would
 exceed it aborts the runtime through the same `Control`

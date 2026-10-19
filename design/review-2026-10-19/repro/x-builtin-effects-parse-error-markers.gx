@@ -1,0 +1,7 @@
+// Title: str::parse's ParseError message embeds the cast error's raw Display, kind marker included
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/x-builtin-effects-parse-error-markers.gx
+// Expected: error:`ParseError("can't cast 1.5 to (i64, string): not a tuple") (the cast's message)
+// Observed: error:`ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast 1.5 to (i64, string): not a tuple\"]")
+let r: Result<(i64, string), `ParseError(string)> = str::parse("1.5");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

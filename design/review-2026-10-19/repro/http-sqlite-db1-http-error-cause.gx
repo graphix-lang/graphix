@@ -1,0 +1,14 @@
+// Title: http request errors drop their cause: refused, DNS failure and a bad URL all
+// read "error sending request" / "builder error".
+// Command: timeout -s KILL 30 graphix --no-cache http-sqlite-db1-http-error-cause.gx
+// Expected: each HTTPError names its cause (connection refused, DNS lookup failed,
+//   relative URL without a base).
+// Observed: (error:`HTTPError("request failed: error sending request for url (http://127.0.0.1:1/x)"),
+//   error:`HTTPError("request failed: error sending request for url (http://no-such-host.invalid/x)"),
+//   error:`HTTPError("request failed: builder error"))
+let c = http::default_client(null)$;
+let r1 = http::get(c, "http://127.0.0.1:1/x");
+let r2 = http::get(c, "http://no-such-host.invalid/x");
+let r3 = http::get(c, "notaurl");
+sys::exit(sys::time::after_idle(duration:2.s, 0));
+(r1, r2, r3)

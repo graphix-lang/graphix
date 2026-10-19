@@ -1,0 +1,27 @@
+// Title: db keys are stored in data form, so `A and "A" are one key and a bare
+// variant sorts apart from the language's `<`.
+// Command: rm -rf /home/eric/tmp/review-2026-10-19/review/work/http-sqlite-db1/db_keys &&
+//   timeout -s KILL 30 graphix --no-cache http-sqlite-db1-db-key-data-form.gx
+// Expected: (2, 1, (`A, 1), true): two distinct keys, get("A") = 1, first = `A since `A < `B(1)
+// Observed: (1, 2, (`B(1), 3), true): inserting `A overwrote "A" (len 1, get "A" = 2),
+//   and first() is `B(1) though `A < `B(1) is true
+type K = [string, `A, `B(i64)];
+let a: K = `A;
+let s: K = "A";
+let b: K = `B(1);
+let dir = "/home/eric/tmp/review-2026-10-19/review/work/http-sqlite-db1/db_keys";
+let r = seq {
+  let db = db::open(dir)?;
+  let t: db::Tree<K, i64> = db::tree(db, "t")?;
+  let x = db::insert(t, s, 1)?;
+  let y = db::insert(t, a, 2)?;
+  let n = db::len(t)?;
+  let g = db::get(t, s)?;
+  let z = db::insert(t, b, 3)?;
+  let w = db::remove(t, s)?;
+  let w2 = db::insert(t, a, 1)?;
+  let f = db::first(t)?;
+  (n, g, f, a < b)
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

@@ -1,0 +1,19 @@
+// core-aux: queuefn's node resets its queue and credit when its arm sleeps
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache core-aux-queuefn-sleep-resets.gx
+// The queuefn node lives in an arm that sleeps at n=3 and wakes at n=4; its
+// wrapper is called outside the arm. #trigger never fires.
+// Expected (sleep is pause, as `queue` keeps its contents and credits): 100
+//   (qf(10) uses the initial credit, qf(20) and qf(50) wait for a trigger).
+// Observed: 100 then 500: QueueFn::sleep cleared the queue and reset
+//   pop_count to 1, so qf(50) ran without a trigger. With the sleep removed
+//   (k == 300) the program prints only 100.
+let t = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- t ~ n + 1;
+let sel = select n { k if k == 3 => 1, _ => 0 };
+let qf = never();
+let r = select sel { 0 => qf <- queuefn(#trigger: never(), |x: i64| -> i64 x * 10), _ => null };
+let x = select n { 1 => 10, 2 => 20, 5 => 50, _ => never() };
+let out = qf(x);
+sys::exit(select n { 8 => 0, _ => never() });
+out

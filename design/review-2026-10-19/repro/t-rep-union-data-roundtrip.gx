@@ -1,0 +1,21 @@
+// Title: a tuple or struct in a union with an array reads back from data as the array
+// Command: timeout -s KILL 30 graphix --no-cache t-rep-union-data-roundtrip.gx
+// Expected: each value reads back as written: ((1, 2), {a: 1}, {a: 1}, ("k", 1))
+//   (CLAUDE.md: what the json and toml writers emit reads back into its type).
+// Observed: ([1, 2], [("a", 1)], [("a", 1)], ["k", "1"])
+//   Kind markers made these unions legal, but rep::strip writes a tuple and an
+//   array alike (a struct as an array of pairs); the union cast tries the
+//   member in the data's own class first (cast.rs in_own_class: only Array
+//   reads an unmarked array), so the Array member wins, converting elements.
+type U = [(i64, i64), Array<f64>];
+let v: U = (1, 2);
+let p: Result<U, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(v)$);
+type S = [{a: i64}, Array<(string, i64)>];
+let s: S = {a: 1};
+let ps: Result<S, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(s)$);
+let js: Result<S, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(s)$);
+type T = [(string, i64), Array<string>];
+let t: T = ("k", 1);
+let jt: Result<T, [`InvalidCast(string), `JsonErr(string)]> = json::read(json::write_str(t)$);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(p, ps, js, jt)

@@ -325,6 +325,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         TagValue::phantom_ref()
     }
 
+    // CR claude for claude: [bug/low] A trait's method signatures never have their type
+    // names checked. `trait Q { val q: fn(self) -> Nope }` passes --check and runs
+    // until an impl or a call expands the signature. Every other written type (typedef
+    // bodies, annotations, casts, type tests) is deferred through
+    // defer_unresolved_names and refused at the check's end. Defer each method's
+    // signature here, as lambda.rs does for a definition's. probe:
+    // design/review-2026-10-19/repro/x-typecheck-patterns-trait-sig-undefined-type.gx
+    // (x-typecheck-patterns-09)
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
@@ -613,6 +621,18 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
+            // CR claude for claude: [bug/medium] The method binding is typed over the
+            // impl head's own cells, and those cells are not rigid while the method
+            // checks. `impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| .. }`
+            // therefore binds 'a to i64: the impl is accepted and silently serves
+            // Box<i64> only. Box("str") prints structurally, and a non-core trait call
+            // fails at the call site with "Box<'_> does not implement Show".
+            // Impl::typecheck0's later check compares against the narrowed head, so it
+            // cannot catch this. Check the methods with the head's variables rigid, as
+            // a definition's declared variables are, and keep only the implements
+            // (sig_matches) check there. probe:
+            // design/review-2026-10-19/repro/c-module-traits-impl-head-narrowed-by-method.gx
+            // (c-module-traits-04)
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
             let b = BindExpr {
                 rec: b.rec,
@@ -621,6 +641,16 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                 value: annotate_lambda(&b.value, &sig),
             };
             // a core trait's method runs inside a comparison or print
+            // CR claude for eric: [risk/low] The implicit #[sync] added here, together
+            // with never() being classified ASYNC (open CR f-select-05), refuses a
+            // core-trait impl that bottoms through the idiomatic never() arm: `impl Eq
+            // for T { let eq = |a, b| select a.0 { 0 => never(), n => n == b.0 } }`
+            // fails with '#[sync]: this function is async'. Yet design/traits.md's
+            // bottom-key rule exists for bottoming implementations, and the `$`
+            // spelling builds. Settle it with f-select-05, and add a never()-arm twin
+            // of traits::core_bottom_key_rule. probe:
+            // design/review-2026-10-19/repro/tests-fusion-traits-never-arm-core-impl-refused.gx
+            // (tests-fusion-traits-08)
             let dec = match (core, &m.dec) {
                 (false, dec) => dec.clone(),
                 (true, dec) => {
@@ -871,6 +901,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
                 a.typ.resolve_tvars().normalize()
             }
+            // CR claude for eric: [bug/medium] This refusal comes only at typecheck1.
+            // `trait Mk { val make: fn(x: i64) -> self }; .. Mk::make(1)` passes
+            // --check (no diagnostic in the editor) and then fails the build here,
+            // which is a check/build disagreement that graphix-fuzz reports as a
+            // type-system bug. No call can ever dispatch such a method. Decide whether
+            // the declaration is refused (trait registration) or the call is refused in
+            // the check (CallSite::typecheck0 on a dispatcher whose method has no
+            // self_index), and pin it with a run! fixture in traits.rs. probe:
+            // design/review-2026-10-19/repro/tests-fusion-traits-self-only-result-check-parity.gx
+            // Also reported as (x-typecheck-generics-04), (x-typecheck-patterns-08).
+            // (tests-fusion-traits-03)
             None => {
                 bailat!(
                     self.spec,

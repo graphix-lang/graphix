@@ -1,0 +1,14 @@
+// Title: rep::strip merges map keys whose data forms coincide: writers silently drop entries
+// Command: timeout -s KILL 30 graphix --no-cache t-rep-strip-map-key-collision.gx
+// Expected: map::len 2, and each writer either writes both entries or refuses
+//   ("two keys write as the same data"); pack round trip keeps both entries.
+// Observed: (2, "{\"A\":2}", "{\"[1, 2]\":1}", {"A" => 2})
+//   json writes one entry (its own duplicate-key guard never fires), pack
+//   reads back one entry, and the surviving key "A" now carries `A's value.
+let m: Map<[string, `A], i64> = {"A" => 1, `A => 2};
+let m2: Map<[Array<i64>, (i64, i64)], i64> = {[1, 2] => 1, (1, 2) => 2};
+let j = json::write_str(m);
+let j2 = json::write_str(m2);
+let p: Result<Map<[string, `A], i64>, [`InvalidCast(string), `PackErr(string)]> = pack::read(pack::write_bytes(m)$);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(map::len(m), j, j2, p)

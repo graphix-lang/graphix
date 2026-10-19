@@ -20,6 +20,19 @@ let tick_out = {
 sys::net::publish(path, tick_out)$;
 let tick: f64 = sys::net::subscribe(path)$;
 let (variance, chk) = winstats::stats(wsize, tick);
+// CR claude for claude: [bug/medium] netidx_stream is not self-clocked, and `processed`
+// over-counts. `let (variance, chk) = winstats::stats(..)` fires both names whenever
+// the tuple fires. The tuple fires twice per tick: when the inner variance fires, and
+// again when the inner chk lands a cycle later. So idx advances twice per received
+// tick, two or more ticks are in flight (the coalescing this header rules out is
+// possible), and `count(chk) - 1` counts some ticks twice, so `done` can fire before n
+// ticks were processed. Fix: have winstats::stats return chk alone (stream_stats uses
+// nothing else) and clock on it: `let processed = count(chk) - 1; idx <- select
+// processed { p if p > 0 && p < n => p, _ => never() }`, which keeps one tick in flight
+// and ends at processed = n. winstats' header is wrong too: variance fires from the
+// first tick, not after the window fills. probe:
+// design/review-2026-10-19/repro/examples-rest-netidx-stream-double-clock.gx
+// (examples-rest-01)
 idx <- select variance ~ idx {
   i if i < n - 1 => i + 1,
   _ => never()

@@ -1,0 +1,9 @@
+// lang-skill: SKILL.md says "On an untyped parameter they [? and $] read as the error form, so a
+// nullable one is annotated". The checker refuses any untyped operand of ? or $.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --check lang-skill-untyped-param-dollar.gx
+// Expected per the skill: x read as the error form; a Result argument works.
+// Observed: "the operand of $ has type '_N: unbound, not known here: annotate it with a type
+//   that holds an error or null" (the same for ? over a Result argument).
+let f = |x| x$;
+let y: [i64, null] = 3;
+f(y)

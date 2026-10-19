@@ -1,0 +1,17 @@
+// Title: must-reject family 3 (shared-var) reports a false LEAK when the
+// first argument is a `let` over never(): its map type is what the call
+// decided, not a type the call must meet.
+// Command:
+//   graphix-fuzz typemorph-one /abs/path/verdict.txt 5000 < fuzz-mutate-shared-var-open-leak.gx
+//   cat /abs/path/verdict.txt
+// Expected: no shared-var site (z is an open cell).
+// Observed:
+//   FLIP shared-var#7 LEAK: accepted at call
+//   MUTANT { let g = |x: 'a, y: 'a| -> 'a x; let z = never(); let r = g(z, "tm"); [r, z] }
+// The mutant is a valid program (z, r: string), so the checker is right.
+{
+  let g = |x: 'a, y: 'a| -> 'a x;
+  let z = never();
+  let r = g(z, i64:1);
+  [r, z]
+}

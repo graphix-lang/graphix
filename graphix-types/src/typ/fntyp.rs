@@ -410,6 +410,21 @@ impl FnType {
             }
         }
         self.quantifiers = Arc::from_iter(names.drain(..));
+        // CR claude for claude: [bug/high] A quantifier's bound is lost when its
+        // variable occurs twice inside a nested fn type, as in `fn<'a: Number>(g: fn(x:
+        // 'a) -> 'a) -> f64`. The nested type's own `declaring` (run by the parser)
+        // already froze its 'a vars, and TVar::alias returns at once for a frozen var.
+        // So this alias pass cannot weld the inner cell to the quantifier's cell, and
+        // constraint_view reaches the bare inner cell by name. Effects: the check
+        // accepts `f(|x: string| x)`; a .gxi with this type refuses its identical
+        // implementation; `graphix fmt` prints the type without `fn<'a: Number>`, and
+        // the file it writes is refused ("undeclared type variable"). The formatter's
+        // reparse guard misses it because FnType::eq compares only the constraint view,
+        // never `quantifiers`. Fix: in Type::alias_tvars, merge a frozen var's cell
+        // into the known one (alias_cells), or have a nested signature's declaring
+        // alias only its own quantifiers. Then pin the parse/print/check round trip.
+        // probe: design/review-2026-10-19/repro/t-fntyp-nested-bound-lost.sh
+        // (t-fntyp-01)
         self.alias_tvars(&mut known);
         seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())));
         self
@@ -825,6 +840,13 @@ impl FnType {
         self.any_open_quantifier(|tv| tv.is_rigid())
     }
 
+    // CR claude for claude: [structure/low] This walk is written four times: here, in
+    // fresh_quantifiers, in open_quantifier_gates and in inner_quantifiers' Fn arm.
+    // Each is collect_tvars by name (which normalizes every conjunct), filtered to
+    // names in `self.quantifiers`, mapped through open_cell(). contains_int runs it
+    // twice per comparison, and a rule change has to be made in four places. Write one
+    // `open_quantifiers(&self, out)` that yields the open quantifier cells, and have
+    // the four callers iterate it. Found by reading; not run. (t-fntyp-05)
     fn any_open_quantifier(&self, also: impl Fn(&TVar) -> bool) -> bool {
         if self.quantifiers.is_empty() {
             return false;
@@ -969,6 +991,15 @@ impl FnType {
     /// deeper: the definition at `depth` closed over them. A cell a
     /// binding lowered above it is its environment's.
     #[doc(hidden)]
+    // CR claude for eric: [perf/low] A chain of closures that each return the previous
+    // one (`let x1 = |a: i64| x0; let x2 = |a: i64| x1; ..`) checks in quadratic time
+    // and memory: 2500 lets take 18 s and 5000 lets went past a 6 GB cap in --check.
+    // Each definition re-walks the whole nested signature here (`reached_cells`), and
+    // `Type::reset_tvars_int` copies every nested fn type fresh (gdb samples land in
+    // both, thousands of frames deep). Deciding the fix is yours: stop generalize/claim
+    // at a nested fn type a closed definition already generalized, and let a copy share
+    // a nested fn type that reaches no cell it must freshen. probe:
+    // design/review-2026-10-19/repro/x-stack-flat-chain-quadratic.sh (x-stack-03)
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
@@ -1101,6 +1132,29 @@ impl FnType {
         // a rank-2 formal passed on is any instance of itself: its
         // quantifiers are fresh for this comparison, so self's bind them
         let fresh;
+        // CR claude for claude: [bug/medium] Only a rigid formal is copied fresh here.
+        // A call's result that is the callee's quantified formal, such as `|g: fn<'b:
+        // Any>(y: 'b) -> 'b| g` or the same g in a struct field, keeps the site's open
+        // quantifier cells, which the instance's formal shares. So `let h: fn(y: i64)
+        // -> i64 = app(|x| x)` binds 'b, the formal turns monomorphic, and DefTable
+        // substitution refuses the instance (`an instance at fn(g: fn(y: i64) -> i64)
+        // -> .. of a definition typed fn(g: fn<'b: Any>..) -> ..`) after --check
+        // passed. Unannotated, the result is polymorphic and `(h(1), h("s"))` runs, and
+        // under GRAPHIX_NO_SUBST=1 the annotated program prints 1. Copy any contained
+        // function type whose own quantifiers are open, not just a rigid formal. probe:
+        // design/review-2026-10-19/repro/x-typecheck-generics-rank2-return-annot.gx
+        // (x-typecheck-generics-03)
+        // CR claude for claude: [bug/high] A rank-2 formal is any instance of itself
+        // only while its quantifiers are rigid, which holds only in the definition's
+        // check. In an instance's elaboration the formal's quantifiers are open but not
+        // rigid. So passing g to a generic HOF binds g's own 'b, and a second pass at
+        // another type is refused. Example: `|g: fn<'b: Number + Singleton>(x: 'b) ->
+        // 'b| (app(1.5, g), app(1, g))` checks, but the build refuses "fn(x: i64) ->
+        // i64 does not contain fn<..>(x: 'b: f64) -> 'b: f64" (graphix-fuzz check:
+        // DIVERGENCE). Take shared_call for any type with an open quantifier
+        // (has_open_quantifier), or carry the formal's rigidity into the instance. Pin
+        // the two-use shape. probe:
+        // design/review-2026-10-19/repro/t-fntyp-rank2-forward-twice.gx (t-fntyp-03)
         let t = match t.is_rigid_formal() {
             true => {
                 fresh = t.shared_call();
@@ -1270,9 +1324,29 @@ impl FnType {
         sig_rtype
             .sig_matches_int(env, impl_rtype, tvar_map, hist)
             .context("in return type")?;
+        // CR claude for claude: [readability/low] A throws mismatch reports a part of
+        // ErrChain's expansion that the user never wrote. For declared
+        // `Error<ErrChain<`A>>` against implemented `Zero, it prints "signature has
+        // [null, ErrChain<`A>], implementation has [null, ErrChain<`Zero>]". For a val
+        // that throws nothing it prints "signature has _". The Ref arm of
+        // sig_matches_int loses the written types when the expanded comparison fails.
+        // Report the unexpanded pair there, and print a bottom throws as "throws
+        // nothing". probe:
+        // design/review-2026-10-19/repro/tests-modules-image-interface-throws.sh
+        // (tests-modules-image-06)
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist)
             .context("in throws clause")?;
+        // CR claude for claude: [bug/medium] This settle also runs for every nested fn
+        // type (a fn-typed parameter reaches it through Type::sig_matches_inner's Fn
+        // arm). It pairs the enclosing signature's deferred unions before the enclosing
+        // signature's later parameters have paired their variables. `val f: fn(x: ['a,
+        // 'b], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64` refuses `|x: ['c, 'd], g:
+        // fn(n: i64) -> i64, y: 'd, z: 'c|` ("type variable usage mismatch"), and
+        // accepts the same interface when g is moved last or dropped. Settle once at
+        // the root, in FnType::sig_matches and Type::sig_matches, and run the bound
+        // checks that read the pairs after it. probe:
+        // design/review-2026-10-19/repro/t-fntyp-nested-settle.sh (t-fntyp-04)
         tvar_map.settle(env, hist)?;
         // Every declared bound must be among the impl cell's whole
         // conjunction, compared by meaning (refs are scoped
@@ -1381,6 +1455,20 @@ impl FnType {
                         declared(sig_tv, &impl_tc)?
                     }
                 }
+                // CR claude for claude: [bug/high] An implementation cell that is an
+                // open quantifier of a rank-2 formal (`g: fn<'b: Number>(x: 'b) -> 'b`)
+                // lands here when the signature gave that parameter a monomorphic type
+                // (`g: fn(x: i64) -> i64`). The arm accepts it because Number admits
+                // i64. But the implementation's body may call g at any Number, while
+                // callers through the interface pass a function on i64 alone. The check
+                // accepts; the static build then refuses the instance, and a dynamic
+                // call fails at run time with "a run-time bind .. did not type". A
+                // quantifier of an implementation fn type in argument position must
+                // pair with a quantifier of the paired signature fn type, never with a
+                // concrete type or an outer variable. Refuse it here, and in the
+                // Some(Type::TVar) arm, unless the paired signature variable is one of
+                // `self.quantifiers`. probe:
+                // design/review-2026-10-19/repro/t-fntyp-rank2-impl.sh (t-fntyp-02)
                 Some(sig_type) => {
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside

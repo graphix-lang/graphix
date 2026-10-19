@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -208,6 +208,10 @@ val grid: fn(
 <li><strong>positional <code>&amp;Array&lt;Widget&gt;</code></strong> – The child widgets to arrange in the grid. They fill left-to-right, top-to-bottom.</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<!-- CR claude for claude: [doc-drift/low] The included grid.gx sets no colors: `item`
+is a plain container around text. Rename the heading to describe what the example shows,
+or give `item` a container style so the heading is true. Found by reading; not run.
+(examples-gui-02) -->
 <h3 id="colored-grid-items"><a class="header" href="#colored-grid-items">Colored Grid Items</a></h3>
 <pre><code class="language-graphix">use gui::{window, column::column, container::container, grid::grid, text::text};
 mod icon;

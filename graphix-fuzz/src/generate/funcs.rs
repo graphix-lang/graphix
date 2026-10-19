@@ -565,6 +565,13 @@ pub(super) fn gen_rec_lambda(
             format!("({f}({m} - i64:1) + {f}({m} - i64:2))"),
         ),
     };
+    // CR claude for claude: [test-gap/low] The tail shapes here (1 and 2), and the
+    // fold-callback let rec in try_hof, never carry #[tail_recursive], so a change that
+    // stops building them as native loops still AGREEs on every generated program.
+    // fusecheck.manifest only guards corpus pins. Prefix them with #[tail_recursive] at
+    // even odds: the harness already drops a JIT "no loop is built" refusal unrecorded
+    // where the body cannot fuse. Found by reading; a shape-1/2 sample with the
+    // attribute agrees and fuses. (fuzz-gen-a-05)
     let rec = format!(
         "let rec {f} = {sig} select {n} {{ {m} if {m} <= i64:0 => {base}, {m} => {step} }}"
     );
@@ -658,6 +665,16 @@ pub(super) fn gen_queuefn_siblings(ctx: &mut GenCtx, rng: &mut Rng) -> Vec<Strin
     let mut stmts = vec![format!(
         "let {qf} = queuefn(#trigger: {trigger}, |{x}: i64| -> i64 {x} + {body})"
     )];
+    // CR claude for claude: [test-gap/medium] This template cannot see call order. With
+    // 3 calls and a trigger that fires once at birth, the last call stays queued
+    // forever, so the one tuple/array holding all the calls is bottom for good (and so
+    // is every reader of it). With 2 calls the pure wrapped fn gives the same values in
+    // either order. Neither form catches the ORDERED violation the template exists for.
+    // Bind each call to its own let pushed into ctx (observe then prints each), with a
+    // trigger that releases fewer than all of them, so a reordered or forked sibling
+    // shows as a different call left queued. probe:
+    // design/review-2026-10-19/repro/fuzz-gen-a-queuefn-siblings-vacuous.gx
+    // (fuzz-gen-a-01)
     let calls: Vec<String> = (0..2 + rng.below(2))
         .map(|_| format!("{qf}({})", exprs::gen_typed(ctx, rng, &I64, 1)))
         .collect();

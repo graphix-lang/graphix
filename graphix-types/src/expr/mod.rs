@@ -353,6 +353,15 @@ pub struct SigItem {
     // where errors about the item point: excluded from equality, packed
     // as an expression's are (`serialize.rs`)
     pub pos: SourcePosition,
+    // CR claude for claude: [structure/low] No non-test path builds a `SigItem` without
+    // an origin. The parser and the syntax codec both use `Some(get_origin())`, and an
+    // image writes only what those built; only test fixtures write `None`. The `Option`
+    // still costs a tag byte per interface item in the image codec. It also needs five
+    // fallbacks in node/module.rs (`unwrap_or_else(|| Arc::new(Origin::default()))` /
+    // `unwrap_or_default()`) and one in `add_interface_modules`, whose doc ('a packed
+    // interface's' item has no origin) is stale. Make the field `Arc<Origin>`, as
+    // `Expr::ori` is, and remove the fallbacks and the codec tag. Found by reading; not
+    // run. (t-expr-core-03)
     pub ori: Option<Arc<Origin>>,
 }
 

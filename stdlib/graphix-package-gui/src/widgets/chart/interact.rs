@@ -285,6 +285,15 @@ impl ChartState {
             let at = r.0 + t * (r.1 - r.0);
             let span = (r.1 - r.0) * factor;
             checked_range((at - t * span, at + (1.0 - t) * span))
+                // CR claude for claude: [bug/medium] This floor is relative to the
+                // axis' magnitude and is seven orders above f64's resolution. A time
+                // series' x is ms since the epoch (~1.8e12), so no view can be narrower
+                // than about 3.8 s: a 1.1 s view of one second of data refuses its
+                // first wheel-in. An x in Unix seconds gets the same floor. Fix: floor
+                // a time axis at the microsecond grid ms_datetime keeps (e.g. 1 ms),
+                // and a numeric one at a few thousand ulps of max(|z0|, |z1|). probe:
+                // design/review-2026-10-19/repro/gui-chart-time-zoom-floor.rs
+                // (gui-chart-04)
                 .filter(|z| z.1 - z.0 > 1e-9 * (z.0.abs() + z.1.abs()))
         };
         if mode != ChartMode::Bar {

@@ -620,6 +620,15 @@ fn call_slots<'a, R: Rt, E: UserEvent>(
     }
     let mut slots: LPooled<Vec<LambdaCallSlot<R, E>>> = LPooled::take();
     let mut sig_idx = 0usize;
+    // CR claude for claude: [bug/medium] The slots, and so the emission of the argument
+    // nodes, follow formal order, while the node-walk updates arguments in written
+    // order. Labeled arguments can be written out of formal order, so `f(#b: e1?, #a:
+    // e2?, x)` raises e1 before e2 in the node-walk and e2 before e1 in a kernel, and
+    // the handler sees the errors in a different order. CallSite::emit_clif's builtin
+    // path emits in marshal (formal) order too. Emit the argument nodes in written
+    // order (ArgKey::of_written) into temporaries and pass them in formal order. probe:
+    // design/review-2026-10-19/repro/f-mod-lowering-labeled-arg-order.gx
+    // (f-mod-lowering-02)
     for i in 0..ftype.args.len() {
         let node = formal_arg(cs, &ftype, i).ok_or_else(|| {
             anyhow!("lambda call `{fn_name}`: missing call-site arg node")
@@ -687,6 +696,26 @@ fn marshal_args<R: Rt, E: UserEvent>(
         let cv = match s {
             LambdaCallSlot::Arg(n, _) => {
                 let cv = n.emit_clif(cx)?;
+                // CR claude for claude: [bug/high] A value-shaped argument passed into
+                // a composite slot is marshalled as-is. Example: a select whose arms
+                // are arrays of different element types, typed [Array<i64>,
+                // Array<string>], passed to an Array<[i64, string]> formal. When it is
+                // bottom, its placeholder is (Null|TAINT, 0). The callee's entry clone
+                // (`graphix_valarray_clone`) or a later drop then reads the zero as
+                // ValArray bits, and the process aborts with "zero ValArray bits — JIT
+                // codegen bug". Only `emit_let_node` narrows this case
+                // (`narrow_value_to_composite`). The same gap is in
+                // `emit_self_tail_call` (a native tail loop's rebind),
+                // `emit_return_from_node` (a composite kernel return) and
+                // `emit_fold_kind` (a composite fold accumulator fed by a value-shaped
+                // body). Fix: one helper that emits a node into a slot of a given ABI
+                // kind (scalar widening, owned clone, value-to-composite narrowing, the
+                // hold), used by all five sites in place of their hand-written copies.
+                // probe:
+                // design/review-2026-10-19/repro/f-call-flow-value-arg-composite-slot.gx;
+                // also f-call-flow-value-arg-tail-rebind.gx,
+                // f-call-flow-value-body-composite-return.gx,
+                // f-call-flow-value-body-composite-fold-acc.gx (f-call-flow-01)
                 match kernel_abi::abi_kind(n.typ()) {
                     Some(AbiKind::Scalar(p)) if value_slot => CompiledExpr::new(
                         cv.disc,
@@ -835,6 +864,11 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         *cx.ctx.callee_refs.get(&kernel_abi::kernel_key(&info.kernel)).ok_or_else(|| {
             anyhow!("lambda call `{fn_name}`: callee_refs has no entry — discovery/declare drift")
         })?;
+    // CR claude for claude: [readability/low] `dmerge` has one predecessor, the jump
+    // right before its switch, so the block and its two params do nothing. The comment
+    // at `widen` ("both merge edges must carry the widened pairing") describes an edge
+    // that no longer exists. Return `result` directly, drop `dmerge`, and cut the
+    // comment to what `widen` decides. Found by reading; not run. (f-call-flow-04)
     let dmerge = cx.b.create_block();
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, ret_pay_ty);
@@ -844,6 +878,18 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     if let Some(own) = own {
         emit_self_dispatch(cx, func_ref, &clif_args, rmerge, fn_name, own.thunk)?;
     } else {
+        // CR claude for claude: [bug/high] A call to another kernel is a plain native
+        // call with no stack check. emit_self_dispatch assumes cross-kernel edges are
+        // acyclic, but acyclic is not shallow: a chain of distinct functions nests
+        // kernel frames as deep as the program is long, and JIT frames cannot grow
+        // through stacker. With fusion on, 400 chained functions `fi(x) = f(i+1)(x) +
+        // vi` abort the process with a native stack overflow (exit 134). --no-fusion
+        // prints the value, even at N=2000. Fix: route Called::Other through the same
+        // graphix_stack_check and spill-thunk dispatch as a self-call, which needs a
+        // spill thunk for every kernel. That also lets the interrupt and the stack
+        // budget reach deep chains. probe:
+        // design/review-2026-10-19/repro/c-callsite-cross-kernel-chain-overflow.sh
+        // (c-callsite-01)
         let inst = cx.b.ins().call(func_ref, &clif_args);
         let (r0, r1) = callee_results(cx, inst, fn_name)?;
         cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);

@@ -390,7 +390,30 @@ impl Halves {
     }
 
     /// Borrow the whole stream under both locks; `None` if it is closed.
+    // CR claude for eric: [bug/medium] Every whole-stream borrow ends the stream's line
+    // readers permanently, including those by fs::fstat and fs::truncate, which change
+    // nothing a reader depends on. take sends stop_lines and line_reader returns.
+    // IoLines keeps its finished Reading and ignores the same handle, so that site
+    // never reads again and the program sees no error. In the probe, lines(f) over a
+    // 30000-line file stops at line 12773 after one fstat. Fix: make the stop a pause
+    // for any take that puts the stream back. The reader drops its guard, waits for
+    // Whole::drop to restore the halves (a Notify there), and reads on. It ends only
+    // when the halves are gone (close, a TLS upgrade). This also makes lines read on
+    // after a seek, from the new position, where design/async_sleep_outputs.md now
+    // lists seek as a stop: decide which a seek should do. probe:
+    // design/review-2026-10-19/repro/sys-io-fstat-stops-lines.gx (sys-io-02)
     pub(crate) async fn take(&self) -> Option<Whole<'_>> {
+        // CR claude for claude: [bug/high] take() stops the stream's line reader for
+        // every whole-stream operation, not only the TLS upgrade it was added for.
+        // FileFstatEv, FileSeekEv and FileTruncateEv borrow through take, so an fstat
+        // beside Lines::lines ends the reader with no value and no error. line_reader's
+        // select! just returns, while the Lines doc promises a stop only at end of
+        // stream or on a read error. This brings back x-builtin-effects-01's symptom by
+        // another path: the probe prints "lines read 0 of 200000". Fix: signal
+        // stop_lines only on the path that consumes the stream (the TLS handoff in
+        // tls.rs). fstat and truncate on a file can wait for the reader's per-chunk
+        // lock. If seek should end lines, it must say so with an error. probe:
+        // design/review-2026-10-19/repro/x-rerun-5-fstat-stops-lines.gx (x-rerun-5-01)
         if let Some(stop) = self.stop_lines.get() {
             stop.send_replace(());
         }
@@ -538,6 +561,14 @@ macro_rules! stream_kinds {
     };
 }
 
+// CR claude for eric: [structure/low] Stdio and Pipe each name both directions of
+// stream and implement Read, Lines and Write. So `Read::read(child.stdin$, n)` and
+// `Write::write(sys::io::stdin(null), d)` pass the check and fail at run time, through
+// StreamKind's Unsupported arms. Splitting each by direction makes the misuse a type
+// error, and lets those arms go: e.g. marks for sys::io::Stdin/Stdout and
+// sys::process::PipeIn/PipeOut, each with only the matching Read+Lines or Write impls
+// in io.gx/process.gx. This changes the stdlib API. probe:
+// design/review-2026-10-19/repro/sys-io-direction-less-stdio-pipe.gx (sys-io-03)
 stream_kinds! {
     FileMark => "sys::fs::File", FILE_WRAPPER, wrap_file;
     TcpMark => "sys::tcp::TcpStream", TCP_WRAPPER, wrap_tcp;
@@ -708,6 +739,10 @@ graphix_package_core::fast_builtin!(pub(crate) JoinPath, JoinPathEv, "sys_join_p
 graphix_package_core::unit_image_state!(GxTempDirEv);
 
 #[derive(Debug)]
+// CR claude for claude: [structure/low] [structure] Args is the builtin dirs_mod.rs's
+// dirs_builtin! generates, written out by hand: a FireOnce latch, fired when born() and
+// the latch is free, reset at reborn. Give the macro a value closure over the ExecCtx
+// and define Args through it. Found by reading; not run. (x-dup-05)
 pub(crate) struct Args {
     once: FireOnce,
     out: TagValue,
@@ -804,6 +839,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // CR claude for eric: [bug/low] `code as i32` wraps, and Unix keeps only the
+        // low 8 bits: sys::exit(256) exits with status 0, a failure reported as
+        // success. Code 2^32 does the same through the cast. Decide the rule: map a
+        // code outside 0..=255 to 1 (or refuse it with a logged failure and exit 1),
+        // use i32::try_from in place of `as`, and state the range on `val exit` in
+        // mod.gxi. Ran: sys::exit(after_idle(50.ms, 256)) exited 0. (sys-net-05)
         if let Some(Value::I64(code)) = from
             .get_mut(0)
             .and_then(|n| seam_tick(n.update(ctx)))
@@ -817,6 +858,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
                 .get::<graphix_package_core::ExitRequest>()
                 .is_some_and(|r| r.request(code as i32));
             if !asked {
+                // CR claude for claude: [bug/low] `code as i32`, and then the OS's low
+                // 8 bits, turn a code the program computed into one it did not:
+                // sys::exit(256) exits 0, so a failure reports success. The ExitRequest
+                // path above takes the same cast. Map a code outside 0..=255 to 1 for
+                // both uses (or type the gxi argument u8). probe:
+                // design/review-2026-10-19/repro/x-panics-exit-code-truncated.gx
+                // (x-panics-07)
                 std::process::exit(code as i32);
             }
         }

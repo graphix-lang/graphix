@@ -1,0 +1,27 @@
+// Title: book/src/functions/semantics.md "Fixing Our Contrived Len" prints 5, 5, not 5, 3, 2
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/book-core-fixed-len.gx
+// Expected (the book): 5, 3, 2
+// Observed (node-walk and JIT alike): two warnings ("this write reads no variable, so it acts
+//   only at this arm's first entry") on `clock <- null` and `sum <- 0`, then 5, 5.
+//   The `_` arm's constants fire only at its first entry, so the queue is never clocked again.
+let len = |a: Array<'a>| {
+  let clock = once(null);
+  let q = queue(#clock, a);
+  let sum = 0;
+  select q {
+    [x, tl..] => {
+      sum <- sum + 1;
+      q <- tl
+    },
+    _ => {
+      clock <- null;
+      sum <- 0;
+      once(sum)
+    }
+  }
+}
+;
+let a = [1, 2, 3, 4, 5];
+a <- [1, 2, 3];
+a <- [1, 2];
+len(a)

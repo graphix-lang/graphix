@@ -1,0 +1,9 @@
+// Title: a horizontal bar_chart whose text_value is non-ASCII panics in ratatui (debug builds)
+// Run:   script -qec "stty cols 40 rows 10; timeout -s KILL 20 graphix --no-cache tui-widgets-hbar-text-value.gx" /dev/null
+// Expected: the chart draws a 3-cell bar with the value text clipped.
+// Observed: panicked at ratatui-widgets-0.3.2/src/barchart/bar.rs:233: attempt to subtract with overflow; "Error: the display failed".
+use tui::{line, layout::{child, layout}, barchart::{bar, bar_chart, bar_group}};
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+let b = bar(#text_value: &"éé", &10);
+let chart = bar_chart(#direction: &`Horizontal, &[bar_group([b])]);
+layout(#direction: &`Horizontal, &[child(#constraint: `Length(3), chart)])

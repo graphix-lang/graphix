@@ -1,0 +1,18 @@
+// x-engine-firing: an event source's output, cleared at its arm's sleep, reads as bottom
+// to the state built on it, so count(timer) in a woken arm is bottom until the timer's
+// next fire although count kept its state.
+// Command: timeout -s KILL 20 graphix --no-cache x-engine-firing-event-clear-bottoms-consumer.gx
+//   (same with --no-fusion)
+// The arm sleeps at n = 8 and wakes at n = 10 (40 ms ticks); the counted timer has fired
+// twice by then and fires every 150 ms.
+// Expected (count keeps its state across a sleep; a re-entry emits the arm's current
+// value): (10, 2) at the wake, then 3 at the timer's next fire.
+// Observed, both engines: (8, -1) (9, -1) (13, 3) ...: nothing at n = 10, 11, 12; the arm
+// is bottom until the timer fires again.
+let clk = sys::time::timer(duration:40.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let on = uniq(select n { k if (k >= 8) && (k < 10) => false, _ => true });
+let t = select on { true => count(sys::time::timer(duration:150.ms, true)), false => -1 };
+sys::exit(select n { 16 => 0, _ => never() });
+(n, t)

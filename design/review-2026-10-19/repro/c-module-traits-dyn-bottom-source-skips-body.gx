@@ -1,0 +1,22 @@
+// Title: a dynamic module whose source fires bottom skips its whole update
+//   that cycle: a write to an interface val in the same cycle reaches the
+//   readers outside but never the loaded body, which stays split from it.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/c-module-traits-dyn-bottom-source-skips-body.gx
+// Expected: "t2: x=5 y=50" (the body's y = x * 10 sees the write; without the
+//   `src0 <- t ~ error(..)` line that is what prints).
+// Observed: "t2: x=5 y=0": Module::update returns early on a bottom source,
+//   before the proxy copy and the body's update.
+let one = "let x = 0; let y = x * 10";
+let src0: [string, Error<`E>] = one;
+let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val x: i64; val y: i64 };
+    source src0$
+};
+let t = sys::time::timer(duration:0.1s, false);
+src0 <- t ~ error(`E);
+foo::x <- t ~ 5;
+let t2 = sys::time::timer(duration:0.3s, false);
+println("t2: x=[t2 ~ foo::x] y=[t2 ~ foo::y]");
+sys::exit(sys::time::timer(duration:0.5s, false) ~ 0);
+"[foo::x] [foo::y]"

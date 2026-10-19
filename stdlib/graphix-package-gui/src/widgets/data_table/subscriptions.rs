@@ -294,6 +294,16 @@ impl SortKey {
                     None => Self::Text(s.clone()),
                 },
             },
+            // CR claude for claude: [bug/medium] SortKey::of_value has no
+            // Value::Decimal arm, so a decimal falls to this Text arm and sorts by its
+            // printed bytes. Ascending, 10.25 comes before 2.0 and 9.5, and every
+            // decimal sorts after every integer and float, against the interface doc's
+            // 'numbers sort before text'. Fix: map an integral decimal to Int via
+            // to_i128 and any other to Num via to_f64 (or add an exact Dec key), and
+            // pin it in raw_numeric_sort_keys_preserve_precision_and_units. Found by
+            // reading; design/review-2026-10-19/repro/gui-datatable-decimal-sort.gx
+            // type-checks and shows the order when run with a display.
+            // (gui-datatable-01)
             v => Self::Text(format_value(v)),
         }
     }

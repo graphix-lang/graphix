@@ -1,0 +1,15 @@
+// Title: CRAFTED_ABSTRACT_PARAMS (lang/types.rs) cannot reach the nesting
+// guard it pins: an abstract value outside an image session is refused
+// before its params are read, and the target is i64 anyway.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-types-crafted-abstract-vacuous.gx
+// Expected if the test were meaningful: the shallow input (no nested params) parses
+// differently from the 2^16-deep one.
+// Observed: the same error for the shallow input as the test's deep one:
+//   (error:`ParseError("cannot parse \"abstract:...ARA=\" as i64"), error:`ParseError("cannot parse \"T(1)\" as i64"), "T(1)")
+type T = Abstract<i64>;
+let t = T(1);
+let shallow = "abstract:oIAMWgwxfpJLTmG4LW8TyaR9CAAAAAAAADA5AXgBARA=";
+let r: [i64, Error<`ParseError(string)>] = str::parse(t ~ shallow);
+let pr: [i64, Error<`ParseError(string)>] = str::parse(t ~ "[t]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(r, pr, "[t]")

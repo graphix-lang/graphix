@@ -1,0 +1,7 @@
+// lang-skill: SKILL.md's abstract-type paragraph does not say an abstract type crosses data
+// (json/toml/pack writers and reads, casts, net) only through a core Cast impl.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache --check lang-skill-abstract-needs-cast.gx
+// Observed: "Id has no Cast implementation, so no read, cast or writer reaches it"; adding
+//   `impl Cast for Id {};` makes it print "{\"id\":3}".
+type Id = Abstract<i64>;
+json::write_str({id: Id(3)})

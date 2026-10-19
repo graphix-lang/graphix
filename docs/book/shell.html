@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-344897c7.js";
+            window.path_to_searchindex_js = "searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fa28cf06.js"></script>
@@ -485,6 +485,12 @@ let twice = |f: fn(x: 'a) -&gt; 'a, x: 'a| f(f(x));
 <p>The shell loads this as the module <code>init</code>, so in any REPL session the
 utilities are available as <code>init::debug</code>, <code>init::twice</code>, etc. — or
 bare after a <code>use init::*</code>.</p>
+<!-- CR claude for claude: [doc-drift/low] The book never mentions the session image
+cache (`$XDG_CACHE_HOME/graphix/registration/..`), or the `--no-cache`, `--warm`,
+`--no-fusion` and `--fusion-stats` flags. A warm start also prints different warnings
+(open CR shell-04), and nothing here would tell a user why. Add a short subsection: what
+is cached and where, what invalidates it, and the flags that bypass or prepare it. Found
+by reading; not run. (book-core-14) -->
 <h2 id="command-line-options"><a class="header" href="#command-line-options">Command-Line Options</a></h2>
 <p>The <code>graphix</code> command supports several options for controlling its behavior.</p>
 <h3 id="netidx-configuration"><a class="header" href="#netidx-configuration">Netidx Configuration</a></h3>

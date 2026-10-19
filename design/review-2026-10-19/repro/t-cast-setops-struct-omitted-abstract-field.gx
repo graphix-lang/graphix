@@ -1,0 +1,13 @@
+// Title: a struct cast refuses an omitted field whose type admits null only
+// through a conversion (an abstract with a Cast impl): the fill test wants
+// the null held as-is (Ok(None)), not read.
+// Command: timeout -s KILL 30 graphix --no-cache t-cast-setops-struct-omitted-abstract-field.gx
+// Expected: ({a: 1, o: Opt(null)}, {a: 1, o: Opt(null)}, Opt(null))
+// Observed: ({a: 1, o: Opt(null)}, error:`InvalidCast("can't cast {a: 1} to
+// { a: i64, o: Opt }: struct size mismatch"), Opt(null))
+type Opt = Abstract<[i64, null]>;
+impl Cast for Opt {};
+let a: Any = {a: 1};
+let b: Any = {a: 1, o: null};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(cast<{a: i64, o: Opt}>(b), cast<{a: i64, o: Opt}>(a), cast<Opt>(null))

@@ -1,0 +1,20 @@
+// Title: a trait conjunct probed with empty flags takes a declared (rigid)
+// variable inside a union as an implementor (trait_contains' TVar arm answers
+// true unless RigidCheck is set; cell_constraints_ok never sets it).
+// Command: timeout -s KILL 30 graphix --check t-contains-conjunct-rigid-trait.gx
+//          timeout -s KILL 30 graphix --no-cache t-contains-conjunct-rigid-trait.gx
+// Expected: the check refuses g(v): [i64, 'a] implements Sz only if 'a does,
+// and 'a is declared Any.
+// Observed: --check exits 0; the build refuses with the internal "an instance at
+// fn(x: [i64, string]) -> i64 of a definition typed fn<'c: Sz>(..)" error.
+trait Sz {
+    val sz: fn(self) -> i64
+};
+impl Sz for i64 { let sz = |x| x };
+let g = 'c: Sz |x: 'c| -> i64 Sz::sz(x);
+let f = 'a: Any |x: 'a, b: bool| -> i64 {
+    let v: [i64, 'a] = select b { true => 1, false => x };
+    g(v)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f("s", false)

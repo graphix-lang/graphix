@@ -1,0 +1,23 @@
+// Title: seqq snapshots a variable the body reads directly, but a closure
+// the body calls reads the same variable live, so one run sees two values.
+// Command: graphix-fuzz run x-engine-seq-errors-seqq-closure-reads-live.gx
+// Expected (one world per request, as `a` shows):
+//   r (0, 0) | r (100, 100) | r (200, 200)
+// Observed (both engines, every mode, AGREE):
+//   r (0, 200) | r (100, 200) | r (200, 200)
+// The three requests queue while `until in3` holds the first run; `x`
+// is 200 when they run. `a` reads the snapshot taken at enqueue, `g(t)`
+// reads `x` through `g`'s closure as it stands.
+// schedule-v1: cap=128 events=1024; in0=i64:1 in2=i64:100; in0=i64:2 in2=i64:200; in3=bool:true
+{
+  let x = in2;
+  let g = |k: i64| k + x;
+  let r = seqq let t = in0 {
+    until in3;
+    let a = x;
+    let c = g(0);
+    (a, c)
+  };
+  println("r [r]");
+  r
+}

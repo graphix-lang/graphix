@@ -1,0 +1,23 @@
+// Title: net.gxi documents `write` as writing the standing value again at
+// its arm's wake; the builtin (and net_write_not_repeated_after_wake) write
+// only on a value fire.
+// Command: graphix --no-cache tests-lib-b2-net-write-wake-doc.gx   (kill after ~1 s)
+// Expected per net.gxi ("When its arm wakes, write the standing value
+//   again"): 2 writes (first entry + wake).
+// Observed: 1 (design/async_sleep_outputs.md: "writes only on a value fire").
+let result = {
+    let path = "/local/review_b2/standing_write";
+    let value = 42;
+    let writes = 0;
+    sys::net::publish(#on_write: |v: i64| writes <- v ~ writes + 1, path, 0);
+    let ready: i64 = once(sys::net::subscribe(path)?);
+    let on = ready ~ true;
+    on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
+    on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
+    select on {
+        true => sys::net::write(path, value),
+        false => never()
+    };
+    sys::time::after_idle(duration:400.ms, ready) ~ writes
+};
+result

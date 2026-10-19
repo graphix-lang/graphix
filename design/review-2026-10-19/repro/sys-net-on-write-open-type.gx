@@ -1,0 +1,15 @@
+// Title: publish's #on_write parameter is not held Concrete, so an open handler
+//   type receives written data uncast (a struct arrives as a 2-element Array).
+// Command: graphix --no-cache --no-netidx design/review-2026-10-19/repro/sys-net-on-write-open-type.gx
+// Expected: refused by the check (the handler's argument is a read target that
+//   settles open, as sys::net::subscribe's 'a: Concrete is), or the write answered
+//   with an InvalidCast error and n staying -1.
+// Observed: 2 -- the written struct {a: 1, b: 2} reaches `v: Array<'b>` in its data
+//   form (an unmarked array of two pairs) and array::len counts its fields.
+let n: i64 = -1;
+let p = "/local/ow2";
+sys::net::publish(#on_write: |v: Array<'b>| n <- v ~ array::len(v), p, 0);
+let s: i64 = sys::net::subscribe(p)$;
+sys::net::write(p, once(s) ~ {a: 1, b: 2});
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+n

@@ -1,0 +1,11 @@
+// x-rerun-5: str::parse's ParseError text prints the InvalidCast variant's kind marker
+// (seen re-running t-tvar-10 and x-engine-collections-01)
+// command: graphix --no-cache design/review-2026-10-19/repro/x-rerun-5-parse-error-prints-marker.gx
+// expected: (error:`ParseError("can't cast 300 to u8: ..."), error:`ParseError("can't cast 1 to (i64, i64): not a tuple"))
+//   -- the cast failure's message, as a failed cast<u8>(300) shows it
+// observed (HEAD 9445a1d21): error:`ParseError("[abstract:EnwukQtE2EoTn2Uo4FoXw40C, \"InvalidCast\", \"can't cast 300 to u8: no primitive conversion\"]")
+//   and the same for the tuple: fc_parse formats the whole marked `InvalidCast(msg) variant with {e}.
+let a: Result<u8, `ParseError(string)> = str::parse("300");
+let b: Result<(i64, i64), `ParseError(string)> = str::parse("[1]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(a, b)

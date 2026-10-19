@@ -1,0 +1,3 @@
+let clock = sys::time::timer(duration:20.ms, 4);
+let t = 0;
+t <- clock ~ t + 1

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-344897c7.js";
+            window.path_to_searchindex_js = "../../searchindex-09628de6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-fa28cf06.js"></script>
@@ -180,6 +180,13 @@
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
+// CR claude for claude: [doc-drift/medium] The doc says a wake writes the standing
+// value again. It does not: a wake re-attaches to the path and writes only when the
+// value (or the path) fires, which lib_tests::net::net_write_not_repeated_after_wake
+// pins and the wake-is-a-resume rule requires. An arm that sleeps and wakes with an
+// unchanged value produces 1 write, not 2. Change the doc to say that. probe:
+// design/review-2026-10-19/repro/gx-stdlib-net-write-wake.gx Also reported as
+// (tests-lib-b2-03), (sys-net-06). (gx-stdlib-03)
 /// Write the value to the specified path. When its arm wakes, write the
 /// standing value again.
 val write: fn&lt;'a: Data&gt;(path: string, value: 'a) -&gt; Result&lt;_, `WriteError(string)&gt;;

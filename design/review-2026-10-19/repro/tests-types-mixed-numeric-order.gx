@@ -1,0 +1,10 @@
+// Title: values of a mixed numeric union order by numeric class, not by value.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache tests-types-mixed-numeric-order.gx
+// Expected (by value): ([0.5, 1, 2.5, 3], 2.5, false, false), or a refusal of
+//   the orderings over a type holding two numeric types
+// Observed: ([1, 3, 0.5, 2.5], 3, true, false): every i64 sorts below every f64
+let xs: Array<[i64, f64]> = [i64:3, f64:2.5, i64:1, f64:0.5];
+let a: [i64, f64] = i64:3;
+let b: [i64, f64] = f64:2.5;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(array::sort(xs), min(a, b), a < b, a == b)

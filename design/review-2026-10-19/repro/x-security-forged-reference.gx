@@ -1,0 +1,14 @@
+// Title: pack::read (and any netidx value) decodes a forged reference out of data
+// Command: timeout -s KILL 60 graphix --no-cache x-security-forged-reference.gx
+// Expected: an error (InvalidCast or PackErr): data is never a reference, and an
+//   abstract value decodes only under an image session (CLAUDE.md, Types).
+// Observed: [&ref] -- the bytes below are Value tag 19 (array of 1), tag 27
+//   (Abstract), length 18, the uuid graphix_types::reference registers, and the
+//   BindId wire varint 1. Reference::decode has no in_session gate, unlike
+//   rep::Marker and GxAbstract, so the read hands the program a reference to an
+//   arbitrary cell, typed Any. The same bytes arrive from any netidx publisher
+//   through sys::net::subscribe / call / an rpc handler's arguments.
+let b = cast<bytes>([u8:19, u8:1, u8:27, u8:18, u8:62, u8:113, u8:10, u8:212, u8:92, u8:40, u8:79, u8:155, u8:134, u8:30, u8:178, u8:71, u8:13, u8:147, u8:230, u8:90, u8:1])$;
+let v: [Array<Any>, Error<[`PackErr(string), `InvalidCast(string)]>] = pack::read(b);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+v

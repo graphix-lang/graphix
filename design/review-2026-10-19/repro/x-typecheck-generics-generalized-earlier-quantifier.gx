@@ -1,0 +1,20 @@
+// `CompileCtx::generalized_earlier` reads a rank-2 quantifier's GENERIC cell
+// as a binding an earlier (REPL) compile generalized.
+// Command:
+//   graphix --no-cache --check x-typecheck-generics-generalized-earlier-quantifier.gx  (exit 0)
+//   graphix --no-cache x-typecheck-generics-generalized-earlier-quantifier.gx
+//   graphix-fuzz check x-typecheck-generics-generalized-earlier-quantifier.gx
+// Expected: runs and prints 1: a writable reference to a parameter of
+//   quantified function type is no different from one to any parameter.
+// Observed: the check passes; the build refuses: "g was made generic by an
+//   earlier compile, and a writable reference to it would let a write narrow
+//   it: write it with <-". graphix-fuzz check: DIVERGENCE (check accepted
+//   what the build refused). There is no earlier compile.
+// Variants refused by the check with the same message:
+//   type F = fn<'b: Number>(x: 'b) -> 'b; let h: F = |x| x * x; let r = &mut h; (*r)(2)
+//   let s: {f: fn<'b: Any>(x: 'b) -> 'b} = {f: |x| x}; let r = &mut s; s.f(1)
+//   let app = |g: fn<'b: Any>(y: 'b) -> 'b| g(1); app(|y| { let r = &mut y; *r <- y; y })
+// And a `<-` to `h` above with a monomorphic function is refused (rightly)
+// as "h is fn<'b: Number>.., made generic by an earlier compile, ..".
+let app = |g: fn<'b: Any>(y: 'b) -> 'b| { let h = &mut g; (*h)(1) };
+app(|x| x)

@@ -308,6 +308,11 @@ impl<R: Rt, E: UserEvent> Callback<R, E> {
         top_id: ExprId,
     ) -> Result<Self> {
         let (args, nodes) = Self::bind_args(ctx, scope, typ, names, top_id)?;
+        // CR claude for claude: [structure/low] through_binding accepts any Function
+        // and panics on Function::Value, so the signature allows the one state it
+        // cannot handle. Take `fid: BindId` here and let new/through wrap it in
+        // Own/Shared, which removes the unreachable!. Found by reading; not run.
+        // (c-pattern-08)
         let (Function::Own(fid) | Function::Shared(fid)) = function else {
             unreachable!("a binding")
         };

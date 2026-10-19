@@ -29,6 +29,13 @@ sys::exit(sys::time::after_idle(duration:200.ms, 0))
 "#;
 
 /// Run `program` with logging to `dir`; returns (stderr, log text).
+// CR claude for claude: [structure/low] This tempdir / spawn graphix / collect *.log
+// helper is rebuilt by hand in about 19 shell test files. The log collection is copied
+// verbatim in five of them, and flags drift (--no-netidx and stdin null in some, not
+// others). Several clean up only after their asserts, so failing runs leave gx-*
+// directories behind. One tests/common/mod.rs function graphix(program, args, env) ->
+// Ran { status, stdout, stderr, log } over a tempfile::TempDir would replace them.
+// Found by reading. (tests-shell-compiler-06)
 fn run(program: &str, no_fusion: bool, label: &str) -> (String, String) {
     let dir =
         std::env::temp_dir().join(format!("gx-swallow-{}-{}", std::process::id(), label));

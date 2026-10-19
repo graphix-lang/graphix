@@ -1,0 +1,16 @@
+// Title: a generic impl head never matches a self type with a declared or
+// open variable inside it (find_impl_with refuses any `has_unbound` type).
+// Command: timeout -s KILL 30 graphix --check t-contains-impl-open-interior.gx
+// Expected: accepted (Rust's `fn f<A: Show>(x: Vec<A>) { x.show() }`): the
+// head Array<'b> matches Array<'a> for every 'a, and 'b: Show follows from
+// 'a: Show. `|x| Show::show(x)` called with [1] is accepted today.
+// Observed: "Array<'a> does not implement Show" at f's body; the same for
+// `|x| Show::show([x])` ("Array<'_N> does not implement Show").
+trait Show {
+    val show: fn(self) -> string
+};
+impl Show for i64 { let show = |x| "i" };
+impl<'b: Show> Show for Array<'b> { let show = |xs| "arr" };
+let f = 'a: Show |x: Array<'a>| -> string Show::show(x);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f([1, 2])

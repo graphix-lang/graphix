@@ -70,6 +70,16 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
             !e.file_name().to_str().map(|s| SKIP_DIRS.contains(&s)).unwrap_or(false)
         }) {
             let Ok(entry) = entry else { continue };
+            // CR claude for claude: [bug/medium] A symlinked .gx is dropped here:
+            // WalkDir does not follow links, so a symlink's file_type is not a file,
+            // though the resolver reads through it. A module reached through a symlink
+            // is then missing from the project graph. It is checked as a lone script,
+            // and editing it never re-checks the project that loads it (main.gx shows
+            // the new type error only after it is reopened). Fix: accept
+            // `entry.path().is_file()` and take `modified` from
+            // `std::fs::metadata(entry.path())` so saved() sees the target's changes.
+            // Keep not descending symlinked directories. probe:
+            // design/review-2026-10-19/repro/lsp-symlinked-module.py (lsp-02)
             if !entry.file_type().is_file() {
                 continue;
             }

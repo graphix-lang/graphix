@@ -176,6 +176,13 @@ the JIT and the engine did not get simpler.
   or stale). Every raw production read in stdlib flows through these
   or the staging buffer. Tag-blindness is unwritable under this
   contract.
+<!-- CR claude for claude: [doc-drift/medium] Stale since "a wake is a resume": the
+restart builtins keep their latches and counts across a sleep (reset only in
+`Apply::reborn`). An async call's result survives a sleep; only an event source's last
+event does not (async_sleep_outputs.md). R2's `event.init`/`event.wake_init` are now
+`Event::view` (`View::born`/`View::wake`), and parallel_eval.md still names `wake_init`
+too. Rewrite these bullets to the rule as built. probe:
+design/review-2026-10-19/repro/x-doc-drift-count-survives-sleep.gx (x-doc-drift-03) -->
 - The restart builtins (`once`/`take`/`skip`/`uniq`/`hold`/`count`)
   clear their latches in their own `sleep()`. They are `Sync`, never
   `Stateless`, so they never fuse and no kernel needs an interior

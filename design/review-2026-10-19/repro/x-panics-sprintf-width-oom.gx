@@ -1,0 +1,11 @@
+// Title: str::sprintf pads to any width or precision: a `*` width from data
+// (or a literal one in the format) allocates without bound.
+// Command: timeout -s KILL 60 graphix --no-cache x-panics-sprintf-width-oom.gx
+// Expected: error:`FormatError(..) for a width past a sane cap (buffer::encode
+//   refuses a Pad over 64 MiB the same way).
+// Observed: the run passes the 6 GB probe cap and is OOM-killed.
+//   `str::sprintf("%.999999999f", 1.5)` returns a 1,000,000,001-byte string.
+let w = 100000000000;
+let s = str::sprintf("<%*d>", w, 1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select s { error as e => "[e]", s => "len [str::len(s)]" }

@@ -1,0 +1,19 @@
+// x-rerun-5: fstat ends a concurrent line reader silently (re-run of x-builtin-effects-01)
+// command: timeout -s KILL 60 graphix --no-cache design/review-2026-10-19/repro/x-rerun-5-fstat-stops-lines.gx
+// expected: lines read 200000 of 200000 (what the program prints without the `let st = fstat` line)
+// observed (HEAD 9445a1d21): lines read 0 of 200000, no error: Halves::take, which fstat
+//   uses, fires stop_lines, and line_reader ends on it without a word.
+use sys::fs::{fstat, open, write_all};
+use sys::io::Lines;
+let temp = sys::fs::tempdir::create(null)$;
+let path = sys::join_path(sys::fs::tempdir::path(temp), "data.txt");
+let body = str::join(#sep: "\n", array::init(200000, |i| "line [i]"));
+let wrote = write_all(#path: path, body)$;
+let f = open(`Read, wrote ~ path)$;
+let ls = Lines::lines_batched(f);
+let n = 0;
+n <- select ls { error as _ => never(), a => a ~ n + array::len(a) };
+let tick = sys::time::timer(duration:1.ms, true);
+let st = fstat(tick ~ f);
+sys::exit(sys::time::after_idle(duration:500.ms, n) ~ 0);
+println(sys::time::after_idle(duration:400.ms, n) ~ "lines read [n] of 200000")

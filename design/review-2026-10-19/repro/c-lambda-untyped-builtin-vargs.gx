@@ -1,0 +1,9 @@
+// c-lambda: a builtin definition's variadic argument may go unannotated.
+//
+// Command: graphix --no-cache --check c-lambda-untyped-builtin-vargs.gx
+// Expected: refused, "builtin function core_sum requires all arguments to
+//   have type annotations", as `|x| -> i64 'core_sum` is.
+// Observed: accepted; `s("a", "b")` checks as i64 and core_sum is handed
+//   strings at run time (the tuple never produces).
+let s = |@args| -> i64 'core_sum;
+(s(1, 2), s("a", "b"))

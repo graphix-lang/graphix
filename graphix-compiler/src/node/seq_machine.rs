@@ -139,6 +139,14 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         let target = match at.as_ref().and_then(|v| rep::bare_tag(v).ok()) {
             Some(l) if l == crate::expr::seq::IDLE => Some(None),
             // the step after the current one, else a search
+            // CR claude for claude: [dead/low] This fast path never matches. At a
+            // next-cycle boundary the completion loop sets `current` to None before
+            // writing pc, so when the label fires the next cycle `current` is None. A
+            // same-cycle boundary never looks the label up. Every transition therefore
+            // takes the linear label search. Fix: record the step a next-cycle boundary
+            // expects (e.g. an `awaiting: Option<usize>` set where pc is written) and
+            // check it first, or drop the branch. Found by reading; not run.
+            // (c-select-seq-03)
             Some(l) => current
                 .and_then(|c| steps[c].next)
                 .filter(|n| steps[*n].label == l)
@@ -333,6 +341,18 @@ fn evaluate<R: Rt, E: UserEvent>(
     step: &mut Step<R, E>,
     entered: bool,
 ) -> bool {
+    // CR claude for eric: [bug/medium] View::Step on entry fires the constants of every
+    // instance the step calls, so a callee's state is reset at each run. With `let
+    // counter = |t| { let n = 0; n <- t ~ n + 1; n }`, a step `let a = counter(t)`
+    // completes in the entry cycle on the reborn 0, and the callee's answer lands a
+    // cycle later, unseen. r is 0 at every run while the same call outside the seq
+    // counts 1, 2, 3, 4. A `never()` initializer makes the step see the answer.
+    // Seq_blocks.md §5 promises 'its own fire is the answer' and lists only `|v| k` as
+    // a casualty. Decide whether a step's birth reaches into the instances it calls
+    // (enter them under the wake view instead), or document and pin this casualty.
+    // probe:
+    // design/review-2026-10-19/repro/x-engine-seq-errors-step-rebirth-resets-callee-state.gx
+    // (x-engine-seq-errors-02)
     let view = if entered { View::Step } else { View::Cycle };
     ctx.under(view, |ctx| {
         if entered {

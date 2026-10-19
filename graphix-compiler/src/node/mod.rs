@@ -151,6 +151,17 @@ macro_rules! deref_typ {
                     Some(t) => $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,
+                    // CR claude for eric: [bug/medium] A cell with a structural bound
+                    // reaches this arm unread. `'a: {x: i64} |s: 'a| s.x`, `'a: (i64,
+                    // i64) |t: 'a| t.0` and `'a: fn(x: i64) -> i64 |g: 'a| g(1)` are
+                    // all refused with "needs its type known here: annotate the
+                    // binding", though the binding is annotated. `'a: Array<i64> |x:
+                    // 'a| x[0]$` checks. Decide the rule: either read through the bound
+                    // (take the cell's single structural conjunct here when it is
+                    // unbound), or refuse with a message that says a bound is not
+                    // enough. Then pin it. probe:
+                    // design/review-2026-10-19/repro/x-rerun-4-bound-reads.gx
+                    // (x-rerun-4-01)
                     None => anyhow::bail!(
                         "reading a {} needs its type known here: annotate the binding",
                         $name
@@ -526,6 +537,16 @@ impl TypeDef {
             )
             .at(&spec)?;
         let name = name.name.clone();
+        // CR claude for claude: [perf/medium] Every typedef rechecks every pending
+        // contractivity question, and none is ever removed. Env::check_contractive
+        // answers Ok for both Guarded and Unknown, so the caller cannot tell a settled
+        // question from an open one. A chain of typedefs that each name the next one as
+        // a union member, written top-down, checks in cubic time: 250 take 0.8 s, 500
+        // take 6.7 s, 1000 take 62 s. The same chain bottom-up takes about 0.1 s. Fix:
+        // return the Unguarded verdict from check_contractive, and keep only the
+        // entries still Unknown in ctx.pending_names. probe:
+        // design/review-2026-10-19/repro/c-node-mod-typedef-forward-chain.py
+        // (c-node-mod-03)
         crate::recheck_pending_contractive(ctx)?;
         if verdict == crate::typ::Unguarded::Unknown {
             ctx.pending_names.push(crate::Pending::Contractive(
@@ -623,6 +644,14 @@ impl Constant {
 
 /// A constant's production: fired at an init view, standing otherwise.
 /// Every argument-less literal is a constant.
+// CR claude for claude: [doc-drift/low] Four docs still describe the old init-view
+// rule. This doc says "fired at an init view" and Constant::new's comment says "firing
+// stays init-gated", but the code fires only where `event.born()`, and a Wake is an
+// init view where constants stand. Event::init's doc ("a birth or a wake" reads
+// standing values as delivered) and VarRead::Standing ("Fired under an init view")
+// contradict standing_view, which reads fresh at a Birth only. Reword the four to the
+// born/Birth rule; standing_view can test `event.view == View::Birth`. Found by
+// reading; not run. (c-node-mod-06)
 pub(crate) fn produce_constant<'a, E: UserEvent>(
     event: &Event<E>,
     resident: &'a mut TagValue,
@@ -706,6 +735,18 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             planned
                 .get_or_init(|| crate::analysis::plan_block(children, catches, ctx))
                 .iter()
+                // CR claude for claude: [bug/high] A planned run's site is built
+                // Undecided, and nothing ever decides it: update_run and fork_point
+                // never call decide_siblings. ForkSite::plan forks only an Independent
+                // site, so no block run has forked under any mode since that rule
+                // became `!= Independent`. `#[parallel]` on a block passes
+                // check_parallel and then forks nothing. Build the run sites
+                // independent (plan_block already applied the rule), then re-run the
+                // forced gate and a Par soak, because block plans have been untested
+                // since. The pin lang::par_attrs::self_calls_in_a_block_fork passes on
+                // its `a + b` operand fork and cannot catch this. probe:
+                // design/review-2026-10-19/repro/x-parallel-block-runs-never-fork.gx
+                // (x-parallel-01)
                 .map(|&(a, b)| (a, b, ForkSite::default()))
                 .collect()
         });
@@ -799,6 +840,14 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
         }
+        // CR claude for claude: [bug/low] A trailing catch is refused only where
+        // `value` holds, and `value` is false for every statement of a module body. So
+        // a module file that ends in `catch(e) ..` is accepted although the catch
+        // covers nothing, while the same lines as a script or block are refused. Pass
+        // whether the statement is last separately from whether it is the block's
+        // value, and refuse a trailing catch on `last`. probe:
+        // design/review-2026-10-19/repro/c-node-mod-module-trailing-catch.sh
+        // (c-node-mod-04)
         let at = StmtAt::Block { value: !module && i + 1 == n };
         let boundary = prune::Prune::boundary(ctx);
         let (node, next) = ctx.in_boundary(&boundary, |ctx| {
@@ -1041,6 +1090,16 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
             let spec = ctx.shared_spec(e.clone());
             compile_module(ctx, flags, spec, scope, top_id, name, value, predeclared)
         }
+        // CR claude for eric: [bug/medium] A `let` is accepted as a block's last
+        // statement. The block then takes the let's bound type (Block::typ is the last
+        // child's, Bind::typ is the value's), but Bind::update produces only the
+        // phantom. So `{ let a = 1; let b = a + 1 }` checks as i64 and never produces,
+        // and a lambda whose body ends that way is typed `-> i64` and never returns.
+        // The same body as a `seq` produces 2. Decide the rule: refuse a trailing let
+        // in a non-seq block the way a trailing catch is refused, or make the block's
+        // value the let's value as a seq's is. probe:
+        // design/review-2026-10-19/repro/c-node-mod-block-ending-in-let.gx
+        // (c-node-mod-02)
         ExprKind::Bind(_) => {
             compiler::compile_statement_expr(ctx, flags, e.clone(), scope, top_id)
         }
@@ -1746,6 +1805,15 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
     // a type variable is declared, and no declaration widens it; nor does
     // one widen a function, as two function types share a runtime form
+    // CR claude for claude: [readability/low] This skips the union proposal only for a
+    // bare variable or function. For an array or struct that holds a function, the
+    // refusal proposes `[Array<fn(x: i64) -> i64>, Array<fn(x: '_7728) -> '_7729 throws
+    // '_7730>]`: raw inference variables, two types of one runtime form, and once
+    // filled in it is refused. The declaration that works is the written type, which
+    // contains the held one. Propose `written` when it contains `held`, and skip the
+    // union whenever either type holds a function anywhere. probe:
+    // design/review-2026-10-19/repro/x-typecheck-generics-write-mismatch-fn-union.gx
+    // (x-typecheck-generics-06)
     if matches!(held, Type::TVar(_) | Type::Fn(_)) {
         return format_with_flags(
             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
@@ -1830,6 +1898,15 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 Some((_, b)) => b.id,
             };
         if ctx.env.ide.is_lsp() {
+            // CR claude for claude: [bug/low] `spec.pos` of a `*r <- v` is the `*`,
+            // because the parser's `connect` takes position() before the optional `*`
+            // and spaces. So the reference for `*rr <- v` spans `*r`: references
+            // highlight the wrong text, and hover or definition at the end of `rr`
+            // answers nothing. Record the target name's own position in the parser, as
+            // WrittenAt metadata on the Connect, and push the site at it here and in
+            // Connect::compile. probe:
+            // design/review-2026-10-19/repro/x-lsp-probe-deref-connect-site.py
+            // (x-lsp-probe-03)
             ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
@@ -2475,6 +2552,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx);
+        // CR claude for eric: [bug/low] A bottom trigger is not `is_fired`, so both `~`
+        // and `~!` ride their resident while the trigger is bottom. The sample keeps
+        // showing its last value: in the probe (7, 2) fires while `a / z` is bottom.
+        // design/dense_delivery.md R3 has a consumed bottom bottom the production. Its
+        // designated rides are the select scrutinee, a guard's truth and `~`'s
+        // argument, not its trigger, and a bottom scrutinee bottoms a select. Decide
+        // one way. Either bottom the sample when the trigger is bottom
+        // (set_bottom(t.tag().triggers()), the debt untouched), or name the trigger as
+        // a fourth designated ride in R3 and CLAUDE.md. Pin it either way. probe:
+        // design/review-2026-10-19/repro/x-engine-firing-sample-bottom-trigger.gx
+        // (x-engine-firing-04)
         let fired = t.tag().is_fired();
         self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
@@ -2719,6 +2807,14 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
         };
+        // CR claude for claude: [bug/low] The write's targets are read with
+        // `with_deref` alone, so a union member that is a typedef naming a reference
+        // (`type Cell = &mut i64; [Cell, &mut i64]`) is not expanded. It is refused as
+        // "not a reference", while the same typedef alone as the binding's type is
+        // accepted. Expand Type::Ref through lookup_ref at the top and for each Set
+        // member before matching ByRef, as deref_typ! does. probe:
+        // design/review-2026-10-19/repro/c-node-mod-write-through-aliased-ref-union.gx
+        // (c-node-mod-05)
         let targets = btyp.with_deref(|t| match t {
             None => Ok(None),
             Some(Type::ByRef(m, t)) => Ok(Some(vec![(*m, (**t).clone())])),

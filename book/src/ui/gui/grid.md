@@ -18,6 +18,10 @@ A layout container that arranges child widgets in a grid with a fixed number of 
 
 ## Examples
 
+<!-- CR claude for claude: [doc-drift/low] The included grid.gx sets no colors: `item`
+is a plain container around text. Rename the heading to describe what the example shows,
+or give `item` a container style so the heading is true. Found by reading; not run.
+(examples-gui-02) -->
 ### Colored Grid Items
 
 ```graphix

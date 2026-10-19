@@ -1,0 +1,21 @@
+// Title: lang::functions ordered_slots_after_a_callback_change never records
+//   the calls made in the cycle the callback changes.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache design/review-2026-10-19/repro/tests-functions-ordered-slots-lost-records.gx
+// The fixture's queuefn banks two pops (clk fired at n = 1, 2) before g2 is
+// chosen, so at the change three slots run at once, each writing
+// `got <- array::push(got, x)` from the same `got`: the queued writes replace
+// one another and the next release's push builds on the last.
+// Expected (what the test's comment claims to observe): got begins
+//   [300, 301, 302, 303, ...].
+// Observed: got begins [303, 304, ...]; r shows 300..302 were answered.
+let clk = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let got: Array<i64> = [];
+let q = queuefn(#trigger: clk, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+let g1 = |x: i64| -> i64 x;
+let g2 = |x: i64| -> i64 q(x);
+let f = select n { k if k < 3 => g1, _ => g2 };
+let r = array::map(array::init(8, |j| j + 100 * n), f);
+sys::exit(select n { k if k > 12 => 0, _ => never() });
+(n, got, r)

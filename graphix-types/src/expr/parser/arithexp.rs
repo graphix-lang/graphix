@@ -159,6 +159,15 @@ where
         between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), token(')'))),
     )
         .map(|(pos, mut exprs): (_, LPooled<Vec<Expr>>)| {
+            // CR claude for claude: [bug/low] `(e,)` is read as the grouping `(e)`:
+            // sep_by1_tok drops the trailing comma, and one element means parens. The
+            // type parser does the same (`(i64,)` is `i64`), but the pattern `(x,)` is
+            // refused with "tuples must have at least 2 elements". So `let t: (i64,) =
+            // (1,)` checks and fmt rewrites it to `let t: i64 = (1)`. Graphix has no
+            // 1-tuple, so refuse a one-element list that ends in a comma here and in
+            // typexp's tuple type, with the pattern's message. probe:
+            // design/review-2026-10-19/repro/t-parser-a-one-tuple-comma.gx
+            // (t-parser-a-04)
             if exprs.len() == 1 {
                 (exprs.drain(..).next().unwrap(), Some(Parenthesized))
             } else {

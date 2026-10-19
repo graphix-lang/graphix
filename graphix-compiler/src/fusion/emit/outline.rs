@@ -84,6 +84,20 @@ pub(super) fn emit_outlined(
     *cx.ctx.closed_frame.borrow_mut() =
         Some(ClosedFrame { depth: 1, len: lp.len, src_disc: lp.src_disc, pending });
     cx.emit_slot_truncates()?;
+    // CR claude for claude: [perf/medium] [perf/medium] Every outlined loop stores
+    // every local in scope into its frame record, and its chunk loads and binds all of
+    // them back, though an iteration reads only its callback's free locals. A kernel
+    // with M loops and L locals therefore emits M x L stores, executed at every kernel
+    // run, and L loads per chunk. Separately, `call::emit_pending_abort`'s rungs
+    // `use_var` every owned local, so the SSA builder passes all of them as block
+    // arguments from every abort exit (M x L again). For a chain of n `array::map`
+    // lets: 10900 stores at n=100, 41800 at 200, 163600 at 400, and first value at 0.64
+    // s / 2.09 s / 8.09 s for n=400 / 800 / 1600 (debug, mostly phase Link). Fix: store
+    // and bind only the locals the iteration reads (the outer reads
+    // `lowering::ReadsMemo` already computes for captures). Spill each owned local once
+    // where it is bound and have the rungs load it. probe:
+    // design/review-2026-10-19/repro/x-perf-compile-outline-frame-stores.sh
+    // (x-perf-compile-01)
     let locals: SmallVec<[ValueVar; 16]> =
         cx.env.locals.iter().map(|l| l.words).collect();
     let (fbase, obase) = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
@@ -103,6 +117,15 @@ pub(super) fn emit_outlined(
         cx.b.ins().store(MemFlags::trusted(), v, fbase, word(i));
     }
     let base = HEADER + tables.len();
+    // CR claude for claude: [perf/low] Every outlined loop stores every local in scope
+    // into the frame, and emit_chunk loads every one back, whether the loop's body
+    // reads it or not. A chain of n array::map lets in one function emits about n^2/2
+    // store pairs: 6478 stores at n=80 and 25758 at n=160, while calls and slot bytes
+    // grow linearly. A fused build takes 2.1 s at n=800 against 0.36 s node-walked. Lay
+    // the frame out over the locals the iteration reads (its free local names), or
+    // store each local once when it is bound. probe:
+    // design/review-2026-10-19/repro/x-rerun-6-outline-stores-quadratic.sh
+    // (x-rerun-6-05)
     for (i, vv) in locals.iter().enumerate() {
         let disc = cx.b.use_var(vv.disc);
         let payload = cx.b.use_var(vv.payload);

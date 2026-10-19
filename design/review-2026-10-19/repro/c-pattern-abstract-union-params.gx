@@ -1,0 +1,18 @@
+// Title: an inferred `T(x)` arm over a union of two instantiations of an
+// abstract type matches neither.
+// Command: graphix --no-cache c-pattern-abstract-union-params.gx
+// (same with --no-fusion)
+// Expected: ("T 1", "T s"): `T(x)` matches every T, x: [i64, string], as
+// `(x, _)` over [(i64, i64), (string, i64)] and `A(x) over
+// [`A(i64), `A(string)] do.
+// Observed: ("other", "other"). The narrowing makes the arm's predicate
+// T<[i64, string]>, and the run-time nominal test compares parameters
+// exactly, so no value passes. Without the `_` arm the check refuses the
+// select: "missing match cases: no arm covers [T<i64>, T<string>]".
+type T<'a> = Abstract<'a>;
+let f = |v: [T<i64>, T<string>]| select v {
+  T(x) => "T [x]",
+  _ => "other"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(f(T(1)), f(T("s")))

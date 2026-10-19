@@ -1,0 +1,21 @@
+// queuefn in a select arm: the arm's sleep resets the queue's credit (QueueFn::sleep)
+// cmd: timeout -s KILL 30 graphix --no-cache [--no-fusion] tests-lib-a-queuefn-sleep-resets-credit.gx
+// expected: [(0, 0)] (no trigger fired after the first call, so q(3) queues)
+// observed: [(0, 0), (4, 30)] in both engines: the wake runs q(3) at once
+// control: with the queuefn bound outside the arm (call site inside) the same run prints [(0, 0), (4, 0)]
+let c = 0;
+c <- select c { n if n < 8 => n + 1, _ => never() };
+let on = uniq(select c { 2 | 3 => false, _ => true });
+let x = 0;
+x <- select c { 0 => 1, 3 => 3, _ => never() };
+let r = select on {
+    true => {
+        let q = queuefn(#trigger: never(), |v: i64| -> i64 v * 10);
+        q(x)
+    },
+    false => never()
+};
+let log: Array<(i64, i64)> = [];
+log <- r ~ array::push(log, (c, r));
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select c { 8 => log, _ => never() }

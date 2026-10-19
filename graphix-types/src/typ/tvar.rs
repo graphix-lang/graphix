@@ -1287,6 +1287,15 @@ impl TVar {
     }
 
     /// Record a ⊥ produced into the open cell; see [`TCell::bottom_fed`].
+    // CR claude for claude: [doc-drift/low] The doc links here, on mark_cycle_refused
+    // and bind_bottom_required, and on settle.rs TVar::settle point at
+    // TCell::bottom_fed, TCell::cycle_refused and TCell::bottom_required. Those fields
+    // are gone: they are now CellFact flags in TCell::facts. Point the links at
+    // CellFact::BottomFed, CellFact::CycleRefused and CellFact::BottomRequired.
+    // design/tvar_constraints.md has the same drift: TCell `typ` (now `binding`),
+    // `TCell::bottom_fed`, and `UnionParts::rigid_pair` (now rigid_apart, which also
+    // refuses a rigid cell beside a known member). Found by reading; not run.
+    // (t-tvar-03)
     pub(super) fn mark_bottom_fed(&self) {
         if graphix_dbg_bind() {
             eprintln!("BOTTOM-FED '{}({:x})", self.name, self.cell_addr());
@@ -1587,6 +1596,13 @@ impl Type {
     pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, false)), &mut parts)?;
+        // CR claude for claude: [readability/low] rigid_apart also holds for one
+        // declared variable beside a known member, so `'a: Number |x: 'a, b: bool| {
+        // let v = select b { true => x, false => 1 }; v * v }` is refused with "[i64,
+        // 'a] must be one type, but its type variables may differ", although only one
+        // type variable is involved. Have rigid_apart say which case it found, and word
+        // that case as "declared variable 'a may differ from the union's other
+        // members". probe: --check of that one-line program (not saved). (t-tvar-05)
         if parts.rigid_apart() {
             bail!(
                 "{} must be one type, but its type variables may differ",
@@ -1903,6 +1919,17 @@ impl Type {
     /// each alternative of self that matches it, where containment against
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
+    // CR claude for claude: [bug/high] Unioning each open cell's parts is wrong for a
+    // cell under an abstract type's parameters, which are invariant and compared
+    // exactly by the run-time nominal test. An inferred `T(x)` arm over [T<i64>,
+    // T<string>] narrows its predicate to T<[i64, string]>, a type no value carries, so
+    // the arm matches neither member. f(T(1)) and f(T("s")) both take the `_` arm, and
+    // without `_` the select is refused as not exhaustive. Tuples and variants (`(x,
+    // _)`, `A(x)) match every member with x: [i64, string]. Fix: under an Abstract's
+    // params, narrow the predicate to the Set of the instantiations it matches instead
+    // of unioning the cells, or make the inferred abstract predicate test the tag
+    // alone. probe: design/review-2026-10-19/repro/c-pattern-abstract-union-params.gx
+    // (c-pattern-02)
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         fn open(t: &Type, seen: &mut IntSet<usize>, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
@@ -1953,6 +1980,19 @@ impl Type {
                 && !p.is_empty()
             {
                 let p: LPooled<Vec<&Type>> = p.iter().collect();
+                // CR claude for eric: [bug/high] A cell under an abstract type's
+                // parameters cannot take the union of its parts: abstract parameters
+                // are invariant, and Type::is_a compares them exactly. Over [Box<bool>,
+                // Box<i64>] the inferred arm `Box(b)` becomes Box<[bool, i64]>, which
+                // matches no value of either member. `select x { Box(b) => "box [b]", _
+                // => "other" }` answers "other" for Box(true) and Box(3) in every
+                // engine, while the checker types b as [i64, bool] and keeps later arms
+                // live. The written-union form `[Box<bool>, Box<i64>] as Box(b)` is
+                // refused ("test the tag first"). Either make the predicate the set of
+                // matching members, each tested on its own, or refuse the inferred form
+                // the same way. probe:
+                // design/review-2026-10-19/repro/x-typecheck-patterns-abstract-bind-two-insts.gx
+                // (x-typecheck-patterns-02)
                 Type::union_exact(env, &p)?.contains(env, &Type::TVar(c.clone()))?;
             }
         }
@@ -2379,6 +2419,16 @@ impl UnionParts {
         }
     }
 
+    // CR claude for claude: [bug/high] member counts every member it meets, with no
+    // dedup. union_parts reads through bindings, so `[i64, 'y]` with 'y later bound to
+    // i64 counts as two types. singleton_holds and one_number_holds then refuse it. An
+    // instance's signature carries exactly that union, so InstanceTypes::new refuses
+    // the instance of `h = |x| x * x` called from `k = |b, y| h(select b { true => 1,
+    // false => y })` at fn(x: [i64, i64]). --check accepts the program and the build
+    // refuses it, and graphix-fuzz check reports the DIVERGENCE. Fix: count distinct
+    // members. OR primitive members into one flag set and count it at the end, and skip
+    // a non-primitive member equal to one already counted. Pin it in lang::types.
+    // probe: design/review-2026-10-19/repro/t-tvar-singleton-dup-members.gx (t-tvar-01)
     fn member(&mut self, t: &Type) {
         let n = match (self.measure, t) {
             (Measure::Members, Type::Primitive(p)) => p.len(),

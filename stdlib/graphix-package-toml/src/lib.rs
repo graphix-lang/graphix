@@ -76,6 +76,13 @@ fn to_toml(
     value: &Value,
     depth: usize,
 ) -> Result<toml::Value, String> {
+    // CR claude for claude: [bug/low] The bound also counts the leaf, so a table
+    // holding 80 nested arrays is refused on write while toml::read reads it (the
+    // reader first refuses at 81). The MAX_DEPTH doc promises the two agree. Check
+    // depth only for Object/Seq shapes, and add the pin JSON has
+    // (the_deepest_written_value_reads_back) for TOML. probe:
+    // design/review-2026-10-19/repro/small-pkgs-toml-depth-off-by-one.gx
+    // (small-pkgs-06)
     if depth > MAX_DEPTH {
         return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
     }

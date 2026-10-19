@@ -1,0 +1,15 @@
+// x-rerun-4: a parameter typed by a quantifier with a structural bound can be
+// indexed (x[0]) but not read as a struct, a tuple or a function.
+// Command: graphix --check x-rerun-4-bound-reads.gx
+// Expected: accepted, printing (1, 2, 3, 4) when run: each read is valid for
+//   every type the bound admits ('a: {x: i64} holds only structs with an i64 x).
+// Observed: refused at `s.x`: "reading a struct needs its type known here:
+//   annotate the binding" (the binding is annotated). Deleting `fld` gives
+//   "reading a tuple ..." at `t.0`; deleting `tup` gives "reading a fn ..." at
+//   `g(1)`; `idx` alone checks and prints 1.
+let idx = 'a: Array<i64> |x: 'a| -> i64 x[0]$;
+let fld = 'a: {x: i64} |s: 'a| -> i64 s.x;
+let tup = 'a: (i64, i64) |t: 'a| -> i64 t.0;
+let call = 'a: fn(x: i64) -> i64 |g: 'a| -> i64 g(1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(idx([1]), fld({x: 2}), tup((3, 4)), call(|x| x + 3))

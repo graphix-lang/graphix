@@ -1,0 +1,11 @@
+// Title: a reference prints as `&ref`, not a session id
+// Command: graphix --no-cache fuzz-gen-b-ref-prints.gx
+// Expected per GenType::printable's comment: a session-dependent id.
+// Observed: `&ref (&ref, 1) Abstract(|a: i64| a + 1)`: constant text, so a
+//   tuple or array holding a reference beside data is observable.
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let x = 3;
+let r = &x;
+let f = |a: i64| a + 1;
+println("[r] [(r, 1)] [f]");
+0

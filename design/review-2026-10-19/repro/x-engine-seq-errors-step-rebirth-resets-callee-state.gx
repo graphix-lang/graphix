@@ -1,0 +1,26 @@
+// Title: a seq step that calls a stateful function completes on the
+// callee's reborn initial value and never sees its answer; the callee's
+// state is reset at every run.
+// Command: graphix-fuzz run x-engine-seq-errors-step-rebirth-resets-callee-state.gx
+// Expected (the call's own answer, as `plain` shows outside the seq):
+//   r 1, r 2, r 3, r 4 ... (or at least the counter's state surviving)
+// Observed (both engines, every mode, AGREE):
+//   plain 1 r 0 | plain 2 r 0 | plain 3 r 0 | plain 4 r 0
+// With `let n: i64 = never()` and `n <- tick ~ tick` instead, the step
+// sees the answer, so it is the constant initializer firing under
+// View::Step that resets `n` and completes the step.
+// schedule-v1: cap=128 events=1024; in0=i64:1; in0=i64:2; in0=i64:3
+{
+  let counter = |tick: i64| -> i64 {
+    let n = 0;
+    n <- tick ~ n + 1;
+    n
+  };
+  let plain = counter(in0);
+  let r = seq let t = in0 {
+    let a = counter(t);
+    a
+  };
+  println("plain [plain] r [r]");
+  r
+}

@@ -139,6 +139,15 @@ impl SourceKind {
 /// `items` with each run of adjacent use statements rewritten as one
 /// statement per path root and visibility, statements and names sorted.
 /// `as_use` is `None` for anything else, a decorated use included.
+// CR claude for claude: [bug/medium] merge_uses is not a fixpoint. When a use that
+// depends on the run ends it, the next run starts with that use, and sorting can move a
+// later independent use ahead of it. In the output that use sits next to the previous
+// run, so the reparse merges and sorts the two, and the guard refuses the file as a
+// formatter bug: `use x::p; use p::q; use a::b` (or `use m::v; use n::v; use a::w`)
+// cannot be formatted. The current pins pass because their later runs sort in written
+// order. Fix: iterate the merge to a fixpoint, or offer each independent use after a
+// break to the previous run first. Pin both programs with `stable`. probe:
+// design/review-2026-10-19/repro/x-formatter-use-merge-not-fixpoint.sh (x-formatter-01)
 fn merge_uses<T: Clone>(
     items: &[T],
     as_use: impl Fn(&T) -> Option<(bool, &Arc<[UseItem]>)>,
@@ -259,6 +268,14 @@ fn merge_uses_within(e: &Expr) -> Expr {
     use ExprKind::*;
     let e = ensure_sufficient(|| e.map_children(&mut merge_uses_within));
     let kind = match &e.kind {
+        // CR claude for claude: [bug/low] Merging a block whose statements are all uses
+        // leaves one statement: `{ use array::len; use array::map }` prints as `{ use
+        // array::{len, map} }`, which does not parse, so guard refuses with "formatter
+        // bug" on text that parses (the LSP returns it as an error response). Keep a
+        // block's last statement, its value slot, out of the merge so a block never
+        // drops below two statements, and pin it with formats_to. probe:
+        // design/review-2026-10-19/repro/t-format-resolver-merge-empties-block.gx
+        // (t-format-resolver-02)
         Block { exprs } => Block { exprs: merge_expr_uses(exprs) },
         Seq(s) => {
             Seq(Arc::new(SeqExpr { body: merge_expr_uses(&s.body), ..(**s).clone() }))
@@ -524,6 +541,12 @@ pub fn format_source(
 
 /// Refused unless `out` reads back as what `parsed` said, comments,
 /// attributes and string delimiters included.
+// CR claude for claude: [test-gap/low] No test expects this to refuse. The only direct
+// call expects Ok, and `stable` passes a consistent loss. A body of `Ok(())`, or
+// Ornaments::expr losing its Select or Trait arm, would pass the whole suite. Add tests
+// that hand this a Parsed and an edited `out` for each branch (a comment moved to a
+// neighbour, a raw string pattern printed quoted, a changed constant, unparseable text)
+// and assert the error is Refused. Found by reading; not run. (t-format-resolver-04)
 fn guard(kind: SourceKind, parsed: &Parsed, out: &str) -> Result<()> {
     let reparsed = match Parsed::new(kind, out) {
         Ok(p) => p,

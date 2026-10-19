@@ -1,0 +1,18 @@
+// Title: throttle's sleep drops its pending emission and keeps its output, so a wake re-emits the old value and never delivers the held one
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-19/repro/x-builtin-effects-throttle-sleep.gx
+// Setup: n goes 0,1,2,3 at 0/10/20/30 ms; the arm holding throttle(#rate: 200ms, n) sleeps at 60 ms
+//   (1, 2, 3 held for the 200 ms timer) and wakes at 300 ms.
+// Expected (design/async_sleep_outputs.md: an event source, throttle's pending emission included, pauses
+//   and its output does not survive the sleep; throttle's doc: the most recent update is always delivered):
+//   (0, ~0ns) then (3, >= 300ms), as after_idle in the same position delivers (3, ~500ms)
+// Observed: (0, 6281.ns) then (0, 301079497.ns): the wake re-emits the stale 0 and 3 is never delivered
+let n = 0;
+let clk = sys::time::timer(duration:10.ms, 3);
+n <- clk ~ n + 1;
+let on = true;
+on <- sys::time::timer(duration:60.ms, false) ~ false;
+on <- sys::time::timer(duration:300.ms, false) ~ true;
+let r = select on { true => throttle(#rate: duration:200.ms, n), false => never() };
+sys::exit(sys::time::timer(duration:900.ms, false) ~ 0);
+let t0 = sys::time::now(true);
+(r, sys::time::diff(sys::time::now(r), t0))

@@ -1,0 +1,12 @@
+// lang-skill: SKILL.md (Sequencing) says "`put(5); let s = b`, where `put` writes the `b` it
+// captured, reads the new `b`". With put written as the sentence describes, a connect body,
+// the call produces no value, so the step never completes and the run stalls silently.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-10-19/bin/graphix --no-cache lang-skill-seq-connect-call-stalls.gx   (--check: no warning)
+// Expected per the skill: 5.
+// Observed: nothing is printed (r stays bottom). With `let put = |v| { b <- v; v }` it prints 5.
+let t = 1;
+let b = 0;
+let put = |v| b <- v;
+let r = seq t { put(5); let s = b; s };
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r
