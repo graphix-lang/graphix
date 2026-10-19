@@ -272,6 +272,9 @@ pub(super) struct GX<X: GXExt> {
     result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
     /// Pending `WaitIdle` requests, answered at the next idle verdict.
     idle_waiters: Vec<oneshot::Sender<()>>,
+    /// Pending `WaitSettled` requests, answered at the first idle verdict
+    /// with nothing outstanding (`GXRt::outstanding`).
+    settle_waiters: Vec<oneshot::Sender<()>>,
     /// The program compiled or restored at construction; a compile
     /// failure is kept for the embedder to report, the runtime starts.
     program: Option<Result<ProgramRoot, String>>,
@@ -314,6 +317,7 @@ impl<X: GXExt> GX<X> {
             flags: cfg.flags,
             result_watch: None,
             idle_waiters: Vec::new(),
+            settle_waiters: Vec::new(),
             trace: None,
             scope: Scope::root(),
             program: None,
@@ -810,6 +814,7 @@ impl<X: GXExt> GX<X> {
                     self.result_watch = Some((id, res));
                 }
                 ToGX::WaitIdle { res } => self.idle_waiters.push(res),
+                ToGX::WaitSettled { res } => self.settle_waiters.push(res),
                 ToGX::TraceStart { max_events, max_cycles } => {
                     // Replacing an active trace drops its pending waiter and events.
                     self.trace = Some(TraceState::new(max_events, max_cycles));
@@ -1356,9 +1361,14 @@ impl<X: GXExt> GX<X> {
             // a second consecutive pass: the first may race an in-flight
             // spawned task.
             if !ready {
+                // a settle waiter waits out what is outstanding without
+                // the grace loop: a finished task or a fire wakes it
+                let settled =
+                    !self.settle_waiters.is_empty() && !self.ctx.rt.outstanding();
                 let waiter = self.result_watch.is_some()
                     || self.trace.is_some()
-                    || !self.idle_waiters.is_empty();
+                    || !self.idle_waiters.is_empty()
+                    || settled;
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
@@ -1367,6 +1377,11 @@ impl<X: GXExt> GX<X> {
                     }
                     for tx in self.idle_waiters.drain(..) {
                         let _ = tx.send(());
+                    }
+                    if settled {
+                        for tx in self.settle_waiters.drain(..) {
+                            let _ = tx.send(());
+                        }
                     }
                     if let Some(tr) = self.trace.as_mut() {
                         tr.resolve(self.ctx.rt.cycle.saturating_sub(1));

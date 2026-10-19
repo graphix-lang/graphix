@@ -525,9 +525,15 @@ macro_rules! list {
 
         impl $name {
             fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-                NetState::get(ctx).stop_list(self.var.id);
+                self.stop(ctx);
                 self.var.remint(ctx);
-                self.current = None;
+            }
+
+            /// Stop the listing in progress, if one is.
+            fn stop<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+                if self.current.take().is_some() {
+                    NetState::get(ctx).stop_list(self.var.id);
+                }
             }
         }
 
@@ -618,7 +624,7 @@ macro_rules! list {
 
             fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 self.var.release(ctx);
-                NetState::get(ctx).stop_list(self.var.id);
+                self.stop(ctx);
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {

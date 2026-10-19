@@ -691,6 +691,7 @@ async fn watch_hears_after_a_wake() -> Result<()> {
     let res = compile_result(&ctx).await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let values = updates_until_quiet(
+        &ctx.rt,
         &mut rx,
         res.exprs[0].id,
         Duration::from_millis(1500),

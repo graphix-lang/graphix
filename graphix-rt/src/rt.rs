@@ -188,6 +188,17 @@ impl<X: GXExt> GXRt<X> {
         &self.store
     }
 
+    /// Whether something may still deliver without new input: a spawned
+    /// or custom task, an armed timer, or a watch besides the two the
+    /// runtime holds open.
+    pub(super) fn outstanding(&self) -> bool {
+        !self.tasks.is_empty()
+            || !self.custom_tasks.is_empty()
+            || !self.timers.is_empty()
+            || self.watches.len() > 1
+            || self.var_watches.len() > 1
+    }
+
     fn previous_cycle(&self) -> u64 {
         self.cycle.wrapping_sub(1)
     }

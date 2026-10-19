@@ -301,31 +301,49 @@ pub async fn next_update_raw(
     }
 }
 
-/// Every update of `id` until no batch arrives for `quiet`, failing at
-/// `deadline` (a program that never quiesces).
+/// Every update of `id` until the runtime settles (idle with nothing
+/// outstanding, [`GXHandle::wait_settled`]), or, for a program with a
+/// standing source that never settles, until no batch arrives for
+/// `quiet`; failing at `deadline` (a program that never quiesces).
 pub async fn updates_until_quiet(
+    rt: &GXHandle<NoExt>,
     rx: &mut Events,
     id: ExprId,
     quiet: Duration,
     deadline: Instant,
 ) -> Result<Vec<Value>> {
+    fn take(batch: &mut GPooled<Vec<GXEvent>>, id: ExprId, values: &mut Vec<Value>) {
+        for e in batch.drain(..) {
+            if let GXEvent::Updated(eid, v) = e
+                && eid == id
+            {
+                values.push(data(v));
+            }
+        }
+    }
     let mut values = Vec::new();
+    let settled = rt.wait_settled();
+    tokio::pin!(settled);
     loop {
         if Instant::now() >= deadline {
             bail!("the program did not quiesce: {values:?}");
         }
-        match tokio::time::timeout(quiet, rx.recv()).await {
-            Err(_) => return Ok(values),
-            Ok(None) => bail!("the runtime died"),
-            Ok(Some(mut batch)) => {
-                for e in batch.drain(..) {
-                    if let GXEvent::Updated(eid, v) = e
-                        && eid == id
-                    {
-                        values.push(data(v));
-                    }
+        tokio::select! {
+            r = &mut settled => {
+                if r.is_err() {
+                    bail!("the runtime died")
                 }
+                // every update is in the stream before the settle answers
+                while let Ok(mut batch) = rx.try_recv() {
+                    take(&mut batch, id, &mut values)
+                }
+                return Ok(values);
             }
+            r = tokio::time::timeout(quiet, rx.recv()) => match r {
+                Err(_) => return Ok(values),
+                Ok(None) => bail!("the runtime died"),
+                Ok(Some(mut batch)) => take(&mut batch, id, &mut values),
+            },
         }
     }
 }
@@ -661,7 +679,7 @@ pub async fn collect(
             values
         }
         Collect::Quiet(window) => {
-            updates_until_quiet(&mut rx, id, window, deadline).await?
+            updates_until_quiet(&ctx.rt, &mut rx, id, window, deadline).await?
         }
     };
     ctx.shutdown().await;

@@ -41,6 +41,7 @@ async fn run(code: &str, mode: Mode) -> Result<Vec<Value>> {
     let res = compile_result(&ctx).await?;
     let deadline = Instant::now() + Duration::from_secs(20);
     let values = updates_until_quiet(
+        &ctx.rt,
         &mut rx,
         res.exprs[0].id,
         Duration::from_millis(700),

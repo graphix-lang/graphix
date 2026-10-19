@@ -501,6 +501,11 @@ enum ToGX<X: GXExt> {
     WaitIdle {
         res: oneshot::Sender<()>,
     },
+    /// Answer when the runtime is idle with nothing outstanding. See
+    /// [`GXHandle::wait_settled`].
+    WaitSettled {
+        res: oneshot::Sender<()>,
+    },
     /// Start (or restart) runtime-side tracing. See
     /// [`GXHandle::trace_start`].
     TraceStart {
@@ -871,6 +876,16 @@ impl<X: GXExt> GXHandle<X> {
     /// brings later is not waited for.
     pub async fn wait_idle(&self) -> Result<()> {
         self.exec(|res| ToGX::WaitIdle { res }).await
+    }
+
+    /// Wait until the runtime is idle, as [`Self::wait_idle`], with
+    /// nothing outstanding: no spawned or custom task, armed timer or
+    /// live watch, so nothing but new input can start another cycle.
+    /// Every update is already in the event stream. A program with a
+    /// standing source (a subscription, a server) never settles; an
+    /// extension's own sources (`GXExt::update_sources`) are not seen.
+    pub async fn wait_settled(&self) -> Result<()> {
+        self.exec(|res| ToGX::WaitSettled { res }).await
     }
 
     /// Start (or restart) runtime-side tracing: every value a registered

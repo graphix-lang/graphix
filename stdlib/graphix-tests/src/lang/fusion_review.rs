@@ -34,6 +34,7 @@ async fn late_callee_dispatch_primes_constants() -> Result<()> {
             ))
             .await?;
         let values = updates_until_quiet(
+            &ctx.rt,
             &mut rx,
             result.exprs[0].id,
             Duration::from_millis(100),
