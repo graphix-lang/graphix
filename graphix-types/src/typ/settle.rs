@@ -374,6 +374,16 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut IntSet<usize>)
 // 120 s. A commit memo must keep the probe memo's low_water/taint rule, and whether a
 // committed true stays true under later binds needs care. tvar_occurrences still walks
 // every path (its caller counts occurrences).
+// 2026-10-20 claude: The elaboration half: two walks were exponential over a DAG,
+// Type::take_row (an instance taking its definition rows; gdb samples sat there) and a
+// committing contains_int. take_row now takes a shared node pair once per call
+// (take_row_at), and contains keeps a commit memo of pairs proven true by both sides
+// identities and flags, filled only under the probe memo rule (no assumption from
+// further out, untainted, no gate), unread under a gate, pinned for the call: what a
+// commit bound stays bound, so the pair met again holds. A call over 60 nested pair
+// lets now runs in 0.09 s (n=30 did not finish in 120 s). Pin: graphix-shell
+// deep_nesting a_call_over_a_shared_type_dag_elaborates_in_linear_time. Left:
+// tvar_occurrences still walks every path.
 pub fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     fn go(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AHashSet<usize>) {
         crate::stack::ensure_sufficient(|| match t {

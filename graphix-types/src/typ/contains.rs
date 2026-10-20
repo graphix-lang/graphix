@@ -12,7 +12,7 @@ use crate::{
         tvar::{CellFact, Fresh, would_cycle_inner},
     },
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use compact_str::format_compact;
 use enumflags2::{BitFlags, bitflags};
@@ -71,6 +71,12 @@ pub(super) struct ContainsHist {
     /// cell a verdict read, so the epoch bumps there.
     probe_pairs: Lazy<AHashMap<(NormKey, NormKey, bool), (u64, bool)>>,
     probe_pins: Lazy<Vec<Type>>,
+    /// Committing pairs proven to hold, by both sides' identities and the
+    /// flags: what the proof bound stays bound for the rest of the call,
+    /// so the same pair met again holds without walking it (a DAG's
+    /// shared nodes are met once per path otherwise). Pinned with
+    /// `probe_pins`.
+    commit_pairs: Lazy<AHashSet<(NormKey, NormKey, BitFlags<ContainsFlags>)>>,
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
@@ -126,6 +132,7 @@ impl ContainsHist {
             expansions: Lazy::new(),
             probe_pairs: Lazy::new(),
             probe_pins: Lazy::new(),
+            commit_pairs: Lazy::new(),
             in_progress: SmallVec::new(),
             tainted: None,
             low_water: usize::MAX,
@@ -184,6 +191,47 @@ impl ContainsHist {
                 .get_mut()
                 .insert((k0, k1, rigid), (self.epoch, r))
                 .is_none()
+        {
+            let pins = self.probe_pins.get_mut();
+            pins.push(t0.clone());
+            pins.push(t1.clone());
+        }
+    }
+
+    /// Start a verdict that may be memoized: its height, and the outer
+    /// verdict's assumption state, set aside.
+    fn enter_verdict(&mut self) -> (usize, usize, Option<usize>) {
+        let height = self.len();
+        let outer = mem::replace(&mut self.low_water, usize::MAX);
+        (height, outer, self.tainted.take())
+    }
+
+    /// End it: whether the verdict assumed no pair from further out, so
+    /// it holds outside this call; the outer state takes its assumptions.
+    fn leave_verdict(
+        &mut self,
+        height: usize,
+        outer: usize,
+        outer_taint: Option<usize>,
+    ) -> bool {
+        let assumed = self.low_water;
+        self.low_water = outer.min(assumed);
+        let tainted = self.tainted;
+        self.tainted = match (outer_taint, tainted) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        assumed >= height && tainted.is_none()
+    }
+
+    fn commit_held(&self, flags: BitFlags<ContainsFlags>, t0: &Type, t1: &Type) -> bool {
+        let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1)) else { return false };
+        self.commit_pairs.get().is_some_and(|m| m.contains(&(k0, k1, flags)))
+    }
+
+    fn commit_put(&mut self, flags: BitFlags<ContainsFlags>, t0: &Type, t1: &Type) {
+        if let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1))
+            && self.commit_pairs.get_mut().insert((k0, k1, flags))
         {
             let pins = self.probe_pins.get_mut();
             pins.push(t0.clone());
@@ -1167,9 +1215,19 @@ impl Type {
             _ => flags,
         };
         if flags.contains(ContainsFlags::Commit) {
+            if hist.gated == 0 && hist.commit_held(flags, self, t) {
+                return Ok(true);
+            }
             // A committing call may bind a cell a cached verdict read.
             hist.epoch += 1;
-            return self.contains_dispatch(flags, env, hist, t);
+            let (height, outer, outer_taint) = hist.enter_verdict();
+            let r = self.contains_dispatch(flags, env, hist, t);
+            let own = hist.leave_verdict(height, outer, outer_taint);
+            let r = r?;
+            if r && own && hist.gated == 0 {
+                hist.commit_put(flags, self, t);
+            }
+            return Ok(r);
         }
         // a probe binds nothing: its verdict, rigid or not, is memoized
         let rigid = flags == ContainsFlags::RigidCheck;
@@ -1183,19 +1241,11 @@ impl Type {
         }
         // Only a verdict that assumed no pair from further out holds
         // outside this call.
-        let height = hist.len();
-        let outer = mem::replace(&mut hist.low_water, usize::MAX);
-        let outer_taint = hist.tainted.take();
+        let (height, outer, outer_taint) = hist.enter_verdict();
         let r = self.contains_dispatch(flags, env, hist, t);
-        let assumed = hist.low_water;
-        hist.low_water = outer.min(assumed);
-        let tainted = hist.tainted;
-        hist.tainted = match (outer_taint, tainted) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let own = hist.leave_verdict(height, outer, outer_taint);
         let r = r?;
-        if assumed >= height && tainted.is_none() && hist.gated == 0 {
+        if own && hist.gated == 0 {
             hist.probe_put(rigid, self, t, r);
         }
         Ok(r)

@@ -449,12 +449,16 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
 /// `graphix --check` of `program` finishes, accepted, within `budget`;
 /// a check still running then is killed.
 fn checks_within(program: &str, budget: std::time::Duration) {
+    completes_within(&["--check", "--no-cache"], program, budget)
+}
+
+fn completes_within(args: &[&str], program: &str, budget: std::time::Duration) {
     let dir = tempfile::tempdir().expect("a dir for the program");
     let file = dir.path().join("program.gx");
     fs::write(&file, program).expect("write the program");
     let start = std::time::Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_graphix"))
-        .args(["--check", "--no-cache"])
+        .args(args)
         .arg(&file)
         .env("XDG_CACHE_HOME", dir.path())
         .stdin(Stdio::null())
@@ -468,11 +472,11 @@ fn checks_within(program: &str, budget: std::time::Duration) {
         }
         if start.elapsed() > budget {
             let _ = child.kill();
-            panic!("the check ran past {budget:?}");
+            panic!("{args:?} ran past {budget:?}");
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    assert!(status.success(), "the check failed: {status}");
+    assert!(status.success(), "{args:?} failed: {status}");
 }
 
 /// A type as deep as the program is long checks in time linear in the
@@ -511,6 +515,20 @@ fn shared_type_dags_check_in_linear_time() {
     for program in [written, typedef] {
         checks_within(&program, std::time::Duration::from_secs(15))
     }
+}
+
+// An instance's types are its definition's, taken row by row: a shared
+// node is taken once, so a call of a definition building a DAG of pairs
+// elaborates in time linear in the DAG.
+#[test]
+fn a_call_over_a_shared_type_dag_elaborates_in_linear_time() {
+    const DEPTH: usize = 60;
+    let mut program = String::from("let f = |a| {\n  let x0 = a;\n");
+    for i in 1..=DEPTH {
+        program.push_str(&format!("  let x{i} = (x{}, x{});\n", i - 1, i - 1));
+    }
+    program.push_str(&format!("  x{DEPTH}\n}};\nlet r = f(1);\nsys::exit(0)\n"));
+    completes_within(&["--no-cache"], &program, std::time::Duration::from_secs(15))
 }
 
 #[test]

@@ -1669,17 +1669,44 @@ impl Type {
     /// shape the instance's own knowledge stands. False when an open cell
     /// of `self` found no part of `row` to take.
     pub fn take_row(&self, row: &Type) -> bool {
-        ensure_sufficient(|| self.take_row_inner(row))
+        let mut seen: LPooled<AHashMap<(usize, usize), bool>> = LPooled::take();
+        self.take_row_at(row, &mut seen)
     }
 
-    fn take_row_inner(&self, row: &Type) -> bool {
-        let each = |a: &[Type], b: &[Type]| match a.len() == b.len() {
-            true => a.iter().zip(b).fold(true, |ok, (a, b)| a.take_row(b) & ok),
-            false => !self.has_unbound(),
-        };
+    /// A shared pair of nodes is taken once: what its first visit bound
+    /// stands, so the walk is linear in a DAG, not in its paths.
+    fn take_row_at(&self, row: &Type, seen: &mut AHashMap<(usize, usize), bool>) -> bool {
+        ensure_sufficient(|| {
+            let key = super::node_addr(self).zip(super::node_addr(row));
+            if let Some(r) = key.and_then(|k| seen.get(&k)) {
+                return *r;
+            }
+            let r = self.take_row_inner(row, seen);
+            if let Some(k) = key {
+                seen.insert(k, r);
+            }
+            r
+        })
+    }
+
+    fn take_row_inner(
+        &self,
+        row: &Type,
+        seen: &mut AHashMap<(usize, usize), bool>,
+    ) -> bool {
+        let mut each =
+            |a: &[Type], b: &[Type], seen: &mut AHashMap<(usize, usize), bool>| match a
+                .len()
+                == b.len()
+            {
+                true => {
+                    a.iter().zip(b).fold(true, |ok, (a, b)| a.take_row_at(b, seen) & ok)
+                }
+                false => !self.has_unbound(),
+            };
         match (self, row) {
             (Type::TVar(tv), row) => match tv.binding() {
-                Some(b) => b.take_row(row),
+                Some(b) => b.take_row_at(row, seen),
                 None => match row {
                     Type::TVar(r) if r.cell_addr() == tv.cell_addr() => true,
                     row if would_cycle_inner(tv.cell_addr(), row) => false,
@@ -1690,32 +1717,38 @@ impl Type {
                 },
             },
             (t, Type::TVar(r)) => match r.binding() {
-                Some(b) => t.take_row(&b),
+                Some(b) => t.take_row_at(&b, seen),
                 None => !t.has_unbound(),
             },
-            (Type::Set(a), Type::Set(b)) | (Type::Tuple(a), Type::Tuple(b)) => each(a, b),
-            (Type::Variant(ta, a, _), Type::Variant(tb, b, _)) if ta == tb => each(a, b),
+            (Type::Set(a), Type::Set(b)) | (Type::Tuple(a), Type::Tuple(b)) => {
+                each(a, b, seen)
+            }
+            (Type::Variant(ta, a, _), Type::Variant(tb, b, _)) if ta == tb => {
+                each(a, b, seen)
+            }
             (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b))
-            | (Type::Error(a), Type::Error(b)) => a.take_row(b),
-            (Type::ByRef(m0, a), Type::ByRef(m1, b)) if m0 == m1 => a.take_row(b),
+            | (Type::Error(a), Type::Error(b)) => a.take_row_at(b, seen),
+            (Type::ByRef(m0, a), Type::ByRef(m1, b)) if m0 == m1 => {
+                a.take_row_at(b, seen)
+            }
             (Type::Struct(a), Type::Struct(b))
                 if a.len() == b.len()
                     && a.iter().zip(b.iter()).all(|(a, b)| a.0 == b.0) =>
             {
                 a.iter()
                     .zip(b.iter())
-                    .fold(true, |ok, ((_, a, _), (_, b, _))| a.take_row(b) & ok)
+                    .fold(true, |ok, ((_, a, _), (_, b, _))| a.take_row_at(b, seen) & ok)
             }
             (Type::Map { key: ka, value: va }, Type::Map { key: kb, value: vb }) => {
-                ka.take_row(kb) & va.take_row(vb)
+                ka.take_row_at(kb, seen) & va.take_row_at(vb, seen)
             }
             (
                 Type::Abstract { id: ia, params: a },
                 Type::Abstract { id: ib, params: b },
-            ) if ia == ib => each(a, b),
+            ) if ia == ib => each(a, b, seen),
             (Type::Ref(a), Type::Ref(b)) if a.name == b.name => {
-                each(&a.params, &b.params)
+                each(&a.params, &b.params, seen)
             }
             (t, _) => !t.has_unbound(),
         }
