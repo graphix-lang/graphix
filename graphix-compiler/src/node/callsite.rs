@@ -661,7 +661,11 @@ fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
 }
 
 /// The cells of the quantifiers a function type under `t` binds.
-fn bound_quantifiers(t: &Type, out: &mut AHashSet<usize>, seen: &mut AHashSet<usize>) {
+pub(crate) fn bound_quantifiers(
+    t: &Type,
+    out: &mut AHashSet<usize>,
+    seen: &mut AHashSet<usize>,
+) {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             if seen.insert(tv.cell_addr())
@@ -925,6 +929,40 @@ impl Widening {
         held.iter()
             .any(|(name, tv)| cells.contains_key(name) && tv.is_bound())
             .then(|| Self::open(formal, cells).0)
+    }
+
+    /// Whether the argument `n` for `key`, a reference to a cell nothing
+    /// has decided, waits for the end of the argument loop: checked now it
+    /// would take what a widenable variable of `formal` holds so far, not
+    /// the widest argument's type.
+    fn defers_open<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        def: &Type,
+        inst: &FnType,
+        key: &ArgKey,
+        formal: &Type,
+        n: &mut Node<R, E>,
+    ) -> Result<bool> {
+        if !self.fresh || !matches!(n.view(), NodeView::Ref(_)) {
+            return Ok(false);
+        }
+        wrap!(n, n.typecheck0(ctx))?;
+        let undecided = match n.typ() {
+            Type::TVar(tv) => !tv.is_rigid() && n.typ().with_deref(|t| t.is_none()),
+            _ => false,
+        };
+        if !undecided {
+            return Ok(false);
+        }
+        let cells = Self::cells(&mut self.cells, def, inst);
+        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        formal.collect_tvars(&mut held);
+        if !held.keys().any(|name| cells.contains_key(name)) {
+            return Ok(false);
+        }
+        self.deferred.push((key.clone(), formal.clone()));
+        Ok(true)
     }
 
     /// The argument `n` for `key` did not fit `formal`: widen, defer, or
@@ -1391,7 +1429,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         expr: &Expr,
         defaults: &mut Refs,
     ) -> Result<Node<R, E>> {
-        checked_default(
+        let entered = ctx.enter_default(f.id, name);
+        let node = checked_default(
             ctx,
             flags,
             scope,
@@ -1401,7 +1440,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             expr,
             defaults,
             self.ftype.as_deref(),
-        )
+        );
+        if entered {
+            ctx.leave_default(f.id, name)
+        }
+        node
     }
 
     /// A function passed where a fn type is expected is called through it:
@@ -1514,7 +1557,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 // a default that reaches its own label's check again (`let
                 // rec f = |#a = f(1), b| b`) is not known here: the run-time
                 // bind narrows it
-                if !ctx.enter_default(f.id, name) {
+                if ctx.default_in_check(f.id, name) {
                     known = false;
                     continue;
                 }
@@ -1527,7 +1570,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     expr,
                     &mut Refs::default(),
                 );
-                ctx.leave_default(f.id, name);
                 ctx.discard(node?);
             }
         }
@@ -1577,14 +1619,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn typecheck_static_defaults(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
-        env: &Env,
+        def: &LambdaDef<R, E>,
     ) -> Result<()> {
-        ctx.with_restored(env.clone(), |ctx| {
-            for arg in self.args.values_mut() {
+        ctx.with_restored(def.env.clone(), |ctx| {
+            for (key, arg) in self.args.iter_mut() {
                 if arg.stage.is_default()
                     && let Some(node) = arg.node.as_mut()
                 {
-                    wrap!(node, node.typecheck1(ctx))?;
+                    let label = match key {
+                        ArgKey::Named(name) => Some(name),
+                        _ => None,
+                    };
+                    let entered = label.filter(|l| ctx.enter_default(def.id, l));
+                    let res = wrap!(node, node.typecheck1(ctx));
+                    if let Some(l) = entered {
+                        ctx.leave_default(def.id, l)
+                    }
+                    res?;
                 }
             }
             Ok(())
@@ -1793,7 +1844,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             drop(setup_span);
             // its defaults are elaborated as a static bind's are: trait
             // dispatch resolves in typecheck1
-            if let Err(e) = self.typecheck_static_defaults(ctx, &f.env) {
+            if let Err(e) = self.typecheck_static_defaults(ctx, f) {
                 ctx.discard_apply(apply);
                 return Err(e);
             }
@@ -1911,7 +1962,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // a site its own omitted default's elaboration reaches stays
         // dynamic: elaborating it would elaborate that default again
-        // CR claude for claude: [bug/medium] These guards live until resolve_static
+        // XCR claude for claude: [bug/medium] These guards live until resolve_static
         // returns, so they are held across the whole bind_instance, including the
         // instance body's typecheck1. A recursive call in the body that omits the same
         // label then returns here, before the self-call branch. It gets no
@@ -1926,20 +1977,22 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // None sources out of the identity. probe:
         // design/review-2026-10-19/repro/c-callsite-omitted-default-selfcall-defuses.gx
         // (c-callsite-02)
+        // 2026-10-19 claude: Default checks are entered only where a default elaborates
+        // (CallSite::checked_default, typecheck_static_defaults); resolve_static stays
+        // dynamic only for a label whose check is in progress
+        // (CompileCtx::default_in_check), so the body's recursive call is a self-call.
+        // fn_arg_identity keys only arguments with a known lambda source, so passing or
+        // omitting a data label is one identity. Pin:
+        // lang::functions::omitted_default_self_call_fuses (#[native]).
         let labels = self.omitted_labels(def);
-        let entered = labels.iter().take_while(|l| ctx.enter_default(def.id, l)).count();
-        let res = match entered == labels.len() {
-            true => self.resolve_static_entered(ctx, def),
-            false => Ok(()),
-        };
-        for label in &labels[..entered] {
-            ctx.leave_default(def.id, label)
+        if labels.iter().any(|l| ctx.default_in_check(def.id, l)) {
+            return Ok(());
         }
-        res
+        self.resolve_static_entered(ctx, def)
     }
 
-    /// [`Self::resolve_static`] with the checks of its omitted defaults
-    /// entered.
+    /// [`Self::resolve_static`] outside the checks of its omitted
+    /// defaults.
     fn resolve_static_entered(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -1953,7 +2006,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Some(active) = active {
             let scope = self.scope.clone();
             self.prepare_bind(ctx, &scope, self.flags, def, &mut Refs::default())?;
-            self.typecheck_static_defaults(ctx, &def.env)?;
+            self.typecheck_static_defaults(ctx, def)?;
             if self.ftype.is_none() {
                 bail!("statically resolving an untyped call site: {}", self.spec)
             }
@@ -2043,7 +2096,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let resolved_ftype =
             self.refresh_static_ftype().expect("static callee must have an apply");
         let res = typecheck0
-            .and_then(|()| self.typecheck_static_defaults(ctx, &def.env))
+            .and_then(|()| self.typecheck_static_defaults(ctx, def))
             .and_then(|()| {
                 self.callee
                     .apply_mut()
@@ -2169,7 +2222,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             .args
             .iter()
             .filter(|(_, arg)| !arg.stage.is_default())
-            .map(|(key, arg)| {
+            .filter_map(|(key, arg)| {
                 let source = arg.node.as_ref().and_then(|node| match node.view() {
                     _ if let Some(l) = lambda_literal(node) => Some(l.source_id()),
                     NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
@@ -2179,7 +2232,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         .map(|def| def.source),
                     _ => None,
                 });
-                (key.clone(), source)
+                source.map(|s| (key.clone(), Some(s)))
             })
             .collect();
         identity.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
@@ -3089,7 +3142,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.ftype.as_ref().unwrap()
             }
         };
-        // CR claude for claude: [bug/medium] Widening is not order-independent for an
+        // XCR claude for claude: [bug/medium] Widening is not order-independent for an
         // argument whose own type is an open cell. That argument is checked against
         // whatever the site's cell holds at that moment, and binds its own cell to it.
         // A later wider argument widens only the site's cell. With `pick(x: 'a, y: 'a,
@@ -3101,9 +3154,24 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // incomparable one, so it is checked after every concrete argument has widened.
         // probe: design/review-2026-10-19/repro/c-callsite-widening-order-open-arg.sh
         // (c-callsite-03)
+        // 2026-10-19 claude: Widening::defers_open: in a fresh instance an argument
+        // that is a reference to an undecided, non-rigid cell, at a formal holding a
+        // widenable variable, is checked in the deferred pass after every concrete
+        // argument widened. Pin: lang::functions::widening_waits_for_an_open_argument;
+        // lang::types::rigid_cell_guides_the_member_placement pins the rigid exclusion.
         let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
+                if widening.defers_open(
+                    ctx,
+                    self.fnode.typ(),
+                    ftype,
+                    &key,
+                    &farg.typ,
+                    n,
+                )? {
+                    continue;
+                }
                 let hint = widening.hint(self.fnode.typ(), ftype, &farg.typ);
                 if !typecheck_arg(ctx, &farg.typ, hint.as_ref(), n)? {
                     widening.misfit(

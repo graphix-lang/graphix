@@ -1313,3 +1313,37 @@ run!(
         let f = |x: i64| -> i64 select x { 1 => error(`E)?, x => x };
         let y = f(2)
     "#; FuseExpect::Jit);
+
+// An interface typedef naming a trait-typed parameter agrees with the
+// identical implementation.
+run!(
+    interface_typedef_with_a_trait_parameter,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "3"),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::apply(|x| "[x]", 3)
+    "#,
+    "/test/m.gxi" => r#"
+        type F = fn(x: Display) -> string;
+        val apply: fn(f: F, x: i64) -> string
+    "#,
+    "/test/m.gx" => r#"
+        type F = fn(x: Display) -> string;
+        let apply = |f: F, x: i64| -> string f(x)
+    "#; FuseExpect::None);
+
+// A dynamic module whose source goes bottom keeps its loaded body
+// running: a write to an interface val reaches the body that cycle.
+run!(dynamic_module_runs_on_under_a_bottom_source, r#"{
+  let step = 0;
+  step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
+  let src0: [string, Error<`E>] = "let x = 0; let y = x * 10";
+  let status = mod foo dynamic {
+    sandbox whitelist [core];
+    sig { val x: i64; val y: i64 };
+    source src0$
+  };
+  src0 <- select step { 1 => step ~ error(`E), _ => never() };
+  foo::x <- select step { 1 => step ~ 5, _ => never() };
+  select step { 3 => foo::y, _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(50))); FuseExpect::Jit);

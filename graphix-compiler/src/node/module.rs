@@ -466,7 +466,9 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
         return Ok(());
     }
     let impl_body = match &td.body {
-        TypeDefBody::Alias(t) => TypeDefBody::Alias(t.scope_refs(scope)),
+        TypeDefBody::Alias(t) => {
+            TypeDefBody::Alias(t.scope_refs(scope).rewrite_trait_args(&ctx.env)?)
+        }
         TypeDefBody::Abstract(rep) => {
             TypeDefBody::Abstract(rep.as_ref().map(|r| r.scope_refs(scope)))
         }
@@ -480,7 +482,7 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
             && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
             && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
     };
-    // CR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
+    // XCR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
     // body is the interface's registered typedef, which Env::deftype already passed
     // through rewrite_trait_args. impl_body here only went through scope_refs. A fn
     // type with a trait-typed parameter (`type F = fn(x: Display) -> string`) therefore
@@ -491,6 +493,9 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
     // or compare the two registered definitions. probe:
     // design/review-2026-10-19/repro/t-typ-mod-sig-trait-param-typedef.sh
     // (t-typ-mod-02)
+    // 2026-10-19 claude: check_typedef_decl rewrites the implementation's alias body
+    // with rewrite_trait_args, as Env::deftype rewrote the interface's; the probe's
+    // check passes. Pin: lang::modules::interface_typedef_with_a_trait_parameter.
     let same_body = sig_td.body == impl_body
         || match (&sig_td.body, &impl_body) {
             (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => one_type(t0, t1),
@@ -1301,6 +1306,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         let mut compiled = false;
         let mut primed: LPooled<Vec<BindId>> = LPooled::take();
         let mut src_tag = Tag::FIRED;
+        let mut bottom = false;
         let src = match &mut self.body {
             Body::Static => None,
             Body::Dynamic { source, .. } => {
@@ -1308,7 +1314,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 let tag = tv.tag();
                 if !tag.triggers() {
                     None
-                // CR claude for claude: [bug/medium] Returning here skips the proxy
+                // XCR claude for claude: [bug/medium] Returning here skips the proxy
                 // copies and the body's update for the whole cycle, so everything the
                 // loaded body had that cycle is lost. A write to an interface val in
                 // the same cycle reaches the readers outside but never the body: the
@@ -1317,11 +1323,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 // the body and the proxies still update. probe:
                 // design/review-2026-10-19/repro/c-module-traits-dyn-bottom-source-skips-body.gx
                 // (c-module-traits-03)
+                // 2026-10-19 claude: A bottom source sets the bottom resident and falls through:
+                // the loaded body and the proxies update that cycle. The probe prints t2: x=5
+                // y=50. Pin: lang::modules::dynamic_module_runs_on_under_a_bottom_source (the
+                // review binary answers 0).
                 } else if tag.is_bottom() {
-                    // a taint placeholder never compiles or tears down
-                    return self
-                        .resident
-                        .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+                    // a taint placeholder never compiles or tears down; the
+                    // loaded body runs on
+                    bottom = true;
+                    None
                 } else {
                     Some((tv.value_cloned(), tag))
                 }
@@ -1425,7 +1435,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             store_production(ctx, *outer, &tv);
             ctx.event.variables.insert(*outer, tv);
         }
-        if compiled {
+        if bottom {
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+        } else if compiled {
             self.resident.set(TagValue::tagged(Value::Null, src_tag))
         } else {
             self.resident.ride()

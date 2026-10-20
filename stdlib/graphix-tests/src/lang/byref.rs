@@ -858,3 +858,10 @@ run!(write_through_aliased_reference_union, r#"{
   *r <- 10;
   a
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1 | 10))); FuseExpect::None);
+
+// A rank-2 parameter's quantifier is generic, not a binding an earlier
+// compile generalized: a writable reference to it is allowed.
+run!(mut_ref_to_a_rank2_parameter, r#"{
+  let app = |g: fn<'b: Any>(y: 'b) -> 'b| { let h = &mut g; (*h)(1) };
+  app(|x| x)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);

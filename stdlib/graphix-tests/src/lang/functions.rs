@@ -3353,3 +3353,29 @@ run!(omitted_defaults_resolve_under_stolen_jobs, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if as_i64s(a) == (1..=60).map(|i| i * 6).collect::<Vec<i64>>())
 }; FuseExpect::Jit);
+
+// A recursive call omitting a labeled default is a self-call, not a site
+// its own default's check keeps dynamic: it fuses under #[native] (the
+// recursion runs at k = 1: 5 * 2 + 4 + 3 + 2 + 1).
+run!(
+    omitted_default_self_call_fuses,
+    r#"{
+  let rec f = |#k: i64 = i64:1, n: i64| -> i64 select n { m if m <= i64:0 => i64:0, m => m * k + f(m - i64:1) };
+  let g = |x: i64| -> i64 #[native] f(#k: i64:2, x);
+  g(i64:5)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(20)))
+);
+
+// A data-only variable settles to the widest argument whatever the order,
+// an argument whose type is an open cell included.
+run!(
+    widening_waits_for_an_open_argument,
+    r#"{
+  let pick = |x: 'a, y: 'a, z: 'a| -> Array<'a> [x, y, z];
+  let v: [i64, null] = null;
+  let h = |z| pick(i64:1, z, v);
+  h(null)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, null, null]")
+);

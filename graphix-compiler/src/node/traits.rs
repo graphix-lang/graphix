@@ -618,7 +618,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
-            // CR claude for claude: [bug/medium] The method binding is typed over the
+            // XCR claude for claude: [bug/medium] The method binding is typed over the
             // impl head's own cells, and those cells are not rigid while the method
             // checks. `impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| .. }`
             // therefore binds 'a to i64: the impl is accepted and silently serves
@@ -630,6 +630,10 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             // (sig_matches) check there. probe:
             // design/review-2026-10-19/repro/c-module-traits-impl-head-narrowed-by-method.gx
             // (c-module-traits-04)
+            // 2026-10-19 claude: Impl::typecheck0 holds the head's variables rigid
+            // (open_rigid) across the body check and the declared-signature check, so a
+            // method annotated at Box<i64> is refused rather than narrowing 'a. Pin:
+            // lang::traits::impl_method_does_not_narrow_the_head.
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
             let b = BindExpr {
                 rec: b.rec,
@@ -876,6 +880,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        // the head's variables are the impl's declared ones: no method
+        // decides them
+        let _gates: LPooled<Vec<_>> =
+            self.def.params.iter().map(|tv| tv.open_rigid()).collect();
         wrap!(self.body, self.body.typecheck0(ctx))?;
         // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {

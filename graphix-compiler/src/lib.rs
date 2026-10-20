@@ -1331,6 +1331,11 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         true
     }
 
+    /// Whether the check of `id`'s default for `label` is in progress.
+    pub(crate) fn default_in_check(&self, id: LambdaId, label: &ArcStr) -> bool {
+        self.defaults_in_check.iter().any(|(i, l)| *i == id && l == label)
+    }
+
     /// Leave the check [`Self::enter_default`] entered.
     pub(crate) fn leave_default(&mut self, id: LambdaId, label: &ArcStr) {
         if let Some(i) =
@@ -1775,7 +1780,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Whether `id` is a binding an earlier compile generalized: its
     /// check already made variables of a function it holds generic.
-    // CR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
+    // XCR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
     // cells too, so this answers true for a rank-2 parameter, for a binding annotated
     // with `type F = fn<'b: ..>(..)`, for a struct holding one, and for a lambda
     // literal's parameter checked against one. The `&mut` check in Bind then refuses
@@ -1788,11 +1793,23 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     // the same wrong message. probe:
     // design/review-2026-10-19/repro/x-typecheck-generics-generalized-earlier-quantifier.gx
     // (x-typecheck-generics-05)
+    // 2026-10-19 claude: generalized_earlier skips the quantifier cells of function types
+    // the binding's type holds (callsite::bound_quantifiers). The probe runs and prints 1.
+    // Pin: lang::byref::mut_ref_to_a_rank2_parameter.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| {
             let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
             b.typ.reached_cells(&mut cells);
-            cells.values().any(|tv| tv.level() == typ::tvar::Level::GENERIC)
+            // a function type's own quantifiers are generic whatever compiled it
+            let mut quantified = AHashSet::new();
+            node::callsite::bound_quantifiers(
+                &b.typ,
+                &mut quantified,
+                &mut AHashSet::new(),
+            );
+            cells.iter().any(|(addr, tv)| {
+                tv.level() == typ::tvar::Level::GENERIC && !quantified.contains(addr)
+            })
         })
     }
 

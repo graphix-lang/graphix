@@ -2030,3 +2030,11 @@ run!(trait_signature_undefined_type_refused, r#"{
   trait Q { val q: fn(self) -> Nope };
   0
 }"#, refused("undefined type Nope"); FuseExpect::None);
+
+// An impl head's variables are its declared ones: a method may not
+// narrow them.
+run!(impl_method_does_not_narrow_the_head, r#"{
+  type Box<'a> = Abstract<'a>;
+  impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
+  "[Box(41)]"
+}"#, refused("method fmt of impl Display for Box<'a> has type"); FuseExpect::None);
