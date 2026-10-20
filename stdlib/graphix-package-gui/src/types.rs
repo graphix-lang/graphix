@@ -94,7 +94,7 @@ impl FromValue for SizeV {
     }
 }
 
-// CR claude for claude: [bug/medium] A window size is only checked for finiteness.
+// XCR claude for claude: [bug/medium] A window size is only checked for finiteness.
 // winit's X11 create_window converts the physical size to u16 with
 // `try_into().unwrap()`, so `size: {width: 70000.0, ..}` panics the event loop on X11;
 // zero and negative sizes also reach winit. Refuse a dimension that is not positive or
@@ -118,6 +118,13 @@ impl FromValue for SizeV {
 // refuses. Either keep the OS-reported size out of the refused set (do not echo a
 // non-positive or oversized size into the ref, or clamp it), or make the constructor
 // private so every WindowSizeV passes the check.
+// 2026-10-20 claude: WindowSizeV's field is private: every one is made by
+// WindowSizeV::new, the (0, 8192] check its from_value also runs. The event loop takes
+// a Resized size through WindowSizeV::reported, which is None for a size the program's
+// type refuses (a minimized window's 0 x 0, an edge past 8192 logical pixels), and such
+// a size is not echoed into the program's size reference: the program keeps its last
+// size. Pin: types::tests::reported_window_sizes_read_back (fails with the check taken
+// out of reported).
 /// A window's size: positive, and no larger than every window system
 /// takes.
 #[derive(Clone, Copy, Debug, PartialEq)]

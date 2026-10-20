@@ -802,7 +802,7 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
-                // CR claude for claude: [bug/high] An embedder write is never checked
+                // XCR claude for claude: [bug/high] An embedder write is never checked
                 // against its binding's type, though Callable::call checks its
                 // arguments. A string set into an `i64` binding that feeds a fused
                 // kernel makes FusedKernel::stage panic, and the runtime dies. The
@@ -846,6 +846,15 @@ impl<X: GXExt> GX<X> {
                 // ByRef registers it) and check against it, or refuse a set_deref
                 // whose target has no known type; add a set_deref-to-fresh-cell case
                 // to a_wrong_typed_set_deref_is_refused.
+                // 2026-10-20 claude: Reproduced first: a set_deref of a string through
+                // the cell of &mut 0 landed and *c read 'hello' (the crash through a
+                // fused '*c + 1' did not reproduce: that sum produced nothing).
+                // ByRef::compile now registers a reference to an unnamed expression
+                // (&mut e, &e) in env.by_id under its own cell id, typed by its
+                // referent cell (what the check settles), and ByRef::delete removes
+                // it, so GX::admits checks a write through it. Pin: graphix-rt
+                // tests/runtime_api.rs a_wrong_typed_set_deref_is_refused, its &mut 0
+                // case (the string lands with the registration undone).
                 ToGX::Set { id, v } => {
                     if self.admits(id, &v) {
                         let mut one = SETS.take();

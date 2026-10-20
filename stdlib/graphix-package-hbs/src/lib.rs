@@ -81,7 +81,7 @@ thread_local! {
 /// link) nests one level more until its block closes. What the parser does
 /// not read as a tag (an escaped `{{`, a comment, a raw block's text, a
 /// string literal in a tag) opens and closes nothing.
-// CR claude for claude: [bug/medium] Only partial expansions are bounded
+// XCR claude for claude: [bug/medium] Only partial expansions are bounded
 // (MAX_PARTIAL_DEPTH); block nesting is not. Handlebars compiles iteratively, but the
 // template clone here, bound_partials, Template's drop and render all recurse per
 // level. 3000 nested `{{#if}}` blocks abort the process with a stack overflow, even
@@ -109,6 +109,14 @@ thread_local! {
 // count each '{{else ..}}' with a helper name (an else-chain link) as one more level in
 // shallow, or bound the compiled Template's depth before cloning it, and add the
 // else-chain case to hbs_block_nesting_refused.
+// 2026-10-20 claude: shallow now nests one level per else-chain link ('{{else x}}' or
+// '{{^ x}}' naming a helper) until its block closes, and skips what the parser does not
+// read as a tag: an escaped '{{', a comment (long, or compact when no '--}}' follows),
+// a raw block's text and a string literal inside a tag; each could hide a closer and
+// undercount. Pin: lib_tests::hbs::hbs_block_nesting_refused gains a 5000-link else
+// chain, 5000 levels whose closers sit in comments, the same in string literals, and a
+// 31-link chain that renders; with the old shallow the test binary aborts with a stack
+// overflow.
 fn shallow(text: &str) -> std::result::Result<&str, String> {
     let refused = || Err(format!("blocks nest more than {MAX_BLOCK_DEPTH} deep"));
     fn pad(s: &str) -> &str {

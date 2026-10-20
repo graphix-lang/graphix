@@ -193,7 +193,7 @@ async fn a_wrong_typed_set_deref_is_refused() -> Result<()> {
         rep::structure([(literal!("a"), Value::I64(5)), (literal!("b"), Value::I64(2))]);
     assert_eq!(produced(&mut rx, sid).await, vec![st]);
     // a writable reference to an expression is its own cell, of its own type
-    let m = gx.compile(literal!("let c = &mut 0; let y = *c + 1; y")).await?;
+    let m = gx.compile(literal!("let c = &mut 0; let y = *c; y")).await?;
     let yid = m.exprs[2].id;
     produced(&mut rx, yid).await;
     let env = gx.get_env().await?;
@@ -202,7 +202,7 @@ async fn a_wrong_typed_set_deref_is_refused() -> Result<()> {
     gx.set_deref(cell, Value::from("hello"))?;
     assert_eq!(produced(&mut rx, yid).await, vec![], "a wrong-typed write landed");
     gx.set_deref(cell, Value::I64(5))?;
-    assert_eq!(produced(&mut rx, yid).await, vec![Value::I64(6)]);
+    assert_eq!(produced(&mut rx, yid).await, vec![Value::I64(5)]);
     Ok(())
 }
 

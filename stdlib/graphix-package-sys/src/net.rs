@@ -619,7 +619,7 @@ macro_rules! list {
                             "invalid path {requested}"
                         )));
                     };
-                    // CR claude for claude: [bug/medium] Each poll tick with an
+                    // XCR claude for claude: [bug/medium] Each poll tick with an
                     // unchanged path reissues the listing under the same id, and
                     // NetState::spawn_request's replacement aborts the one in flight. A
                     // listing slower than its #update period (default 1 s) therefore
@@ -655,6 +655,13 @@ macro_rules! list {
                     // included, as the end of the listing in flight (Done, or issue the
                     // owed one), and pin a polled list that picks up a path published
                     // after an unchanged poll.
+                    // 2026-10-20 claude: Any delivery on the listing's var now ends the
+                    // listing in flight, an unchanged poll's Null included: the Null
+                    // sets Done (or issues the owed listing) and answers nothing, so
+                    // the next tick lists again. Pin:
+                    // lib_tests::net::net_list_polled_sees_a_later_path (a path
+                    // published at 700 ms under a list polled every 100 ms; it answers
+                    // 1 instead of 2 with the fix undone, all four modes).
                     match &mut self.current {
                         Some((p, listing)) if *p == path => {
                             match (trigger_fired, *listing) {

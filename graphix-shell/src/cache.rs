@@ -219,7 +219,7 @@ fn sources_record(probes: &[Probe]) -> Option<String> {
 fn sources_unchanged(record: &str) -> bool {
     record.lines().all(|line| match line.split_at_checked(1) {
         Some(("-", path)) => {
-            // CR claude for claude: [bug/medium] This absence test is not the one the
+            // XCR claude for claude: [bug/medium] This absence test is not the one the
             // compile used. `read_optional` records a path as absent on NotFound or
             // NotADirectory, and it follows symlinks. Here only an lstat NotFound
             // passes. So a probe through a regular file (a file `m` beside `m.gx` makes
@@ -251,6 +251,12 @@ fn sources_unchanged(record: &str) -> bool {
             // this change' was agent scope, not a constraint. Also a stray code comment
             // line ('absent as expr::read_optional finds it: nothing opens there') is
             // trapped inside the XCR block between the finding and its note.
+            // 2026-10-20 claude: graphix_types::expr::names_nothing, beside
+            // read_optional, is the one absence predicate (NotFound or NotADirectory on
+            // an open, a link followed): read_optional and sources_unchanged both call
+            // it. The stray code comment inside this block is dropped: the predicate's
+            // name and doc say it. Pin:
+            // cache::tests::a_program_entry_restores_over_paths_that_name_nothing.
             fs::File::open(path).is_err_and(|e| names_nothing(&e))
         }
         Some(("+", rest)) => match rest.split_once(' ') {

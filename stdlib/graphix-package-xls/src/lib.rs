@@ -307,7 +307,7 @@ fn parse_sheet<RS: Read + Seek + Clone>(rs: RS, sheet: &str) -> Value {
     grid(cells)
 }
 
-// CR claude for claude: [bug/high] Padding to A1 allocates (end row + 1) x (end col
+// XCR claude for claude: [bug/high] Padding to A1 allocates (end row + 1) x (end col
 // + 1) Values. Both numbers come from cell coordinates in the file, not from its
 // size, so a 2 KB xlsx whose only cell is XFD100000 asks for 100000 rows of 16384
 // nulls (1.6e9 Values), and the runtime is OOM-killed. calamine's range for that
@@ -350,6 +350,12 @@ fn parse_sheet<RS: Read + Seek + Clone>(rs: RS, sheet: &str) -> Value {
 // refused. Fix: treat a cell as valued when it has any attribute calamine reads a
 // value from (office:value, office:string-value, office:date-value, office:time-value,
 // office:boolean-value) or a formula, and pin the value-type-less far rows.
+// 2026-10-20 claude: check_ods counts a self-closing cell as valued when it carries
+// any of ODS_VALUE_ATTRIBUTES: office:value, office:string-value, office:date-value,
+// office:time-value, office:boolean-value, office:value-type or table:formula. Pin:
+// xls test::ods_refuses_far_rows_valued_by_any_attribute (2000 far rows ending in a
+// cell with each attribute alone; the office:value file passes the check with the old
+// two attributes).
 /// `cells` as rows of values from A1, a cell not given null.
 fn grid(mut cells: Cells) -> Value {
     let rows = cells.iter().map(|(r, _, _)| *r as usize + 1).max().unwrap_or(0);
