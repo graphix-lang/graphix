@@ -1560,23 +1560,15 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // a quiet acc is news to no slot: it only stands, unless the
         // slots read their accs anew
         let anew = moved || woke || back;
-        // CR claude for claude: [structure/low] A fresh slot's accumulator is defined
-        // twice. pass_acc delivers it when `fresh` is set (slot 0 when old_len == 0,
-        // slot i+1 when views.fresh(i + 1)), and the seed at the top of that slot's
-        // iteration then overwrites the delivery with FIRED or FRESH_BOTTOM. So the
-        // `fresh` path never decides anything and costs a deliver per grown slot. Drop
-        // the `fresh` parameter, leave fresh slots to the seed, and write `anew = moved
-        // || back` (take_source already folds `woke` into `moved`). Found by reading;
-        // not run. (c-collection-03)
-        let pass_acc = |ctx: &mut ExecCtx<'_, R, E>, id, tv: TagValue, fresh: bool| {
-            if tv.tag().triggers() || fresh || anew {
+        let pass_acc = |ctx: &mut ExecCtx<'_, R, E>, id, tv: TagValue| {
+            if tv.tag().triggers() || anew {
                 ctx.deliver(id, tv)
             } else {
                 ctx.rt.store_insert_standing(id, tv)
             }
         };
         if let Some(slot) = self.slots.first() {
-            pass_acc(ctx, slot.acc_id, init.clone(), old_len == 0);
+            pass_acc(ctx, slot.acc_id, init.clone());
         }
         if self.slots.is_empty() {
             // a resize or a return is a new result whatever the source's tag
@@ -1625,7 +1617,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                 slot.state.set(&tv);
                 // The production, a bottom included, travels the acc chain.
                 if let Some(next) = slots.get(i + 1) {
-                    pass_acc(ctx, next.acc_id, tv, views.fresh(i + 1));
+                    pass_acc(ctx, next.acc_id, tv);
                 }
             }
             Some(prod)
