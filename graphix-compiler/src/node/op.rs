@@ -69,7 +69,7 @@ macro_rules! binary_node {
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
             slept: WakeBit,
-            fork: crate::cost::ForkSite,
+            pub(crate) fork: crate::cost::ForkSite,
             $(
                 /// the operator's own
                 state: $state,
@@ -189,9 +189,7 @@ macro_rules! gated_operands {
     ($self:ident, $ctx:ident) => {{
         let woke = $self.slept.take();
         let (lhs, rhs) = (&mut $self.lhs, &mut $self.rhs);
-        $self.fork.decide_siblings($ctx, 2, || {
-            $crate::analysis::independent([&*lhs, &*rhs].into_iter(), $ctx)
-        });
+        $self.fork.decide_siblings($ctx, 2, [&*lhs, &*rhs].into_iter());
         let (l, r) = $crate::branch::join2(
             &mut $self.fork,
             $ctx,

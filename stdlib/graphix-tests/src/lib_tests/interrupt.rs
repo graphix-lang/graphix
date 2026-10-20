@@ -143,21 +143,25 @@ async fn interrupted_recursion_rides(flags: BitFlags<CFlag>) -> Result<()> {
     for stmt in setup.iter() {
         held.push(ctx.rt.compile(ArcStr::from(stmt.as_str())).await?);
     }
-    let started = tokio::time::Instant::now();
     held.push(ctx.rt.compile(ArcStr::from("r")).await?);
     let r = held.last().unwrap().exprs[0].id;
-    let Some(first) = value_of(&mut rx, r, Duration::from_secs(60)).await else {
+    let Some(_) = value_of(&mut rx, r, Duration::from_secs(60)).await else {
         bail!("r never produced")
     };
-    let took = started.elapsed();
+    // a rerun binds nothing, so it is timed apart from the first run
+    let rerun = |part: &str| {
+        format!(
+            r#"s <- sys::time::timer(duration:10.ms, false) ~ str::concat(s, "{part}")"#
+        )
+    };
+    let started = tokio::time::Instant::now();
+    held.push(ctx.rt.compile(ArcStr::from(rerun("b7"))).await?);
+    let Some(first) = value_of(&mut rx, r, Duration::from_secs(60)).await else {
+        bail!("r never ran again")
+    };
+    let took = started.elapsed().saturating_sub(Duration::from_millis(10));
     // run the recursion again and interrupt it halfway
-    held.push(
-        ctx.rt
-            .compile(ArcStr::from(
-                r#"s <- sys::time::timer(duration:10.ms, false) ~ str::concat(s, "b7")"#,
-            ))
-            .await?,
-    );
+    held.push(ctx.rt.compile(ArcStr::from(rerun("b8"))).await?);
     tokio::time::sleep(Duration::from_millis(10) + took / 2).await;
     ctx.rt.interrupt();
     held.push(

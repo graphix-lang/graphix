@@ -3,7 +3,7 @@
 //! and where it forks.
 
 use crate::{
-    ExecCtx, Rt, UserEvent,
+    ExecCtx, Node, Rt, UserEvent, analysis,
     branch::{eval_pool, pool_idle, saturated},
 };
 use graphix_types::stack::ParMode;
@@ -265,20 +265,41 @@ pub enum Plan<'a> {
 /// arguments, a constructor's fields, an operator's operands): its
 /// state under `Auto`.
 #[derive(Debug, Default)]
-pub struct ForkSite(Site, Siblings);
+pub struct ForkSite(Site, pub(crate) Siblings);
 
-/// Whether a fork point's children may run in parallel at all, decided
-/// once ([`crate::analysis::independent`]); undecided runs them in order.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum Siblings {
-    #[default]
-    Undecided,
-    Independent,
-    Dependent,
+/// Whether a fork point's children may run in parallel at all
+/// ([`crate::analysis::independent`]): decided once, by the analysis
+/// that reached the fork point or else at its first update. A question
+/// whose answer rests on a call not bound yet is asked again only once
+/// the runtime has bound something since ([`crate::Control::rebuilds`]).
+/// Children not known independent run in order.
+#[derive(Debug, Default)]
+pub struct Siblings {
+    decided: OnceLock<bool>,
+    /// The runtime's rebuild count when the question was last left open.
+    open_at: Option<u64>,
 }
 
 impl Siblings {
-    // CR claude for claude: [perf/medium] `None` (the verdict rests on a call not bound
+    /// Whether the siblings are known independent.
+    pub fn independent(&self) -> bool {
+        self.decided.get() == Some(&true)
+    }
+
+    pub(crate) fn decided(&self) -> bool {
+        self.decided.get().is_some()
+    }
+
+    /// Take the analysis's verdict, unless one stands.
+    pub(crate) fn decided_by_analysis(&self, independent: Option<bool>) {
+        if let Some(v) = independent {
+            let _ = self.decided.set(v);
+        }
+    }
+
+    /// Decide whether `n` siblings are independent, unless that is
+    /// decided, or open with nothing bound since it was asked.
+    // XCR claude for claude: [perf/medium] `None` (the verdict rests on a call not bound
     // yet) becomes Undecided, so decide_siblings calls analysis::independent again at
     // every update for as long as that call stays unbound, which for a nullable
     // callback that stays null, or a call in an arm never taken, is forever. That costs
@@ -290,11 +311,33 @@ impl Siblings {
     // design/review-2026-10-19/repro/c-analysis-branch-unbound-sibling-redecides.gx
     // (3000 cycles: off 0.69 s, auto 1.78 s; bound g 0.77 s; 600-function chain: off
     // 1.76 s, auto 9.0 s). (c-analysis-branch-03)
-    fn of(independent: Option<bool>) -> Self {
-        match independent {
-            None => Siblings::Undecided,
-            Some(true) => Siblings::Independent,
-            Some(false) => Siblings::Dependent,
+    // 2026-10-20 claude: Fixed with x-parallel-03: an open verdict waits for
+    // Control::rebuilds to move (Siblings::decide), and this probe's tuple is now
+    // decided by the analysis. Probe (quick, --no-fusion, taskset 0-3): auto 1.13 s ->
+    // 0.33 s (off 0.33 s). Pin: lang::par_attrs::an_open_verdict_waits_for_a_bind.
+    pub fn decide<'a, R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        n: usize,
+        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+    ) {
+        if self.decided() || n < 2 || ctx.fork_mode() == ParMode::Off {
+            return;
+        }
+        let rebuilds = ctx.control.rebuilds();
+        if self.open_at == Some(rebuilds) {
+            return;
+        }
+        if !analysis::two_work(children.clone()) {
+            let _ = self.decided.set(true);
+            return;
+        }
+        ctx.control.verdict_asked();
+        match analysis::independent(children, ctx) {
+            Some(v) => {
+                let _ = self.decided.set(v);
+            }
+            None => self.open_at = Some(rebuilds),
         }
     }
 }
@@ -331,46 +374,63 @@ struct Measured {
 }
 
 impl ForkSite {
-    /// Decide, once, whether the site's `n` children are independent;
-    /// dependent ones always run in order.
+    /// Decide whether the site's `n` children are independent
+    /// ([`Siblings::decide`]); dependent ones always run in order.
+    // XCR claude for claude: [perf/medium] An Undecided verdict is asked for again
+    // at every update. When it rests on a call that never binds (an arm never
+    // taken, a callback that never arrives), the site rebuilds the static call
+    // graph and every instance summary below it each cycle, forever.
+    // SlotSite::decide_siblings and fork_instances' `independent` do the same. A
+    // 4-slot map whose callback holds such an arm runs twice as slow under auto as
+    // under off, and the twin without the dynamic call runs the same in both.
+    // Re-decide only when a run-time bind happened since the last answer (a bind
+    // counter on Control), or settle the verdict as Dependent until that call site
+    // binds. probe:
+    // design/review-2026-10-19/repro/x-parallel-undecided-reanalyzed-every-cycle.gx
+    // (x-parallel-03)
+    // 2026-10-20 claude: Siblings (cost.rs) now holds an open verdict at the
+    // runtime's rebuild count (Control::rebuilds, bumped by ExecCtx::apply_deferred
+    // when something was built and by CallSite::bind) and asks again only once it
+    // moved; ForkSite, SlotSite and fork_instances share it. Probe (quick,
+    // --no-fusion, taskset 0-3): auto 1.23 s -> 0.40 s (off 0.38 s). Pin:
+    // lang::par_attrs::an_open_verdict_waits_for_a_bind (verdicts <= 4 over 40
+    // cycles; 47 without the gate).
+    // XCR claude for claude: [perf/high] A new aspect of x-perf-compile-03. In a
+    // recursion, every activation's fork site is still Undecided after its first
+    // update, because its callee is not bound yet. The next update that reaches the
+    // chain then runs `independent()` at all N sites at once, each walking the
+    // graph below it. Under the default Auto mode, the update after an argument
+    // changes in a node-walked recursion therefore grows about 8x per doubling of
+    // depth: 0.39/1.34/9.2 s at depth 1000/2000/4000 against 0.20/0.28/0.42 s with
+    // GRAPHIX_PAR=off, and over 40 s at 8000. Nothing ever forks here
+    // (GRAPHIX_PAR_T fixed huge), and the third update costs 15 ms. Force stays
+    // linear only because it turns Off past MAX_FORK_DEPTH.
+    // interrupted_recursion_rides_* re-runs this shape at depth 15000 and
+    // interrupts it, so no test sees the cost. Decide these sites at analysis, or
+    // give a run-time instance its definition's verdict, as x-perf-compile-03
+    // proposes. probe:
+    // design/review-2026-10-19/repro/tests-lib-b1-recursion-rerun-auto-cliff.sh
+    // (tests-lib-b1-01)
+    // 2026-10-20 claude: Fork points other than blocks are now decided by the
+    // analysis that reaches them (analysis::plan_forks, beside the block plans),
+    // from instance summaries computed once per analysis and each subtree's Shallow
+    // facts once (ForkCx::shallow_of); an activation's sites are decided at its
+    // bind (analyze_bound_callee, its call to the next activation a self-call
+    // through self_binds), so the rerun asks nothing. Quick build, GRAPHIX_PAR_T
+    // huge, --no-fusion, taskset 0-3: auto N=1000/2000/4000/8000 1.09/2.45/9.92/>60
+    // s -> 0.13/0.18/0.29/0.55 s (off 0.12/0.18/0.30/0.58). Pin:
+    // lang::par_attrs::activations_decide_their_fork_points_at_bind
+    // (Control::verdicts stays 0; 601 with the analysis verdict disabled).
+    // interrupted_recursion_rides_* now times a rerun before interrupting one: its
+    // old timing landed after the now-fast rerun.
     #[inline]
-    pub fn decide_siblings<R: Rt, E: UserEvent>(
+    pub fn decide_siblings<'a, R: Rt, E: UserEvent>(
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         n: usize,
-        independent: impl FnOnce() -> Option<bool>,
+        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ) {
-        // CR claude for claude: [perf/medium] An Undecided verdict is asked for again
-        // at every update. When it rests on a call that never binds (an arm never
-        // taken, a callback that never arrives), the site rebuilds the static call
-        // graph and every instance summary below it each cycle, forever.
-        // SlotSite::decide_siblings and fork_instances' `independent` do the same. A
-        // 4-slot map whose callback holds such an arm runs twice as slow under auto as
-        // under off, and the twin without the dynamic call runs the same in both.
-        // Re-decide only when a run-time bind happened since the last answer (a bind
-        // counter on Control), or settle the verdict as Dependent until that call site
-        // binds. probe:
-        // design/review-2026-10-19/repro/x-parallel-undecided-reanalyzed-every-cycle.gx
-        // (x-parallel-03)
-        // CR claude for claude: [perf/high] A new aspect of x-perf-compile-03. In a
-        // recursion, every activation's fork site is still Undecided after its first
-        // update, because its callee is not bound yet. The next update that reaches the
-        // chain then runs `independent()` at all N sites at once, each walking the
-        // graph below it. Under the default Auto mode, the update after an argument
-        // changes in a node-walked recursion therefore grows about 8x per doubling of
-        // depth: 0.39/1.34/9.2 s at depth 1000/2000/4000 against 0.20/0.28/0.42 s with
-        // GRAPHIX_PAR=off, and over 40 s at 8000. Nothing ever forks here
-        // (GRAPHIX_PAR_T fixed huge), and the third update costs 15 ms. Force stays
-        // linear only because it turns Off past MAX_FORK_DEPTH.
-        // interrupted_recursion_rides_* re-runs this shape at depth 15000 and
-        // interrupts it, so no test sees the cost. Decide these sites at analysis, or
-        // give a run-time instance its definition's verdict, as x-perf-compile-03
-        // proposes. probe:
-        // design/review-2026-10-19/repro/tests-lib-b1-recursion-rerun-auto-cliff.sh
-        // (tests-lib-b1-01)
-        if self.1 == Siblings::Undecided && n >= 2 && ctx.fork_mode() != ParMode::Off {
-            self.1 = Siblings::of(independent())
-        }
+        self.1.decide(ctx, n, children)
     }
 
     /// What this update does with the site's `n` children.
@@ -382,7 +442,7 @@ impl ForkSite {
     ) -> Plan<'_> {
         match ctx.fork_mode() {
             ParMode::Off => Plan::Serial,
-            _ if n < 2 || self.1 != Siblings::Independent => Plan::Serial,
+            _ if n < 2 || !self.1.independent() => Plan::Serial,
             ParMode::Force => Plan::Fork(Splits::Halves),
             ParMode::Auto => self.plan_auto(n),
         }
@@ -640,30 +700,25 @@ impl SlotSite {
     /// Decide, once, whether the slots are independent: they share one
     /// callback, so two of them stand for all; dependent slots always
     /// run in order.
-    pub fn decide_siblings<R: Rt, E: UserEvent>(
+    pub fn decide_siblings<'a, R: Rt, E: UserEvent>(
         &mut self,
         ctx: &ExecCtx<'_, R, E>,
         n: usize,
-        independent: impl FnOnce() -> Option<bool>,
+        children: impl Iterator<Item = &'a Node<R, E>> + Clone,
     ) {
-        if self.siblings == Siblings::Undecided
-            && n >= 2
-            && ctx.fork_mode() != ParMode::Off
-        {
-            self.siblings = Siblings::of(independent())
-        }
+        self.siblings.decide(ctx, n, children)
     }
 
     /// Decide the siblings again at the next update: the slots' callee
     /// changed.
     pub fn redecide(&mut self) {
-        self.siblings = Siblings::Undecided
+        self.siblings = Siblings::default()
     }
 
     /// Whether the slots must run in order: they are not known to be
     /// independent.
     pub fn in_order(&self) -> bool {
-        self.siblings != Siblings::Independent
+        !self.siblings.independent()
     }
 
     /// The plan for the `n` standing slots.
@@ -675,7 +730,7 @@ impl SlotSite {
     ) -> SlotPlan {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
-            _ if n < 2 || self.siblings != Siblings::Independent => SlotPlan::Serial,
+            _ if n < 2 || !self.siblings.independent() => SlotPlan::Serial,
             ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
             ParMode::Auto => self.plan_auto(n),
         }

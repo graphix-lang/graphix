@@ -1139,7 +1139,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Absent>,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
     /// The reads of an imaged tree this site registered when it decoded
     /// outside every heap instance, released at delete.
     held: Option<Box<[BindId]>>,
@@ -1730,6 +1730,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx.apply_deferred();
         let defaults = match self.build_bound(ctx, fv, f) {
             Ok(d) => {
+                ctx.control.rebuilt();
                 ctx.apply_deferred();
                 d
             }
@@ -3467,9 +3468,7 @@ fn update_args<R: Rt, E: UserEvent>(
     pass: Pass,
 ) -> ArgsOut {
     let n = args.len();
-    site.decide_siblings(ctx, n, || {
-        crate::analysis::independent(args.values().filter_map(|a| a.node.as_ref()), ctx)
-    });
+    site.decide_siblings(ctx, n, args.values().filter_map(|a| a.node.as_ref()));
     let in_order = |c: &mut ExecCtx<'_, R, E>, p, m: Option<&mut Meter<'_>>| {
         update_args_in_order(c, p, m, pass)
     };

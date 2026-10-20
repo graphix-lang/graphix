@@ -2,7 +2,9 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
     BindId, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue, TagView,
-    UserEvent, branch, errf,
+    UserEvent, branch,
+    cost::Siblings,
+    errf,
     expr::ExprId,
     image::{self, ImageBuf},
     node::{ErrorRelay, genn},
@@ -89,7 +91,7 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
     running: Vec<(Request<R, E>, Q)>,
     /// Whether the running instances may run apart, once decided; a new
     /// function decides again.
-    independent: Option<bool>,
+    siblings: Siblings,
 }
 
 /// One call of the function over its own request binding.
@@ -166,7 +168,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             top_id,
             pending: Vec::new(),
             running: Vec::new(),
-            independent: None,
+            siblings: Siblings::default(),
         })
     }
 
@@ -174,7 +176,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     pub fn set_fn(&mut self, ctx: &mut ExecCtx<'_, R, E>, f: Option<Value>, fired: bool) {
         if fired && let Some(v) = f {
             ctx.deliver(self.pid, TagValue::fired(v));
-            self.independent = None;
+            self.siblings = Siblings::default();
         }
     }
 
@@ -204,7 +206,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         // None: still running; Some(None): its asker stopped waiting
         let answers = branch::fork_instances(
             ctx,
-            &mut self.independent,
+            &mut self.siblings,
             &mut self.running,
             call_of,
             |ctx, (r, q)| match q.abandoned() {
@@ -281,7 +283,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             top_id,
             pending: Vec::new(),
             running: Vec::new(),
-            independent: None,
+            siblings: Siblings::default(),
         })
     }
 }

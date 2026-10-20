@@ -399,7 +399,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
-    site.decide_siblings(ctx, n, || crate::analysis::independent(nodes.iter(), ctx));
+    site.decide_siblings(ctx, n, nodes.iter());
     fork_point(ctx, nodes, site, gather_in_order, |(t0, mut p0), (t1, p1)| {
         p0.extend(p1);
         (t0.join(t1), p0)
@@ -1562,7 +1562,7 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
     pub(crate) typs: Box<[Type]>,
     pub args: Box<[Node<R, E>]>,
     resident: TagValue,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {

@@ -52,7 +52,7 @@ pub struct Map<R: Rt, E: UserEvent> {
     // design/review-2026-10-19/repro/c-data-map-map-effect-order.sh (c-data-map-02)
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {

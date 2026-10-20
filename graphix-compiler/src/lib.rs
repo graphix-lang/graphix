@@ -2142,6 +2142,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         if !self.deferred_pending() {
             return;
         }
+        self.control.rebuilt();
         // registered first, so each discard's delete reaches the runtime,
         // whether it was registered before this batch or in it
         for ((id, reader), n) in self.cx.pending_refs.drain() {

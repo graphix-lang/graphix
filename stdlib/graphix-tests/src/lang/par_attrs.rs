@@ -292,6 +292,47 @@ async fn self_calls_in_a_block_fork() -> Result<()> {
     Ok(())
 }
 
+// An activation's fork points are decided at its bind, its call to the
+// next activation a self-call: the update after an argument changes
+// works nothing out at the chain's operators. Asked there, each operator
+// walked every activation below it, cubic in the depth.
+#[tokio::test(flavor = "current_thread")]
+async fn activations_decide_their_fork_points_at_bind() -> Result<()> {
+    let code = r#"{
+        let rec f = |n: i64, s: string| -> i64 select n {
+            0 => 0,
+            n => select str::contains(#part: "b[n]", s) { true => 2, false => 1 } + f(n - 1, s)
+        };
+        let s = "aaaa";
+        s <- sys::time::timer(duration:5.ms, false) ~ str::concat(s, "b7");
+        f(300, s)
+    }"#;
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(ran.values, [Value::I64(300), Value::I64(301)]);
+    assert_eq!(ran.verdicts, 0, "a fork point was decided at an update");
+    Ok(())
+}
+
+// A verdict that rests on a call never bound is asked again only after
+// something binds, not at every update.
+#[tokio::test(flavor = "current_thread")]
+async fn an_open_verdict_waits_for_a_bind() -> Result<()> {
+    let code = r#"{
+        let n = 0;
+        n <- select sys::time::timer(duration:1.ms, 40) ~ n {
+            k if k < 40 => k + 1,
+            _ => never()
+        };
+        let fs = [|x: i64| x * 2];
+        let xs = array::init(4, |i| i + n);
+        array::fold(array::map(xs, |x| select x { -1 => (fs[0]$)(x), x => x * 3 + x * 5 }), 0, |a, b| a + b)
+    }"#;
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(8 * (6 + 4 * 40))));
+    assert!(ran.verdicts <= 4, "{} verdicts in 40 cycles", ran.verdicts);
+    Ok(())
+}
+
 // Fields, arguments and operands that reach one ordered queuefn wrapper
 // do not fork, so #[parallel] over them has nothing to run in parallel.
 #[tokio::test(flavor = "current_thread")]

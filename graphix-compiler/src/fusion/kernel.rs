@@ -49,7 +49,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     facts: RegionFacts,
     /// One feeder Node per kernel input slot.
     feeders: Box<[Node<R, E>]>,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
     /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 1.
     slept: WakeBit,
     /// The ABI contract; the `Arc` pointer is also the kernel's identity

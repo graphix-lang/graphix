@@ -93,7 +93,7 @@ pub struct Struct<R: Rt, E: UserEvent> {
     pub names: Box<[ArcStr]>,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Struct<R, E> {
@@ -500,7 +500,7 @@ pub struct Tuple<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Tuple<R, E> {
@@ -578,7 +578,7 @@ pub struct Variant<R: Rt, E: UserEvent> {
     pub tag: ArcStr,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
-    fork: ForkSite,
+    pub(crate) fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Variant<R, E> {

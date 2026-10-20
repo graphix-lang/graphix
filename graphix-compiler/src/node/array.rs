@@ -480,7 +480,7 @@ pub struct SeqLit<R: Rt, E: UserEvent, K: SeqKind> {
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
     kind: PhantomData<K>,
-    fork: crate::cost::ForkSite,
+    pub(crate) fork: crate::cost::ForkSite,
 }
 
 impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {

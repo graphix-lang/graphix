@@ -10,6 +10,7 @@
 use crate::{
     ApplyView, BindId, CompileCtx, DefAssertion, DefAssertionKind, LambdaId,
     LambdaInstanceId, Node, NodeView, Refs, Rt, Update, UserEvent,
+    cost::{ForkSite, Siblings},
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
     effects::{LambdaFacts, RecursionKind},
     env::Env,
@@ -61,6 +62,8 @@ struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     blocks: LPooled<Vec<&'a Block<R, E>>>,
     /// The `#[parallel]` sites.
     parallels: LPooled<Vec<&'a ForkControl<R, E>>>,
+    /// Fork points other than blocks whose siblings nothing decided yet.
+    forks: LPooled<Vec<(&'a Siblings, ForkKids<'a, R, E>)>>,
     captures: LPooled<
         AHashMap<
             (crate::expr::ExprId, Holder),
@@ -78,6 +81,7 @@ impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {
             machines: LPooled::take(),
             blocks: LPooled::take(),
             parallels: LPooled::take(),
+            forks: LPooled::take(),
             captures: LPooled::take(),
         }
     }
@@ -126,6 +130,11 @@ fn walk_static_graph<'a, R: Rt, E: UserEvent>(
 ) {
     while let Some((node, caller)) = stack.pop() {
         fusion::for_each_node(node, &mut |n| {
+            if let Some((siblings, kids)) = fork_point(n)
+                && !siblings.decided()
+            {
+                graph.forks.push((siblings, kids))
+            }
             let site = match n.view() {
                 NodeView::CallSite(site) => site,
                 NodeView::SeqMachine(m) => return graph.machines.push((m, caller)),
@@ -295,7 +304,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
     plan_machines(&graph, ctx);
-    plan_blocks(&graph, ctx);
+    plan_forks(&graph, ctx);
     for f in graph.parallels.iter() {
         check_parallel(&f.spec, &f.n, ctx)?
     }
@@ -341,7 +350,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
     plan_machines(&graph, ctx);
-    plan_blocks(&graph, ctx);
+    plan_forks(&graph, ctx);
     let parallels =
         graph.parallels.iter().try_for_each(|f| check_parallel(&f.spec, &f.n, ctx));
     let mut due = TailLoops::default();
@@ -1345,22 +1354,49 @@ fn local_summary<R: Rt, E: UserEvent>(
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
+    fusion::for_each_node(n, &mut |x| {
+        own_access(x, graph, ctx, detail, s, callees);
+        if let NodeView::FusedKernel(k) = x.view() {
+            k.feeders()
+                .iter()
+                .for_each(|f| local_summary(f, graph, ctx, detail, s, callees))
+        }
+    })
+}
+
+/// The children an access summary walks: a kernel reads only through
+/// its feeders.
+fn access_children<'a, R: Rt, E: UserEvent>(
+    n: &'a Node<R, E>,
+    f: &mut dyn FnMut(&'a Node<R, E>),
+) {
+    match n.view() {
+        NodeView::FusedKernel(k) => k.feeders().iter().for_each(f),
+        _ => fusion::for_each_child(n, f),
+    }
+}
+
+/// [`local_summary`] of `x` alone, its children aside.
+fn own_access<R: Rt, E: UserEvent>(
+    x: &Node<R, E>,
+    graph: &StaticCallGraph<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
+    detail: Detail,
+    s: &mut Summary,
+    callees: &mut SmallVec<[LambdaInstanceId; 4]>,
+) {
     let ids = detail == Detail::Ids;
-    fusion::for_each_node(n, &mut |x| match x.view() {
+    match x.view() {
         NodeView::Ref(r) => {
             if ids {
                 s.reads.ids.insert(r.id);
             }
         }
-        // a kernel reads only through its feeders, and through the core-trait
-        // impls its region may run
+        // through the core-trait impls its region may run
         NodeView::FusedKernel(k) => {
             if k.facts().hooks {
                 s.opaque()
             }
-            k.feeders()
-                .iter()
-                .for_each(|f| local_summary(f, graph, ctx, detail, s, callees))
         }
         NodeView::Connect(c) => {
             if ids {
@@ -1430,7 +1466,7 @@ fn local_summary<R: Rt, E: UserEvent>(
             s.opaque()
         }
         _ => (),
-    })
+    }
 }
 
 /// The summary of every instance `roots` reach: its body's reads and
@@ -1556,29 +1592,109 @@ fn with_callees(
         .collect()
 }
 
-/// Plan each block the analysis reached with the whole graph in hand,
-/// once: what a block's first update would plan from its own children
-/// misses a call to the instance holding it, and a warm start, whose
-/// callees are still imaged.
-fn plan_blocks<R: Rt, E: UserEvent>(
+/// Plan each block, and decide each other fork point, the analysis
+/// reached, with the whole graph in hand, once: what a fork point's
+/// first update would decide from its own children misses a call to the
+/// instance holding it (an activation's call to the next one is not
+/// bound yet), and a warm start, whose callees are still imaged; and
+/// each would walk everything below it again.
+fn plan_forks<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
 ) {
-    if graph.blocks.iter().all(|b| b.planned.get().is_some()) {
-        return;
-    }
-    let sums =
-        instance_summaries(graph, ctx, Detail::Ids, graph.instances.keys().copied());
+    let mut cx = ForkCx::new(graph, ctx);
     for b in graph.blocks.iter() {
         if b.planned.get().is_some() {
             continue;
         }
         let accesses = with_callees(
             &local_summaries(b.children.iter(), graph, ctx, Detail::Ids),
-            &sums,
+            cx.sums(Detail::Ids),
         );
         let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
         let _ = b.planned.set(plan);
+    }
+    let mut kids: SmallVec<[&Node<R, E>; 8]> = SmallVec::new();
+    for (siblings, of) in graph.forks.iter() {
+        kids.clear();
+        of.collect(&mut kids);
+        siblings.decided_by_analysis(cx.independent(&kids));
+    }
+}
+
+/// The instance summaries a [`plan_forks`] computes once, at each detail
+/// it needs, and each subtree's [`Shallow`] facts it needed.
+struct ForkCx<'g, 'a, R: Rt, E: UserEvent> {
+    graph: &'g StaticCallGraph<'a, R, E>,
+    ctx: &'g CompileCtx<R, E>,
+    ids: Option<LPooled<IntMap<LambdaInstanceId, Summary>>>,
+    flags: Option<LPooled<IntMap<LambdaInstanceId, Summary>>>,
+    shallow: LPooled<IntMap<usize, Shallow>>,
+}
+
+impl<'g, 'a, R: Rt, E: UserEvent> ForkCx<'g, 'a, R, E> {
+    fn new(graph: &'g StaticCallGraph<'a, R, E>, ctx: &'g CompileCtx<R, E>) -> Self {
+        Self { graph, ctx, ids: None, flags: None, shallow: LPooled::take() }
+    }
+
+    /// Every reached instance's summary at `detail`.
+    fn sums(&mut self, detail: Detail) -> &IntMap<LambdaInstanceId, Summary> {
+        let (graph, ctx) = (self.graph, self.ctx);
+        let slot = match detail {
+            Detail::Ids => &mut self.ids,
+            Detail::Flags => &mut self.flags,
+        };
+        slot.get_or_insert_with(|| {
+            instance_summaries(graph, ctx, detail, graph.instances.keys().copied())
+        })
+    }
+
+    /// [`independent`] over the graph's summaries.
+    fn independent(&mut self, children: &[&'a Node<R, E>]) -> Option<bool> {
+        if !two_work(children.iter().copied()) {
+            return Some(true);
+        }
+        let shallow: SmallVec<[Shallow; 8]> =
+            children.iter().map(|c| self.shallow_of(c)).collect();
+        shallow_verdict(&shallow).unwrap_or_else(|| {
+            let (graph, ctx) = (self.graph, self.ctx);
+            let locals =
+                local_summaries(children.iter().copied(), graph, ctx, Detail::Ids);
+            ids_verdict(
+                children.iter().copied(),
+                &with_callees(&locals, self.sums(Detail::Ids)),
+            )
+        })
+    }
+
+    /// The [`Shallow`] facts of the subtree `n`, its callees included,
+    /// each subtree's once.
+    fn shallow_of(&mut self, n: &'a Node<R, E>) -> Shallow {
+        let key = ptr::from_ref(n) as usize;
+        if let Some(s) = self.shallow.get(&key) {
+            return *s;
+        }
+        let s = crate::stack::ensure_sufficient(|| {
+            let mut own = Summary::default();
+            let mut callees = SmallVec::new();
+            own_access(n, self.graph, self.ctx, Detail::Flags, &mut own, &mut callees);
+            let mut s = Shallow::of(&own);
+            s.makes_ref = matches!(n.view(), NodeView::ByRef(_));
+            if !callees.is_empty() {
+                let sums = self.sums(Detail::Flags);
+                callees
+                    .iter()
+                    .filter_map(|c| sums.get(c))
+                    .for_each(|c| s.join(Shallow::of(c)));
+            }
+            access_children(n, &mut |c| {
+                let c = self.shallow_of(c);
+                s.join(c)
+            });
+            s
+        });
+        self.shallow.insert(key, s);
+        s
     }
 }
 
@@ -1738,16 +1854,21 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // (quadratic in node visits, cheap ones), siblings that use references or opaque
     // calls take the full quadratic path, and a warm start's first cycle stays serial;
     // deciding at analysis and imaging the verdict covers all three.
-    let inert =
-        |n: &&Node<R, E>| matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
-    if children.clone().filter(|n| !inert(n)).nth(1).is_none() {
+    // 2026-10-20 claude: Decided at analysis now: plan_forks decides every fork point
+    // other than a block that an analysis reaches (the program's and each run-time
+    // bind's), from one set of instance summaries per analysis and memoized subtree
+    // facts (ForkCx); an open verdict waits for a bind (Siblings::decide,
+    // Control::rebuilds). The probe chain (quick, --no-fusion, taskset 0-3) at 1600
+    // functions: auto 1.23 s -> 0.56 s (off 0.59 s). What stands: the verdict does not
+    // ride the image, so a warm start's first cycle still decides each site here over
+    // its own children (the old per-site walk), and
+    // lang::image::warm_fork_point_decides_once_its_callees_bind still describes that
+    // first cycle. Imaging ForkSite's verdict in each fork-point node's codec closes
+    // it.
+    if !two_work(children.clone()) {
         return Some(true);
     }
-    // A sibling's lets are named by no other sibling, so only a reference
-    // reaches what one publishes: with no reference made before the last
-    // sibling and none read through or opaque, the ordered calls decide,
-    // and no sibling's reads need collecting.
-    // CR claude for claude: [perf/medium] [perf/medium] The first-update cost that
+    // XCR claude for claude: [perf/medium] [perf/medium] The first-update cost that
     // x-perf-compile-03 describes is not confined to deep chains. A left-associated
     // operator run `f(x) + g0(x) + ... + gK(x)` nests K fork sites, each with f(x) in
     // its left operand, so `accesses` collects f's whole reachable static graph K
@@ -1759,43 +1880,151 @@ pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
     // whose operand is a fork site of the same kind can reuse that child's summary.
     // probe: design/review-2026-10-19/repro/x-perf-compile-par-auto-operator-runs.gx
     // (x-perf-compile-03) (x-perf-compile-02)
+    // 2026-10-20 claude: The analysis now decides these sites (plan_forks) with each
+    // subtree's Shallow facts computed once and memoized by node (ForkCx::shallow_of),
+    // so a run of K nested operators visits f's graph once; the runtime fallback below
+    // runs only for sites no analysis decided (a rebind's arguments, an image-restored
+    // node). Probe (quick, --no-fusion, taskset 0-3): auto 0.77 s -> 0.12 s (off 0.12
+    // s). Pin: lang::par_attrs::activations_decide_their_fork_points_at_bind counts
+    // run-time verdicts (Control::verdicts).
     let flags = accesses(children.clone(), ctx, Detail::Flags);
-    let mut cells = Vars::default();
-    let n = flags.len();
-    for c in children.clone().take(n.saturating_sub(1)) {
-        fusion::for_each_node(c, &mut |x| {
-            if let NodeView::ByRef(b) = x.view() {
-                cells.ids.insert(b.id);
-            }
-        });
-    }
-    if cells.is_empty() && !flags.iter().any(|a| a.reads.unknown()) {
-        let mut ordered = false;
-        for a in flags.iter() {
-            if a.ordered && ordered {
-                return match flags.iter().any(|a| a.unbound) {
-                    true => None,
-                    false => Some(false),
-                };
-            }
-            ordered |= a.ordered;
+    let shallow: SmallVec<[Shallow; 8]> = children
+        .clone()
+        .zip(flags.iter())
+        .map(|(c, a)| {
+            let mut s = Shallow::of(a);
+            fusion::for_each_node(c, &mut |x| {
+                s.makes_ref |= matches!(x.view(), NodeView::ByRef(_))
+            });
+            s
+        })
+        .collect();
+    shallow_verdict(&shallow).unwrap_or_else(|| {
+        ids_verdict(children.clone(), &accesses(children, ctx, Detail::Ids))
+    })
+}
+
+/// Whether two of `children` are more than a constant or a variable
+/// read, which publish nothing and call nothing: beside at most one child
+/// that is, there is nothing to decide.
+pub(crate) fn two_work<'a, R: Rt, E: UserEvent>(
+    children: impl Iterator<Item = &'a Node<R, E>>,
+) -> bool {
+    let inert =
+        |n: &&Node<R, E>| matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
+    children.filter(|n| !inert(n)).nth(1).is_some()
+}
+
+/// What deciding siblings needs of each first: whether it reads through
+/// a reference or an opaque call, makes an ordered call, calls something
+/// not bound yet, or makes a reference.
+#[derive(Clone, Copy, Default)]
+struct Shallow {
+    unknown_reads: bool,
+    ordered: bool,
+    unbound: bool,
+    makes_ref: bool,
+}
+
+impl Shallow {
+    fn of(s: &Summary) -> Self {
+        Self {
+            unknown_reads: s.reads.unknown(),
+            ordered: s.ordered,
+            unbound: s.unbound,
+            makes_ref: false,
         }
-        return Some(true);
     }
-    let accesses = accesses(children.clone(), ctx, Detail::Ids);
+
+    fn join(&mut self, other: Self) {
+        self.unknown_reads |= other.unknown_reads;
+        self.ordered |= other.ordered;
+        self.unbound |= other.unbound;
+        self.makes_ref |= other.makes_ref;
+    }
+}
+
+/// The verdict on siblings from their [`Shallow`] facts, or `None` when
+/// it needs what they read. A sibling's lets are named by no other
+/// sibling, so only a reference reaches what one publishes: with no
+/// reference made before the last sibling and none read through or
+/// opaque, the ordered calls decide.
+fn shallow_verdict(siblings: &[Shallow]) -> Option<Option<bool>> {
+    let (_, init) = siblings.split_last()?;
+    if init.iter().any(|s| s.makes_ref) || siblings.iter().any(|s| s.unknown_reads) {
+        return None;
+    }
+    let ordered = siblings.iter().filter(|s| s.ordered).nth(1).is_some();
+    Some(match ordered {
+        false => Some(true),
+        true => unbound_or_dependent(siblings.iter().any(|s| s.unbound)),
+    })
+}
+
+/// The verdict on `children` from what each accesses.
+fn ids_verdict<'a, R: Rt, E: UserEvent>(
+    children: impl Iterator<Item = &'a Node<R, E>>,
+    accesses: &[Summary],
+) -> Option<bool> {
     let mut published = Vars::default();
     let mut ordered = false;
     for (n, access) in children.zip(accesses.iter()) {
         if access.reads.meeting(&published).is_some() || (access.ordered && ordered) {
-            return match accesses.iter().any(|a| a.unbound) {
-                true => None,
-                false => Some(false),
-            };
+            return unbound_or_dependent(accesses.iter().any(|a| a.unbound));
         }
         publishes(n, &mut published);
         ordered |= access.ordered;
     }
     Some(true)
+}
+
+/// Dependent siblings, unless that rests on a call not bound yet.
+fn unbound_or_dependent(unbound: bool) -> Option<bool> {
+    (!unbound).then_some(false)
+}
+
+/// What a fork point other than a block's runs as siblings.
+#[derive(Clone, Copy)]
+enum ForkKids<'a, R: Rt, E: UserEvent> {
+    Args(&'a CallSite<R, E>),
+    Nodes(&'a [Node<R, E>]),
+    Pair(&'a Node<R, E>, &'a Node<R, E>),
+}
+
+impl<'a, R: Rt, E: UserEvent> ForkKids<'a, R, E> {
+    fn collect(&self, out: &mut SmallVec<[&'a Node<R, E>; 8]>) {
+        match *self {
+            Self::Args(cs) => {
+                out.extend(cs.args.values().filter_map(|a| a.node.as_ref()))
+            }
+            Self::Nodes(ns) => out.extend(ns.iter()),
+            Self::Pair(l, r) => out.extend([l, r]),
+        }
+    }
+}
+
+/// `n` as a fork point other than a block's: its siblings verdict and
+/// the children it decides it over.
+fn fork_point<'a, R: Rt, E: UserEvent>(
+    n: &'a Node<R, E>,
+) -> Option<(&'a Siblings, ForkKids<'a, R, E>)> {
+    use NodeView as V;
+    let (site, kids): (&ForkSite, _) = match n.view() {
+        V::CallSite(cs) => (&cs.fork, ForkKids::Args(cs)),
+        V::Struct(c) => (&c.fork, ForkKids::Nodes(&c.n)),
+        V::Tuple(c) => (&c.fork, ForkKids::Nodes(&c.n)),
+        V::Variant(c) => (&c.fork, ForkKids::Nodes(&c.n)),
+        V::Array(c) => (&c.fork, ForkKids::Nodes(&c.n)),
+        V::ListLit(c) => (&c.fork, ForkKids::Nodes(&c.n)),
+        V::Map(c) => (&c.fork, ForkKids::Nodes(&c.n)),
+        V::StringInterpolate(c) => (&c.fork, ForkKids::Nodes(&c.args)),
+        V::FusedKernel(k) => (&k.fork, ForkKids::Nodes(k.feeders())),
+        v => {
+            let (l, r, site) = fusion::binary_operands(&v)?;
+            (site, ForkKids::Pair(l, r))
+        }
+    };
+    Some((&site.1, kids))
 }
 
 /// Why a block plan starts a new run at a statement.
@@ -2026,13 +2255,20 @@ fn is_work<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
     )
 }
 
-/// Whether siblings fork: two of them are work, and the runtime finds
-/// them [`independent`].
+/// Whether a fork point's siblings fork: two of them are work, and they
+/// are [`independent`].
 fn forks_two<'a, R: Rt, E: UserEvent>(
-    ns: impl Iterator<Item = &'a Node<R, E>> + Clone,
+    siblings: &Siblings,
+    of: ForkKids<'a, R, E>,
     ctx: &CompileCtx<R, E>,
 ) -> bool {
-    ns.clone().filter(|n| is_work(n)).count() >= 2 && independent(ns, ctx) == Some(true)
+    let mut kids: SmallVec<[&Node<R, E>; 8]> = SmallVec::new();
+    of.collect(&mut kids);
+    kids.iter().filter(|n| is_work(n)).nth(1).is_some()
+        && match siblings.decided() {
+            true => siblings.independent(),
+            false => independent(kids.iter().copied(), ctx) == Some(true),
+        }
 }
 
 /// `#[parallel]`'s assertion: something within `node`, callees excluded,
@@ -2107,26 +2343,16 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
                         None => forks(&plan_block(&b.children, &b.catches, ctx)),
                     }
                 }
-                NodeView::CallSite(cs) => {
-                    let slots = matches!(
+                NodeView::CallSite(cs)
+                    if matches!(
                         cs.resolved_apply(),
                         Some(ApplyView::Lambda(g)) if matches!(g.body().view(), NodeView::MapQ(_))
-                    );
-                    slots
-                        || forks_two(
-                            cs.args.values().filter_map(|a| a.node.as_ref()),
-                            ctx,
-                        )
+                    ) =>
+                {
+                    true
                 }
-                NodeView::Struct(c) => forks_two(c.n.iter(), ctx),
-                NodeView::Tuple(c) => forks_two(c.n.iter(), ctx),
-                NodeView::Variant(c) => forks_two(c.n.iter(), ctx),
-                NodeView::Array(c) => forks_two(c.n.iter(), ctx),
-                NodeView::ListLit(c) => forks_two(c.n.iter(), ctx),
-                NodeView::Map(c) => forks_two(c.n.iter(), ctx),
-                NodeView::StringInterpolate(c) => forks_two(c.args.iter(), ctx),
-                v => fusion::binary_operands(&v)
-                    .is_some_and(|(l, r)| forks_two([l, r].into_iter(), ctx)),
+                _ => fork_point(n)
+                    .is_some_and(|(siblings, of)| forks_two(siblings, of, ctx)),
             }
     });
     if !forks {

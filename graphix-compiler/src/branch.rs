@@ -7,7 +7,7 @@
 
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue, UserEvent,
-    cost::{ForkSite, Meter, Plan},
+    cost::{ForkSite, Meter, Plan, Siblings},
     expr::Expr,
     node::{callsite::CallNode, place::Path},
     prune::{BoundaryRef, Reader},
@@ -1008,15 +1008,15 @@ where
 
 /// Update `items`, instances of functions the runtime started (a
 /// server's requests), each on a branch of its own when there are two or
-/// more and they are independent, else in order. `independent` is the
-/// caller's verdict on its instances: decided here once
-/// ([`crate::analysis::independent`]) and kept until the caller resets
-/// it, as instances of one function stand for each other. A fresh
-/// instance's call binds here first, so no branch compiles; `call` is
-/// an item's call.
+/// more and they are independent, else in order. `siblings` is the
+/// caller's verdict on its instances: decided here
+/// ([`Siblings::decide`]) and kept until the caller resets it, as
+/// instances of one function stand for each other. A fresh instance's
+/// call binds here first, so no branch compiles; `call` is an item's
+/// call.
 pub fn fork_instances<R, E, T, O, F>(
     ctx: &mut ExecCtx<'_, R, E>,
-    independent: &mut Option<bool>,
+    siblings: &mut Siblings,
     items: &mut [T],
     call: for<'a> fn(&'a mut T) -> &'a mut Node<R, E>,
     f: F,
@@ -1038,13 +1038,13 @@ where
     if ctx.deferred_pending() {
         ctx.apply_deferred();
     }
-    if items.len() >= 2 && ctx.fork_mode() != ParMode::Off && independent.is_none() {
+    {
         let calls: LPooled<Vec<&Node<R, E>>> =
             items.iter_mut().map(|i| &*call(i)).collect();
-        *independent = crate::analysis::independent(calls.iter().copied(), ctx);
+        siblings.decide(ctx, calls.len(), calls.iter().copied());
     }
     let fork =
-        items.len() >= 2 && ctx.fork_mode() != ParMode::Off && *independent == Some(true);
+        items.len() >= 2 && ctx.fork_mode() != ParMode::Off && siblings.independent();
     match fork {
         true => fork_each(ctx, items.iter_mut(), |c, item| f(c, item)),
         false => items.iter_mut().map(|item| f(ctx, item)).collect(),
