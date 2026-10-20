@@ -1666,19 +1666,12 @@ impl Lambda {
             if flags.contains(CFlag::NoBuiltins) {
                 bail!("defining builtins is not allowed in this context")
             }
-            // CR claude for claude: [bug/low] This annotation check covers the argspec
-            // but not the variadic. An untyped `@args` becomes a fresh tvar, so
-            // `|@args| -> i64 'core_sum` is accepted, and `s("a", "b")` checks as i64
-            // while core_sum is handed strings. `|x| -> i64 'core_sum` is refused here.
-            // Fix: bail the same way when `l.vargs` is `Some(None)`. probe:
-            // design/review-2026-10-19/repro/c-lambda-untyped-builtin-vargs.gx
-            // (c-lambda-04)
-            for a in argspec.iter() {
-                if a.constraint.is_none() {
-                    bail!(
-                        "builtin function {builtin} requires all arguments to have type annotations"
-                    )
-                }
+            if argspec.iter().any(|a| a.constraint.is_none())
+                || matches!(l.vargs, Some(None))
+            {
+                bail!(
+                    "builtin function {builtin} requires all arguments to have type annotations"
+                )
             }
             if rtype.is_none() {
                 bail!("builtin function {builtin} requires a return type annotation")

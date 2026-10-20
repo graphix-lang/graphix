@@ -3078,3 +3078,9 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, null, null]")
 );
+
+// A builtin binding declares every argument's type, its variadic's too.
+run!(builtin_binding_needs_a_typed_variadic, r#"{
+  let s = |@args| -> i64 'core_sum;
+  s(1, 2)
+}"#, refused("builtin function core_sum requires all arguments to have type annotations"); FuseExpect::None);
