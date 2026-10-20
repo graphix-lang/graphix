@@ -583,13 +583,7 @@ pub fn interrupted() -> bool {
 /// enclosing runtime's is back when `f` returns or unwinds. Run it on
 /// the thread that runs the nodes, before the task can migrate.
 pub fn with_control<T>(control: &Control, f: impl FnOnce() -> T) -> T {
-    struct Restore(*const Control);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            CURRENT.with(|c| c.set(self.0));
-        }
-    }
-    let _restore = Restore(CURRENT.with(|c| c.replace(control as *const Control)));
+    let _restore = crate::Restore::replace(&CURRENT, control as *const Control);
     f()
 }
 

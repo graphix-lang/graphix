@@ -73,7 +73,7 @@ thread_local! {
 /// must stay valid while `f` runs.
 #[doc(hidden)]
 pub fn with_value_hooks<T>(h: &ValueHookDispatch, f: impl FnOnce() -> T) -> T {
-    let _restore = Restore(VALUE_HOOKS.with(|c| c.replace(h)));
+    let _restore = crate::Restore::replace(&VALUE_HOOKS, h as *const ValueHookDispatch);
     f()
 }
 
@@ -83,24 +83,16 @@ pub fn value_hooks_loaned() -> bool {
     VALUE_HOOKS.with(|c| !c.get().is_null())
 }
 
-struct Restore(*const ValueHookDispatch);
-
-impl Drop for Restore {
-    fn drop(&mut self) {
-        VALUE_HOOKS.with(|c| c.set(self.0));
-    }
-}
-
 /// Dispatch through the installed handle, which is suspended for the
 /// dispatch's duration: the code an implementation runs sees no loan
 /// but one it arms itself, so nothing inherits a context it was not
 /// lent. The handle is restored on return and on unwind.
 fn hooked<T>(f: impl FnOnce(&ValueHookDispatch) -> Option<T>) -> Option<T> {
-    let p = VALUE_HOOKS.with(|c| c.replace(ptr::null()));
+    let restore = crate::Restore::replace(&VALUE_HOOKS, ptr::null());
+    let p = restore.prev();
     if p.is_null() {
         return None;
     }
-    let _restore = Restore(p);
     // SAFETY: only `with_value_hooks` installs a pointer, and it is the
     // borrow of a handle alive for the whole of that call's `f`.
     f(unsafe { &*p })

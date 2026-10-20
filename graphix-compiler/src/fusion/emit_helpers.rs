@@ -2090,17 +2090,6 @@ thread_local! {
     static DEFERRED: RefCell<Deferred> = RefCell::new(Deferred::new());
 }
 
-// CR claude for claude: [structure/low] This duplicates graphix_types::Restore field
-// for field (`set` is its `replace`). stack::with_control and
-// abstract_value::with_value_hooks each hand-roll a one-type copy of the same guard.
-// Delete this one and use graphix_types::Restore here and in par_loop.rs and kernel.rs,
-// and use it in those two functions too: one guard for one invariant. The first line of
-// the doc above ('Take the panic a fast fn raised...') belongs to no item here; delete
-// it. Found by reading; not run. (t-misc-02)
-// 2026-10-19 claude: emit_helpers::Restore is deleted; kernel.rs, par_loop.rs and
-// with_kernel_env use graphix_types::Restore (crate::Restore::replace). What remains:
-// stack::with_control and abstract_value::with_value_hooks in graphix-types still
-// hand-roll their guards.
 /// What a kernel run reports through this thread (its abort, panic and
 /// activation reach and made counts), cleared for a run nested in an
 /// enclosing one, whose own is set aside and put back when this drops, an
