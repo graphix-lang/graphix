@@ -2421,13 +2421,15 @@ mod tests {
             assert!(old.is_bound());
         }
         assert_eq!(current_task(), module);
-        assert!(!writes.foreign());
+        assert!(writes.foreign().is_none());
         let writes = OwnWrites::enter(module);
         TVar::empty_named(literal!("b")).bind(Type::Bottom);
-        assert!(!writes.foreign(), "a cell of the module's own");
+        assert!(writes.foreign().is_none(), "a cell of the module's own");
         let writes = OwnWrites::enter(module);
         older.bind(Type::Bottom);
-        assert!(writes.foreign(), "an earlier task's cell, decided by the module");
+        let w = writes.foreign().expect("an earlier task's cell, decided by the module");
+        assert!(w.held_by(&Type::Tuple(Arc::from_iter([Type::TVar(older.clone())]))));
+        assert!(!w.held_by(&Type::TVar(old.clone())), "the write names its own cell");
     }
 
     /// A copy knows what the source's checks learned of each cell.
