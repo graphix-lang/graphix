@@ -1824,14 +1824,15 @@ impl Env {
 
     /// [`Self::deftype`]'s contractiveness again, for a definition whose
     /// body named something not defined yet: at the end of the check
-    /// every name it reaches is.
-    pub fn check_contractive(&self, scope: &ModPath, name: &str) -> Result<()> {
+    /// every name it reaches is. `Unknown` while a name it reaches is
+    /// still undefined.
+    pub fn check_contractive(&self, scope: &ModPath, name: &str) -> Result<Unguarded> {
         let Some(td) = self.typedefs.get(scope).and_then(|m| m.get(name)) else {
-            return Ok(());
+            return Ok(Unguarded::Guarded);
         };
         match td.typ().reaches_unguarded(self, td.def.def_key()) {
             Unguarded::Reaches => bail!("{}", non_contractive(name)),
-            Unguarded::Guarded | Unguarded::Unknown => Ok(()),
+            u => Ok(u),
         }
     }
 

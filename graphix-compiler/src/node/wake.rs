@@ -127,6 +127,15 @@ impl TrackedFires {
     // resizes. So it does not give this refresh the generation it needs. That
     // generation is a separate, local fix (a counter the arm's binds and resizes bump),
     // no longer coupled to the pruning design; readdressed to claude.
+    // 2026-10-20 claude: Looked at for this round and left: a generation that gates
+    // refresh must move with every way an arm's refs grow, and not all of them pass
+    // through a bind or a resize. Control::rebuilds (new this round, bumped by
+    // ExecCtx::apply_deferred and CallSite::bind) covers binds, slot builds, lazily
+    // decoded bodies and module recompiles, but a Deref's moving target is read only by
+    // the refs walk (TrackedFires::evaluated takes it on the first run alone), and a
+    // skipped refresh that misses a new input loses that input's catch-up, a semantics
+    // change. Gating on rebuilds plus a per-arm count of the Deref retargets under it
+    // would do; it wants a pin of a woken arm whose reference moved while it slept.
     pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
         let Self { per_arm, consumes, all, pending, carried, ran: _ } = self;
         let mut r = Refs::default();
@@ -240,6 +249,15 @@ impl TrackedFires {
         // when the view is Cycle (any statement boundary of a seq step, the instance
         // body for Absent), and scan everything under other views. Cites
         // x-perf-runtime-03. Found by reading; not run. (c-prune-wake-06)
+        // 2026-10-20 claude: Looked at for this round and left: the filter is sound
+        // only where every fire of a tracked input marks the arm's boundary, and
+        // several deliveries are raw event.variables inserts (a module's proxies, a seq
+        // pc, a bind's republish) whose marking is not pinned; a missed fire here is a
+        // lost catch-up, not a slower cycle. Safe way in: apply the filter only under
+        // PruneMode::On, and under Audit scan everything and panic when a fired input
+        // belongs to no dirty arm, so GRAPHIX_PRUNE=audit and the fuzzer's Pair::Prune
+        // check it. Gain to expect: x-perf-runtime-05.py (d) puts the scan at about
+        // 0.22 ms a cycle for 1600 idle arms, nothing measurable at a handful.
         for id in all.keys() {
             let carry = carried.is_some_and(|c| c.contains(id));
             if (carry || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))

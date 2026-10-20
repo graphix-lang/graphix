@@ -1650,6 +1650,10 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         self.attr_census.lock().extend(attr_census.into_inner());
         self.attr_dispatched.lock().extend(attr_dispatched.into_inner());
         self.attr_absorbed.lock().extend(attr_absorbed.into_inner());
+        let mut pending_refs = pending_refs;
+        if pending_refs.len() > self.pending_refs.len() {
+            mem::swap(&mut self.pending_refs, &mut pending_refs)
+        }
         for (k, n) in pending_refs {
             *self.pending_refs.entry(k).or_default() += n;
         }
@@ -2901,7 +2905,7 @@ pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
                 }
             }
             Pending::Contractive(scope, name, spec) => {
-                ctx.env.check_contractive(&scope, &name).at(&spec)?
+                ctx.env.check_contractive(&scope, &name).at(&spec)?;
             }
         }
     }
@@ -2930,19 +2934,29 @@ pub(crate) fn resite_pending_name<R: Rt, E: UserEvent>(
     }
 }
 
-/// Refuse now each deferred typedef a declaration just completed (a
-/// typedef, or a `use` naming a type), before anything later in the run
-/// expands it.
+/// Refuse now each deferred typedef a `use` naming a type just
+/// completed, before anything later in the run expands it, and forget
+/// those it settled.
 pub(crate) fn recheck_pending_contractive<R: Rt, E: UserEvent>(
-    ctx: &CompileCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> Result<()> {
     use expr::At;
-    for p in ctx.pending_names.iter() {
-        if let Pending::Contractive(scope, name, spec) = p {
-            ctx.env.check_contractive(scope, name).at(spec)?;
+    let mut res = Ok(());
+    let CompileCtx { pending_names, env, .. } = ctx;
+    pending_names.retain(|p| match p {
+        Pending::Contractive(_, _, _) if res.is_err() => true,
+        Pending::Contractive(scope, name, spec) => {
+            match env.check_contractive(scope, name).at(spec) {
+                Ok(u) => u == typ::Unguarded::Unknown,
+                Err(e) => {
+                    res = Err(e);
+                    true
+                }
+            }
         }
-    }
-    Ok(())
+        Pending::Name(..) => true,
+    });
+    res
 }
 
 /// Record the names `t`, written at `spec`, holds that do not resolve

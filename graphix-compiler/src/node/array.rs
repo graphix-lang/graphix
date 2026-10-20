@@ -33,6 +33,45 @@ use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 
+/// The union of a literal's element types `ts`, `⊥` first: an element of
+/// the very type of an earlier one adds nothing, and one type left is its
+/// own union. A call through an element accepts each alike: functions
+/// meet.
+pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
+    let same = |a: &Type, b: &Type| {
+        std::ptr::eq(a, b)
+            || match (a, b) {
+                (Type::TVar(a), Type::TVar(b)) => a.same_cell(b),
+                (Type::Array(a), Type::Array(b)) | (Type::List(a), Type::List(b)) => {
+                    Arc::ptr_eq(a, b)
+                }
+                (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+                    Arc::ptr_eq(k0, k1) && Arc::ptr_eq(v0, v1)
+                }
+                (Type::Tuple(a), Type::Tuple(b)) => Arc::ptr_eq(a, b),
+                (Type::Struct(a), Type::Struct(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    };
+    let mut distinct: LPooled<Vec<&Type>> = LPooled::take();
+    for t in ts {
+        if !distinct.iter().any(|d| same(d, t)) {
+            distinct.push(t)
+        }
+    }
+    match &distinct[..] {
+        [_, one] => Ok((*one).clone()),
+        ts => Type::union_of_alternatives(env, ts),
+    }
+}
+
+/// Bind `cell`, a literal's own element cell, to `t` without an occurs
+/// walk of `t`'s whole depth: nothing else holds the cell. False when it
+/// is not such a cell.
+pub(super) fn bind_element(cell: &Type, t: &Type) -> bool {
+    matches!(cell, Type::TVar(tv) if !matches!(t, Type::Bottom) && tv.bind_unshared(t))
+}
+
 /// An array index or slice bound: any integer. An open cell is narrowed
 /// to the integers, as an arithmetic operand is to the numbers.
 pub(super) fn check_index<R: Rt, E: UserEvent>(env: &Env, i: &Node<R, E>) -> Result<()> {
@@ -644,18 +683,9 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         let mut ts: LPooled<Vec<&Type>> = LPooled::take();
         ts.push(&bottom);
         ts.extend(self.n.iter().map(|n| n.typ()));
-        // a call through an element accepts each alike: functions meet;
-        // one element is its own union
-        let union = match &self.n[..] {
-            [one] => one.typ().clone(),
-            _ => wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?,
-        };
-        // the literal's own element cell, held by nothing else, takes the
-        // elements' type without an occurs walk of its whole depth
+        let union = wrap!(self, element_union(&ctx.env, &ts))?;
         if let Type::Array(e) | Type::List(e) = &self.typ
-            && let Type::TVar(tv) = &**e
-            && !matches!(union, Type::Bottom)
-            && tv.bind_unshared(&union)
+            && bind_element(e, &union)
         {
             return Ok(());
         }

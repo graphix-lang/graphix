@@ -522,6 +522,7 @@ impl TypeDef {
         body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
         let (params, body) = Type::reset_typedef_tvars(params, body);
+        let parametric = !params.is_empty();
         let verdict = ctx
             .env
             .deftype(
@@ -537,7 +538,7 @@ impl TypeDef {
             )
             .at(&spec)?;
         let name = name.name.clone();
-        // CR claude for claude: [perf/medium] Every typedef rechecks every pending
+        // XCR claude for claude: [perf/medium] Every typedef rechecks every pending
         // contractivity question, and none is ever removed. Env::check_contractive
         // answers Ok for both Guarded and Unknown, so the caller cannot tell a settled
         // question from an open one. A chain of typedefs that each name the next one as
@@ -547,7 +548,29 @@ impl TypeDef {
         // entries still Unknown in ctx.pending_names. probe:
         // design/review-2026-10-19/repro/c-node-mod-typedef-forward-chain.py
         // (c-node-mod-03)
-        crate::recheck_pending_contractive(ctx)?;
+        // 2026-10-20 claude: check_contractive returns the verdict and
+        // recheck_pending_contractive keeps only the questions still Unknown. That
+        // alone does not help the probe (every link of a forward chain stays Unknown
+        // until its last name), so TypeDef::compile now rechecks only after a typedef
+        // with parameters: a cycle a definition completes runs through it, through its
+        // body when it has none, which deftype's own walk already refused; one with
+        // parameters can close a cycle through an argument
+        // (lang::types::forward_alias_cycle, type T = G<[i64, T]>), which only T's walk
+        // sees. A use still rechecks. Probe (quick): forward 250/500 1.27/9.15 s ->
+        // 0.26/0.12 s (backward 0.07/0.15). Pins:
+        // deep_nesting::forward_typedef_chain_checks_in_time (1000 types within 15 s;
+        // 62 s debug before), lang::types::forward_alias_cycle, forward_maybe_cycle,
+        // renamed_alias_cycle.
+        // 2026-10-20 claude: Checked the parametric recheck is load-bearing: with it
+        // disabled, cargo test -p graphix-tests -- lang::types:: spins at 400% CPU for
+        // over 8 minutes (a fixture expands its forward alias cycle before the
+        // end-of-check refusal), so those fixtures pin it.
+        if parametric {
+            // A cycle a definition completes runs through it: without
+            // parameters through its body, which deftype walked; with them also
+            // through an argument (`type T = G<[i64, T]>`), which only T's walk sees.
+            crate::recheck_pending_contractive(ctx)?;
+        }
         if verdict == crate::typ::Unguarded::Unknown {
             ctx.pending_names.push(crate::Pending::Contractive(
                 scope.lexical.clone(),

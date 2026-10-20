@@ -1429,6 +1429,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             // out. That gives modules the planned, imaged runs and removes this
             // duplicate catch-ordered walk. Found by reading; not run.
             // (c-module-traits-05)
+            // 2026-10-20 claude: Left for now: holding the body as a Block gives a
+            // module the block plan's runs, but a planned run's ForkSite is never
+            // decided today (x-parallel-01, node::Block::update_forking), so no block
+            // run forks under any mode and the restructure would fork nothing yet
+            // while changing the module's image codec, typecheck and catch walk. Do it
+            // once x-parallel-01 lands, with a #[parallel] module pin.
             for i in super::evaluation_order(self.nodes.len(), &self.catches) {
                 let _ = self.nodes[i].update(ctx);
             }
