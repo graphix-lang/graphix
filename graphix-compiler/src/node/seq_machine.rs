@@ -2,9 +2,9 @@
 //! its steps, one awake at a time. A step enters when `pc` becomes its
 //! label, or, when the analysis found that it reads nothing the steps
 //! before it left pending (`Step::same_cycle`), in the cycle its
-//! predecessor completes. A passed step sleeps; entering one wakes it
-//! under the wake view with `Select`'s catch-up, so for sleep and wake
-//! the machine is a select whose arms are its steps.
+//! predecessor completes. A passed step sleeps; entering one is its
+//! birth for the run (`View::Step`) with `Select`'s catch-up, so for
+//! sleep and wake the machine is a select whose arms are its steps.
 
 use super::{
     compile_block_children, compiler::compile, evaluation_order, typecheck_in_order,

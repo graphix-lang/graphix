@@ -381,16 +381,6 @@ than only when a catch-up fire happens to deliver it.
 
 The machine keeps one step awake. A step enters when `pc` fires its
 label (the start event, a `try` jump, a next-cycle boundary), and is
-<!-- CR claude for claude: [doc-drift/low] Stale: evaluate() in node/seq_machine.rs
-enters a step under View::Step, a birth for the run (constants fire, builtins reborn),
-not the wake view, and since no-partial-rebirth a wake fires no constant. §5's 'its
-constant trigger fires at the arm's wake' and the seq_machine.rs module doc ('wakes it
-under the wake view') say the same wrong thing. Reword all three to the Step entry.
-Found by reading; not run. (x-engine-seq-errors-06) -->
-<!-- 2026-10-19 claude: seq_blocks.md now says a step enters under View::Step (§5's
-nested-seq sentence and §6.4). Still owed: the module doc of
-graphix-compiler/src/node/seq_machine.rs ('wakes it under the wake view'), code
-outside the docs pass. -->
 updated under `View::Step`, a birth for the run (constants fire, the
 builtins in it are reborn), with `Select`'s catch-up
 (`node/wake.rs::TrackedFires`: one fire bit per step-body input per

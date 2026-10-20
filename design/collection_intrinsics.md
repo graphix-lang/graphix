@@ -90,18 +90,6 @@ operation has a sound ownership rule.
 
 Firing is `SlotFlags`: per-slot discs fold into a slots word and a
 prev-length word gives exact resize detection
-<!-- CR claude for claude: [doc-drift/low] The rule is incomplete. Filter and find also
-fire when their source fires with the same length and no slot fires, because the result
-reads the elements (MapOp::reads_elements; the JIT agrees). Add that case here and in
-CLAUDE.md's list of what collection loops fire on. probe:
-design/review-2026-10-19/repro/c-collection-filter-fires-on-moved-source.gx
-(c-collection-04) -->
-<!-- 2026-10-19 claude: collection_intrinsics.md now states the filter/find case. Still
-owed: CLAUDE.md's 'collection loops fire on' list (The semantics both engines
-implement, Organic firing) needs the same clause; CLAUDE.md is outside the docs
-pass. -->
-<!-- 2026-10-19 claude: Back to CR: a partial fix (the design doc only) stays a CR until
-CLAUDE.md carries the clause. -->
 (`kernel_instance_state.md`) — a loop fires iff resized ∨ a slot fired,
 or, for `filter` and `find`, whose result reads the source's elements,
 the source fired (`MapOp::reads_elements`; the JIT agrees); for the

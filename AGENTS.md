@@ -735,8 +735,9 @@ node graph IS the IR — there is no parallel typed IR
   stale everywhere else; every argument-less literal (`` `Tag ``, `[]`,
   `{}`) is a constant (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
-  resize, a fired slot, a fired empty source, a fired fold carry, or a
-  source back from bottom. A bottom source forgets the length and runs
+  resize, a fired slot, a fired empty source, a fired fold carry, a
+  source back from bottom, or, for filter and find, which read the
+  elements, a fired source of the same length. A bottom source forgets the length and runs
   no slot: its slots pause as a deselected arm does and wake, caught up,
   when it returns; a kernel loop runs no iteration over a tainted source
   (`scaffold::slots_run`).
