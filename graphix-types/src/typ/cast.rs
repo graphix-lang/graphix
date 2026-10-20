@@ -2226,17 +2226,20 @@ fn parse(s: &ArcStr, t: Typ) -> Option<Value> {
     {
         return of_int(n, t);
     }
-    if t == Typ::Decimal {
-        let s = s.trim();
-        return rust_decimal::Decimal::from_str_exact(s)
-            .or_else(|_| rust_decimal::Decimal::from_scientific(s))
-            .ok()
-            .map(|d| Value::Decimal(d.into()));
-    }
-    match t {
-        Typ::F64 => return s.trim().parse::<f64>().ok().map(Value::F64),
-        Typ::F32 => return s.trim().parse::<f32>().ok().map(Value::F32),
-        _ => (),
+    let plain = match t {
+        Typ::Decimal => {
+            let s = s.trim();
+            rust_decimal::Decimal::from_str_exact(s)
+                .or_else(|_| rust_decimal::Decimal::from_scientific(s))
+                .ok()
+                .map(|d| Value::Decimal(d.into()))
+        }
+        Typ::F64 => s.trim().parse::<f64>().ok().map(Value::F64),
+        Typ::F32 => s.trim().parse::<f32>().ok().map(Value::F32),
+        _ => None,
+    };
+    if plain.is_some() {
+        return plain;
     }
     if parses_to_collection(s) {
         return None;

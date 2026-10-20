@@ -3332,6 +3332,15 @@ run!(string_casts_to_decimal_and_float_exactly, r#"{
   "[d1] [d2] [f1] [f2] [f3] [f4] [t1] [r]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.23456789012345678901234567 12345678901234567890. 9223372036854776000 inf 3 -0 0 1.23456789012345678901234567"); FuseExpect::Jit);
 
+// A string holding a typed literal reads into a float as into an
+// integer: what Rust's parse refuses is read as a value, then converted.
+run!(typed_strings_cast_to_floats_as_to_integers, r#"{
+  let f = cast<f64>("f64:1.5")$;
+  let g = cast<f64>("i64:3")$;
+  let n = cast<i64>("i64:3")$;
+  "[f] [g] [n]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1.5 3 3"); FuseExpect::Jit);
+
 // A union whose members are one type once bound counts that type once:
 // `[i64, 'y]` with 'y bound to i64 is a singleton for arithmetic.
 run!(
