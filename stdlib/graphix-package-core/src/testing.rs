@@ -383,7 +383,8 @@ pub async fn next_update_raw(
 /// Every update of `id` until the runtime settles (idle with nothing
 /// outstanding, [`GXHandle::wait_settled`]), or, for a program with a
 /// standing source that never settles, until no batch arrives for
-/// `quiet`; failing at `deadline` (a program that never quiesces).
+/// `quiet` after the first; failing at `deadline` (a program that never
+/// quiesces).
 pub async fn updates_until_quiet(
     rt: &GXHandle<NoExt>,
     rx: &mut Events,
@@ -419,6 +420,9 @@ pub async fn updates_until_quiet(
                 return Ok(values);
             }
             r = tokio::time::timeout(quiet, rx.recv()) => match r {
+                // a first value may be slow to come under load: quiet only
+                // counts once one has
+                Err(_) if values.is_empty() => continue,
                 Err(_) => return Ok(values),
                 Ok(None) => bail!("the runtime died"),
                 Ok(Some(mut batch)) => take(&mut batch, id, &mut values),
