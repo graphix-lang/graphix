@@ -40,7 +40,7 @@ use cranelift_module::{
     default_libcall_names,
 };
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
-use netidx_value::Value;
+use netidx_value::{Typ, Value};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -2146,10 +2146,10 @@ fn emit_wrapper(
 
 /// Pack a scalar [`Value`] into a u64 slot as `prim`: signed ints
 /// sign-extend, unsigned zero-extend, floats keep their bits. `None`
-/// when `v` is not a scalar of `prim`'s shape, which the caller reports
-/// as a mismatch. `Z32`/`Z64`/`V32`/`V64` pack as their fixed-width
-/// prim, which is a varint type's own.
+/// when `v` is not exactly a `prim`, which the caller reports as a
+/// mismatch: a varint is not of any register prim (its type rides a
+/// kernel as a Value), so a `Z32`/`Z64`/`V32`/`V64` is refused too.
 pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
-    (kernel_abi::scalar_prim_of_value(v) == Some(prim))
+    (PrimType::from_typ(Typ::get(v)) == Some(prim))
         .then(|| crate::tval::value_words(v)[1])
 }

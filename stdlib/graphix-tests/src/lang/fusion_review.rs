@@ -410,3 +410,61 @@ run!(prologue_unguarded_arm_binds_reach_the_chain, r#"
     (#[native] f(`A(1), 0), #[native] f(`B(5), 2), #[native] f(`B(1), 2))
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:50, i64:1]"); FuseExpect::Jit);
+
+// A list pattern at a tuple, struct or array leaf, or in a variant
+// payload, tests and binds the leaf's own list.
+run!(select_list_pattern_leaves, r#"
+{
+    let l0 = |xs: List<i64>, n: i64| -> i64 #[native] select (xs, n) { ([<x, ..>], 0) => x, (_, m) => m };
+    let l1 = |p: (List<string>, i64)| -> i64 #[native] select p {
+        ([<a, b>], _) => str::len(a) + str::len(b),
+        (w@ [<_, rest..>], k) => list::len(rest) + list::len(w) * 100 + k,
+        _ => -1
+    };
+    let l2 = |s: {xs: List<i64>, y: i64}| -> i64 #[native] select s { {xs: [<>], y} => y, {xs: [<h, ..>], ..} => h, _ => -1 };
+    let l3 = |a: Array<List<i64>>| -> i64 #[native] select a { [[<h, ..>], ..] => h, _ => 0 };
+    let l4 = |v: [`A(List<i64>), `B]| -> i64 #[native] select v { `A(w@ [<h, t..>]) => h + list::len(t) + list::len(w) * 10, `A(_) => -1, `B => 0 };
+    (
+        l0([<3>], 0), l0([<>], 2), l0([<4>], 5),
+        l1(([<"ab", "c">], 9)), l1(([<"ab", "c", "d">], 9)), l1(([<>], 9)),
+        l2({xs: [<>], y: 7}), l2({xs: [<8, 1>], y: 7}),
+        l3([[<5>], [<>]]), l3([[<>]]), l3([]),
+        l4(`A([<2, 3>])), l4(`A([<>])), l4(`B)
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:3, i64:2, i64:5, i64:3, i64:311, i64:-1, i64:7, i64:8, i64:5, i64:0, i64:0, i64:23, i64:-1, i64:0]"); FuseExpect::Jit);
+
+// A composite pattern over a result of a composite, or over a union of
+// composites with no written type test, tests the member's own form and
+// destructures it.
+run!(select_composite_over_result_and_union, r#"
+{
+    let r0 = |t: [(i64, i64), Error<`E>]| -> i64 #[native] select t { error as _ => 0, (x, y) => x + y };
+    let r1 = |t: [{a: i64, b: string}, Error<`E>]| -> i64 #[native] select t { {a, b} => a + str::len(b), _ => -1 };
+    let r2 = |t: [Array<i64>, Error<`E>]| -> i64 #[native] select t { [h, ..] => h, [] => 0, _ => -1 };
+    let u0 = |v: [(i64, i64), Array<i64>]| -> i64 #[native] select v { (x, y) => x * y, [h, ..] => h, _ => 0 };
+    let u1 = |v: [{x: i64, y: i64}, (string, i64)]| -> i64 #[native] select v { {x, y} => x * y, (s, n) => str::len(s) + n };
+    let u2 = |v: [(i64, i64), Array<i64>, {a: i64}]| -> i64 #[native] select v { [a, b] => a - b, (x, y) => x + y, {a} => a, _ => 0 };
+    (
+        r0((3, 4)), r0(error(`E)), r1({a: 1, b: "xy"}), r1(error(`E)), r2([5]), r2([]), r2(error(`E)),
+        u0((3, 4)), u0([1, 2]), u0([5, 6, 7]), u0([]), u1({x: 2, y: 3}), u1(("ab", 4)),
+        u2({a: 4}), u2([9, 2]), u2((9, 2)), u2([1, 2, 3])
+    )
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:7, i64:0, i64:3, i64:-1, i64:5, i64:0, i64:-1, i64:12, i64:1, i64:5, i64:0, i64:6, i64:6, i64:4, i64:7, i64:11, i64:0]"); FuseExpect::Jit);
+
+// An unguarded or-arm before an impure guard: the prologue's test of its
+// alternatives is the chain's, and the taken alternative's binds reach
+// the body.
+run!(prologue_unguarded_or_arm_reaches_the_chain, r#"
+{
+    let f = |v: [`A(string), `B(string), `C(i64)], k: i64| -> i64 select v {
+        `A(s) | `B(s) => str::len(s),
+        `C(n) if n > k => n * 10,
+        `C(n) => n
+    };
+    let g = |v: [`A(i64), `B(i64), `C], k: i64| -> i64 select v { `A(1) | `B(_) => 1, `A(x) if x > k => x, _ => 0 };
+    (#[native] f(`A("ab"), 0), #[native] f(`B("xyz"), 0), #[native] f(`C(5), 2), #[native] f(`C(1), 2),
+     #[native] g(`A(1), 9), #[native] g(`B(4), 9), #[native] g(`A(5), 2), #[native] g(`A(5), 9), #[native] g(`C, 0))
+}
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:3, i64:50, i64:1, i64:1, i64:1, i64:5, i64:0, i64:0]"); FuseExpect::Jit);
