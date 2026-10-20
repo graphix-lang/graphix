@@ -307,55 +307,6 @@ fn parse_sheet<RS: Read + Seek + Clone>(rs: RS, sheet: &str) -> Value {
     grid(cells)
 }
 
-// XCR claude for claude: [bug/high] Padding to A1 allocates (end row + 1) x (end col
-// + 1) Values. Both numbers come from cell coordinates in the file, not from its
-// size, so a 2 KB xlsx whose only cell is XFD100000 asks for 100000 rows of 16384
-// nulls (1.6e9 Values), and the runtime is OOM-killed. calamine's range for that
-// file holds one cell. Bound the padded area before building it: compute it from
-// range.end() and answer an XlsErr above a cell limit, or return the start offset
-// beside the unpadded rows. calamine's worksheet_range is itself dense over the
-// used area (a cell at A1 plus one far corner is the same bomb), so reading through
-// the sparse cells reader with the same limit would close both. probe:
-// design/review-2026-10-12/repro/x-fix-stdlib-01.sh Also reported as (x-panics-02).
-// (x-fix-stdlib-01)
-// 2026-10-13 claude: xlsx and xlsb now read through calamine's sparse cell readers,
-// and every sheet's grid is refused past MAX_CELLS before it is built (pins:
-// lib_tests::xls::xls_read_refuses_a_far_cell, xls_read_pads_to_a1). What stands: xls
-// and ods sheets are read whole by calamine when the workbook opens, as dense ranges
-// over their used area. xls is held to 65536 x 256 by its format; an ods file with a
-// far cell still allocates inside calamine before parse_sheet runs. Closing that needs
-// calamine's ods reader changed or replaced. small-pkgs-02 was this same defect.
-// 2026-10-14 eric: lets add a new CR type to the CR skill, `CR claude for upstream`
-// where we log bugs we find in upstream packages. We can then decide whether it's ok
-// to release with them, and track our outstanding upstream PRs at the CR site. This,
-// sled, and handlebars-rs are the first ones in the class.
-// 2026-10-16 claude: ods closed in this package: check_ods streams an ods file's
-// content.xml before calamine opens it and refuses (XlsErr) a workbook whose any table
-// calamine would expand past MAX_CELLS, both the row elements it holds out to their
-// last value and the area its values span with repeats expanded; xls::sheets is
-// covered too, since calamine reads every table at open. Pins: xls
-// test::ods_refuses_many_far_rows (2000 rows reaching XFD), ods_refuses_a_far_corner
-// (A1 plus XFD over 5000 repeated rows), ods_reads_padded_to_a1; both refusals fail
-// with the check disabled. calamine's dense ods reader stands upstream (no sparse
-// cells reader for ods), now unreachable past the bound.
-// 2026-10-20 claude: XCR review: The 10-16 note says ods is closed because check_ods
-// refuses any table calamine would expand past MAX_CELLS. But check_ods counts a
-// self-closing cell as valued only when it carries office:value-type or table:formula,
-// while calamine's get_datatype (ods.rs, expand_empty_elements on) makes a value from
-// office:value, office:string-value, office:date-value, office:time-value or
-// office:boolean-value alone. Ran with the current quick binary: 2000 rows of
-// '<table:table-cell table:number-columns-repeated="16383"/><table:table-cell
-// office:value="1"/>' (a 2.6 KB ods) passes the check, and xls::sheets answers ['S']
-// after calamine built 32.7M cells. The same file with office:value-type="float" is
-// refused. Fix: treat a cell as valued when it has any attribute calamine reads a
-// value from (office:value, office:string-value, office:date-value, office:time-value,
-// office:boolean-value) or a formula, and pin the value-type-less far rows.
-// 2026-10-20 claude: check_ods counts a self-closing cell as valued when it carries
-// any of ODS_VALUE_ATTRIBUTES: office:value, office:string-value, office:date-value,
-// office:time-value, office:boolean-value, office:value-type or table:formula. Pin:
-// xls test::ods_refuses_far_rows_valued_by_any_attribute (2000 far rows ending in a
-// cell with each attribute alone; the office:value file passes the check with the old
-// two attributes).
 /// `cells` as rows of values from A1, a cell not given null.
 fn grid(mut cells: Cells) -> Value {
     let rows = cells.iter().map(|(r, _, _)| *r as usize + 1).max().unwrap_or(0);

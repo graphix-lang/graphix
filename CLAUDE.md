@@ -1137,6 +1137,9 @@ test is a result.
   cases rather than accept them.
 - Hot operators log and bottom on failure; rare stdlib functions return a
   catchable `Error`.
+- A bug in a crate Graphix depends on is an entry in `UPSTREAM.md`, not a
+  CR. Work around it in Graphix only when it breaks Graphix's own
+  operation (a crash, a hang, a wrong answer), and say so in the entry.
 
 ## Stdlib notes
 
