@@ -426,8 +426,15 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         // 2026-10-19 claude: The CTX_WIRE_SLOTS doc now says a site-channel claim
         // traps on a null slot 2. The StateWord simplification (dropping the dead
         // null-guard paths) remains.
-        word.required_addr(self);
-        word
+        // the trap proved the base non-null: what follows needs no guard
+        // 2026-10-20 claude: claimed_word now returns StateWord::Sure after its trap,
+        // so words claimed through it emit no null guard downstream. Still open:
+        // claim_anchor and the other StateWord::Guarded constructions in body.rs (and
+        // SlotTable::guarded, the live selects in call::claim_callee_block and
+        // emit_site_block, the Guarded arm of emit_slot_truncates) where no trap
+        // precedes them; each needs its own proof that the base is non-null before the
+        // variant can go.
+        StateWord::Sure(word.required_addr(self))
     }
 
     /// Claim and register an owning chain's anchor in this body's channel.
