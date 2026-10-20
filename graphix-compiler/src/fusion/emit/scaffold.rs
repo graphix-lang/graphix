@@ -12,6 +12,7 @@ use crate::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
     },
+    node::pattern::StructPatternNode,
     tval::TAG_MASK,
     typ::Type,
 };
@@ -96,6 +97,9 @@ pub(crate) struct HofElem<'a> {
     /// single-name callbacks; only valid on a composite element
     /// ([`bind_elem`] Errs otherwise).
     pub leaves: &'a [Leaf],
+    /// A destructure past a flat tuple, bound as a `let` binds it; only
+    /// on a composite element.
+    pub pattern: Option<&'a StructPatternNode>,
 }
 
 /// The owned locals one iteration bound; each is an env local, so a
@@ -202,7 +206,8 @@ fn bind_elem(
         kernel_abi::abi_kind(elem.typ).and_then(LocalKind::of).ok_or_else(|| {
             anyhow!("HOF element shape not supported by the JIT loop scaffolds")
         })?;
-    if !elem.leaves.is_empty() && kind != LocalKind::Composite {
+    if (!elem.leaves.is_empty() || elem.pattern.is_some()) && kind != LocalKind::Composite
+    {
         return Err(anyhow!(
             "destructure leaves on a non-composite HOF element — caller bug"
         ));
@@ -210,11 +215,35 @@ fn bind_elem(
     let (d, p) = read_elem(cx, arr_ptr, i_now, kind)?;
     let d = elem_disc(cx, d, src_disc);
     let vv = bind_local(cx, elem.name.clone(), d, p, kind, elem.id);
-    let leaves = match kind {
+    let mut leaves = match kind {
         LocalKind::Composite => bind_leaves(cx, p, src_disc, TAINT | STALE, elem.leaves)?,
         _ => OwnedLocals::new(),
     };
+    if let Some(pattern) = elem.pattern {
+        bind_pattern(cx, pattern, elem.typ, d, p, &mut leaves)?;
+    }
     Ok(Bound { elem: (kind, vv), leaves })
+}
+
+/// Bind `pattern`'s names over the composite `(disc, ptr)` of type
+/// `typ`, as a `let` destructure binds them, adding the owned ones to
+/// `owned` for dropping.
+fn bind_pattern(
+    cx: &mut BodyCx,
+    pattern: &StructPatternNode,
+    typ: &Type,
+    disc: ClifValue,
+    ptr: ClifValue,
+    owned: &mut OwnedLocals,
+) -> Result<()> {
+    let mark = cx.env.mark();
+    super::select::emit_composite_binds(cx, pattern, typ, disc, ptr)?;
+    for (kind, vv) in cx.env.locals_above(mark) {
+        if !matches!(kind, LocalKind::Scalar(_)) {
+            owned.push((kind, vv));
+        }
+    }
+    Ok(())
 }
 
 /// `len = valarray_len(arr_ptr)`.
@@ -1048,7 +1077,14 @@ pub(crate) enum FoldAcc<'a> {
     /// iteration the body's result is made owned per `body_src` and the
     /// old acc dropped. `leaves` are the acc pattern's destructure
     /// leaves, re-read off the current acc each iteration.
-    Composite { init_src: CompositeSource, body_src: CompositeSource, leaves: &'a [Leaf] },
+    Composite {
+        init_src: CompositeSource,
+        body_src: CompositeSource,
+        leaves: &'a [Leaf],
+        /// The acc parameter's destructure past a flat tuple, over the
+        /// acc's frozen type.
+        pattern: Option<(&'a StructPatternNode, &'a Type)>,
+    },
     /// An owned `ArcStr`. String reads always clone, so results are
     /// already owned; the old acc still drops when replaced.
     Str,
@@ -1174,10 +1210,15 @@ where
             cx.env.bind(acc_name.clone(), acc_vv, kind, acc_id);
             let bound = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
             let acc_leaves = match &acc {
-                FoldAcc::Composite { leaves, .. } if !leaves.is_empty() => {
+                FoldAcc::Composite { leaves, pattern, .. } => {
                     let acc_ptr = cx.b.use_var(acc_var);
                     let acc_disc = cx.b.use_var(acc_disc_var);
-                    bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?
+                    let mut owned =
+                        bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?;
+                    if let Some((pattern, typ)) = pattern {
+                        bind_pattern(cx, pattern, typ, acc_disc, acc_ptr, &mut owned)?;
+                    }
+                    owned
                 }
                 _ => OwnedLocals::new(),
             };

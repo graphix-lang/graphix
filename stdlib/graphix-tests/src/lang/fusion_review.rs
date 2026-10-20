@@ -344,14 +344,23 @@ run!(narrow_min_div_minus_one_is_bottom, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i8:7, i16:7, i32:7, i8:-64]"); FuseExpect::Jit);
 
-// A collection callback whose formal destructures past a flat tuple has
-// no fused loop, and a #[native] says which formal, not an internal name.
-run!(destructured_callback_formal_is_named, r#"
+// A collection callback whose formal destructures past a flat tuple (a
+// struct, a nested tuple, a fold accumulator) binds its names as a `let`
+// destructure does, in a fused loop.
+run!(destructured_callback_formals_fuse, r#"
 {
-    let rows = [{a: 1, b: 2}, {a: 3, b: 4}];
-    #[native] array::map(rows, |{a, b}| a + b)
+    let rows = [{a: "x", b: 2}, {a: "yy", b: 4}];
+    let nested = [(("p", 2), 5), (("qq", 4), 6)];
+    (
+        #[native] array::map(rows, |{a, b}| str::len(a) + b),
+        #[native] array::map(nested, |((a, b), c)| str::len(a) + b + c),
+        #[native] array::fold(["a", "bb", "ccc"], (("", 1), 2), |((n, m), k), x| (("[n][x]", m + 1), k)),
+        #[native] array::filter(rows, |{a, b}| str::len(a) + b > 4)
+    )
 }
-"#, refused("parameter 1 destructures past a flat tuple"); FuseExpect::None; jit_only);
+"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == DESTRUCTURED_FORMALS); FuseExpect::Jit);
+
+const DESTRUCTURED_FORMALS: &str = r#"[[i64:3, i64:6], [i64:8, i64:12], [["abbccc", i64:4], i64:2], [[["a", "yy"], ["b", i64:4]]]]"#;
 
 // A native tail loop polls the interrupt every 64 iterations, its first
 // included: a long one still runs to its answer.

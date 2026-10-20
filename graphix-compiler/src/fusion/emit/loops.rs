@@ -14,7 +14,7 @@ use crate::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
     },
-    node::{collection::Flavor, lambda::GXLambda},
+    node::{collection::Flavor, lambda::GXLambda, pattern::StructPatternNode},
     typ::{FnArgKind, Type},
 };
 use anyhow::Result;
@@ -25,32 +25,40 @@ use netidx_value::Typ;
 use smallvec::SmallVec;
 
 #[derive(Debug)]
-pub(crate) struct CallbackParam {
+pub(crate) struct CallbackParam<'p> {
     name: ArcStr,
     id: Option<BindId>,
     binds: Vec<(BindId, usize)>,
+    /// A destructure past a flat tuple, bound as a `let` binds it.
+    pattern: Option<&'p StructPatternNode>,
 }
 
-impl CallbackParam {
+impl CallbackParam<'_> {
     /// The loop's element bind for this parameter.
     fn elem<'a>(
         &'a self,
         typ: &'a Type,
         leaves: &'a [scaffold::Leaf],
     ) -> scaffold::HofElem<'a> {
-        scaffold::HofElem { name: &self.name, id: self.id, typ, leaves }
+        scaffold::HofElem {
+            name: &self.name,
+            id: self.id,
+            typ,
+            leaves,
+            pattern: self.pattern,
+        }
     }
 }
 
 /// The callback's `index`-th positional parameter. A callback with
 /// labeled parameters, which the collection interprets, is a blocker
 /// naming the first.
-pub(crate) fn callback_param<R: Rt, E: UserEvent>(
-    callback: &GXLambda<R, E>,
+pub(crate) fn callback_param<'c, R: Rt, E: UserEvent>(
+    callback: &'c GXLambda<R, E>,
     index: usize,
     fallback: ArcStr,
     spec: &Expr,
-) -> Result<Option<CallbackParam>> {
+) -> Result<Option<CallbackParam<'c>>> {
     if let Some(FnArgKind::Labeled { name, .. }) =
         callback.typ().args.first().map(|a| &a.kind)
     {
@@ -62,21 +70,19 @@ pub(crate) fn callback_param<R: Rt, E: UserEvent>(
         ));
     }
     let Some(arg) = callback.args().get(index) else { return Ok(None) };
-    let mut binds = false;
-    arg.ids(&mut |_| binds = true);
-    if binds && arg.single_bind_id().is_none() && arg.tuple_leaves().is_none() {
-        return Err(fusion::blocker(
-            spec,
-            format_compact!(
-                "a collection callback whose parameter {} destructures past a flat \
-                 tuple has no fused loop",
-                index + 1
-            ),
-        ));
-    }
+    let mut names = false;
+    arg.ids(&mut |_| names = true);
     Ok(match arg.tuple_leaves() {
-        Some(binds) => Some(CallbackParam { name: fallback, id: None, binds }),
-        // CR claude for claude: [perf/medium] A destructuring formal other than a flat
+        Some(binds) => {
+            Some(CallbackParam { name: fallback, id: None, binds, pattern: None })
+        }
+        None if names && arg.single_bind_id().is_none() => Some(CallbackParam {
+            name: fallback,
+            id: None,
+            binds: Vec::new(),
+            pattern: Some(arg),
+        }),
+        // XCR claude for claude: [perf/medium] A destructuring formal other than a flat
         // tuple (`|{a, b}|`, `|((a, b), c)|`, a fold acc `|((n, m), k), x|`) lands here
         // as if it were a single name: id is None, there are no leaves, and the
         // pattern's binds are never bound. The loop then fails with 'emit_clif:
@@ -92,11 +98,22 @@ pub(crate) fn callback_param<R: Rt, E: UserEvent>(
         // fusion_review destructured_callback_formal_is_named), so a #[native] says what does
         // not fuse and nothing reaches 'undefined local'. The loop still node-walks: binding
         // the general pattern's leaves (as select destructuring does) remains.
+        // 2026-10-19 claude: A formal that binds names and is neither one name nor a flat
+        // tuple now rides the CallbackParam as its pattern: the loop binds the element under
+        // its synthetic name and the pattern's names over it through
+        // select::emit_composite_binds (emit_structure_cond plus install_arm_binds, as a let
+        // destructure does), the owned ones dropped with the iteration's leaves; a fold's
+        // composite acc takes the same (FoldAcc::Composite's pattern). A destructure over a
+        // non-composite element or acc refuses (the bind_elem check, the acc arms' guards).
+        // Pin: fusion_review destructured_callback_formals_fuse (the review's three shapes
+        // plus a filter, each #[native]); an RSS watch over 3000 ticks of the three loops
+        // matches the single-name control.
         None => match &callback.typ().args.get(index).map(|a| &a.kind) {
             Some(FnArgKind::Positional { name: Some(name) }) => Some(CallbackParam {
                 name: name.clone(),
                 id: arg.single_bind_id(),
                 binds: Vec::new(),
+                pattern: None,
             }),
             _ => None,
         },
@@ -514,8 +531,8 @@ pub(crate) fn emit_find_map_kind<R: Rt, E: UserEvent>(
 pub(crate) struct FoldParts<'a, R: Rt, E: UserEvent> {
     pub(crate) init: &'a Node<R, E>,
     pub(crate) body: &'a Node<R, E>,
-    pub(crate) acc: &'a CallbackParam,
-    pub(crate) element: &'a CallbackParam,
+    pub(crate) acc: &'a CallbackParam<'a>,
+    pub(crate) element: &'a CallbackParam<'a>,
 }
 
 /// A fold's acc carried one register per field: a tuple of scalars
@@ -610,7 +627,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     }
     let acc_leaves;
     let acc_shape = match kernel_abi::abi_kind(&acc_type) {
-        Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
+        Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() && acc.pattern.is_none() => {
             scaffold::FoldAcc::Scalar(prim)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -622,13 +639,16 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
                 init_src: slot_source(cx, init, LocalKind::Composite),
                 body_src: slot_source(cx, body, LocalKind::Composite),
                 leaves: &acc_leaves,
+                pattern: acc.pattern.map(|p| (p, &acc_type)),
             }
         }
-        Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
+        Some(AbiKind::String) if acc.binds.is_empty() && acc.pattern.is_none() => {
+            scaffold::FoldAcc::Str
+        }
         // The init and body may emit narrower members of the acc union;
         // `emit_owned_value_operand_node` normalizes them to an owned Value.
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
-            if acc.binds.is_empty() =>
+            if acc.binds.is_empty() && acc.pattern.is_none() =>
         {
             for n in [init, body] {
                 match kernel_abi::abi_kind(n.typ()) {

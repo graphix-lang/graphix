@@ -349,6 +349,22 @@ pub(super) fn emit_let_binds<R: Rt, E: UserEvent>(
     install_arm_binds(cx, &binds, scrut, cond)
 }
 
+/// An irrefutable composite pattern's names bound over the composite
+/// `(disc, ptr)` of the frozen type `typ`, as a `let` destructure binds
+/// them: a loop's element or accumulator.
+pub(super) fn emit_composite_binds(
+    cx: &mut BodyCx,
+    pattern: &StructPatternNode,
+    typ: &Type,
+    disc: ClifValue,
+    ptr: ClifValue,
+) -> Result<()> {
+    let scrut = SelectScrut::Composite { disc, ptr };
+    let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+    let cond = emit_structure_cond(cx, pattern, typ, false, scrut, typ, &mut binds)?;
+    install_arm_binds(cx, &binds, scrut, cond)
+}
+
 /// [`classify_select_scrutinee`] for the value `node`, of the frozen
 /// type `scrut_typ`, of the expression `id`.
 fn classify_scrutinee<R: Rt, E: UserEvent>(
