@@ -6,7 +6,7 @@
 //! caller supplies the body as a closure over the [`BodyCx`].
 
 use crate::{
-    ApplyView, BindId, Node, NodeView, Rt, UserEvent,
+    ApplyView, BindId, Node, NodeView, Refs, Rt, UserEvent,
     expr::ExprId,
     fusion::{
         self,
@@ -22,6 +22,7 @@ use cranelift_codegen::ir::{
     Block, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::Variable;
+use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 
@@ -699,16 +700,16 @@ fn emit_slots(
     flags: &SlotFlags,
     kind: SinkKind,
     (src, src_disc, len): (ClifValue, ClifValue, ClifValue),
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     iteration: impl Iteration,
 ) -> Result<Sunk> {
     let (accs, entered) = (flags.accs, flags.entered);
     if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
-        let lp = outline::Loop { kind, src, src_disc, len, entered, state_sites };
+        let lp = outline::Loop { kind, src, src_disc, len, entered, facts };
         return outline::emit_outlined(cx, lp, accs, iteration);
     }
     let sink = open_sink(cx, kind, len)?;
-    let lp = open_loop(cx, len, src_disc, state_sites, entered)?;
+    let lp = open_loop(cx, len, src_disc, &facts.sites, entered)?;
     iteration(cx, &lp, &Slots { src, src_disc, sink, accs })?;
     lp.close(cx)?;
     Ok(match sink {
@@ -770,14 +771,13 @@ fn array_loop(
     arr: ArraySrc,
     kind: LoopKind,
     sink: SinkKind,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     iteration: impl Iteration,
 ) -> Result<(Sunk, SlotFlags)> {
     arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, kind);
-    let sunk =
-        emit_slots(cx, &flags, sink, (arr.ptr, arr.disc, len), state_sites, iteration)?;
+    let sunk = emit_slots(cx, &flags, sink, (arr.ptr, arr.disc, len), facts, iteration)?;
     arr.drop_held(cx)?;
     Ok((sunk, flags))
 }
@@ -787,11 +787,11 @@ fn array_buf_loop(
     cx: &mut BodyCx,
     arr: ArraySrc,
     kind: LoopKind,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     step: impl BufStep,
 ) -> Result<(ClifValue, SlotFlags)> {
     let iteration = |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots| step(cx, lp, s, s.buf());
-    let (sunk, flags) = array_loop(cx, arr, kind, SinkKind::Buf, state_sites, iteration)?;
+    let (sunk, flags) = array_loop(cx, arr, kind, SinkKind::Buf, facts, iteration)?;
     Ok((sunk.array(), flags))
 }
 
@@ -800,13 +800,12 @@ fn array_find_loop(
     cx: &mut BodyCx,
     arr: ArraySrc,
     kind: LoopKind,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     step: impl FindStep,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)> {
     let iteration =
         |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots| step(cx, lp, s, s.found());
-    let (sunk, flags) =
-        array_loop(cx, arr, kind, SinkKind::Find, state_sites, iteration)?;
+    let (sunk, flags) = array_loop(cx, arr, kind, SinkKind::Find, facts, iteration)?;
     Ok((sunk.taken(), flags))
 }
 
@@ -819,7 +818,7 @@ pub(crate) fn emit_init_loop<F>(
     idx_id: Option<BindId>,
     out_typ: &Type,
     out_src: CompositeSource,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     body: F,
 ) -> Result<(ClifValue, SlotFlags, ClifValue)>
 where
@@ -857,7 +856,7 @@ where
     let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
     let disc = cx.b.ins().select(oversize, tainted, stale);
     flags.accs.fold(cx, disc);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, (zero, n_disc, n), state_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, (zero, n_disc, n), facts, {
         |cx, lp, s| {
             let ((), value) = lp.run(
                 cx,
@@ -894,13 +893,13 @@ pub(crate) fn emit_map_loop<F>(
     elem: &HofElem,
     out_typ: &Type,
     out_src: CompositeSource,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    array_buf_loop(cx, arr, LoopKind::Slots, state_sites, {
+    array_buf_loop(cx, arr, LoopKind::Slots, facts, {
         |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -918,13 +917,13 @@ pub(crate) fn emit_filter_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     predicate: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    array_buf_loop(cx, arr, LoopKind::PassThrough, state_sites, {
+    array_buf_loop(cx, arr, LoopKind::PassThrough, facts, {
         |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, keep) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
@@ -959,7 +958,7 @@ pub(crate) fn emit_filter_map_loop<F>(
     elem: &HofElem,
     out_elem: &Type,
     out_src: CompositeSource,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -971,7 +970,7 @@ where
     ) {
         return Err(anyhow!("filter_map output element is not representable"));
     }
-    array_buf_loop(cx, arr, LoopKind::Slots, state_sites, {
+    array_buf_loop(cx, arr, LoopKind::Slots, facts, {
         |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -1017,13 +1016,13 @@ pub(crate) fn emit_flat_map_loop<F>(
     arr: ArraySrc,
     elem: &HofElem,
     extend_kind: FlatMapExtend,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    array_buf_loop(cx, arr, LoopKind::Slots, state_sites, {
+    array_buf_loop(cx, arr, LoopKind::Slots, facts, {
         |cx: &mut BodyCx, lp: &LoopFrame, s: &Slots, buf: ClifValue| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -1172,7 +1171,7 @@ pub(crate) fn emit_fold_loop<'a, 'f, 'c, I, F>(
     acc_name: &ArcStr,
     acc_id: Option<BindId>,
     elem: &HofElem,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     init: I,
     body: F,
 ) -> Result<(CompiledExpr, SlotFlags)>
@@ -1199,7 +1198,7 @@ where
     cx.b.def_var(acc_var, init_pay);
     let d0 = acc.carry_disc(cx, init_disc);
     cx.b.def_var(acc_disc_var, d0);
-    let lp = open_loop(cx, len, arr.disc, state_sites, flags.entered)?;
+    let lp = open_loop(cx, len, arr.disc, &facts.sites, flags.entered)?;
     // The acc binds before the interrupt poll so the poll's abort cleanup
     // drops an owned acc. Acc leaves carry the acc's loop-carried
     // TAINT|STALE; unlike an element, the acc can be tainted.
@@ -1279,7 +1278,7 @@ pub(crate) fn emit_fold_fields_loop<'a, 'f, 'c, I, F>(
     acc_name: &ArcStr,
     acc_names: &AccNames,
     elem: &HofElem,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     init_src: CompositeSource,
     init: I,
     fields: F,
@@ -1319,7 +1318,7 @@ where
     }
     let c0 = cx.b.ins().band_imm(init_cv.disc, TAINT | STALE);
     cx.b.def_var(carry, c0);
-    let lp = open_loop(cx, len, arr.disc, state_sites, flags.entered)?;
+    let lp = open_loop(cx, len, arr.disc, &facts.sites, flags.entered)?;
     let (bound, new_fields) = lp.run(
         cx,
         |cx, i| {
@@ -1434,13 +1433,13 @@ pub(crate) fn emit_find_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     predicate: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    array_find_loop(cx, arr, LoopKind::PassThrough, state_sites, {
+    array_find_loop(cx, arr, LoopKind::PassThrough, facts, {
         |cx: &mut BodyCx,
          lp: &LoopFrame,
          s: &Slots,
@@ -1494,13 +1493,13 @@ pub(crate) fn emit_find_map_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
-    state_sites: &[ExprId],
+    facts: &LoopBody,
     body: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<(ClifValue, ClifValue)>,
 {
-    array_find_loop(cx, arr, LoopKind::Slots, state_sites, {
+    array_find_loop(cx, arr, LoopKind::Slots, facts, {
         |cx: &mut BodyCx,
          lp: &LoopFrame,
          s: &Slots,
@@ -1534,18 +1533,21 @@ where
     })
 }
 
-/// Collect the per-slot state sites in a scaffold-loop body: the
-/// callsite `ExprId` of every nested collection HOF call (its
+/// What a scaffold-loop body needs of its loop: its per-slot state
+/// sites, the callsite `ExprId` of every nested collection HOF call (its
 /// prev-length word) and of every cross-kernel lambda call (its
 /// first-call word), each of which claims one per-slot state chain (see
-/// [`BodyCx::open_slot_tables`]). A nested callback body lives behind
-/// its own lambda def and anchors its sites in the chain its own loop
-/// opens.
-pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
-    cx: &BodyCx,
-    node: &Node<R, E>,
-) -> LPooled<Vec<ExprId>> {
-    let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
+/// [`BodyCx::open_slot_tables`]); and the bindings it reads from outside,
+/// its callees' included, which an outlined loop's chunk is handed. A
+/// nested callback body lives behind its own lambda def and anchors its
+/// sites in the chain its own loop opens.
+pub(crate) struct LoopBody {
+    pub(super) sites: LPooled<Vec<ExprId>>,
+    pub(super) reads: LPooled<IntSet<BindId>>,
+}
+
+pub(crate) fn loop_body<R: Rt, E: UserEvent>(cx: &BodyCx, node: &Node<R, E>) -> LoopBody {
+    let mut sites: LPooled<Vec<ExprId>> = LPooled::take();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
             let id = n.spec().id;
@@ -1554,10 +1556,16 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
                 Some(ApplyView::Lambda(l)) if l.inline_callback_body().is_some()
             );
             if collection || cx.ctx.lambda_call_sites.contains_key(&id) {
-                ids.push(id);
+                sites.push(id);
             }
         }
         _ => {}
     });
-    ids
+    let mut refs = Refs::default();
+    node.refs(&mut refs);
+    let mut reads: LPooled<IntSet<BindId>> = LPooled::take();
+    refs.with_external_refs(|id| {
+        reads.insert(id);
+    });
+    LoopBody { sites, reads }
 }

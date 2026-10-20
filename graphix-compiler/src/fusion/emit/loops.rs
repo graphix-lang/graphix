@@ -282,7 +282,7 @@ pub(crate) fn emit_init_kind<R: Rt, E: UserEvent>(
     }
     let count = source.emit_clif(cx)?;
     let output_source = emit::node_composite_source(body);
-    let sites = emit::slot_state_sites(cx, body);
+    let sites = emit::loop_body(cx, body);
     let (ptr, flags, count_disc) = scaffold::emit_init_loop(
         cx,
         count.payload,
@@ -320,7 +320,7 @@ pub(crate) fn emit_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let output_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_map_loop(
             cx,
             src,
@@ -350,7 +350,7 @@ pub(crate) fn emit_filter_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_filter_loop(
             cx,
             src,
@@ -389,7 +389,7 @@ pub(crate) fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let output_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_filter_map_loop(
             cx,
             src,
@@ -427,7 +427,7 @@ pub(crate) fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     };
     emit_loop(cx, source, flavor, |cx, src| {
         let body_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let (ptr, flags) = scaffold::emit_flat_map_loop(
             cx,
             src,
@@ -477,7 +477,7 @@ pub(crate) fn emit_find_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let ((disc, payload), flags) = scaffold::emit_find_loop(
             cx,
             src,
@@ -512,7 +512,7 @@ pub(crate) fn emit_find_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let body_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         let ((disc, payload), flags) = scaffold::emit_find_map_loop(
             cx,
             src,
@@ -605,7 +605,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
     }
     if let Some((names, prims)) = unpackable_acc(cx, &acc_type, acc, body) {
         return emit_loop(cx, source, flavor, |cx, src| {
-            let sites = emit::slot_state_sites(cx, body);
+            let sites = emit::loop_body(cx, body);
             scaffold::emit_fold_fields_loop(
                 cx,
                 src,
@@ -670,7 +670,7 @@ pub(crate) fn emit_fold_kind<R: Rt, E: UserEvent>(
         LocalKind::Scalar(_) | LocalKind::String => n.emit_clif(cx),
     };
     emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
+        let sites = emit::loop_body(cx, body);
         scaffold::emit_fold_loop(
             cx,
             src,
