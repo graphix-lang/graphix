@@ -506,6 +506,11 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     // missed truncation would show in the kernel interior memory pins
     // (lang::kernel_state, collection slot fixtures); graphix-tests 9636 green
     // and regress 552/0/0/0.
+    // 2026-10-20 claude: Correction to the pin named above (there is no
+    // lang::kernel_state): a mutation that drops these records instead of
+    // handing them to the enclosing frame aborts
+    // lang::fusion::nested_hof_function_capture (a slot-chain helper panics),
+    // which is the pin.
     /// The claims of [`Self::open_slot_tables`] for a loop at the next
     /// depth: its sites' tables. Their truncate records go to the
     /// enclosing loop's frame: the preheader sizes the tables each run,
