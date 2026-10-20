@@ -1804,7 +1804,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Whether `id` is a binding an earlier compile generalized: its
     /// check already made variables of a function it holds generic.
-    // CR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
+    // XCR claude for claude: [bug/medium] A function type's own quantifiers are GENERIC
     // cells too, so this answers true for a rank-2 parameter, for a binding annotated
     // with `type F = fn<'b: ..>(..)`, for a struct holding one, and for a lambda
     // literal's parameter checked against one. The `&mut` check in Bind then refuses
@@ -1837,13 +1837,20 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     // binding was checked under from one an earlier compile generalized (e.g. by the cell's
     // origin or by the formal's quantifiers reaching the literal's parameters), and the pin
     // set wants this case beside mut_ref_to_a_rank2_parameter.
+    // 2026-10-20 claude: generalized_earlier skips a generic cell a rank-2 formal's
+    // quantifier gate holds (TVar::is_quantifier_rigid): a lambda literal's parameter
+    // checked against fn<'b: Any>(y: 'b) -> 'b has the quantifier itself as its type. Pin:
+    // lang::byref::mut_ref_to_a_rank2_argument_parameter (app(|y| { let r = &mut y; y });
+    // the pre-fix binary refuses it with 'made generic by an earlier compile').
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| {
             let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
             b.typ.reached_cells(&mut cells);
             let mut generic = cells
                 .iter()
-                .filter(|(_, tv)| tv.level() == typ::tvar::Level::GENERIC)
+                .filter(|(_, tv)| {
+                    tv.level() == typ::tvar::Level::GENERIC && !tv.is_quantifier_rigid()
+                })
                 .peekable();
             if generic.peek().is_none() {
                 return false;

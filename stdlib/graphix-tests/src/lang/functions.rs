@@ -3079,6 +3079,18 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, null, null]")
 );
 
+// The same with the open cell nested inside the argument.
+run!(
+    widening_waits_for_a_nested_open_argument,
+    r#"{
+  let pick = |x: Array<'a>, y: Array<'a>, z: Array<'a>| -> Array<Array<'a>> [x, y, z];
+  let v: [i64, null] = null;
+  let h = |z| pick([i64:1], [z], [v]);
+  h(null)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:1], [null], [null]]")
+);
+
 // A builtin binding declares every argument's type, its variadic's too.
 run!(builtin_binding_needs_a_typed_variadic, r#"{
   let s = |@args| -> i64 'core_sum;

@@ -11,7 +11,7 @@ use crate::{
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::{MatchHist, SigPairs},
-        tvar::{Fresh, Level},
+        tvar::{self, Fresh, Level},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1897,12 +1897,12 @@ fn param_bounds_of(env: &Env, t: &Type, out: &mut IntMap<usize, SmallVec<[Type; 
                             .entry(tv.cell_addr())
                             .or_default()
                             .push(bound.replace_tvars(&known)),
-                        (Some(Type::NoError), arg) => {
-                            for tv in arg.open_members() {
-                                out.entry(tv.cell_addr()).or_default().push(Type::NoError)
-                            }
-                        }
-                        _ => (),
+                        (Some(bound), arg) => tvar::handed_bounds(
+                            std::slice::from_ref(bound),
+                            arg,
+                            &mut |tv, b| out.entry(tv.cell_addr()).or_default().push(b),
+                        ),
+                        (None, _) => (),
                     }
                 }
             }

@@ -469,9 +469,11 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
         TypeDefBody::Alias(t) => {
             TypeDefBody::Alias(t.scope_refs(scope).rewrite_trait_args(&ctx.env)?)
         }
-        TypeDefBody::Abstract(rep) => {
-            TypeDefBody::Abstract(rep.as_ref().map(|r| r.scope_refs(scope)))
-        }
+        TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
+            rep.as_ref()
+                .map(|r| r.scope_refs(scope).rewrite_trait_args(&ctx.env))
+                .transpose()?,
+        ),
     };
     // a ground union has several normal forms: one type is one by
     // mutual containment
@@ -482,7 +484,7 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
             && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
             && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
     };
-    // CR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
+    // XCR claude for claude: [bug/medium] At the check_sig_items call site, sig_td's
     // body is the interface's registered typedef, which Env::deftype already passed
     // through rewrite_trait_args. impl_body here only went through scope_refs. A fn
     // type with a trait-typed parameter (`type F = fn(x: Display) -> string`) therefore
@@ -505,9 +507,18 @@ fn check_typedef_decl<R: Rt, E: UserEvent>(
     // found type F = Abstract<fn(x: Display) -> string>' (the alias form now passes).
     // Rewrite the Abstract rep the same way, and pin the abstract-rep twin of
     // interface_typedef_with_a_trait_parameter.
+    // 2026-10-20 claude: check_typedef_decl rewrites the Abstract rep with
+    // rewrite_trait_args too, and compares two reps by one_type as it does two aliases.
+    // Pin: lang::modules::interface_abstract_typedef_with_a_trait_parameter (the
+    // pre-fix binary refuses it with 'signature mismatch in F'). The doubled text was
+    // the expected and found sides printing alike, not a second print: a genuine
+    // mismatch prints once.
     let same_body = sig_td.body == impl_body
         || match (&sig_td.body, &impl_body) {
-            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => one_type(t0, t1),
+            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1))
+            | (TypeDefBody::Abstract(Some(t0)), TypeDefBody::Abstract(Some(t1))) => {
+                one_type(t0, t1)
+            }
             _ => false,
         };
     if sig_td.name != td.name || sig_td.params != impl_params || !same_body {

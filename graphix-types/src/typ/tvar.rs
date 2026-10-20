@@ -761,15 +761,23 @@ impl Hash for TVar {
 }
 
 /// Hand a cell's bounds to the open cells of its binding `t`.
-pub(crate) fn require_bounds(cons: &[Type], t: &Type) {
+pub fn require_bounds(cons: &[Type], t: &Type) {
+    handed_bounds(cons, t, &mut |tv, b| tv.add_cell_constraint(b))
+}
+
+/// Each conjunct the bounds `cons` hand an open cell of `t`, a type
+/// bound where they hold: what [`require_bounds`] adds, and what an
+/// interface's typedef parameter declares of the variables its argument
+/// holds.
+pub(crate) fn handed_bounds(cons: &[Type], t: &Type, hand: &mut dyn FnMut(&TVar, Type)) {
     for c in cons {
         match c {
-            Type::Concrete => t.require_concrete(),
-            Type::Data => t.require_data(),
-            Type::Singleton => t.require_singleton(),
-            Type::OneNumber => t.require_one_number(),
-            Type::NoError => t.require_no_error(),
-            Type::Discernible | Type::Ordered => t.require_compared(c),
+            Type::Concrete => t.require_everywhere(c, true, hand, &mut LPooled::take()),
+            Type::Data => t.require_everywhere(c, false, hand, &mut LPooled::take()),
+            Type::Singleton => t.require_singleton(hand),
+            Type::OneNumber => t.require_one_number(hand),
+            Type::NoError => t.require_no_error(hand),
+            Type::Discernible | Type::Ordered => t.require_compared(c, hand),
             _ => (),
         }
     }
@@ -1301,7 +1309,7 @@ impl TVar {
     }
 
     /// Whether a rank-2 formal's quantifier holds this cell rigid.
-    pub(super) fn is_quantifier_rigid(&self) -> bool {
+    pub fn is_quantifier_rigid(&self) -> bool {
         self.read().cell.read().quantifier_gates > 0
     }
 
@@ -1551,19 +1559,12 @@ impl Type {
     }
 
     /// The open members of a `NoError` cell's binding are each `NoError`.
-    pub(crate) fn require_no_error(&self) {
-        for tv in self.open_members() {
-            tv.add_cell_constraint(Type::NoError)
-        }
-    }
-
-    /// The open cells among this type's members read as a union: the
-    /// cells a `NoError` bound reaches ([`Self::require_no_error`]).
-    pub(crate) fn open_members(&self) -> SmallVec<[TVar; 2]> {
+    fn require_no_error(&self, hand: &mut dyn FnMut(&TVar, Type)) {
         let mut parts = UnionParts::new(Measure::Members);
-        match self.union_parts(None, &mut parts) {
-            Ok(()) => parts.open,
-            Err(_) => SmallVec::new(),
+        if self.union_parts(None, &mut parts).is_ok() {
+            for tv in parts.open.iter() {
+                hand(tv, Type::NoError)
+            }
         }
     }
 
@@ -1594,15 +1595,15 @@ impl Type {
     /// Narrow the open members of a `Singleton` cell's binding: beside one
     /// known member each must be within it; with none, each is a
     /// `Singleton` itself (two open members may still differ).
-    pub(crate) fn require_singleton(&self) {
+    fn require_singleton(&self, hand: &mut dyn FnMut(&TVar, Type)) {
         let mut parts = UnionParts::new(Measure::Members);
         if self.union_parts(None, &mut parts).is_err() {
             return;
         }
         parts.merge_open();
         if let Some(narrow) = parts.narrowing() {
-            for tv in parts.open.drain(..) {
-                tv.add_cell_constraint(narrow.clone())
+            for tv in parts.open.iter() {
+                hand(tv, narrow.clone())
             }
         }
     }
@@ -1611,7 +1612,7 @@ impl Type {
     /// `OneNumber` where no member is numeric yet; beside a numeric
     /// member, one may still bind another numeric type (no upper bound
     /// says "not numeric, or this number").
-    pub(crate) fn require_one_number(&self) {
+    fn require_one_number(&self, hand: &mut dyn FnMut(&TVar, Type)) {
         let mut parts = UnionParts::new(Measure::Numbers);
         // CR claude for eric: [bug/medium] When the binding already has a numeric
         // member, the open members get no conjunct at all. So `'a: [Number, null] +
@@ -1629,8 +1630,8 @@ impl Type {
         if self.union_parts(None, &mut parts).is_err() || parts.known > 0 {
             return;
         }
-        for tv in parts.open.drain(..) {
-            tv.add_cell_constraint(Type::OneNumber)
+        for tv in parts.open.iter() {
+            hand(tv, Type::OneNumber)
         }
     }
 
@@ -1803,36 +1804,30 @@ impl Type {
         })
     }
 
-    /// Hand the `Concrete` conjunct to every open cell the type reaches:
-    /// a concrete cell's binding is concrete all the way down.
-    pub(crate) fn require_concrete(&self) {
-        self.require_everywhere(Type::Concrete, true, &mut LPooled::take())
-    }
-
     /// Hand `bound` to every open cell the type reaches, a function's
     /// parts only when `in_fns`; each cell and shared node once.
-    fn require_everywhere(&self, bound: Type, in_fns: bool, seen: &mut AHashSet<usize>) {
+    fn require_everywhere(
+        &self,
+        bound: &Type,
+        in_fns: bool,
+        hand: &mut dyn FnMut(&TVar, Type),
+        seen: &mut AHashSet<usize>,
+    ) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) if !seen.insert(tv.cell_addr()) => (),
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_everywhere(bound, in_fns, seen),
-                None => tv.add_cell_constraint(bound),
+                Some(b) => b.require_everywhere(bound, in_fns, hand, seen),
+                None => hand(tv, bound.clone()),
             },
             t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
             Type::Fn(ft) if in_fns => ft.for_each_part(&mut |t, _| {
-                t.require_everywhere(bound.clone(), in_fns, seen)
+                t.require_everywhere(bound, in_fns, hand, seen)
             }),
             Type::Fn(_) => (),
-            t => t.for_each_child(&mut |c| {
-                c.require_everywhere(bound.clone(), in_fns, seen)
-            }),
+            t => {
+                t.for_each_child(&mut |c| c.require_everywhere(bound, in_fns, hand, seen))
+            }
         })
-    }
-
-    /// Hand the `Data` conjunct to every open cell the type reaches
-    /// outside a function, which is no data whatever it holds.
-    pub(crate) fn require_data(&self) {
-        self.require_everywhere(Type::Data, false, &mut LPooled::take())
     }
 
     /// Drop the conjuncts of every open cell the type reaches: for a
@@ -1999,7 +1994,7 @@ impl Type {
 
     /// [`Self::has_unbound`] less the rigid cells: a declared variable in
     /// its own body never binds, so it stands as a constant.
-    pub(crate) fn has_free(&self) -> bool {
+    pub fn has_free(&self) -> bool {
         self.open_beneath(false)
     }
 

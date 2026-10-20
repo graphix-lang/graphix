@@ -1332,6 +1332,46 @@ run!(
         let apply = |f: F, x: i64| -> string f(x)
     "#; FuseExpect::None);
 
+// A predicate bound on a typedef parameter reaches the open members of a
+// union argument on the interface's side as on the implementation's.
+run!(
+    interface_typedef_bound_reaches_open_members,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f([1, 2])
+    "#,
+    "/test/m.gxi" => r#"
+        type T<'a: Discernible> = Array<'a>;
+        val f: fn(x: T<[i64, 'b]>) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        type T<'a: Discernible> = Array<'a>;
+        let f = |x: T<[i64, 'b]>| -> i64 array::len(x)
+    "#; FuseExpect::Jit);
+
+// The same with the trait-typed parameter inside an abstract's
+// representation.
+run!(
+    interface_abstract_typedef_with_a_trait_parameter,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "3"),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::apply(3)
+    "#,
+    "/test/m.gxi" => r#"
+        type F = Abstract<fn(x: Display) -> string>;
+        val apply: fn(x: i64) -> string
+    "#,
+    "/test/m.gx" => r#"
+        type F = Abstract<fn(x: Display) -> string>;
+        let apply = |x: i64| -> string {
+            let f = F(|y| "[y]");
+            let g = f.0;
+            g(x)
+        }
+    "#; FuseExpect::None);
+
 // A dynamic module whose source goes bottom keeps its loaded body
 // running: a write to an interface val reaches the body that cycle.
 run!(dynamic_module_runs_on_under_a_bottom_source, r#"{
