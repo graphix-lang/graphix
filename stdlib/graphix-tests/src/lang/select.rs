@@ -1270,7 +1270,7 @@ run!(
     (g({x: 0, z: "q"}), h({x: 1, y: "s"}))
 }"#,
     prints(r#"[i64:0, "s"]"#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // An abstract's payload pattern compiles against its written rep: an
@@ -3362,7 +3362,7 @@ run!(coverage_slice_bind_covers_every_member, r#"{
     let h = |p: [Array<i64>, Array<string>]| select p { [h, rest..] => 1, [] => 0 };
     let l = |p: [List<i64>, List<string>]| select p { [<h, rest..>] => 1, [<>] => 0 };
     (f(["s"]), h(["s"]), l([<"s">]))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("one"), Value::I64(1), Value::I64(1)]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("one"), Value::I64(1), Value::I64(1)]); FuseExpect::Jit);
 
 // Under a written union, a constructor pattern's binds take the union of
 // their parts over every member it matches, as under an inferred one.
@@ -4041,7 +4041,7 @@ run!(pool_takes_the_member_an_arm_matches, r#"{
     (false, n) => "f"
   };
   [f((true, 1)), f((false, 1)), f((`A, "s")), f((`B, "s"))]
-}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["t", "f", "a", "b"]"#); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == r#"["t", "f", "a", "b"]"#); FuseExpect::Jit);
 
 // An abstract payload's heads are the scrutinee member's, not the
 // pattern's own: `Box(`A)` alone leaves `B uncovered.

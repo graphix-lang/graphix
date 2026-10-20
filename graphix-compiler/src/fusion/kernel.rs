@@ -239,7 +239,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         }
         tv.with_value(|v| {
             let [disc, payload] = match (p, v) {
-                // CR claude for claude: [readability/low] The comment above is wrong:
+                // XCR claude for claude: [readability/low] The comment above is wrong:
                 // pack_value_to_u64 returns value_words' payload, which sign- or
                 // zero-extends narrow scalars, so no byte is padding.
                 // pack_value_to_u64's doc in emit/jit.rs says a None makes the caller
@@ -266,6 +266,17 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 // fixed-width prim, which is a varint type's own') repeats the error.
                 // Test the exact variant there (or use a prim-of-value that refuses
                 // varints).
+                // 2026-10-20 claude: The exact-variant test is taken:
+                // pack_value_to_u64 packs only a Value whose Typ is exactly the prim
+                // (PrimType::from_typ of Typ::get), so a varint in a Scalar slot is a
+                // mismatch and stage panics as for any other class mismatch; its doc
+                // says a varint is no register prim. compile_const, which must take a
+                // varint literal as its fixed-width prim (a literal compared against a
+                // varint's payload word over a value scrutinee), no longer goes
+                // through pack_value_to_u64 and keeps the collapsing
+                // scalar_prim_of_value. Pin: kernel.rs tests
+                // varints_fill_no_scalar_slot (Z32, V32, Z64, V64 against their
+                // fixed-width prims).
                 (ParamKind::Scalar(prim), v) => match pack_value_to_u64(v, *prim) {
                     Some(payload) => [prim_to_value_disc(*prim) as u64, payload],
                     None => mismatch(v),
@@ -639,6 +650,19 @@ mod tests {
         for (v, p) in cases {
             let bits = pack_value_to_u64(v, *p).expect("matching prim");
             assert_eq!(unpack_u64_to_value(bits, *p), *v);
+        }
+    }
+
+    #[test]
+    fn varints_fill_no_scalar_slot() {
+        let cases: &[(Value, PrimType)] = &[
+            (Value::Z32(-3), PrimType::I32),
+            (Value::V32(3), PrimType::U32),
+            (Value::Z64(-3), PrimType::I64),
+            (Value::V64(3), PrimType::U64),
+        ];
+        for (v, p) in cases {
+            assert_eq!(pack_value_to_u64(v, *p), None, "{v:?} packed as {p:?}");
         }
     }
 }

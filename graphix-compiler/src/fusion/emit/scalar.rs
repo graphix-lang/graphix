@@ -21,7 +21,6 @@ use netidx_value::Value;
 
 use super::{
     abi::{CompiledExpr, scalar_disc, value_disc},
-    jit::pack_value_to_u64,
     lower::LowerCtx,
 };
 
@@ -231,14 +230,16 @@ pub(super) fn string_buf_push_helper(p: PrimType) -> &'static str {
 }
 
 /// Lower a scalar [`Value`] constant of `prim` to a CLIF constant.
-/// `v` must be the matching scalar (`Z*`/`V*` accepted for their
-/// fixed-width prim); anything else is `Err`, which de-fuses.
+/// `v` must be the matching scalar, a varint literal as its fixed-width
+/// prim (it compares against a varint's payload word); anything else is
+/// `Err`, which de-fuses.
 pub(super) fn compile_const(
     b: &mut FunctionBuilder,
     v: &Value,
     prim: PrimType,
 ) -> Result<ClifValue> {
-    let bits = pack_value_to_u64(v, prim)
+    let bits = (kernel_abi::scalar_prim_of_value(v) == Some(prim))
+        .then(|| crate::tval::value_words(v)[1])
         .ok_or_else(|| anyhow!("compile_const: {v:?} isn't a {prim:?} scalar"))?;
     Ok(match prim {
         PrimType::F32 => b.ins().f32const(f32::from_bits(bits as u32)),
